@@ -641,7 +641,7 @@ _MACHINERY_DROP = (
     "user-prompt-submit-hook", "system-reminder",
 )
 
-_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 
@@ -663,14 +663,60 @@ _LEADING_BLOCK = re.compile(
 # the second pass template.html's `BLOCK_OPENERS` makes over a cut preview.
 _LEADING_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 
-# The annotation notes, which have NO TAG at all: `formatAnnotations` writes one
-# opening sentence, a paragraph of field notes for the model, and a fenced json
-# block. A port of template.html's `stripAnnBlock`, matched at position zero for
-# the same reason it is — anything wedged in front turns the strip into a silent
-# no-op and leaks raw json as the title.
+# The annotation notes as they are written TODAY: an `<annotations>` block of
+# markdown stanzas, one per pin. It needs no strip code of its own — the tag is
+# in `_MACHINERY_STRIP` above and `_LEADING_BLOCK` peels it like the other two —
+# but `ann_notes` still has to read the user's words back out of it, and prose
+# has no `content` key to ask for. Hence the shape rules below, which are the
+# ones `formatAnnotations` writes and nothing else:
+#
+#   * stanzas are separated by a blank line, and the writer collapses any blank
+#     line INSIDE a note so that boundary is unambiguous (the composer commits
+#     on Enter and takes a newline on Shift+Enter, so a note really can hold
+#     one);
+#   * the FIRST paragraph is the block's own preamble, and it is the only one
+#     that does not open with `**A** — ` (every stanza opens with its label);
+#   * inside a stanza the first line is that heading, the no-badge caveat and
+#     the no-words placeholder are OURS, and what is left is what the user said.
+#
+# The two machine lines are matched EXACTLY rather than as "any wholly-italic
+# line": a note that is one emphasised word is a note, and dropping it as prose
+# of ours loses the row's whole name.
+#
+# Anything that does not match is answered "" rather than guessed at — a row
+# named with a fragment of our own preamble is worse than one named by its id.
+_ANN_TAG = "annotations"
+_ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
+
+# The annotation notes as they were written BEFORE that tag existed: one opening
+# sentence, a paragraph of field notes for the model, and a fenced json payload.
+# No tag at all, so it is recognised by its prose at position ZERO — which is
+# exactly the fragility the tag was added to end. Sessions already on disk carry
+# this shape forever, so both readers stay (the same permanent obligation
+# `pane_shot`'s bare-object form carries).
 _ANN_PREAMBLE = "The user annotated "
 _ANN_FENCE_OPEN = "\n```json\n"
 _ANN_FENCE_CLOSE = "\n```"
+
+
+def _ann_notes_md(block: str) -> str:
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
+    notes = []
+    for para in re.split(r"\n\s*\n", block.strip()):
+        lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
+            continue            # the preamble paragraph, or something we did not write
+        said = [ln for ln in lines[1:]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
+        if said:
+            notes.append(" ".join(said))
+    return " · ".join(notes)
 
 
 def _strip_ann_block(text: str) -> str:
@@ -732,6 +778,12 @@ def ann_notes(text: str) -> str:
     pins ARE what the user wrote, and no reader was showing them.
     """
     out = (text or "").strip()
+    # TODAY'S shape first, and searched rather than anchored: the tag made this
+    # block position-independent, so it is found wherever the send put it — no
+    # peeling loop needed to expose it, unlike the untagged form below.
+    found = _ANN_BLOCK.search(out)
+    if found:
+        return _ann_notes_md(found.group(1))
     while True:
         match = _LEADING_BLOCK.match(out)
         if not match:
