@@ -500,6 +500,44 @@ def test_no_model_loaded_answers_a_clean_failure(worker):
     assert frames == [{"type": "done", "ok": False, "error": "no model is loaded"}]
 
 
+# -- images: this runner does not read them at all ---------------------------
+# `generate` reads `messages`/`prompt`/`max_tokens`/`temperature`/`top_p` and
+# nothing else. Silently dropping `images` on the floor would answer a
+# picture the model never saw with a confident reply about nothing — the
+# worst failure mode this app has, and exactly what an explicit refusal
+# exists to stop.
+
+
+def test_images_are_refused_rather_than_silently_dropped(worker):
+    """Not a claim about llama.cpp's own limits (it has `libmtmd`, and
+    llama-cpp-python exposes vision through `create_chat_completion`'s
+    chat-handler table) — this runner deliberately streams through
+    `create_completion` instead (module docstring), and a vision model would
+    additionally need a second `mmproj` GGUF nothing here downloads. So the
+    refusal is about THIS runner's wiring, and it must fire before a single
+    token streams."""
+    llm = _FakeLlama(chunks=["should never run"])
+    worker._loaded["llm"] = llm
+    frames = []
+    worker.generate(
+        {"prompt": "what is this?", "images": ["/Users/x/photo.png"]}, frames.append)
+    assert frames[-1]["ok"] is False
+    assert "llamacpp" in frames[-1]["error"].lower()
+    assert not [f for f in frames if f["type"] == "chunk"], (
+        "no tokens may stream once images are refused")
+
+
+def test_an_empty_images_list_is_not_a_refusal(worker):
+    """The shape the server sends when nothing is attached — omitted or
+    empty, never a bare `[]`, but this runner's OWN contract should not
+    depend on the server never sending one."""
+    llm = _FakeLlama(chunks=["ok"])
+    worker._loaded["llm"] = llm
+    frames = []
+    worker.generate({"prompt": "hi", "images": []}, frames.append)
+    assert frames[-1]["ok"] is True
+
+
 def test_cancellation_needs_no_thread_to_join(worker):
     """`create_completion`'s own generator IS the token loop here. transformers'
     `model.generate` owns its own loop and needs a producer thread to hand
