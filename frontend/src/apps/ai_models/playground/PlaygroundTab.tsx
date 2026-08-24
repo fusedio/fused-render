@@ -194,22 +194,24 @@ export default function PlaygroundTab() {
   // model that silently is not in it reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
-  // The RAIL's reading order — images lead, and this tab's own reasoning is why:
-  // it is not a catalogue but a set of things you can DO, and the picture is the
-  // result you can judge at a glance. Text is not demoted for being lesser; it is
-  // the one everybody already knows they can have.
+  // The RAIL's reading order — text generation leads now (2026-08-24): it is
+  // the capability a reader arrives at this app FOR, the one every other
+  // capability is compared against by reputation, so it is what a reader
+  // should find first, not the second thing after image generation. It used
+  // to lead with images on the argument that this tab is not a catalogue but
+  // a set of things you can DO, and a picture is the result you can judge at
+  // a glance — that argument is not wrong, it just lost to a stronger one.
   //
-  // **THE LIST ITSELF NOW LIVES IN `CAPABILITY_ORDER`** (Akshil, 2026-08-24).
-  // This tab kept a private copy for exactly as long as it took to notice what
-  // two copies cost. Two things were wrong with it. The Models and Benchmark
-  // tabs sorted by the other list, so the same five sections appeared in two
-  // orders on one page and a reader moving between tabs re-found every one. And
-  // this copy named FOUR capabilities: video was not in it, so it fell through
-  // to the end and landed after Embeddings by accident rather than by anybody's
-  // decision. So the argument above won — the tab a reader uses the models on
-  // sets the order — and the shared constant is where it won: `CAPABILITY_ORDER`
-  // holds this order now, video listed explicitly, and the inventory tabs follow
-  // it. One list, three tabs.
+  // **THE LIST ITSELF LIVES IN `CAPABILITY_ORDER`** (D475), read by all
+  // three tabs with no private copy anywhere — this tab kept one for exactly
+  // as long as it took to notice what two copies cost: the Models and
+  // Benchmark tabs sorted by the other list, so the same five sections
+  // appeared in two orders on one page and a reader moving between tabs
+  // re-found every one. That is still the reason there is one shared
+  // constant rather than three tabs each making their own case for a
+  // leading capability — the 2026-08-24 reorder changed WHICH capability
+  // leads, in the one place that decision lives, not whether each tab gets
+  // to decide for itself again.
   //
   // A capability missing from that list still draws — it sorts after the named
   // ones, in the order the server sent it — so a capability added server-side
@@ -217,12 +219,10 @@ export default function PlaygroundTab() {
   //
   // This is also what the FALLBACK SELECTION reads, so a bare visit to
   // /ai-models/playground opens on the first section of the rail rather than on
-  // whichever capability the server happened to list first. Where the sections
-  // sit and what the page opens on are different decisions, and the answer to
-  // the second is that a page whose first section is images and whose stage is a
-  // chat box is a page arguing with itself. `pickPlaygroundModel` needs no
-  // change: its rule was always "the first usable row" (pick.ts), and this is
-  // the order that phrase is about.
+  // whichever capability the server happened to list first — now text
+  // generation's own chat stage, matching the rail. `pickPlaygroundModel`
+  // needs no change: its rule was always "the first usable row" (pick.ts),
+  // and this is the order that phrase is about.
   const railRows = useMemo(() => {
     const rank = (c: string) => {
       const i = CAPABILITY_ORDER.indexOf(c);

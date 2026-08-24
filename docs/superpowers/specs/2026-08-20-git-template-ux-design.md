@@ -112,12 +112,12 @@ button's label.
 
 ---
 
-# v3 — "Fix with AI" replaces the operation-error advice panel (2026-08-24, D476)
+# v3 — "Fix with AI" replaces the operation-error advice panel (2026-08-24, D484)
 
 - **Error-flash AI helper is no longer "Explain."** It is now labeled
   **"Fix with AI"** and hands the failed operation off to the Claude sidebar
   instead of streaming advice into this view's own proposal panel — see
-  SPEC.md's GT-19 and DECISIONS.md's D476 for the mechanism (a pull, not a
+  SPEC.md's GT-19 and DECISIONS.md's D484 for the mechanism (a pull, not a
   push onto the claude iframe's URL, and an honest readiness check before
   anything is switched or stored). v1/v2's "labeled Explain" lines above are
   superseded by this; kept in place rather than edited, per this doc's own

@@ -9,14 +9,23 @@
 // rule the chart itself follows: a Share button above "no runs recorded yet"
 // offers to send an empty axis.
 //
-// The outcome is SAID, not assumed. The three channels put the card in three
-// completely different places (a share sheet, the clipboard, the Downloads
-// folder), and a silent success leaves the reader hunting for a file that is
-// actually on their clipboard. Cleared on a timer, since the note is a
-// receipt for an action already finished — nothing later depends on it having
-// been read.
+// **The outcome is SAID, not assumed — but through the global toast (D480),
+// not an inline note beside the button.** An inline `<span>` here used to sit
+// inside `.am-bench-share`, inside `.am-bench-headtools`, inside the
+// right-aligned `.am-section-head` row — so the instant a receipt like "Copied
+// as an image" appeared, the whole control group got pushed left (measured:
+// the Metric `<select>`'s left edge jumped from x≈1183 to x≈962, ~220px) and
+// the button the reader had just pressed moved out from under their pointer.
+// It also landed next to the section's own `<h3>`, where a sentence reads as
+// a second heading rather than a receipt for one click. A toast has neither
+// problem: it renders in `NotificationHost` at the app root, entirely outside
+// this row's layout, so nothing beside the button ever moves — and it is
+// unambiguously a transient system message, not a second title. `pushToast`
+// already owns auto-dismiss (`lib/toast.ts`'s ~6s TTL), so there is no local
+// timer to keep in step with it here.
 import { useEffect, useRef, useState } from "react";
 import { MenuIcons } from "@platform/ui/MenuIcons";
+import { pushToast } from "@platform/lib/toast";
 import {
   deliverShareCard,
   renderShareCard,
@@ -25,14 +34,22 @@ import {
   type ShareCardInput,
 } from "./shareCard";
 
-const NOTE_MS = 4000;
-
 export function ShareChartButton({ card }: { card: ShareCardInput }) {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   // A card takes a beat to encode; a component unmounted in between (a
-  // capability switch remounts the section) must not set state afterwards.
+  // capability switch remounts the section) must not set its OWN LOCAL
+  // state afterwards — that is all `alive` still guards. It used to guard
+  // the receipt too, back when the receipt WAS local state (an inline
+  // `<span>` next to this button); now that the receipt is a global
+  // `pushToast` (D480), gating it on `alive` silently drops it in exactly
+  // the case the comment below names — a capability switch remounts this
+  // component while the PNG is still encoding, `alive.current` goes false,
+  // and the toast that should have said where the card went never fires,
+  // leaving the reader with no idea whether the share succeeded. The toast
+  // does not live in this component's render tree at all (`NotificationHost`
+  // at the app root), so it has nothing to protect against by waiting on
+  // `alive` — only `setBusy` below, a real `useState` on THIS instance,
+  // still needs the guard.
   //
   // Set on the way IN as well as cleared on the way out — `useRef(true)`'s
   // initializer only ever runs on the FIRST render, so leaving it out here
@@ -41,8 +58,8 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
   // `TranscribeStage.tsx`'s `aliveRef` documents the identical hazard for
   // when it does) runs mount -> cleanup -> mount again with no render in
   // between, so `alive.current` latches `false` on that synthetic cleanup and
-  // the button never clears `busy` or shows a receipt again for the rest of
-  // the session, even though the component is genuinely still mounted.
+  // the button never clears `busy` again for the rest of the session, even
+  // though the component is genuinely still mounted.
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -51,57 +68,46 @@ export function ShareChartButton({ card }: { card: ShareCardInput }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (note === null) return;
-    const timer = window.setTimeout(() => setNote(null), NOTE_MS);
-    return () => window.clearTimeout(timer);
-  }, [note]);
-
   const share = async () => {
     setBusy(true);
-    setError(null);
-    setNote(null);
     try {
       const blob = await renderShareCard(card);
       const outcome = await deliverShareCard(blob, shareCardFilename(card.capability, card.metric));
-      if (!alive.current) return;
-      // A dismissed share sheet has no receipt to show — the reader is the one
-      // who cancelled it.
-      const receipt = shareOutcomeNote(outcome);
-      if (receipt) setNote(receipt);
+      // A dismissed share sheet has no receipt to show — the reader is the
+      // one who cancelled it, and `shareOutcomeNote` says so by returning "":
+      // that empty string must not become an empty toast. Pushed
+      // unconditionally (no `alive` check) — see the guard's own comment
+      // above for why a global toast survives this component unmounting.
+      const msg = shareOutcomeNote(outcome);
+      if (msg) pushToast({ msg, tone: "info" });
     } catch (e) {
-      if (alive.current) setError((e as Error).message);
+      // Also unconditional, for the same reason the success path is.
+      pushToast({ msg: (e as Error).message, tone: "error" });
     } finally {
       if (alive.current) setBusy(false);
     }
   };
 
   return (
-    <span className="am-bench-share">
-      {/* Icon-only, per the icon-buttons pass — "Share chart" (and, while
-          busy, "Preparing…") survives as `aria-label`/`title` rather than on
-          screen, and the RECEIPT below still says in words what happened
-          ("Copied as an image" / "Saved as a PNG"), so the one thing this
-          button does that a glyph cannot say for itself is still said. */}
-      <button
-        type="button"
-        className="cc-iconbtn"
-        disabled={busy}
-        title={busy ? "Preparing…" : "Save this chart, with your hardware, as a PNG you can share"}
-        aria-label={busy ? "Preparing…" : "Share chart"}
-        onClick={() => void share()}
-      >
-        <span className={busy ? "am-icon-spin" : undefined}>
-          {busy ? MenuIcons.spinner : MenuIcons.share}
-        </span>
-      </button>
-      {/* One slot for both, because they are the same slot's two answers —
-          `role="status"` so the receipt is announced rather than only seen. */}
-      {(note || error) && (
-        <span className={error ? "am-bench-share-error" : "am-bench-share-note"} role="status">
-          {error ?? note}
-        </span>
-      )}
-    </span>
+    // Icon-only, per the icon-buttons pass — "Share chart" (and, while busy,
+    // "Preparing…") survives as `aria-label`/`title` rather than on screen,
+    // and the RECEIPT now travels as a toast rather than living on this row
+    // at all (see the file-top comment for why that moved). No wrapping
+    // `<span>` any more either: with the inline note gone this button is the
+    // whole control, so it sits directly in `.am-bench-headtools`'s flex row
+    // like the Metric select beside it, instead of inside a now-empty
+    // single-child flex box that existed only to hold the note.
+    <button
+      type="button"
+      className="cc-iconbtn"
+      disabled={busy}
+      title={busy ? "Preparing…" : "Save this chart, with your hardware, as a PNG you can share"}
+      aria-label={busy ? "Preparing…" : "Share chart"}
+      onClick={() => void share()}
+    >
+      <span className={busy ? "am-icon-spin" : undefined}>
+        {busy ? MenuIcons.spinner : MenuIcons.share}
+      </span>
+    </button>
   );
 }

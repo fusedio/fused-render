@@ -15,6 +15,8 @@ No model is downloaded and no worker is spawned; runner resolution is forced
 rather than inherited, because MLX resolves on a Mac and on nothing in CI.
 """
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -103,6 +105,29 @@ def test_history_names_exactly_the_workload_covered_capabilities(client):
     body = client.get("/api/ai/benchmark").json()
     assert set(body["workloadCapabilities"]) == set(benchmark.WORKLOADS)
     assert ai_registry.VIDEO_GENERATION not in body["workloadCapabilities"]
+
+
+def test_history_carries_the_actual_workload_table_derived_not_restated(client):
+    """`workloads` (D483) is what lets the Benchmark tab say WHAT a run
+    measures — a fixed prompt and token budget, a generated tone, a fixed
+    image size — as a server fact rather than a frontend copy of
+    `benchmark.WORKLOADS` that could silently drift from it. Built from the
+    IDENTICAL `Workload.as_dict()` a run record's own `workload` block uses,
+    so this asserts the response is that table, verbatim, not a hand-written
+    stand-in for it."""
+    body = client.get("/api/ai/benchmark").json()
+    assert set(body["workloads"]) == set(benchmark.WORKLOADS)
+    for capability, workload in benchmark.WORKLOADS.items():
+        # Round-tripped through the SAME json encode/decode the real response
+        # went through — `as_dict()`'s own `params` can hold a tuple (the
+        # embeddings workload's `texts`), and JSON has no tuple type, so a
+        # bare equality check here would fail on a list vs. tuple difference
+        # that is an encoding artefact, not a real mismatch.
+        expected = json.loads(json.dumps(workload.as_dict()))
+        assert body["workloads"][capability] == expected
+    # Video generation has no workload at all (`NO_WORKLOAD_YET`) — absent
+    # from both fields, not a null placeholder in this one.
+    assert ai_registry.VIDEO_GENERATION not in body["workloads"]
 
 
 # -- POST -----------------------------------------------------------------------

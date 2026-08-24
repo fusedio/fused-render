@@ -4110,7 +4110,7 @@ caller that wants the log on purpose.
 
 - **GT-19** **A merge conflict can be taken to an AI IN THIS PANEL, with
   nothing it says reaching the working tree without a confirmation; a failed
-  operation is taken to the Claude SIDEBAR instead (D476), under that sidebar's
+  operation is taken to the Claude SIDEBAR instead (D484), under that sidebar's
   own permission mode.** Two situations, one sparkle (the same icon as GT-18),
   and — for the conflict case — one panel and one model: **`claude-sonnet-5`**,
   named explicitly rather than left on the cheap default, because reconciling
@@ -4119,7 +4119,7 @@ caller that wants the log on purpose.
   understood, and it is the latency the user waits through. *This used to read
   "one panel, and one model" for both situations — the operation-error case
   streamed advice into the SAME proposal panel the conflict case uses, on the
-  same model, with no Apply. D476 moved it out of this view entirely; the
+  same model, with no Apply. D484 moved it out of this view entirely; the
   model, the panel, and the confirmation-before-write guarantee below are now
   the conflict case's alone.*
 
@@ -4170,7 +4170,7 @@ caller that wants the log on purpose.
   all**.
 
   **The operation-error case is secondary, and now hands off to the Claude
-  sidebar instead of producing advice in this panel** (D476). A failed
+  sidebar instead of producing advice in this panel** (D484). A failed
   mutation's `flash` carries the sparkle, labeled **"Fix with AI"**; the same
   facts the panel used to answer with (the error text plus the repository's
   branch/upstream/ahead-behind/dirty state) become a prompt asking the model to
@@ -4187,7 +4187,7 @@ caller that wants the log on purpose.
   failure — not a swallow — when nothing up the chain can open one at all. *This
   clause used to describe `adviseOnError`/`ADVISE_SYSTEM`: the operation-error
   case asked THIS view's own `fused.ai` for advice text, shown in the same
-  proposal panel the conflict-resolution case uses, with no Apply. D476 deleted
+  proposal panel the conflict-resolution case uses, with no Apply. D484 deleted
   both — advice a user has to copy into a terminal by hand is strictly less
   useful than a sidebar that can read the repository, run the fix, and show its
   work, which is what the Claude sidebar already is everywhere else in this

@@ -8462,6 +8462,40 @@ def test_a_llamacpp_curated_id_is_marked_downloaded_and_not_duplicated(
     assert curated_match["source"] == "curated"
     # The repo id itself must NOT also appear as a second, "cached" row.
     assert not any(m["id"] == recipe["repo"] for m in row["models"])
+    # And the translation that made both answers possible is ON THE WIRE, since
+    # the Local tab has the same duplicate to avoid and cannot redo it: its
+    # "already have a card for this" map is keyed by repo id, so without this
+    # field the entry kept a Download button beside its own finished disk card.
+    assert curated_match["repo"] == recipe["repo"]
+
+
+def test_every_catalog_entry_carries_the_repo_that_addresses_it(client, hub, monkeypatch):
+    """`repo` is on EVERY entry, not just the filename-keyed half.
+
+    A consumer that had to know which half it was holding before reading the
+    field would be back to making the distinction this field exists to remove —
+    so a repo-keyed curated entry and a cached one both answer with their own
+    id, and only a `GGUF_RECIPES` entry answers with something different.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "llamacpp-text")
+
+    # One cached repo the curation has never heard of, so the "cached" tail is
+    # populated too.
+    _cached_repo(hub, "somebody/found-on-disk", files=("config.json",))
+
+    rows = _catalog(client)
+    seen_filename_keyed = False
+    for row in rows.values():
+        for entry in row["models"]:
+            recipe = formats.GGUF_RECIPES.get(entry["id"])
+            expected = recipe["repo"] if recipe else entry["id"]
+            assert entry["repo"] == expected, entry["id"]
+            seen_filename_keyed = seen_filename_keyed or recipe is not None
+    # Guards the assertion above against going vacuous if the llama.cpp
+    # shortlist ever stops being filename-keyed.
+    assert seen_filename_keyed
 
 
 def test_a_llamacpp_curated_id_with_a_sibling_quant_not_downloaded_is_told_apart(

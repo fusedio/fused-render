@@ -216,15 +216,33 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
   // nor "you don't" while the tab still has no idea.
   const onCard = data ? diskCards(repos) : null;
 
+  // A curated id → the repo id that ADDRESSES its bytes (`AiCatalogModel.repo`),
+  // which is the id itself for everything but a llama.cpp GGUF. Needed wherever
+  // a model id meets `onCard`, whose keys are repo ids — see `mergeSections`.
+  const repoById = new Map<string, string>(
+    (catalog ?? []).flatMap((entry) =>
+      entry.models.map((m) => [m.id, m.repo ?? m.id] as const),
+    ),
+  );
+
   // The click is held until something ELSE can speak for the pull — the runtime
   // reporting it, `settling` carrying it through the walk, or the walk finding
   // it on disk (a "download" that was a cache hit and finished before any poll
   // saw it). Clearing on the POST's reply would put the card back to "Download"
   // for the beat before the next runtime poll, which reads as the button having
   // done nothing.
+  //
+  // **That third arm is the ONLY one a cache hit ever reaches, so it is the one
+  // that has to speak the disk's language.** `downloading`/`settling` are keyed
+  // by model id, but `onCard` is keyed by repo id, and asking it about a bare
+  // GGUF filename could never be true — a Download pressed on a model already
+  // fully cached had no arm that could settle it, and the click stayed held
+  // until the next thing re-rendered the tab.
   const spokenFor =
     starting !== null &&
-    (downloading.has(starting) || settling.has(starting) || !!onCard?.has(starting));
+    (downloading.has(starting) ||
+      settling.has(starting) ||
+      !!onCard?.has(repoById.get(starting) ?? starting));
   useEffect(() => {
     if (spokenFor) setStarting(null);
   }, [spokenFor]);

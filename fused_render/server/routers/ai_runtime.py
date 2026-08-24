@@ -720,6 +720,22 @@ def _catalog_with_downloads() -> list[dict]:
     `curated_repo_ids` then removes the SAME repo from the "cached"
     tail below whenever any of ITS curated entries resolved as downloaded, so
     the two halves cannot show the one download twice under two different ids.
+
+    **`repo` puts that same translation ON THE WIRE, because a client cannot
+    redo it.** Every entry carries the repo id whose cache folder holds it —
+    equal to `id` everywhere but a filename-keyed one, where it is the recipe's
+    `repo`. The Local tab has the identical duplicate to avoid and no way to
+    avoid it: its "do I already have a card for this" map is keyed by repo id
+    (`/api/ai-models`, the page's own walk), so `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`
+    never matched `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` and the row kept its
+    Download button beside its own finished disk card — the same "Download
+    forever" this docstring describes, one layer up and still open. It cannot
+    read `downloaded` instead (`mergeSections` states why: two definitions of
+    on-disk on one page are two moments they were true), so what it needs is the
+    IDENTITY, not the verdict. A field rather than a client-side table for the
+    reason `GGUF_RECIPES` is server-side at all: which repo publishes a curated
+    quantization is the curation's fact, and a second copy in TypeScript is one
+    that goes stale the next time a recipe's repo changes.
     """
     rows = catalog.describe()
     cached = cached_models()
@@ -740,9 +756,17 @@ def _catalog_with_downloads() -> list[dict]:
         # `cached` is passed so a row of twenty entries pays for the scan once.
         return is_downloaded(entry_id, cached)
 
+    def _repo_of(entry_id: str) -> str:
+        # The repo id that ADDRESSES this entry's bytes, which is the entry id
+        # itself for every runner but the filename-keyed one. One lookup in the
+        # curation's own table, so no consumer has to keep a second copy of it.
+        recipe = formats.GGUF_RECIPES.get(entry_id)
+        return recipe["repo"] if recipe else entry_id
+
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
+                 repo=_repo_of(entry["id"]),
                  loaded=entry["id"] in resident,
                  # Normalised to a bool HERE rather than left absent, because
                  # the curation writes it opt-in (`catalog.py`) and a consumer
@@ -753,14 +777,15 @@ def _catalog_with_downloads() -> list[dict]:
         ]
         curated_ids = {entry["id"] for entry in curated}
         # Repo ids already spoken for by a DOWNLOADED filename-keyed curated
-        # entry — see the docstring. Built from `curated` (post-`_downloaded`)
-        # rather than re-checking `formats.GGUF_RECIPES` here, so this stays
-        # correct for any future runner whose ids work the same way without
-        # this function needing to know which one.
+        # entry — see the docstring. Read off `repo` (post-`_downloaded`) rather
+        # than re-checking `formats.GGUF_RECIPES` here, so this stays correct for
+        # any future runner whose ids work the same way without this function
+        # needing to know which one. `repo != id` IS "filename-keyed", by
+        # `_repo_of`'s own definition, and is why that translation is a field
+        # rather than a second lookup here.
         curated_repo_ids = {
-            formats.GGUF_RECIPES[entry["id"]]["repo"]
-            for entry in curated
-            if entry["downloaded"] and entry["id"] in formats.GGUF_RECIPES
+            entry["repo"] for entry in curated
+            if entry["downloaded"] and entry["repo"] != entry["id"]
         }
         extra = [
             {
@@ -774,6 +799,12 @@ def _catalog_with_downloads() -> list[dict]:
                 "note": None,
                 "source": "cached",
                 "downloaded": True,
+                # Its own repo id, so `repo` is on EVERY entry rather than on
+                # the half that needed it: a consumer reading it only where it
+                # differs from `id` is a consumer that has to know which half it
+                # is holding, which is the distinction this field exists to
+                # remove.
+                "repo": model.repo_id,
                 # Never recommended: `recommended` is a curator's mark and
                 # nobody has made one about a repo the user found themselves.
                 # It costs the Playground nothing — a cached entry is on the

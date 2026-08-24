@@ -2686,6 +2686,24 @@ export function getAiRuntime(): Promise<AiRuntime> {
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
 export interface AiCatalogModel {
   id: string;
+  /** The repo id whose cache folder holds this model — equal to `id` for every
+   *  entry but a llama.cpp one, whose curated id is the GGUF's bare FILENAME so
+   *  that one repo's several quantizations can be curated separately
+   *  (`formats.GGUF_RECIPES`, server side).
+   *
+   *  **Read this, not `id`, against anything keyed by repo id** — above all the
+   *  Local tab's `diskCards` map, built from `/api/ai-models`. Matching on `id`
+   *  there could never hit for a filename-keyed entry, so a finished
+   *  `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` stayed "recommended" and kept its
+   *  Download button beside the very disk card its own bytes had produced.
+   *  `downloaded` is NOT the substitute: it is the server's verdict at scan
+   *  time, and `mergeSections` deliberately answers on-disk from the page's own
+   *  walk instead so one page cannot hold two definitions of it. This field is
+   *  the missing IDENTITY, which is a different question from the verdict.
+   *
+   *  Optional only because an older server does not send it; fall back to `id`,
+   *  which is correct for every entry that is not filename-keyed. */
+  repo?: string;
   label: string;
   /** The short human name the Playground sidebar shows — the model without its
    *  quantization/engine qualifier. A curated field beside `label`, never a
@@ -2982,6 +3000,15 @@ export interface AiBenchmarkHistory {
    *  capability selector to this set rather than hardcoding the gap, so a
    *  future workload lights the section up with no frontend change. */
   workloadCapabilities: string[];
+  /** The FIXED workload each of `workloadCapabilities` actually runs, keyed
+   *  by capability — same shape as a RUN's own `workload` block
+   *  (`AiBenchmarkWorkload`, above), because the server builds both from the
+   *  identical `Workload.as_dict()` (D483). This is what lets the Benchmark
+   *  tab say WHAT a run measures (128 greedy-decoded tokens, a 30-second
+   *  tone, …) as server fact rather than a frontend copy of
+   *  `ai/benchmark.py`'s `WORKLOADS` table that could silently drift from
+   *  it. */
+  workloads: Record<string, AiBenchmarkWorkload>;
 }
 
 export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {

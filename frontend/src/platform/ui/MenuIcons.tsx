@@ -246,14 +246,19 @@ export const MenuIcons: Record<string, ReactNode> = {
       <path d="M9 6l6 6-6 6" />
     </svg>
   ),
-  // Share — an upward arrow lifting out of a tray. The mirror image of
-  // `download`'s arrow dropping INTO one: sharing a chart is sending
-  // something out, not pulling something in.
+  // Share — the three-node graph: one point on the left, two on the right,
+  // joined by the two edges between them. The universal "send this somewhere
+  // else" glyph, and it reads at 16px in a way the tray-plus-arrow it replaced
+  // did not: that one was a stack of three near-parallel strokes that blurred
+  // into `download`'s mirror image at button size, while three round nodes stay
+  // distinct shapes however small the button gets.
   share: (
     <svg {...svgProps}>
-      <path d="M12 15V4" />
-      <path d="M7.5 8.5L12 4l4.5 4.5" />
-      <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+      <circle cx="18" cy="5" r="2.6" />
+      <circle cx="6" cy="12" r="2.6" />
+      <circle cx="18" cy="19" r="2.6" />
+      <path d="M8.4 10.8l7.2-4.2" />
+      <path d="M8.4 13.2l7.2 4.2" />
     </svg>
   ),
   // Stop — a plain filled-outline square, the universal "halt" glyph and
@@ -261,6 +266,19 @@ export const MenuIcons: Record<string, ReactNode> = {
   stop: (
     <svg {...svgProps}>
       <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  ),
+  // Info — a circle with a dot above a stem, the universal "there is more to
+  // read here" glyph. Its one consumer (the Benchmark tab's per-capability
+  // workload explanation, D483) wraps it in a real `<button>` carrying
+  // `data-hint` (platform/lib/hints.ts, D474) rather than a native `title` —
+  // this glyph is the announced control, never the caption itself, so it
+  // stays the plain outline every other glyph here is.
+  info: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
     </svg>
   ),
 };
