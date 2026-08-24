@@ -1,31 +1,27 @@
 // The Playground tab: pick a local model on the left, use it on the right.
 //
-// Everything else on /ai-models is ABOUT models — what is on disk, what could
-// be, which backend serves it. This tab is the one that answers the first
-// question a person has ("what can this thing actually do?") by letting them
-// do it: a one-shot prompt for a text model, a prompt-to-picture stage for an
-// image model, a record-and-transcribe stage for a speech model. Every stage
-// is the same API-surface shape — input, Run, the result of that run — on the
-// hero card's centered column. The stage is chosen
-// by the selected model's capability, so a capability added server-side gets a
-// named placeholder here rather than a blank.
+// Everything else on /ai-models is ABOUT models — this tab is the one that
+// answers "what can this thing actually do?" by letting them do it. Every
+// stage is the same API-surface shape — input, Run, the result of that run.
+// The stage is chosen by the selected model's capability, so a capability
+// added server-side gets a named placeholder here rather than a blank.
 //
-// The sidebar is `GET /api/ai/catalog`, verbatim — the same payload every
-// page's model picker reads (D323), so a model downloaded from the Local tab's
-// Hub search is in the playground with no curation edit. Rows show the curated `nickname`
-// (catalog.py) with the full label one hover away.
+// The whole tab is ONE bordered workbench of panes (nav rail | header +
+// stage + settings rail), the way shadcn's own playground reads — borders
+// separate regions; cards are not stacked inside cards.
+//
+// The sidebar is `GET /api/ai/catalog`, verbatim (D323). Rows show the
+// curated `nickname` (catalog.py) with the full label one hover away.
 //
 // SELECTING IS NOT LOADING. One model per capability is resident and loading
-// evicts (AI-4), so a sidebar where every click moved gigabytes would turn
-// browsing into eviction thrash. A click renders the stage and rewrites the
-// URL; the weights move when the user acts — Download explicitly, or the first
-// generation, which starts the load itself (the chat stage rides AI-5's 409
-// dance, image and transcription load inside their own jobs).
+// evicts (AI-4). A click renders the stage and rewrites the URL; the weights
+// move when the user acts — Download explicitly, or the first generation.
 //
 // The URL carries the setup, never the transcript: `model` plus each stage's
 // non-default settings, written with `replaceSearch` because browsing models
 // is not history the back button should replay.
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDownIcon, DownloadIcon, SparklesIcon } from "lucide-react";
 import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
@@ -55,15 +51,21 @@ import {
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { MenuIcons } from "@platform/ui/MenuIcons";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Badge } from "@apps/ai_models/ui/badge";
+import { Button } from "@apps/ai_models/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@apps/ai_models/ui/collapsible";
+import { cn } from "@apps/ai_models/ui/utils";
 
-// What the groups are called HERE: the capability vocabulary is exact
-// ("automatic-speech-recognition") and `capabilityLabel` is faithful to it
-// ("Speech to text") — this tab names the WORK instead ("Text generation"),
-// which is the vocabulary the Home strip's cards already use
-// (PLAYGROUND_GROUPS, shared with them so one capability has one name). An
-// unknown capability falls back to the shared label, so a new runner appears
-// (plainly named) instead of vanishing.
+// What the groups are called HERE: this tab names the WORK ("Text
+// generation") rather than the capability id — shared with the Home strip via
+// PLAYGROUND_GROUPS so one capability has one name. An unknown capability
+// falls back to the shared label, so a new runner appears instead of
+// vanishing.
 const GROUP_LABELS: Record<string, string> = Object.fromEntries(
   PLAYGROUND_GROUPS.map((g) => [g.capability, g.label]),
 );
@@ -71,29 +73,16 @@ function groupLabel(capability: string): string {
   return GROUP_LABELS[capability] ?? capabilityLabel(capability);
 }
 
-// A sidebar row's download, counting. The row has one 20px corner for this and
-// the glyph that lived there says only "you may fetch this" — so a pull started
-// from the sidebar (or from the stage, or from another tab) left the row it is
-// about looking idle, with the percentage two hundred pixels away in the stage
-// header.
-//
-// A RING and not a bar: the slot is a square the width of an icon, and a 3px
-// bar in it is four pixels of fill nobody can read. It replaces the glyph in
-// place rather than joining it, because the arrow and the ring make the same
-// claim about the same model and the row has no room to make it twice.
-//
-// The arc is drawn with `stroke-dasharray`/`-dashoffset` on a circle rotated a
-// quarter turn back, so 0% starts at twelve o'clock. An unmeasured pull — no
-// total yet, which is the first second of every one of them and the whole of a
-// venv build — spins a fixed quarter-arc instead: a ring frozen at 0 reads as a
-// download that has stalled, which is the one thing it is not.
+// A sidebar row's download, counting — a RING, because the slot is a square
+// the width of an icon. The arc is drawn with stroke-dasharray/-dashoffset on
+// a circle rotated a quarter turn back, so 0% starts at twelve o'clock. An
+// unmeasured pull spins a fixed quarter-arc instead: a ring frozen at 0 reads
+// as a download that has stalled, which is the one thing it is not.
 const RING_R = 6.5;
 const RING_C = 2 * Math.PI * RING_R;
 
 /** How far a pull has got, 0–1, or null while nothing can divide. The job's
- *  bytes and never the runtime's: only the worker doing the fetching knows.
- *  One function because the ring, the byte line and both titles must not be
- *  able to disagree about the same download. */
+ *  bytes and never the runtime's: only the worker doing the fetching knows. */
 function downloadFraction(job?: Job): number | null {
   if (!job || job.unit !== "bytes" || !job.total || job.done === null) return null;
   return Math.min(1, job.done / job.total);
@@ -103,23 +92,32 @@ function DownloadRing({ job }: { job?: Job }) {
   const measured = downloadFraction(job);
   return (
     <svg
-      className={"pg-dl-ring" + (measured === null ? " pg-dl-ring-idle" : "")}
+      className={cn("size-4 -rotate-90", measured === null && "animate-spin")}
       viewBox="0 0 16 16"
       aria-hidden="true"
     >
-      <circle className="pg-dl-ring-track" cx="8" cy="8" r={RING_R} />
       <circle
-        className="pg-dl-ring-arc"
+        className="stroke-border"
         cx="8"
         cy="8"
         r={RING_R}
+        fill="none"
+        strokeWidth="2"
+      />
+      <circle
+        className="stroke-primary"
+        cx="8"
+        cy="8"
+        r={RING_R}
+        fill="none"
+        strokeWidth="2"
+        strokeLinecap="round"
         strokeDasharray={RING_C}
         strokeDashoffset={measured === null ? RING_C * 0.75 : RING_C * (1 - measured)}
       />
     </svg>
   );
 }
-
 
 type CatalogLoad =
   | { status: "loading" }
@@ -131,14 +129,12 @@ export default function PlaygroundTab() {
   const [actionError, setActionError] = useState<string | null>(null);
   const runtime = useAiRuntime();
   // `useUrlVersion`, not `useNavEpoch`: the selection is written with
-  // `replaceSearch`, which fires only fused:urlchange — the nav epoch counts
-  // pushes and pops and would leave a click's own rewrite unread.
+  // `replaceSearch`, which fires only fused:urlchange.
   const urlVersion = useUrlVersion();
 
   // One fetch per mount, then again when a download lands: `downloaded` on the
   // rows is a disk fact and a finished pull is the one thing here that changes
-  // it. The shrink-detection mirrors AiModels.tsx's — a model that LEFT the
-  // downloading list is a pull that ended, however it ended.
+  // it. A model that LEFT the downloading list is a pull that ended.
   const [catalogEpoch, setCatalogEpoch] = useState(0);
   const downloadingKey = runtime.downloading.map((d) => d.model).sort().join(" ");
   const previousDownloads = useRef<string>("");
@@ -168,8 +164,7 @@ export default function PlaygroundTab() {
 
   // Job rows while anything is live, so the size rule can read a running
   // pull's own measured total — matched by TITLE (the supervisor sets it to
-  // the model id), the same join AiModels.tsx uses and for the same reason:
-  // the id derivation sanitises characters and must not be copied here.
+  // the model id), the same join AiModels.tsx uses.
   const anyBusy = isBusy(runtime);
   const [jobs, setJobs] = useState<Job[]>([]);
   useEffect(() => {
@@ -188,40 +183,14 @@ export default function PlaygroundTab() {
   }, [anyBusy]);
 
   const capabilities = catalog.status === "ok" ? catalog.capabilities : [];
-  // Downloaded, and runnable by nothing here. Drawn rather than dropped: this
-  // sidebar is the only list of what is on the disk that this tab shows, and a
-  // model that silently is not in it reads as a download that failed.
+  // Downloaded, and runnable by nothing here. Drawn rather than dropped: a
+  // model that silently is not in the sidebar reads as a download that failed.
   const unsupported = catalog.status === "ok" ? catalog.unsupported : [];
 
-  // The RAIL's reading order — images lead, and this tab's own reasoning is why:
-  // it is not a catalogue but a set of things you can DO, and the picture is the
-  // result you can judge at a glance. Text is not demoted for being lesser; it is
-  // the one everybody already knows they can have.
-  //
-  // **THE LIST ITSELF NOW LIVES IN `CAPABILITY_ORDER`** (Akshil, 2026-08-24).
-  // This tab kept a private copy for exactly as long as it took to notice what
-  // two copies cost. Two things were wrong with it. The Models and Benchmark
-  // tabs sorted by the other list, so the same five sections appeared in two
-  // orders on one page and a reader moving between tabs re-found every one. And
-  // this copy named FOUR capabilities: video was not in it, so it fell through
-  // to the end and landed after Embeddings by accident rather than by anybody's
-  // decision. So the argument above won — the tab a reader uses the models on
-  // sets the order — and the shared constant is where it won: `CAPABILITY_ORDER`
-  // holds this order now, video listed explicitly, and the inventory tabs follow
-  // it. One list, three tabs.
-  //
-  // A capability missing from that list still draws — it sorts after the named
-  // ones, in the order the server sent it — so a capability added server-side
-  // needs no edit anywhere.
-  //
-  // This is also what the FALLBACK SELECTION reads, so a bare visit to
-  // /ai-models/playground opens on the first section of the rail rather than on
-  // whichever capability the server happened to list first. Where the sections
-  // sit and what the page opens on are different decisions, and the answer to
-  // the second is that a page whose first section is images and whose stage is a
-  // chat box is a page arguing with itself. `pickPlaygroundModel` needs no
-  // change: its rule was always "the first usable row" (pick.ts), and this is
-  // the order that phrase is about.
+  // The rail's reading order lives in CAPABILITY_ORDER (shared with the
+  // Models and Benchmark tabs). A capability missing from that list still
+  // draws — it sorts after the named ones, in the order the server sent it.
+  // This is also what the fallback selection reads.
   const railRows = useMemo(() => {
     const rank = (c: string) => {
       const i = CAPABILITY_ORDER.indexOf(c);
@@ -231,63 +200,35 @@ export default function PlaygroundTab() {
   }, [capabilities]);
 
   // The selection lives in the URL. An unknown or absent id falls back to the
-  // TOP SECTION's default silently (PT-9's posture: a stale link opens the
-  // page, not an error) — and the fallback is `default`, never models[0], which
-  // catalog.py's ordering rule makes the smallest vetted model.
+  // top section's default silently (PT-9: a stale link opens the page, not an
+  // error).
   const asked = useMemo(() => readParam("model"), [urlVersion]);
-  // `?cap=` names a capability, not a model — the Home strip's cards land
-  // here with only a task in mind. It only steers the fallback: an explicit
-  // `model` always wins, and an unknown cap value falls through silently.
+  // `?cap=` names a capability, not a model — it only steers the fallback.
   const askedCap = useMemo(() => readParam("cap"), [urlVersion]);
-  // Only a row the SIDEBAR ACTUALLY DRAWS is selectable — which since D425 is
-  // narrower than "in the catalog": an unavailable capability renders its
-  // reason in place of its model buttons (HF-8), and an unrecommended model
-  // nobody has downloaded is not offered here at all. Both rules live in
-  // `pick.ts`, with the sidebar reading the same `playgroundModels` below, so
-  // the drawn list and the selectable list cannot come apart.
+  // Only a row the sidebar actually draws is selectable — both rules live in
+  // `pick.ts`, with the sidebar reading the same `playgroundModels` below.
   const selected = useMemo(
     () => pickPlaygroundModel(railRows, asked, askedCap),
     [railRows, asked, askedCap],
   );
 
-  // What the URL asked for, when this machine cannot give it. Home's strip is
-  // the STATIC `PLAYGROUND_GROUPS` list, not the catalog, so every machine
-  // shows a "Search by meaning" card whether or not it has an embeddings
-  // engine — and answering that click by silently opening a chat box is a
-  // worse answer than naming the reason. Same for a `?model=` link to a model
-  // whose capability is ruled out here.
+  // What the URL asked for, when this machine cannot give it.
   const blockedAsk = useMemo(() => {
     if (!asked && !askedCap) return null;
     const row =
       capabilities.find((r) => r.models.some((m) => m.id === asked)) ??
       capabilities.find((r) => r.capability === askedCap);
     if (!row || row.available) return null;
-    // The reason comes off the catalog and is a server sentence that may or
-    // may not be punctuated; this line puts another one after it.
-    // The fallback must not restate the lead-in — "X is not available here —
-    // it is not available on this machine" says nothing twice.
     const reason = row.reason?.trim() || "no engine for it is installed.";
     return { row, reason: /[.!?]$/.test(reason) ? reason : reason + "." };
   }, [capabilities, asked, askedCap]);
 
   const select = (id: string) => {
     setActionError(null);
-    // CHANGING CAPABILITY CLEARS THE SETTINGS. Every stage writes its tuning
-    // into one query namespace and nulls only the keys it owns, so a merge kept
-    // the abandoned stage's — which is not merely untidy: `prompt`, `steps`,
-    // `seed` and `w`/`h` are spelled the same across stages and mean different
-    // things, so a scene written for an image model arrived as a sentence for a
-    // chat one, and a step count tuned for a distilled renderer was read by a
-    // video engine with its own grid. Whatever does NOT collide is dead weight
-    // in a URL people share.
-    //
-    // Written as "keep the model" rather than as a list of keys to drop,
-    // because the list of keys is the thing that goes stale: a stage that gains
-    // a parameter tomorrow is already covered here.
-    //
-    // A move WITHIN a capability keeps everything on purpose — comparing two
-    // image models at one size and seed is the whole point of the sidebar, and
-    // the stage does not even remount for it.
+    // CHANGING CAPABILITY CLEARS THE SETTINGS: `prompt`, `steps`, `seed` and
+    // `w`/`h` are spelled the same across stages and mean different things.
+    // Written as "keep the model" rather than as a list of keys to drop. A
+    // move WITHIN a capability keeps everything on purpose.
     const nextCapability = railRows.find((row) =>
       row.models.some((model) => model.id === id),
     )?.capability;
@@ -295,8 +236,7 @@ export default function PlaygroundTab() {
       resetParams({ model: id });
       return;
     }
-    // cap dies with the first explicit pick — leaving it would make a shared
-    // URL claim a task the user has since clicked away from.
+    // cap dies with the first explicit pick.
     writeParams({ model: id, cap: null });
   };
 
@@ -309,18 +249,15 @@ export default function PlaygroundTab() {
   const jobForSelected = selected
     ? jobs.find((j) => j.owner === "server" && j.title === selected.model.id)
     : undefined;
-  // Rows by MODEL, for the sidebar's own size cells — the same title match
-  // `jobForSelected` uses one line up, and for the same reason: the job id
-  // derivation sanitises characters and a second copy of that rule in
-  // TypeScript would drift from the Python one. What a running pull's total does
-  // to the size shown is `shared/modelSize`'s rule, not this file's.
+  // Rows by MODEL, for the sidebar's own size cells — same title match as
+  // `jobForSelected`, for the same reason.
   const jobByModel = useMemo(
     () => new Map(jobs.filter((j) => j.owner === "server").map((j) => [j.title, j])),
     [jobs],
   );
 
-  // The sidebar cards and the stage header share this: same call, same error
-  // surface (the stage's banner — the card has no room for a sentence).
+  // The sidebar rows and the header share this: same call, same error
+  // surface (the stage's banner — the row has no room for a sentence).
   const runDownloadFor = async (id: string, capability: string) => {
     setActionError(null);
     try {
@@ -334,11 +271,8 @@ export default function PlaygroundTab() {
     if (!selected) return;
     return runDownloadFor(selected.model.id, selected.row.capability);
   };
-  // The download manager's ✕, on the card the download is being watched from. A
-  // REQUEST and not a state change: the job row stays until the worker honours
-  // it, and the next tick (one second — the poll is running because the runtime
-  // is busy) brings "Cancelling…" from the row itself rather than from a local
-  // guess about it. Same call the Local tab's cards make.
+  // The download manager's ✕: a REQUEST and not a state change — the job row
+  // stays until the worker honours it.
   const runCancelDownload = async (job: Job) => {
     setActionError(null);
     try {
@@ -376,21 +310,11 @@ export default function PlaygroundTab() {
     return <ErrorBanner>{catalog.message}</ErrorBanner>;
   }
 
-  // The size to name for the selected model, wherever this page names one —
-  // never understating it, and null when there is nothing to say at all (see
-  // `shared/modelSize`).
+  // The size to name for the selected model, wherever this page names one.
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
-  // The fit verdict, in words, for all three answers — null and only null draws
-  // nothing (see the fact itself).
-  //
-  // The two bad answers are TINTED and the good one is not. Amber and red are
-  // the app's warning and error tokens and they are spent here for the reason
-  // they exist: "tight" and "no" are the only verdicts that ask the reader to
-  // do something differently. "easy" deliberately gets no green — green on this
-  // page means RUNNING (the sidebar's live dot, the loaded badge, D461), and a
-  // second meaning for one hue on one screen dilutes the one that matters,
-  // doubly so when it would appear on nearly every model. Untinted-is-fine is
-  // legible precisely because the other two are not.
+  // The fit verdict, in words, for all three answers — null draws nothing.
+  // The two bad answers are TINTED and the good one is not: "tight" and "no"
+  // are the only verdicts that ask the reader to do something differently.
   const fitNote = !selected
     ? null
     : selected.model.fit === "easy"
@@ -403,26 +327,21 @@ export default function PlaygroundTab() {
       : selected.model.fit === "tight"
         ? {
             text: "Tight fit on this machine",
-            tone: " pg-fact-tight",
+            tone: "text-chart-3",
             title:
               "Judged against this machine's memory — close other heavy apps while it runs.",
           }
         : selected.model.fit === "no"
           ? {
               text: "Likely too big for this machine",
-              tone: " pg-fact-no",
+              tone: "text-destructive",
               title: "Judged against this machine's memory — it may crawl or fail to load.",
             }
           : null;
 
   // The running pull's own figures, for the header's ring and byte line.
-  // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
-  // 0, which React renders as a literal "0".
   const downloadedFraction = downloadFraction(jobForSelected);
-  // Whether the pull can be STOPPED, by the download manager's own rule rather
-  // than a looser one (`CancelButton` states it): a job its reporter never
-  // marked cancellable, or one already asked to stop, offers nothing — the
-  // progress then simply stays put under the pointer.
+  // Whether the pull can be STOPPED, by the download manager's own rule.
   const stoppable =
     jobForSelected &&
     isRunning(jobForSelected) &&
@@ -436,255 +355,203 @@ export default function PlaygroundTab() {
     jobForSelected.done !== null
   );
 
+  // One nav row in the model rail: a quiet ghost row, not a bordered card —
+  // active is the filled one, exactly how shadcn's sidebar rows read.
+  const drawModelRow = (row: AiCatalogCapability) => (model: AiCatalogModel) => {
+    const active = selected?.model.id === model.id;
+    const downloading = runtime.downloading.some((d) => d.model === model.id);
+    const name = modelName(model);
+    // The row is a div-as-button, not a <button>: the Download CTA lives
+    // inside it, and a button inside a button is markup browsers are free to
+    // mangle.
+    const job = jobByModel.get(model.id);
+    const size = modelSizeHint(model.size_gb, job);
+    return (
+      <div
+        key={model.id}
+        role="button"
+        tabIndex={0}
+        className={cn(
+          "flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm outline-none transition-colors",
+          "hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50",
+          active ? "bg-accent font-medium text-accent-foreground" : "text-muted-foreground",
+        )}
+        aria-pressed={active}
+        onClick={() => select(model.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            select(model.id);
+          }
+        }}
+        title={model.label}
+      >
+        {/* Live from the supervisor, not the catalog's `loaded` snapshot — a
+            dot that outlives an unload is a lie. */}
+        {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
+          <span
+            className="size-1.5 shrink-0 rounded-full bg-chart-2"
+            title="Loaded — answering from memory"
+          />
+        )}
+        <span className="min-w-0 flex-1 truncate">{name}</span>
+        <span
+          className="shrink-0 text-xs text-muted-foreground/70"
+          title={
+            size ? `${size.text} download — judged against this machine's memory` : undefined
+          }
+        >
+          {modelSizeLabel(model.size_gb, job)}
+        </span>
+        {/* On disk = nothing to say: the CTA exists only while there is an
+            action to take. */}
+        {!model.downloaded && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="size-6 shrink-0"
+            disabled={downloading}
+            aria-label={downloading ? "Downloading…" : `Download ${name}`}
+            title={
+              downloading
+                ? downloadFraction(job) !== null
+                  ? `Downloading — ${Math.floor((downloadFraction(job) as number) * 100)}%`
+                  : "Downloading…"
+                : `Download ${name}`
+            }
+            onClick={(e) => {
+              // Selecting too is fine; a second click must not be.
+              e.stopPropagation();
+              select(model.id);
+              void runDownloadFor(model.id, row.capability);
+            }}
+          >
+            {downloading ? <DownloadRing job={job} /> : <DownloadIcon />}
+          </Button>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="pg-body">
-      <aside className="pg-side" aria-label="Models to try">
+    <div className="pg-scope flex min-h-0 flex-1 overflow-hidden rounded-xl border bg-background text-foreground">
+      {/* -- the model rail ------------------------------------------------ */}
+      <aside
+        className="flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r p-3 md:w-64"
+        aria-label="Models to try"
+      >
         {railRows.map((row) => {
-          // The catalog's curated half, in its own smallest-first order — but
-          // the RECOMMENDED subset of it (D425), because this tab is where
-          // someone types a sentence rather than shops for a download: see
-          // `pick.ts`. The whole shortlist is the LOCAL tab's, drawn in its
-          // capability carousels beside what this disk already holds, with the
-          // Hub search above them for anything the curation never named (D426).
-          //
-          // The uncurated repos this disk happens to hold (D323's union) are
-          // still playable but sit apart under their own quiet caption — they
-          // have no curator, and mixed in they read as recommendations nobody
-          // made.
+          // The catalog's curated half, in its own smallest-first order — the
+          // RECOMMENDED subset of it (D425): see `pick.ts`. The uncurated
+          // repos this disk happens to hold (D323's union) are still playable
+          // but drawn after the curated run.
           const offered = playgroundModels(row);
           const curated = offered.filter((m) => m.source === "curated");
           const cached = offered.filter((m) => m.source !== "curated");
-          const draw = (model: AiCatalogModel) => {
-            const active = selected?.model.id === model.id;
-            const downloading = runtime.downloading.some((d) => d.model === model.id);
-            const name = modelName(model);
-            // The card is a div-as-button, not a <button>: the Download CTA
-            // lives inside it, and a button inside a button is markup browsers
-            // are free to mangle.
-            // The advertised figure, or a running pull's own total when that
-            // is larger (see `shared/modelSize`).
-            const job = jobByModel.get(model.id);
-            const size = modelSizeHint(model.size_gb, job);
-            return (
-              <div
-                key={model.id}
-                role="button"
-                tabIndex={0}
-                className={
-                  "pg-model" + (active ? " active" : "") +
-                  (model.downloaded ? "" : " pg-model-absent")
-                }
-                aria-pressed={active}
-                onClick={() => select(model.id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    select(model.id);
-                  }
-                }}
-                title={model.label}
-              >
-                {/* The whole card, one line: nickname left, then the two
-                    figures and the Download glyph hard right. No repo id under
-                    the name — the stage header names the selected model in
-                    full. */}
-                <span className="pg-model-head">
-                  <span className="pg-model-name">
-                    {/* Live from the supervisor, not the catalog's `loaded`
-                        snapshot — a dot that outlives an unload is a lie. */}
-                    {runtime.loaded.some((m) => m.model === model.id && m.state === "ready") && (
-                      <span className="pg-model-live" title="Loaded — answering from memory" />
-                    )}
-                    {name}
-                  </span>
-                  {/* Parameter count, left of the download weight: the two
-                      numbers a reader compares rows by, and they mean
-                      different things — how much model, then how much to
-                      fetch. Printed as the curator wrote it ("4B", "8B (~1B
-                      active)"), never shortened here: catalog.py's AI-2c rule
-                      is that this string is a value somebody owns.
-                      Absent on a cached entry nobody curated, and the slot
-                      then draws nothing rather than a "—" the stage header
-                      would have to explain. */}
-                  {model.params && (
-                    <span className="pg-model-chip" title="Parameters">
-                      {model.params}
-                    </span>
-                  )}
-                  <span
-                    className="pg-model-size"
-                    title={
-                      size
-                        ? `${size.text} download — judged against this machine's memory`
-                        : undefined
-                    }
-                  >
-                    {modelSizeLabel(model.size_gb, job)}
-                  </span>
-                  {/* On disk = nothing to say: the CTA exists only while there
-                      is an action to take. Last on the row, RIGHT of the two
-                      figures it acts on: the facts read as a block that way
-                      (name, size of model, size of download) and the one
-                      control sits outside it, in the corner a reader's cursor
-                      is already heading for.
-                      A glyph rather than the word, sharing the file's one
-                      download icon (MenuIcons.download, an arrow into a tray):
-                      the word competed with the model's name for the eye, and
-                      an arrow-into-tray is the same claim in a quarter of the
-                      width. The label survives as `aria-label`/`title` — it
-                      has to, because a screen reader gets nothing from a
-                      decorative path, and the title is what carries the
-                      running state a text button used to say out loud. */}
-                  {!model.downloaded && (
-                    <button
-                      type="button"
-                      className="pg-model-dl"
-                      disabled={downloading}
-                      aria-label={downloading ? "Downloading…" : `Download ${name}`}
-                      title={
-                        downloading
-                          ? downloadFraction(job) !== null
-                            ? `Downloading — ${Math.floor((downloadFraction(job) as number) * 100)}%`
-                            : "Downloading…"
-                          : `Download ${name}`
-                      }
-                      onClick={(e) => {
-                        // Selecting too is fine; a second click must not be.
-                        e.stopPropagation();
-                        select(model.id);
-                        void runDownloadFor(model.id, row.capability);
-                      }}
-                    >
-                      {downloading ? <DownloadRing job={job} /> : MenuIcons.download}
-                    </button>
-                  )}
-                </span>
-              </div>
-            );
-          };
+          const draw = drawModelRow(row);
           return (
-            <details key={row.capability} className="pg-group" open>
-              <summary className="pg-group-head">
-                <span className="pg-group-icon">{capabilityIcon(row.capability)}</span>
-                <span className="pg-group-title">{groupLabel(row.capability)}</span>
-              </summary>
-              {!row.available && (
-                // Visible with its reason, never hidden: an absent group and a
-                // ruled-out group look identical, and HF-8 already paid for
-                // that lesson once.
-                <p className="pg-group-off">{row.reason || "Not available on this machine."}</p>
-              )}
-              {row.available && !offered.length && (
-                // `offered`, not `row.models`: a capability whose whole
-                // shortlist is unrecommended and undownloaded has models in
-                // the catalog and nothing to draw here, and a silent empty
-                // group is the one outcome this filter must not produce. The
-                // curation is meant to prevent it (catalog.py keeps at least
-                // one recommended entry per list, and a test pins that) — this
-                // line is what the failure looks like if it ever slips.
-                <p className="pg-group-off">
-                  Nothing to try here yet — the Local tab is where a first model comes from.
-                </p>
-              )}
-              {/* Curated first, then the uncurated repos this disk happens to
-                  hold — one run of cards, no divider. The "Your downloads"
-                  caption that used to separate them said something the cards
-                  no longer needed said: a curated entry not yet fetched wears
-                  a Download button and a fetched one does not, so which half
-                  is on this disk is legible from the cards themselves, and the
-                  heading was a second answer to a question already answered. */}
-              {row.available && curated.map(draw)}
-              {row.available && cached.map(draw)}
-            </details>
+            <Collapsible key={row.capability} defaultOpen className="group/cap">
+              <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium tracking-wide text-muted-foreground uppercase hover:text-foreground">
+                <span className="[&_svg]:size-3.5">{capabilityIcon(row.capability)}</span>
+                <span className="flex-1 text-left">{groupLabel(row.capability)}</span>
+                <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=closed]/cap:-rotate-90" />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="flex flex-col gap-0.5 pt-1">
+                {!row.available && (
+                  // Visible with its reason, never hidden: an absent group and
+                  // a ruled-out group look identical (HF-8).
+                  <p className="px-2 py-1 text-xs text-muted-foreground/80">
+                    {row.reason || "Not available on this machine."}
+                  </p>
+                )}
+                {row.available && !offered.length && (
+                  // `offered`, not `row.models`: a silent empty group is the
+                  // one outcome this filter must not produce.
+                  <p className="px-2 py-1 text-xs text-muted-foreground/80">
+                    Nothing to try here yet — the Local tab is where a first model comes from.
+                  </p>
+                )}
+                {/* Curated first, then the uncurated repos this disk happens
+                    to hold — one run of rows, no divider: which half is on
+                    this disk is legible from the Download glyphs. */}
+                {row.available && curated.map(draw)}
+                {row.available && cached.map(draw)}
+              </CollapsibleContent>
+            </Collapsible>
           );
         })}
 
         {unsupported.length > 0 && (
-          // **Everything downloaded appears, and what cannot run says so.**
-          // These rows used to be absent — `/api/ai/catalog` only listed models
-          // some capability could load — so a text-to-speech model or a depth
-          // estimator was a multi-gigabyte download that simply was not in the
-          // sidebar, which reads as a bug in the download rather than as an
-          // answer. Last, and collapsed by DEFAULT (the only `<details>` here
-          // that is): it is a reference list, not a menu — nothing in it is
-          // selectable, so leaving it open would put dead cards between the
-          // reader and the ones they came for.
-          <details className="pg-group">
-            <summary className="pg-group-head">
-              <span className="pg-group-icon">{unsupportedIcon()}</span>
-              <span className="pg-group-title">Not supported</span>
-            </summary>
-            <p className="pg-group-off">
-              On this disk, and nothing here runs it. The AI Models page is where these
-              can be deleted.
-            </p>
-            {unsupported.map((model) => (
-              // A card, so the shape matches the ones above — but a plain div:
-              // no role, no tabIndex, no click. There is nothing to select, and
-              // a control that looks pressable and is not teaches the wrong
-              // thing about every card beside it.
-              <div key={model.id} className="pg-model pg-model-off">
-                <span className="pg-model-head">
-                  <span className="pg-model-name">{model.label}</span>
-                  {/* Top-right, as on the selectable cards above — same slot,
-                      so the size reads the same however the card behaves.
-                      `shared/modelSize`, like every other size cell on this
-                      page, with no job: a repo already on the disk is not
-                      downloading. Hand-formatting it here would be the second
-                      copy of a rule that exists because the copies
-                      disagreed. */}
-                  <span className="pg-model-size">{modelSizeLabel(model.size_gb)}</span>
-                </span>
-                <span className="pg-model-full">{model.id}</span>
-                {/* What it IS, when the repo said. Null is its own answer and
-                    gets no chip: "we could not tell" is what the missing label
-                    means, and inventing one would be a claim. */}
-                {model.task && (
-                  <span className="pg-model-foot">
-                    <span className="pg-model-task">{model.task}</span>
+          // Everything downloaded appears, and what cannot run says so.
+          // Last, and collapsed by DEFAULT: it is a reference list, not a
+          // menu — nothing in it is selectable.
+          <Collapsible className="group/cap">
+            <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium tracking-wide text-muted-foreground uppercase hover:text-foreground">
+              <span className="[&_svg]:size-3.5">{unsupportedIcon()}</span>
+              <span className="flex-1 text-left">Not supported</span>
+              <ChevronDownIcon className="size-3.5 transition-transform group-data-[state=closed]/cap:-rotate-90" />
+            </CollapsibleTrigger>
+            <CollapsibleContent className="flex flex-col gap-1 pt-1">
+              <p className="px-2 py-1 text-xs text-muted-foreground/80">
+                On this disk, and nothing here runs it. The AI Models page is where these can
+                be deleted.
+              </p>
+              {unsupported.map((model) => (
+                // The row shape matches the ones above — but a plain div: no
+                // role, no tabIndex, no click. A control that looks pressable
+                // and is not teaches the wrong thing.
+                <div
+                  key={model.id}
+                  className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 text-muted-foreground/80"
+                >
+                  <span className="flex items-baseline gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{model.label}</span>
+                    <span className="shrink-0 text-xs">{modelSizeLabel(model.size_gb)}</span>
                   </span>
-                )}
-                {/* The server's own sentence, written per task beside the
-                    classification it explains (`ai/tasks.py`). Empty for a repo
-                    we could not identify — an explanation we have not earned is
-                    worse than none — and then the line simply is not drawn. */}
-                {model.reason && <p className="pg-model-why">{model.reason}</p>}
-              </div>
-            ))}
-          </details>
+                  <span className="truncate text-xs">{model.id}</span>
+                  {/* What it IS, when the repo said. Null gets no chip. */}
+                  {model.task && (
+                    <span className="pt-0.5">
+                      <Badge variant="outline" className="text-[11px]">
+                        {model.task}
+                      </Badge>
+                    </span>
+                  )}
+                  {/* The server's own sentence (ai/tasks.py); empty for a repo
+                      we could not identify. */}
+                  {model.reason && <p className="text-xs">{model.reason}</p>}
+                </div>
+              ))}
+            </CollapsibleContent>
+          </Collapsible>
         )}
       </aside>
 
-      <div className="pg-stage">
-        {actionError && <ErrorBanner>{actionError}</ErrorBanner>}
-        {blockedAsk && selected && (
-          // Not an ErrorBanner: nothing failed and nothing the user did is
-          // wrong — the link simply named a task this machine cannot run, and
-          // the stage below is the substitute, said out loud.
-          <p className="pg-blocked-ask">
-            {groupLabel(blockedAsk.row.capability)} is not available here — {blockedAsk.reason}{" "}
-            Showing {groupLabel(selected.row.capability)} instead.
-          </p>
-        )}
+      {/* -- the stage ----------------------------------------------------- */}
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col">
         {!selected ? (
-          <p className="cc-empty">
+          <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
             {blockedAsk
               ? `${groupLabel(blockedAsk.row.capability)} is not available here — ${blockedAsk.reason}`
               : "No models to try yet — the Local tab is where a first one comes from."}
-          </p>
+          </div>
         ) : (
           <>
-            <section className="pg-hero">
-              <div className="pg-hero-head">
-                <div className="pg-hero-names">
-                  <h3 className="pg-stage-title">{modelName(selected.model)}</h3>
-                  {/* The full repo id — author/name as Hugging Face knows it.
-                      A link only when it IS a repo id: llama.cpp entries are
-                      keyed by bare .gguf filename (formats.GGUF_RECIPES), and
+            {/* The model header: name, repo, the facts as badges, and the
+                lifecycle actions — one slim bordered band, not a card. */}
+            <header className="flex flex-col gap-2 border-b px-6 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+                <div className="min-w-0">
+                  <h1 className="truncate text-lg font-semibold tracking-tight">
+                    {modelName(selected.model)}
+                  </h1>
+                  {/* The full repo id — a link only when it IS a repo id:
+                      llama.cpp entries are keyed by bare .gguf filename, and
                       huggingface.co/<filename> is a 404 dressed as a link. */}
                   {selected.model.id.includes("/") ? (
                     <a
-                      className="pg-hero-repo"
+                      className="block truncate text-xs text-muted-foreground hover:underline"
                       href={hubModelUrl(selected.model.id)}
                       target="_blank"
                       rel="noopener noreferrer"
@@ -692,114 +559,53 @@ export default function PlaygroundTab() {
                       {selected.model.id}
                     </a>
                   ) : (
-                    <span className="pg-hero-repo">{selected.model.id}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {selected.model.id}
+                    </span>
                   )}
                 </div>
-                <div className="pg-stage-actions">
-                  {/* The playground's exit ramp: everything tried here is one
-                      `fused.ai` call in a page, and this hands the /apps
-                      composer an annotation naming the model and the tuned
-                      settings — shown as a chip, not dumped into the prompt
-                      box — so the user just types the app they want. */}
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    title="Open the app builder with this model and your settings pre-filled"
-                    onClick={() =>
-                      navigateUrl(
-                        "/apps?annot=" +
-                          encodeURIComponent(
-                            JSON.stringify(buildAppAnnotation(selected.model, selected.row.capability)),
-                          ),
-                      )
-                    }
-                  >
-                    Build an app with this AI
-                  </button>
+                <div className="flex flex-wrap items-center gap-2">
                   {!selected.model.downloaded && !selectedDownloading && (
-                    <button type="button" className="btn btn-secondary" onClick={runDownload}>
+                    <Button type="button" variant="outline" size="sm" onClick={runDownload}>
+                      <DownloadIcon data-icon="inline-start" />
                       Download{selectedSize ? ` (${selectedSize.text})` : ""}
-                    </button>
+                    </Button>
                   )}
-                  {/* The pull, IN THE BUTTON'S OWN SLOT. Pressing Download used
-                      to empty this corner — the button's condition excludes a
-                      running download — so the one place the eye was already
-                      on went blank at the exact moment there was most to say,
-                      and the only counting left on the page was the sidebar
-                      row's size cell. `ModelProgress` is the drawing every
-                      other card on /ai-models uses for this (shared/), reading
-                      the same job row: bytes and a bar come from the worker
-                      doing the fetching, never from the runtime, which knows
-                      only that something is happening. No job row yet — the
-                      poll is a second behind the click — is its "Preparing…",
-                      not a blank. */}
+                  {/* The pull, IN THE BUTTON'S OWN SLOT: a ring and the two
+                      byte figures in the width of a button. Hovering the
+                      progress swaps in the way out (Cancel), which stays in
+                      the DOM and focusable while invisible so it is reachable
+                      by tab and not only by pointer. */}
                   {selectedDownloading && (
                     <div
-                      className="pg-hero-dl"
+                      className="group/dl flex h-8 items-center gap-2 rounded-md border border-dashed px-3 text-xs text-muted-foreground"
                       title={
                         downloadedFraction !== null
                           ? `Downloading — ${Math.floor(downloadedFraction * 100)}%`
                           : "Downloading…"
                       }
                     >
-                      {/* An icon, a ring, and the two byte figures — in the
-                          width of a button, which is all this corner has.
-                          Deliberately NOT `ModelProgress`, the drawing the
-                          /ai-models cards share: that one leads with a pulsing
-                          dot and the job's own sentence ("Fetching weights…")
-                          and ends in a bar that wants a whole card's width.
-                          Here the icon says which kind of work this is without
-                          a word, and a ring says how far in the space the
-                          sentence wanted. */}
-                      {/* The icon does NOT take part in the swap: it is what
-                          says which kind of work this slot is about, and that is
-                          as true while the pointer is over it as before. Only
-                          the two things that are about PROGRESS — the ring and
-                          the figures — give way. */}
-                      <span className="pg-hero-dl-icon" aria-hidden="true">
-                        {MenuIcons.download}
-                      </span>
-                      <span className="pg-hero-dl-swap">
-                        <span className="pg-hero-dl-live">
+                      <DownloadIcon className="size-3.5" aria-hidden="true" />
+                      <span className="grid">
+                        <span
+                          className={cn(
+                            "col-start-1 row-start-1 flex items-center gap-1.5",
+                            stoppable &&
+                              "group-hover/dl:opacity-0 group-focus-within/dl:opacity-0",
+                          )}
+                        >
                           <DownloadRing job={jobForSelected} />
                           {downloadedBytes && (
-                            <span className="pg-hero-dl-bytes">
+                            <span>
                               {formatSize(jobForSelected?.done as number)} /{" "}
                               {formatSize(jobForSelected?.total as number)}
                             </span>
                           )}
                         </span>
-                      {/* POINT AT THE PROGRESS, GET THE WAY OUT. A download is
-                          the one thing on this card a reader changes their mind
-                          about, and the figures are what they look at while
-                          doing it — so the way to stop it lives under the
-                          pointer that is already there, rather than as a fourth
-                          button in a row that is only ever read while a
-                          download is NOT running.
-
-                          Both drawings share one grid cell, so the box is as
-                          wide and as tall as the wider of the two at rest and
-                          NOTHING MOVES on hover: a control that reflows the row
-                          it appears in is a control the pointer slides off
-                          (D452's argument about the recent-chats row, in one
-                          box instead of one row).
-
-                          Revealed by `:hover` and by `:focus-within`, and the
-                          button stays in the DOM and focusable while invisible
-                          — which is what makes the second of those fire, so the
-                          way out is reachable by tab and not only by pointer.
-
-                          A WORD, at the figures' own size, and not a button: it
-                          stands in for a byte count in a corner of a card, and
-                          a bordered control there would be the loudest thing on
-                          the card while the download it stops is the quietest.
-                          Pale red and underlined is enough — the colour says
-                          which direction it goes, the underline says it is
-                          pressable. */}
                         {stoppable && (
                           <button
                             type="button"
-                            className="pg-hero-dl-stop"
+                            className="col-start-1 row-start-1 text-destructive underline opacity-0 group-hover/dl:opacity-100 group-focus-within/dl:opacity-100 focus:opacity-100"
                             title={`Stop downloading ${selected.model.id}`}
                             onClick={() => void runCancelDownload(stoppable)}
                           >
@@ -810,89 +616,107 @@ export default function PlaygroundTab() {
                     </div>
                   )}
                   {selected.model.downloaded && !selectedResident && (
-                    <button
+                    <Button
                       type="button"
-                      className="btn btn-secondary"
+                      variant="outline"
+                      size="sm"
                       onClick={runLoad}
                       title="Optional — the first generation loads it too"
                     >
                       Load
-                    </button>
+                    </Button>
                   )}
                   {selectedResident && selectedResident.state === "ready" && (
-                    <button type="button" className="btn btn-secondary" onClick={runUnload}>
+                    <Button type="button" variant="outline" size="sm" onClick={runUnload}>
                       Unload
-                    </button>
+                    </Button>
                   )}
+                  {/* The playground's exit ramp: everything tried here is one
+                      `fused.ai` call in a page, and this hands the /apps
+                      composer an annotation naming the model and the tuned
+                      settings. The one filled button in the header — it is
+                      the destination action, not a lifecycle chore. */}
+                  <Button
+                    type="button"
+                    size="sm"
+                    title="Open the app builder with this model and your settings pre-filled"
+                    onClick={() =>
+                      navigateUrl(
+                        "/apps?annot=" +
+                          encodeURIComponent(
+                            JSON.stringify(
+                              buildAppAnnotation(selected.model, selected.row.capability),
+                            ),
+                          ),
+                      )
+                    }
+                  >
+                    <SparklesIcon data-icon="inline-start" />
+                    Build an app
+                  </Button>
                 </div>
               </div>
               {(selected.model.params ||
                 selected.model.quantization ||
                 selected.model.size_gb != null ||
                 fitNote) && (
-                <dl className="pg-hero-facts">
+                <div className="flex flex-wrap items-center gap-1.5">
                   {selected.model.params && (
-                    <div className="pg-hero-fact">
-                      <dt>Parameters</dt>
-                      <dd>{selected.model.params}</dd>
-                    </div>
+                    <Badge variant="secondary" title="Parameters">
+                      {selected.model.params}
+                    </Badge>
                   )}
                   {selected.model.quantization && (
-                    <div className="pg-hero-fact">
-                      <dt>Quantization</dt>
-                      <dd>{selected.model.quantization}</dd>
-                    </div>
+                    <Badge variant="secondary" title="Quantization">
+                      {selected.model.quantization}
+                    </Badge>
                   )}
                   {selected.model.size_gb != null && (
-                    <div className="pg-hero-fact">
-                      <dt>Download</dt>
-                      <dd>{modelSizeLabel(selected.model.size_gb, jobForSelected)}</dd>
-                    </div>
+                    <Badge variant="secondary" title="Download size">
+                      {modelSizeLabel(selected.model.size_gb, jobForSelected)}
+                    </Badge>
                   )}
                   {/* WILL IT RUN HERE — the server's verdict over the weights
-                      and this machine's RAM (`_fit_verdict`), back on the card
-                      after the state line that used to carry it was deleted for
-                      being prose. A fact beside the others rather than a chip
-                      by the name: this page spends its loud colours on what is
-                      RUNNING (D461), and a coloured badge here would be the
-                      same "quieter card" argument re-lost.
-
-                      ALL THREE answers are drawn, reversing the warning-only
-                      first cut. That version had the better argument on paper —
-                      "easy" is the common case, and a mark on nearly every
-                      model marks nothing (D448's chip) — and it was wrong about
-                      what this fact is FOR. It is not a badge decorating a
-                      model; it is the answer to "can my machine run this",
-                      which is asked OF EVERY MODEL, and a row that answers only
-                      when the answer is bad is silent exactly when it is being
-                      consulted: on a 34GB laptop every model the sidebar offers
-                      is "easy", so the fact was unreachable and read as
-                      missing. Absence-as-good-news works for a badge nobody was
-                      looking for, not for a question somebody asked. `null`
-                      still draws nothing, for the server's own reason: a verdict
-                      over a size nobody measured is the lie the "—" size cell
-                      exists to avoid.
-
-                      Its own fact, not a line on Download: fetching and
-                      running are different questions, and the Download slot is
-                      the one that turns into a progress ring mid-pull — which
-                      is exactly when "will this even fit" is worth reading. */}
+                      and this machine's RAM. All three answers are drawn:
+                      this fact answers "can my machine run this", which is
+                      asked OF EVERY MODEL. `null` draws nothing. */}
                   {fitNote && (
-                    <div className="pg-hero-fact">
-                      <dt>Memory</dt>
-                      <dd className={"pg-hero-fact-judged" + fitNote.tone} title={fitNote.title}>
-                        {fitNote.text}
-                      </dd>
-                    </div>
+                    <Badge variant="outline" className={fitNote.tone} title={fitNote.title}>
+                      {fitNote.text}
+                    </Badge>
                   )}
-                </dl>
+                  {/* The curator's sentence — the rail clamps it, this line
+                      does not. */}
+                  {selected.model.note && (
+                    <span className="basis-full pt-0.5 text-xs text-muted-foreground">
+                      {selected.model.note}
+                    </span>
+                  )}
+                </div>
               )}
-              {/* The curator's sentence, in full — the sidebar clamps it.
-                  For the zero-jargon reader this is the model introducing
-                  itself; the mechanics (loaded, downloading) stay on the
-                  quieter line below it. */}
-              {selected.model.note && <p className="pg-stage-note">{selected.model.note}</p>}
-            </section>
+            </header>
+
+            {(actionError || (blockedAsk && selected)) && (
+              <div className="flex flex-col gap-2 px-6 pt-4">
+                {actionError && (
+                  <Alert variant="destructive">
+                    <AlertDescription>{actionError}</AlertDescription>
+                  </Alert>
+                )}
+                {blockedAsk && (
+                  // Not destructive: nothing failed — the link simply named a
+                  // task this machine cannot run, and the stage below is the
+                  // substitute, said out loud.
+                  <Alert>
+                    <AlertDescription>
+                      {groupLabel(blockedAsk.row.capability)} is not available here —{" "}
+                      {blockedAsk.reason} Showing {groupLabel(selected.row.capability)} instead.
+                    </AlertDescription>
+                  </Alert>
+                )}
+              </div>
+            )}
+
             {selected.row.capability === "text-generation" ? (
               <TextStage
                 key={selected.model.id}
@@ -923,15 +747,15 @@ export default function PlaygroundTab() {
               />
             ) : (
               // A capability a future runner adds before this tab learns it:
-              // named, never blank — the same posture the group labels take.
-              <p className="cc-empty">
+              // named, never blank.
+              <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
                 No playground for {groupLabel(selected.row.capability)} yet — the Local tab can
                 still load and manage this model.
-              </p>
+              </div>
             )}
           </>
         )}
-      </div>
+      </section>
     </div>
   );
 }

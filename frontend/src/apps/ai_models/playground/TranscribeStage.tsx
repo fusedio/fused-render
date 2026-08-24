@@ -24,8 +24,23 @@ import {
   type TranscriptSegment,
   type TranscribeStarted,
 } from "./client";
-import { ConfigPanel, CopyButton, ResultSlot, StageHeader } from "./controls";
+import {
+  AnswerBlock,
+  CopyButton,
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldTitle,
+  RailChips,
+  ResultSlot,
+  StageShell,
+} from "./controls";
 import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { Alert, AlertDescription } from "@apps/ai_models/ui/alert";
+import { Button } from "@apps/ai_models/ui/button";
+import { Input } from "@apps/ai_models/ui/input";
+import { Progress } from "@apps/ai_models/ui/progress";
+import { cn } from "@apps/ai_models/ui/utils";
 
 type Phase =
   | { step: "idle" }
@@ -38,6 +53,42 @@ function clock(seconds: number | undefined): string {
   if (seconds === undefined || !isFinite(seconds)) return "";
   const s = Math.max(0, Math.floor(seconds));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** An on/off setting as a labelled row — the panel has no Switch installed,
+ *  so the state is a small pressed/unpressed button, `aria-pressed` carrying
+ *  the truth for screen readers. */
+function ToggleField({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <Field>
+      <FieldContent>
+        <div className="flex items-center justify-between gap-2">
+          <FieldTitle>{label}</FieldTitle>
+          <Button
+            type="button"
+            variant={checked ? "secondary" : "outline"}
+            size="sm"
+            className="h-6 px-2 text-xs"
+            aria-pressed={checked}
+            onClick={() => onChange(!checked)}
+          >
+            {checked ? "On" : "Off"}
+          </Button>
+        </div>
+        <FieldDescription>{hint}</FieldDescription>
+      </FieldContent>
+    </Field>
+  );
 }
 
 export function TranscribeStage({ model }: { model: string }) {
@@ -304,224 +355,254 @@ export function TranscribeStage({ model }: { model: string }) {
     setPhase({ step: "idle" });
   };
 
-  return (
-    <div className={"pg-work" + (configOpen ? " has-config" : "")}>
-        {/* The action, and the way to the settings. The hero card above names
-            the model and its state. */}
-        <StageHeader
-          title="Transcribe a recording"
-          configOpen={configOpen}
-          onToggleConfig={() => setConfigOpen((open) => !open)}
-        />
-
-        {phase.step === "recording" ? (
-          <div className="pg-recording">
-            <button type="button" className="pg-rec-btn live" onClick={() => recorderRef.current?.stop()}>
-              <span className="pg-rec-square" />
-            </button>
-            <div className="pg-rec-info">
-              <span className="pg-rec-time">{clock(elapsed)}</span>
-              <span className="pg-meter" aria-hidden="true">
-                {Array.from({ length: 12 }, (_, i) => (
-                  <span
-                    key={i}
-                    className={"pg-meter-bar" + (level * 12 > i ? " lit" : "")}
-                  />
-                ))}
-              </span>
-              <span className="pg-rec-hint">Recording — click to stop and transcribe</span>
-            </div>
-          </div>
-        ) : (
-          <div
-            className={"pg-dropzone" + (dragging ? " dragging" : "") + (busy ? " busy" : "")}
-            onDragOver={(e) => {
-              e.preventDefault();
-              if (!busy) setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              const file = e.dataTransfer.files?.[0];
-              if (file && !busy) void land(file, file.name);
-            }}
-          >
-            <button type="button" className="pg-rec-btn" disabled={busy} onClick={() => void record()} title="Record from the microphone">
-              <span className="pg-rec-dot" />
-            </button>
-            <div className="pg-drop-copy">
-              <p className="pg-drop-title">
-                {busy ? "Working…" : "Record, or drop an audio / video file"}
-              </p>
-              <p className="pg-drop-sub">
-                {busy ? (
-                  phase.step === "uploading" ? (
-                    `Saving ${phase.name}…`
-                  ) : (
-                    progress
-                  )
-                ) : (
-                  <>
-                    …or{" "}
-                    <label className="pg-browse">
-                      browse for one
-                      <input
-                        type="file"
-                        accept="audio/*,video/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          e.target.value = "";
-                          if (file) void land(file, file.name);
-                        }}
-                      />
-                    </label>{" "}
-                    — the words appear as they are decoded.
-                  </>
-                )}
-              </p>
-              {pct !== null && (
-                <span className="pg-bar">
-                  <span className="pg-bar-fill" style={{ width: `${pct}%` }} />
-                </span>
-              )}
-            </div>
-            {phase.step === "running" && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
-              >
-                Stop
-              </button>
-            )}
-          </div>
-        )}
-
-        <ConfigPanel open={configOpen}>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Task</span>
-            </span>
-            <select
-              className="pg-rail-input"
-              value={task}
-              onChange={(e) => setTask(e.target.value as "transcribe" | "translate")}
-            >
-              <option value="transcribe">Transcribe — same language</option>
-              <option value="translate">Translate into English</option>
-            </select>
-          </label>
-          <label className="pg-ctl">
-            <span className="pg-ctl-head">
-              <span className="pg-ctl-label">Language</span>
-            </span>
-            <input
-              className="pg-rail-input"
-              type="text"
-              value={language}
-              placeholder="Detected automatically"
-              onChange={(e) => setLanguage(e.target.value)}
-            />
-            <span className="pg-ctl-hint">Set it only when detection gets it wrong.</span>
-          </label>
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={vad} onChange={(e) => setVad(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Skip silence</span>
-              <span className="pg-ctl-hint">Much faster on recordings with gaps. Turn off if it clips speech.</span>
-            </span>
-          </label>
-          <label className="pg-ctl pg-ctl-row">
-            <input type="checkbox" checked={words} onChange={(e) => setWords(e.target.checked)} />
-            <span>
-              <span className="pg-ctl-label">Word timestamps</span>
-              <span className="pg-ctl-hint">Per-word timings in the saved transcript. Slower.</span>
-            </span>
-          </label>
-        </ConfigPanel>
-
-        {error && <p className="pg-error">{error}</p>}
-
-        {source && phase.step !== "recording" && (
-          // The recording itself, playable — hearing what the model heard is
-          // how a surprising transcript stops being a mystery. And because the
-          // path rides the URL, this row is also the compare loop: pick
-          // another model in the sidebar and the same recording is one click
-          // from a fresh run.
-          <div className="pg-audio-row">
-            <div className="pg-audio-meta">
-              <span className="pg-audio-label">What the model hears</span>
-              <span className="pg-audio-name">{source.name}</span>
-            </div>
-            <audio className="pg-audio" controls preload="metadata" src={rawUrl(source.path)} />
-            {!busy && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => {
-                  setError(null);
-                  void transcribePath(source.path).catch((e: Error) => {
-                    setError(e.message);
-                    setPhase({ step: "idle" });
-                  });
-                }}
-              >
-                {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
-              </button>
-            )}
-            {!busy && (
-              <button
-                type="button"
-                className="pg-ghost-btn pg-clear"
-                title="Drop this recording and start over"
-                onClick={clear}
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        )}
-
-        {segments.length === 0 && phase.step !== "done" ? (
-          <ResultSlot
-            label="Transcript"
-            capability="automatic-speech-recognition"
-            note="The words come back here, timed — record something above, or pick a file."
+  const config = (
+    <>
+      <Field>
+        <FieldContent>
+          <FieldTitle>Task</FieldTitle>
+          <RailChips
+            options={[
+              { value: "transcribe", label: "Same language", title: "Transcribe — same language" },
+              { value: "translate", label: "To English", title: "Translate into English" },
+            ]}
+            active={task}
+            onPick={setTask}
           />
-        ) : (
-          <div className="pg-answer-block">
-            <p className="pg-answer-label">Transcript</p>
-            <div className="pg-segments">
-              {phase.step === "done" && finalText() && (
-                <CopyButton text={finalText()} label="Copy the transcript" />
-              )}
-              {segments.length > 0 ? (
-                segments.map((segment, index) => (
-                  <div key={index} className="pg-segment">
-                    <span className="pg-segment-time">{clock(segment.start)}</span>
-                    <span className="pg-segment-text">
-                      {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
-                      {segment.text}
-                    </span>
-                  </div>
-                ))
-              ) : phase.step === "done" && phase.text.trim() ? (
-                <p className="pg-transcript-text">{phase.text.trim()}</p>
-              ) : phase.step === "done" && phase.readFailed ? (
-                // The read failed, not the recording — the file is still saved.
-                <p className="pg-transcript-text pg-transcript-empty">
-                  The run finished, but the transcript could not be read back — it is saved in
-                  the transcripts folder.
-                </p>
-              ) : (
-                <p className="pg-transcript-text pg-transcript-empty">
-                  No speech was detected in this recording.
-                </p>
-              )}
-            </div>
+        </FieldContent>
+      </Field>
+      <Field>
+        <FieldContent>
+          <FieldTitle>Language</FieldTitle>
+          <Input
+            type="text"
+            value={language}
+            placeholder="Detected automatically"
+            onChange={(e) => setLanguage(e.target.value)}
+          />
+          <FieldDescription>Set it only when detection gets it wrong.</FieldDescription>
+        </FieldContent>
+      </Field>
+      <ToggleField
+        label="Skip silence"
+        hint="Much faster on recordings with gaps. Turn off if it clips speech."
+        checked={vad}
+        onChange={setVad}
+      />
+      <ToggleField
+        label="Word timestamps"
+        hint="Per-word timings in the saved transcript. Slower."
+        checked={words}
+        onChange={setWords}
+      />
+    </>
+  );
+
+  return (
+    <StageShell
+      title="Transcribe a recording"
+      configOpen={configOpen}
+      onToggleConfig={() => setConfigOpen((open) => !open)}
+      config={config}
+    >
+      {phase.step === "recording" ? (
+        <div className="flex items-center gap-4 rounded-lg border bg-card px-4 py-4">
+          <Button
+            type="button"
+            variant="destructive"
+            size="icon-lg"
+            className="rounded-full"
+            title="Stop and transcribe"
+            onClick={() => recorderRef.current?.stop()}
+          >
+            <span className="size-3 rounded-[2px] bg-current" aria-hidden="true" />
+          </Button>
+          <div className="flex flex-col gap-1.5">
+            <span className="font-mono text-sm tabular-nums">{clock(elapsed)}</span>
+            <span className="flex items-end gap-0.5" aria-hidden="true">
+              {Array.from({ length: 12 }, (_, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "h-3 w-1 rounded-sm transition-colors",
+                    level * 12 > i ? "bg-primary" : "bg-border",
+                  )}
+                />
+              ))}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Recording — click to stop and transcribe
+            </span>
           </div>
-        )}
-    </div>
+        </div>
+      ) : (
+        <div
+          className={cn(
+            "flex items-center gap-4 rounded-lg border border-dashed px-4 py-4 transition-colors",
+            dragging && "border-ring bg-accent",
+            busy && "opacity-80",
+          )}
+          onDragOver={(e) => {
+            e.preventDefault();
+            if (!busy) setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const file = e.dataTransfer.files?.[0];
+            if (file && !busy) void land(file, file.name);
+          }}
+        >
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-lg"
+            className="rounded-full"
+            disabled={busy}
+            onClick={() => void record()}
+            title="Record from the microphone"
+          >
+            <span className="size-3 rounded-full bg-destructive" aria-hidden="true" />
+          </Button>
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <p className="text-sm font-medium">
+              {busy ? "Working…" : "Record, or drop an audio / video file"}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {busy ? (
+                phase.step === "uploading" ? (
+                  `Saving ${phase.name}…`
+                ) : (
+                  progress
+                )
+              ) : (
+                <>
+                  …or{" "}
+                  <label className="cursor-pointer text-foreground underline underline-offset-2">
+                    browse for one
+                    <input
+                      type="file"
+                      className="sr-only"
+                      accept="audio/*,video/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = "";
+                        if (file) void land(file, file.name);
+                      }}
+                    />
+                  </label>{" "}
+                  — the words appear as they are decoded.
+                </>
+              )}
+            </p>
+            {pct !== null && <Progress value={pct} className="mt-1 h-1.5" />}
+          </div>
+          {phase.step === "running" && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => void cancelJob(phase.started.jobId).catch(() => {})}
+            >
+              Stop
+            </Button>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+
+      {source && phase.step !== "recording" && (
+        // The recording itself, playable — hearing what the model heard is
+        // how a surprising transcript stops being a mystery. And because the
+        // path rides the URL, this row is also the compare loop: pick
+        // another model in the sidebar and the same recording is one click
+        // from a fresh run.
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-card px-3 py-2">
+          <div className="flex min-w-0 flex-col">
+            <span className="text-xs text-muted-foreground">What the model hears</span>
+            <span className="truncate text-sm font-medium">{source.name}</span>
+          </div>
+          <audio
+            className="h-9 min-w-0 flex-1"
+            controls
+            preload="metadata"
+            src={rawUrl(source.path)}
+          />
+          {!busy && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setError(null);
+                void transcribePath(source.path).catch((e: Error) => {
+                  setError(e.message);
+                  setPhase({ step: "idle" });
+                });
+              }}
+            >
+              {phase.step === "done" ? "Transcribe again" : "Transcribe this recording"}
+            </Button>
+          )}
+          {!busy && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              title="Drop this recording and start over"
+              onClick={clear}
+            >
+              Clear
+            </Button>
+          )}
+        </div>
+      )}
+
+      {segments.length === 0 && phase.step !== "done" ? (
+        <ResultSlot
+          label="Transcript"
+          capability="automatic-speech-recognition"
+          note="The words come back here, timed — record something above, or pick a file."
+        />
+      ) : (
+        <AnswerBlock
+          label="Transcript"
+          className="flex flex-col gap-1.5 rounded-lg border bg-card px-4 py-3 text-sm leading-relaxed"
+        >
+          {phase.step === "done" && finalText() && (
+            <CopyButton text={finalText()} label="Copy the transcript" />
+          )}
+          {segments.length > 0 ? (
+            segments.map((segment, index) => (
+              <div key={index} className="flex gap-3">
+                <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground pt-0.5">
+                  {clock(segment.start)}
+                </span>
+                <span>
+                  {segment.speaker ? <strong>{segment.speaker}: </strong> : null}
+                  {segment.text}
+                </span>
+              </div>
+            ))
+          ) : phase.step === "done" && phase.text.trim() ? (
+            <p className="whitespace-pre-wrap">{phase.text.trim()}</p>
+          ) : phase.step === "done" && phase.readFailed ? (
+            // The read failed, not the recording — the file is still saved.
+            <p className="text-muted-foreground">
+              The run finished, but the transcript could not be read back — it is saved in
+              the transcripts folder.
+            </p>
+          ) : (
+            <p className="text-muted-foreground">No speech was detected in this recording.</p>
+          )}
+        </AnswerBlock>
+      )}
+    </StageShell>
   );
 }
