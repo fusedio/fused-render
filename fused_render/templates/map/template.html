@@ -1126,6 +1126,10 @@ function computeColorByStats(L) {
 // engine, which renders them properly.
 const COG_SUFFIX = /\.(tif|tiff)(\?|$)/i;
 const isRemoteCog = target => /^https?:\/\//i.test(target) && COG_SUFFIX.test(target);
+// Mirrors the Python gate's MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES default (50 MB):
+// a no-overview raster larger than this is downloaded whole, so it belongs to
+// the engine, which asks first.
+const DOWNLOAD_CONFIRM_BYTES = 50 << 20;
 
 // Origins whose blob host refused the browser reader outright (auth or CORS):
 // re-fetching a doomed range request for every sibling file is wasted latency,
@@ -1384,11 +1388,13 @@ async function openClientCog(L, target) {
   try {
     geotiff = await deck.GeoTIFF.fromUrl(target);
     // No overview pyramid means reading the file whole. That is fine for a
-    // small COG (one that fits in roughly a tile grid), but for a large one it
-    // would pull the entire file at full resolution in the browser and bypass
-    // the download confirmation, so hand those to the Python engine.
-    const pixels = (geotiff.width || 0) * (geotiff.height || 0);
-    if (!(geotiff.overviews && geotiff.overviews.length) && pixels > 4096 * 4096) {
+    // small COG, but for a large one it would pull the entire file at full
+    // resolution in the browser and bypass the download confirmation. Estimate
+    // the bytes as width*height*bands (this reader only takes 8-bit, so one byte
+    // per sample) — an upper bound on the on-disk size the Python gate keys off,
+    // so a gated file is never let through here — and hand those to the engine.
+    const bytes = (geotiff.width || 0) * (geotiff.height || 0) * (geotiff.count || 1);
+    if (!(geotiff.overviews && geotiff.overviews.length) && bytes > DOWNLOAD_CONFIRM_BYTES) {
       throw new Error("no overview pyramid on a large raster; not cloud-optimized");
     }
     epsgResolver(geotiff.crs);

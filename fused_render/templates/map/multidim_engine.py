@@ -45,13 +45,9 @@ def _install_ca_bundle() -> None:
     operator's own SSL_CERT_FILE always wins."""
     import sys
 
-    if os.environ.get("SSL_CERT_FILE"):
+    if sys.platform != "win32" or os.environ.get("SSL_CERT_FILE"):
         return
     import certifi
-
-    if sys.platform != "win32":
-        os.environ["SSL_CERT_FILE"] = certifi.where()
-        return
     import ssl
     import tempfile
 

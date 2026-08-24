@@ -851,8 +851,12 @@ class VectorEngine:
         locator = source.locator
         if _suffix(locator) != ".shp" or not os.path.isfile(locator):
             return None
-        qix = os.path.splitext(locator)[0] + ".qix"
-        if not os.path.isfile(qix):
+        stem = os.path.splitext(locator)[0]
+        qix = next(
+            (path for path in (stem + ".qix", stem + ".QIX") if os.path.isfile(path)),
+            None,
+        )
+        if qix is None:
             return None
         try:
             return self._parse_qix(qix, source.feature_count)

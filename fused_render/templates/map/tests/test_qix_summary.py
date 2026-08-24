@@ -109,6 +109,20 @@ def test_qix_summary_used_when_the_index_exists(eng, tmp_path):
     assert len(summary[0]) == 3
 
 
+def test_qix_summary_finds_uppercase_index(eng, tmp_path):
+    # ESRI tools name the sidecar to match the shapefile case (.SHP -> .QIX);
+    # on a case-sensitive filesystem a lowercase-only lookup would miss it.
+    shp = tmp_path / "farms.shp"
+    shp.write_bytes(b"")
+    _write_qix(tmp_path / "farms.QIX", nshapes=4)
+    source = types.SimpleNamespace(locator=str(shp), feature_count=4)
+
+    summary = eng._qix_summary(source)
+
+    assert summary is not None
+    assert len(summary[0]) == 3
+
+
 def test_qix_summary_absent_index_falls_back(eng, tmp_path):
     shp = tmp_path / "farms.shp"
     shp.write_bytes(b"")  # no sibling .qix
