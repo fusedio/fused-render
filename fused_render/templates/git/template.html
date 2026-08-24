@@ -2581,9 +2581,25 @@ function askClaudeOnError(message) {
   parts.push("Explain what the error means, then fix it: run whatever is "
     + "needed to get this repository out of the failure and back to a good "
     + "state.");
-  if (typeof window._fusedAskClaude === "function") {
-    window._fusedAskClaude(parts.join("\n\n"));
+  // The one thing this view can tell FOR SURE about whether the hop can work
+  // at all: whether the runtime installed the export in THIS frame. It cannot
+  // tell whether an ancestor further up is actually listening (`noteAskClaude`
+  // broadcasts and never reports back, same as `_fusedSelectRev`/`hopRev`
+  // above) — that half is accepted as unverifiable here, the same way `hopRev`
+  // accepts it. But the export being MISSING outright — this template opened
+  // standalone, under the hosted runtime, or in any frame the shell's
+  // ancestor-window plumbing was never injected into — used to fail with
+  // nothing: the button did something to the eye, and nothing to the page.
+  // The project convention is against exactly that, so this is now a normal
+  // failed op like any other `resolveFailed` — a visible toast, not a swallow.
+  if (typeof window._fusedAskClaude !== "function") {
+    flash = { ok: false, message: "Claude is not available from this view — "
+      + "there is no chat to open it into here." };
+    announce(flash.message);
+    draw(true);
+    return;
   }
+  window._fusedAskClaude(parts.join("\n\n"));
 }
 
 function commit(message) {

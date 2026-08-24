@@ -369,11 +369,46 @@ def test_ask_claude_on_error_builds_the_same_context_advise_used_to():
     assert " file " in fn or "+ file +" in fn or "file +" in fn
     # It asks for a fix, not just an explanation.
     assert "fix it" in fn
-    # And it leaves via the ancestor hop, guarded like every other call to it.
-    assert 'typeof window._fusedAskClaude === "function"' in fn
+    # And it leaves via the ancestor hop, guarded like every other call to it —
+    # an early-return guard now (review #804 finding 5), not a wrapping `if`,
+    # because the missing-export case is a reportable failure rather than a
+    # silent one (see test_a_missing_ancestor_hook_is_a_visible_failure below).
+    assert 'typeof window._fusedAskClaude !== "function"' in fn
     assert "window._fusedAskClaude(" in fn
     # It must NOT call fused.ai itself — that is the whole point of the change.
     assert "fused.ai(" not in fn
+
+
+def test_a_missing_ancestor_hook_is_a_visible_failure_not_a_silent_one():
+    """review #804 finding 5: the button used to render on ANY failed op, but
+    `askClaudeOnError` just returned when no ancestor defines
+    `_fusedClaudeAsk` — a real, reachable case (this template opened
+    standalone, under the hosted runtime, or inside any frame the shell's
+    ancestor-window plumbing was never injected into). The old "Explain"
+    button always produced something; this one silently did nothing, which is
+    the project's stated convention against.
+
+    Verified NOT to be a defect: the reviewer's second scenario (`claude`
+    genuinely not offered for the same target while `git`'s own template is
+    rendering) is unreachable given the current gates —
+    fused_render/templates/claude/condition.py and
+    fused_render/templates/git/condition.py refuse on the identical
+    mount-backed predicate, and claude adds no narrowing beyond it (`isfile`
+    unconditionally allows a file, `isdir` unconditionally allows a
+    directory), so wherever git's gate has already passed (a precondition for
+    this button being on screen at all), claude's gate is guaranteed to have
+    passed too. Nothing was changed for that half — see the report for the
+    verification.
+    """
+    src = _view_source()
+    fn = src[src.index("function askClaudeOnError(message)"):]
+    fn = fn[:fn.index("\n}")]
+    guard = fn[fn.index('if (typeof window._fusedAskClaude !== "function") {'):]
+    guard = guard[:guard.index("\n  }")]
+    assert "flash = { ok: false," in guard
+    assert "announce(" in guard
+    assert "draw(true);" in guard
+    assert "return;" in guard
 
 
 def test_the_claude_ask_reaches_the_shell_through_the_ancestor_global():
