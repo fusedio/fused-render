@@ -5926,8 +5926,8 @@ def test_the_worker_is_given_the_row_identity_to_restate(
     started = _post_transcribe(client, path=recording).json()
     _wait_job(started["jobId"])
 
-    assert seen["row"] == {"title": os.path.basename(recording), "kind": "task",
-                           "cancellable": True, "unit": "s"}
+    assert seen["row"] == {"title": os.path.basename(recording), "model": "org/fake-whisper",
+                           "kind": "task", "cancellable": True, "unit": "s"}
 
 
 def test_the_terminal_report_can_rebuild_an_evicted_row(
@@ -6463,7 +6463,7 @@ def test_an_exception_taking_the_turn_does_not_WEDGE_transcription_forever(monke
 def test_the_turn_is_released_even_when_the_body_raises(monkeypatch):
     """The pairing itself: acquisition and release are one construct, so a
     caller cannot take a turn and forget to give it back."""
-    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title: None)
+    monkeypatch.setattr(supervisor, "_await_turn", lambda job, title, model="": None)
     supervisor._TRANSCRIBE_LOCK.acquire()
     with pytest.raises(ValueError):
         with supervisor._transcribe_turn("sys:ai-transcribe:x", "x.m4a"):

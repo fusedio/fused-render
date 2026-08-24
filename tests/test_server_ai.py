@@ -344,18 +344,24 @@ def test_relay_dismisses_its_job_row_immediately_on_success(monkeypatch):
 def test_relay_remote_job_row_title_is_the_prompt_like_local_rows(monkeypatch):
     # Change 1: local generation rows title on the PROMPT
     # (supervisor._start_render) — a hardcoded "Claude (remote)" title was the
-    # odd one out. The remote-ness moves to the detail line instead, so a
-    # page calling fused.ai() against Claude still can't be mistaken for a
-    # local model at a glance. Checked on an ERRORED call — a successful one
-    # dismisses its row entirely (see the test above) — but the title and
-    # detail are set when the row OPENS, before the outcome is known, so an
-    # error shows exactly what a success would have too.
+    # odd one out. Checked on an ERRORED call — a successful one dismisses
+    # its row entirely (see the test above) — but the title and detail are
+    # set when the row OPENS, before the outcome is known, so an error shows
+    # exactly what a success would have too.
+    #
+    # Change 2 (this follow-up): the model used to live IN the detail line
+    # ("Claude (sonnet) — remote"), which was the only place any row named
+    # its model — a LOCAL row's title never did, so a user could tell a
+    # remote call apart from a local one but not the other way round. The
+    # model now rides its own field (`row["model"]`, jobs.py `Job.model`),
+    # rendered as a dimmed suffix on the title row same as a local row's, and
+    # the detail line is freed to say only that this is remote.
     _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
     _relay({"prompt": "summarize this doc for me"})
     row = jobs.list_jobs()[0]
     assert row["title"] == "summarize this doc for me"
-    assert "claude" in row["detail"].lower()
-    assert _server_ai._AI_DEFAULT_MODEL in row["detail"]
+    assert row["model"] == _server_ai._AI_DEFAULT_MODEL
+    assert row["detail"] == "Claude — remote"
 
 
 def test_relay_remote_job_row_title_is_truncated_to_80_chars(monkeypatch):

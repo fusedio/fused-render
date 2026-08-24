@@ -1099,12 +1099,14 @@ async def _ai_relay(body: dict):
         # the PROMPT, trimmed and capped at 80 chars, falling back to the
         # model when there is no usable prompt (unreachable today — `prompt`
         # is already validated non-empty above this branch — but written the
-        # same way so the two shapes cannot drift). The remote-ness that a
-        # fixed "Claude (remote)" title used to carry moves into the detail
-        # line instead, which is still unmistakable at a glance.
+        # same way so the two shapes cannot drift). The model rides its own
+        # field (jobs.py `Job.model`) — a dimmed suffix JobRow draws after the
+        # title, same as a local row's — so the detail line is free to say
+        # only "Claude — remote", which is the one thing this row exists to
+        # say that a local row's detail never does.
         title = str(prompt or model).strip() or model
-        _report_remote(title=title[:80], state="running", kind="task",
-                       cancellable=False, detail=f"Claude ({model}) — remote")
+        _report_remote(title=title[:80], model=model, state="running", kind="task",
+                       cancellable=False, detail="Claude — remote")
 
     def _finish_remote_job() -> None:
         """Success only: drop the row immediately rather than leaving it at
