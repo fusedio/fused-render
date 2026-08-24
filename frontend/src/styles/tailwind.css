@@ -94,9 +94,10 @@
     --radius: 0.625rem;
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
-    /* A shade above the page's 0.145 background — lifted, but nowhere near
-       the stock 0.205, which read too light against it. */
-    --card: oklch(0.18 0 0);
+    /* One shade above the app's own page background (tokens.css --bg,
+       #131417) and in ITS cool blue-grey hue — a neutral grey here read
+       warmer than the page it sits on. */
+    --card: #17191d;
     --card-foreground: oklch(0.985 0 0);
     --popover: oklch(0.205 0 0);
     --popover-foreground: oklch(0.985 0 0);
