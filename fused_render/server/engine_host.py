@@ -15,7 +15,10 @@ point runs inside its project venv (PY-16/D276) — the only interpreter on the
 machine holding that template's extra stack — so it hands over its own
 sys.executable. The handoff is validated rather than trusted: the python must
 live in the home venv store, and the daemon must be <templates-root>/<engine_id>
-/daemon.py under a known templates root.
+/daemon.py under a known templates root. `ensure_app` adds a second kind of
+child — a warm worker for an app's own `.py` (see ENGINE_HOST_APPS_DESIGN.md) —
+validated by interpreter only, since its daemon is the shipped engine_worker.py,
+not a template.
 
 A restarted child starts empty, so any descriptor the pages hold would 404.
 `reinit()` records the requests that registered a template's state, and a restart
@@ -200,8 +203,8 @@ def _inflight(child: Child) -> int:
     try:
         with urllib.request.urlopen(_url(child, "/ping"), timeout=PING_TIMEOUT_S) as r:
             payload = json.load(r)
-        return int(payload.get("inflight", 0))
-    except (OSError, ValueError, TypeError):
+        return payload.get("inflight", 0)
+    except (OSError, ValueError):
         return 0
 
 

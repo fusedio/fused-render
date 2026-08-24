@@ -80,13 +80,13 @@ or already retired is a no-op success. Idle-retire covers the common case.
 
 ## How it works on the server
 
-`routers/engine.py` resolves the file and interpreter exactly like `run.py`:
+`routers/app_engine.py` resolves the file and interpreter exactly like `run.py`:
 `projectenv.project_env_for(resolved)` then `projectenv.interpreter_for(...)` —
 the app's own `sys.executable` when the folder declares no environment, else that
 folder's venv python. No caller-supplied interpreter and no path allowlist: it
 runs the calling app's own resolved `.py`, so it adds no code-execution surface
 over `/api/run`. It then calls `engine_host.ensure_app(resolved, interpreter)`
-and forwards `params` to the worker's `/call` through `routers/engines._forward`,
+and forwards `params` to the worker's `/call` through `engine_forward._forward`,
 reusing that proxy's heal-on-failure and cancel-on-disconnect.
 
 ### The worker (`fused_render/engine_worker.py`)
