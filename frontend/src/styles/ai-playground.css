@@ -440,6 +440,21 @@
   /* The stage is the scroller now — a one-shot column has no inner log to
      scroll, so the hero rides along with the content. */
   overflow-y: auto;
+  /* Vertically only. `overflow-y: auto` alone leaves x at `visible`, which the
+     cascade then computes to `auto` — so the stage was one horizontal scroll
+     container, and the settings fold made it flash a scrollbar: on open the
+     work column's box grows by the card's footprint in ONE step while its
+     `margin-left` is still gliding left from the closed centre, and for a stage
+     between the 920px threshold and ~1100px the card's right edge sits past the
+     stage's edge until the margin catches up. The end state always fits (the
+     threshold is what guarantees it) — only the first frames of the slide poke
+     out, and they poke out at nearly zero opacity, since the card is fading in
+     across the same interval. `clip`, not `hidden`: there is nothing here to
+     scroll to sideways, and `hidden` leaves a programmatically scrollable box
+     that a stray focus or anchor jump can shove sideways. The apps strip
+     scrolls in its own box (`.pg-apps-row`), so nothing legitimate is lost. */
+  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* The stage header as a banner — the model introducing itself before the work
@@ -949,9 +964,23 @@ a.pg-hero-repo:hover {
      page slid out from under it would read as two animations, not one. */
   .pg-work > .pg-config-card.is-closing {
     position: absolute;
+    /* Both edges, so this rail is as tall as the one it takes over from: the
+       card inside it STICKS, and a rail that ended at its own content height
+       would have nothing left to stick within — the card would drop to the top
+       of the column the moment `has-config` came off. After a long result has
+       scrolled that top is above the viewport, so the fade would run
+       off-screen, out of sight of the person who just clicked the cog. */
     top: 0;
+    bottom: 0;
     right: calc(-1 * (var(--pg-gap) + var(--pg-card)));
     width: var(--pg-card);
+  }
+
+  /* Same sticky as the open card, for the same reason: the fade has to happen
+     where the card was being READ, not where its rail happens to start. */
+  .pg-work > .pg-config-card.is-closing > .pg-config-inner {
+    position: sticky;
+    top: 0;
   }
 }
 
