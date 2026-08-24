@@ -6809,7 +6809,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   taking a colour this app cannot justify. Colour is never the only channel — the
   tag says the engine's name, and the UNAVAILABLE state keeps its dashed border and
   warning hue, where the state outranks the identity.
-  **EVERY tag is a pill, in every state** (D473). The unavailable, unrecognised,
+  **EVERY tag is a pill, in every state** (D475). The unavailable, unrecognised,
   partial and component tags tint their BORDER and carry a 10% wash from the same
   token their ink comes from, exactly as the available one does — a state that set
   only the ink and the dash left `border-color` at `--border`, and a dashed hairline
@@ -6817,7 +6817,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   with something to say were the ones that did not read as tags at all. The dash
   stays as the channel that says WHICH kind, and the component tag stays solid
   because nothing is missing there.
-  **"Try" is OUTLINED in accent, not filled with it** (D473): transparent ground,
+  **"Try" is OUTLINED in accent, not filled with it** (D475): transparent ground,
   accent ink, a 1px accent border, and a 12% accent wash on hover. It shipped
   filled for a day — the case being that "use this model now" is the one thing a
   reader opened the card to do — and what that missed is the card it sits on. Load
@@ -6830,7 +6830,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   the fill that needed it — on a transparent plate the inherited accent ring is
   the highest-contrast one available.
   **A refused Load says why ON the card, in one line, with the remedy as a link**
-  (D473). `loadRefusal`'s full sentence stays in the disabled button's `title` and
+  (D475). `loadRefusal`'s full sentence stays in the disabled button's `title` and
   accessible name; the card prints `loadRefusalShort` beside it — the first clause
   of the registry's reason, cut at its own comma or dash — because the long form
   wrapped to three lines and became the largest block of text on a 300px card. A

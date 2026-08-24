@@ -676,7 +676,7 @@ describe("why Load is refused", () => {
   });
 });
 
-// The CARD-length form of the same verdicts (D474): one line, cause only, the
+// The CARD-length form of the same verdicts (D475): one line, cause only, the
 // remedy carried by the link beside it. Same arms as `loadRefusal`, so the two
 // cannot disagree about WHICH problem a card has — only about how much of it
 // fits on the card.
