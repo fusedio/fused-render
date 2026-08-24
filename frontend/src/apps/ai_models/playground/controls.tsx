@@ -91,9 +91,9 @@ export function StageHeader({
 }
 
 /** How long the settings card's exit animation runs, in ms. Mirrors
- *  `--pg-fold-out` in ai-playground.css — the timer below unmounts the card,
- *  the stylesheet fades it, and a value that disagrees either cuts the fade
- *  off mid-way or leaves an invisible card mounted after it. */
+ *  `--pg-fade` in ai-playground.css — the timer below unmounts the card, the
+ *  stylesheet fades it, and a value that disagrees either cuts the fade off
+ *  mid-way or leaves an invisible card mounted after it. */
 const CONFIG_EXIT_MS = 160;
 
 /** Where the uncommon parameters live, revealed by the cog above — a narrow
@@ -110,10 +110,12 @@ export function ConfigPanel({ open, children }: { open: boolean; children: React
   // Mount is kept for the length of the exit so the card can fade OUT as well
   // as in: a panel that pops out of existence while the column glides back
   // under it is the half-animated version, and reads worse than no animation
-  // at all. The stage's own `has-config` class comes off immediately (it is
-  // driven by `open`, not by this), so the column starts moving at the same
-  // moment the card starts fading — the exit rule in ai-playground.css is what
-  // holds the dying card's geometry once that class is gone.
+  // at all. This unmount is also what STARTS the column's glide back: the
+  // stylesheet holds the open geometry for as long as a closing card is
+  // mounted (`:has(> .pg-config-card.is-closing)`, ai-playground.css), because
+  // the card's open place and the column's closed place overlap — a card
+  // fading over a column already in motion can only be clipped by the stage or
+  // laid on top of the composer.
   const [shown, setShown] = useState(open);
   useEffect(() => {
     if (open) {
