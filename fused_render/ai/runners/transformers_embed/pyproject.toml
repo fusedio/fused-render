@@ -11,13 +11,17 @@
 # answers drifting apart is the thing `_SHARED_SUGGESTIONS`-style duplication
 # always risks.
 #
-# **No CUDA or ROCm sibling, unlike text and image generation.** A dual
-# encoder is a single forward pass over a short sequence or one image —
-# milliseconds already on a CPU — so there is no accelerated wheel that would
-# meaningfully speed this runner up, and therefore no second or third folder to
-# install it from. See `registry.py`'s `transformers-embed` row and this
-# folder's `worker.py` module docstring for the same argument stated where the
-# absence is decided.
+# **CUDA and ROCm siblings exist (`transformers_embed_cuda/`,
+# `transformers_embed_rocm/`), but not for speed.** A dual encoder is a single
+# forward pass over a short sequence or one image — milliseconds already on a
+# CPU — so neither accelerated wheel meaningfully speeds this runner up. They
+# exist for the machine that already has a working NVIDIA or fully
+# ROCm-capable AMD card and would rather use it than fall back to this CPU
+# build's fp32 by default — see `runners/torch_embed.py`'s module docstring
+# and `registry.py`'s `transformers-embed-cuda`/`-rocm` rows for the same
+# argument stated where it matters. This folder is unchanged by their
+# existence: same dependencies, same `whl/cpu` index, same fallback behind
+# `mlx_embed` on a Mac.
 #
 # Four dependencies beyond torch, and each earns its place:
 #   transformers    AutoModel/AutoProcessor, and `get_text_features` /

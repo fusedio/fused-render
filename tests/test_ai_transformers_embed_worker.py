@@ -1,13 +1,20 @@
-"""The transformers embedding runner's own behaviour — what is true of torch
-and `embed_common` together, not what `embed_common.py`'s own tests already
-cover on their own.
+"""The shared transformers embedding runner's own behaviour — what is true of
+torch and `embed_common` together, not what `embed_common.py`'s own tests
+already cover on their own.
+
+Targets `runners/torch_embed.py` directly, not any of the three folders'
+`worker.py` shells — the same choice `tests/test_ai_diffusers_worker.py` makes
+for `torch_image.py`, and for the identical reason: `transformers_embed/`,
+`transformers_embed_cuda/` and `transformers_embed_rocm/` each hold a
+five-line shell that imports this file, so testing a shell would test three
+copies of the same five lines rather than the runner itself.
 
 Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
 `tests/test_ai_transformers_worker.py` does: the runner finds its base off
 `sys.path` in an interpreter of its own, so importing it the packaged way
 (`fused_render.ai.runners.…`) would be testing an import that never ships.
 `embed_common` is NOT stubbed — it is stdlib-plus-PIL and both are really
-installed here, so the worker's own `sys.path.insert` reaches the real file,
+installed here, so the runner's own `sys.path.insert` reaches the real file,
 exactly as it does in production.
 
 `torch` IS stubbed: it is not installed in this environment (it lives in the
@@ -28,7 +35,7 @@ from PIL import Image
 
 WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
-    / "fused_render" / "ai" / "runners" / "transformers_embed" / "worker.py"
+    / "fused_render" / "ai" / "runners" / "torch_embed.py"
 )
 
 
