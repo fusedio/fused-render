@@ -682,11 +682,11 @@ export default function PlaygroundTab() {
           </p>
         ) : (
           <>
-            <Card className="pg-hero flex-none" size="sm">
+            <Card className="pg-hero flex-none [--card-spacing:--spacing(6)]">
               <CardHeader>
-                <div className="flex min-w-0 flex-col gap-1.5">
+                <div className="flex min-w-0 flex-col gap-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <CardTitle className="text-[17px] tracking-tight">
+                    <CardTitle className="text-lg font-semibold tracking-tight">
                       {modelName(selected.model)}
                     </CardTitle>
                     {/* WILL IT RUN HERE — the server's verdict over the weights
@@ -712,7 +712,7 @@ export default function PlaygroundTab() {
                   <div className="group flex min-w-0 items-center gap-1.5">
                     {selected.model.id.includes("/") ? (
                       <a
-                        className="truncate font-mono text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+                        className="truncate font-mono text-xs text-muted-foreground no-underline transition-colors hover:text-foreground hover:underline"
                         href={hubModelUrl(selected.model.id)}
                         target="_blank"
                         rel="noopener noreferrer"
@@ -826,12 +826,12 @@ export default function PlaygroundTab() {
                   )}
                 </CardAction>
               </CardHeader>
-              <CardContent className="flex flex-col gap-3">
+              <CardContent className="flex flex-col gap-4">
                 {/* The curator's sentence, in full — the sidebar clamps it.
                     For the zero-jargon reader this is the model introducing
                     itself. */}
                 {selected.model.note && (
-                  <p className="m-0 max-w-[64ch] text-[12.5px] leading-relaxed text-muted-foreground">
+                  <p className="m-0 text-sm leading-relaxed text-muted-foreground">
                     {selected.model.note}
                   </p>
                 )}
@@ -840,7 +840,7 @@ export default function PlaygroundTab() {
                   selected.model.size_gb != null) && (
                   <>
                     <Separator />
-                    <dl className="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px]">
+                    <dl className="m-0 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
                       {[
                         selected.model.params
                           ? {
