@@ -1068,6 +1068,16 @@ async def _ai_relay(body: dict):
     # `cancel_requested` flag for a reporter to notice on its next tick.
     # Nothing in this relay polls that flag, so advertising a ✕ here would
     # ship a button that visibly does nothing when pressed.
+    #
+    # NOT opened here, before the stream/non-stream fork: `ndjson()` below is
+    # an async generator that Starlette only starts iterating once it
+    # actually sends the response body, so a client that disconnects before
+    # that first `__anext__` never runs the generator at all — including its
+    # `finally`. A row opened out here, unconditionally, would then never
+    # close: exactly the leak the streaming `finally` exists to prevent, just
+    # relocated one step earlier. Each branch below opens its own row as its
+    # own first action instead, so there is no window where a row exists
+    # with nothing yet committed to closing it.
     _remote_job = jobs.SERVER_ID_PREFIX + "ai-claude:" + uuid.uuid4().hex
     _remote_job_closed = False
 
@@ -1084,8 +1094,9 @@ async def _ai_relay(body: dict):
         except (jobs.JobError, ValueError):
             pass
 
-    _report_remote(title="Claude (remote)", state="running", kind="task",
-                   cancellable=False, detail=f"Talking to {model}…")
+    def _open_remote_job() -> None:
+        _report_remote(title="Claude (remote)", state="running", kind="task",
+                       cancellable=False, detail=f"Talking to {model}…")
 
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
@@ -1141,6 +1152,7 @@ async def _ai_relay(body: dict):
                     raise
 
     if not stream:
+        _open_remote_job()
         try:
             try:
                 data = await run_once()
@@ -1180,6 +1192,15 @@ async def _ai_relay(body: dict):
     # the first chunk left the wire cannot change the status code, so errors
     # become the terminal done frame instead.
     async def ndjson():
+        # First action, not before the StreamingResponse is constructed: this
+        # generator only starts running once Starlette actually sends the
+        # body (its first `__anext__`), so a client that disconnects before
+        # that point never runs this line — and, symmetrically, never runs
+        # the `finally` below either. Opening the row out here rather than
+        # before `return StreamingResponse(...)` keeps those two facts in
+        # sync: no code path can create a row without something guaranteed
+        # to run also being on the hook to close it.
+        _open_remote_job()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))

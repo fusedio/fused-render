@@ -402,6 +402,21 @@ def test_relay_stream_remote_job_row_closes_on_error(monkeypatch):
     assert row["state"] == "error"
 
 
+def test_relay_stream_never_iterated_leaves_no_running_row(monkeypatch):
+    # Code review finding (the more serious one): the row used to be opened
+    # BEFORE `StreamingResponse(ndjson(), ...)` was even returned. `ndjson()`
+    # is an async generator that Starlette only starts running once it
+    # actually sends the response body — a client that disconnects before
+    # that first iteration never runs the generator's body, so its `finally`
+    # (where the row used to get closed) never runs either, and the row was
+    # left "running" in the corner forever. Constructing the response and
+    # never iterating it must leave no row behind at all.
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
+    resp = asyncio.run(_server_ai._ai_relay({"prompt": "hello", "stream": True}))
+    assert isinstance(resp, _server_ai.StreamingResponse)
+    assert jobs.list_jobs() == []
+
+
 def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
     # Sanity anchor for the seam this whole feature adds: the LOCAL branch of
     # `_ai_relay` never runs the remote job-row code at all — it is a
