@@ -802,6 +802,92 @@ def test_the_buffer_keeps_the_newest_entries(html):
     assert logs[0] == "line 10" and logs[-1] == "line 59"
 
 
+_PUSH_FNS = ["const APP_STATE_MAX_LOGS", "const APP_STATE_MAX_TEXT",
+             "const APP_STATE_WIRE_LOGS", "const appLogs",
+             "function clipText(", "function pushAppLog(",
+             "function appStatePush("]
+
+
+def _pushed(html, n):
+    """`n` console lines in the buffer, then the PUSHED snapshot of them.
+
+    `appStateSnapshot` is stubbed rather than extracted: what this pins is the
+    trim, and building a real snapshot needs the whole frame/document harness for
+    a field it would not touch."""
+    return _node(_PUSH_FNS,
+                 "for (let i = 0; i < %d; i++) pushAppLog('warn', 'line ' + i);"
+                 "function appStateSnapshot() {"
+                 "  return {title: 'Demo', console: appLogs.slice()};"
+                 "}"
+                 "const pushed = appStatePush();"
+                 "console.log(JSON.stringify({pushed, buffer: appLogs.length}));"
+                 % n, html)
+
+
+def test_a_pushed_block_carries_only_the_newest_console_lines(html):
+    """The buffer is 50 deep and each line up to 300 characters, so an untrimmed
+    console is ~22 KB on ONE send — and the CLI keeps every message in its session
+    transcript, so it stays in context for the rest of the conversation. `dom`
+    already had a size story (appStateFile sends a path); this field had none."""
+    out = _pushed(html, 60)
+    lines = [e["text"] for e in out["pushed"]["console"]]
+    assert len(lines) == 12
+    # The TAIL: a console is read newest-first, and the line explaining the screen
+    # the user is annotating is the last one.
+    assert lines[0] == "line 48" and lines[-1] == "line 59"
+    # The buffer itself is untouched — it answers "was that error already there
+    # before my edit", which reaches back further than one turn.
+    assert out["buffer"] == 50
+
+
+def test_a_trimmed_console_says_so(html):
+    """outlineNode's rule, one field over: an elision the agent cannot see is a
+    lie about the page, because it reads a dropped line as a line that never
+    happened. And it names where the rest honestly is."""
+    out = _pushed(html, 60)
+    assert out["pushed"]["consoleTruncated"].startswith("38 older console line")
+    assert "app_state tool" in out["pushed"]["consoleTruncated"]
+
+
+def test_a_short_console_is_pushed_whole_and_unannotated(html):
+    """No caveat when nothing was dropped — a turn with a two-line console must
+    not carry a sentence about truncation that did not happen."""
+    out = _pushed(html, 2)
+    assert [e["text"] for e in out["pushed"]["console"]] == ["line 0", "line 1"]
+    assert "consoleTruncated" not in out["pushed"]
+
+
+def test_the_pull_channel_hands_over_the_whole_buffer(html):
+    """The third thing push and pull disagree about, and for the same reason as
+    the other two: a pushed block is one nobody asked for and is re-read on every
+    later turn, where the pull channel is answering a tool call that asked."""
+    out = _node(_PUSH_FNS + ["function appStatePull(", "const APP_STATE_UNREADABLE"],
+                "for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);"
+                "function appStateSnapshot() {"
+                "  return {title: 'Demo', console: appLogs.slice()};"
+                "}"
+                "console.log(JSON.stringify({"
+                "  pull: appStatePull().console.length,"
+                "  push: appStatePush().console.length}));", html)
+    assert out == {"pull": 50, "push": 12}
+
+
+def test_the_push_trim_does_not_mutate_the_snapshot_it_was_given(html):
+    """A copy, never in place: the snapshot object is also what appStateFile
+    forwards and what the send path holds, and trimming a shared field would make
+    the pull channel start answering with the push channel's twelve lines."""
+    out = _node(_PUSH_FNS, """
+for (let i = 0; i < 60; i++) pushAppLog('warn', 'line ' + i);
+const shared = {title: 'Demo', console: appLogs.slice()};
+function appStateSnapshot() { return shared; }
+const pushed = appStatePush();
+console.log(JSON.stringify({pushed: pushed.console.length,
+                            shared: shared.console.length,
+                            same: pushed === shared}));
+""", html)
+    assert out == {"pushed": 12, "shared": 50, "same": False}
+
+
 def test_console_log_is_not_captured_only_errors_and_warnings(html):
     """50 ring slots spent on an app's ordinary chatter would push out the
     errors they exist for."""

@@ -2197,7 +2197,7 @@ def test_the_shot_belongs_to_exactly_one_message(html):
     this one is still running must not inherit the picture. And the chip goes at
     the same moment, which is what a user reads as "it went with that one"."""
     send = _between(html, "async function sendMessage(message)", "\n}\n")
-    head = send[:send.index("const state = appStateSnapshot();")]
+    head = send[:send.index("const state = appStatePush();")]
     assert "const pics = shotAttached;" in head
     assert "shotAttached = [];" in head
     assert "renderAnn();" in head

@@ -4195,9 +4195,14 @@ document.title = "Claude — " + BASENAME;
 // or whether the page went blank. Two channels close that, and both are served
 // from here:
 //
-//   push — appStateSnapshot() rides along with each message (appStateBlock).
+//   push — appStatePush() rides along with each message (appStateBlock).
 //   pull — the agent's `app_state` MCP tool, answered from the poll loop, for
 //          after it edits something and the snapshot has gone stale.
+//
+// One snapshot function, two wrappers, and they disagree on purpose — see each
+// one for what about. The push side is a block nobody asked for and pays for
+// itself on every later turn of the session; the pull side is an answer to a
+// tool call and hands over everything it has.
 //
 // It is deliberately TEXT ONLY — structure, own-text, params, console lines —
 // for the same reason the annotation anchors are (#372): a description Claude
@@ -4207,6 +4212,11 @@ document.title = "Claude — " + BASENAME;
 // so every access is guarded and a failure degrades to LESS state, never to a
 // thrown send.
 const APP_STATE_MAX_LOGS = 50;    // ring buffer: a live-reloading page logs forever
+// How many of those 50 ride a PUSHED block. The buffer is deliberately deeper
+// than the wire: it answers "was that error already there before my edit", which
+// reaches back further than one turn, and the pull channel (a tool call that
+// asked) hands over all of it. See appStatePush.
+const APP_STATE_WIRE_LOGS = 12;
 const APP_STATE_MAX_TEXT = 300;   // per console line / text snippet
 const APP_STATE_MAX_NODES = 60;   // elements in the DOM outline
 const APP_STATE_MAX_DEPTH = 4;    // how deep the outline descends
@@ -4596,6 +4606,9 @@ function appStateSnapshot() {
       state.unreadable = "could not read the pane's document: " + err.message;
     }
   }
+  // The WHOLE buffer, because this function serves both channels and the PULL
+  // one is a tool call that asked for the app's state — see appStatePush below,
+  // which is where the pushed copy is trimmed and why.
   if (appLogs.length) { state.console = appLogs.slice(); known = true; }
   return known ? state : null;
 }
@@ -4626,6 +4639,42 @@ function appStatePull() {
   const out = { unreadable: APP_STATE_UNREADABLE };
   if (appEntry) out.entry = appEntry;
   return out;
+}
+
+// The PUSH channel's view: the snapshot with its console trimmed to the newest
+// `APP_STATE_WIRE_LOGS` lines. The third thing push and pull disagree about, and
+// for the same reason as the other two — one is a block nobody asked for, the
+// other is an answer to a tool call.
+//
+// `dom` is the largest thing on the snapshot and it already had a size story
+// (appStateFile moves it out to a file and sends a path, because the CLI keeps
+// every message in its session transcript and re-reads it on every later turn).
+// The console went inline beside it and was never counted: 50 lines of up to 300
+// characters is ~22 KB on ONE send, and it stays in the model's context for the
+// rest of the conversation. A live-reloading page that logs a line per boot
+// fills that buffer with nothing being wrong.
+//
+// Trimmed to the TAIL, because a console is read newest-first and the line that
+// explains the screen the user is annotating is the last one. The elision is
+// REPORTED for outlineNode's reason: truncation the agent cannot see is a lie
+// about the page, since it reads a dropped line as a line that never happened —
+// and it names the tool, which is where the rest of the buffer honestly is.
+//
+// A COPY, never the snapshot in place: `state.console` is `appLogs.slice()`, but
+// the object it sits on is also what appStateFile forwards and what the send
+// path holds, and trimming a shared field in place is how the pull channel would
+// start answering with the push channel's twelve lines.
+function appStatePush() {
+  const state = appStateSnapshot();
+  if (!state || !state.console) return state;
+  const lines = state.console;
+  if (lines.length <= APP_STATE_WIRE_LOGS) return state;
+  return Object.assign({}, state, {
+    console: lines.slice(-APP_STATE_WIRE_LOGS),
+    consoleTruncated: (lines.length - APP_STATE_WIRE_LOGS)
+      + " older console line(s) not shown — call the app_state tool for the "
+      + "whole buffer",
+  });
 }
 
 // The block prepended to the user's message. Delimited and labelled, because
@@ -14169,8 +14218,9 @@ async function sendMessage(message) {
   if (!message && !pending.length && !pics.length) { sending = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
-  // describing when they type.
-  const state = appStateSnapshot();
+  // describing when they type. `appStatePush`, not the raw snapshot: a pushed
+  // block carries the newest console lines rather than the whole buffer.
+  const state = appStatePush();
   // The bubble goes up BEFORE the screenshot capture below, which is the one slow
   // step on this path: the user's words appearing instantly is worth more than a
   // receipt and a bubble arriving together.
