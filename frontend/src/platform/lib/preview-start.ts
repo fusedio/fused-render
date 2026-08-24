@@ -92,13 +92,24 @@ export function createPreviewStartQueue(limit: number): PreviewStartQueue {
 const previewStarts = createPreviewStartQueue(2);
 const START_TIMEOUT_MS = 10_000;
 
-// Expand well past the actual viewport: previews are ready before a card
+// Expand a bit past the actual viewport: previews are ready before a card
 // scrolls on screen, while cards several rows away do not consume a whole
 // iframe document. The same root selector covers the Apps hub and both Home
 // surfaces, each of which owns its vertical scroller.
-const NEAR_VIEWPORT_MARGIN = "800px 0px";
+//
+// This is a lookahead in BOTH directions (rootMargin, not a one-sided
+// threshold), and its size has to be judged against the densest layout it
+// runs in, not the sparsest. Home stacks four ~330px card rows inside one
+// scroller — Fused Apps, AI Playground, Claude Sessions, Recent files — so an
+// 800px margin covered essentially every card in every row on first paint:
+// each one read as "near the viewport" and queued a full embed-shell document
+// (React boot + its own API calls) for three rows the reader had not
+// scrolled to yet. 300px is still roughly a row of lookahead — a preview is
+// ready before its card actually crosses the edge — while a row two screens
+// down now costs nothing until the reader approaches it.
+const NEAR_VIEWPORT_MARGIN = "300px 0px";
 
-// Two observers, not one: `near` (the 800px lookahead) decides whether an
+// Two observers, not one: `near` (the lookahead margin above) decides whether an
 // iframe may exist at all, `visible` (the real viewport) decides which of the
 // waiting ones goes first. One observer cannot answer both — rootMargin is
 // fixed per observer — and the second is a per-card cost of one more entry in

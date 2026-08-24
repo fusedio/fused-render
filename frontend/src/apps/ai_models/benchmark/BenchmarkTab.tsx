@@ -2,8 +2,9 @@
 // ranked comparison chart (the hero: "which of these is fastest here"), a
 // leaderboard of every model with its own action (Run, Details), and a
 // per-model trend chart (secondary: "is THIS model getting faster or
-// slower") — plus the archive underneath and a button to measure again
-// (SPEC AI-14).
+// slower"), now rendered INLINE directly under whichever row it belongs to
+// (D481) rather than in its own block below the whole list — plus the
+// archive underneath and a button to measure again (SPEC AI-14).
 //
 // **The question this tab exists to answer is "how fast is THIS model on THIS
 // laptop", and the only way to answer it comparably is to fix the work.** So a
@@ -29,9 +30,11 @@
 // one model has a measurement — the normal case — and the leaderboard's own
 // inline bar is deleted, since drawing the identical proportional comparison
 // twice (once properly, with an axis, once as an unlabelled sliver in each
-// row) was the duplicated ink. `ModelTrendChart` keeps its own spot, now
+// row) was the duplicated ink. `ModelTrendChart` keeps its own spot,
 // correctly secondary, for the model a reader picks by clicking a leaderboard
-// row.
+// row — see the D481 comment above `.am-bench-rows`' render loop for why that
+// spot moved from a block below the whole list to right under the clicked
+// row itself.
 //
 // THE LISTING IS NOT THIS TAB'S. `scan` arrives from the page above
 // (lib/useCacheScan.ts) exactly as it does for the Local tab, because "which
@@ -69,7 +72,7 @@
 // already-polled table rather than adding a second poll: while that table
 // still reports the model loading, the row says so; once it does not, the row
 // switches to "Measuring — mm:ss" ticking from the moment Run was pressed.
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { ComparisonChart } from "./ComparisonChart";
 import { ShareChartButton } from "./ShareChartButton";
 import { ModelTrendChart } from "./ModelTrendChart";
@@ -89,10 +92,11 @@ import {
   benchmarkableCapabilities,
   busyRowText,
   formatMetricSpecValue,
+  closedModelSentinel,
   formatPrimary,
   latestByModel,
   leaderboard,
-  metricUnitAndCue,
+  metricOptionLabel,
   middleEllipsis,
   orderCapabilities,
   primaryMetric,
@@ -109,6 +113,7 @@ import {
   shortModelName,
   stoppedNote,
   trendKind,
+  workloadNote,
   type LeaderboardRow,
   type MetricSpec,
   type ModelLatest,
@@ -135,6 +140,7 @@ import {
   runAiBenchmark,
   type AiBenchmarkMachine,
   type AiBenchmarkRun,
+  type AiBenchmarkWorkload,
   type AiRuntime,
 } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -152,6 +158,16 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // render that reads `all` until `runs` and this land together out of the
   // same response.
   const [workloadCapabilities, setWorkloadCapabilities] = useState<string[]>([]);
+  // The fixed workload EACH capability above actually runs (D483) — what a
+  // Run press measures, in the server's own words: a fixed prompt and token
+  // budget, a generated tone of a fixed length, a fixed image size and
+  // guidance, eight fixed texts. Turned into one sentence by `CapabilitySection`
+  // (`workloadNote`, below) and carried on the section heading's info glyph
+  // as a `data-hint` rather than restated here as frontend prose that could
+  // silently drift from `fused_render/ai/benchmark.py`'s `WORKLOADS` table —
+  // see that function's own comment for why the drift is guarded by a
+  // Python-side test rather than trusted to stay in sync by hand.
+  const [workloads, setWorkloads] = useState<Record<string, AiBenchmarkWorkload>>({});
   // THIS machine, as the server sees it now — the caption the share card is
   // unshareable without ("62 tok/s" means nothing without the laptop that
   // produced it). Read from the history rather than from each run, because it
@@ -238,6 +254,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
         if (!alive) return;
         setRuns(history.runs);
         setWorkloadCapabilities(history.workloadCapabilities);
+        setWorkloads(history.workloads);
         setMachine(history.machine);
         setError(null);
       },
@@ -400,6 +417,7 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
       const history = await deleteAiBenchmarks([id]);
       setRuns(history.runs);
       setWorkloadCapabilities(history.workloadCapabilities);
+      setWorkloads(history.workloads);
       setMachine(history.machine);
     } catch (e) {
       setError((e as Error).message);
@@ -481,16 +499,55 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
   // so a tie breaks toward whichever model is already reading as the better
   // one rather than an arbitrary list order.
   const modelCounts = capabilityRuns ? runCountsByModel(capabilityRuns) : {};
-  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts);
+  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts, selected);
   const trendRuns = selectedModel && capabilityRuns
     ? capabilityRuns.filter((r) => r.model === selectedModel)
     : [];
+  // This capability's own "closed" marker (`resolveModel`'s own comment) —
+  // computed once here since both `toggleModel` and the URL-sync effect
+  // below need the exact same string to write or compare against.
+  const closedSentinel = selected ? closedModelSentinel(selected) : null;
+
+  // Selecting a row now OPENS it (D481) — which means it has to be closable
+  // too, or `aria-expanded="true"` on an open row would be a control with no
+  // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
+  // accordion header now, not a small chevron target inside it — see the
+  // big comment above `.am-bench-rows`' render loop): already-open closes
+  // it (writes THIS capability's own `closedSentinel`, never a bare `""` —
+  // a bare flag would still read as "closed" after switching to a different
+  // capability, since `modelParam` is one piece of state shared across all
+  // of them; see `closedModelSentinel`'s own comment in lib/benchmark.ts),
+  // anything else opens it. `openModel` never closes anything — it is what
+  // the Run button uses, since starting a benchmark must never hide the row
+  // you are about to watch update (see the Run button's own comment in
+  // `BenchmarkRow`). Both bail out with no-ops if `selected` is somehow
+  // null — `CapabilitySection`, where both are actually wired to a click,
+  // only ever renders under a real capability, so this is defensive, not
+  // reachable in practice.
+  const toggleModel = (model: string) => {
+    if (!closedSentinel) return;
+    setModelParam(model === selectedModel ? closedSentinel : model);
+  };
+  const openModel = (model: string) => setModelParam(model);
 
   // Keep the URL in sync with whatever is actually selected — landing on a
   // default (no param yet) writes it in, and choosing a different capability,
   // metric or model updates it — via `replaceState` (`writeParams`), never a
   // navigation: a selector change is not a page to go Back to. Runs after
   // render rather than during it, since writing history is a side effect.
+  //
+  // **An explicit close is written VERBATIM (`modelParam === closedSentinel`
+  // — THIS capability's own marker, never any other), not as
+  // `selectedModel`** (which `resolveModel` resolves to `null` for exactly
+  // this case): `writeParams` deletes a key given `null`, and a deleted
+  // `?benchModel=` is indistinguishable from one that was never set, which
+  // would make a closed row silently re-open itself on the next reload. Every
+  // OTHER case — including a marker closed under a DIFFERENT capability,
+  // left over in `modelParam` from before the reader switched — writes the
+  // resolved `selectedModel` rather than echoing `modelParam` raw, which
+  // doubles as the fix for the cross-capability leak: the stale foreign
+  // marker gets overwritten with this capability's own real default the
+  // very next time this effect runs, rather than lingering in the URL.
   //
   // **This hook must run on EVERY render, loading or not** — React throws
   // ("Rendered more hooks than during the previous render") the moment a hook
@@ -505,9 +562,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
     writeParams({
       benchCap: selected,
       benchMetric: selectedMetric?.key ?? null,
-      benchModel: selectedModel,
+      benchModel: modelParam !== null && modelParam === closedSentinel ? modelParam : selectedModel,
     });
-  }, [loading, selected, selectedMetric, selectedModel]);
+  }, [loading, selected, selectedMetric, selectedModel, modelParam, closedSentinel]);
 
   if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
 
@@ -524,10 +581,9 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           inside the card below — it chooses WHICH section you are looking
           at, which is a page-level question, unlike Metric (now inside
           `CapabilitySection`, right beside the instruments it actually
-          governs, and still captioned "Metric" there — that select sits next
-          to a card's `<h3>`, not on its own line in an empty toolbar, so the
-          two are not read side by side and dropping only this one does not
-          leave them looking inconsistent). No run count in the option labels
+          governs, and unlabelled on screen there too — same reasoning, an
+          option's own text names the metric, so both selects now carry their
+          name in `aria-label` alone). No run count in the option labels
           any more — the reader asked for that gone too, and `capabilityCounts`
           still drives `resolveCapability`'s default pick, it just no longer
           prints itself. */}
@@ -553,13 +609,15 @@ export function BenchmarkTab({ scan }: { scan: CacheScan }) {
           metric={selectedMetric}
           metricSpecs={metricSpecs}
           onSelectMetric={setMetricParam}
+          workload={workloads[selected] ?? null}
           runs={capabilityRuns}
           machine={machine}
           ranked={ranked}
           gone={gone}
           selectedModel={selectedModel}
           trendRuns={trendRuns}
-          onSelectModel={setModelParam}
+          onToggleModel={toggleModel}
+          onOpenModel={openModel}
           inFlight={inFlight}
           runStartedAt={runStartedAt}
           runtime={scan.runtime}
@@ -579,13 +637,15 @@ function CapabilitySection({
   metric,
   metricSpecs,
   onSelectMetric,
+  workload,
   runs,
   machine,
   ranked,
   gone,
   selectedModel,
   trendRuns,
-  onSelectModel,
+  onToggleModel,
+  onOpenModel,
   inFlight,
   runStartedAt,
   runtime,
@@ -607,6 +667,13 @@ function CapabilitySection({
    *  picks WHICH card). Empty for a capability with nothing to select. */
   metricSpecs: MetricSpec[];
   onSelectMetric: (key: string) => void;
+  /** This capability's own fixed workload (D483) — null while the history
+   *  has not answered, or for a capability with none (`NO_WORKLOAD_YET`
+   *  server-side, video generation today, which draws no Run button either
+   *  and therefore has nothing here to caption). Turned into one sentence by
+   *  `workloadNote` and carried on the section heading's info glyph as a
+   *  `data-hint`, not drawn on screen — see that glyph's own comment. */
+  workload: AiBenchmarkWorkload | null;
   /** null while the history has not answered. */
   runs: AiBenchmarkRun[] | null;
   /** This machine, for the share card's caption — null until the history has
@@ -627,7 +694,18 @@ function CapabilitySection({
   /** `selectedModel`'s own runs, already filtered — `ModelTrendChart` draws
    *  nothing else. */
   trendRuns: AiBenchmarkRun[];
-  onSelectModel: (model: string) => void;
+  /** The whole row's own click (the entire row is the accordion header —
+   *  see D481): closes an already-open row, opens any other
+   *  (`BenchmarkTab`'s `toggleModel`). Exactly one row open at a time, same
+   *  as `selectedModel` always meant — the new part is that re-clicking the
+   *  open one now closes it instead of being a no-op. */
+  onToggleModel: (model: string) => void;
+  /** The Run button's own click: opens this row, NEVER closes it — starting
+   *  a benchmark must not hide the chart you are about to watch update
+   *  (`BenchmarkTab`'s `openModel`, a plain "select" with no toggle branch).
+   *  See the Run button's own comment below for how its click avoids also
+   *  triggering the row's toggle. */
+  onOpenModel: (model: string) => void;
   /** Every capability's in-flight run, not just this one's — `runButtonState`
    *  reads its own key out, which keeps the "which capability blocks which"
    *  rule in one tested place rather than in each section's props. */
@@ -652,6 +730,10 @@ function CapabilitySection({
   onRunAll: (capability: string, models: string[]) => void;
   onStopAll: (capability: string) => void;
 }) {
+  // What a Run press here actually measures, in one sentence (D483) — null
+  // for a capability `workloadNote` does not know how to describe, or
+  // while `workload` itself has not arrived yet.
+  const note = workloadNote(capability, workload);
   // The trend instrument's shape — `trendKind` (lib/benchmark.ts) decides
   // "none" / "single" / "trend" from how many of `trendRuns` actually
   // measured `metric`. Computed here, once, rather than inline in the JSX
@@ -722,21 +804,79 @@ function CapabilitySection({
           from — a select with zero options renders as an empty,
           clickable-looking box, and there is nothing honest for it to say.
 
-          The badge beside it is unit + DIRECTION only, never the metric's own
-          name (the select already shows that) — `metricUnitAndCue`
-          (lib/benchmark.ts) states "lower is better" for exactly the metrics
-          where the ordinary "longer bar / bigger number wins" habit reads
-          backwards (Peak memory, Load time, …), and says nothing extra for
-          the metrics where that habit already reads right — labelling both
+          **The unit and the direction cue are IN the option text**
+          (`metricOptionLabel`, lib/benchmark.ts — "Speed (× realtime)", "Peak
+          memory (lower is better)"), not in a badge beside the select. Two
+          badges have now been tried and both failed on the same axis. Trailing
+          the select it was a third mark in a row that already holds an `<h3>`
+          and a Share button, saying nothing the control it followed could not
+          say itself. Moved to the LEFT of the select — where the "Metric"
+          caption used to be, so the row would read unit-then-choice — it broke
+          outright on transcription: `× realtime` is a multiplier SUFFIX, it
+          parses only when it trails a number ("1.4× realtime"), and alone in a
+          bordered pill beside a control it read as the dismiss ✕ of a
+          removable filter chip — a shape this app uses elsewhere for exactly
+          that (D448's Tasks filter pills). Inside the option the words have a
+          subject again, the empty-unit metric (`Peak memory` formats through
+          the byte formatter and has no unit string, so the pill there held
+          only "lower is better") stops being a special case, and the fact is
+          stated where the choice is made rather than beside it.
+
+          The CUE is one-sided on purpose: "lower is better" for exactly the
+          metrics where the ordinary "longer bar / bigger number wins" habit
+          reads backwards (Peak memory, Load time, …), nothing extra for the
+          metrics where that habit already reads right — labelling both
           directions everywhere would bury the one case actually worth
-          flagging. One badge, read by both instruments below (the comparison
-          chart's shorter-is-better bars and the trend chart's downward-is-
-          better line invert the same way), not a copy drawn twice — the old
-          per-model-name-plus-unit pill that used to live on the trend
-          heading below is GONE; a reader who has just picked a metric from
-          this select does not need it restated a few lines down. */}
+          flagging. Read by both instruments below (the comparison chart's
+          shorter-is-better bars and the trend chart's downward-is-better line
+          invert the same way), and still said only once: the old
+          per-model-name-plus-unit pill on the trend heading below is GONE
+          too. */}
       <div className="am-section-head am-bench-section-head">
-        <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+        <div className="am-bench-section-heading">
+          <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+          {/* What a Run press on this capability actually DOES (D483) — the
+              page's only other words about this were the tab-level subtitle,
+              "a fixed workload per capability, timed on this machine", which
+              said THAT the work is fixed without ever saying what it is.
+              Behind an info glyph now, not a visible line: the first version
+              put the sentence directly under the heading, unconditionally,
+              and the user's own call was that an EXPLICIT glyph is the ink
+              this data earns, rather than a line every reader scans past on
+              every visit whether they want it or not.
+
+              `data-hint` (platform/lib/hints.ts, D474), never a native
+              `title` — D474 measured the browser's own tooltip delay at
+              four to five seconds on a session's first hover, which reads
+              as "no tooltip" to whoever is waiting on it. A real
+              `<button>` is what makes `hints.ts`'s FOCUS path find this
+              (`onFocus`, anchored to the element rather than a pointer that
+              is not there) — a `<span>` or a `<div role="button">` would
+              have the hint but not the Tab stop, which is a control a
+              keyboard cannot reach let alone understand. `aria-label`
+              carries what the control IS ("what this benchmark
+              measures"); `data-hint` carries the answer itself — the exact
+              sentence the visible line used to say, workload name and
+              revision included, unchanged.
+
+              Placed beside the HEADING, not inside `.am-bench-headtools`
+              with the Metric select and Share: it explains the SECTION as
+              a whole (what a Run press on ANY row here measures), not
+              those two controls, and that group is already this row's
+              busy end. Rendered only when there is a workload to explain
+              (`note` — a capability with none, video generation today,
+              gets no dead glyph pointing at nothing). */}
+          {note && (
+            <button
+              type="button"
+              className="am-bench-workload-info"
+              data-hint={note}
+              aria-label="What this benchmark measures"
+            >
+              {MenuIcons.info}
+            </button>
+          )}
+        </div>
         {/* The head's controls, as one group: the Metric select and — only
             when there is actually a chart to send — Share. Share sits HERE
             rather than over the chart because what it shares is this
@@ -745,20 +885,19 @@ function CapabilitySection({
         <div className="am-bench-headtools">
           {metricSpecs.length > 0 && (
             <div className="am-bench-metricsel">
-              <label htmlFor={`am-bench-metric-${capability}`}>Metric</label>
               <select
                 id={`am-bench-metric-${capability}`}
                 className="field-control am-bench-capsel-input"
+                aria-label="Metric"
                 value={metric?.key ?? ""}
                 onChange={(e) => onSelectMetric(e.target.value)}
               >
                 {metricSpecs.map((spec) => (
                   <option key={spec.key} value={spec.key}>
-                    {spec.label}
+                    {metricOptionLabel(spec)}
                   </option>
                 ))}
               </select>
-              {metric && <span className="am-bench-metric">{metricUnitAndCue(metric)}</span>}
             </div>
           )}
           {/* Rendered on exactly the condition the chart itself is (below): a
@@ -778,7 +917,6 @@ function CapabilitySection({
           )}
         </div>
       </div>
-
       {runs === null ? (
         <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
       ) : ranked.length === 0 ? (
@@ -827,7 +965,12 @@ function CapabilitySection({
               press does (`BenchmarkTab`'s `runAllFor`), so a queued run and a
               manual one are indistinguishable to the server and to the
               history. Sits between the two chart instruments and the ledger
-              rows it drives, since it acts on exactly that list.
+              rows it drives, since it acts on exactly that list — and now
+              (D479) sits FLUSH against those rows in the markup's own order
+              (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
+              button is that list's control, not a third, orphaned instrument
+              floating in the gap the chart and the rows each already own a
+              margin into.
 
               **The label states the true cost up front** — "Run all 6
               models" — rather than reading like a single cheap click; each
@@ -836,7 +979,32 @@ function CapabilitySection({
               repeated downloads-from-disk. `runnable.length === 0` hides the
               button entirely rather than disabling it — there is nothing
               honest for a Run All button to say when every model is
-              already `gone`. */}
+              already `gone`.
+
+              **Idle branch is `--fg`-outlined, glyph-led, plain text (D479)**
+              — not the accent outline `.am-card-try` wears on the Models tab,
+              and not a filled plate. Accent on THIS tab is already spoken
+              for as DATA ink: the comparison chart's bars, the metric values
+              in each row, and the selected row's ring all draw in it, so an
+              accent-outlined button sitting between the chart and the
+              selection would read as one more lime thing competing to be the
+              current selection rather than a control. `--fg` says "control",
+              not "selected" or "value", and stays true everywhere on the
+              page. A filled plate was rejected on the D475 precedent this
+              tab does not get to except itself from: filled is the loudest
+              mark this page can make, reserved for the ONE genuinely
+              consequential action beside a cheaper one (Load, filled, next
+              to Try, outlined, on the Models tab) — and Run All is minutes
+              of compute across N cold loads and several GB re-read from
+              disk, the single most expensive thing a press can start here.
+              It should be findable, which the border and full-opacity text
+              do; it should not be the loudest thing on the page competing
+              with the chart above it. The glyph is `MenuIcons.play`, the
+              exact triangle every row below already wears on its own Run
+              button — "run all" is that same act N times over, so it borrows
+              the row's own vocabulary instead of inventing a second one; a
+              bare word here would say the same thing in a different
+              language than the list it operates on. */}
           {runnable.length > 0 && (
             <div className="am-bench-runall">
               {status === "running" && queue ? (
@@ -860,7 +1028,7 @@ function CapabilitySection({
                 <>
                   <button
                     type="button"
-                    className="cc-btn"
+                    className="am-bench-runall-btn"
                     disabled={busy}
                     title={
                       busy
@@ -869,6 +1037,7 @@ function CapabilitySection({
                     }
                     onClick={() => onRunAll(capability, runnable)}
                   >
+                    {MenuIcons.play}
                     Run all {runnable.length} models
                   </button>
                   {/* The one category Run All silently leaves out — say so,
@@ -903,73 +1072,145 @@ function CapabilitySection({
           )}
           {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
               with the action (Run, Details) the chart above has no room for.
-              Doubles as the trend chart's picker below: click a row (or focus
-              it and press Enter/Space) to choose which model that instrument
-              is showing. No bar here any more — that was the SAME
-              proportional comparison the chart above now draws once,
-              properly, with an axis; two copies of one comparison was the
-              duplicated ink this replaces. */}
+              **The WHOLE ROW is the accordion header** ("let's make the
+              entire row have a dropdown of sorts") — clicking anywhere on
+              it except the Run button, or Enter/Space on its one focusable
+              disclosure control (the model-name cell, `BenchmarkRow`),
+              TOGGLES it: an already-open row closes, any other opens (and
+              closes whichever row was open before it — exactly one at a
+              time). Open is the one full-width expansion rendered as that
+              row's sibling in `.am-bench-rows`, holding BOTH the per-run
+              detail/failure text and INSTRUMENT THREE, the trend, for
+              `selectedModel` — and visually FUSED to its row into one card
+              that grew (ai-models.css: the open row's own bottom corners
+              square off and its bottom border drops, the expansion picks
+              up the matching side/bottom border and radius and the same
+              accent wash, so there is no seam between "the header" and
+              "the part that opened").
+
+              **One row, one open state, one hit target — three passes to
+              get here.** Pass one put the trend behind a SEPARATE
+              `<details>` beside a plain-select row — two independent
+              expanders on one row. Pass two merged them into a single
+              `<button>` chevron with `aria-expanded`, but selection was
+              still a plain assignment with no way back to closed — a
+              control reporting `aria-expanded="true"` that cannot collapse.
+              Pass two-and-a-half fixed closing (an explicit `""` in
+              `?benchModel=`, `resolveModel`/lib/benchmark.ts, distinct from
+              `null`'s "no opinion yet, pick the default" — survives a
+              reload instead of the closed row silently reopening) but left
+              the 16px chevron glyph as the ONLY thing on a 36px-tall row
+              that actually opened it, with the row's own click doing the
+              same job right beside it with no visual hint that it did.
+              This pass fixes THAT: the chevron is now a plain, `aria-
+              hidden` rotation indicator with no handler or focus stop of
+              its own, the row itself carries the click (bubbling from
+              anywhere inside it, Run excepted — see its own comment), and
+              the model-name cell is the row's one real focusable control,
+              carrying `aria-expanded`/`aria-controls` so there is exactly
+              one place that contract lives and exactly one extra Tab stop
+              per row (that cell, then Run) instead of three. A row with
+              nothing to expand (`row === null`, never benchmarked) gets
+              none of this — no chevron, no hand cursor, no `aria-expanded`,
+              a click that does nothing (`BenchmarkRow`'s `expandable`). At
+              N models the trend's original position (a block below the
+              WHOLE list) put row N's click a full screen away from the
+              thing it changed; the sibling-of-the-row position fixed that,
+              and each later pass fixed a way the fix itself still fell
+              short of "click the thing, see the thing change, right
+              there". One more since: the `""` mentioned above was a BARE
+              flag, and `modelParam` is one piece of state shared across
+              every capability — closing a row under one capability left
+              every OTHER capability's `?benchModel=` reading as "closed"
+              too the instant the reader switched to it. The sentinel now
+              carries the capability it was closed under
+              (`closedModelSentinel`, lib/benchmark.ts) so a marker closed
+              elsewhere fails the equality check here and falls through to
+              this capability's own default instead. */}
           <div className="am-bench-rows">
             {ranked.map(({ model, row }) => {
               const button = gone.has(model)
                 ? undefined
                 : runButtonState(capability, model, inFlight, row !== null);
+              // The one line beyond the headline — TTFT, load time, device,
+              // or a failed run's own error. Computed HERE, not inside
+              // `BenchmarkRow`, because the expansion that shows it is a
+              // sibling of the row in this same list, not a child of it —
+              // one calculation feeds both the row (whether it has anything
+              // to expand at all) and the expansion's own content.
+              const detail = row
+                ? row.latest.ok
+                  ? rowDetail(row.latest, metric, expectedDevice)
+                  : failureReason(row.latest)
+                : null;
+              const expansionId = benchExpandId(model);
               return (
-                <BenchmarkRow
-                  key={model}
-                  model={model}
-                  row={row}
-                  metric={metric}
-                  expectedDevice={expectedDevice}
-                  button={button}
-                  busyText={model === busyModel ? busyText : null}
-                  gone={gone.has(model)}
-                  selected={model === selectedModel}
-                  onSelect={() => onSelectModel(model)}
-                  onRun={() => onRun(model, capability)}
-                />
+                <Fragment key={model}>
+                  <BenchmarkRow
+                    model={model}
+                    row={row}
+                    metric={metric}
+                    detail={detail}
+                    expansionId={expansionId}
+                    button={button}
+                    busyText={model === busyModel ? busyText : null}
+                    gone={gone.has(model)}
+                    selected={model === selectedModel}
+                    onToggle={() => onToggleModel(model)}
+                    onRun={() => {
+                      onOpenModel(model);
+                      onRun(model, capability);
+                    }}
+                  />
+                  {/* The row's single expansion (D481): full row width for
+                      free, since this is a SIBLING of `.am-bench-row`'s grid
+                      rather than a cell inside it — the trend chart needs
+                      the whole width, which is exactly what a `<details>`
+                      living in the row's own grid cell could never give it.
+                      Rendered only for `selectedModel`'s own row (selection
+                      IS the open state — nothing new to track), and only
+                      when it has anything to hold: `row !== null` is the
+                      SAME "has this model ever been benchmarked" fact that
+                      already sends a never-run model to "Never benchmarked"
+                      with no chevron below, and the `(detail || metric)`
+                      guard beside it is the belt-and-braces case where
+                      somehow neither a detail line nor a metric to trend
+                      survived — never open a block with nothing in it.
+
+                      Detail first, then the trend: the text explains what
+                      this row's own headline didn't have room for, the
+                      chart elaborates on it with a real time axis. Three
+                      shapes for the trend half, not two — a single measured
+                      point is NOT a trend (no before to compare against, and
+                      drawing it in the same ~400px frame as a real chart was
+                      the actual bug: one dot, ~95% empty frame, the largest
+                      element on the page), so it gets its own compact state,
+                      and only two-or-more points earn `ModelTrendChart`.
+                      Zero points for THIS metric (the model has other runs,
+                      just none that measured it) says so in words rather
+                      than drawing an empty axis. */}
+                  {model === selectedModel && row !== null && (detail || metric) && (
+                    <div id={expansionId} className="am-bench-rowexpand">
+                      {detail && <p className="am-bench-rowexpand-detail">{detail}</p>}
+                      {metric &&
+                        (trend === "trend" ? (
+                          <ModelTrendChart runs={trendRuns} metric={metric} />
+                        ) : trend === "single" ? (
+                          <div className="am-bench-trend-single">
+                            <span className="am-bench-trend-value">
+                              {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
+                            </span>
+                            <span className="am-bench-trend-note">one run · run again to see a trend</span>
+                          </div>
+                        ) : (
+                          <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
+                        ))}
+                    </div>
+                  )}
+                </Fragment>
               );
             })}
           </div>
-          {/* INSTRUMENT THREE, SECONDARY: the trend — one model's own
-              history, a real time axis. Earns its space once someone has
-              actually re-run a model; until then it says so plainly rather
-              than drawing an empty frame (see `trendKind` below).
-
-              **Titled by the MODEL alone now** — no metric badge here any
-              more. The section head above already names the metric, right
-              beside the `<select>` that chose it (unit and direction cue
-              included, via `metricUnitAndCue`), and repeating it a few lines
-              down was the exact "drawn twice" duplication that select's own
-              move into this card was meant to end. A model with a card gone
-              from disk (`gone`) still gets a title here: its history is
-              still what this instrument is showing. */}
-          {metric && selectedModel && (
-            <div className="am-bench-trend-head">
-              <h4 className="am-bench-trend-title">{shortModelName(selectedModel)}</h4>
-            </div>
-          )}
-          {/* Three shapes, not two. A single measured point is NOT a trend:
-              it has no before to compare against, and drawing it in the same
-              ~400px frame as a real chart was the actual bug (one dot, ~95%
-              empty frame, the largest element on the page). So it gets its
-              own compact state — the value stated plainly, at a fraction of
-              the height — and only two-or-more points earn
-              `ModelTrendChart`. */}
-          {!metric || !selectedModel ? null : trend === "trend" ? (
-            <ModelTrendChart runs={trendRuns} metric={metric} />
-          ) : trend === "single" ? (
-            <div className="am-bench-trend-single">
-              <span className="am-bench-trend-value">
-                {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
-              </span>
-              <span className="am-bench-trend-note">one run · run again to see a trend</span>
-            </div>
-          ) : (
-            <p className="am-group-note">
-              No {metric.label.toLowerCase()} recorded for {shortModelName(selectedModel)} yet.
-            </p>
-          )}
         </>
       )}
 
@@ -982,16 +1223,29 @@ function CapabilitySection({
   );
 }
 
+/** This row's full-width expansion sibling's own DOM id — needed so the
+ *  row's model-name button can point `aria-controls` at it. Sanitized rather than the
+ *  raw model id verbatim: a model id is a repo path ("org/name") and `/` (or
+ *  other punctuation a real id might carry) is not a legal `id` token in
+ *  every consumer of this string. Collisions are not a real risk — model ids
+ *  are already unique within one capability's leaderboard, and the
+ *  sanitizing regex only merges characters that were already distinct
+ *  punctuation, never two different alphanumeric runs. */
+function benchExpandId(model: string): string {
+  return `am-bench-expand-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
 function BenchmarkRow({
   model,
   row,
   metric,
-  expectedDevice,
+  detail,
+  expansionId,
   button,
   busyText,
   gone,
   selected,
-  onSelect,
+  onToggle,
   onRun,
 }: {
   model: string;
@@ -999,10 +1253,23 @@ function BenchmarkRow({
   /** The SELECTED metric — what the headline reads. Decided in
    *  `BenchmarkTab`/`leaderboard`, never here. */
   metric: MetricSpec | null;
-  /** The device most of this section's OTHER models report — `rowDetail`
-   *  drops this row's own device when it matches, and keeps it when it
-   *  doesn't (`commonDevice`, lib/benchmark.ts). */
-  expectedDevice: string | null;
+  /** The one line beyond the headline — TTFT, load time, device, or a failed
+   *  run's own error. Computed by `CapabilitySection` (its `rowDetail`/
+   *  `expectedDevice` call), not here: the SAME string also opens inside
+   *  this row's full-width expansion sibling, and that element is a sibling
+   *  of this component's own return value, not a child of it — so the one
+   *  place that can hand it to both is the caller. `null` just means this
+   *  row's whole story already fits the headline — it does NOT decide
+   *  whether the row is expandable at all (`row !== null` alone does that,
+   *  below): the expansion can still hold a trend worth opening even when
+   *  there is no extra detail line to go with it. */
+  detail: string | null;
+  /** DOM id of this row's own expansion sibling in `.am-bench-rows`
+   *  (`benchExpandId`) — the model-name button's `aria-controls` target.
+   *  Only actually points at something real while `open` is true (that is
+   *  the only time the sibling exists at all), which is exactly when the
+   *  button supplies it below. */
+  expansionId: string;
   /** What the Run button says and whether it can be pressed — decided by
    *  `runButtonState`, never here: the rule about which run blocks which button
    *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
@@ -1015,52 +1282,112 @@ function BenchmarkRow({
   busyText?: string | null;
   /** The model is no longer on disk; its history is shown, its button is not. */
   gone?: boolean;
-  /** This row is the one the trend chart above is currently showing. */
+  /** This row's expansion (detail text + trend, D481) is open right below
+   *  it — closing it is a real, reachable state (the whole row's own
+   *  toggle, below), not just an implementation detail of "which one is
+   *  selected". Only ever true for an EXPANDABLE row (`row !== null`) —
+   *  `CapabilitySection` never sets it otherwise, since a model with no
+   *  history has nothing to open. */
   selected: boolean;
-  /** Choose this model for the trend chart — a click anywhere on the row, or
-   *  Enter/Space while it has focus. */
-  onSelect: () => void;
+  /** The whole row's own toggle — a click ANYWHERE on it (the model name,
+   *  the headline, empty space — everything except the Run button, which
+   *  carves itself out below), or Enter/Space on the row's one focusable
+   *  disclosure control (the model-name button — see below for why it, and
+   *  not the row itself, carries the keyboard/ARIA contract). Opens this
+   *  row's expansion if it was closed, closes it if it was already open
+   *  (`BenchmarkTab`'s `toggleModel`). Called only when `row !== null`: a
+   *  row with nothing to expand gets no click handler at all, not a toggle
+   *  that would silently write a selection with nothing to show for it. */
+  onToggle: () => void;
+  /** Runs this model AND opens its row — never closes it, even when the row
+   *  is already open (`BenchmarkTab` wires this to call `onOpenModel`
+   *  before starting the run). See the Run button's own comment below for
+   *  why its click must not also reach `onToggle` via bubbling. */
   onRun?: () => void;
 }) {
-  // The one line beyond the headline — TTFT, load time, device, or a failed
-  // run's own error — behind an expander so it never dominates the row. Only
-  // drawn when there is something to say: a row whose whole story fits the
-  // headline gets no expander at all.
-  const detail = row
-    ? row.latest.ok
-      ? rowDetail(row.latest, metric, expectedDevice)
-      : failureReason(row.latest)
-    : null;
-
+  // Whether this row has ANYTHING to expand — the one fact that decides
+  // four things at once: whether the leading chevron column draws a glyph
+  // or stays empty; whether the model-name cell becomes a real disclosure
+  // button or stays a plain, inert label; whether the row's own click does
+  // anything; and whether the row gets the `expandable` class that turns
+  // on its pointer cursor and hover hint. A model with no history
+  // (`row === null`, "Never benchmarked") must not LOOK openable — no
+  // chevron glyph (the column itself still reserves its width, so the
+  // model name stays aligned with every other row's — see
+  // `.am-bench-rowdetail-chevron` in ai-models.css), no hand cursor, no
+  // `aria-expanded` implying a state that does not exist, and a click
+  // that does nothing rather than writing a pointless selection.
+  const expandable = row !== null;
+  // `selected` can only be true here when `expandable` is too (see its own
+  // doc comment), but computing this once, locally, means every use below
+  // reads as "is this row's card actually open" rather than trusting a
+  // caller invariant silently.
+  const open = selected && expandable;
+  const nameCell = (
+    <>
+      {/* Budget (28) is a hair under the column's own 30ch so the CSS
+          `overflow: hidden` safety net (ai-models.css) never has to fire
+          for a monospace glyph at this size — see `middleEllipsis`'s own
+          comment for why the ellipsis goes in the MIDDLE rather than the
+          tail. */}
+      <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
+      {gone && <span className="am-bench-gone">not on this machine any more</span>}
+    </>
+  );
   return (
-    // A div-as-button, not a `<button>`: the Run button lives inside this row
-    // (the same shape the Playground's model cards settled on, D428) and a
-    // button inside a button is markup browsers are free to mangle. Clicking
-    // Run also selects the model for the trend chart — a harmless, arguably
-    // useful side effect (you are clearly interested in that model right
-    // now), so its own click is left to bubble here rather than stopped.
+    // A div-as-container, not a `<button>`: the Run button lives inside
+    // this row (the same shape the Playground's model cards settled on,
+    // D428), and a `<button>` cannot contain another `<button>`. The whole
+    // row is still the accordion header a reader can click anywhere on
+    // ("Let's make the entire row have a dropdown of sorts" — the direction
+    // this replaces the small chevron-target design with) — but the row
+    // itself carries no ARIA or keyboard contract of its own any more.
+    // That belongs on ONE real focusable control inside it instead (the
+    // model-name button below), so there is exactly one place `aria-
+    // expanded`/`aria-controls` live and exactly one extra Tab stop per
+    // row, rather than the row AND a second element both claiming to be
+    // "the" disclosure control. Only the Run button's click stops here —
+    // see its own comment — everything else (the model name, the headline,
+    // empty space) is left to bubble to `onClick` below.
     <div
-      className={"am-bench-row" + (selected ? " selected" : "")}
-      role="button"
-      tabIndex={0}
-      aria-pressed={selected}
-      onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
+      className={"am-bench-row" + (open ? " selected" : "") + (expandable ? " expandable" : "")}
+      onClick={expandable ? onToggle : undefined}
     >
-      <div className="am-bench-model" title={model}>
-        {/* Budget (28) is a hair under the column's own 30ch so the CSS
-            `overflow: hidden` safety net (ai-models.css) never has to fire
-            for a monospace glyph at this size — see `middleEllipsis`'s own
-            comment for why the ellipsis goes in the MIDDLE rather than the
-            tail. */}
-        <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
-        {gone && <span className="am-bench-gone">not on this machine any more</span>}
-      </div>
+      {/* The row's LEADING column, reserved on every row (ai-models.css'
+          `.am-bench-row` grid-template gives it a fixed width, not `auto`)
+          so an accordion indicator sits at one consistent x down the whole
+          list rather than drifting with the length of the headline/delta
+          text that used to precede it. Empty, not omitted, for a
+          non-expandable row — see `.am-bench-rowdetail-chevron`'s own
+          comment for why the column still has to exist even with nothing
+          drawn inside it. */}
+      <span className="am-bench-rowdetail-chevron" aria-hidden="true">
+        {expandable && MenuIcons.chevron}
+      </span>
+      {expandable ? (
+        // The row's ONE focusable disclosure control. A real `<button>`,
+        // not the row div itself (which has no `tabIndex`/`role` any more)
+        // and not the old chevron-only button (demoted below to a bare,
+        // `aria-hidden` indicator with no handler or focus stop of its
+        // own) — putting the ARIA/keyboard contract on the cell that NAMES
+        // what is being expanded is the natural choice, and it collapses
+        // three former Tab stops (row, chevron, Run) to two (this button,
+        // Run). No `onClick` of its own: its native click bubbles to the
+        // row's `onClick` exactly like any other click on the row would,
+        // and Enter/Space on a focused `<button>` fires that same native
+        // click for free, so the row's toggle needs no separate keyboard
+        // handler either.
+        <button type="button" className="am-bench-model" title={model} aria-expanded={open} aria-controls={open ? expansionId : undefined}>
+          {nameCell}
+        </button>
+      ) : (
+        // Not expandable — a plain, inert cell. No button, no `aria-
+        // expanded`, nothing implying this row does something a click on
+        // it will not actually do.
+        <div className="am-bench-model" title={model}>
+          {nameCell}
+        </div>
+      )}
       <div className="am-bench-latest">
         {button?.busy ? (
           // A plain spinner, not `ModelProgress`: that component draws a
@@ -1082,7 +1409,12 @@ function BenchmarkRow({
             {/* No bar here any more — the comparison chart above draws the
                 SAME proportional comparison once, properly, with a real
                 axis. Two copies of it (a mini-bar per row AND a chart) was
-                the duplicated ink this row is compacted to remove. */}
+                the duplicated ink this row is compacted to remove. The
+                chevron that used to trail this cluster now lives in the
+                row's own LEADING column instead (see above) — its x used
+                to drift with how long this headline/delta text happened to
+                be, which is the opposite of what a disclosure indicator's
+                column is supposed to give a reader. */}
             <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
             {row.delta && (
               // The sign is not the meaning — on a lower-is-better metric a
@@ -1093,48 +1425,31 @@ function BenchmarkRow({
                 {row.delta.percent.toFixed(1)}%
               </span>
             )}
-            {detail && (
-              <details
-                className="am-bench-rowdetail"
-                // A click inside the expander (opening it, or on the summary)
-                // is not a model selection — without this, opening "Details"
-                // on a row you did NOT mean to select would select it anyway.
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Icon-only, per the icon-buttons pass — but still a real
-                    `<summary>`, so the disclosure semantics (native toggle,
-                    keyboard, screen-reader "expanded/collapsed" state) are
-                    untouched. `aria-label`/`title` carry the exact words the
-                    icon replaced; `am-bench-rowdetail-chevron` is what rotates
-                    the glyph 90° on `[open]` (ai-models.css) rather than
-                    swapping to a second path. */}
-                <summary
-                  className="am-bench-rowdetail-chevron"
-                  aria-label={row.latest.ok ? "Details" : "Failed — details"}
-                  title={row.latest.ok ? "Details" : "Failed — details"}
-                >
-                  {MenuIcons.chevron}
-                </summary>
-                <p>{detail}</p>
-              </details>
-            )}
           </>
         ) : (
           <span className="am-bench-never">Never benchmarked</span>
         )}
       </div>
       {!gone && button && (
-        // No `stopPropagation` — see the row's own comment above. Pressing
-        // Run bubbles its click up to the row's `onClick` too, which selects
-        // this model for the trend chart. That is a plain assignment
-        // (`onSelect` sets state to the same model `onRun` is about to run),
-        // not a toggle, so it cannot fight the button's `disabled` state —
-        // there is nothing here for the two handlers to disagree about.
+        // `stopPropagation` HERE now, deliberately reversing the old rule —
+        // the row's own click used to be a plain, idempotent select, so
+        // letting Run's click bubble into it was harmless (selecting the
+        // already-selected model twice does nothing). Now that click is a
+        // TOGGLE: on an already-open row, an unstoppped bubble would fire
+        // `onToggle` right after `onRun`'s own open, closing the row this
+        // same press just opened (or was already showing) — hiding the
+        // chart you pressed Run specifically to watch. `onRun` itself
+        // (wired in `CapabilitySection`) opens this row via `onOpenModel`
+        // before starting the run, so the row still opens on a first press;
+        // it simply never gets a chance to close on a second one.
         <button
           type="button"
           className="cc-iconbtn"
           disabled={button.blocked}
-          onClick={onRun}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRun?.();
+          }}
           title={button.title}
           aria-label={button.label}
         >

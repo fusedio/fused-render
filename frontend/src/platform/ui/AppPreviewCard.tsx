@@ -32,7 +32,7 @@
 // near the viewport and unmounts it once scrolled well past, showing step 3's
 // empty thumb in between — an offloaded card reads the same as an app with no
 // live preview (D365).
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppInfo } from "@platform/lib/api";
 import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
@@ -100,6 +100,22 @@ export function AppPreviewCard({
   // Set when the authored thumbnail fails to decode — see the fallback chain in
   // the module comment. One-way: a retry would loop on a file that is broken.
   const [shotFailed, setShotFailed] = useState(false);
+  // Set from the still <img>'s onLoad — gates the shimmer/fade below. Separate
+  // from `shotFailed`: a still can be slow to decode without ever failing, and
+  // that gap is exactly what used to paint the box background underneath it.
+  const [shotLoaded, setShotLoaded] = useState(false);
+  // Whether the pointer has ever entered the card. The still's ENTRANCE fade
+  // (first decode, below) and the hover crossfade's INSTANT snap-back
+  // (`.app-pcard-shot` in apps.css) land on the same end state — opaque, not
+  // hovered — so a style computed purely from (hovered, liveReady, shotLoaded)
+  // cannot tell the two apart; a CSS transition only looks at the style being
+  // entered, not how it got there. Before the first hover, reaching that state
+  // means the shot just finished loading and gets the transition (the fade
+  // this feature adds); from the first hover on, reaching it again means a
+  // live preview just unmounted underneath, and it has to snap back with none
+  // — a fade there would show the still fading in over the iframe's blank box,
+  // which is the exact regression the original (pre-shimmer) code avoided.
+  const everHoveredRef = useRef(false);
   // The still's source. An exported .fused card (kind "appfile", D396) has no
   // folder to hold a preview.png — its still is the payload's, streamed by a
   // single-member zip read; the endpoint 404s when the file ships without one
@@ -111,6 +127,13 @@ export function AppPreviewCard({
       : app.preview_image
         ? rawUrl(app.preview_image)
         : null;
+  // Reset if the still's own URL ever changes under an already-mounted card
+  // (narrow edge case — cards are keyed by `app.path`, so this is a safety net
+  // rather than a path this component normally takes; unlike the live
+  // iframe below, this `<img>` is never conditionally unmounted by scrolling).
+  useEffect(() => {
+    setShotLoaded(false);
+  }, [shotSrc]);
   // Gates the live-iframe branch only — preview.png costs nothing to keep
   // mounted and the empty thumb costs nothing at all, so neither needs this.
   const [thumbRef, nearViewport, onScreen] = useNearViewport<HTMLSpanElement>();
@@ -154,9 +177,9 @@ export function AppPreviewCard({
   const hoverPriority = Boolean(shotSrc && !shotFailed && hovered);
   // Every other card ranks by whether it is ON SCREEN — useNearViewport's
   // third slot, a STABLE getter the queue reads at admission time
-  // (preview-start's Priority). The 800px lookahead means a scroll queues a
-  // couple of rows the reader cannot see yet, and with two slots the cards
-  // they ARE looking at used to wait behind those in request order. A getter
+  // (preview-start's Priority). The 300px lookahead still means a scroll
+  // queues a row or so the reader cannot quite see yet, and with two slots the
+  // cards they ARE looking at used to wait behind those in request order. A getter
   // rather than a dependency because usePreviewStart's effect restarts the
   // iframe whenever its deps change: promoting a waiting card through the deps
   // would tear down a running one.
@@ -164,6 +187,20 @@ export function AppPreviewCard({
     wantsLive,
     hoverPriority || onScreen,
   );
+  // Whether the CURRENTLY MOUNTED body iframe has painted — separate from
+  // `bodyLive` above on purpose. `bodyLive` is deliberately one-way for the
+  // export capture's sake (see its comment); reusing it here would mean a
+  // card that once painted, then scrolled out of view and back in, shows its
+  // brand-new, not-yet-loaded iframe at FULL opacity — a blank/booting frame
+  // presented as finished, the same bug `loaded` in BookmarkCards.tsx's
+  // LivePreview has this same fix for. `bodyPainted` resets whenever the
+  // iframe itself is torn down and remounted (`liveStarted` or `liveSrc`
+  // changing) and drives the fade/shimmer instead; `bodyLive` keeps its
+  // existing one-way contract untouched.
+  const [bodyPainted, setBodyPainted] = useState(false);
+  useEffect(() => {
+    setBodyPainted(false);
+  }, [liveStarted, liveSrc]);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
@@ -184,6 +221,7 @@ export function AppPreviewCard({
       // previous hover's iframe could have re-set it after leave cleared it, and
       // a stale true would blank the still before the new iframe has painted.
       onMouseEnter={() => {
+        everHoveredRef.current = true;
         setHovered(true);
         setLiveReady(false);
       }}
@@ -216,10 +254,34 @@ export function AppPreviewCard({
         ref={thumbRef}
         data-capture-ready={bodyLive ? "" : undefined}
       >
+        {/* Shimmer while something is actually COMING: an authored still not
+            yet decoded, or a live iframe the card wants but has not painted.
+            Never for the "nothing to show" case (D365, the module comment) —
+            that's `liveSrc == null`, which keeps `wantsLive` false and this
+            condition with it, so a card with no entry file stays the plain
+            empty box it always was rather than shimmering forever.
+            The second clause's "has it painted yet" signal depends on WHICH
+            live branch is live: a still-thumbed card's hover preview sets
+            `liveReady` (below) and never touches `bodyPainted` — that branch
+            doesn't render at all when there's a still — so testing
+            `bodyPainted` here would stay permanently true-less and shimmer
+            for the entire duration of every hover on a still-thumbed card. */}
+        {((shotSrc && !shotFailed && !shotLoaded) ||
+          (wantsLive &&
+            (!liveStarted || !(shotSrc && !shotFailed ? liveReady : bodyPainted)))) && (
+          <span className="app-pcard-skel" />
+        )}
         {shotSrc && !shotFailed ? (
           <>
             {/* Hover live preview, mounted BELOW the img in the stacking
-                order so the still stays on top until the app has painted. */}
+                order so the still stays on top until the app has painted.
+                No `loading="lazy"`: mounting is already gated by
+                `useNearViewport`/`liveStarted`, so lazy adds no savings, and
+                the UA's lazy heuristics read the layout box — which here is
+                400% wide and `scale(0.25)`-ed — and can defer past the point
+                a `load` event ever fires, which would leave `liveReady` (and
+                the shimmer above) stuck forever and a scheduler slot held
+                until the 10s timeout. */}
             {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
                 src={liveSrc}
@@ -232,7 +294,15 @@ export function AppPreviewCard({
                   liveSettled();
                   setLiveReady(true);
                 }}
-                onError={liveSettled}
+                // An error is still a painted result (the frame shows the
+                // app's own error page) — `onError={liveSettled}` alone freed
+                // the scheduler slot but left `liveReady` false forever, so
+                // the still never faded out and the shimmer clause above
+                // never cleared either.
+                onError={() => {
+                  liveSettled();
+                  setLiveReady(true);
+                }}
                 tabIndex={-1}
                 scrolling="no"
                 title=""
@@ -243,12 +313,23 @@ export function AppPreviewCard({
               src={shotSrc}
               alt=""
               loading="lazy"
+              onLoad={() => setShotLoaded(true)}
               onError={() => setShotFailed(true)}
               // Transition inline with the opacity: hover-end removes the whole
               // style, so the still snaps back instantly instead of fading in
-              // over the unmounted iframe's blank.
+              // over the unmounted iframe's blank. The `!shotLoaded` branch is
+              // the one new case (the entrance fade over the skeleton above);
+              // `everHoveredRef` is why it can share this ternary with the
+              // hover crossfade without the two fighting over the same
+              // opacity:1-not-hovered end state — see its declaration above.
               style={
-                hovered && liveReady ? { opacity: 0, transition: "opacity 0.15s ease" } : undefined
+                hovered && liveReady
+                  ? { opacity: 0, transition: "opacity 0.15s ease" }
+                  : !shotLoaded
+                    ? { opacity: 0, transition: "opacity 0.15s ease" }
+                    : everHoveredRef.current
+                      ? undefined
+                      : { opacity: 1, transition: "opacity 0.15s ease" }
               }
             />
             {/* The same shield the iframe gets. An <img> swallows no clicks of
@@ -259,12 +340,22 @@ export function AppPreviewCard({
           </>
         ) : liveSrc && nearViewport && liveStarted ? (
           <>
+            {/* No `loading="lazy"` — see the comment on the hover iframe
+                above; the same failure mode applies here to `bodyPainted`. */}
             <iframe
               src={liveSrc}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
                 transform: `scale(${PREVIEW_SCALE})`,
+                // Fades in over the skeleton above rather than popping in
+                // mid-boot. Gated on `bodyPainted`, NOT `bodyLive`: `bodyLive`
+                // is one-way for the export capture's sake (see its
+                // declaration) and stays true across a scroll-away/back
+                // remount, which would otherwise show the freshly-mounted,
+                // not-yet-loaded iframe at full opacity.
+                opacity: bodyPainted ? 1 : 0,
+                transition: "opacity 0.15s ease",
               }}
               tabIndex={-1}
               scrolling="no"
@@ -275,8 +366,19 @@ export function AppPreviewCard({
               onLoad={() => {
                 liveSettled();
                 setBodyLive(true);
+                setBodyPainted(true);
               }}
-              onError={liveSettled}
+              // An error is still a painted result (the frame shows the app's
+              // own error page) — `onError={liveSettled}` alone freed the
+              // scheduler slot but left `bodyLive`/`bodyPainted` false
+              // forever, so the shimmer never cleared, the frame never faded
+              // in, and `data-capture-ready` was never set (silently breaking
+              // export-from-card for an app whose live render errors).
+              onError={() => {
+                liveSettled();
+                setBodyLive(true);
+                setBodyPainted(true);
+              }}
             />
             {/* Shield: the preview is display-only — every pointer event lands
                 on the card's link, never inside the app — which is also what

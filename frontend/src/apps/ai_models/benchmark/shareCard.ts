@@ -128,6 +128,19 @@ export function shareCardFilename(capability: string, metric: MetricSpec): strin
   return `fused-render-benchmark-${slug(capability)}-${slug(metric.key)}.png`;
 }
 
+/** The muted phrase that turns a bare capability label into the whole title —
+ *  "Speech to text" becomes "Speech to text local AI benchmark". There is no
+ *  longer a separate caption row to say this (it used to live right-aligned
+ *  in the now-deleted brand row); folding it into the title keeps the card
+ *  saying what kind of benchmark this is without spending a whole line on it.
+ *  Sentence case, because it reads as a continuation of the label's phrase,
+ *  not as its own heading. Pulled out as its own function so the drawing
+ *  code can colour and size it separately from the label, and so a test can
+ *  pin the exact wording without a canvas. */
+export function titleSuffix(): string {
+  return "local AI benchmark";
+}
+
 function slug(text: string): string {
   return text
     .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
@@ -142,9 +155,10 @@ export function shareCardHeight(barCount: number): number {
   const plot = barCount * ROW_H + Math.max(0, barCount - 1) * ROW_GAP;
   return (
     PAD + // top padding
-    32 + // the brand row
-    26 + // gap under it
-    30 + // the title
+    // No separate brand row any more — the wordmark moved to the footer and
+    // the caption folded onto the title line below, so the card opens
+    // directly on the title rather than spending a row on branding first.
+    30 + // the title (capability label + its "local AI benchmark" suffix)
     20 + // the metric subtitle
     14 + // gap before the plot
     plot +
@@ -174,9 +188,11 @@ export interface ShareCardInput {
 /** Draw the card and hand back its PNG bytes.
  *
  *  Rejects only if the canvas itself is unavailable or refuses to encode; a
- *  missing LOGO is not a failure (the mark falls back to a drawn wordmark),
- *  because a card without its picture is still the result somebody asked to
- *  share. */
+ *  missing LOGO is not a failure. The footer's "fused render 0.4.53 · ..."
+ *  text is drawn unconditionally regardless of whether the mark loaded, so a
+ *  failed `loadLogo()` just means the footer ships without its mark, not that
+ *  the card loses its branding — the card without its picture is still the
+ *  result somebody asked to share. */
 export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
   const { bars, metric } = input;
   const height = shareCardHeight(bars.length);
@@ -192,24 +208,32 @@ export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
   ctx.fillRect(0, 0, WIDTH, height);
 
   let y = PAD;
-
-  // -- the brand row ---------------------------------------------------------
   const mark = await loadLogo();
-  if (mark) ctx.drawImage(mark, PAD, y, 32, 32);
-  ctx.fillStyle = INK.fg;
-  ctx.font = `600 17px ${SANS}`;
-  ctx.fillText("fused render", PAD + (mark ? 42 : 0), y + 8);
-  ctx.fillStyle = INK.muted;
-  ctx.font = `12px ${SANS}`;
-  ctx.textAlign = "right";
-  ctx.fillText("Local AI model benchmark", WIDTH - PAD, y + 12);
-  ctx.textAlign = "left";
-  y += 32 + 26;
 
   // -- title + metric --------------------------------------------------------
+  // The capability label carries the heading weight; the "local AI benchmark"
+  // suffix rides beside it in the muted colour, so the two read as one phrase
+  // ("Speech to text local AI benchmark") rather than a label plus an
+  // unrelated caption. The suffix's x is `label`'s MEASURED width, not a
+  // guessed offset — the label's text varies per capability ("Text
+  // generation" vs "Embeddings"), so a fixed offset would either collide with
+  // a wide label or leave a gap after a narrow one.
+  //
+  // Both runs are drawn at the SAME 24px size — weight and colour do the
+  // distinguishing, not size. A smaller suffix (tried first) reads as a
+  // caption stapled onto a heading rather than as one phrase, and it also
+  // reintroduces the baseline mismatch below: `textBaseline` is "top", so two
+  // sizes sharing one `y` sit on different baselines and need a hand-eyeballed
+  // nudge to line back up. One size sidesteps both problems at once, which is
+  // why a future "shrink the suffix back down" edit should stop here.
   ctx.fillStyle = INK.fg;
   ctx.font = `600 24px ${SANS}`;
-  ctx.fillText(capabilityLabel(input.capability), PAD, y);
+  const label = capabilityLabel(input.capability);
+  ctx.fillText(label, PAD, y);
+  const labelWidth = ctx.measureText(label).width;
+  ctx.fillStyle = INK.muted;
+  ctx.font = `24px ${SANS}`;
+  ctx.fillText(` ${titleSuffix()}`, PAD + labelWidth, y);
   y += 30;
   ctx.fillStyle = INK.muted;
   ctx.font = `13px ${SANS}`;
@@ -287,7 +311,24 @@ export async function renderShareCard(input: ShareCardInput): Promise<Blob> {
   ctx.fillText(hardwareLine(input.machine, input.device), PAD, y);
   ctx.fillStyle = INK.muted;
   ctx.textAlign = "right";
-  ctx.fillText(provenanceLine(input.appVersion, input.now ?? new Date()), WIDTH - PAD, y);
+  const provenance = provenanceLine(input.appVersion, input.now ?? new Date());
+  ctx.fillText(provenance, WIDTH - PAD, y);
+  if (mark) {
+    // The mark moved down here from the old brand row: it now sits flush
+    // against the provenance text it used to sit above, so the two read as
+    // one group at the card's bottom right rather than two unrelated
+    // mentions of the brand. Sized for THIS line (14px, not the header's
+    // 32px) — measured off the provenance text's actual width via
+    // `measureText` rather than guessed, because the width changes with the
+    // app version and the date's month name.
+    const markSize = 14;
+    const markGap = 6;
+    const provenanceLeft = WIDTH - PAD - ctx.measureText(provenance).width;
+    // `y` is the top of the 12px line (textBaseline stays "top"); +6 is that
+    // line's vertical midpoint, so centring the mark there against half its
+    // own size keeps the mark and the text visually centred on each other.
+    ctx.drawImage(mark, provenanceLeft - markGap - markSize, y + 6 - markSize / 2, markSize, markSize);
+  }
   ctx.textAlign = "left";
 
   return await encode(canvas);
@@ -382,17 +423,21 @@ export async function deliverShareCard(blob: Blob, filename: string): Promise<Sh
   return "downloaded";
 }
 
-/** What the button says after a delivery — the outcomes differ in WHERE the
- *  card went, and a single "Done" would leave a reader hunting for a file that
- *  is actually on their clipboard. */
+/** What the toast (D480) says after a delivery — the outcomes differ in WHERE
+ *  the card went, and a single "Done" would leave a reader hunting for a file
+ *  that is actually on their clipboard. Each string names the DESTINATION,
+ *  not the format: a toast lands away from the button, with no page context
+ *  around it to lean on, so "Copied as an image" or "Saved as a PNG" answers
+ *  a question ("as what?") nobody who just clicked Share was asking, while
+ *  leaving the one they were ("where did it go?") unanswered. */
 export function shareOutcomeNote(outcome: ShareOutcome): string {
   switch (outcome) {
     case "shared":
-      return "Shared";
+      return "Chart shared";
     case "copied":
-      return "Copied as an image";
+      return "Chart copied to the clipboard";
     case "downloaded":
-      return "Saved as a PNG";
+      return "Chart saved to your Downloads folder";
     case "cancelled":
       return "";
   }
