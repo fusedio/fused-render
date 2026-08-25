@@ -67,6 +67,11 @@ export interface Tour {
       its steps are chrome a returning user already knows, and firing it on a
       first folder view would spend the one first-run moment on the listing. */
   autoStart?: boolean;
+  /** Auto-start holds off while this is false — for a page whose chrome is up
+      but whose CONTENT is still loading (home: skeleton cards). Without it the
+      tour fires with the loading-dependent steps filtered out, marks itself
+      seen, and those steps are skipped forever. The caller retries. */
+  readyWhen?: () => boolean;
   /** A do-it continuation, possibly chained — see FollowUp. */
   followUp?: FollowUp;
 }

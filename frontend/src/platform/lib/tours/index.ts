@@ -341,6 +341,10 @@ export function maybeAutoStartTour(tour: Tour): boolean {
   // truncated walkthrough AND mark it seen. The brand row exists only in the
   // expanded frame, so it is the expansion check.
   if (!document.querySelector(".sidebar-brand")) return false;
+  // Chrome is up but the page's content may not be (home: skeleton cards) —
+  // firing now would run without the loading-dependent steps AND mark the tour
+  // seen, skipping them forever. False = "not yet", and the caller retries.
+  if (tour.readyWhen && !tour.readyWhen()) return false;
   const steps = presentSteps(tour.steps());
   if (steps.length === 0) return false;
   runTour(tour.id, steps, tour.followUp);

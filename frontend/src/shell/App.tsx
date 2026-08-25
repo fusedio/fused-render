@@ -616,9 +616,18 @@ export default function App({ config }: { config: Config }) {
     if (IS_EMBED) return;
     const tour = autoStartTourFor(pathname);
     if (!tour || firedTours.current.has(tour.id)) return;
-    const id = setTimeout(() => {
+    // Retries IN PLACE, not only on the next route change: a tour can be held
+    // back by content still loading (maybeAutoStartTour returns false while
+    // home's apps strip is skeletons), and the user may just sit on the page.
+    // Bounded so a browser refusing the "seen" write, or a page whose content
+    // never settles, doesn't poll forever.
+    let tries = 10;
+    let id: ReturnType<typeof setTimeout>;
+    const attempt = () => {
       if (maybeAutoStartTour(tour)) firedTours.current.add(tour.id);
-    }, 600);
+      else if (--tries > 0) id = setTimeout(attempt, 600);
+    };
+    id = setTimeout(attempt, 600);
     return () => clearTimeout(id);
   }, [pathname]);
 

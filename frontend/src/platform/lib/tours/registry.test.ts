@@ -154,7 +154,8 @@ describe("home tour", () => {
     expect(steps.map((s) => s.element)).toEqual([
       ".home-hero",
       ".home-strips",
-      "#home-sec-apps .app-pcard",
+      // Real cards only — the loading skeletons wear .app-pcard too.
+      "#home-sec-apps .app-pcard:not(.home-skel-card)",
       ".sidebar-bookmarks .sidebar-heading",
     ]);
   });
@@ -182,17 +183,25 @@ describe("tasks tour", () => {
     expect(steps[1].actionText).toBe("Create it");
   });
 
-  it("chains a second follow-up onto the create, over the list's first row", () => {
-    const list = tasks?.followUp?.followUp;
-    expect(list?.trigger).toBe(".schedule-save");
-    const steps = list?.steps() ?? [];
-    expect(steps.length).toBe(1);
-    expect(steps[0].element).toBe(".tasks-row");
+  it("chains a second follow-up onto the create, one step per tasks view", () => {
+    const chain = tasks?.followUp?.followUp;
+    expect(chain?.trigger).toBe(".schedule-save");
+    const steps = chain?.steps() ?? [];
+    // List row, board card, calendar grid — mutually exclusive on screen, so
+    // presentSteps keeps exactly the one the user is looking at.
+    expect(steps.map((s) => s.element)).toEqual([
+      ".tasks-row",
+      ".schedule-tv-board .tasks-card-wrap",
+      ".schedule-cal",
+    ]);
     // The row's press is the stretched link, not the row div — so that is what
     // the step waits for and what its action button clicks.
     expect(steps[0].advanceOn).toBe(".tasks-rowlink");
     expect(steps[0].actionText).toBe("Open it");
+    expect(steps[1].advanceOn).toBe(".schedule-tv-board .schedule-tv-card");
+    // The calendar step is a plain pointer — a chip opens through a popover.
+    expect(steps[2].advanceOn).toBeUndefined();
     // End of the chain.
-    expect(list?.followUp).toBeUndefined();
+    expect(chain?.followUp).toBeUndefined();
   });
 });

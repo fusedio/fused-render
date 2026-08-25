@@ -8,6 +8,11 @@ export const homeTour: Tour = {
   id: "home",
   title: "Home",
   matches: (pathname) => pathname === "/home",
+  // Hold the auto-start while the apps strip is still skeletons: the card step
+  // filters placeholders out, so firing now would run without it and mark the
+  // tour seen — skipping "Open an app" forever. The caller retries until the
+  // strip has settled (real cards or an empty state, either is ready).
+  readyWhen: () => !document.querySelector("#home-sec-apps .home-skel-card"),
   startPath: "/home",
   steps: () => [
     {
