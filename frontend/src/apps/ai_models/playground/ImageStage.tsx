@@ -44,9 +44,9 @@ import {
   ResultSlot,
   StageHeader,
   StarterCards,
-  useAutoGrow,
   type Starter,
 } from "./controls";
+import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { Button } from "@platform/shadcn/ui/button";
 import {

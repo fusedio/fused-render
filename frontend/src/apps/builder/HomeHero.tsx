@@ -7,6 +7,7 @@ import { aiComplete, createApp, type DefaultModel, type SessionEffort } from "@p
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
+import { useAutoGrow } from "@platform/lib/autoGrow";
 import { startersFor } from "./starterPrompts";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
@@ -245,19 +246,17 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // JSON `AppAnnotation`, encoded rather than dumped into the prompt text.
   // Consumed once and removed (replaceSearch, no history entry): an annot
   // that survived in the URL would reappear on the next mount.
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Grow the box with its content: reset to auto so a deleted line shrinks it,
-  // then take scrollHeight. The 3-row floor and 10-row ceiling are CSS
-  // min/max-height on `.home-composer-input`; past the ceiling the textarea
-  // scrolls. Runs on `prompt` rather than onChange so a starter chip landing
-  // a long brief resizes too.
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [prompt]);
+  // Grow the box with its content. `Infinity` because the ceiling here is CSS,
+  // not pixels: the 3-row floor and 10-row ceiling are min/max-height on
+  // `.home-composer-input`, and past the ceiling the textarea scrolls. The hook
+  // is what keeps the height it writes from going stale when the box's WIDTH
+  // changes (a sidebar toggle, a window resize) and the same text rewraps —
+  // this composer had that bug for exactly as long as it grew itself inline.
+  // Driven from an effect on `prompt` rather than onChange because a starter
+  // chip sets the text programmatically and has the longest briefs of anything
+  // that lands in here.
+  const { ref: inputRef, grow } = useAutoGrow(Infinity);
+  useEffect(grow, [prompt, grow]);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const raw = params.get("annot");

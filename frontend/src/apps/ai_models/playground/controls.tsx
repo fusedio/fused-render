@@ -14,43 +14,6 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
 import { capabilityIcon } from "./capabilityIcons";
 
-/** A composer textarea that grows with its own text, so a Shift+Enter newline
- *  is visible. Returns the ref to hand the textarea and the `grow` to call on
- *  change.
- *
- *  The height it writes is an inline px value, which means it goes STALE the
- *  moment the box's width changes and the same text rewraps to more lines: the
- *  box keeps its old height and quietly turns into a scroller. A Clear button
- *  appearing beside the prompt used to be enough to do it. Hence the observer —
- *  and it watches the WIDTH only, because reacting to a height change would
- *  loop on the very thing this callback does.
- *
- *  CSS `field-sizing: content` would delete this hook outright. Deliberately
- *  not used: it is Chromium-only, and this sheet is not a Chromium-only
- *  sheet. Revisit when Safari and Firefox ship it. */
-export function useAutoGrow(max = 180) {
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-  const grow = useCallback(() => {
-    const box = ref.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, max) + "px";
-  }, [max]);
-  useEffect(() => {
-    const box = ref.current;
-    if (!box || typeof ResizeObserver === "undefined") return;
-    let last = box.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (box.clientWidth === last) return;
-      last = box.clientWidth;
-      grow();
-    });
-    observer.observe(box);
-    return () => observer.disconnect();
-  }, [grow]);
-  return { ref, grow };
-}
-
 /** The stage's one-line title, with the config cog right-aligned on the same
  *  row. The cog lives up here rather than under the input because the title
  *  row is the stage's own header — the settings belong to the stage, not to
