@@ -167,6 +167,12 @@ _require_or_skip(
 
 TORCH_SNAPSHOT = _real_snapshot(TORCH_MODEL_ID)
 
+#: The prose half of the capability, checked against the curated default. Its
+#: snapshot is OPTIONAL even under `FUSED_RENDER_REAL_WEIGHTS=1` — see
+#: `prose_worker` for why this one is a `pytest.skip` and not a `pytest.fail`.
+PROSE_MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
+PROSE_SNAPSHOT = _real_snapshot(PROSE_MODEL_ID)
+
 #: The probe set, and it is FIXED rather than generated: a parity number is only
 #: comparable between runs if both engines saw the same strings. Deliberately
 #: mixed — two near-synonyms, an unrelated noun, a multilingual pair and a
@@ -458,3 +464,177 @@ def test_the_size_figure_here_matches_the_catalogs():
     entry = next(e for e in catalog.SUGGESTIONS["onnx-embed"]
                  if e["id"] == MODEL_ID)
     assert entry["size_gb"] == EXPECTED_FETCHED_GB
+
+
+# -- the prose half: retrieval, which is what the capability widened FOR --------
+
+
+@pytest.fixture(scope="module")
+def prose_worker():
+    """The same runner, loaded against a text-only export.
+
+    **Skipped rather than failed when the snapshot is absent, even under the
+    opt-in.** The parity gate above is about one specific pair of repos and an
+    opt-in run that cannot find them is a broken invocation; this one is about
+    the prose PATH, and a developer exercising the dual encoder should not be
+    forced to also hold a second 0.5 GB download to do it. The two halves fail
+    differently on purpose.
+    """
+    import threading
+    import types
+
+    if PROSE_SNAPSHOT is None:
+        pytest.skip(
+            f"{PROSE_MODEL_ID} is not in the local Hub cache "
+            f"({_snapshot_glob(PROSE_MODEL_ID)}) — the prose assertions need it "
+            f"and this file never fetches")
+
+    base = types.ModuleType("worker_base")
+    base.CANCEL = threading.Event()
+    base.download_snapshot = lambda model_id, **kw: PROSE_SNAPSHOT
+    base.serve = lambda **kw: None
+    base.recorded = {}
+    base.set_state = lambda **fields: base.recorded.update(fields)
+    sys.modules["worker_base"] = base
+
+    spec = importlib.util.spec_from_file_location(
+        "onnx_embed_prose_real_weights", WORKER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.worker_base = base
+    module.load(PROSE_MODEL_ID, PROSE_SNAPSHOT)
+    yield module
+
+    del sys.modules["worker_base"]
+
+
+#: A five-document corpus and a query that shares NO WORD with its answer.
+#:
+#: The gap is the whole test. A keyword baseline can only score on shared terms,
+#: so on this corpus it scores zero for the right document and nonzero for the
+#: two decoys that reuse the query's words — which is exactly the failure a
+#: page's users notice, and exactly what an embedding is bought to fix.
+CORPUS = [
+    # 0 — the answer. Shares no word with the query.
+    "The lease runs to the end of March and the deposit is two months' rent.",
+    # 1, 2 — decoys that DO share words with the query, and answer nothing.
+    "I need to find out how long the queue is at the passport office.",
+    "How long does it take to walk to the station from here?",
+    # 3, 4 — unrelated.
+    "Reheat the oven to 200 degrees and give it another twenty minutes.",
+    "The compiler warning turned out to be a missing semicolon after all.",
+]
+QUERY = "how long do I have to stay in this flat"
+ANSWER = 0
+
+
+def _keyword_scores(query, documents):
+    """A bag-of-words overlap baseline — the thing an embedding has to beat.
+
+    Deliberately the crudest possible one (shared lowercase word count over the
+    query's length), because a sophisticated lexical baseline would be a second
+    thing to get right and the point is not "beat BM25", it is "answer a
+    question whose words do not appear in its answer".
+    """
+    terms = set(query.lower().strip(".?").split())
+    scores = []
+    for document in documents:
+        words = set(document.lower().replace(",", " ").replace(".", " ").split())
+        scores.append(len(terms & words) / len(terms))
+    return scores
+
+
+def test_the_prose_encoder_is_768_dim_and_unit_norm(prose_worker):
+    result = prose_worker.generate({"texts": CORPUS})
+    assert result["dim"] == 768
+    for row in result["vectors"]:
+        assert abs(sum(v * v for v in row) ** 0.5 - 1.0) < 1e-4
+
+
+def test_a_paragraph_longer_than_siglips_64_tokens_embeds_at_all(prose_worker):
+    """The capability's own reason for widening, asserted as a fact rather than
+    argued. A SigLIP text tower truncates at 64 tokens, so this paragraph would
+    have been silently cut in half — the vectors still come back, still unit
+    length, describing the first sentence and a bit."""
+    paragraph = " ".join(CORPUS * 6)
+    assert len(paragraph.split()) > 300
+    result = prose_worker.generate({"texts": [paragraph, CORPUS[0]]})
+    assert result["dim"] == 768
+    # …and the long text is not simply its own first sentence: a truncating
+    # encoder would put these two almost on top of each other.
+    assert _cos(*result["vectors"]) < 0.98
+
+
+def test_retrieval_beats_a_keyword_baseline_on_a_corpus_it_shares_no_words_with(
+        prose_worker):
+    """The retrieval assertion, in the shape of PR #780's own
+    `test_ai_text_embed_retrieval.py`.
+
+    Both sides of the prompt pair are used, which is the point of `kind` — the
+    query is embedded as a query and the corpus as documents — and the ranking
+    is compared against `_keyword_scores`, which cannot see the answer at all.
+    """
+    query = prose_worker.generate({"texts": [QUERY], "kind": "query"})
+    documents = prose_worker.generate({"texts": CORPUS, "kind": "document"})
+
+    scores = [_cos(query["vectors"][0], row) for row in documents["vectors"]]
+    ranked = sorted(range(len(CORPUS)), key=lambda at: -scores[at])
+    assert ranked[0] == ANSWER, list(zip(CORPUS, scores))
+
+    baseline = _keyword_scores(QUERY, CORPUS)
+    assert baseline[ANSWER] == 0.0, "the corpus must share no word with its answer"
+    assert max(range(len(CORPUS)), key=lambda at: baseline[at]) != ANSWER, (
+        "the keyword baseline must get this WRONG, or the comparison proves "
+        "nothing about the embedding")
+
+
+def test_using_BOTH_prompt_sides_beats_using_one_for_everything(prose_worker):
+    """`kind` earns its place, or it is a parameter nobody should have to pass.
+
+    nomic's card is explicit that its task prefixes are REQUIRED rather than
+    advisory — the model was trained multi-task and the prefix is what selects
+    the task — so embedding a question with the document prefix is out of
+    distribution, not merely un-tuned. Asserted as a MARGIN on the right
+    document rather than as a number, because the number is a property of this
+    checkpoint and the margin is the property the parameter promises.
+    """
+    documents = prose_worker.generate({"texts": CORPUS, "kind": "document"})
+    asymmetric = prose_worker.generate({"texts": [QUERY], "kind": "query"})
+    symmetric = prose_worker.generate({"texts": [QUERY], "kind": "document"})
+
+    def margin(query_vector):
+        scores = [_cos(query_vector, row) for row in documents["vectors"]]
+        best_wrong = max(s for at, s in enumerate(scores) if at != ANSWER)
+        return scores[ANSWER] - best_wrong
+
+    assert margin(asymmetric["vectors"][0]) > margin(symmetric["vectors"][0])
+
+
+def test_a_PATHS_request_is_refused_by_name_on_the_real_prose_model(
+        prose_worker, probe_image):
+    """The mocked suite asserts this against a fake session; here it is asserted
+    against a real one, which is the half that proves the refusal fires BEFORE
+    anything reaches the graph rather than being a lucky error message from
+    inside it."""
+    with pytest.raises(ValueError) as exc:
+        prose_worker.generate({"paths": [probe_image]})
+    assert PROSE_MODEL_ID in str(exc.value)
+
+
+def test_the_prose_snapshot_is_the_fp32_set_too():
+    """`test_the_cached_snapshot_is_the_fp32_set_and_not_the_whole_repo`'s
+    sibling. A prose export publishes the same eight quantizations of its one
+    graph, AND `model.safetensors` beside them — so `nomic-embed-text-v1.5`'s
+    whole repo is 2.2 GB against a 0.55 GB fetch."""
+    if PROSE_SNAPSHOT is None:
+        pytest.skip(f"{PROSE_MODEL_ID} is not in the local Hub cache")
+    names = []
+    for _dirpath, _dirnames, filenames in os.walk(PROSE_SNAPSHOT):
+        names.extend(filenames)
+    for name in names:
+        for tag in ("fp16", "int8", "uint8", "q4", "bnb4", "quantized"):
+            assert tag not in name, name
+        assert not name.endswith(".safetensors"), (
+            f"{name} is a second copy of the weights this engine cannot open, "
+            f"and the largest file in the repo — `allow_patterns` has drifted.")
+    assert "model.onnx" in names

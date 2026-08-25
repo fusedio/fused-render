@@ -62,6 +62,12 @@ SIDE = 8
 #: FIRST, so `outputs[0]` is the wrong answer by construction.
 DIM = 3
 
+#: What the fake graph computes at a PAD position. Deliberately far from any
+#: real row and not a multiple of one, so a mean that averaged it in cannot come
+#: out parallel to the right answer — `unit_normalize` would hide a merely
+#: scaled result. See `FakeSession.run`.
+PAD_ROW = -9.0
+
 
 class FakeSpec:
     """An `onnxruntime` input/output descriptor — only `.name` is read."""
@@ -97,10 +103,34 @@ class FakeSession:
         batch = len(next(iter(feed.values())))
         pooled = numpy.asarray([self._rows[at % len(self._rows)]
                                 for at in range(batch)], dtype=numpy.float32)
+        # `(batch, tokens, dim)`, with `tokens` taken from the feed the way a
+        # real graph's output shape is — the prose pooling multiplies this by the
+        # attention mask, so a fixed token count here would test a broadcast
+        # that never happens in production.
+        ids = feed.get("input_ids")
+        tokens = ids.shape[1] if ids is not None and getattr(ids, "ndim", 0) > 1 else 4
         # Rank 3, and deliberately not a broadcastable view of `pooled`: a
         # runner reading this instead would produce rows of the wrong length.
-        hidden = numpy.stack([pooled] * 4, axis=1)
-        by_name = {"last_hidden_state": hidden, "pooler_output": pooled}
+        hidden = numpy.stack([pooled] * tokens, axis=1)
+        # **The PAD positions carry something else, and that is what makes the
+        # mask assertion mean anything.** With every position identical, a mean
+        # that divided by the padded WIDTH instead of by the mask sum would
+        # differ from a masked one only by a scalar — and `unit_normalize` erases
+        # a scalar, so the mocked suite would go green on a runner that ignored
+        # the mask entirely. A real graph computes something quite different for
+        # a pad token, so this fake does too.
+        mask = feed.get("attention_mask")
+        if mask is not None and getattr(mask, "ndim", 0) > 1:
+            hidden = numpy.where(numpy.asarray(mask)[:, :, None] > 0, hidden,
+                                 PAD_ROW)
+        by_name = {"last_hidden_state": hidden, "pooler_output": pooled,
+                   # A fully-pooled sentence-transformers export publishes this
+                   # instead, already the vector.
+                   "sentence_embedding": pooled,
+                   # …and a graph this runner cannot read at all publishes
+                   # neither. Rank 2 on purpose: an unreadable output must fail
+                   # by NAME, not by happening to have the wrong shape.
+                   "logits": pooled}
         return [by_name[spec.name] for spec in self._outputs]
 
 
@@ -133,6 +163,7 @@ class FakeTokenizer:
     def __init__(self):
         self.padding = None
         self.truncation = None
+        self.encoded = None
 
     def token_to_id(self, token):
         return 7 if token else None
@@ -144,6 +175,7 @@ class FakeTokenizer:
         self.padding = {"length": length, "pad_id": pad_id, "pad_token": pad_token}
 
     def encode_batch(self, texts):
+        self.encoded = list(texts)
         length = (self.padding or {}).get("length") or max(len(t) for t in texts)
         return [FakeEncoding(range(1, min(len(text), length) + 1), length)
                 for text in texts]
@@ -460,3 +492,284 @@ def test_no_model_loaded_is_a_plain_runtime_error(worker):
     worker._loaded.clear()
     with pytest.raises(RuntimeError, match="no model is loaded"):
         worker.generate({"texts": ["a cat"]})
+
+
+# -- prose encoders ------------------------------------------------------------
+#
+# The same runner, one session instead of two, no image preprocessing, and a
+# retrieval prefix in front of every text. The fake graph here emits
+# `last_hidden_state` and NOTHING else, which is what all three curated prose
+# exports really do (`nomic-embed-text-v1.5`, `multilingual-e5-small` and
+# `bge-base-en-v1.5`, read out of their own graph protobufs) — so the pooling
+# happens here rather than in the export, and the mask is what makes it correct.
+
+
+def _prose_session(outputs=("last_hidden_state",)):
+    """A BERT-family export: three inputs, and by default one output.
+
+    Every ONNX input is REQUIRED, so a graph asking for `token_type_ids` is the
+    case that proves the feed is built from `get_inputs()` rather than from a
+    fixed dict — SigLIP's text tower takes `input_ids` alone.
+    """
+    return FakeSession(["input_ids", "attention_mask", "token_type_ids"],
+                       list(outputs), [[1.0, 2.0, 2.0], [4.0, 0.0, 3.0]])
+
+
+def _write_prose_snapshot(root, pooling="mean"):
+    import json
+
+    onnx = root / "onnx"
+    onnx.mkdir(exist_ok=True)
+    (onnx / "model.onnx").write_bytes(b"")
+    (root / "config.json").write_text(json.dumps({
+        "model_type": "bert", "max_position_embeddings": 512}))
+    (root / "tokenizer_config.json").write_text(json.dumps({
+        "pad_token": "[PAD]", "model_max_length": 512}))
+    (root / "tokenizer.json").write_text("{}")
+    pooling_dir = root / "1_Pooling"
+    pooling_dir.mkdir(exist_ok=True)
+    (pooling_dir / "config.json").write_text(json.dumps({
+        "pooling_mode_cls_token": pooling == "cls",
+        "pooling_mode_mean_tokens": pooling == "mean",
+    }))
+
+
+@pytest.fixture()
+def prose(monkeypatch, tmp_path):
+    """The runner loaded against a text-only export, through its real `load()`."""
+    base = types.ModuleType("worker_base")
+    base.CANCEL = threading.Event()
+    base.download_snapshot = lambda model_id, **kw: str(tmp_path)
+    base.serve = lambda **kw: None
+    base.recorded = {}
+    base.set_state = lambda **fields: base.recorded.update(fields)
+    monkeypatch.setitem(sys.modules, "worker_base", base)
+
+    onnxruntime = types.ModuleType("onnxruntime")
+    onnxruntime.get_available_providers = lambda: ["CPUExecutionProvider"]
+    onnxruntime.InferenceSession = lambda path, providers=None: _prose_session()
+    monkeypatch.setitem(sys.modules, "onnxruntime", onnxruntime)
+
+    tokenizers = types.ModuleType("tokenizers")
+    fake_tokenizer = FakeTokenizer()
+
+    class Tokenizer:
+        @staticmethod
+        def from_file(_path):
+            return fake_tokenizer
+
+    tokenizers.Tokenizer = Tokenizer
+    monkeypatch.setitem(sys.modules, "tokenizers", tokenizers)
+
+    spec = importlib.util.spec_from_file_location(
+        "onnx_embed_prose_under_test", WORKER_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.worker_base = base
+    _write_prose_snapshot(tmp_path)
+    module.load("BAAI/bge-base-en-v1.5", str(tmp_path))
+    module.fake_tokenizer = fake_tokenizer
+    return module
+
+
+def test_a_prose_export_loads_ONE_session_and_no_vision_tower(prose):
+    assert prose._loaded["text"] is not None
+    assert prose._loaded.get("vision") is None
+    assert prose._loaded["family"] == "text"
+
+
+def test_prose_texts_produce_one_unit_vector_each(prose):
+    result = prose.generate({"texts": ["a cat", "a dog"]})
+    assert len(result["vectors"]) == 2
+    assert result["dim"] == DIM
+    for row in result["vectors"]:
+        assert abs(sum(v * v for v in row) ** 0.5 - 1.0) < 1e-6
+
+
+def test_the_retrieval_PREFIX_reaches_the_tokenizer(prose):
+    """The whole of what `kind` does, and the only place it is observable: the
+    prefix is applied BEFORE tokenizing, so nothing downstream — not the ids,
+    not the vector, not the reply — records that it happened."""
+    prose.generate({"texts": ["red shoes"], "kind": "query"})
+    assert prose.fake_tokenizer.encoded == [
+        "Represent this sentence for searching relevant passages: red shoes"]
+
+
+def test_the_document_side_of_bge_is_genuinely_UNPREFIXED(prose):
+    """bge's card instructs the query only, which is the tie-breaker behind the
+    "document" default (`embed_common.DEFAULT_KIND`): a bare call on this family
+    embeds text verbatim, exactly as someone who has never heard of prompt
+    schemes expects."""
+    prose.generate({"texts": ["red shoes"]})
+    assert prose.fake_tokenizer.encoded == ["red shoes"]
+
+
+def test_the_scheme_comes_from_the_model_id(prose):
+    assert prose._loaded["scheme"] == "bge"
+
+
+def test_a_PATHS_request_is_refused_BY_NAME_on_a_prose_model(prose, tmp_path):
+    """**Refused, never attempted.** Handing a text encoder pixel values raises
+    somewhere inside the session about a tensor rank, which tells a page author
+    nothing — and a graph that happened to accept them would embed noise and
+    return a plausible vector. The refusal names the MODEL, because the fix is
+    to pick a different one."""
+    path = tmp_path / "pic.png"
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(path)
+    with pytest.raises(ValueError) as exc:
+        prose.generate({"paths": [str(path)]})
+    message = str(exc.value)
+    assert "BAAI/bge-base-en-v1.5" in message
+    assert "texts" in message
+
+
+def test_prose_pads_to_the_batchs_LONGEST_not_to_max_length(prose):
+    """The opposite of the SigLIP rule, and for the same reason it is stated at
+    all: a BERT-family graph takes an `attention_mask` and ignores its pads, so
+    padding all 512 positions is 8x the compute for identical vectors. SigLIP's
+    text tower has no mask, which is why THAT one must pad to max_length."""
+    assert prose.fake_tokenizer.padding["length"] is None
+    assert prose.fake_tokenizer.truncation == 512
+
+
+def test_every_declared_input_is_fed_including_token_type_ids(prose):
+    prose.generate({"texts": ["a cat"]})
+    assert set(prose._loaded["text"].feeds[0]) == {
+        "input_ids", "attention_mask", "token_type_ids"}
+
+
+def test_mean_pooling_ignores_the_PAD_positions(prose):
+    """The mask is the whole of what makes mean pooling correct. Two texts of
+    different lengths ride one batch, so the shorter one is padded — and a mean
+    that summed the padded positions too would average whatever the graph
+    computes for a pad token into every short text's vector.
+
+    **The divisor is not the interesting half, and saying so is the point.**
+    Dividing by the batch's padded WIDTH instead of by each row's mask sum
+    scales a row by a constant, and `unit_normalize` erases a constant — so that
+    variant is not a bug at all. What matters is ZEROING the pad positions
+    before the sum, and this test is written to fail on exactly that: `PAD_ROW`
+    is far from any real row and not a multiple of one, so a vector that
+    averaged it in cannot come out parallel to the right answer.
+
+    Asserted against a hand-computed expectation rather than by inspection: the
+    fake's `last_hidden_state` repeats one row across every REAL position and
+    carries `PAD_ROW` at the rest, so a mask-aware mean returns that row exactly.
+    """
+    session = _prose_session()
+    prose._loaded["text"] = session
+    result = prose.generate({"texts": ["ab", "abcd"]})
+    # Both rows are the fake's own vectors, unit-normalized — which is only true
+    # if the mean divided by the MASK sum and not by the padded width.
+    for row, expected in zip(result["vectors"], ([1.0, 2.0, 2.0], [4.0, 0.0, 3.0])):
+        norm = sum(v * v for v in expected) ** 0.5
+        for got, want in zip(row, expected):
+            assert abs(got - want / norm) < 1e-6
+
+
+def test_CLS_pooling_is_read_off_the_pooling_config_not_guessed(monkeypatch,
+                                                                prose, tmp_path):
+    """**Pooling differs per model and the config is the only place it is
+    written down.** `bge-base-en-v1.5` pools the CLS token; `multilingual-e5-small`
+    and `nomic-embed-text-v1.5` take the masked mean. Mean-pooling a CLS model
+    returns a well-shaped vector that is measurably worse, with nothing to
+    signal it — so this reads `1_Pooling/config.json`, which every
+    sentence-transformers repo ships, rather than assuming one mode.
+    """
+    _write_prose_snapshot(tmp_path, pooling="cls")
+    prose.load("BAAI/bge-base-en-v1.5", str(tmp_path))
+    assert prose._loaded["pooling"] == "cls"
+    _write_prose_snapshot(tmp_path, pooling="mean")
+    prose.load("intfloat/multilingual-e5-small", str(tmp_path))
+    assert prose._loaded["pooling"] == "mean"
+
+
+def test_a_graph_publishing_a_POOLED_output_is_used_directly(prose):
+    """"Pooling comes from the export's own graph where present" — some
+    sentence-transformers exports emit `sentence_embedding`, already pooled and
+    already the vector. Read by NAME like everything else here, never inferred
+    from a shape."""
+    prose._loaded["text"] = _prose_session(
+        outputs=("last_hidden_state", "sentence_embedding"))
+    result = prose.generate({"texts": ["a cat"]})
+    assert result["dim"] == DIM
+
+
+def test_a_prose_graph_with_no_readable_output_raises_naming_what_it_has(prose):
+    prose._loaded["text"] = _prose_session(outputs=("logits",))
+    with pytest.raises(RuntimeError) as exc:
+        prose.generate({"texts": ["a cat"]})
+    assert "logits" in str(exc.value)
+    assert "BAAI/bge-base-en-v1.5" in str(exc.value)
+
+
+def test_download_pins_the_single_fp32_graph_for_a_prose_export(prose,
+                                                                monkeypatch):
+    """A text-only export ships `onnx/model.onnx` and the same eight
+    quantizations beside it — `nomic-embed-text-v1.5`'s repo is 2.2 GB against a
+    0.55 GB fetch — so the pattern list matters here for the identical reason."""
+    listing = ["config.json", "tokenizer.json", "vocab.txt",
+               "1_Pooling/config.json",
+               "onnx/model.onnx", "onnx/model_fp16.onnx", "onnx/model_q4.onnx",
+               "onnx/model_quantized.onnx", "model.safetensors"]
+    monkeypatch.setattr(prose, "_repo_files", lambda _id: listing)
+    seen = {}
+    monkeypatch.setattr(prose.worker_base, "download_snapshot",
+                        lambda model_id, **kw: seen.update(kw) or "/snap")
+    prose.download("BAAI/bge-base-en-v1.5")
+
+    patterns = seen["allow_patterns"]
+    assert "onnx/model.onnx" in patterns
+    assert "1_Pooling/config.json" in patterns
+    # The safetensors are a whole second copy of the weights this engine cannot
+    # open, and they are the biggest single file in the repo.
+    assert "model.safetensors" not in patterns
+    assert not [p for p in patterns
+                if any(t in p for t in ("fp16", "q4", "quantized", "int8"))]
+
+
+def test_the_dual_and_prose_layouts_are_told_apart_by_the_LISTING(prose,
+                                                                  monkeypatch):
+    """`download()` runs before anything is on the disk, so the repo's file
+    listing is the only evidence available — not `config.json`, which is not
+    fetched yet. A repo carrying `onnx/text_model.onnx` is a dual encoder and
+    gets both towers; one carrying only `onnx/model.onnx` is a prose export and
+    gets the one graph."""
+    dual = ["onnx/text_model.onnx", "onnx/vision_model.onnx", "onnx/model.onnx"]
+    text = ["onnx/model.onnx"]
+    assert "onnx/vision_model.onnx" in prose._weight_patterns(dual)
+    assert "onnx/model.onnx" not in prose._weight_patterns(dual)
+    assert prose._weight_patterns(text) == ("onnx/model.onnx",)
+    assert prose._weight_patterns(["README.md"]) == ()
+
+
+def test_pooler_output_is_deliberately_NOT_a_prose_output():
+    """**The trap a future editor is most likely to fall into**, and the reason
+    the two families have separate output tuples instead of one shared "read the
+    pooled thing" rule.
+
+    A BERT graph may well publish `pooler_output`, and it is the CLS token
+    through a tanh-activated dense layer trained for next-sentence prediction —
+    not a sentence embedding, and not what any of these models' cards tell you
+    to use. Reading it would return a 768-dim unit vector that is simply worse
+    at retrieval, which is #813's shape exactly: a plausible wrong answer rather
+    than an error. It IS the correct read for a SigLIP tower, which is what
+    makes the mistake inviting.
+
+    Imported by path the way the fixtures do, because this asserts on a
+    module-level constant and needs no session at all.
+    """
+    import importlib.util as _il
+
+    spec = _il.spec_from_file_location("onnx_embed_constants", WORKER_PATH)
+    module = _il.module_from_spec(spec)
+    base = types.ModuleType("worker_base")
+    base.serve = lambda **kw: None
+    sys.modules["worker_base"] = base
+    try:
+        spec.loader.exec_module(module)
+        assert module._POOLED_OUTPUT == "pooler_output"
+        assert module._POOLED_OUTPUT not in module._PROSE_OUTPUTS
+        assert module._PROSE_OUTPUTS == ("sentence_embedding", "last_hidden_state")
+    finally:
+        del sys.modules["worker_base"]
