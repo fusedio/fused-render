@@ -120,8 +120,13 @@ def note_touch(path: str) -> None:
     global _touched
     if _touched or not offered():
         return
+    # Every path above the OS in this app is forward-slashed (see
+    # canonical_fs_path), so compare in that shape — os.sep would silently
+    # never match on Windows (where only forced tests reach this anyway).
+    norm = path.replace("\\", "/")
     for root in _protected_roots():
-        if path == root or path.startswith(root + os.sep):
+        root = root.replace("\\", "/")
+        if norm == root or norm.startswith(root + "/"):
             _touched = True
             return
 

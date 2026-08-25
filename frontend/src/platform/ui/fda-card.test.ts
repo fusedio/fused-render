@@ -31,6 +31,14 @@ describe("when the card renders", () => {
     expect(CARD).toContain('if (!fda || fda.granted || fda.dismissed) setStage("hidden")');
     expect(CARD).toContain('else if (fda.relevant) setStage("offer")');
   });
+
+  it("waiting is never a dead end: it keeps a Not now, and its poll bails too", () => {
+    // Backing out of System Settings without granting (Bugbot, PR #831) must
+    // not strand the card on "In System Settings…" for the session.
+    const waitingArm = CARD.slice(CARD.indexOf("{waiting ? ("), CARD.indexOf(") : ("));
+    expect(waitingArm).toContain("dismissFdaNudge()");
+    expect(CARD).toContain('} else if (!fda || fda.dismissed) {');
+  });
 });
 
 describe("what the buttons do", () => {

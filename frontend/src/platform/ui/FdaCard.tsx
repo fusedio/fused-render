@@ -78,11 +78,16 @@ export default function FdaCard() {
       getConfig()
         .then((config) => {
           if (stageRef.current !== "waiting") return;
-          if (config.fda?.granted) {
+          const fda = config.fda;
+          if (fda?.granted) {
             setStage("hidden");
             // "info" is this app's confirmation tone — there is no green toast
             // (Toast.tsx), and every other success ("Path copied") is info too.
             pushToast({ msg: "Full Disk Access is on — no more prompts", tone: "info" });
+          } else if (!fda || fda.dismissed) {
+            // Same bail as the watching poll: the field vanishing or another
+            // tab dismissing must not leave this card waiting forever.
+            setStage("hidden");
           }
         })
         .catch(() => {});
@@ -108,15 +113,29 @@ export default function FdaCard() {
         </ol>
       )}
       {waiting ? (
-        <button
-          type="button"
-          className="server-status-retry"
-          onClick={() => {
-            openFdaSettings().catch(() => {});
-          }}
-        >
-          Reopen System Settings
-        </button>
+        <>
+          <button
+            type="button"
+            className="server-status-retry server-status-fda-go"
+            onClick={() => {
+              openFdaSettings().catch(() => {});
+            }}
+          >
+            Reopen System Settings
+          </button>
+          {/* The escape hatch: backing out of Settings without granting must
+              not strand the card on "In System Settings…" for the session. */}
+          <button
+            type="button"
+            className="server-status-retry"
+            onClick={() => {
+              setStage("hidden");
+              dismissFdaNudge().catch(() => {});
+            }}
+          >
+            Not now
+          </button>
+        </>
       ) : (
         <>
           <button
