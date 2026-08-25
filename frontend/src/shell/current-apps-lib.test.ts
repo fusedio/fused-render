@@ -57,4 +57,8 @@ describe("appDirOf", () => {
     expect(appDirOf("/Users/me/Fused/localother/x", ROOT)).toBeNull();
     expect(localAppsRoot("/Users/me/")).toBe(ROOT);
   });
+
+  it("folds a backslashed Windows home onto forward-slash task paths", () => {
+    expect(localAppsRoot("C:\\Users\\me")).toBe("C:/Users/me/Fused/local/");
+  });
 });

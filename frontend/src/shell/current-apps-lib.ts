@@ -30,9 +30,12 @@ export interface CurrentApp {
 }
 
 /** The workspace apps root for a home dir, with its trailing slash so
- *  `Fused/localother` can never prefix-match. */
+ *  `Fused/localother` can never prefix-match. Backslashes are folded: `home`
+ *  is the server's raw `expanduser("~")` (backslashed on Windows) while task
+ *  paths arrive canonical forward-slash, and a prefix test between the two
+ *  spellings would silently empty the section. */
 export function localAppsRoot(home: string): string {
-  const base = home.replace(/\/+$/, "");
+  const base = home.replace(/\\/g, "/").replace(/\/+$/, "");
   return `${base}/Fused/local/`;
 }
 
