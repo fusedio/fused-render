@@ -41,6 +41,19 @@
 
   /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
      dark page but as dirt against a light one, hence the light overrides. */
+  /* -- the ink shadcn's shadow scale is drawn in (styles/tailwind.css) -------
+     Tailwind ships whole box-shadow VALUES (geometry and colour in one token)
+     and this app's own `--shadow-*` are bare colours its rules position
+     themselves. The two vocabularies collide on the same four names, so
+     `tailwind.css` re-declares Tailwind's set on `[data-slot]`; what it must
+     not do is hardcode the colour, which is how the shadcn subtree ended up
+     wearing LIGHT-mode shadows on the dark page. These three alphas are that
+     colour, per palette — deeper here for the same reason `--shadow-md` is
+     0.4 in dark and 0.14 in light: a shadow on a dark ground has to work
+     harder to read as lift. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.2);
+  --shadow-ink: rgba(0, 0, 0, 0.4);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.6);
   --shadow-sm: rgba(0, 0, 0, 0.25);
   --shadow-md: rgba(0, 0, 0, 0.4);
   --shadow-lg: rgba(0, 0, 0, 0.5);
@@ -287,6 +300,11 @@
   --fg-muted-rgb: 97, 101, 108;
   --warning-rgb: 143, 106, 16;
 
+  /* Tailwind's own published alphas, which are written for a white page — see
+     the dark block for what these are and why they are a token at all. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.05);
+  --shadow-ink: rgba(0, 0, 0, 0.1);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.25);
   --shadow-sm: rgba(0, 0, 0, 0.1);
   --shadow-md: rgba(0, 0, 0, 0.14);
   --shadow-lg: rgba(0, 0, 0, 0.18);
