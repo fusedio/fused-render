@@ -4,6 +4,8 @@ import {
   activeRow,
   answerFrom,
   homeCountNote,
+  isAiRow,
+  isOpenRow,
   nameStart,
   narrowAnswer,
   pathShortcut,
@@ -14,6 +16,7 @@ import {
   submitRow,
   type HomeAnswer,
   type HomeHit,
+  type RowModel,
 } from "./home-search";
 import type { IndexRankHit, IndexRankResult } from "@platform/lib/api";
 
@@ -85,6 +88,29 @@ describe("pathShortcut", () => {
     // A backslash is a legal POSIX filename char, so this is not a path.
     expect(pathShortcut("a\\b", HOME)).toBeNull();
     expect(pathShortcut("  ", HOME)).toBeNull();
+    // A RELATIVE query is a search, not an address, even one that looks
+    // file-shaped.
+    expect(pathShortcut("docs/readme.md", HOME)).toBeNull();
+  });
+
+  it("accepts a paste wrapped in matching quotes", () => {
+    expect(pathShortcut('"~/Downloads"', HOME)).toBe(`${HOME}/Downloads`);
+    expect(pathShortcut("'/etc/hosts'", HOME)).toBe("/etc/hosts");
+    // Mismatched quotes are not a wrapping pair — left as-is (and then not a
+    // path shape at all here).
+    expect(pathShortcut("'/etc/hosts\"", HOME)).toBeNull();
+  });
+
+  it("strips a file:// scheme, same as a terminal or Finder paste would carry", () => {
+    expect(pathShortcut("file:///etc/hosts", HOME)).toBe("/etc/hosts");
+  });
+
+  it("tolerates a trailing newline from a multi-line paste", () => {
+    expect(pathShortcut("/etc/hosts\n", HOME)).toBe("/etc/hosts");
+  });
+
+  it("unescapes a shell-escaped space, regardless of platform", () => {
+    expect(pathShortcut("/Users/me/My\\ Files", HOME)).toBe("/Users/me/My Files");
   });
 });
 
@@ -183,17 +209,21 @@ describe("rankingSettled over a failure", () => {
   });
 });
 
+function rowModel(over: Partial<RowModel> = {}): RowModel {
+  return { openRow: false, fileCount: 5, aiRow: true, ...over };
+}
+
 describe("submitRow over a failure with stale rows", () => {
   it("commits nothing when Enter has no explicit choice", () => {
     // The whole point of the rule above: with rows for a previous query on
     // screen, the top-hit fallthrough opens a file the user did not ask for.
     const settled = rankingSettled(answer({ query: "read" }), "readme", false, true);
-    expect(submitRow(null, 10, settled)).toBeNull();
+    expect(submitRow(null, rowModel({ fileCount: 10 }), settled)).toBeNull();
   });
 
   it("still commits a row the user pointed at", () => {
     const settled = rankingSettled(answer({ query: "read" }), "readme", false, true);
-    expect(submitRow(3, 10, settled)).toBe(3);
+    expect(submitRow(3, rowModel({ fileCount: 10 }), settled)).toBe(3);
   });
 });
 
@@ -212,38 +242,77 @@ describe("homeCountNote", () => {
 });
 
 
-describe("keyboard rows", () => {
-  // Rows are the file hits followed by ONE action row (Search with AI), so the
-  // AI row's index is always the file count.
+describe("keyboard rows — without an open row (the pre-section-7 shape)", () => {
+  // Rows are the file hits followed by ONE action row (Search with AI), so
+  // the AI row's index is always the file count.
   it("steps down from nothing to the first row and wraps at both ends", () => {
-    expect(stepHighlight(null, 3, 1)).toBe(0);
-    expect(stepHighlight(2, 3, 1)).toBe(3); // the AI row
-    expect(stepHighlight(3, 3, 1)).toBe(0); // wrapped past the AI row
-    expect(stepHighlight(null, 3, -1)).toBe(3); // up from nothing = the AI row
-    expect(stepHighlight(0, 3, -1)).toBe(3);
+    const m = rowModel({ fileCount: 3 });
+    expect(stepHighlight(null, m, 1)).toBe(0);
+    expect(stepHighlight(2, m, 1)).toBe(3); // the AI row
+    expect(stepHighlight(3, m, 1)).toBe(0); // wrapped past the AI row
+    expect(stepHighlight(null, m, -1)).toBe(3); // up from nothing = the AI row
+    expect(stepHighlight(0, m, -1)).toBe(3);
   });
 
   it("walks only the AI row when there are no file hits", () => {
-    expect(stepHighlight(null, 0, 1)).toBe(0);
-    expect(stepHighlight(0, 0, 1)).toBe(0);
+    const m = rowModel({ fileCount: 0 });
+    expect(stepHighlight(null, m, 1)).toBe(0);
+    expect(stepHighlight(0, m, 1)).toBe(0);
   });
 
   it("pre-selects the AI row on zero matches, and nothing otherwise", () => {
-    expect(activeRow(null, 0, true)).toBe(0); // the AI row is the only content
-    expect(activeRow(null, 5, true)).toBeNull(); // no highlight to render
-    expect(activeRow(2, 5, true)).toBe(2);
+    expect(activeRow(null, rowModel({ fileCount: 0 }), true)).toBe(0); // the AI row is the only content
+    expect(activeRow(null, rowModel({ fileCount: 5 }), true)).toBeNull(); // no highlight to render
+    expect(activeRow(2, rowModel({ fileCount: 5 }), true)).toBe(2);
     // A highlight past the end of a shrinking list clamps to the AI row rather
     // than addressing a row that is no longer on screen.
-    expect(activeRow(9, 3, true)).toBe(3);
+    expect(activeRow(9, rowModel({ fileCount: 3 }), true)).toBe(3);
   });
 
   it("does not pre-select the AI row until ranking has settled on zero", () => {
     // "Nothing scored yet" and "zero matches" look identical as a count, and
     // pre-selecting on the first made Enter during the corpus load or the
     // 120ms debounce spend a model call on a query with instant matches.
-    expect(activeRow(null, 0, false)).toBeNull();
+    expect(activeRow(null, rowModel({ fileCount: 0 }), false)).toBeNull();
     // An explicit arrow-key choice is the user's, settled or not.
-    expect(activeRow(1, 0, false)).toBe(0);
+    expect(activeRow(1, rowModel({ fileCount: 0 }), false)).toBe(0);
+  });
+
+  it("isAiRow/isOpenRow agree with the wrap-around walk", () => {
+    const m = rowModel({ fileCount: 3 });
+    expect(isOpenRow(0, m)).toBe(false);
+    expect(isAiRow(3, m)).toBe(true);
+    expect(isAiRow(0, m)).toBe(false);
+  });
+});
+
+describe("keyboard rows — WITH an open row (a resolving path address)", () => {
+  // An open row implies zero file rows and no AI row (FilesHome skips the
+  // rank request and suppresses the AI row entirely once an address
+  // resolves), so a RowModel with openRow:true is a single-row list in
+  // practice — but the functions here take whatever shape they are given.
+  it("is the only content, pre-selected unconditionally — no `settled` needed", () => {
+    const m = rowModel({ openRow: true, fileCount: 0, aiRow: false });
+    expect(activeRow(null, m, false)).toBe(0);
+    expect(activeRow(null, m, true)).toBe(0);
+  });
+
+  it("wraps as a one-row list", () => {
+    const m = rowModel({ openRow: true, fileCount: 0, aiRow: false });
+    expect(stepHighlight(null, m, 1)).toBe(0);
+    expect(stepHighlight(0, m, 1)).toBe(0);
+    expect(stepHighlight(null, m, -1)).toBe(0);
+  });
+
+  it("isOpenRow identifies row 0, and it is never also the AI row", () => {
+    const m = rowModel({ openRow: true, fileCount: 0, aiRow: false });
+    expect(isOpenRow(0, m)).toBe(true);
+    expect(isAiRow(0, m)).toBe(false);
+  });
+
+  it("submitRow commits the open row on a bare Enter", () => {
+    const m = rowModel({ openRow: true, fileCount: 0, aiRow: false });
+    expect(submitRow(null, m, false)).toBe(0);
   });
 });
 
@@ -251,7 +320,7 @@ describe("submitRow", () => {
   it("opens the top hit when Enter is pressed with no highlight", () => {
     // Previously a silent no-op: every other search box in the app commits on
     // Enter, and the top hit is what the list is offering.
-    expect(submitRow(null, 5, true)).toBe(0);
+    expect(submitRow(null, rowModel({ fileCount: 5 }), true)).toBe(0);
   });
 
   it("commits NOTHING while the rows on screen answer the previous query", () => {
@@ -260,21 +329,21 @@ describe("submitRow", () => {
     // then "readme", press Enter before the answer lands, and the app
     // navigated to "read"'s best match. Opening a file is now gated on
     // `settled` exactly as the AI row already was.
-    expect(submitRow(null, 5, false)).toBeNull();
+    expect(submitRow(null, rowModel({ fileCount: 5 }), false)).toBeNull();
     // An explicit arrow-key choice still commits: the user pointed at a row
     // they can see.
-    expect(submitRow(2, 5, false)).toBe(2);
+    expect(submitRow(2, rowModel({ fileCount: 5 }), false)).toBe(2);
   });
 
   it("runs the AI row only once ranking has settled on zero hits", () => {
-    expect(submitRow(null, 0, true)).toBe(0); // fileCount 0 → the AI row
+    expect(submitRow(null, rowModel({ fileCount: 0 }), true)).toBe(0); // fileCount 0 → the AI row
     // Mid-scan: nothing to commit yet, and the AI row must not be armed.
-    expect(submitRow(null, 0, false)).toBeNull();
+    expect(submitRow(null, rowModel({ fileCount: 0 }), false)).toBeNull();
   });
 
   it("honours an explicit highlight, including the AI row", () => {
-    expect(submitRow(2, 5, true)).toBe(2);
-    expect(submitRow(5, 5, true)).toBe(5);
+    expect(submitRow(2, rowModel({ fileCount: 5 }), true)).toBe(2);
+    expect(submitRow(5, rowModel({ fileCount: 5 }), true)).toBe(5);
   });
 });
 

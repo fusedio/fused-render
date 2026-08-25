@@ -623,6 +623,17 @@
   cursor: default;
 }
 
+/* -- the "Open" row (section 7) ----------------------------------------------
+   The other action row — a resolving path address, offered at row 0 instead
+   of the last row, and for the opposite reason (ranking would be noise, not
+   ranking coming up empty). Shares `.fh-result`'s column layout (icon, name,
+   PATH — this one really is a path, unlike the AI row's query echo, so it
+   keeps `.fh-result-path`) and gets the same accent name treatment item 6
+   gives the AI row, so both read as "an action" the same way. */
+.fh-open-row .fh-result-name {
+  color: var(--accent);
+}
+
 /* The query echo — its own column, not `.fh-result-path` (the file rows' PATH
    column): "parquet" is not a filesystem path, and sharing the class made it
    read as one. Muted and quoted rather than the path's plain-text treatment,

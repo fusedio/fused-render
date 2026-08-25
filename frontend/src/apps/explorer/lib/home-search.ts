@@ -178,9 +178,23 @@ export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
  * A pasted or typed `/…`, `~/…` or `C:\…` is an exact address, and searching
  * for it would be answering a question nobody asked. The caller still has to
  * `statPath` it: a path that does not exist falls back to being a search.
+ *
+ * Real pastes are not as clean as a typed shortcut, so the shape test runs
+ * only after stripping, in order: surrounding whitespace/newlines (a paste
+ * from a terminal or a chat window often carries one), matching wrapping
+ * quotes (`"~/Downloads"`), a `file://` scheme, and a shell backslash-escape
+ * before a space (`My\ File` -> `My File`) — that last one applies regardless
+ * of platform, unlike the drive-letter de-backslashing below: a `\` followed
+ * by a space is overwhelmingly a shell escape, never a real two-character
+ * POSIX filename fragment, so unescaping it does not touch the POSIX
+ * backslash-is-a-legal-char rule the drive-letter branch exists for.
  */
 export function pathShortcut(query: string, home: string): string | null {
-  const q = query.trim();
+  let q = query.trim().replace(/[\r\n]+/g, " ").trim();
+  const quoted = q.match(/^(['"])([\s\S]*)\1$/);
+  if (quoted) q = quoted[2].trim();
+  if (/^file:\/\//i.test(q)) q = q.slice("file://".length);
+  q = q.replace(/\\ /g, " ");
   if (!/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) return null;
   let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
   // Backslashes are only separators in drive-letter paths (same rule as the
@@ -278,23 +292,45 @@ export function redirectsToSearch(e: KeyIntent): boolean {
 
 // -- the row model the keyboard walks ----------------------------------------
 //
-// The rendered list is `fileCount` file rows followed by exactly ONE action row
-// (Search with AI), so the AI row's index is always `fileCount`. Keeping that
-// as arithmetic rather than a flag is what makes ↑/↓ a single wrap-around step
-// over a heterogeneous list.
+// The list used to be a fixed shape — `fileCount` file rows followed by
+// exactly ONE action row — which let the AI row's index be plain arithmetic
+// (`fileCount`). Section 7 adds a second, EARLIER action row (an "Open" row
+// for a resolving path address), which arithmetic cannot express: `fileCount`
+// alone no longer says where anything is once a row can also come BEFORE the
+// files. `RowModel` replaces the arithmetic with a small descriptor every
+// other row-model function derives from, so ↑/↓ is still a single wrap-around
+// step over a heterogeneous list, however many of its three parts are present.
+
+/** The shape of the rendered list: at most one open row, then files, then at
+ * most one AI row — any of the three may be absent. */
+export interface RowModel {
+  /** A resolving path address is offered as row 0, ahead of any file rows. */
+  openRow: boolean;
+  /** File hits, in rendered order — between the open row (if any) and the AI
+   * row (if any). */
+  fileCount: number;
+  /** "Search with AI" as the LAST row. */
+  aiRow: boolean;
+}
+
+function totalRows(m: RowModel): number {
+  return (m.openRow ? 1 : 0) + m.fileCount + (m.aiRow ? 1 : 0);
+}
+
+/** Whether row `index` is the leading "Open" row. */
+export function isOpenRow(index: number, m: RowModel): boolean {
+  return m.openRow && index === 0;
+}
 
 /** Whether row `index` is the AI action row rather than a file. */
-export function isAiRow(index: number, fileCount: number): boolean {
-  return index >= fileCount;
+export function isAiRow(index: number, m: RowModel): boolean {
+  return m.aiRow && index === totalRows(m) - 1;
 }
 
 /** Move the highlight by one row, wrapping, entering the list from either end. */
-export function stepHighlight(
-  current: number | null,
-  fileCount: number,
-  delta: 1 | -1,
-): number {
-  const n = fileCount + 1;
+export function stepHighlight(current: number | null, m: RowModel, delta: 1 | -1): number {
+  const n = totalRows(m);
+  if (n === 0) return 0;
   if (current === null) return delta === 1 ? 0 : n - 1;
   return (current + delta + n) % n;
 }
@@ -339,20 +375,33 @@ export function rankingSettled(
 /**
  * The row the highlight is ON: the explicit choice, clamped into the list.
  *
- * With no highlight there is one default, and it is the settled zero-hit case:
- * the AI row is then the only content on screen, so it is pre-selected. That
- * pre-selection is gated on `settled` because it ARMS Enter — offering it while
- * the scan is still running spends a model call on a query that was about to
- * answer itself. With file hits showing there is no highlight until the user
- * picks one; `submitRow` is what Enter consults.
+ * With no highlight there are two defaults, checked in this order:
+ *
+ *  * an open row pre-selects UNCONDITIONALLY — unlike the AI row, resolving an
+ *    address costs nothing to arm (it navigates, it does not call a model),
+ *    and by the time `RowModel.openRow` is true the stat has already settled
+ *    on "this address exists", so there is no in-flight ambiguity to gate on.
+ *    It is also, by construction, the only content on screen: an open row
+ *    implies zero file rows (the request is skipped entirely once an address
+ *    resolves — see FilesHome).
+ *  * failing that, the settled zero-hit case: the AI row is then the only
+ *    content, so IT pre-selects. Gated on `settled` because it ARMS Enter —
+ *    offering it while the scan is still running spends a model call on a
+ *    query that was about to answer itself.
+ *
+ * With file hits showing (and no open row), there is no highlight until the
+ * user picks one; `submitRow` is what Enter consults instead.
  */
 export function activeRow(
   highlight: number | null,
-  fileCount: number,
+  m: RowModel,
   settled: boolean,
 ): number | null {
-  if (highlight === null) return fileCount === 0 && settled ? 0 : null;
-  return Math.min(highlight, fileCount);
+  if (highlight === null) {
+    if (m.openRow) return 0;
+    return m.fileCount === 0 && m.aiRow && settled ? totalRows(m) - 1 : null;
+  }
+  return Math.min(highlight, totalRows(m) - 1);
 }
 
 /**
@@ -362,7 +411,8 @@ export function activeRow(
  * to resolve to null and do nothing at all — a silent no-op, in the one box in
  * this app where Enter is the obvious gesture. It still never falls through to
  * the AI row that way: reaching a paid action takes either zero settled hits or
- * an explicit highlight.
+ * an explicit highlight. (An open row, if present, is handled by `activeRow`
+ * above before this fallthrough is ever reached.)
  *
  * That fallthrough is gated on `settled` for the same reason the AI row is, and
  * the reason arrived with server-side ranking: the list is deliberately never
@@ -374,10 +424,10 @@ export function activeRow(
  */
 export function submitRow(
   highlight: number | null,
-  fileCount: number,
+  m: RowModel,
   settled: boolean,
 ): number | null {
-  const row = activeRow(highlight, fileCount, settled);
+  const row = activeRow(highlight, m, settled);
   if (row !== null) return row;
-  return settled && fileCount > 0 ? 0 : null;
+  return settled && m.fileCount > 0 ? (m.openRow ? 1 : 0) : null;
 }

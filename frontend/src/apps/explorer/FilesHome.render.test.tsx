@@ -109,6 +109,16 @@ function type(box: { input: () => any }, value: string): Promise<void> {
   return flush(() => box.input().props.onChange({ target: { value } }));
 }
 
+/** Elements carrying `cls` among possibly several space-separated classes —
+ * `findAllByProps` does exact string equality, which a compound className
+ * (e.g. "fh-result-icon fh-ai-glyph") never satisfies. */
+function findByClass(box: { renderer: ReactTestRenderer }, cls: string): unknown[] {
+  return box.renderer.root.findAll(
+    (n) =>
+      typeof n.props?.className === "string" && n.props.className.split(" ").includes(cls),
+  );
+}
+
 function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
   return {
     covered: true,
@@ -214,6 +224,48 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
 
     await flush(() => clock.advance(STALE_CLEAR_MS + 50));
     expect(noteText(box)).toBe("Searching…");
+    box.unmount();
+  });
+});
+
+describe("a query that is really an address (section 7)", () => {
+  test("a resolving absolute path issues no indexRank and offers no AI row", async () => {
+    const box = mount();
+    await type(box, "/tmp/report.csv");
+    // No rank request for a literal address — 7c skips it entirely.
+    expect(rankCalls).toHaveLength(0);
+    expect(statCalls.map((c) => c.path)).toEqual(["/tmp/report.csv"]);
+
+    await flush(() => statCalls[0].reply.resolve({
+      path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+    }));
+    // The Open row renders in place of any AI row.
+    expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
+    expect(box.renderer.root.findAllByProps({ id: "fh-row-0" }).length).toBeGreaterThan(0);
+    box.unmount();
+  });
+
+  test("suppresses the AI row even while the stat is still in flight", async () => {
+    const box = mount();
+    await type(box, "/tmp/still-checking");
+    expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("suppresses the AI row even when the address does not resolve", async () => {
+    const box = mount();
+    await type(box, "/tmp/does-not-exist");
+    await flush(() => statCalls[0].reply.reject(new Error("not found")));
+    // Falls through to a normal search (7d) — but still no AI row (7e).
+    expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/does-not-exist"]);
+    expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a plain query still gets its AI row back", async () => {
+    const box = mount();
+    await type(box, "readme");
+    expect(findByClass(box, "fh-ai-glyph").length).toBeGreaterThan(0);
     box.unmount();
   });
 });
