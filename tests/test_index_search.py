@@ -760,6 +760,27 @@ def test_an_ignore_roots_interrupt_attributed_to_the_token_becomes_cancelled(
                       gitignore_filter=lambda root, es, oracles: es)
 
 
+def test_a_cancel_after_search_ranked_returns_does_not_touch_the_closed_connection(
+    tmp_path,
+):
+    """The real disconnect-lands-after-close race (server/routers/index.py):
+    `_watch_disconnect` can call `token.cancel()` after `search_ranked` has
+    already returned NORMALLY and closed its connection — a fast typist's
+    keystroke landing a beat too late to matter, not a mid-query interrupt at
+    all. `search_ranked`'s `finally` must `token.unbind()` before
+    `con.close()`, or this `cancel()` calls `interrupt()` on an already-closed
+    real `duckdb.DuckDBPyConnection`, which raises `duckdb.ConnectionException`
+    — on a task nothing ever retrieves the result of once the route only
+    `.cancel()`s it, so a perfectly normal disconnect would surface as nothing
+    but an unhandled "Task exception was never retrieved" warning."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+    search_ranked(cfg, "/r", "readme.md", token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True
+
+
 def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
     """Filtering after the cut is what makes today's corpus report `truncated`
     while holding fewer rows than it says: the cap was spent on entries that

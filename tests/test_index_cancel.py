@@ -78,3 +78,31 @@ def test_binding_a_second_connection_only_interrupts_the_current_one():
     token.cancel()
     assert first.interrupts == 0
     assert second.interrupts == 1
+
+
+def test_unbind_stops_a_later_cancel_from_touching_the_connection():
+    """The disconnect-lands-after-close race (server/routers/index.py):
+    `_watch_disconnect` can call `token.cancel()` after `search_ranked` has
+    already returned and closed its connection. `unbind()` — called in
+    `search_ranked`'s `finally`, right before `con.close()` — is what a later
+    `cancel()` needs to see so it does not call `interrupt()` on a connection
+    that is closed, or about to be: a real duckdb connection raises
+    `ConnectionException` for that, same shape of bug
+    guarded_query.py's own `timer.cancel()`-before-`close()` ordering already
+    exists to avoid for its Timer."""
+    token = CancelToken()
+    con = _FakeConnection()
+    token.bind(con)
+    token.unbind()
+    token.cancel()
+    assert con.interrupts == 0
+    # `cancelled` still flips — `check()` (the between-phase guard) must keep
+    # working even once the connection is gone.
+    assert token.cancelled is True
+
+
+def test_unbind_with_nothing_bound_is_a_safe_no_op():
+    token = CancelToken()
+    token.unbind()  # must not raise
+    token.cancel()
+    assert token.cancelled is True

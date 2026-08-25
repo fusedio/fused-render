@@ -757,4 +757,16 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             raise Cancelled() from None
         raise
     finally:
+        # `unbind` BEFORE `close`, not after: the disconnect watcher
+        # (server/routers/index.py's `_watch_disconnect`) can call
+        # `token.cancel()` from another thread at any time, including in the
+        # window right here between the query finishing and the connection
+        # closing. Closing first would let that `cancel()` call `interrupt()`
+        # on an already-closed connection (`duckdb.ConnectionException`, on a
+        # task nothing then retrieves the result of — an unhandled-exception
+        # warning on a perfectly normal disconnect). Same ordering
+        # `guarded_query.py` already uses for its own connection-owning
+        # `threading.Timer` (`timer.cancel()` before `close()`).
+        if token is not None:
+            token.unbind()
         con.close()

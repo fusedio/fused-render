@@ -20,6 +20,12 @@ neither alone is enough:
 abandoned-before-the-connect-even-finished case) must still stop the query,
 so `bind` interrupts immediately if the flag is already set, under the same
 lock `cancel()` uses — otherwise a fast abort races the connect and is lost.
+
+`unbind`/`cancel` ordering matters just as much at the OTHER end: the
+caller's `finally` must call `unbind()` before `con.close()`, so a `cancel()`
+racing the very end of the query (the disconnect watcher firing just as the
+query thread is already returning) finds no connection to `interrupt()`
+rather than one that is closed, or about to be.
 """
 import threading
 
@@ -55,6 +61,27 @@ class CancelToken:
         # only widen the window `cancel()` blocks in for no reason.
         if already_cancelled:
             con.interrupt()
+
+    def unbind(self) -> None:
+        """Detach the connection, so a `cancel()` that arrives after this
+        point does not call `interrupt()` on it.
+
+        The caller (`search_ranked`) must call this in its `finally`, BEFORE
+        `con.close()` — the same ordering `guarded_query.py` already uses for
+        its own connection-owning `threading.Timer` (`timer.cancel()` before
+        `close()`, not after). Without it, `_watch_disconnect`
+        (server/routers/index.py) calling `cancel()` after the query thread
+        has already returned and closed its connection makes `interrupt()`
+        land on an already-closed `duckdb.DuckDBPyConnection`, which raises
+        `duckdb.ConnectionException` — on a task nothing ever awaits again
+        once the route only `.cancel()`s it, so a perfectly normal client
+        disconnect surfaces as an unhandled "Task exception was never
+        retrieved" warning instead of nothing at all.
+
+        `cancelled` itself is untouched: `check()` must keep raising for a
+        token cancelled before this call, connection or no connection."""
+        with self._lock:
+            self._con = None
 
     def cancel(self) -> None:
         """Safe to call from any thread — cross-thread is exactly what
