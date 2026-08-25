@@ -244,6 +244,66 @@ TEXT_EMBED_MODEL_TYPES = frozenset({"bert", "xlm-roberta", "nomic_bert",
 #: two: the `paths` refusal at the route, and this file's own MLX subset.
 EMBED_MODEL_TYPES = DUAL_EMBED_MODEL_TYPES | TEXT_EMBED_MODEL_TYPES
 
+#: Architecture suffixes that mean "this encoder has a TASK HEAD on it", and so
+#: is not an embedding model whatever its `model_type` says.
+#:
+#: **The same argument as `TEXT_EMBED_MODEL_TYPES`' comment, running the other
+#: way.** There the point was that `model_type` is only evidence where it
+#: distinguishes an encoder from a generative model. Here it is that `model_type`
+#: alone does not distinguish far enough: `BAAI/bge-reranker-base` is an
+#: `xlm-roberta` and `dslim/bert-base-NER` is a `bert`, both admitted by that
+#: set, and both are a fine-tuned encoder plus a head. A cross-encoder scores a
+#: PAIR of texts and has no single-text vector to give; a token classifier's
+#: pooled output is a by-product nothing trained. Pooling either returns a
+#: confident unit vector that means nothing, and — because `loaders()` returns
+#: EARLY on an embedding match — the repo never reaches another runner that might
+#: have recognised it, so the AI Models page shows four Load buttons and no
+#: correct one.
+#:
+#: `architectures` is the evidence, and it is present on every transformers
+#: config that has a head, because it is what `AutoModel` dispatches on.
+#:
+#: `ForMaskedLM` is deliberately NOT here: that is the pretraining objective an
+#: ordinary base encoder ships with (`BertForMaskedLM`, `ModernBertForMaskedLM`),
+#: the head is discarded when the encoder is used for embeddings, and excluding
+#: it would reject a large share of the legitimate models this gate exists to
+#: admit.
+#: `"Classification"` unqualified rather than the four `For*Classification`
+#: spellings, because the modality is in the middle of the name and enumerating
+#: them is a list to forget an entry in: `ForSequenceClassification` (rerankers),
+#: `ForTokenClassification` (NER), `ForImageClassification` and
+#: `ForAudioClassification` all end the same way, and a head named after a
+#: modality nobody has added yet still ends that way. The first draft of this
+#: constant listed the first two and a test on a `siglip` classifier caught the
+#: omission immediately.
+_TASK_HEAD_SUFFIXES = (
+    "Classification",              # rerankers, NER, image/audio classifiers
+    "ForQuestionAnswering",
+    "ForMultipleChoice",
+    "ForCausalLM",                 # a generative head on an encoder config
+    "ForConditionalGeneration",
+)
+
+
+def has_task_head(config: dict) -> bool:
+    """Does this config declare an architecture with a task head on it?
+
+    False when `architectures` is missing, empty or unreadable — absence of the
+    field is not evidence of a head, and a great many perfectly ordinary exports
+    omit it. That asymmetry is deliberate: the cost of missing a head here is one
+    repo offered to the embedding runner, and the cost of guessing one is
+    refusing a legitimate encoder.
+
+    ANY entry deciding it is also deliberate. The field is a list because a
+    checkpoint can declare several, and a repo that names a classification head
+    at all is one whose vectors nothing should be built on.
+    """
+    architectures = config.get("architectures")
+    if not isinstance(architectures, (list, tuple)):
+        return False
+    return any(isinstance(name, str) and name.endswith(_TASK_HEAD_SUFFIXES)
+               for name in architectures)
+
 #: …and the subset MLX reads. Same field, shorter list, and it is
 #: `mlx-embeddings` 0.1.0's own module directory intersected with the gate above:
 #: it ships `siglip.py`, `bert.py`, `modernbert.py` and `xlm_roberta.py` (the
@@ -1320,9 +1380,16 @@ def embed_model_type(config: dict) -> str | None:
     Lowercased, because `model_type` is written by whoever exported the
     checkpoint and a `SigLIP` or a `ModernBERT` would otherwise read as an
     unknown family.
+
+    **A TASK HEAD disqualifies the checkpoint whatever the family says** — see
+    `has_task_head`. `model_type` is the architecture family and says nothing
+    about what was fine-tuned onto it, so a reranker and the base encoder it was
+    built from are indistinguishable by that field alone.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str):
+        return None
+    if has_task_head(config):
         return None
     model_type = model_type.strip().lower()
     return model_type if model_type in EMBED_MODEL_TYPES else None

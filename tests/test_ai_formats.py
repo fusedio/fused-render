@@ -1058,3 +1058,110 @@ def test_the_sidecar_alone_is_not_weights():
     `.onnx`, so the old suffix test missed this one correctly and everything
     above it incorrectly."""
     assert formats.onnx_export_graphs(["onnx/model.onnx_data"]) == ()
+
+
+# -- task heads: an encoder plus a head is not an embedding model -------------
+#
+# Gating on `model_type` alone is not enough, because that field is the
+# architecture FAMILY and says nothing about what was fine-tuned onto it. And
+# because `loaders()` returns EARLY on an embedding match, a wrong admission here
+# is not a missing tag — the repo never reaches another runner, so the page shows
+# four Load buttons and no correct one, and the runner hands back pooled vectors
+# from a head-less encoder that nothing downstream can identify as meaningless.
+
+
+def test_a_reranker_is_not_an_embedding_model():
+    """`BAAI/bge-reranker-base`: an `xlm-roberta`, admitted by
+    `TEXT_EMBED_MODEL_TYPES`, and a CROSS-encoder — it scores a PAIR of texts
+    and has no single-text vector to give."""
+    assert formats.embed_model_type({
+        "model_type": "xlm-roberta",
+        "architectures": ["XLMRobertaForSequenceClassification"],
+    }) is None
+
+
+def test_a_token_classifier_is_not_an_embedding_model():
+    """`dslim/bert-base-NER`: a `bert`, and its pooled output is a by-product
+    nothing trained."""
+    assert formats.embed_model_type({
+        "model_type": "bert",
+        "architectures": ["BertForTokenClassification"],
+    }) is None
+
+
+def test_the_base_encoders_those_were_built_FROM_still_pass():
+    """The guard against the fix becoming a wall — these are the models the gate
+    exists to admit, and they differ from the two above only in the head."""
+    for model_type, architecture in (
+            ("bert", "BertModel"),
+            ("xlm-roberta", "XLMRobertaModel"),
+            ("modernbert", "ModernBertModel"),
+            ("nomic_bert", "NomicBertModel"),
+    ):
+        assert formats.embed_model_type({
+            "model_type": model_type, "architectures": [architecture],
+        }) == model_type
+
+
+def test_ForMaskedLM_is_still_an_embedding_model():
+    """**The exclusion that would have done real damage.** `ForMaskedLM` is the
+    pretraining objective an ordinary base encoder ships with; the head is
+    discarded when the encoder is used for embeddings, and rejecting it would
+    turn away a large share of the legitimate models here."""
+    for architecture in ("BertForMaskedLM", "ModernBertForMaskedLM",
+                         "XLMRobertaForMaskedLM"):
+        assert formats.embed_model_type({
+            "model_type": "bert", "architectures": [architecture],
+        }) == "bert"
+
+
+def test_a_missing_architectures_field_is_not_evidence_of_a_head():
+    """Deliberately asymmetric: the cost of missing a head is one repo offered to
+    the embedding runner, and the cost of GUESSING one is refusing a legitimate
+    encoder. Plenty of ordinary exports omit the field."""
+    assert formats.embed_model_type({"model_type": "bert"}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": []}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": None}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": "BertModel"}) == "bert"
+
+
+def test_ANY_declared_head_disqualifies_the_checkpoint():
+    """`architectures` is a list because a checkpoint can declare several, and a
+    repo naming a classification head at all is one whose vectors nothing should
+    be built on."""
+    assert formats.embed_model_type({
+        "model_type": "bert",
+        "architectures": ["BertModel", "BertForSequenceClassification"],
+    }) is None
+
+
+def test_a_dual_encoder_with_a_head_is_excluded_too():
+    """The gate is one question for both halves, so the head check has to cover
+    the dual families as well as the prose ones."""
+    assert formats.embed_model_type({
+        "model_type": next(iter(formats.DUAL_EMBED_MODEL_TYPES)),
+        "architectures": ["SiglipForImageClassification"],
+    }) is None
+
+
+def test_the_reranker_reaches_no_embedding_runner_through_loaders():
+    """The end-to-end consequence, and the reason this matters more than a tag:
+    `loaders()` returns early on an embedding match, so the wrong admission also
+    denied the repo every other runner."""
+    reranker = formats.loaders(
+        repo_id="BAAI/bge-reranker-base", names=set(), dirnames={"onnx"},
+        config={"model_type": "xlm-roberta",
+                "architectures": ["XLMRobertaForSequenceClassification"]},
+        torch_weights=True, onnx_weights=True)
+    assert "onnx-embed" not in reranker
+    assert "mlx-embed" not in reranker
+
+    ner = formats.loaders(
+        repo_id="dslim/bert-base-NER", names=set(), dirnames=set(),
+        config={"model_type": "bert",
+                "architectures": ["BertForTokenClassification"]},
+        torch_weights=True)
+    assert "mlx-embed" not in ner
