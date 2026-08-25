@@ -195,7 +195,15 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
             return {"ok": False, "error": "unknown plugin"}
         # No git commit — plugins/ is ignored; restart applies it. Best-effort
         # (the claude CLI may be absent, or exceed claude_cli's timeout; plugins.md §5).
-        res = lib.claude_cli("plugin", "update", id, "--scope", "user")
+        #
+        # -y for the same reason `install` below passes it, and the CLI documents
+        # it on `update` too: a marketplace whose plugin manifest has CHANGED its
+        # declared install command re-prompts for consent on update, and the flag
+        # is required outright when stdout is not a TTY — which it never is here,
+        # `claude_cli` captures it. Without it such an update sits on a prompt
+        # nobody can answer until the timeout, and the user is told it timed out
+        # rather than that consent was wanted.
+        res = lib.claude_cli("plugin", "update", id, "--scope", "user", "-y")
         if not res["ok"]:
             return {"ok": False, "error": res["stderr"] or "update failed"}
         return {"ok": True, "id": id, "stdout": res["stdout"]}

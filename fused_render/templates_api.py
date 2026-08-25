@@ -1122,15 +1122,18 @@ def api_new_template(body: dict = Body(...), x_fused: str | None = Header(defaul
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create template {name!r}: {exc}")
 
-    # Refresh the skills the starter CLAUDE.md references: the plugin root a
-    # session we launch is handed (D216) and the user-level copy for the user's
-    # own sessions (D185). Best-effort inside — a skill copy must never fail
-    # scaffolding.
+    # Refresh the plugin root a session we launch is handed (D216), which is
+    # what supplies the skills the starter CLAUDE.md references. Best-effort
+    # inside — a skill copy must never fail scaffolding.
+    #
+    # The user's OWN sessions are covered by the published plugin instead
+    # (user_plugin.py, D492) and deliberately not touched here: that path is a
+    # `claude` spawn that clones over the network, which has no business on a
+    # create-template request, and it is machine-wide rather than per-folder so
+    # there is nothing about a new template for it to repair.
     from fused_render.skill_plugin import export_skill_plugin_env
-    from fused_render.user_skills import sync_user_skills
 
     export_skill_plugin_env()
-    sync_user_skills()
 
     if keys:
         # Additive only: append the new template to whatever list a key
