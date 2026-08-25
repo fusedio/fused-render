@@ -102,6 +102,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai import catalog as _catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import formats
@@ -678,6 +679,37 @@ def _has_torch_weights(snapshot_dir: str) -> bool:
     return False
 
 
+def _has_onnx_weights(snapshot_dir: str) -> bool:
+    """Is there an export in this revision the ONNX runner could actually open?
+
+    `_has_torch_weights`'s sibling, and a WALK for a stronger reason than that
+    one has: every ONNX export this app reads keeps its graphs in an `onnx/`
+    SUBDIRECTORY (`onnx/text_model.onnx`, `onnx/model.onnx`), so a check over the
+    snapshot's top level would conclude that no ONNX repo anywhere holds weights
+    — the format's convention is the subfolder, not the root.
+
+    **The LAYOUT question, not "is there an `.onnx` here".** It used to be the
+    latter — `any(name.endswith(formats.ONNX_WEIGHTS))` over the walk — which is
+    weaker than what `onnx_embed` requires, and every gap between the two was a
+    Load button that could only fail once the download had run: a root-level
+    `model.onnx` from a plain `optimum` export, a repo publishing nothing but
+    `onnx/model_q4.onnx`, a dual export missing its vision tower. The page must
+    not offer what the runner will refuse, which is the same defect as the
+    engine-gap bug one level down.
+
+    `formats.onnx_export_graphs` is that question, in the module both this and
+    the runner read, for the reason the old docstring gave for sharing
+    `ONNX_WEIGHTS`: the page and the runner must not come to disagree.
+    """
+    names = []
+    for dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        rel = os.path.relpath(dirpath, snapshot_dir)
+        for name in filenames:
+            joined = name if rel == "." else os.path.join(rel, name)
+            names.append(joined.replace(os.sep, "/"))
+    return bool(formats.onnx_export_graphs(names))
+
+
 def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[int, bool]:
     """Parameters in one safetensors file, and whether any of them were unpacked.
 
@@ -912,6 +944,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         dirnames=dirnames,
         config=config,
         torch_weights=_has_torch_weights(snapshot),
+        onnx_weights=_has_onnx_weights(snapshot),
         gguf_architecture=gguf_architecture,
     )
     # The snapshot's own top-level listing, carried past this function for
@@ -1163,9 +1196,11 @@ def _part_progress(sidecar: str) -> int:
     return done
 
 
-def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | None, str | None]:
+def _engine(meta: _RepoMeta, reading: _tasks.Classification,
+            repo_id: str = "") -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
-    AS — `(None, capability)` when nothing here reads the format.
+    AS — `(None, capability)` when nothing here reads the format AND the
+    curation has no opinion either.
 
     Two questions, deliberately answered together, because either alone lies.
     The FORMAT says which runners could open it (`meta.loaders`); the REGISTRY
@@ -1186,6 +1221,55 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | Non
     """
     capability = reading.capability
     if not meta.loaders:
+        # **No FORMAT evidence — which is not the same as no evidence.** Two very
+        # different repos land here: one that is fully downloaded and whose files
+        # no engine reads (the honest `None`, and the answer this field has
+        # always given), and one whose download never FINISHED, where there are
+        # no weights to read yet and so nothing for `formats.loaders()` to judge.
+        #
+        # For the second, the CURATION knows what the format check cannot: a
+        # curated id belongs to a named engine whether or not a byte has landed.
+        # That is what makes this branch answerable at all — and it is the gap
+        # `google/siglip2-so400m-patch14-384` fell into on Linux, where the card
+        # showed no engine, so the resume was offered and the download then died
+        # inside a runner that cannot read MLX safetensors.
+        #
+        # An UNCURATED repo still answers `None`, deliberately: nobody here has
+        # an opinion about a repo the user found themselves, and inventing one
+        # would be claiming an engine reads a format nothing has looked at. Its
+        # resume stays offered and the runner's own format check stays the
+        # backstop — exactly the behaviour every uncurated repo already had.
+        gap = _catalog.engine_gap(repo_id) if repo_id else None
+        if gap is not None:
+            offering = [_ai_registry.by_code(code) for code in gap["engines"]]
+            offering = [runner for runner in offering if runner is not None]
+            if offering:
+                runner = offering[0]
+                return {
+                    "code": runner.code,
+                    "label": runner.label,
+                    "shortLabel": runner.short,
+                    "familyLabel": runner.family,
+                    "available": False,
+                    # `engine_gap`'s sentence, not one composed here — the card
+                    # and the load route must say the same thing, and that is
+                    # the reason that function exists. It is also deliberately
+                    # UNLIKE the "switch it on the Engines tab" sentence below:
+                    # that one is a remedy on THIS machine, this one is "no
+                    # engine here can read this, fetch the other format".
+                    "reason": gap["reason"],
+                    # **The flag the resume gate reads, and it is why
+                    # `available: False` alone is not enough.** That is also
+                    # false for a repo whose engine is merely UNSELECTED ("switch
+                    # it on the Engines tab"), and resuming one of those is
+                    # perfectly fine — the bytes download either way and only the
+                    # LOAD needs a switch. This says something stronger: no
+                    # engine available on this machine can read these files at
+                    # all, so there is nothing a resume could lead to. Absent
+                    # (rather than false) on every other row, so a reader cannot
+                    # mistake "not flagged" for "checked and fine".
+                    "unservable": True,
+                }, gap["capability"]
         return None, capability
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
     if capability is None and not reading.ruled_out:
@@ -1312,6 +1396,62 @@ class CacheReading(NamedTuple):
     runner_reason: str | None = None
 
 
+def embed_family(repo_id: str) -> str | None:
+    """`"dual"`, `"text"`, or None when the cached snapshot cannot say.
+
+    **Exported, and read TWICE by `ai_runtime` for two different questions**
+    (SPEC §40): whether the catalog entry may advertise `paths`, and whether the
+    embed route must refuse them. THREE-VALUED on purpose, because those two
+    questions want opposite treatment of "cannot tell":
+
+    * the CATALOG field fails closed — `== "dual"`, so an unknown answers False
+      and the Playground draws no image mode. `_accepts_image`'s discipline: an
+      affordance whose request then 400s is worse than a missing one.
+    * the ROUTE refusal fails OPEN — `== "text"`, so it refuses only on positive
+      evidence that there is no vision tower. A cold model has no snapshot to
+      read, and a `paths` call on one must still answer `model_loading` and
+      start the download, exactly as it does today; turning that into a 400
+      would break a working call on the strength of a file not being there yet.
+
+    Both readings are COMPUTED and neither is curated, which is what makes the
+    pair safe: they can only ever disagree in the direction where the picker
+    hides something the route would have allowed, never the reverse.
+
+    Read off `config.json`'s `model_type` through `formats`' own sets — the same
+    evidence `formats.loaders()` uses to decide which engines get a Load button
+    — rather than off a `vision_config` block alone. A dual encoder does declare
+    one, but `model_type` is the field this app already treats as decisive here,
+    and reading two different things would let the page and the route classify
+    one repo differently. None for a `model_type` that is not an embedding
+    family at all: this answers "which KIND of embedding model", not "is this an
+    embedding model".
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    if not config:
+        return None
+    family = formats.embed_model_type(config)
+    if family is None:
+        return None
+    return "dual" if family in formats.DUAL_EMBED_MODEL_TYPES else "text"
+
+
+def _embed_snapshot_dir(repo_id: str) -> str | None:
+    """`repo_id`'s default cached snapshot directory, or None.
+
+    Split out of `has_vision_tower` when `embed_family` needed the same three
+    lines: the path-segment guard is the part that must not be duplicated, since
+    a repo id reaches both of these out of a request body and is not a place to
+    go looking for `..` or a path separator.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    return _default_snapshot(os.path.join(hub_cache_dir(), dirname))
+
+
 def has_vision_tower(repo_id: str) -> bool:
     """Does the cached snapshot of `repo_id` declare a vision tower?
 
@@ -1343,14 +1483,12 @@ def has_vision_tower(repo_id: str) -> bool:
     and "no image support" is the failure-closed direction for a control this
     permissive.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    # The same path-segment guard `cached_capability` applies below: a repo id
-    # reaches here out of a request body, and is not a place to go looking
-    # for `..` or a path separator.
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
-        return False
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
-    snapshot_dir = _default_snapshot(repo_dir)
+    # `_embed_snapshot_dir` carries the path-segment guard `cached_capability`
+    # applies below — a repo id reaches here out of a request body, and is not a
+    # place to go looking for `..` or a path separator. Shared with
+    # `embed_family` above rather than written twice, because that guard is
+    # exactly the line a second copy would come to differ on.
+    snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return False
     config = _read_json(os.path.join(snapshot_dir, "config.json"))
@@ -1389,7 +1527,7 @@ def cached_capability(repo_id: str) -> CacheReading:
     # The page's own join, in the page's own order: the task first, then the
     # decisive formats, which is what `_engine` exists to combine.
     reading = _tasks.classify(meta.task)
-    _row, capability = _engine(meta, reading)
+    _row, capability = _engine(meta, reading, repo_id)
     if (capability is None and meta.loaders
             and reading.support == _tasks.UNKNOWN and not meta.unmapped_arch):
         # Nothing DECISIVE and nothing that told us what this IS, but the
@@ -1683,7 +1821,7 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         if kind == "model" and component is None else _tasks.NOTHING
     )
     engine, capability = (
-        _engine(meta, reading) if kind == "model" and component is None
+        _engine(meta, reading, repo_id) if kind == "model" and component is None
         else (None, None)
     )
     return {

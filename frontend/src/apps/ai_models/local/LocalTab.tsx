@@ -405,7 +405,18 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     // — then the curation, which knows every model this tab's own Download
     // button ever started a pull for. Null for a repo neither can place, and the
     // card says so on a disabled button rather than dropping the control.
-    const resumeCapability = r.capability ?? capabilityById.get(r.id) ?? null;
+    //
+    // **`unservable` overrules both, and it has to be checked FIRST.** A partly
+    // downloaded repo has no weights, so `capabilityById` correctly omits a
+    // Mac-only model on Linux — but `r.capability` is read off the config that
+    // DID land and happily says "embeddings", which put the resume back and sent
+    // the download into a runner that cannot read the format. The server is what
+    // knows no engine here can serve it (`hub_cache._engine` ->
+    // `catalog.engine_gap`), and this is the same answer the load and download
+    // routes refuse on — so the card cannot offer what the route would reject.
+    const resumeCapability = r.engine?.unservable
+      ? null
+      : r.capability ?? capabilityById.get(r.id) ?? null;
     return (
       <RepoCard
         key={r.path}

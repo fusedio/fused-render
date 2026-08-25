@@ -1,0 +1,49 @@
+# The ONNX embedding runner's environment — the CUDA variant (SPEC §40, PY-16).
+#
+# Identical to `onnx_embed/pyproject.toml` except for the one thing a hardware
+# variant is allowed to change: which onnxruntime distribution is installed.
+# Read that file first — it carries the reasoning for the dependency list, the
+# ceilings, and why this engine exists at all.
+#
+# **Not about speed.** A dual encoder is one forward pass over a short sequence
+# or one image, milliseconds already on a CPU, so this row buys no meaningful
+# throughput. It exists for the machine that already has a working NVIDIA card
+# and would rather use it than run fp32 on the CPU — opted into from the Engines
+# tab, exactly like `diffusers-image-cuda`, because the speed argument is
+# genuinely a wash and nobody should be moved here who did not ask. The registry
+# orders it BELOW the CPU row so `auto` never reaches it.
+#
+# **`onnxruntime-gpu` REPLACES `onnxruntime`, it does not accompany it.** Both
+# distributions install the same `onnxruntime` import package, so declaring the
+# pair puts two copies of one module in the venv and which one wins is whatever
+# uv unpacked last. The CPU line is therefore absent rather than joined — and
+# the CPU provider is still available, because the GPU build registers
+# `CPUExecutionProvider` alongside `CUDAExecutionProvider` (which is what
+# `onnx_embed._placement`'s fallback chain relies on).
+#
+# **No `[tool.uv.index]`, unlike the torch CUDA sibling this replaces.**
+# `onnxruntime-gpu` is published on PyPI proper for both Linux and Windows and
+# pulls its CUDA and cuDNN libraries in as ordinary `nvidia-*` wheels, so there
+# is no `download.pytorch.org` mirror to route around and no per-platform
+# source split. That is one of the two savings this whole engine is for.
+#
+# Every dependency below is a verbatim copy of the CPU folder's six beyond
+# onnxruntime and must stay one. A version drifting between the four would make
+# "which hardware" also mean "which tokenizer".
+[project]
+name = "fused-render-runner-onnx-embed-cuda"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "onnxruntime-gpu>=1.29,<2",
+    "numpy>=1.26,<3",
+    "tokenizers>=0.23,<0.24",
+    "pillow",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

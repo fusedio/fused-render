@@ -263,6 +263,13 @@ export default function PlaygroundTab() {
   // engine — and answering that click by silently opening a chat box is a
   // worse answer than naming the reason. Same for a `?model=` link to a model
   // whose capability is ruled out here.
+  //
+  // That card stays ONE card even though the embeddings stage now has TWO modes
+  // (lines, and pictures where the model has a vision tower — SPEC §40): the
+  // modes are a property of the selected MODEL and not of the capability, so a
+  // second static card would promise an image search on a machine whose
+  // resolved model is a prose encoder. The dispatch below is unchanged for the
+  // same reason — one capability, one stage, and the stage asks the entry.
   const blockedAsk = useMemo(() => {
     if (!asked && !askedCap) return null;
     const row =
@@ -900,6 +907,7 @@ export default function PlaygroundTab() {
                 key={selected.model.id}
                 model={selected.model.id}
                 downloaded={selected.model.downloaded}
+                entry={selected.model}
               />
             ) : (
               // A capability a future runner adds before this tab learns it:

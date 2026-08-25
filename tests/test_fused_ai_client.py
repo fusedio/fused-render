@@ -485,6 +485,62 @@ def test_the_clients_transcribe_wire_keys_match_the_servers_constant():
     assert fused_ai._TRANSCRIBE_WIRE_KEYS == ai_runtime._TRANSCRIBE_OPTIONS
 
 
+def test_the_clients_embed_wire_keys_match_the_servers_constant():
+    """The third of the three pins, and `kind` is why it was written (SPEC §40).
+
+    `kind` is refused per MODEL rather than per endpoint — a dual encoder has no
+    retrieval convention — so the failure a drift here produces is not a 400 a
+    caller can see: it is every retrieval model embedding queries as documents,
+    which returns unit-length vectors of the right dimension and worse recall,
+    with nothing measurable to say so. Exactly the class of bug the image and
+    transcribe pins already exist for (D413 x3).
+    """
+    from fused_render.server.routers import ai_runtime
+    assert fused_ai._EMBED_WIRE_KEYS == ai_runtime._EMBED_OPTIONS
+
+
+def test_embed_forwards_kind_only_when_it_is_given_one():
+    """An absent key is "I did not say" and the server applies its own default;
+    an explicit one on a model with no retrieval convention is a 400. So sending
+    a default from the client would turn every legal dual-encoder call into a
+    refused one — the same reason `model` is conditional."""
+    sent = []
+    original = fused_ai._post_json
+    try:
+        fused_ai._post_json = lambda p, b, timeout=None: (
+            sent.append(b), {"ok": True, "result": {"vectors": [[1.0]], "dim": 1}})[1]
+        fused_ai.embed(texts=["a"])
+        assert "kind" not in sent[0]
+        fused_ai.embed(texts=["a"], kind="query")
+        assert sent[1]["kind"] == "query"
+    finally:
+        fused_ai._post_json = original
+
+
+def test_the_bridge_and_the_client_forward_the_same_embed_options():
+    """`runtime.js` is the third copy of this surface, and it is JS — no import
+    can pin it, so the assertion is over its source.
+
+    Cheap and worth it: a page author meets `fused.ai.embed` through the bridge
+    and a `.py` author through this module, and a parameter one forwards and the
+    other drops is a feature that works in half the app. Read as text rather
+    than parsed, the same way `frontend/.../repoCardControls.test.ts` pins the
+    Local card's own conditions.
+    """
+    import pathlib
+
+    runtime = (pathlib.Path(fused_ai.__file__).parents[2]
+               / "static" / "runtime.js").read_text(encoding="utf-8")
+    embed = runtime[runtime.index("function aiEmbed(opts)"):]
+    embed = embed[:embed.index("/api/ai/embed")]
+    for option in sorted(fused_ai._EMBED_WIRE_KEYS):
+        assert f"opts.{option}" in embed or f"body.{option}" in embed, option
+    # …and the one it must NOT forward from a caller's own options object:
+    # `base` is bridge-injected from the page's own `?path=`, so a caller
+    # passing it is passing an option that does not exist from where they stand.
+    assert "opts.base" not in embed
+
+
 def test_the_ai_object_mirrors_the_js_surface():
     assert callable(fused_ai.ai.text)
     assert callable(fused_ai.ai.stream)

@@ -77,13 +77,41 @@ IMAGE_GENERATION = "text-to-image"
 #: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
 #: one string rather than three that have to be kept in step.
 SPEECH_TO_TEXT = "automatic-speech-recognition"
-#: Vectors, not words: one dual-encoder model that turns a piece of text OR an
-#: image into a point in the same space, so a page can compare them. The plain
-#: English name rather than the Hub's `feature-extraction`, unlike
-#: `SPEECH_TO_TEXT` above — the tag a SigLIP repo actually carries is
-#: `zero-shot-image-classification`, which describes one thing you can DO with
-#: those vectors and not what the runner returns, so borrowing it would have
-#: named the capability after a use case it does not implement.
+#: Vectors, not words: one model that turns a piece of text — or, where the
+#: checkpoint has a vision tower, an image — into a point in one space, so a page
+#: can compare them.
+#:
+#: **TWO MODEL SHAPES under one capability, which no other row here has.** A
+#: DUAL ENCODER (SigLIP, CLIP) projects text and pictures into the same space and
+#: answers `paths`; a PROSE ENCODER (BERT-family, 512 to 8192 tokens) answers
+#: text alone and is what makes RAG, document search and clustering possible —
+#: impossible on a dual encoder at any chunk size, since a SigLIP text tower
+#: truncates at 64 tokens. `formats.DUAL_EMBED_MODEL_TYPES` and
+#: `formats.TEXT_EMBED_MODEL_TYPES` are the two halves, and both engines here
+#: serve both.
+#:
+#: **So `paths` and `kind` are PER-MODEL rather than per-capability**, and that
+#: is the design consequence: the route refuses `paths` for a model with no
+#: vision tower and `kind` for a model with no retrieval convention, each with a
+#: 400 naming the model — the shape `_accepts_image` already uses for text
+#: generation. A capability-level answer would have to be the union (offer
+#: everything, fail inside a worker) or the intersection (offer neither, and the
+#: image half of this capability disappears).
+#:
+#: **This capability was split until this branch, and the split is what got
+#: reversed.** A separate `embed-text` capability meant two resident slots on a
+#: machine that has budget for one, two catalogs, two bridge calls and two sets
+#: of docs, to serve one question — "turn this into a vector" — whose answer
+#: differs only in whether the checkpoint has a second tower.
+#:
+#: **It is also the one capability reached by MANY Hub tags**
+#: (`ai/tasks.py`): `zero-shot-image-classification` for a dual encoder,
+#: `feature-extraction` and `sentence-similarity` for a prose one. The plain
+#: English name rather than any of them, unlike `SPEECH_TO_TEXT` above, and for
+#: two reasons that both still hold: `zero-shot-image-classification` describes
+#: one thing you can DO with these vectors rather than what the runner returns,
+#: and no single tag covers both shapes. A future `reranking` capability sits
+#: beside this one without renaming it.
 EMBEDDINGS = "embeddings"
 #: The Hub's own tag, like `IMAGE_GENERATION` and `SPEECH_TO_TEXT` are — a
 #: diffusers text-to-video pipeline's `_class_name` folds onto "video
@@ -301,26 +329,55 @@ def _always() -> Availability:
     return Availability(True)
 
 
-def _torch_platform() -> Availability:
-    """`transformers-embed`'s supported production platforms.
+def _onnx_platform() -> Availability:
+    """`onnx-embed`'s supported platforms — a HARD exclusion, meaning "there is
+    no wheel to install", the same kind of claim `_llamacpp_platform` makes.
 
-    This is the probe the withdrawn `transformers-text` family used (D416),
-    kept alive because the embed runner installs the same torch from the same
-    `whl/cpu` index — the withdrawal was about maintaining three TEXT rows
-    llama.cpp had obsoleted, not about torch ceasing to run anywhere. MLX is
-    preferred on Apple Silicon by registry order, but torch's MPS path is a
-    working fallback when the MLX runner is unavailable. Intel macOS is not a
-    distribution target, and availability drives the catalog and Load button,
-    so it must not be advertised merely because torch happens to publish a
-    wheel there.
+    Narrower by ARCHITECTURE than the withdrawn torch gate this replaces
+    (Windows or Linux on ANY machine, plus Apple Silicon), and deliberately so:
+    PyPI's `onnxruntime` 1.29 publishes `macosx_14_0_arm64`,
+    `manylinux_2_28_{x86_64,aarch64}`, `win_amd64` and `win_arm64` — read off
+    the release's own wheel list rather than assumed — and nothing else. There
+    is no macOS x86_64 build and no Linux riscv64 one, so both are excluded
+    because `uv sync` has NOTHING to install, an immediate total failure the
+    moment a machine reaches this row.
+
+    Checked by architecture per OS for `_llamacpp_platform`'s reason exactly:
+    `machine()` spells one architecture differently per OS (`"AMD64"` on
+    Windows, `"x86_64"` on Linux, `"arm64"` on Darwin), so each branch checks
+    its own OS's spelling rather than one shared tuple that would silently stop
+    matching the moment a branch used the wrong OS's name for it.
+
+    Note this row is WIDER than `_llamacpp_platform` on Windows — onnxruntime
+    publishes `win_arm64` and the llama.cpp index does not — so a Windows ARM64
+    machine with no local text engine still gets local embeddings.
     """
     system = platform.system()
     machine = platform.machine()
-    if (
-        system in ("Windows", "Linux")
-        or (system == "Darwin" and machine == "arm64")
-    ):
+    if system == "Linux" and machine in ("x86_64", "aarch64"):
         return Availability(True)
+    if system == "Windows" and machine in ("AMD64", "ARM64"):
+        return Availability(True)
+    if system == "Darwin" and machine == "arm64":
+        return Availability(True)
+    if system == "Darwin":
+        return Availability(
+            False,
+            "needs Apple Silicon — onnxruntime publishes no macOS x86_64 wheel "
+            f"(this is {system.lower()}/{machine})",
+        )
+    if system == "Linux":
+        return Availability(
+            False,
+            "needs x86_64 or aarch64 — onnxruntime publishes no "
+            f"{machine} wheel for Linux (this is {system.lower()}/{machine})",
+        )
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 or ARM64 machine — onnxruntime publishes no "
+            f"{machine} wheel for Windows (this is {system.lower()}/{machine})",
+        )
     return Availability(
         False,
         f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
@@ -917,6 +974,56 @@ def _vulkan() -> Availability:
     )
 
 
+def _directml() -> Availability:
+    """`onnx-embed-directml`'s platform — Windows on x86_64, and that is all.
+
+    **The simplest probe in this section, and that is the right answer rather
+    than an omission.** `_vulkan` beside it is long because a Vulkan wheel
+    supplies neither the loader nor the driver ICD, so `import llama_cpp` HARD
+    FAILS on a machine missing either — there is a real, catastrophic failure to
+    gate against. DirectML has no equivalent: `onnxruntime-directml` links
+    against `DirectML.dll` and `d3d12.dll`, both of which ship with Windows
+    itself from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
+    adapter — a discrete NVIDIA or AMD card, Intel Arc, or the integrated GPU
+    every desktop Windows machine has. There is no "no driver installed" state
+    to detect and nothing to `dlopen`-check.
+
+    **So "plus a present GPU" is not modelled as a second probe.** Enumerating
+    D3D12 adapters needs a `ctypes` call into `dxgi.dll` — a system binary
+    question SPEC.md's rule keeps out of a per-page-render path — and every
+    answer it could give on a machine that reaches this row is "yes". A probe
+    that always answers yes is a probe whose failure mode is entirely its own
+    bugs. The row is also OPT-IN from the Engines tab and sits below the CPU row,
+    so `auto` never reaches it: nobody lands here without choosing to.
+
+    `win_amd64` only, from the distribution's own wheel list (checked against
+    `onnxruntime-directml` 1.24.4, which publishes `cp311`-`cp314` for
+    `win_amd64` and no other tag) — so a Windows ARM64 machine is refused here
+    even though plain `onnxruntime` serves it.
+
+    Not cached, for `_rocm`'s reasons: the platform cannot change under a
+    running app, but every other probe in this section declines caching and an
+    `lru_cache` on one of them would make test ORDER significant against the
+    monkeypatch style these tests use.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Windows" and machine == "AMD64":
+        return Availability(True)
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 machine — onnxruntime-directml publishes "
+            f"win_amd64 only, no win_arm64 (this is {system.lower()}/{machine})",
+        )
+    return Availability(
+        False,
+        "needs Windows — DirectML is Direct3D 12's compute layer and the "
+        f"onnxruntime-directml wheel is published for it alone (this is "
+        f"{system.lower()}/{machine})",
+    )
+
+
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
 # below it serves Windows and Linux plus the Apple Silicon fallback. All four
@@ -1230,19 +1337,26 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
-    # the Macs and the torch row below it keeps every other platform — plus the
+    # the Macs and the ONNX row below it keeps every other platform — plus the
     # Macs whenever the MLX folder is not built yet or its package cannot run.
     #
     # **The two runners share an embedding SPACE, which no other pair here
-    # does.** mlx-embeddings reads the same `google/siglip2-*` safetensors
-    # transformers reads, through its own port of the same architecture, and the
-    # cosine similarities the two produce for the same texts and images agree to
-    # about three decimals (measured on `siglip2-base-patch16-384`). So a page
-    # that embedded a folder of images on one engine and searches it from the
-    # other gets sensible answers, which is a promise the whisper and text pairs
-    # explicitly cannot make about their weights. It is not a promise this app
-    # relies on anywhere — vectors are the caller's to store, and a switch is
-    # still a switch — but it is why the engine choice here is genuinely free.
+    # does.** They read DIFFERENT FILES out of the same models — mlx-embeddings
+    # opens `mlx-community` safetensors through its own port of the
+    # architecture, `onnx-embed` opens an `onnx-community` graph export — and
+    # the cosine similarities the two produce for the same texts and images
+    # still agree to about three decimals (measured on
+    # `siglip2-base-patch16-384`). So a page that embedded a folder of images on
+    # one engine and searches it from the other gets sensible answers, which is a
+    # promise the whisper and text pairs explicitly cannot make about their
+    # weights. It is not a promise this app relies on anywhere — vectors are the
+    # caller's to store, and a switch is still a switch — but it is why the
+    # engine choice here is genuinely free.
+    #
+    # **The two engines' CATALOG lists are separate, and that follows from the
+    # files rather than from the vectors** (`catalog.py`'s keying rule): a Mac
+    # cannot open an ONNX export and this engine cannot open MLX safetensors, so
+    # the shared space does not make the downloads interchangeable.
     Runner(
         code="mlx-embed",
         capability=EMBEDDINGS,
@@ -1254,76 +1368,87 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="MLX Embeddings",
         # ONE LINE, per the naming note above the table. It describes the
         # DEFAULT on a Mac, so what it leads with is what the reader gets.
-        note="Embeds on the GPU, in the same vector space the Transformers "
-             "engine produces.",
+        note="Embeds on the GPU, in the same vector space the ONNX engine "
+             "produces.",
         _available=_apple_silicon,
     ),
-    Runner(
-        code="transformers-embed",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed"),
-        # "(CPU)" now that `transformers-embed-cuda`/`-rocm` sit below it, for
-        # the same reason `llamacpp-text` carries it once
-        # `llamacpp-text-vulkan` existed: the qualifier names the BUILD —
-        # PyPI's `whl/cpu` wheel, which also happens to run on Apple Silicon's
-        # GPU through MPS — never a prediction about the device, and a family
-        # with a sibling needs it on every row or two engines print the same
-        # name.
-        label="Transformers Embeddings (CPU)",
-        short_label="Transformers Embeddings (CPU)",
-        family_label="Transformers Embeddings",
-        # "the CPU build" rather than "runs on the CPU on any machine": with
-        # accelerated siblings now registered, this row is one build among
-        # three rather than the only way to run this engine, and the note has
-        # to say which one this is rather than describe the family.
-        note="The CPU build — quick on any machine, or Apple Silicon's GPU, "
-             "since one item is a single forward pass.",
-        _available=_torch_platform,
-    ),
-    # The CUDA and ROCm siblings, and neither contradicts the CPU row's own
-    # case for having no accelerated variant: a dual encoder is one forward
-    # pass over a short sequence or one image, milliseconds already on a CPU,
-    # so neither row buys meaningful speed. What they buy is DEVICE — a
-    # machine with a working NVIDIA or fully ROCm-capable AMD card runs
-    # `transformers-embed` in fp32 on the CPU by default, because that row
-    # pins PyPI's `whl/cpu` torch on every platform (see its own comment).
-    # These rows are for whoever would rather their card do it, opted into
-    # from the Engines tab exactly like `diffusers-image-cuda`/`-rocm` above —
-    # nobody is moved here who did not ask, because the speed argument
-    # genuinely is a wash.
+    # **ONNX Runtime — the cross-platform embedding engine, and the
+    # Apple-Silicon fallback behind `mlx-embed`.** There were three
+    # `transformers-embed*` rows here until this branch, running the identical
+    # checkpoints through torch; they went because a dual encoder is one forward
+    # pass over a short sequence or one image, so the compute was never the
+    # argument — the WHEEL was. Those rows installed 0.2 GB on the CPU index and
+    # up to 5.9 GB on an accelerated one to run a model whose own weights are
+    # 1.5 GB, where `onnxruntime` is tens of megabytes reading the same
+    # checkpoint re-exported. `tests/test_ai_onnx_embed_real_weights.py` is what
+    # licensed the swap: it asserts ≥0.999 cosine between the two engines'
+    # vectors on real weights, both towers.
     #
-    # Both below `transformers-embed`, CUDA before ROCm — the same order the
-    # image family uses — and per the naming note over this table and
-    # `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`,
-    # `auto` must keep resolving to the CPU/MPS row on every platform.
+    # Same four-row shape the torch family had: an unaccelerated build first —
+    # what every `auto` machine off Apple Silicon resolves to — then the
+    # accelerated ones, opt-in from the Engines tab and gated on the device
+    # actually being there. DirectML leads those three because it is the only
+    # one Windows can take, and unlike the CUDA/ROCm pair it is vendor-neutral,
+    # so ONE row covers every Windows GPU rather than a folder per vendor.
     Runner(
-        code="transformers-embed-cuda",
+        code="onnx-embed",
         capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_cuda"),
-        label="Transformers Embeddings (CUDA)",
-        short_label="Transformers Embeddings (CUDA)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and, like the ROCm row below, no
-        # desktop-stall warning: that hazard is a denoise holding the GPU for
-        # minutes, and an embed call is one forward pass at
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
+        # "(CPU)" on every row of a family with siblings, the discipline
+        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
+        # `onnxruntime`, which has no GPU provider compiled in — never a
+        # prediction about the device, and a family missing it on one row prints
+        # two engines under one name.
+        label="ONNX Embeddings (CPU)",
+        short_label="ONNX Embeddings (CPU)",
+        # The format claim with the hardware taken out: these weights are the
+        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
+        family_label="ONNX Embeddings",
+        # ONE LINE, per the naming note above the table. It describes the
+        # DEFAULT off a Mac, so what it leads with is what most readers get: a
+        # workload that is already fast, on an engine that is a small download.
+        note="Quick on any machine, since one item is a single forward pass — "
+             "and tens of megabytes of engine rather than gigabytes.",
+        _available=_onnx_platform,
+    ),
+    Runner(
+        code="onnx-embed-directml",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_directml"),
+        label="ONNX Embeddings (DirectML)",
+        short_label="ONNX Embeddings (DirectML)",
+        family_label="ONNX Embeddings",
+        # One line, and it names the vendor-neutrality because that is the fact
+        # that distinguishes this row from the CUDA one on a Windows machine
+        # with an NVIDIA card — both would work, and this one needs no
+        # `nvidia-*` wheels. No desktop-stall warning: that hazard is a denoise
+        # holding the GPU for minutes, and an embed call is one forward pass at
         # `embed_common.MAX_ITEMS` items, over in under a second.
-        note="Embeds on an NVIDIA GPU — a larger download for a workload "
-             "that is already fast on the CPU.",
+        note="Embeds on any Windows GPU — NVIDIA, AMD or Intel — through "
+             "Direct3D 12, with no vendor runtime to install.",
+        _available=_directml,
+    ),
+    Runner(
+        code="onnx-embed-cuda",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_cuda"),
+        label="ONNX Embeddings (CUDA)",
+        short_label="ONNX Embeddings (CUDA)",
+        family_label="ONNX Embeddings",
+        # Same `_cuda` probe the torch and diffusers CUDA rows use, unchanged:
+        # "does this machine have a usable NVIDIA GPU" does not become a
+        # different question because the wheel opening the model is onnxruntime.
+        note="Embeds on an NVIDIA GPU — a larger download for a workload that "
+             "is already fast on the CPU.",
         _available=_cuda,
     ),
     Runner(
-        code="transformers-embed-rocm",
+        code="onnx-embed-rocm",
         capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_rocm"),
-        label="Transformers Embeddings (ROCm)",
-        short_label="Transformers Embeddings (ROCm)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and unlike the image ROCm row's note, no
-        # desktop-stall warning: that hazard comes from holding the GPU for
-        # minutes during a denoise, and an embed call is one forward pass at
-        # `embed_common.MAX_ITEMS` items, over in under a second.
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_rocm"),
+        label="ONNX Embeddings (ROCm)",
+        short_label="ONNX Embeddings (ROCm)",
+        family_label="ONNX Embeddings",
         note="Embeds on a supported AMD GPU under Linux — a larger download "
              "for a workload that is already fast on the CPU.",
         _available=_rocm,

@@ -2387,6 +2387,17 @@ export interface AiModelRepo {
     familyLabel: string;
     available: boolean;
     reason: string | null;
+    /** **No engine available on this machine can read this repo's files at
+     *  all** — absent on every row where that is not the case, so "not
+     *  present" cannot be misread as "checked and fine".
+     *
+     *  Stronger than `available: false`, which is ALSO what a merely-unselected
+     *  engine reports ("switch it on the Engines tab"). That one still has a
+     *  working remedy here and its download is still worth resuming; this one
+     *  has neither, so the Local tab withholds the resume rather than offering
+     *  an action that ends in a refusal. `reason` carries the sentence,
+     *  including the counterpart id to fetch instead where one is curated. */
+    unservable?: boolean;
   } | null;
   /**
    * Set when this repo is not a model at all but a PART of one — the quantized
@@ -2788,6 +2799,26 @@ export interface AiCatalogModel {
    *  route would 400. False on every non-image capability, and optional on
    *  the wire only because an older server does not send it. */
   acceptsImage?: boolean;
+  /** Can this model be handed image PATHS to embed (SPEC §40)? The embeddings
+   *  half of `acceptsImage`: a dual encoder (SigLIP, CLIP) has a vision tower
+   *  and a joint space, so a photo and a sentence are comparable; a prose
+   *  encoder has one tower and handing it pixels embeds nothing. The server's
+   *  own answer, computed from the cached checkpoint's `model_type` — false on
+   *  every non-embeddings capability, and false for a model not on this disk
+   *  yet, because an affordance whose request then 400s is worse than a missing
+   *  one. Optional on the wire only because an older server does not send it. */
+  acceptsPaths?: boolean;
+  /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
+   *  `"nomic"`, … — or **null when it has none**, which is the case for every
+   *  dual encoder and for any repo whose convention the server does not
+   *  recognise.
+   *
+   *  Null is the signal, not a missing field: a retrieval encoder instructs a
+   *  question and a passage differently (`kind: "query" | "document"`), and a
+   *  model with no convention refuses `kind` at the route because it would
+   *  change nothing about the vectors. So a control drawn off the truthiness of
+   *  this field and the route's own refusal are keyed on the same fact. */
+  promptScheme?: string | null;
 }
 
 export interface AiCatalogCapability {

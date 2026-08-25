@@ -596,17 +596,27 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     # runner resolves here.
     for tag in offered:
         assert ai_tasks.classify(tag).supported, tag
-    # And the ones that made the complaint are gone, by name.
-    for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
+    # And the ones that made the complaint are gone, by name — MINUS the two
+    # that legitimately joined. `feature-extraction` and `sentence-similarity`
+    # were on this list for as long as the embedding capability meant dual
+    # encoders only: what wears them is a text encoder, and nothing here could
+    # open one, so offering the filter promised a Load button that then refused.
+    # Both engines load a prose encoder now (SPEC §40's widening), so the promise
+    # is real and the two moved out of this list into the `capability_for_tag`
+    # check below. `image-feature-extraction` did NOT move and is added here in
+    # their place: an image-only encoder (DINOv2/v3) has no text tower for either
+    # load path to read.
+    for absent in ("fill-mask", "image-feature-extraction",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
     # …while the five the Engines tab is about are all reachable. EMBEDDINGS
-    # arrives through `zero-shot-image-classification` and deliberately NOT
-    # through `feature-extraction`: the dual encoders the embedding runners load
-    # carry the former, and the sentence-transformers checkpoints that carry the
-    # latter are exactly what the `absent` list above keeps out (see
-    # `ai/tasks.py`'s note on those two rows). VIDEO_GENERATION arrives through
-    # "text-to-video", the tag `ltx-video` serves.
+    # arrives through THREE tags, which is unique to it (see
+    # `registry.EMBEDDINGS`'s docstring): `zero-shot-image-classification` for a
+    # dual encoder, `feature-extraction` and `sentence-similarity` for a prose
+    # one. VIDEO_GENERATION arrives through "text-to-video", the tag `ltx-video`
+    # serves.
+    assert {"zero-shot-image-classification", "feature-extraction",
+            "sentence-similarity"} <= set(offered)
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
         registry.EMBEDDINGS, registry.VIDEO_GENERATION}
@@ -635,13 +645,23 @@ def test_a_result_is_never_something_this_app_cannot_run(client, hub_cache, monk
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"},
         {"id": "org/pic", "pipeline_tag": "text-to-image"},
         {"id": "org/ears", "pipeline_tag": "automatic-speech-recognition"},
-        # …and the ones the user was looking at when they complained.
+        # A prose embedding model, which this app now genuinely loads — this row
+        # used to be in the rejected group below and moved up with SPEC §40's
+        # widening of the embeddings capability.
         {"id": "sentence-transformers/all-MiniLM-L6-v2", "pipeline_tag": "feature-extraction"},
+        # …and the ones the user was looking at when they complained, which are
+        # still nothing this app can run.
         {"id": "google-bert/bert-base-uncased", "pipeline_tag": "fill-mask"},
         {"id": "cross-encoder/ms-marco", "pipeline_tag": "text-classification"},
+        # An image-ONLY encoder: the neighbour of `feature-extraction` that did
+        # NOT become loadable, because it has no text tower for either load path
+        # to read.
+        {"id": "facebook/dinov2-base", "pipeline_tag": "image-feature-extraction"},
     ]))
     models = _search(client).json()["models"]
-    assert [m["id"] for m in models] == ["org/chat", "org/vlm", "org/pic", "org/ears"]
+    assert [m["id"] for m in models] == [
+        "org/chat", "org/vlm", "org/pic", "org/ears",
+        "sentence-transformers/all-MiniLM-L6-v2"]
 
 
 def test_a_result_with_no_pipeline_tag_is_dropped(client, hub_cache, monkeypatch):

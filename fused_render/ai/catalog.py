@@ -766,57 +766,306 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "transcribes faster than real time.",
         },
     ],
-    # Embeddings, and the ONE capability here whose two backends read the same
-    # bytes — which is why `mlx-embed` has no list of its own and is aliased onto
-    # this one (`_SHARED_SUGGESTIONS`). `google/siglip2-*` publishes a single
-    # format: a `model.safetensors` beside a `"model_type": "siglip"` config.
-    # Transformers reads it, and mlx-embeddings' own SigLIP port reads the same
-    # file — there is no `mlx-community` re-upload to prefer and nothing to
-    # convert, so pointing both engines at the same repos is not a coincidence to
-    # be maintained by hand, it is the format rule this file is keyed on.
+    # Embeddings on MLX. TWO SHAPES, and they come from two different kinds of
+    # repo for one reason: which account publishes a SINGLE-FORMAT build of the
+    # thing this engine reads.
     #
-    # Keyed under the TORCH row rather than the MLX one because this is the
-    # platform-agnostic backend: every machine can resolve here, and only Apple
-    # Silicon can resolve to the other.
+    # * The `google/siglip2-*` upstream safetensors are used where no
+    #   `mlx-community` build is BETTER, not as a rule. mlx-embeddings' own
+    #   SigLIP port reads `model.safetensors` beside a `"model_type": "siglip"`
+    #   config directly, so an upstream repo needs no conversion to work — which
+    #   makes the conversion worth taking only when it buys something. For
+    #   so400m it buys half the download at the same capability (bf16 against
+    #   upstream fp32) and it is taken; for the base row the only conversion on
+    #   offer is 224px and 8-bit, a weaker model, and it is not.
+    # * The PROSE row is an `mlx-community` conversion, because that is where a
+    #   single-format MLX build of a prose encoder exists at all. The upstream
+    #   `nomic-ai/*` repos ship an ONNX export and (for some) an OpenVINO copy
+    #   beside their safetensors, so this list's whole-snapshot convention would
+    #   charge four or five times the weights for one; the conversion ships MLX
+    #   safetensors and tokenizer files and nothing else, so the convention costs
+    #   nothing there. That is also the re-upload convention every other MLX row
+    #   in this file already follows.
     #
-    # **Why these two and nothing else.** Smallest first, per the module rule,
-    # so the base model is what a bare `fused.ai.embed()` loads: 768 dimensions
-    # is a comfortable vector to keep a few thousand of in a page, and 1.5GB is
-    # the smallest download that gets a genuinely good multilingual encoder.
-    # The so400m is the accuracy option at three times the disk and three times
-    # the compute per item, and its 1152-dim vectors are a third more storage
-    # for whoever is keeping them.
+    # `size_gb` is the WHOLE snapshot for all three, this file's ordinary
+    # convention — each of these repos publishes one format, so the whole-repo
+    # pull IS the fetched set. (The ONNX block below documents why it has to
+    # deviate.) Hub per-file byte sums, 2026-08-25. All three ungated;
+    # Apache-2.0.
     #
-    # **`openai/clip-vit-base-patch32` is deliberately absent**, and it is the
-    # entry a future reader is most likely to try to add — it is the famous one,
-    # it is 512-dim, and the model itself is about 600MB. The repo is not:
-    # it ships TensorFlow, Flax and PyTorch-pickle copies of the same weights
-    # beside the safetensors, so the whole-repo download this app's
-    # `size_gb` rule measures (and `download_snapshot` actually performs) is
-    # 3.6GB — more than twice the SigLIP2 base for a weaker, English-only
-    # encoder. mlx-embeddings has no CLIP module either, so it would also be an
-    # entry that vanishes when a Mac switches engines. The torch runner still
-    # LOADS a CLIP repo a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
-    # this file is curation, and curating that download is a different question.
+    # **The prose row leads, so a Mac's default is a paragraph encoder too** —
+    # 0.30 GB against the ONNX default's 0.55, with four times the context.
     #
-    # Sizes are the Hub's per-file byte sums for the whole snapshot (2026-08-21),
-    # rounded to one decimal like every other list here. Both repos are ungated
-    # and Apache-2.0. **One line each**, per the rule the transformers text list
-    # states.
-    "transformers-embed": [
+    # **Cross-engine vector comparability is NOT a goal of this table, and this
+    # paragraph used to say the opposite.** It claimed the two engines' rows were
+    # matched so a page's vectors would survive an engine switch, and it told the
+    # next reader not to "optimize" the bigger row. That was a real constraint
+    # once and it has been withdrawn: nobody is asked to move an index between a
+    # Mac and a Linux box, and holding both lists to the intersection of what the
+    # two engines can read cost real download size for a promise no one wanted.
+    # Each engine now curates the best build IT can read.
+    #
+    # What DOES matter, and is a live hazard, is provenance WITHIN one engine.
+    # Two models on the same list can share a dimension — `onnx-embed`'s nomic
+    # default and its SigLIP2 base row are both 768 — so vectors indexed under
+    # one and queried under the other have the same shape, no error, and
+    # different meanings. There is nothing this table can do about that: the fix
+    # is that `/api/ai/embed` returns the `model` it used and a caller stores it
+    # beside the vectors. `skills/fused-render-ai/SKILL.md` states that rule, and
+    # it is the reason the field exists.
+    #
+    # **Every curated row has a KNOWN PROMPT SCHEME**, the same curation rule the
+    # ONNX block states. The prose row needed an explicit
+    # `formats.TEXT_EMBED_SCHEMES` entry to get one: its id spells the account
+    # `nomicai-`, so the substring heuristic misses it and would have resolved
+    # `"none"` — see that table's own comment.
+    #
+    # **What is deliberately NOT here, and why**, because each of these is a
+    # trip a later reader would otherwise take:
+    #
+    # * `mlx-community/bge-small-en-v1.5-bf16` (0.07 GB) and
+    #   `mlx-community/multilingual-e5-small-mlx` (0.25 GB). Both LOAD — `bert`
+    #   is in the gate — and both would take position 0 on size, which under the
+    #   smallest-first rule makes them the default. One is English-only and both
+    #   cap at 512 tokens, so either would make a Mac's default the weakest model
+    #   in this list for the job the capability exists for. The identical
+    #   structural argument keeps bge off the ONNX list.
+    # * `mlx-community/embeddinggemma-300m-bf16` (0.65 GB) and
+    #   `mlx-community/Qwen3-Embedding-0.6B-8bit` (0.65 GB). These do NOT load:
+    #   `gemma3_text` and `qwen3` are not in `formats.MLX_EMBED_MODEL_TYPES`, and
+    #   that set is deliberately narrower than mlx-embeddings' module list — a
+    #   decoder-derived embedder wears its CHAT architecture's `model_type`, so
+    #   admitting it would route every Qwen3 chat checkpoint on the disk to this
+    #   runner. Both schemes are already in `TEXT_EMBED_PROMPTS`, which makes
+    #   them look one line from ready; the gate is what blocks them, not the
+    #   prompts.
+    # * `mlx-community/nomicai-modernbert-embed-base-4bit` (0.09 GB), the same
+    #   model a third the size. Quantization costs retrieval quality and costs it
+    #   into the VECTOR, where there is no sampling step afterwards to absorb it
+    #   — the same class of silent loss the prompt table guards against. bf16 is
+    #   the honest default; the 4-bit build is a fine thing to fetch by hand.
+    # * `mlx-community/siglip2-base-patch16-224-8bit` (the base row's only
+    #   `mlx-community` counterpart). NOT a cheaper build of
+    #   `google/siglip2-base-patch16-384`: it is 224px and 8-BIT, a weaker model
+    #   on both axes rather than the same one converted. The so400m row above
+    #   took the conversion precisely because that one IS the same capability at
+    #   half the bytes (bf16 against fp32); this one is not, so the base row
+    #   stays upstream. The two decisions are consistent, not contradictory —
+    #   the question each time is "same model, cheaper build?" and here the
+    #   answer is no.
+    "mlx-embed": [
+        {
+            "id": "mlx-community/nomicai-modernbert-embed-base-bf16",
+            "params": "149M",
+            "recommended": True,
+            "label": "ModernBERT Embed base",
+            "nickname": "ModernBERT Embed",
+            # 298.04 MB weights + 3.58 MB tokenizer + configs = 0.30 GB, and
+            # that IS the whole repo: the conversion ships one format.
+            "size_gb": 0.3,
+            "note": "The default: 8192 tokens of context and 768-dim vectors, "
+                    "so whole documents embed at once — nomic's ModernBERT, "
+                    "converted for MLX.",
+        },
         {
             "id": "google/siglip2-base-patch16-384",
             "params": "375M",
-            "recommended": True,
             "label": "SigLIP2 base (384px)",
             "nickname": "SigLIP2 base",
             "size_gb": 1.5,
-            "note": "The smallest here and what a bare embed call loads — "
-                    "768-dim vectors, multilingual, and quick enough to index a "
-                    "folder of photos.",
+            "note": "The one that reads IMAGES — text and photos in one space, "
+                    "768-dim, multilingual, but only 64 tokens of text.",
         },
         {
-            "id": "google/siglip2-so400m-patch14-384",
+            "id": "mlx-community/siglip2-so400m-patch16-384",
+            # 2272.20 MB safetensors + 34.36 MB tokenizer + configs = 2.31 GB,
+            # the whole repo (10 files, safetensors only). Hub per-file byte
+            # sums, 2026-08-25.
+            #
+            # Half the upstream row it replaces, and the saving is PRECISION not
+            # capability: 2272 MB over ~1.14B parameters is two bytes each, where
+            # `google/siglip2-so400m-patch14-384`'s 4.6 GB is four. `config.json`
+            # reports no `quantization`, so this is a bf16 conversion and not a
+            # quantized build — the distinction that keeps the 4-bit ModernBERT
+            # off this list.
+            "params": "1.1B",
+            "label": "SigLIP2 so400m (384px)",
+            "nickname": "SigLIP2 so400m",
+            "size_gb": 2.31,
+            "note": "Noticeably better matches than the base model, for 1152-dim "
+                    "vectors to store instead of 768.",
+        },
+    ],
+    # Embeddings — `onnx-community`'s ONNX Runtime exports of the two
+    # `google/siglip2-*` checkpoints above. The safetensors were served here by
+    # three withdrawn `transformers-embed*` rows until this branch: a dual
+    # encoder is one forward pass over a short sequence or one image, so the
+    # compute was never the argument — the WHEEL was, at 0.2 GB on the CPU index
+    # and up to 5.9 GB on an accelerated one to run a model whose own weights
+    # are 1.5 GB, where `onnxruntime` is tens of megabytes.
+    #
+    # **Two embeddings blocks, and `mlx-embed` is no longer ALIASED onto this
+    # one.** It was, and correctly, while `google/siglip2-*` published a single
+    # format both engines read — one list served both by construction, and
+    # `_SHARED_SUGGESTIONS` carried the only cross-RUNNER alias in this file.
+    # An ONNX export ends that coincidence: mlx-embeddings cannot open a `.onnx`
+    # graph and `onnxruntime` cannot open MLX safetensors, so an alias would
+    # offer every Mac a download its engine has no reader for. The two engines
+    # still produce vectors in the SAME SPACE (`registry.py`'s comment on the
+    # `mlx-embed` row), which is why a page can switch between them — the space
+    # is shared, the files are not, and this file is keyed on the files.
+    #
+    # **`size_gb` here is the FETCHED file set, not the whole snapshot, and that
+    # is a deliberate exception to this file's own convention.** Everywhere else
+    # the figure is the Hub's per-file byte sum for the entire repo, because
+    # that is what `download_snapshot` actually pulls — and the CLIP rejection
+    # note below rests on exactly that reading. Every repo in this list breaks
+    # the assumption behind it: they publish EIGHT quantizations of each tower
+    # side by side, so the whole snapshot is 11.42 GB for the base export and
+    # 29.5 GB for the so400m, none of which this app fetches.
+    # `runners/onnx_embed.py`'s `download()` pins `allow_patterns` to the fp32
+    # graphs plus the tokenizer, and the figures below are that set, in DECIMAL
+    # GB (this file's own convention — see the LTX rows, which check out exactly
+    # against `/1e9`), not GiB:
+    #   nomic:   547,310,275 graph + 716,106 tokenizer/pooling config
+    #            = 548,026,381 B = 0.55 GB
+    #            (whole repo 2.2 GB — eight quantizations plus a safetensors copy)
+    #   base:    372,975,112 vision + 1,129,469,657 text + 34,411,767 tokenizer
+    #            + configs = 1,536,856,536 B = 1.54 GB
+    #   so400m:  1,713,485,119 vision + 2,831,730,610 text (599,026 B of graph
+    #            plus its 2,831,131,584 B external-data sidecar) + 34,412,213
+    #            tokenizer/configs = 4,579,627,942 B = 4.58 GB
+    # Measured against the Hub's own per-file byte sums, 2026-08-25 — and
+    # `size_gb` below is each total rounded to one decimal (0.5/1.5/4.6), the
+    # same rounding every other row in this file gets. An earlier version of
+    # this comment carried a different set of component byte counts for base
+    # and so400m, and neither the "1.54 GB"/"4.58 GB" it stated nor the
+    # `size_gb` it shipped was that set's DECIMAL total — the decimal figure
+    # those bytes actually produce is 1.61/4.80 GB, over the 0.05 tolerance
+    # `test_ai_onnx_embed_real_weights.py` allows, which would have failed the
+    # gate on a fully correct download and blamed `allow_patterns` for it. It
+    # then called the 1.5/4.6 GB agreement with the torch repos' own figures "a
+    # coincidence" — with the numbers corrected, it no longer needs that
+    # excuse, but the underlying caution still holds: the ONNX export of a
+    # tower is a different file from its safetensors, and a future re-export
+    # can move either figure independently. `tests/test_ai_onnx_embed_real_weights.py`
+    # asserts the on-disk total against these numbers on a machine that really
+    # downloaded one, which is the only place the pin can be checked.
+    #
+    # **THE PROSE ROW LEADS THIS LIST, and that is the user-visible change on
+    # this branch.** A bare `fused.ai.embed({texts})` used to load a 64-token
+    # caption encoder; it now loads a 2048-token paragraph encoder. That is the
+    # point of widening the capability — a SigLIP text tower truncates at 64
+    # tokens, so no chunk size turns it into a document encoder, and RAG,
+    # clustering and document search were all impossible at any setting. Anyone
+    # who indexed a corpus with the old default has to re-index: the two models'
+    # vectors are not comparable, and nothing can detect that they are not.
+    #
+    # Smallest first, per the module rule, which puts the ONE prose row at
+    # position 0 — so it is what a bare `fused.ai.embed()` loads on any machine
+    # that resolves to this engine. The two SigLIP2 exports sit below it: 768
+    # dimensions is a comfortable vector to keep a few thousand of in a page, and
+    # the so400m is the accuracy option at three times the disk and three times
+    # the compute per item, with 1152-dim vectors that are a third more storage
+    # for whoever is keeping them.
+    #
+    # **A CLIP export is deliberately absent**, and it is the entry a future
+    # reader is most likely to try to add — CLIP is the famous one and it is
+    # 512-dim. `onnx-community/clip-vit-base-patch32-ONNX` would even avoid the
+    # reason the torch curation refused `openai/clip-vit-base-patch32` (that
+    # repo ships TensorFlow, Flax and PyTorch-pickle copies beside the
+    # safetensors, so the whole-repo pull is 3.6 GB for a weaker, English-only
+    # encoder). What survives that change is the other half of the argument:
+    # mlx-embeddings has no CLIP module, so a curated CLIP is an entry that
+    # vanishes the moment a Mac switches engines. This runner still LOADS a
+    # `clip` export a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
+    # this file is curation, and curating that download is a different question.
+    #
+    # Both repos are ungated and Apache-2.0, like their upstreams. **One line
+    # each**, per the rule the transformers text list states.
+    #
+    # **Every row here has a KNOWN PROMPT SCHEME, and that is a curation rule
+    # rather than a coincidence** (`formats.TEXT_EMBED_SCHEMES`, asserted by
+    # `test_ai_catalog_embeddings.py`). A retrieval encoder instructs a question
+    # and a passage differently, and a model whose convention this app does not
+    # know embeds both verbatim — which still returns unit-length vectors of the
+    # right dimension, just worse ones, with nothing downstream able to tell.
+    # Recommending a model we cannot prompt correctly would be recommending a
+    # silent accuracy loss.
+    #
+    # **`sentence-transformers/all-MiniLM-L6-v2` is deliberately absent**, and
+    # it is the entry a future reader is most likely to try to add: it is the
+    # famous small one, its ONNX export is 90 MB, and it would take position 0
+    # on size alone. It is not retrieval-trained — it was distilled on a
+    # symmetric sentence-similarity objective, has no query/passage convention
+    # to prompt with, and is measurably behind every row below on retrieval. Put
+    # differently: the smallest-first rule would make it the DEFAULT, so adding
+    # it would mean a bare embed call loading the one model here that is bad at
+    # the job the capability exists for.
+    #
+    # **`BAAI/bge-base-en-v1.5` is absent for the same structural reason, and
+    # this one IS a deviation from the plan worth naming.** It is a good
+    # retrieval encoder with a known scheme, and its fetched fp32 set is 0.44 GB
+    # — SMALLER than the prose row below. Under the smallest-first rule that makes
+    # it position 0 and therefore the default, and it is English-only at 512
+    # tokens: a worse default than a 2048-token one for a capability whose whole
+    # point is paragraphs, and a narrower one than the multilingual SigLIP2 the
+    # default is moving away from. Curating it would mean either shipping that
+    # default or adding the separate `default:` field this file's module
+    # docstring explicitly rejects. It loads fine if a user fetches it
+    # themselves, and its scheme is in `TEXT_EMBED_SCHEMES` for exactly that
+    # case.
+    #
+    # **`intfloat/multilingual-e5-small` was curated here and was REMOVED — a
+    # scope decision, not a defect.** It is a good encoder: 100 languages in one
+    # space at 384-dim, 512 tokens, a known `e5` scheme, and a 0.49 GB fetch. It
+    # loads fine when fetched by hand, and its scheme stays in
+    # `TEXT_EMBED_SCHEMES` so that a user who does gets prompted correctly. What
+    # went was the RECOMMENDATION: one curated prose encoder is the shortlist
+    # this capability wants, and a second one that is smaller-but-shorter-context
+    # is a comparison put in front of a reader who came to embed a paragraph.
+    #
+    # **It leaves one fact behind worth keeping, though it is no longer a
+    # constraint.** e5-small is `model_type: bert` (a `BertModel` with an XLM-R
+    # sentencepiece tokenizer — not `xlm-roberta`, which is the easy thing to
+    # assume from its tokenizer files), and `bert` is in
+    # `formats.MLX_EMBED_MODEL_TYPES` while nomic's `nomic_bert` is not. So while
+    # e5 was curated here it was also the only curated prose model MLX could
+    # open, and removing it briefly left the curated prose set ONNX-only.
+    #
+    # That is no longer the state: the `mlx-embed` block above curates
+    # `mlx-community/nomicai-modernbert-embed-base-bf16`, a `modernbert`
+    # conversion the gate admits, so each engine has its own curated prose row
+    # from its own kind of repo. Nothing here needs to be re-added to close a
+    # gap — and a row added back to THIS list would be an ONNX row, which is not
+    # what a Mac reads.
+    "onnx-embed": [
+        {
+            "id": "nomic-ai/nomic-embed-text-v1.5",
+            "params": "137M",
+            "recommended": True,
+            "label": "Nomic Embed Text v1.5",
+            "nickname": "Nomic Embed",
+            # onnx/model.onnx 547.31 MB + tokenizer.json + vocab.txt + the
+            # pooling and tokenizer configs = 0.55 GB. The whole repo is 2.2 GB
+            # (eight quantizations plus a safetensors copy this engine cannot
+            # open), which is the deviation the block header documents.
+            "size_gb": 0.5,
+            "note": "The default: 2048 tokens of context and 768-dim vectors, "
+                    "so a whole paragraph embeds at once — what makes document "
+                    "search and RAG possible at all.",
+        },
+        {
+            "id": "onnx-community/siglip2-base-patch16-384-ONNX",
+            "params": "375M",
+            "label": "SigLIP2 base (384px)",
+            "nickname": "SigLIP2 base",
+            "size_gb": 1.5,
+            "note": "The one that reads IMAGES — text and photos in one space, "
+                    "768-dim, multilingual, but only 64 tokens of text.",
+        },
+        {
+            "id": "onnx-community/siglip2-so400m-patch14-384-ONNX",
             "params": "1.1B",
             "label": "SigLIP2 so400m (384px)",
             "nickname": "SigLIP2 so400m",
@@ -928,16 +1177,21 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
-    # Hardware variants of `transformers-embed` — same repos, same format,
-    # different wheel — for the identical reason the Diffusers pair above is
-    # aliased rather than copied.
-    "transformers-embed-cuda": "transformers-embed",
-    "transformers-embed-rocm": "transformers-embed",
-    # Not a hardware variant of the same runner — a DIFFERENT runner that reads
-    # the same repos (see the comment on the embeddings block above). Aliased
-    # for the same reason as the pairs above: one list to keep in step rather
-    # than two copies drifting apart.
-    "mlx-embed": "transformers-embed",
+    # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
+    # different execution provider — for the identical reason. The four ONNX
+    # builds differ in which `onnxruntime*` distribution is installed and in
+    # nothing about which files are loadable, so their lists must be identical
+    # BY CONSTRUCTION rather than by nobody having edited one of them yet.
+    "onnx-embed-directml": "onnx-embed",
+    "onnx-embed-cuda": "onnx-embed",
+    "onnx-embed-rocm": "onnx-embed",
+    # **`mlx-embed` used to be aliased here and deliberately is not any more.**
+    # It was the one entry in this table that aliased a DIFFERENT RUNNER rather
+    # than a hardware variant, and it was correct while `google/siglip2-*`
+    # published one format that both the torch runner and mlx-embeddings read.
+    # `onnx-embed` reads a graph export instead, which MLX has no reader for, so
+    # the coincidence that justified the alias is gone — see the embeddings
+    # block above, and `test_ai_catalog_embeddings.py`, which pins the absence.
 }
 
 
@@ -990,13 +1244,192 @@ def default_for(capability: str) -> str | None:
 
 
 def all_suggested_ids() -> set[str]:
-    """Every suggested repo id, for the AI Models page's checkmarks.
+    """Every suggested repo id, across every runner.
 
-    Deliberately EVERY runner's, not just the resolvable one's: the checkmark
-    answers "is this on my disk", and a machine that has an MLX model cached
-    from a previous life should be told so rather than have the row go quiet.
+    **Not the page's checkmarks — that is what this docstring used to say and it
+    was stale enough to be misleading.** The AI Models page ticks a card from
+    `/api/ai/catalog`'s payload (`_catalog_with_downloads` -> `for_capability`),
+    which holds only the RESOLVING runner's list, so the tick is already
+    engine-aware and a Mac-only row does not wear it on Linux. The one live
+    caller is `mirror_id`'s privacy gate.
+
+    Deliberately EVERY runner's all the same, and for that caller's reason: the
+    gate asks "is this a model we ourselves recommend", so that a repo the user
+    found in Discover is never named to our own distribution. Narrowing it to the
+    resolvable runner would silently turn the mirror off for every model on the
+    other engine's list.
+
+    `runners_offering` is the narrow companion for callers that need to know
+    WHICH engine an id belongs to — see its docstring for the difference.
     """
     return {entry["id"] for entries in SUGGESTIONS.values() for entry in entries}
+
+
+def runners_offering(model_id: str) -> tuple[str, ...]:
+    """Every runner code whose curated list names `model_id`, in registry order.
+
+    **The NARROW companion to `all_suggested_ids()`, and the two answer opposite
+    questions on purpose.** That one is deliberately every runner's ids, because
+    it backs the "is this on my disk" checkmark and a Mac model cached from a
+    previous life should still tick. This one says WHICH engine a curated id
+    belongs to, which is what a caller needs before offering to fetch or load it
+    — and the difference between them is exactly the gap
+    `google/siglip2-so400m-patch14-384` fell into.
+
+    Empty for an uncurated repo, which is not the same answer as "no engine
+    reads it": nobody here has an opinion about a repo the user found
+    themselves, and `formats.loaders()` is what judges those. Callers must treat
+    empty as "no information" rather than as a refusal.
+
+    Resolves aliases (`_SHARED_SUGGESTIONS`) the same way `for_runner` does, so a
+    hardware variant reports as offering everything its family's list holds.
+    """
+    codes = []
+    for runner in registry.all_runners():
+        entries = SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(runner.code, runner.code))
+        if entries and any(entry["id"] == model_id for entry in entries):
+            codes.append(runner.code)
+    return tuple(codes)
+
+
+#: The same MODEL, curated for a different engine — id to id.
+#:
+#: **This table exists because the torch removal orphaned exactly these two ids
+#: on every machine that is not a Mac**, and for no more general reason than
+#: that. Both were curated for `transformers-embed`, which every platform could
+#: run; with that engine gone their only curated home is `mlx-embed`, so a Linux
+#: or Windows user who had already downloaded one is holding a snapshot no
+#: engine available to them can read. The ONNX exports below are the same
+#: checkpoints in the format the engine they DO have opens, which is what makes
+#: the refusal a "fetch this instead" rather than a shrug.
+#:
+#: **Written out rather than derived, deliberately.** The mapping is
+#: `google/X` -> `onnx-community/X-ONNX` for both rows, and that is a
+#: coincidence of how one account names its conversions — not a rule. Inferring
+#: it from string munging would invent ids for every other `google/*` repo on
+#: the Hub and confidently recommend downloads that do not exist. Two lines of
+#: data cannot do that.
+#:
+#: Not a migration to run, and nothing is rewritten on disk: the snapshot stays
+#: exactly where it is, still perfectly loadable the moment the user opens the
+#: same cache on a Mac. `counterpart_for` below is what checks that a
+#: counterpart is REALLY curated for the engine being offered it, so this table
+#: cannot outlive the rows it points at.
+#: **The so400m pair was here and was REMOVED, because it stopped being a pair.**
+#: The MLX so400m row is now `mlx-community/siglip2-so400m-patch16-384` and the
+#: ONNX one is still patch14 — a genuinely different checkpoint, not the same
+#: weights in another format. This table's entire claim is "the SAME model in the
+#: format this machine's engine does read", and offering a patch14 export as the
+#: counterpart of a patch16 conversion would break exactly the promise the
+#: sentence makes. A stranded so400m snapshot now falls to `engine_gap`'s
+#: no-counterpart branch, which names the engine that serves embeddings here and
+#: recommends nothing — the honest answer.
+#:
+#: The base row stays: `google/siglip2-base-patch16-384` and
+#: `onnx-community/siglip2-base-patch16-384-ONNX` are patch16 both, one export of
+#: one checkpoint, which is the only relationship this table is allowed to
+#: assert.
+COUNTERPART_IDS = {
+    "google/siglip2-base-patch16-384":
+        "onnx-community/siglip2-base-patch16-384-ONNX",
+}
+
+
+def counterpart_for(model_id: str, runner_code: str) -> str | None:
+    """`model_id`'s equivalent in `runner_code`'s own curated list, or None.
+
+    Checked against the list rather than returned from `COUNTERPART_IDS`
+    directly: a table entry pointing at a row somebody later removed would
+    otherwise have this function recommending a download nothing curates. The
+    table proposes; the curation decides.
+    """
+    counterpart = COUNTERPART_IDS.get(model_id)
+    if not counterpart:
+        return None
+    return counterpart if counterpart in {
+        entry["id"] for entry in for_runner(runner_code)} else None
+
+
+def engine_gap(model_id: str) -> dict | None:
+    """Why no engine available here can serve `model_id`, or None when one can.
+
+    **The one place this question is answered, because two surfaces ask it and
+    they must not disagree**: the Local tab's card (which decides whether to
+    offer a resume, and what sentence to print) and the load/download/embed
+    routes (which refuse a request made anyway — a stale URL, a seeded app
+    param, a stored pref). A card that offered an action the route then refused
+    would be the failure this function exists to remove.
+
+    Answers from the CURATION, which is what makes it work on a snapshot whose
+    format cannot be read yet. `formats.loaders()` needs weights on disk, so a
+    PARTIALLY downloaded repo has no format evidence at all and cannot be judged
+    that way — and download is the one operation a format gate structurally
+    cannot guard, since fetching the files is the whole point of it. For a
+    curated id the curation knows the answer before a byte arrives.
+
+    None in three cases, and each is a deliberate "no information" rather than
+    an approval:
+
+    * an UNCURATED id — nobody here has an opinion about a repo the user found
+      themselves, and the runner's own format check is the right judge;
+    * a curated id whose engine IS the one serving its capability here;
+    * a curated id offered by a runner that is available, even if not the one
+      currently selected — that is the Engines tab's business, and
+      `hub_cache._engine` already prints "switch it on the Engines tab" for it.
+
+    The dict carries the engines that DO curate it, whether any of them could
+    run here at all, the counterpart to fetch instead where there is one, and
+    the finished sentence. `registry.unavailable_reason` supplies the
+    "cannot run here" half so this reads in the app's existing vocabulary
+    rather than a parallel phrasing invented here.
+    """
+    codes = runners_offering(model_id)
+    if not codes:
+        return None
+    offering = [registry.by_code(code) for code in codes]
+    offering = [runner for runner in offering if runner is not None]
+    if not offering:
+        return None
+    capability = offering[0].capability
+    serving = registry.for_capability(capability)
+    if serving is not None and any(r.code == serving.code for r in offering):
+        return None
+    # Available-but-not-selected is not a gap: switching engines fixes it, and
+    # that is a sentence the card already knows how to print.
+    if any(runner.available().ok for runner in offering):
+        return None
+
+    names = " or ".join(dict.fromkeys(runner.short for runner in offering))
+    # The registry's own words for why the engine that reads this cannot run,
+    # taken from the first offering runner rather than composed here.
+    why = offering[0].available().reason or registry.unavailable_reason(capability)
+    counterpart = counterpart_for(model_id, serving.code) if serving else None
+
+    # A COLON rather than a dash before `why`: the registry's own reasons
+    # already contain an em-dash ("needs Apple Silicon — MLX runs on Metal
+    # only"), and nesting one inside another reads as a broken sentence.
+    reason = (
+        f"{model_id} is only readable by {names}, which cannot run on this "
+        f"machine: {why}." if why else
+        f"{model_id} is only readable by {names}, which cannot run on this "
+        f"machine.")
+    if counterpart:
+        reason += (
+            f" The same model in the format this machine's engine does read is "
+            f"{counterpart} — fetch that instead. Nothing is deleted: this "
+            f"snapshot stays on disk and still loads on a machine that can run "
+            f"{names}.")
+    elif serving is not None:
+        reason += (
+            f" {serving.short} is what serves {capability} here, and it does "
+            f"not read this model's files.")
+    return {
+        "engines": tuple(runner.code for runner in offering),
+        "capability": capability,
+        "serving": serving.code if serving is not None else None,
+        "counterpart": counterpart,
+        "reason": reason,
+    }
 
 
 def mirror_id(model_id: str) -> str:

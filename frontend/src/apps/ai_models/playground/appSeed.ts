@@ -105,12 +105,56 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
   } else if (capability === "embeddings") {
+    // **The prose is SPLIT by what this model declares, and the reason is that
+    // the route refuses the other half** (SPEC §40). A seeded session that was
+    // told about `paths` on a prose encoder writes an image search whose every
+    // request comes back 400 naming the model — and it writes it confidently,
+    // because the seed is the most authoritative thing in its context. Same for
+    // `kind` on a dual encoder. So each parameter is mentioned only where the
+    // server says it applies, off the same two flags the Playground's own
+    // controls read.
+    //
+    // The negative half is stated too, not merely omitted: "it has no vision
+    // tower" stops a session reaching for `paths` on the strength of the
+    // capability's own docs, which describe both halves.
+    const takesPaths = model.acceptsPaths === true;
+    const scheme = model.promptScheme ?? null;
+    const call = `await fused.ai.embed({ texts, model: ${JSON.stringify(model.id)} })`;
     lines.push(
-      "It turns text or images into vectors that place similar meanings near each other. " +
-        `Call it from the page with await fused.ai.embed({ texts, model: ${JSON.stringify(model.id)} }) ` +
-        "(or { paths } for image files) — it resolves with { vectors, dim }. Vectors come back " +
-        "unit-length, so the dot product of two of them scores how alike their meanings are.",
+      "It turns text into vectors that place similar meanings near each other. " +
+        `Call it from the page with ${call} — it resolves with { vectors, dim }. ` +
+        "Vectors come back unit-length, so the dot product of two of them scores " +
+        "how alike their meanings are.",
     );
+    if (takesPaths) {
+      lines.push(
+        "This model is a DUAL ENCODER: it also embeds pictures, into the same " +
+          "space as the text, so a typed phrase can rank photographs. Pass " +
+          "{ paths } instead of { texts } — absolute paths, or relative to the " +
+          "page — and compare the two sets of vectors with the same dot product.",
+      );
+    } else {
+      lines.push(
+        "This model is a TEXT encoder — it has no vision tower, so { paths } is " +
+          "refused with a 400 naming the model. Do not build an image search " +
+          "around it.",
+      );
+    }
+    if (scheme) {
+      lines.push(
+        "It is a RETRIEVAL model and instructs a question differently from a " +
+          `passage (its scheme is "${scheme}"). Pass kind: "query" for the thing ` +
+          'being searched WITH and kind: "document" for the things being searched ' +
+          "THROUGH — embed the corpus once as documents, then each search as a " +
+          "query. Leaving it out means \"document\", which is internally " +
+          "consistent but measurably worse at retrieval than using both sides.",
+      );
+    } else {
+      lines.push(
+        "It has no retrieval prompt convention, so there is no kind parameter to " +
+          "pass — sending one is a 400. Embed queries and documents the same way.",
+      );
+    }
   }
   // Addressed to the CLAUDE SESSION the composer spawns, not to the user: the
   // `fused-render-ai` skill is the authoritative contract for these calls

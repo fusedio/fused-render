@@ -1061,9 +1061,10 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image-rocm": "(ROCm)",
     "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
-    "transformers-embed": "(CPU)",
-    "transformers-embed-cuda": "(CUDA)",
-    "transformers-embed-rocm": "(ROCm)",
+    "onnx-embed": "(CPU)",
+    "onnx-embed-directml": "(DirectML)",
+    "onnx-embed-cuda": "(CUDA)",
+    "onnx-embed-rocm": "(ROCm)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1071,7 +1072,11 @@ _QUALIFIED_SHORT_NAMES = {
 #: The vocabulary is closed on purpose: it is what
 #: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
 #: name against, and what Task B's family test forbids in a family name.
-_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
+#: `(DirectML)` joined the vocabulary with the ONNX embedding family: it names a
+#: BUILD (`onnxruntime-directml`) exactly as `(Vulkan)` does, and it is the
+#: Windows GPU path — vendor-neutral, so one row covers NVIDIA, AMD and Intel
+#: there rather than a folder per vendor.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)", "(DirectML)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -1991,10 +1996,10 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
     assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
     assert catalog.for_runner("diffusers-image-cuda") == catalog.SUGGESTIONS["diffusers-image"]
     assert catalog.for_runner("diffusers-image-rocm") == catalog.SUGGESTIONS["diffusers-image"]
-    assert catalog.for_runner("transformers-embed-cuda") == (
-        catalog.SUGGESTIONS["transformers-embed"])
-    assert catalog.for_runner("transformers-embed-rocm") == (
-        catalog.SUGGESTIONS["transformers-embed"])
+    assert catalog.for_runner("onnx-embed-cuda") == (
+        catalog.SUGGESTIONS["onnx-embed"])
+    assert catalog.for_runner("onnx-embed-rocm") == (
+        catalog.SUGGESTIONS["onnx-embed"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -2318,29 +2323,35 @@ def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monk
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
-def test_the_embeddings_capability_orders_mlx_then_cpu_then_cuda_then_rocm(monkeypatch):
-    """Embeddings' four rows, pinned in full — the whole family shares one
-    ordering rule with the image and text families, and it is invisible in a
-    diff of the table.
+def test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_rows(monkeypatch):
+    """Embeddings' five rows, pinned in full — the whole family shares one
+    ordering rule with the image and text families, and it is invisible in a diff
+    of the table.
 
-    MLX takes the Macs (`_apple_silicon`), `transformers-embed` is the
-    cross-platform default and Apple-Silicon fallback, and
-    `transformers-embed-cuda`/`-rocm` are opt-in accelerated siblings of that
-    row — CUDA before ROCm, the same order `diffusers-image-cuda`/`-rocm` use.
-    Both accelerated rows sit LAST so `auto` never reaches either on any
-    platform, exactly as `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    MLX takes the Macs (`_apple_silicon`), `onnx-embed` is the cross-platform
+    default and the Apple-Silicon fallback, and `onnx-embed-directml`/`-cuda`/
+    `-rocm` are opt-in accelerated siblings of that row — DirectML first because
+    it is the only one Windows can take, then CUDA before ROCm, the same order
+    `diffusers-image-cuda`/`-rocm` use. All three accelerated rows sit LAST so
+    `auto` never reaches any of them on any platform, exactly as
+    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
     pins for text generation's own accelerated tail.
+
+    There were three `transformers-embed*` rows between MLX and these until the
+    parity gate (`tests/test_ai_onnx_embed_real_weights.py`) showed both engines
+    produce the same vectors; they went with the torch wheel they existed to
+    install, and nothing moved to close the gap.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-        "transformers-embed-rocm",
+        "mlx-embed",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
     ]
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
-    assert registry.for_capability(registry.EMBEDDINGS).code == "transformers-embed"
+    assert registry.for_capability(registry.EMBEDDINGS).code == "onnx-embed"
 
 
 def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
@@ -4173,8 +4184,9 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-        "transformers-embed-rocm", "ltx-video"}
+        "mlx-embed",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+        "onnx-embed-rocm", "ltx-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -8301,10 +8313,22 @@ def _load(client, body):
 
 
 def test_a_load_without_a_capability_reads_the_cached_repos_format(
-        client, hub, dispatched):
+        client, hub, dispatched, monkeypatch):
     """The reported bug. An mflux conversion has no config.json at all, so the
     old default sent it to mlx-lm; its component folders say image generation
-    beyond doubt."""
+    beyond doubt.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id}).status_code == 200
@@ -8534,9 +8558,27 @@ def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
     assert dispatched == []
 
 
-def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
+def test_an_explicit_capability_still_wins_over_the_format(
+        client, hub, dispatched, monkeypatch):
     """Inference governs the OMITTED case only. A caller who names a capability
-    gets it, right or wrong — that is what makes this additive."""
+    gets it, right or wrong — that is what makes this additive.
+
+    Note the ORDER this pins: the explicit capability wins over the FORMAT, not
+    over servability. A model no engine here can serve is refused whatever
+    capability is named for it, because that refusal is about the model rather
+    than about the dispatch — see the platform note below.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id,
@@ -8544,10 +8586,23 @@ def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatch
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
 
 
-def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
+def test_download_infers_the_capability_the_same_way(client, hub, dispatched,
+                                                     monkeypatch):
     """`/download` takes the same default through the same helper, so it had the
     same bug: a Download on the AI Models page fetched an image model into the
-    text runner's idea of what to fetch."""
+    text runner's idea of what to fetch.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     response = client.post("/api/ai/runtime/download", json={"model": repo_id},

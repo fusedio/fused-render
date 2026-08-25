@@ -926,6 +926,70 @@ def test_a_prefs_file_naming_ANOTHER_capabilitys_engine_degrades_the_same_way(
     assert "mlx-whisper" not in {c["code"] for c in row["choices"]}
 
 
+def test_a_prefs_file_naming_a_WITHDRAWN_EMBEDDING_engine_falls_back_to_the_ordering(
+        tmp_path, monkeypatch):
+    """A prefs.json holding `transformers-embed` after the ONNX swap removed it.
+
+    The sibling of the `transformers-text` case above, and it needs its own test
+    for the reason that one gives about how a stranded value actually reaches a
+    user: the three `transformers-embed*` codes were offered in this very picker
+    and stored by people who chose them, and prefs.json travels — synced, copied
+    between machines, restored from a backup — so an upgrade is not the only
+    route.
+
+    **A CLEAN BREAK, and that is the decision this pins.** There is no aliasing
+    of the old code onto `onnx-embed`, even though the two engines serve the same
+    capability and produce vectors in the same space: a preference is a record of
+    what somebody chose, and silently rewriting it to a different engine would
+    make the picker lie about its own state. So the value comes back verbatim
+    (visible, and undoable), `effective` is whatever the ORDERING resolves, and
+    `ignoredReason` says the code is unknown — which is true, and is what sends
+    the page down `engines.strandedSelection`.
+
+    Platform PINNED for the same reason its text sibling pins it: what is under
+    test is the degradation, not the coverage.
+    """
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"engines": {"embeddings": "transformers-embed"}}))
+
+    # The premise: this build really has never heard of the code.
+    assert ai_registry.by_code("transformers-embed") is None
+
+    body = client.get("/api/prefs").json()
+    row = next(r for r in body["engines"]["capabilities"]
+               if r["capability"] == "embeddings")
+    assert row["selected"] == "transformers-embed"
+    assert row["effective"] == "onnx-embed"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    assert "transformers-embed" not in {c["code"] for c in row["choices"]}
+    # …and the file is untouched by having been read, so the user can see the
+    # stale value and change it rather than having it rewritten under them.
+    assert json.loads((home / "prefs.json").read_text())["engines"] == {
+        "embeddings": "transformers-embed"}
+
+
+def test_the_accelerated_embedding_codes_are_stranded_the_same_way(
+        tmp_path, monkeypatch):
+    """All three went together, so all three have to degrade together — a fix
+    that special-cased the CPU code would leave the two rows nobody thinks about
+    raising instead of falling back."""
+    monkeypatch.setattr(ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ai_registry.platform, "machine", lambda: "x86_64")
+    for code in ("transformers-embed-cuda", "transformers-embed-rocm"):
+        client, home = _client(tmp_path / code, monkeypatch)
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "prefs.json").write_text(
+            json.dumps({"engines": {"embeddings": code}}))
+        row = next(r for r in client.get("/api/prefs").json()["engines"]["capabilities"]
+                   if r["capability"] == "embeddings")
+        assert row["selected"] == code
+        assert row["effective"] == "onnx-embed"
+
+
 def test_auto_is_a_value_you_can_write_BACK(tmp_path, monkeypatch):
     """Undo has to be reachable. "Auto" is a choice the control offers, so it
     has to be a choice the endpoint accepts — not merely the absence of a key,

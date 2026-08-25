@@ -200,8 +200,16 @@ DIFFUSERS_INDEX = "model_index.json"
 #: checkpoint holding a text tower and a vision tower that project into one
 #: space, which is what `get_text_features` / `get_image_features` are.
 #:
+#: **This set is what makes `paths` legal**, and it is the only reason the
+#: embedding gate has two halves rather than one: a request carrying image paths
+#: needs a vision tower to feed them to, and the families here have one while the
+#: families below do not (`ai_runtime._accepts_paths` answers the same question
+#: off the cached `config.json`, since a fine-tune's `model_type` may be
+#: anything).
+#:
 #: **`siglip` covers SigLIP AND SigLIP2**: `google/siglip2-base-patch16-384`
-#: declares `"model_type": "siglip"` (checked 2026-08-21, and it is what makes
+#: and `onnx-community/siglip2-base-patch16-384-ONNX` both
+#: declare `"model_type": "siglip"` (checked 2026-08-25, and it is what makes
 #: the MLX runner able to read it at all — mlx-embeddings 0.1.x ships a `siglip`
 #: module and no `siglip2` one, and dispatches on this very field). There is no
 #: separate spelling to add.
@@ -209,14 +217,340 @@ DIFFUSERS_INDEX = "model_index.json"
 #: Read off the config rather than the repo id, for `is_parakeet_checkpoint`'s
 #: reason: a fine-tune under somebody's own account is the same format and
 #: deserves the same tag.
-EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
+DUAL_EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
 
-#: …and the subset MLX reads. Same field, shorter list: mlx-embeddings has a
-#: SigLIP port and no CLIP one, so a CLIP repo is loadable by the torch runner
-#: and by nothing else here. Split rather than shared because this is exactly
-#: what `loaders()` answers — a Mac that resolved to MLX must not be offered a
-#: Load for a checkpoint its engine has no module for.
-MLX_EMBED_MODEL_TYPES = frozenset({"siglip"})
+#: …and the TEXT-ONLY encoders, which the `embeddings` capability also serves:
+#: one tower, no vision half, hundreds or thousands of tokens of context instead
+#: of a caption's 64. These are what make RAG, document search and clustering
+#: possible at all — a SigLIP text tower truncates at 64 tokens, so no chunk size
+#: makes it a paragraph encoder.
+#:
+#: **Four families, and the boundary is "does this `model_type` distinguish an
+#: encoder from a generative model".** `bert`, `xlm-roberta`, `nomic_bert` and
+#: `modernbert` are encoder-only architectures: nothing generative wears those
+#: strings, so the field is real evidence. Deliberately ABSENT are `qwen3`,
+#: `gemma3_text`, `lfm2` and the rest of the decoder-derived embedding ports —
+#: `mlx-embeddings` genuinely ships modules for several of them, but their
+#: `model_type` is the CHAT architecture's, so admitting them here would route
+#: every Qwen3 chat checkpoint on the disk to the embedding runner. That is
+#: `is_parakeet_checkpoint`'s lesson restated: evidence that does not
+#: distinguish is not evidence.
+TEXT_EMBED_MODEL_TYPES = frozenset({"bert", "xlm-roberta", "nomic_bert",
+                                    "modernbert"})
+
+#: The gate `loaders()` actually asks — "is this an embedding checkpoint at all"
+#: — which is one question with one answer, so it is the union. The two halves
+#: above are for the callers that need to know WHICH kind, and there are exactly
+#: two: the `paths` refusal at the route, and this file's own MLX subset.
+EMBED_MODEL_TYPES = DUAL_EMBED_MODEL_TYPES | TEXT_EMBED_MODEL_TYPES
+
+#: Architecture suffixes that mean "this encoder has a TASK HEAD on it", and so
+#: is not an embedding model whatever its `model_type` says.
+#:
+#: **The same argument as `TEXT_EMBED_MODEL_TYPES`' comment, running the other
+#: way.** There the point was that `model_type` is only evidence where it
+#: distinguishes an encoder from a generative model. Here it is that `model_type`
+#: alone does not distinguish far enough: `BAAI/bge-reranker-base` is an
+#: `xlm-roberta` and `dslim/bert-base-NER` is a `bert`, both admitted by that
+#: set, and both are a fine-tuned encoder plus a head. A cross-encoder scores a
+#: PAIR of texts and has no single-text vector to give; a token classifier's
+#: pooled output is a by-product nothing trained. Pooling either returns a
+#: confident unit vector that means nothing, and — because `loaders()` returns
+#: EARLY on an embedding match — the repo never reaches another runner that might
+#: have recognised it, so the AI Models page shows four Load buttons and no
+#: correct one.
+#:
+#: `architectures` is the evidence, and it is present on every transformers
+#: config that has a head, because it is what `AutoModel` dispatches on.
+#:
+#: `ForMaskedLM` is deliberately NOT here: that is the pretraining objective an
+#: ordinary base encoder ships with (`BertForMaskedLM`, `ModernBertForMaskedLM`),
+#: the head is discarded when the encoder is used for embeddings, and excluding
+#: it would reject a large share of the legitimate models this gate exists to
+#: admit.
+#: `"Classification"` unqualified rather than the four `For*Classification`
+#: spellings, because the modality is in the middle of the name and enumerating
+#: them is a list to forget an entry in: `ForSequenceClassification` (rerankers),
+#: `ForTokenClassification` (NER), `ForImageClassification` and
+#: `ForAudioClassification` all end the same way, and a head named after a
+#: modality nobody has added yet still ends that way. The first draft of this
+#: constant listed the first two and a test on a `siglip` classifier caught the
+#: omission immediately.
+_TASK_HEAD_SUFFIXES = (
+    "Classification",              # rerankers, NER, image/audio classifiers
+    "ForQuestionAnswering",
+    "ForMultipleChoice",
+    "ForCausalLM",                 # a generative head on an encoder config
+    "ForConditionalGeneration",
+)
+
+
+def has_task_head(config: dict) -> bool:
+    """Does this config declare an architecture with a task head on it?
+
+    False when `architectures` is missing, empty or unreadable — absence of the
+    field is not evidence of a head, and a great many perfectly ordinary exports
+    omit it. That asymmetry is deliberate: the cost of missing a head here is one
+    repo offered to the embedding runner, and the cost of guessing one is
+    refusing a legitimate encoder.
+
+    ANY entry deciding it is also deliberate. The field is a list because a
+    checkpoint can declare several, and a repo that names a classification head
+    at all is one whose vectors nothing should be built on.
+    """
+    architectures = config.get("architectures")
+    if not isinstance(architectures, (list, tuple)):
+        return False
+    return any(isinstance(name, str) and name.endswith(_TASK_HEAD_SUFFIXES)
+               for name in architectures)
+
+#: …and the subset MLX reads. Same field, shorter list, and it is
+#: `mlx-embeddings` 0.1.0's own module directory intersected with the gate above:
+#: it ships `siglip.py`, `bert.py`, `modernbert.py` and `xlm_roberta.py` (the
+#: loader sanitizes `-` to `_` when it imports by `model_type`, which is why
+#: `xlm-roberta` is spelled with the hyphen the config uses).
+#:
+#: Two families are therefore ONNX-ONLY here. `clip`: mlx-embeddings has no CLIP
+#: port, so a CLIP checkpoint in SAFETENSORS is loadable by nothing at all — the
+#: ONNX runner reads a `clip` export happily, but it reads the export and not the
+#: safetensors. `nomic_bert`: same story, and it is the reason the curated
+#: default is an ONNX row rather than one both engines share.
+#:
+#: A SUBSET of `EMBED_MODEL_TYPES`, never a superset: a family the gate does not
+#: recognise can never reach the MLX check in `loaders()`, so an entry here that
+#: is not in the union above would be a line nothing can read.
+#:
+#: Split rather than shared because this is exactly what `loaders()` answers: a
+#: Mac that resolved to MLX must not be offered a Load for a checkpoint its
+#: engine has no module for.
+MLX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
+                                   "modernbert"})
+
+#: …and the subset the ONNX runner reads, which is the same idea as
+#: `MLX_EMBED_MODEL_TYPES` and exists for the same sentence: an engine must not
+#: be offered a Load for a family it has not been verified against.
+#:
+#: **`clip` is the one family in the gate and in NEITHER engine's set, and that
+#: is deliberate.** Every constant in `runners/onnx_embed.py` was checked against
+#: SigLIP2 exports and nothing else, and CLIP differs in two ways that each
+#: produce a confident wrong answer rather than an error:
+#:
+#: * a CLIP export publishes PROJECTED `text_embeds` / `image_embeds`, so
+#:   `_output_index(session, "pooler_output", ...)` either raises or reads the
+#:   unprojected pooled state — which leaves the two towers in different spaces,
+#:   and a cosine across them is meaningless while still looking like a number
+#:   between -1 and 1;
+#: * `_image_settings` ignores `crop_size` and `do_center_crop`, and CLIP
+#:   RESIZES THEN CENTER-CROPS where SigLIP resizes outright, so pixels reach the
+#:   vision tower framed differently from training.
+#:
+#: To re-admit it: get a real CLIP export into the loop, confirm which outputs
+#: its graphs actually declare and read the projected pair, and take the
+#: resize-then-crop geometry off `preprocessor_config.json`. Until someone has
+#: run that, this module's own standard applies — constants come off the config,
+#: not off an assumption.
+#:
+#: It stays in `DUAL_EMBED_MODEL_TYPES` all the same, and removing it from there
+#: would be the wrong fix: the gate is what makes `loaders()` return EARLY, and
+#: without that a CLIP snapshot falls through to the text branch and is offered
+#: as a CHAT model — a worse answer than "nothing here loads this", and one an
+#: existing test already pins.
+ONNX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
+                                    "nomic_bert", "modernbert"})
+
+#: Prompt scheme -> `(query_prefix, document_prefix)`. Ported from PR #780
+#: (Aman Bagrecha) essentially verbatim, comments included.
+#:
+#: **Retrieval encoders are asymmetric and this is not a detail.** A question
+#: and the passage that answers it are different kinds of text, and every
+#: model named here was trained with that difference spelled out in its
+#: input. Embedding both sides identically costs real recall on the models
+#: that instruct one side — and costs it SILENTLY, which is the part that
+#: matters: the vectors still come back, still unit length, still comparable,
+#: just worse. Nothing downstream can detect it.
+#:
+#: Each value is `(query_prefix, document_prefix)`, applied by plain
+#: concatenation — no template engine, because every scheme here is literally
+#: a string glued to the front, checked against each model's own card.
+#:
+#: `"none"` is a REAL scheme and the fallback, not an absence: a model whose
+#: convention this table does not know is embedded verbatim on both sides,
+#: which is the symmetric behaviour every encoder supports and the only
+#: honest answer for a repo nobody here has read the card for. Guessing a
+#: prefix would be worse than not prefixing — a wrong instruction is not
+#: ignored, it is text the model dutifully encodes as though it were content.
+#: It is also how a DUAL ENCODER answers: SigLIP has no retrieval convention
+#: at all, so `"none"` is what `ai_runtime` reads to refuse `kind` on one.
+TEXT_EMBED_PROMPTS = {
+    "none": ("", ""),
+    # bge v1.5. The card instructs the QUERY only and says in as many words
+    # that the passage side takes none ("no instruction needed for
+    # passages"), so this is the one asymmetric scheme whose document branch
+    # is genuinely the empty string rather than a second prefix.
+    "bge": ("Represent this sentence for searching relevant passages: ", ""),
+    # nomic-embed-text v1 and v1.5. Its card is explicit that the task
+    # prefixes are REQUIRED rather than advisory — the model was trained
+    # multi-task and the prefix is what selects the task, so an unprefixed
+    # call is out of distribution on both sides, not merely un-tuned.
+    "nomic": ("search_query: ", "search_document: "),
+    # The e5 family (intfloat/e5-*-v2, multilingual-e5-*). Both sides
+    # prefixed, and the card warns that swapping the two is worse than using
+    # neither.
+    "e5": ("query: ", "passage: "),
+    # Qwen3-Embedding ships NAMED prompts in
+    # `config_sentence_transformers.json` (`query` and `document`); the query
+    # one is an instruction block and the document one is empty. The task
+    # sentence is Qwen's own default out of that file, kept verbatim rather
+    # than reworded — it is part of what the model was tuned against, not a
+    # comment this app is free to improve.
+    "qwen3": ("Instruct: Given a web search query, retrieve relevant passages "
+              "that answer the query\nQuery:", ""),
+    # EmbeddingGemma's card gives a prompt per task; these are its
+    # `Retrieval-query` and `Retrieval-document` forms. The document form
+    # ends at `text: ` because the card's template carries an optional
+    # `title:` ahead of it, and `none` is what that field takes when there is
+    # no title — which is always, here, since this API takes a flat list of
+    # strings and has nowhere for a caller to put one.
+    "gemma-embedding": ("task: search result | query: ", "title: none | text: "),
+}
+
+#: The two values `kind` may take. A closed set, checked at the edge
+#: (`embed_common.request_kind`) rather than defaulted through, because a
+#: typo'd `"queries"` silently falling back to the document prefix is the exact
+#: silent-degradation failure this whole table exists to prevent.
+TEXT_EMBED_KINDS = ("query", "document")
+
+#: What a caller who says nothing gets. See `embed_common.DEFAULT_KIND` for the
+#: whole argument.
+TEXT_EMBED_DEFAULT_KIND = "document"
+
+#: Repo id -> its prompt scheme, for every model this app CURATES. Checked
+#: before the heuristic below, so the guess never runs for the models most
+#: people will ever load — and `test_ai_catalog_embeddings.py` asserts every
+#: curated embeddings id resolves to a scheme, which makes "has a known
+#: convention" a curation rule rather than a hope.
+#:
+#: PR #780 carried the same idea keyed by GGUF FILENAME, because llama.cpp
+#: addresses a model as a `(repo, file)` pair. Nothing here does: both engines
+#: take a repo id, so that is the key.
+TEXT_EMBED_SCHEMES = {
+    "nomic-ai/nomic-embed-text-v1.5": "nomic",
+    # **The curated MLX prose row, and it is here because the HEURISTIC BELOW
+    # MISSES IT.** `mlx-community/nomicai-modernbert-embed-base-bf16` is nomic's
+    # own ModernBERT embed model and takes nomic's prefixes — the upstream card
+    # says so outright ("adding `search_query: ` to the query and
+    # `search_document: ` to the documents will be sufficient") and links to
+    # nomic-embed-text-v1.5's own task-instruction-prefixes section. But the
+    # conversion's id spells the account as `nomicai-`, so it contains no
+    # `nomic-embed` substring and `TEXT_EMBED_SCHEME_HINTS` falls through every
+    # entry to `"none"` — which would embed every query with no prefix at all,
+    # the exact silent recall loss this whole table exists to prevent.
+    #
+    # **The hint that fixes this is `("modernbert-embed", "nomic")`, and it is
+    # now in the table below** — but this row stays, because the curation rule is
+    # that every curated id appears here EXPLICITLY, and a hint that happens to
+    # match it does not discharge that.
+    #
+    # The reasoning this comment used to give was against widening the hint to
+    # `"nomic"`, which would start matching every unrelated repo with "nomic" in
+    # the name — the trap the e5 hints are spelled with their size suffix to
+    # avoid. That argument was right and it does not apply to
+    # `modernbert-embed`, which is nomic's embed line and nobody else's. Said
+    # plainly here because the old wording read as "do not widen the hint at
+    # all", and it cost the UPSTREAM repo its prefixes: `nomic-ai/
+    # modernbert-embed-base` matched neither this table nor any hint, so every
+    # query embedded unprefixed — the same silent recall loss, one repo over.
+    "mlx-community/nomicai-modernbert-embed-base-bf16": "nomic",
+    "intfloat/multilingual-e5-small": "e5",
+    # Not curated in `catalog.py` — see the ONNX block's comment on why its
+    # 0.44 GB would make it the default — but named here anyway, so a user who
+    # fetches it themselves is prompted correctly rather than falling to the
+    # id heuristic below. The curation rule is that every curated row IS here;
+    # the reverse is not required.
+    "BAAI/bge-base-en-v1.5": "bge",
+}
+
+#: Substrings of a REPO ID that identify a prompt scheme, most specific first —
+#: the fallback for a repo `TEXT_EMBED_SCHEMES` above does not curate.
+#:
+#: **A heuristic, and named as one.** A model's prompt convention is a fact
+#: about its training that no file in the snapshot records, so for an uncurated
+#: repo the id is the only evidence there is. It is reasonable evidence — an
+#: embedding repo is named after the model it holds, near universally — but it
+#: is evidence and not proof, which is why the scheme actually resolved travels
+#: back on the catalog entry (`ai_runtime`'s `promptScheme`) rather than being
+#: applied out of sight. A caller who sees the wrong one can pass `kind`
+#: deliberately or name a curated id instead.
+#:
+#: `qwen3-embedding` ahead of any bare `qwen3` and `nomic-embed` ahead of any
+#: bare `nomic` for the obvious reason; the e5 hints are spelled with their
+#: size suffix rather than as a bare `e5` because two letters that common
+#: match ids with nothing to do with the family.
+TEXT_EMBED_SCHEME_HINTS = (
+    ("qwen3-embedding", "qwen3"),
+    ("embeddinggemma", "gemma-embedding"),
+    ("gemma-embedding", "gemma-embedding"),
+    ("nomic-embed", "nomic"),
+    # nomic's ModernBERT embed line, which `nomic-embed` above does NOT catch:
+    # neither `nomic-ai/modernbert-embed-base` nor
+    # `mlx-community/nomicai-modernbert-embed-base-bf16` contains that substring.
+    # One hint covers both, and every future `-4bit`/`-8bit` conversion of them,
+    # which is why this is a hint rather than a pair of curated rows.
+    #
+    # Specific enough to be safe: `modernbert-embed` is nomic's embed line and
+    # nobody else's. A bare `modernbert` would NOT be — that is the base
+    # architecture, and plenty of repos wear it without nomic's prefixes.
+    ("modernbert-embed", "nomic"),
+    ("multilingual-e5", "e5"),
+    ("e5-small", "e5"),
+    ("e5-base", "e5"),
+    ("e5-large", "e5"),
+    # bge-m3 is the family member that takes NO query instruction — its card
+    # says so outright — so it must not inherit the `bge` scheme below by
+    # substring. Ordered ahead of `bge-` for exactly that.
+    ("bge-m3", "none"),
+    ("bge-", "bge"),
+)
+
+
+def text_embed_prompt(scheme: str, kind: str) -> str:
+    """The prefix to glue in front of one text, for `scheme` and `kind`.
+
+    An unknown scheme falls back to `"none"` rather than raising: this is
+    reached from a worker holding a resident model with a validated batch in
+    hand, and a scheme name that has drifted out of the table is a reason to
+    embed plainly, not to fail a call that would otherwise work.
+    """
+    query, document = TEXT_EMBED_PROMPTS.get(scheme) or TEXT_EMBED_PROMPTS["none"]
+    return query if kind == "query" else document
+
+
+def text_embed_scheme(model_id: str) -> str:
+    """The prompt scheme for a model — the curated table, then the repo id.
+
+    Curated first: `TEXT_EMBED_SCHEMES` states the scheme outright for every id
+    this app recommends, so the heuristic never runs for the models most people
+    will ever load. Everything else falls to `TEXT_EMBED_SCHEME_HINTS` over the
+    repo id, and finally to `"none"`.
+
+    Lowercased before matching: publishers capitalise inconsistently
+    (`BAAI/bge-*` against `BAAI/BGE-*` in their own docs), and a scheme that
+    turned on that would be precisely the silent wrong answer this table exists
+    to avoid.
+
+    `"none"` for a DUAL ENCODER, and that is the answer rather than a gap:
+    SigLIP and CLIP have no query/passage convention, so there is no prefix to
+    apply and `kind` is a parameter with nothing to do — which is exactly what
+    `ai_runtime` refuses it on.
+    """
+    curated = TEXT_EMBED_SCHEMES.get(model_id)
+    if curated:
+        return curated
+    haystack = model_id.lower()
+    for hint, scheme in TEXT_EMBED_SCHEME_HINTS:
+        if hint in haystack:
+            return scheme
+    return "none"
 
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
 #:
@@ -317,6 +651,63 @@ def component(repo_id: str) -> dict | None:
 #: a question about the FILES, which did not change when D416 removed the torch
 #: text runners. `diffusers-image*` and `mlx-text` still read every one of them.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
+
+#: What an `onnxruntime.InferenceSession` can open. One extension, and it is
+#: deliberately NOT paired with `.onnx_data` here: an export over the 2 GB
+#: protobuf limit splits its tensors into a sidecar of that name, but a sidecar
+#: with no `.onnx` graph beside it is not a loadable model, so the graph file is
+#: the whole of the evidence. (`onnx-community/siglip2-so400m-patch14-384-ONNX`
+#: is the split case: `onnx/text_model.onnx` is 0.6 MB of graph pointing at a
+#: 2.8 GB `onnx/text_model.onnx_data`. Both are FETCHED — see
+#: `runners/onnx_embed.py`'s `allow_patterns` — this constant just decides what
+#: counts as "there are weights here".)
+#:
+#: Separate from `TORCH_WEIGHTS` rather than appended to it, because the two
+#: answer different questions for different engines: `ai_models.py` counts
+#: parameters off safetensors headers, and no `.onnx` has one.
+ONNX_WEIGHTS = (".onnx",)
+
+#: The graph paths `runners/onnx_embed.py` actually opens, which is a STRICTER
+#: question than `ONNX_WEIGHTS` above and has to be asked separately.
+#:
+#: An `.onnx` file somewhere in a repo is not an export this app can load. The
+#: runner opens `onnx/model.onnx` for a prose encoder, or `onnx/text_model.onnx`
+#: AND `onnx/vision_model.onnx` for a dual one — in the `onnx/` subfolder, under
+#: those names, unquantized. A root-level `model.onnx` (a perfectly normal
+#: `optimum` export) or a repo publishing only `onnx/model_q4.onnx` satisfies
+#: `ONNX_WEIGHTS` and satisfies nothing the runner needs, so the page offered a
+#: Load button that could only fail once the download had run.
+ONNX_PROSE_GRAPH = "onnx/model.onnx"
+ONNX_TEXT_GRAPH = "onnx/text_model.onnx"
+ONNX_VISION_GRAPH = "onnx/vision_model.onnx"
+
+
+def onnx_export_graphs(names):
+    """The graphs to open for this file listing, in load order, or `()`.
+
+    **The single answer to "is this an export this app reads", shared by the page
+    and the runner**, which is the whole reason it lives in this module. The
+    AI Models page used to ask a weaker question than the runner answered —
+    "any `.onnx` anywhere" against "these names in this folder" — and every
+    disagreement between the two showed up as a Load button that failed at
+    download time. Same defect in miniature as the engine-gap bug: an offer made
+    on weaker evidence than the thing it offers requires.
+
+    The dual branch is asked FIRST because a dual export ships `onnx/model.onnx`
+    too — a merged graph this app never opens, and a third full copy of both
+    towers if it were fetched.
+
+    `names` are repo-relative and forward-slashed, so this reads the same whether
+    it was handed a Hub listing or a walk of a snapshot on disk.
+    """
+    listing = frozenset(names)
+    if ONNX_TEXT_GRAPH in listing:
+        return ((ONNX_TEXT_GRAPH, ONNX_VISION_GRAPH)
+                if ONNX_VISION_GRAPH in listing else ())
+    if ONNX_PROSE_GRAPH in listing:
+        return (ONNX_PROSE_GRAPH,)
+    return ()
+
 
 #: llama.cpp's single-file weights format (SPEC AI-11, `runners/llama_text.py`).
 #: Unlike every other format in this module a `.gguf` needs no companion
@@ -927,17 +1318,23 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # keeps for the diffusers pair just above.
             "llamacpp-text", "llamacpp-text-vulkan",
             # A `siglip`/`clip` model_type is decisive too, and it has to be: a
-            # dual encoder is a directory of safetensors, so without this the
-            # text branch would claim it and a cached SigLIP card would offer to
-            # load a vision-text encoder as a chat model. All four codes appear
-            # for `DIFFUSERS_RUNNERS`' reason — membership is a statement about
-            # the FORMAT, and a config saying `siglip` says the same thing
-            # whichever of the four engines opens it. `transformers-embed-cuda`
-            # and `-rocm` are spelled literally rather than via
-            # `TRANSFORMERS_EMBED_RUNNERS` for the same forward-declaration
+            # dual encoder is a directory of weights like any other, so without
+            # this the text branch would claim it and a cached SigLIP card would
+            # offer to load a vision-text encoder as a chat model. Every code
+            # appears for `DIFFUSERS_RUNNERS`' reason — membership is a
+            # statement about the FORMAT, and a config saying `siglip` says the
+            # same thing whichever engine opens it. That covers BOTH weight
+            # layouts: an `onnx-community/*-ONNX` export carries the same
+            # `model_type: siglip` with an `onnx/` tree instead of
+            # `model.safetensors`, and without its codes here a cached export
+            # with no pipeline_tag would come back with NO capability at all —
+            # `hub_cache._resolve` would find no candidate runner and the card
+            # would show a repo nothing can load. All spelled literally rather
+            # than via `ONNX_EMBED_RUNNERS` for the same forward-declaration
             # reason `LLAMACPP_RUNNERS` is spelled literally just above.
-            "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-            "transformers-embed-rocm")
+            "mlx-embed",
+            "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+            "onnx-embed-rocm")
 
 
 def unloadable_quant(config: dict) -> str | None:
@@ -1023,13 +1420,27 @@ def is_parakeet_checkpoint(config: dict) -> bool:
 
 
 def embed_model_type(config: dict) -> str | None:
-    """The dual-encoder family this config declares, or None.
+    """The embedding family this config declares, or None.
+
+    EITHER half of the gate — a dual encoder (`DUAL_EMBED_MODEL_TYPES`) or a
+    text-only one (`TEXT_EMBED_MODEL_TYPES`). One function for both, because
+    `loaders()` asks a single question ("is this an embedding checkpoint") and
+    only then asks which half the answer is in; a function per half would be two
+    places to forget a family in, and the halves are already two constants.
 
     Lowercased, because `model_type` is written by whoever exported the
-    checkpoint and a `SigLIP` would otherwise read as an unknown family.
+    checkpoint and a `SigLIP` or a `ModernBERT` would otherwise read as an
+    unknown family.
+
+    **A TASK HEAD disqualifies the checkpoint whatever the family says** — see
+    `has_task_head`. `model_type` is the architecture family and says nothing
+    about what was fine-tuned onto it, so a reranker and the base encoder it was
+    built from are indistinguishable by that field alone.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str):
+        return None
+    if has_task_head(config):
         return None
     model_type = model_type.strip().lower()
     return model_type if model_type in EMBED_MODEL_TYPES else None
@@ -1089,21 +1500,25 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
 #: `llamacpp-text` here is exactly the trap this comment already describes for
 #: the other two families (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
-#: All three transformers embedding builds — CPU, CUDA and ROCm — for the same
-#: reason as the two tuples above: a `siglip`/`clip` `model_type` is the same
-#: FORMAT whichever wheel's `AutoModel` opens it, and a branch that named only
-#: the CPU row would be exactly the trap
-#: `test_every_registered_runner_appears_in_loaders` exists to catch — a
-#: registered runner with no engine tag, no Load button and no cached repos
-#: offered, on precisely the machines that chose it.
+#: All four ONNX Runtime embedding builds — CPU, DirectML, CUDA and ROCm — for
+#: the same reason as the two tuples above: an `onnx/` tree holding a
+#: `text_model.onnx` is the same FORMAT whichever execution provider's
+#: `InferenceSession` opens it, and a branch that named only the CPU row would be
+#: exactly the trap `test_every_registered_runner_appears_in_loaders` exists to
+#: catch — a registered runner with no engine tag, no Load button and no cached
+#: repos offered, on precisely the machines that chose it.
+#:
 #: `mlx-embed` stays OUT: it has no hardware variant of its own to enumerate,
 #: and it is appended separately in `loaders()` because it is gated on
-#: `MLX_EMBED_MODEL_TYPES` in a way none of these three are.
-TRANSFORMERS_EMBED_RUNNERS = ("transformers-embed", "transformers-embed-cuda",
-                              "transformers-embed-rocm")
+#: `MLX_EMBED_MODEL_TYPES` in a way none of these four are — and, since the
+#: three `transformers-embed*` rows went, because it reads a different weight
+#: layout entirely (safetensors, not `.onnx`).
+ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+                      "onnx-embed-rocm")
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
+           onnx_weights: bool = False,
            gguf_architecture: str | None = None) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
@@ -1112,7 +1527,10 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
 
     `names`/`dirnames` are the snapshot's top-level entries, `config` its
     `config.json` (empty when absent), `torch_weights` whether anything in the
-    tree is a file torch can open, and `gguf_architecture` the caller's OWN
+    tree is a file torch can open, `onnx_weights` whether anything in it is a
+    file `onnxruntime` can open (two INDEPENDENT facts, not a fork — a repo may
+    publish both layouts, and each engine reads only its own), and
+    `gguf_architecture` the caller's OWN
     reading of `gguf_architecture()` for whichever root `.gguf` file is
     present — passed in rather than read here because opening and parsing the
     file is I/O this pure evidence-classifier has never otherwise done, and
@@ -1180,17 +1598,49 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # through to whatever else recognises the file layout."
         return tuple(found)
     family = embed_model_type(config)
-    if family and torch_weights:
-        if family in MLX_EMBED_MODEL_TYPES:
+    if family and (torch_weights or onnx_weights):
+        # TWO independent appends, not a fork. The same `onnx-community` account
+        # sometimes re-uploads `model.safetensors` beside its export, and such a
+        # repo really is readable by both engines — so each engine's rows are
+        # gated on ITS OWN weight fact and neither excludes the other: MLX
+        # reads safetensors and `onnxruntime` reads the `onnx/` graphs, and
+        # those are two separate questions about one repo.
+        if torch_weights and family in MLX_EMBED_MODEL_TYPES:
             found.append("mlx-embed")
-        # All three torch builds, not just the CPU row —
-        # `TRANSFORMERS_EMBED_RUNNERS`'s own comment gives the reason, and it
-        # is the DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
-        # registered but absent here is invisible to the page.
-        found.extend(TRANSFORMERS_EMBED_RUNNERS)
-        # …and NOTHING else, for the `.gguf` branch's reason: this snapshot is
-        # a directory of safetensors, so the text branch below would claim it
-        # and the page would offer to load a dual encoder as a chat model.
+        if onnx_weights and family in ONNX_EMBED_MODEL_TYPES:
+            # All four execution providers, not just the CPU row —
+            # `ONNX_EMBED_RUNNERS`' own comment gives the reason, and it is the
+            # DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
+            # registered but absent here is invisible to the page. `mlx-embed`
+            # gets no analogue on this side: MLX has no ONNX reader at all, so an
+            # export is invisible to it whatever the family says.
+            #
+            # Gated on `ONNX_EMBED_MODEL_TYPES` exactly as the MLX row above is
+            # gated on its own subset: "onnxruntime runs whatever graph it is
+            # handed" is true of onnxruntime and not of this runner, whose output
+            # names and image geometry were verified against one family. `clip`
+            # is the family that falls through both gates — see that constant.
+            found.extend(ONNX_EMBED_RUNNERS)
+        # …and NOTHING else, for the `.gguf` branch's reason: an embedding
+        # snapshot is a directory of weights like any other, so the text branch
+        # below would claim it and the page would offer to load an encoder as a
+        # chat model. Load-bearing along two axes now, not one:
+        #
+        # * both LAYOUTS — an ONNX export ships `tokenizer.json` and a
+        #   `config.json` and would fall through just as readily as a
+        #   safetensors one;
+        # * both FAMILIES — and the prose half is the sharper case. A dual
+        #   encoder at least has a vision tower to make it obviously not a chat
+        #   model; `BAAI/bge-base-en-v1.5` is a directory of safetensors with a
+        #   `bert` config, byte-for-byte the shape `mlx-text` reads, and it can
+        #   never generate a token.
+        #
+        # It returns even when `found` is EMPTY, which is the case a fallthrough
+        # looks harmless in: a `nomic_bert` SAFETENSORS snapshot is loadable by
+        # nothing here (mlx-embeddings has no module for it and this is not an
+        # ONNX export), and "an embedding model nothing here can load" is the
+        # correct answer — not "matches nothing here, so fall through to whatever
+        # else recognises the file layout."
         return tuple(found)
     # A directory of safetensors, which since D416 exactly one engine here
     # reads: `mlx-text`. This branch used to fork — an MLX-packed checkpoint
