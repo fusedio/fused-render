@@ -1112,3 +1112,32 @@ a.bookmark-name::after {
   font-size: 11px;
   cursor: pointer;
 }
+
+/* Current apps (D487): the workspace apps with unfiled tasks, above Bookmarks.
+   Rows reuse .bookmark-row/.bookmark-name/.bookmark-actions for identical
+   metrics; the hover cross archives every task under the app. Fixed height
+   like .sidebar-recents — the bookmark tree below is the one that scrolls. The
+   bookmarks heading's 18px sticky top padding assumed it sat first after the
+   nav group; with this section above it the gap would double, so the section
+   ends flush and lets that padding be the gap. */
+.sidebar-current-apps {
+  flex: 0 0 auto;
+  padding-bottom: 0;
+}
+
+.current-app-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The running dot rides the glyph slot rather than the rail icon it was drawn
+   for: unposition it so it centres in the 14px slot. */
+.current-app-glyph > .sidebar-rail-dot {
+  position: static;
+}
+
+.current-app-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

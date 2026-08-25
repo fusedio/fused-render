@@ -57,6 +57,12 @@ let loaded = false;
  *  While there is one, this module does not poll at all — see schedule. */
 let feeders = 0;
 const listeners = new Set<(p: TasksPulse) => void>();
+/** Readers of the ROWS rather than the summary (the sidebar's Current apps
+ *  section). Fired on every publish, not only on a changed summary: two
+ *  answers with the same running/unseen counts can still name different
+ *  projects. Counted with `listeners` for the poll's start/stop, so a rows
+ *  reader alone keeps the poll alive too. */
+const rowListeners = new Set<(rows: TaskPulseTask[]) => void>();
 
 function readSeen(): TasksSeen {
   try {
@@ -122,7 +128,7 @@ async function poll() {
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
-  if (listeners.size === 0 || feeders > 0) return;
+  if (listeners.size + rowListeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
@@ -157,7 +163,7 @@ export function pokeTasks() {
   }
   // Nobody reading and nobody feeding: nothing on screen to update, and a
   // fetch for an unmounted sidebar is the waste schedule() already refuses.
-  if (listeners.size === 0) return;
+  if (listeners.size + rowListeners.size === 0) return;
   void poll();
 }
 
@@ -185,6 +191,7 @@ export function publishTasks(next: TaskPulseTask[]) {
   tasks = next;
   loaded = true;
   recompute();
+  for (const listener of rowListeners) listener(next);
   schedule();
 }
 
@@ -251,4 +258,23 @@ export function useTasksPulse(): TasksPulse {
     };
   }, []);
   return current;
+}
+
+/** Subscribe to the compact rows themselves — `key`, `status`, `project`,
+ *  `last_active` — for a reader that groups tasks rather than counts them (the
+ *  sidebar's Current apps section, D487). Same store, same poll, same feeder
+ *  contract as useTasksPulse: this is NOT a second /api/tasks poller. */
+export function useTasksPulseRows(): TaskPulseTask[] {
+  const [rows, setRows] = useState<TaskPulseTask[]>(tasks);
+  useEffect(() => {
+    rowListeners.add(setRows);
+    setRows(tasks);
+    if (feeders === 0) void poll();
+    else schedule();
+    return () => {
+      rowListeners.delete(setRows);
+      schedule();
+    };
+  }, []);
+  return rows;
 }

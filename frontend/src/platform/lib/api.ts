@@ -2117,7 +2117,9 @@ export interface Task {
 // descriptions, and message previews. Keep this structural subset compatible
 // with Task so the Tasks page can still publish its full rows into the shared
 // pulse store while every other route polls the compact endpoint.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active">;
+// `project` is here for the sidebar's Current apps section (D487), which groups
+// live tasks by the workspace app they belong to off this same poll.
+export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
 
 export function getTasks(): Promise<{ tasks: Task[] }> {
   return getJson<{ tasks: Task[] }>("/api/tasks");
