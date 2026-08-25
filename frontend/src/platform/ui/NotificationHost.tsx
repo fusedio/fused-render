@@ -34,6 +34,7 @@
 import type { ReactNode } from "react";
 import Toast from "@platform/ui/Toast";
 import DownloadManager from "@platform/ui/DownloadManager";
+import FdaCard from "@platform/ui/FdaCard";
 import ServerStatusBanner from "@platform/ui/ServerStatusBanner";
 import { dismissToast, useToasts } from "@platform/lib/toast";
 import { IS_EMBED } from "@platform/lib/router";
@@ -73,6 +74,10 @@ export default function NotificationHost({ activity }: { activity?: ReactNode })
         </div>
       ))}
       {!IS_EMBED && (activity ?? <DownloadManager />)}
+      {/* Full Disk Access nudge (macOS packaged app only): longer-lived than a
+          toast or a job — once granted or dismissed it never comes back — so it
+          sits just above the one entry that outlives the session. */}
+      {!IS_EMBED && <FdaCard />}
       {!IS_EMBED && <ServerStatusBanner />}
     </div>
   );
