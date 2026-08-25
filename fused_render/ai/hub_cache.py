@@ -678,6 +678,25 @@ def _has_torch_weights(snapshot_dir: str) -> bool:
     return False
 
 
+def _has_onnx_weights(snapshot_dir: str) -> bool:
+    """Is there anything in this revision an `InferenceSession` could open?
+
+    `_has_torch_weights`'s sibling, and a WALK for a stronger reason than that
+    one has: every ONNX export this app reads keeps its graphs in an `onnx/`
+    SUBDIRECTORY (`onnx/text_model.onnx`, `onnx/model.onnx`), so a check over the
+    snapshot's top level would conclude that no ONNX repo anywhere holds weights
+    — the format's convention is the subfolder, not the root.
+
+    The suffixes are `formats.ONNX_WEIGHTS` rather than a list spelled here, for
+    `_has_torch_weights`'s reason exactly: the page and `formats.loaders()` must
+    not come to disagree about what counts as weights.
+    """
+    for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        if any(name.endswith(formats.ONNX_WEIGHTS) for name in filenames):
+            return True
+    return False
+
+
 def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[int, bool]:
     """Parameters in one safetensors file, and whether any of them were unpacked.
 
@@ -912,6 +931,7 @@ def _repo_meta(repo_dir: str) -> _RepoMeta:
         dirnames=dirnames,
         config=config,
         torch_weights=_has_torch_weights(snapshot),
+        onnx_weights=_has_onnx_weights(snapshot),
         gguf_architecture=gguf_architecture,
     )
     # The snapshot's own top-level listing, carried past this function for

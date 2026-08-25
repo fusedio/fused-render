@@ -318,6 +318,21 @@ def component(repo_id: str) -> dict | None:
 #: text runners. `diffusers-image*` and `mlx-text` still read every one of them.
 TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 
+#: What an `onnxruntime.InferenceSession` can open. One extension, and it is
+#: deliberately NOT paired with `.onnx_data` here: an export over the 2 GB
+#: protobuf limit splits its tensors into a sidecar of that name, but a sidecar
+#: with no `.onnx` graph beside it is not a loadable model, so the graph file is
+#: the whole of the evidence. (`onnx-community/siglip2-so400m-patch14-384-ONNX`
+#: is the split case: `onnx/text_model.onnx` is 0.6 MB of graph pointing at a
+#: 2.8 GB `onnx/text_model.onnx_data`. Both are FETCHED — see
+#: `runners/onnx_embed.py`'s `allow_patterns` — this constant just decides what
+#: counts as "there are weights here".)
+#:
+#: Separate from `TORCH_WEIGHTS` rather than appended to it, because the two
+#: answer different questions for different engines: `ai_models.py` counts
+#: parameters off safetensors headers, and no `.onnx` has one.
+ONNX_WEIGHTS = (".onnx",)
+
 #: llama.cpp's single-file weights format (SPEC AI-11, `runners/llama_text.py`).
 #: Unlike every other format in this module a `.gguf` needs no companion
 #: config to identify — the vocabulary, the architecture and the model's own
@@ -1101,9 +1116,25 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 #: `MLX_EMBED_MODEL_TYPES` in a way none of these three are.
 TRANSFORMERS_EMBED_RUNNERS = ("transformers-embed", "transformers-embed-cuda",
                               "transformers-embed-rocm")
+#: All four ONNX Runtime embedding builds — CPU, DirectML, CUDA and ROCm — for
+#: `TRANSFORMERS_EMBED_RUNNERS`' reason exactly: an `onnx/` tree holding a
+#: `text_model.onnx` is the same FORMAT whichever execution provider's
+#: `InferenceSession` opens it, and a branch that named only the CPU row would be
+#: the trap `test_every_registered_runner_appears_in_loaders` exists to catch — a
+#: registered runner with no engine tag, no Load button and no cached repos
+#: offered, on precisely the machines that chose it.
+#:
+#: A SEPARATE tuple from the torch family rather than a widening of it, because
+#: the two read DIFFERENT FILES out of the same checkpoint: `onnxruntime` cannot
+#: open `model.safetensors` and `AutoModel` cannot open `model.onnx`. That is why
+#: `loaders()` below takes two independent weight facts and appends the two
+#: families independently, instead of forking on one.
+ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+                      "onnx-embed-rocm")
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
+           onnx_weights: bool = False,
            gguf_architecture: str | None = None) -> tuple[str, ...]:
     """Which runners' `load()` would accept this snapshot, by code.
 
@@ -1112,7 +1143,10 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
 
     `names`/`dirnames` are the snapshot's top-level entries, `config` its
     `config.json` (empty when absent), `torch_weights` whether anything in the
-    tree is a file torch can open, and `gguf_architecture` the caller's OWN
+    tree is a file torch can open, `onnx_weights` whether anything in it is a
+    file `onnxruntime` can open (two INDEPENDENT facts, not a fork — a repo may
+    publish both layouts, and each engine reads only its own), and
+    `gguf_architecture` the caller's OWN
     reading of `gguf_architecture()` for whichever root `.gguf` file is
     present — passed in rather than read here because opening and parsing the
     file is I/O this pure evidence-classifier has never otherwise done, and
@@ -1180,17 +1214,31 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # through to whatever else recognises the file layout."
         return tuple(found)
     family = embed_model_type(config)
-    if family and torch_weights:
-        if family in MLX_EMBED_MODEL_TYPES:
-            found.append("mlx-embed")
-        # All three torch builds, not just the CPU row —
-        # `TRANSFORMERS_EMBED_RUNNERS`'s own comment gives the reason, and it
-        # is the DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
-        # registered but absent here is invisible to the page.
-        found.extend(TRANSFORMERS_EMBED_RUNNERS)
-        # …and NOTHING else, for the `.gguf` branch's reason: this snapshot is
-        # a directory of safetensors, so the text branch below would claim it
-        # and the page would offer to load a dual encoder as a chat model.
+    if family and (torch_weights or onnx_weights):
+        # TWO independent appends, not a fork. The same `onnx-community` account
+        # sometimes re-uploads `model.safetensors` beside its export, and such a
+        # repo really is readable by both families — so each engine's rows are
+        # gated on ITS OWN weight fact and neither excludes the other.
+        if torch_weights:
+            if family in MLX_EMBED_MODEL_TYPES:
+                found.append("mlx-embed")
+            # All three torch builds, not just the CPU row —
+            # `TRANSFORMERS_EMBED_RUNNERS`'s own comment gives the reason, and it
+            # is the DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
+            # registered but absent here is invisible to the page.
+            found.extend(TRANSFORMERS_EMBED_RUNNERS)
+        if onnx_weights:
+            # All four execution providers, for the identical reason — see
+            # `ONNX_EMBED_RUNNERS`. `mlx-embed` gets no analogue here: MLX has no
+            # ONNX reader at all, so an export is invisible to it whatever the
+            # family says.
+            found.extend(ONNX_EMBED_RUNNERS)
+        # …and NOTHING else, for the `.gguf` branch's reason: an embedding
+        # snapshot is a directory of weights like any other, so the text branch
+        # below would claim it and the page would offer to load a dual encoder
+        # as a chat model. Load-bearing for BOTH layouts — an ONNX export ships
+        # `tokenizer.json` and a `config.json` and would fall through just as
+        # readily as a safetensors one.
         return tuple(found)
     # A directory of safetensors, which since D416 exactly one engine here
     # reads: `mlx-text`. This branch used to fork — an MLX-packed checkpoint

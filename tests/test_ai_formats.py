@@ -760,6 +760,97 @@ def test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners():
     assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
 
 
+# -- embeddings, the ONNX exports -----------------------------------------------
+#
+# `onnx-community/siglip2-*-ONNX` is the SAME checkpoint re-exported: the config
+# still says `model_type: siglip`, and the weights are `onnx/{text,vision}_model
+# .onnx` rather than `model.safetensors`. So the family gate is unchanged and the
+# WEIGHTS half is what tells the two engines apart — which is why `loaders()`
+# takes two independent weight facts rather than one.
+
+
+def _onnx_export_names():
+    """A real `onnx-community/siglip2-base-patch16-384-ONNX` top-level listing.
+
+    The `.onnx` files are NOT here: they live under `onnx/`, which is why
+    `hub_cache._has_onnx_weights` walks the tree and this fixture's evidence
+    reaches `loaders()` as the `onnx_weights` flag instead of a filename.
+    """
+    return {"config.json", "preprocessor_config.json", "tokenizer.json",
+            "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
+            "quantize_config.json", "README.md"}
+
+
+def test_an_onnx_dual_encoder_export_resolves_to_the_four_onnx_rows_only():
+    """The ONNX engine's whole reason for existing, at the format layer.
+
+    `onnx_weights=True` and `torch_weights=False` is exactly what an
+    `onnx-community` export looks like on disk, and neither torch nor
+    mlx-embeddings can open a `.onnx` file — so the torch family and `mlx-embed`
+    must be absent, not merely outranked.
+    """
+    codes = formats.loaders(
+        repo_id="onnx-community/siglip2-base-patch16-384-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_siglip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_an_onnx_export_is_not_offered_to_the_text_runner():
+    """`mlx-text` reads a directory of safetensors and an ONNX export is not one
+    — but the early `return` in the embed branch is what makes that true, and it
+    is the same guard `test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners`
+    pins for the torch layout. Without it a cached ONNX SigLIP2 export would be
+    offered as a chat model on every machine."""
+    codes = formats.loaders(
+        repo_id="onnx-community/siglip2-so400m-patch14-384-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_siglip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert "mlx-text" not in codes
+
+
+def test_a_torch_siglip_snapshot_matches_exactly_what_it_matched_before_onnx():
+    """The no-regression half, and the one this task could actually break: a
+    `model.safetensors` SigLIP snapshot carries no `.onnx` anywhere, so the ONNX
+    rows must not appear on it merely because the branch now knows about them."""
+    codes = formats.loaders(
+        repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
+        dirnames=set(), config=_siglip_config(), torch_weights=True,
+        onnx_weights=False)
+    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert not set(codes) & set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_a_repo_carrying_both_layouts_matches_both_families():
+    """`onnx-community` sometimes re-uploads the safetensors beside the export,
+    and both engines really can read such a repo — so the two weight flags are
+    independent rather than a fork, which is why they are two parameters."""
+    codes = formats.loaders(
+        repo_id="x/y", names={"model.safetensors"}, dirnames={"onnx"},
+        config=_siglip_config(), torch_weights=True, onnx_weights=True)
+    assert set(codes) == ({"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+                          | set(formats.ONNX_EMBED_RUNNERS))
+
+
+def test_an_embed_config_with_neither_weight_layout_loads_nowhere():
+    """`test_an_embed_config_with_no_torch_weights_loads_nowhere`'s sibling, and
+    the reason that test's name had to narrow: with two weight facts, "no torch
+    weights" no longer means "nothing to load"."""
+    codes = formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(), config=_siglip_config(),
+        torch_weights=False, onnx_weights=False)
+    assert codes == ()
+
+
+def test_the_onnx_family_tuple_names_all_four_execution_providers():
+    """`TRANSFORMERS_EMBED_RUNNERS`' own argument, restated for this family: a
+    variant registered but missing from `loaders()` has no engine tag, no Load
+    button and no cached repos offered, on precisely the machines that chose it.
+    """
+    assert formats.ONNX_EMBED_RUNNERS == (
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm")
+
+
 def test_embed_model_type_is_case_and_whitespace_tolerant():
     assert formats.embed_model_type({"model_type": " SigLIP "}) == "siglip"
     assert formats.embed_model_type({"model_type": "CLIP"}) == "clip"
