@@ -399,13 +399,36 @@ export interface EmbedResult {
  *  dot product between two of them IS their cosine similarity. The reply is
  *  wrapped (`{ok, result}`) unlike image/transcribe, and a cold model answers
  *  the same model_loading 409 the chat route does — thrown as `ModelLoading`
- *  for the caller's own watch-and-retry. */
-export async function embedTexts(model: string, texts: string[]): Promise<EmbedResult> {
+ *  for the caller's own watch-and-retry.
+ *
+ *  `kind` picks which half of a retrieval model's prompt pair goes in front of
+ *  these texts — `"query"` for the thing being searched WITH, `"document"` for
+ *  the things being searched THROUGH. **Sent only when the caller has one**, and
+ *  that is not tidiness: the route 400s a `kind` on a model with no retrieval
+ *  convention (every dual encoder), because a parameter that changed nothing
+ *  would be worse than one that is refused. `AiCatalogModel.promptScheme` is the
+ *  server's own answer to whether this model has one. */
+export async function embedTexts(
+  model: string,
+  texts: string[],
+  kind?: "query" | "document",
+): Promise<EmbedResult> {
   const res = await fetch("/api/ai/embed", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Fused": "1" },
-    body: JSON.stringify({ model, texts }),
+    body: JSON.stringify(kind ? { model, texts, kind } : { model, texts }),
   });
+  return readEmbedReply(res);
+}
+
+/** `/api/ai/embed`'s reply, for both halves of the call.
+ *
+ *  One reader rather than a copy per entry point: the 409-means-LOADING fork is
+ *  the part that matters (a cold model is not a failed request, and dropping the
+ *  job id loses the download the caller would have shown), and two copies of it
+ *  would be two places for a `texts` call to keep watching and a `paths` call to
+ *  stop. */
+async function readEmbedReply(res: Response): Promise<EmbedResult> {
   const data = (await res.json().catch(() => null)) as {
     ok?: boolean;
     result?: EmbedResult;
@@ -420,6 +443,27 @@ export async function embedTexts(model: string, texts: string[]): Promise<EmbedR
   }
   if (!data.result) throw new Error("the reply carried no result");
   return data.result;
+}
+
+/** One batch of image PATHS into the same vector space — the other half of a
+ *  dual encoder, and the reason a typed phrase can rank photographs at all.
+ *
+ *  **Absolute paths, and no `base`.** The route resolves a relative path against
+ *  the calling PAGE's own file (RH-1); the shell is not a page and has no
+ *  `?path=` to resolve against, so it sends what the OS file dialog handed back.
+ *
+ *  Refused with a 400 naming the model when that model has no vision tower —
+ *  `AiCatalogModel.acceptsPaths` is the server's own answer to whether it does,
+ *  and a caller drawing an affordance off anything else is drawing one whose
+ *  request then fails. Shares `embedTexts`' reply handling, including the
+ *  `ModelLoading` fork, by calling through the same reader below. */
+export async function embedPaths(model: string, paths: string[]): Promise<EmbedResult> {
+  const res = await fetch("/api/ai/embed", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Fused": "1" },
+    body: JSON.stringify({ model, paths }),
+  });
+  return readEmbedReply(res);
 }
 
 // -- Transcription (POST /api/ai/transcribe, AI-10) ---------------------------
