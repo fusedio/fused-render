@@ -62,15 +62,30 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [open, stop]);
 
+  /** Is a `getUserMedia` in flight? The button that calls this is enabled the
+   *  whole time one is — `open` does not flip until the stream arrives, and on
+   *  a first use that wait is however long the browser's permission prompt
+   *  stands there. Two clicks across it used to mean two streams, the second
+   *  overwriting the first in `streamRef`: the orphan had no owner left to
+   *  stop it, so the camera light stayed on after the overlay closed. */
+  const startingRef = useRef(false);
+
   const start = useCallback(async () => {
+    // Already filming, or already asking. Either way this click is a repeat of
+    // one still being answered.
+    if (startingRef.current || streamRef.current) return;
+    startingRef.current = true;
     try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: 1280 }, height: { ideal: 720 } },
       });
+      // Stopped through the local handle, not through `stop()`: this stream is
+      // not in the ref yet, and on a dead component it never should be.
       if (!aliveRef.current) {
-        stop();
+        stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      streamRef.current = stream;
       setOpen(true);
     } catch (e) {
       onError(
@@ -78,8 +93,10 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
           ? "Camera access was refused — allow it in the browser and try again."
           : (e as Error).message,
       );
+    } finally {
+      startingRef.current = false;
     }
-  }, [onError, stop]);
+  }, [onError]);
 
   /** One frame off the live view, at the camera's own pixels. PNG because
    *  `toBlob` is guaranteed to produce one and the server reads it. */
