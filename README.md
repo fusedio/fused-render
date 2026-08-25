@@ -133,10 +133,16 @@ Any `.html` file can call it and bind the result to the URL:
   language is auto-detected unless you name one. It runs for minutes, so
   `onProgress` fires with seconds of audio and the download manager's ✕ really
   stops it, and the transcript is written to a file so it outlives the tab.
-- `fused.ai.embed({texts|paths, ...})` — text or images into one vector space,
-  locally: resolves with `{vectors, dim, model}`, unit-normalized so cosine
-  similarity is a plain dot product. Pass one or the other, never both — a
-  batch of up to 64 strings or file paths at a time.
+- `fused.ai.embed({texts|paths, kind, ...})` — text into a vector space
+  locally — and, on a model with a vision tower, images into the SAME space, so
+  a typed phrase can rank photographs. Resolves with `{vectors, dim, model}`,
+  unit-normalized so cosine similarity is a plain dot product. Pass `texts` or
+  `paths`, never both — a batch of up to 64 at a time. `kind: "query" |
+  "document"` picks which half of a retrieval model's prompt pair goes in front
+  of the texts: embed a corpus as documents once, then each search as a query.
+  Both `paths` and `kind` are refused with a 400 naming the model where that
+  model has no vision tower / no retrieval convention — `fused.ai.models
+  .catalog()` reports `acceptsPaths` and `promptScheme` per model.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).

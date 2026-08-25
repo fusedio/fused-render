@@ -134,6 +134,28 @@ _TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
 # exactly as `aiTranscribe` does, so a caller passing `base` directly is
 # passing an option that does not exist from where it is standing.
 _IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
+#: `/api/ai/embed`'s caller-facing option names (SPEC §40, PY-19).
+#:
+#: **Declared for the DRIFT GUARD rather than for a rejection.** Unlike the four
+#: sets above, `api_ai_embed` does not call `_reject_unknown` — its shape is
+#: `embed_common.request_kind`'s, checked in the worker's own venv too, and the
+#: route deliberately validates through that one function so the two cannot
+#: disagree. What this set exists for is `tests/test_fused_ai_client.py`'s pin
+#: against `templates/shared/fused_ai.py`'s `_EMBED_WIRE_KEYS`: the Python
+#: client mirrors this endpoint's surface and a parameter added on one side and
+#: not the other is a silent no-op, which is exactly what D413 x3 caught for
+#: `image` and `transcribe`.
+#:
+#: `kind` is the newest member and the reason the set was written down at all:
+#: it is refused per MODEL (a dual encoder has no retrieval convention), so a
+#: client that could not send it would leave every retrieval model embedding
+#: queries as documents with nothing to show it.
+_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind"})
+#: `base` is bridge-injected — `aiEmbed` adds it from the page's own `?path=` so
+#: a relative `paths` entry resolves beside the calling page (RH-1) — so the
+#: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
+#: `_TRANSCRIBE_SERVER_OPTIONS` documents.
+_EMBED_SERVER_OPTIONS = _EMBED_OPTIONS | {"base"}
 
 
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):

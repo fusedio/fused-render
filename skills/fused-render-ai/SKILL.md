@@ -435,18 +435,115 @@ One thing about the call is therefore engine-dependent:
 
 Every ASR option `fused.ai.transcribe` takes — `task`, `language`, `initialPrompt` — is honoured by both engines today, so nothing here needs a per-engine check. Everything else — the result shape, the two files, `onSegment`, the speaker labels, `vad` — is identical whichever one served you.
 
+## Embeddings: `fused.ai.embed({texts, ...})`
+
+Text into a vector, locally — and on a model with a vision tower, images into
+the **same** vector space, so a typed phrase can rank photographs. Not
+job-backed and not streaming: a batch of at most **64** items is one forward pass
+through a small encoder, over before a progress row would have drawn, so the
+reply IS the result.
+
+```js
+const { vectors, dim, model } = await fused.ai.embed({ texts: ["a cat", "a dog"] });
+```
+
+Vectors come back **unit-length**, so a cosine similarity between two of them is
+a plain dot product — `a[i]*b[i]` summed, with no magnitude to divide by. That
+is the one guarantee to build on; everything else about a vector is the model's.
+
+### Options, and the two that are refused PER MODEL
+
+| Option | Meaning |
+|---|---|
+| `texts` | Up to 64 non-empty strings. Exactly one of `texts`/`paths`, never both — refused in the bridge, before the request is even sent. |
+| `paths` | Up to 64 image paths, absolute or relative to the calling page. **Only on a model with a vision tower.** |
+| `kind` | `"query"` or `"document"` — which half of a retrieval model's prompt pair to put in front of these texts. **Only on a model with a retrieval convention.** Omitted means `"document"`. |
+| `model` | A repo id. Omitted takes the capability's default (`catalog()`'s `default`). |
+
+**The capability serves two shapes of checkpoint, and that is why two of the four
+options are per-model rather than per-endpoint:**
+
+- a **dual encoder** (SigLIP, CLIP) has a text tower and a vision tower
+  projecting into one space. It answers `texts` and `paths`, and has **no**
+  retrieval convention — so `kind` on one is a 400.
+- a **prose encoder** (BERT-family, 512–8192 tokens) has one tower. It answers
+  `texts` and `kind`, and `paths` on one is a 400. This is the half that makes
+  RAG, document search and clustering possible at all: a SigLIP text tower
+  truncates at **64 tokens**, so no chunk size turns it into a paragraph encoder.
+
+**Ask before you send.** `fused.ai.models.catalog()` reports both facts per
+model — `acceptsPaths` (a boolean; **absent on an older server, so test `===
+true`**) and `promptScheme` (the scheme's name, or **`null` where the model has
+none**). Draw an image affordance off the first and a query/document toggle off
+the second; a control drawn off anything else — the repo id looking like a
+SigLIP, the capability being embeddings — is a control whose request comes back
+400.
+
+### Why `kind` is not optional politeness
+
+A retrieval encoder was trained with a question and a passage marked
+differently in its input, and using one side for both **costs real recall — and
+costs it silently**. The vectors still come back, still unit length, still
+comparable, just worse; nothing downstream can detect it. So:
+
+```js
+// Index once, as documents.
+const corpus = await fused.ai.embed({ texts: chunks, kind: "document" });
+// Then every search, as a query.
+const q = await fused.ai.embed({ texts: [question], kind: "query" });
+```
+
+Omitting it means `"document"`, which is the internally-consistent fallback:
+every text in the system carries one prefix, which is the symmetric behaviour
+every one of these models supports. It is not optimal, and it degrades
+gracefully rather than to the mismatched state that using the *wrong* side
+produces.
+
+An unrecognised value — `kind: "queries"` — is a **400, never defaulted
+through**, for the same reason: a typo that fell back to the default would
+return plausible vectors computed against the wrong prefix.
+
+### Rejections
+
+Same `{ok, error:{type, message}}` shape `fused.ai` itself uses, and the same
+`.type` on the thrown `Error`:
+
+| `.type` | When | What a page should do |
+|---|---|---|
+| `bad_request` | Both `texts` and `paths`; an empty list; over 64 items; a non-string item; `kind` on a model with no scheme; `paths` on a model with no vision tower; a `kind` value outside the pair | Fix the call. These name the problem — and the per-model two name the MODEL, because the fix is to pick a different one. |
+| `model_loading` | The model is not resident yet. Carries `jobId` — the load this call just started | `fused.watchJob(err.jobId)`, then retry. The same cold-start dance `fused.ai()` has. |
+| `unavailable` | Nothing here serves embeddings, or no curated default exists | Show `err.message`; it names the reason (e.g. an engine that is not built yet). |
+| `ai_error` | The worker failed | Surface the message. |
+
+### Two engines, one vector space
+
+MLX Embeddings on Apple Silicon, ONNX Embeddings everywhere else (plus three
+opt-in accelerated ONNX builds — DirectML, CUDA, ROCm — gated on the hardware
+being there). Unusually for this app, **the two engines produce vectors in the
+same space**: cosine similarities agree to about three decimals on the same
+model, so a page that indexed a folder on one engine and searches it from the
+other gets sensible answers.
+
+**Their catalogs are still different, and that is about the FILES.** MLX reads
+safetensors and ONNX reads a graph export, so the two engines' curated lists name
+different repos for the same checkpoint (`google/siglip2-base-patch16-384` against
+`onnx-community/siglip2-base-patch16-384-ONNX`). Take the model from
+`catalog()`, never from memory — the same rule the speech section states, and for
+the same reason.
+
 ## What Actually Runs Locally Today
 
-Ten runners, four capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
+Fifteen runners, five capabilities, taking **either** a Hugging Face repo id **or** — for `llamacpp-text` and its Vulkan variant — a GGUF filename id; see the Overview for why the shape is not uniform:
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
 | `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
 | `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
+| `embeddings` | MLX Embeddings, then ONNX Embeddings (CPU), then ONNX (DirectML), (CUDA), (ROCm) | **Everywhere.** MLX takes Apple Silicon; **ONNX Embeddings (CPU)** serves everywhere else and is the Apple Silicon fallback. Three Transformers rows used to sit here and were withdrawn: an embedding call is one forward pass over a short sequence or one image, so the compute was never the argument — the WHEEL was, at 0.2–5.9 GB of torch to run a model whose own weights are 1.5 GB, against tens of megabytes of `onnxruntime` producing the same vectors (there is a real-weights parity gate asserting ≥0.999 cosine). So **local embedding ids are ONNX exports now** on every machine but a Mac. The three accelerated rows are opt-in and hardware-gated; none of them is about speed, and `auto` never reaches one. |
 | `text-to-video` | LTX-2.3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** LTX-2.3 runs on `ltx-2-mlx`, which is MLX-only; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
 
-Those four strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
+Those five strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
 **Which runner serves you is not purely a hardware fact.** The user can override the default per capability from the AI Models page's Engines tab, so a Mac may deliberately be running the CTranslate2 path. Each row in `fused.ai.models.list()`'s `runners` therefore carries **both** `available` (can this backend run here at all) and `active` (is it serving the capability right now). Read `active` to say what is running, `available` to say what this machine could do. Never hard-code either, and let `unavailable` messages reach the user.
 
@@ -480,7 +577,7 @@ Same names, same options as `fused.ai` above:
 | `fused_ai.stream(prompt, model=, effort=, system_prompt=)` → generator of `str` | `fused.ai(prompt, {onChunk})` |
 | `fused_ai.transcribe(path=, model=, language=, task=, initial_prompt=, vad=, diarize=, speakers=, words=, ...)` | `fused.ai.transcribe({...})` |
 | `fused_ai.image(prompt=, model=, width=, height=, steps=, guidance=, seed=, image=, ...)` | `fused.ai.image({...})` |
-| `fused_ai.embed(texts=, paths=, model=)` | same `/api/ai/embed` endpoint (not covered above) — one forward pass, not job-backed |
+| `fused_ai.embed(texts=, paths=, model=, kind=)` | same `/api/ai/embed` endpoint — one forward pass, not job-backed; see **Embeddings** below for the two per-model refusals |
 | `fused_ai.models.list()` / `.catalog()` / `.load(id, capability=)` / `.download(id)` / `.unload(id)` | `fused.ai.models.*` |
 | `fused_ai.cancel(capability)` | `fused.ai.cancel(capability)` |
 
