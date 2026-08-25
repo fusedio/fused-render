@@ -31,9 +31,20 @@
 //   3. The pane guards the door anyway (shouldReclaimFocus below). Same-origin
 //      means the shell can see the frame take focus and simply take it back —
 //      belt and braces for a page loaded from somewhere runtime.js does not
-//      reach, and for the frames the browser focuses itself. Cards need no
-//      such guard: step 2 covers them, and there is no keyboard mode on a grid
-//      of links for a leaked focus to break.
+//      reach, and for the frames the browser focuses itself.
+//   4. The CARDS guard theirs too (thumb-focus.ts) — which D348 said they did
+//      not need. That reading was measured against a probe app doing the two
+//      obvious things, an `autofocus` attribute and a `focus()` on load, and
+//      step 2 does beat both. What it does not cover is the other routes into
+//      focus: `input.select()`, `dialog.showModal()`, an engine that applies a
+//      queued autofocus candidate before the bounce can matter, and — until
+//      now — any page a thumbnail's page frames ITSELF, whose own URL carries
+//      none of the shell's stamps (runtime.js inherits the flag from a
+//      same-origin ancestor for exactly that). Every one of them ends in the
+//      same place: the grid scrolled to a row the reader did not ask for. So
+//      the card guard is written against the CONSEQUENCE rather than against
+//      the list — the shell remembers what its card scroller was at, and puts
+//      it back — and no future route into focus needs it changed.
 //
 // Deliberate acts are untouched: clicking into the pane, tabbing into it, or
 // expanding the preview full-screen all move focus for real. The contract is
@@ -114,4 +125,59 @@ export function tabEntersFrame<T>(
   const i = active === null ? -1 : stops.indexOf(active);
   if (i < 0) return (back ? stops[stops.length - 1] : stops[0]) === frame;
   return stops[back ? i - 1 : i + 1] === frame;
+}
+
+
+// -- THE CARD GRID'S SCROLL, as arithmetic ------------------------------------
+//
+// A thumbnail that takes focus (or calls scrollIntoView) scrolls ITSELF into
+// view, and the scroll walks out of the frame into the embedder's scroller: the
+// /apps grid jumps to that card's row mid-scroll. By the time the shell hears
+// about the focus the scroll has already happened — the focusing steps scroll
+// first and fire the focus events after — so on this side the fix cannot be
+// prevention. It is restoration: the shell remembers where its scroller was,
+// and a frame that displaces it gets put back.
+//
+// "Remembers where it was" is the SCROLL EVENT's value, which is what makes the
+// comparison below a fact rather than a guess. A scroll event is dispatched in
+// a later rendering update than the offset change that caused it, so at the
+// moment a frame steals focus the remembered value is still the last one the
+// reader could see and the live value is already the displaced one. A
+// difference therefore means "moved during this task, ahead of any scroll
+// event" — programmatic, from inside the frame — and not "the reader is
+// scrolling". The worst case if that ever slipped by a frame is that a reader
+// mid-flick loses one frame of momentum, against a jump of thousands of pixels.
+//
+// The epsilon is for fractional offsets (scrollTop is not an integer at a
+// fractional device pixel ratio): a sub-pixel difference is noise, and pinning
+// against it would fight the reader over tenths of a pixel.
+export const PIN_EPSILON_PX = 1;
+
+export type ScrollOffset = { top: number; left: number };
+
+// Which of a frame's candidate scrollers moved without the reader, and what to
+// put each back to. DOM-free — the caller supplies both readings — so the rule
+// stays pinnable by a test that has no layout.
+export function displacedScrollers<T>(
+  scrollers: readonly T[],
+  remembered: (el: T) => ScrollOffset | undefined,
+  live: (el: T) => ScrollOffset,
+): { el: T; to: ScrollOffset }[] {
+  const out: { el: T; to: ScrollOffset }[] = [];
+  for (const el of scrollers) {
+    const was = remembered(el);
+    // No record means nothing to restore TO, and a restore to a
+    // remembered-from-nowhere zero would be a worse jump than the one it is
+    // meant to undo. The shell records a scroller the moment a thumbnail
+    // registers, so this is the never-tracked case, not the never-scrolled one.
+    if (!was) continue;
+    const now = live(el);
+    if (
+      Math.abs(now.top - was.top) > PIN_EPSILON_PX ||
+      Math.abs(now.left - was.left) > PIN_EPSILON_PX
+    ) {
+      out.push({ el, to: was });
+    }
+  }
+  return out;
 }

@@ -39,6 +39,7 @@ import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { withNoFocus } from "@platform/lib/frame-focus";
+import { shieldThumbFrame } from "@platform/lib/thumb-focus";
 import { embedUrlForFsPath, navigateUrl, withPreviewFlag } from "@platform/lib/router";
 import {
   appRecency,
@@ -253,6 +254,17 @@ export function AppPreviewCard({
         aria-hidden="true"
         ref={thumbRef}
         data-capture-ready={bodyLive ? "" : undefined}
+        /* `inert`, which for a thumbnail says exactly what the box already IS:
+           a picture, already `aria-hidden`, already behind a pointer shield,
+           with the one interactive thing (the export chip) a SIBLING rather
+           than a child. Where an engine propagates inertness into a nested
+           browsing context it also stops the frame from being focused at all,
+           which is the same yank prevented instead of undone (thumb-focus.ts
+           is what covers the engines that do not). Spread, and the empty
+           STRING rather than `true`: React 18 does not know the attribute, so
+           it passes a string through and drops a boolean — `inert={true}`
+           would silently render nothing at all. */
+        {...{ inert: "" }}
       >
         {/* Shimmer while something is actually COMING: an authored still not
             yet decoded, or a live iframe the card wants but has not painted.
@@ -306,6 +318,10 @@ export function AppPreviewCard({
                 tabIndex={-1}
                 scrolling="no"
                 title=""
+                /* The shell half of the focus contract: a frame that takes
+                   focus anyway drags the grid's scroller to its own row, so
+                   the guard puts the scroller back (thumb-focus.ts). */
+                ref={shieldThumbFrame}
               />
             )}
             <img
@@ -360,6 +376,8 @@ export function AppPreviewCard({
               tabIndex={-1}
               scrolling="no"
               title=""
+              /* See the hover frame above: thumb-focus.ts's scroll guard. */
+              ref={shieldThumbFrame}
               // `bodyLive` as well as the queue's release: settling frees the
               // NEXT card's start slot, which says nothing about whether this
               // frame painted, and the export capture needs the latter.

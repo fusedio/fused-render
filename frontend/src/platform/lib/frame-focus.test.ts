@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   NO_FOCUS_PARAM,
+  displacedScrollers,
   noFocusRequested,
   shouldReclaimFocus,
   tabEntersFrame,
@@ -116,5 +117,76 @@ describe("tabEntersFrame", () => {
     // release, and nothing that could match the end-of-list cases above.
     expect(tabEntersFrame([CRUMB, SEARCH], SEARCH, FRAME, false)).toBe(false);
     expect(tabEntersFrame([], null, FRAME, false)).toBe(false);
+  });
+});
+
+describe("displacedScrollers", () => {
+  // The card grids' half of the contract: what a thumbnail's own focus (or
+  // scrollIntoView) did to the grid's scroller, and where it goes back to.
+  // DOM-free by construction — the caller hands over both readings — so the
+  // rule is testable without layout, which is why it lives here rather than in
+  // thumb-focus.ts, the DOM half that supplies them.
+  const GRID = "apps-page";
+  const PAGE = "scrollingElement";
+
+  const at = (m: Record<string, [number, number]>) => (el: string) =>
+    m[el] ? { top: m[el][0], left: m[el][1] } : undefined;
+  const now = (m: Record<string, [number, number]>) => (el: string) => {
+    const v = m[el];
+    return { top: v ? v[0] : 0, left: v ? v[1] : 0 };
+  };
+
+  test("a scroller the frame moved comes back to the remembered offset", () => {
+    // THE BUG: a card mounts 300px below the viewport, its app focuses an input
+    // on boot, and the grid is dragged to that card's row under a reader who
+    // was mid-scroll. The numbers are D348's own measurement.
+    expect(
+      displacedScrollers([GRID], at({ [GRID]: [1200, 0] }), now({ [GRID]: [2423, 0] })),
+    ).toEqual([{ el: GRID, to: { top: 1200, left: 0 } }]);
+  });
+
+  test("a scroller nobody moved is left alone", () => {
+    // The common case by far — every pin on a bounce that cost nothing — so it
+    // has to answer "nothing to do" rather than "reset to the record".
+    expect(
+      displacedScrollers([GRID], at({ [GRID]: [900, 0] }), now({ [GRID]: [900, 0] })),
+    ).toEqual([]);
+  });
+
+  test("sub-pixel drift is not a displacement", () => {
+    // scrollTop is fractional at a fractional device pixel ratio; pinning
+    // against tenths of a pixel would fight the reader over nothing.
+    expect(
+      displacedScrollers([GRID], at({ [GRID]: [900, 0] }), now({ [GRID]: [900.5, 0.25] })),
+    ).toEqual([]);
+  });
+
+  test("horizontal counts too", () => {
+    expect(
+      displacedScrollers([GRID], at({ [GRID]: [0, 0] }), now({ [GRID]: [0, 640] })),
+    ).toEqual([{ el: GRID, to: { top: 0, left: 0 } }]);
+  });
+
+  test("a scroller with no record is skipped, not zeroed", () => {
+    // No remembered value means no answer to "back to where?", and a restore to
+    // an assumed 0 would be a worse jump than the one being undone.
+    expect(displacedScrollers([GRID], () => undefined, now({ [GRID]: [2400, 0] }))).toEqual([]);
+  });
+
+  test("each tracked scroller is judged on its own", () => {
+    // The page scroller and the grid's are both tracked and usually only one of
+    // them moves; pinning the untouched one would undo a scroll the reader made
+    // in it a moment ago.
+    expect(
+      displacedScrollers(
+        [GRID, PAGE],
+        at({ [GRID]: [1200, 0], [PAGE]: [40, 0] }),
+        now({ [GRID]: [2423, 0], [PAGE]: [40, 0] }),
+      ),
+    ).toEqual([{ el: GRID, to: { top: 1200, left: 0 } }]);
+  });
+
+  test("nothing tracked is not an error", () => {
+    expect(displacedScrollers([], at({}), now({}))).toEqual([]);
   });
 });

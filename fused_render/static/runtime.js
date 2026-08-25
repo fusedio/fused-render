@@ -406,8 +406,49 @@
     }
   }
 
+  // INHERITED, not just requested. A page the shell mounts as a picture may
+  // frame a page of its own, and that inner URL is the app author's — it carries
+  // none of the shell's stamps, so asking only about `location.search` left
+  // every nested frame free to take focus while its scroll chain still reached
+  // the card grid or the listing. The thumbnail flag has had this inheritance on
+  // the shell side all along (router.ancestorIsPreview); this is the same climb
+  // for the focus flag: up while same-origin, stopping where a cross-origin
+  // read throws, since nothing above that boundary is ours to read anyway.
+  function ancestorNoFocus() {
+    try {
+      var w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (noFocusRequested(w.location.search)) return true;
+      }
+    } catch (e) {
+      /* cross-origin ancestor: the climb ends here */
+    }
+    return false;
+  }
+
+  // Ask every same-origin ancestor shell to put its card scroller back where the
+  // reader left it (frontend/src/platform/lib/thumb-focus.ts publishes the hook).
+  // Focus inside a frame — and scrollIntoView from inside one — scrolls the FRAME
+  // into view in the embedder, and that scroll is already done by the time this
+  // page can react to it. The embedder is the only side that knows where its
+  // scroller was, so this page just says "now", and every ancestor is asked
+  // rather than only the nearest: the frame chain can be shell → thumbnail →
+  // app, and it is the outermost one that owns the grid.
+  function pinThumbScroll() {
+    try {
+      var w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (typeof w.__fusedPinThumbScroll === "function") w.__fusedPinThumbScroll();
+      }
+    } catch (e) {
+      /* cross-origin ancestor, or a shell without the hook: nothing to ask */
+    }
+  }
+
   function startNoFocus() {
-    if (!noFocusRequested(location.search)) return;
+    if (!noFocusRequested(location.search) && !ancestorNoFocus()) return;
     window.__fusedNoAutofocus = true;
 
     // Anything that manages to take focus anyway gives it straight back. This
@@ -424,8 +465,47 @@
     var bounceFocus = function (e) {
       var el = e.target;
       if (el && typeof el.blur === "function") el.blur();
+      // The focus is given back here, but the SCROLL it caused is not: the
+      // focusing steps scroll the frame into view in the embedder before any
+      // focus event fires, so by now the card grid (or the listing) has already
+      // jumped. Blurring does not undo a scroll — the embedder has to, and it
+      // is asked on every bounce because this is the one moment both sides can
+      // still agree on: the displacement is a task old, so the offset the
+      // embedder remembers is still the one the reader was looking at.
+      pinThumbScroll();
     };
     document.addEventListener("focusin", bounceFocus, true);
+
+    // scrollIntoView is the same yank with no focus in it at all: it scrolls
+    // every scroll container up the chain, and that chain does not stop at the
+    // frame — it walks out into the embedder's scroller, so a thumbnail whose
+    // app scrolls a chat log to the bottom on boot drags the grid to its own
+    // row. The call is LET THROUGH rather than blocked: the page's own
+    // containers are what the author meant to scroll, and inside a thumbnail
+    // (which cannot be scrolled by the reader anyway) that is harmless. Only
+    // the part that escaped the frame is undone, by the side that owns it.
+    //
+    // Pinned across the next couple of frames as well as immediately, because
+    // `behavior: "smooth"` means the embedder has not moved yet when this
+    // returns — it animates over the following frames, and a pin that ran only
+    // now would find nothing displaced and let the whole animation through.
+    // Each late pin is still discriminating rather than a blind reset: a scroll
+    // event is dispatched every rendering update, so anything the READER did in
+    // between has already been recorded as the new remembered value.
+    var realScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function () {
+      var r = realScrollIntoView.apply(this, arguments);
+      pinThumbScroll();
+      try {
+        requestAnimationFrame(function () {
+          pinThumbScroll();
+          requestAnimationFrame(pinThumbScroll);
+        });
+      } catch (e) {
+        /* no rAF: the immediate pin covers an instant scroll, which is the default */
+      }
+      return r;
+    };
 
     // Strip `autofocus` from anything already parsed and anything that arrives
     // while the document streams. Belt and braces beside the blur above — an
@@ -461,6 +541,10 @@
       if (released) return;
       released = true;
       HTMLElement.prototype.focus = realFocus;
+      // Restored with the rest of it: after a deliberate gesture the page owns
+      // itself, and a reader scrolling something into view in a preview they
+      // just clicked into is entitled to have the pane follow.
+      Element.prototype.scrollIntoView = realScrollIntoView;
       window.__fusedNoAutofocus = false;
       if (observer) observer.disconnect();
       // Every part of the suppression lifts at once, this one included — a

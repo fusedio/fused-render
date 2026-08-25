@@ -35,6 +35,7 @@ import pytest
 TEMPLATE = os.path.join("fused_render", "templates", "claude", "template.html")
 RUNTIME = os.path.join("fused_render", "static", "runtime.js")
 SHELL = os.path.join("frontend", "src", "platform", "lib", "frame-focus.ts")
+THUMB_FOCUS = os.path.join("frontend", "src", "platform", "lib", "thumb-focus.ts")
 
 
 def _node(script):
@@ -80,6 +81,69 @@ def test_the_runtime_reads_the_signal_the_way_the_shell_writes_it():
         fn + "\nconsole.log(JSON.stringify(%s.map((s) => noFocusRequested(s))));" % json.dumps(cases)
     )
     assert got == [True, True, False, False, False]
+
+
+def test_the_signal_is_inherited_from_a_same_origin_ancestor():
+    """A thumbnail's page may frame a page of its OWN, and that inner URL is the
+    app author's — it carries none of the shell's stamps. Asking only about
+    `location.search` therefore left every nested frame free to take focus with
+    its scroll chain still reaching the card grid, which is the hole the
+    thumbnail flag never had (router.ancestorIsPreview inherits). Run for real:
+    the climb, over fake window chains, under node."""
+    fn = _fn(RUNTIME, "var NO_FOCUS_PARAM", "\n  }\n") + _fn(
+        RUNTIME, "  function ancestorNoFocus", "\n  }\n"
+    )
+    script = fn + """
+const frame = (search, parent) => {
+  const w = { location: { search } };
+  w.parent = parent || w;   // a top-level window is its own parent
+  return w;
+};
+const answers = [];
+const ask = (w) => { globalThis.window = w; answers.push(ancestorNoFocus()); };
+
+// The shell, a thumbnail of an app, and a page that app frames itself.
+const shell = frame("?path=/apps");
+ask(frame("?path=y", frame("?path=x&_nofocus=1", shell)));   // inherits
+ask(frame("?path=y", frame("?path=x", shell)));              // nothing above it
+ask(shell);                                                  // top level
+// A cross-origin ancestor: reading its location throws, and the climb has to
+// end there rather than take the whole runtime down with it.
+const hostile = { get location() { throw new Error("cross-origin"); } };
+hostile.parent = hostile;
+ask(frame("?path=y", hostile));
+console.log(JSON.stringify(answers));
+"""
+    assert _node(script) == [True, False, False, False]
+
+
+def test_the_runtime_and_the_shell_spell_the_scroll_pin_the_same_way():
+    """The second half of the card guard is a call ACROSS the frame boundary:
+    the page says "a focus I bounced (or a scrollIntoView) just happened", and
+    the embedder — the only side that knows where its scroller was — puts it
+    back. A global only one side spells right is not a call."""
+    runtime = open(RUNTIME, encoding="utf-8").read()
+    shell = open(THUMB_FOCUS, encoding="utf-8").read()
+    assert "w.__fusedPinThumbScroll()" in runtime
+    assert "window.__fusedPinThumbScroll = pinCardScrollers" in shell
+
+
+def test_a_bounced_focus_and_a_scrollintoview_both_ask_for_the_pin():
+    """Blurring does not undo a scroll: the focusing steps scroll the frame into
+    view in the EMBEDDER before any focus event fires, so the bounce is always
+    too late to prevent the jump and can only ask for it to be undone. And
+    scrollIntoView is the same jump with no focus in it at all — the one route
+    no focus machinery can see."""
+    runtime = open(RUNTIME, encoding="utf-8").read()
+    bounce = _fn(RUNTIME, "    var bounceFocus = function", "\n    };\n")
+    assert "pinThumbScroll()" in bounce
+    # Let through, not blocked: the page's own containers are what the author
+    # meant to scroll, and only the part that escaped the frame is undone.
+    patch = _fn(RUNTIME, "    Element.prototype.scrollIntoView = function", "\n    };\n")
+    assert "realScrollIntoView.apply(this, arguments)" in patch
+    assert "pinThumbScroll()" in patch
+    # …and restored with the rest of the suppression on the first real gesture.
+    assert "Element.prototype.scrollIntoView = realScrollIntoView;" in runtime
 
 
 def test_the_claude_composer_no_longer_autofocuses():
@@ -164,3 +228,50 @@ def test_the_embed_shell_forwards_the_stamp_with_the_thumbnail_flag():
     on the thumbnail flag, which already inherits through nested frames."""
     src = open(EMBED_SHELL, encoding="utf-8").read()
     assert '"&_preview=1&_nofocus=1"' in src
+
+
+# -- The card grids' own guard --------------------------------------------------
+#
+# D348 concluded the cards needed no shell-side guard because the runtime half
+# beat the two obvious routes into focus (an `autofocus` attribute, a `focus()`
+# on load). It does. What it does not cover is every OTHER route — select(),
+# showModal(), an engine applying a queued autofocus candidate before the bounce
+# can matter — and each one ends in the same place: the grid scrolled to a row
+# the reader did not ask for. So the guard is written against the consequence,
+# and these pin that every live thumbnail is actually wired to it.
+
+
+def test_every_card_thumbnail_frame_is_registered_with_the_scroll_guard():
+    """One ref callback per live thumbnail — both /apps branches (the hover
+    preview over a preview.png and the no-png live card) and the bookmark peek.
+    A frame that skipped it would keep the old behaviour silently."""
+    card = open(CARD, encoding="utf-8").read()
+    assert card.count("ref={shieldThumbFrame}") == card.count("<iframe") == 2
+    assert open(BOOKMARK_CARDS, encoding="utf-8").read().count("ref={shieldThumbFrame}") == 1
+
+
+def test_the_thumb_boxes_are_inert_as_a_string_not_a_boolean():
+    """`inert` is the prevention half where an engine carries inertness into the
+    nested document: the frame cannot be focused, so nothing is displaced to
+    undo. It has to be spread as the empty STRING — this shell is on React 18,
+    which passes an unknown string attribute through and DROPS an unknown
+    boolean one, so `inert={true}` would render nothing at all and the whole
+    thing would no-op quietly."""
+    for path in (CARD, BOOKMARK_CARDS):
+        src = open(path, encoding="utf-8").read()
+        assert '{...{ inert: "" }}' in src, path
+        # The comments beside it say the words "inert={true}" out loud (that is
+        # the trap they exist to name), so the negative is asked of the CODE.
+        code = re.sub(r"/\*.*?\*/|//[^\n]*", "", src, flags=re.S)
+        assert "inert={true}" not in code, path
+        assert "inert=" not in code, path
+
+
+def test_the_pane_is_not_inert_and_keeps_its_own_guard():
+    """The pane is the surface a reader CAN deliberately click and tab into, so
+    taking focus off it is a judgement with an owner (usePaneFocusGuard) and
+    making it inert would break the deliberate acts the contract protects."""
+    for path in (EMBED_SHELL, os.path.join(
+        "frontend", "src", "apps", "explorer", "ListingPreviewPane.tsx"
+    )):
+        assert "inert" not in open(path, encoding="utf-8").read(), path
