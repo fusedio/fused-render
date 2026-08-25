@@ -407,6 +407,49 @@ def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_user_plugin_sync(monkeypatch):
+    """No test may run `user_plugin.start()` for real.
+
+    `create_app` kicks it off the STARTUP event (server/app.py), so every
+    `with TestClient(create_app(...))` in the suite reaches it — and nothing in
+    the suite blocks it: the per-run FUSED_RENDER_HOME has no `user-plugin.json`
+    stamp, so the rate limit says "go". Left alone this runs the REAL `claude`
+    CLI on a daemon thread: `plugin marketplace add fusedio/fused-render` then
+    `plugin install`, each with a 120s timeout, cloning this repo for a ~152MB
+    footprint — the network-dependence and slowdown are the same class of harm
+    as `_no_real_workbench_skills_clone` above, on the same trigger.
+
+    The redirect fixtures (`_no_real_claude_config_writes`,
+    `_isolate_appenv_contract_vars`) are not enough by themselves: they move
+    WHERE the config lives, but the thread they'd redirect is never joined —
+    `start()` fires it and returns immediately, so it outlives this fixture's
+    own `monkeypatch` teardown just as easily as it outlives theirs. Once
+    `_no_real_claude_config_writes` restores `lib.SETTINGS_PATH` to the next
+    test's throwaway dir (or, worse, once the whole session ends and nothing
+    restores it at all), a still-running thread from THIS test resolves
+    `lib.CLAUDE_DIR` fresh and can land on the DEVELOPER'S REAL `~/.claude`. The
+    only sound boundary is stopping the spawn itself, same reasoning as
+    `_no_schedule_loop_thread`/`_no_background_mount_threads` above.
+
+    Flips the module's OWN once-per-process flag rather than stubbing `start`
+    itself: `start()` already refuses to spawn a second time once `_started` is
+    True, so presetting it makes every call in this suite a no-op through the
+    function's real guard, not a patched-around one. That distinction matters
+    because `tests/test_user_plugin.py::test_start_runs_once_per_process` is
+    the one place ABOUT `start()` — it calls the REAL function and only fakes
+    `sync_user_plugin`, and it flips `_started` back to False itself as its
+    first line. That later `monkeypatch.setattr` wins over this fixture's
+    earlier one on the very same attribute, the identical escape hatch
+    `_no_real_workbench_skills_clone` and friends rely on ("the test body wins
+    over the fixture") — so that one test still exercises the real dedup logic,
+    while every other test in the suite, which never touches `_started`, gets
+    the no-op."""
+    from fused_render import user_plugin
+
+    monkeypatch.setattr(user_plugin, "_started", True)
+
+
+@pytest.fixture(autouse=True)
 def _no_background_mount_threads(monkeypatch):
     """`create_app` starts two daemon threads that reach for a real rclone;
     neither may run in a test.

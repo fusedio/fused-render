@@ -24,7 +24,14 @@ a skill IS a directory under ``skills/`` with a ``SKILL.md`` in it.
 Nothing here is authoritative about the CONTENT of a skill — that is D106's
 single-source rule, unchanged: the repo-level ``skills/<name>/`` wins whenever
 it is resolvable (editable/dev installs — always the current truth), else the
-packaged copy under ``fused_render/skills/`` (wheel builds).
+packaged copy under ``fused_render/skills/`` (wheel builds). D106's rule is
+about which skill EXISTS too, not only what is inside one it already knows
+about: a repo checkout is truth about its own membership, so a skill deleted
+or renamed out of ``skills/`` must stop shipping even when a stale
+``fused_render/skills/`` (a leftover local wheel build) still has the old
+directory sitting there. Unioning the two roots per-skill would let that
+stale copy keep a dead skill alive forever on exactly the machine — a dev
+checkout — where the repo answer is available and correct.
 
 ``scripts/hatch_build.py`` deliberately does NOT import this module — a build
 hook must not import the package it is building — and carries the same scan
@@ -49,27 +56,51 @@ MANIFEST_FILE = "SKILL.md"
 
 
 def skill_sources() -> dict:
-    """``{name: source dir}`` for every canonical skill, repo root winning per
-    skill (D106).
+    """``{name: source dir}`` for every canonical skill, repo root winning
+    WHOLESALE over the packaged one (D106).
 
-    Per SKILL, not per root: a dev checkout whose repo `skills/` is missing one
-    that a stale local wheel-build copy still has should deliver both, the same
-    way `_source_for` did before this was a scan.
+    Per ROOT, not per skill: a resolvable `skills/` is a dev/editable checkout,
+    and that checkout is the current truth about its own membership, not just
+    about the content of skills it already lists. So the packaged copy is
+    consulted only when the repo root cannot be listed at all (a wheel/DMG
+    install with no repo present). If it were unioned per-skill instead, a
+    skill deleted or renamed out of `skills/` would keep shipping forever on a
+    dev checkout that also has a stale `fused_render/skills/` copy lying
+    around (a leftover local wheel build) — the one place where the correct
+    answer (the repo) is sitting right there and gets overridden by a stale
+    one anyway. `_source_for`, before this was a scan, could not exhibit that
+    bug (it was handed one name at a time by a hardcoded list, never asked
+    "which names exist"), so matching its old per-name fallback here would be
+    reproducing a gap it never had to close.
 
-    A missing root is not an error — a wheel install has no repo and an editable
-    install has no packaged copy, so exactly one of the two is normally absent.
+    A missing repo root is not an error — a wheel install has no repo, so the
+    packaged copy is the only source it could ever have.
+
+    "Resolvable" means it yields at least one skill, not merely that it lists.
+    REPO_SKILLS_DIR is `<parent of the package>/skills`, which on a wheel
+    install is `<site-packages>/skills` — a path any other distribution is free
+    to create. An empty or non-skill `skills/` there would otherwise be read as
+    an authoritative "this checkout has no skills" and deliver NOTHING, on
+    exactly the installs that have only the packaged copy to offer. That is the
+    failure this whole PR exists to stop, so precedence is claimed by a root
+    that actually has skills in it.
     """
+    out = _scan(REPO_SKILLS_DIR)
+    return out or _scan(PACKAGED_SKILLS_DIR)
+
+
+def _scan(root: str) -> dict:
+    """``{name: dir}`` for one root. Unreadable or absent reads as empty: the
+    caller distinguishes the two roots, not the two failure modes."""
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return {}
     out = {}
-    for root in (REPO_SKILLS_DIR, PACKAGED_SKILLS_DIR):
-        try:
-            names = sorted(os.listdir(root))
-        except OSError:
-            continue  # root absent (or unreadable): the other one may have it
-        for name in names:
-            src = os.path.join(root, name)
-            if name not in out and os.path.isfile(
-                    os.path.join(src, MANIFEST_FILE)):
-                out[name] = src
+    for name in names:
+        src = os.path.join(root, name)
+        if os.path.isfile(os.path.join(src, MANIFEST_FILE)):
+            out[name] = src
     return out
 
 

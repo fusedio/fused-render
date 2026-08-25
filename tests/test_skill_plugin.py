@@ -315,15 +315,51 @@ def test_every_skill_in_the_repo_is_discovered(tmp_path, monkeypatch):
                                               "SKILL.md"))}
     assert on_disk and set(skill_sources.skill_names()) == on_disk
 
+    # The packaged root is only ever consulted with no repo present (D106): it
+    # wins nothing while the repo resolves, so exercising its own scan rules
+    # (rejecting the flat `plugin.json` and a manifest-less dir) means making
+    # the repo root unresolvable here too, the same as a wheel install with no
+    # checkout on disk.
     packaged = tmp_path / "pkg"
     (packaged / "later-skill").mkdir(parents=True)
     (packaged / "later-skill" / "SKILL.md").write_text("# s\n", encoding="utf-8")
     (packaged / "plugin.json").write_text("{}", encoding="utf-8")
     (packaged / "not-a-skill").mkdir()
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(tmp_path / "no-repo"))
     monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
     found = skill_sources.skill_names()
     assert "later-skill" in found
     assert "plugin.json" not in found and "not-a-skill" not in found
+
+
+def test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_packaged_copy(
+        tmp_path, monkeypatch):
+    """The scenario a per-skill union would get wrong (D106): a dev checkout
+    whose `skills/` no longer has a skill, sitting beside a stale
+    `fused_render/skills/` (a leftover local wheel build) that still does.
+
+    The repo root IS resolvable here, so it is the whole answer about which
+    skills exist — the packaged copy contributes nothing, not even the names
+    the repo happens to be missing. Getting this wrong means a skill deleted
+    or renamed in `skills/` keeps shipping to that developer indefinitely,
+    because nothing ever deletes the stale packaged dir on its own."""
+    repo = tmp_path / "repo" / "skills"
+    (repo / "kept-skill").mkdir(parents=True)
+    (repo / "kept-skill" / "SKILL.md").write_text("# k\n", encoding="utf-8")
+    # No "deleted-skill" dir here: this repo checkout has already removed it.
+
+    packaged = tmp_path / "pkg" / "skills"
+    (packaged / "kept-skill").mkdir(parents=True)
+    (packaged / "kept-skill" / "SKILL.md").write_text("# k\n", encoding="utf-8")
+    (packaged / "deleted-skill").mkdir(parents=True)
+    (packaged / "deleted-skill" / "SKILL.md").write_text("# d\n", encoding="utf-8")
+
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(repo))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
+
+    found = skill_sources.skill_sources()
+    assert "kept-skill" in found
+    assert "deleted-skill" not in found
 
 
 def test_the_build_hook_discovers_the_same_skills_as_the_runtime():
@@ -333,10 +369,28 @@ def test_the_build_hook_discovers_the_same_skills_as_the_runtime():
     DMG user. It cannot import `skill_sources` (a build hook must not import the
     package it is building), so the two scans agree only by convention; before
     D490 both sides were hardcoded lists and `fused-render-ai` was in one of
-    them, shipping four of five skills for months with nothing failing."""
+    them, shipping four of five skills for months with nothing failing.
+
+    Compared as SETS, not tuples: `_canonical_skills` always returns its result
+    `sorted`, while `skill_sources.skill_names()` is repo-order-then-any-
+    packaged-extras — a legitimate difference in ORDER that a tuple `==` cannot
+    tell apart from an actual disagreement about WHICH skills exist. Pinning on
+    order made a real bug (a stale packaged `fused_render/skills/` still
+    delivering a skill this repo checkout deleted, see
+    `test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_...`
+    below) fail here too, but with an order/extra-element mismatch that names
+    neither cause — exactly the confusing failure this reshaping removes. A set
+    comparison still catches the original `fused-render-ai` bug: that bug was a
+    name present in one scan and absent from the other, which changes set
+    membership regardless of order."""
     from scripts.hatch_build import _canonical_skills
 
-    assert _canonical_skills(REPO_ROOT) == skill_sources.skill_names()
+    canonical = set(_canonical_skills(REPO_ROOT))
+    runtime = set(skill_sources.skill_names())
+    assert canonical == runtime, (
+        "build-hook scan and runtime scan disagree about which skills exist "
+        f"-- only in build hook: {canonical - runtime}; "
+        f"only in runtime: {runtime - canonical}")
 
 
 def _agent(template):
@@ -1169,3 +1223,22 @@ def test_the_legacy_id_is_the_pre_rename_plugin_and_not_the_live_one():
     assert skill_plugin.LEGACY_PLUGIN_ID.startswith("fused@")
     assert not skill_plugin.LEGACY_PLUGIN_ID.startswith(
         skill_plugin.WORKBENCH_PLUGIN_SUBDIR + "@")
+
+
+def test_an_empty_repo_skills_dir_does_not_shadow_the_packaged_copy(monkeypatch,
+                                                                    tmp_path):
+    """Precedence is claimed by a root that HAS skills, not by one that merely
+    lists. REPO_SKILLS_DIR is `<parent of the package>/skills`, which on a wheel
+    is `<site-packages>/skills` — a path any other distribution may create.
+    Reading an empty one as "this checkout has no skills" would deliver nothing
+    on exactly the installs that only have the packaged copy."""
+    empty = tmp_path / "site-packages-skills"
+    empty.mkdir()
+    (empty / "not-a-skill").mkdir()  # no SKILL.md: not a skill, and not a veto
+    packaged = tmp_path / "packaged"
+    (packaged / "fused-render-usage").mkdir(parents=True)
+    (packaged / "fused-render-usage" / "SKILL.md").write_text("x")
+
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(empty))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
+    assert skill_sources.skill_names() == ("fused-render-usage",)
