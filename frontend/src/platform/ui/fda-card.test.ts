@@ -34,10 +34,14 @@ describe("when the card renders", () => {
 
   it("waiting is never a dead end: it keeps a Not now, and its poll bails too", () => {
     // Backing out of System Settings without granting (Bugbot, PR #831) must
-    // not strand the card on "In System Settings…" for the session.
-    const waitingArm = CARD.slice(CARD.indexOf("{waiting ? ("), CARD.indexOf(") : ("));
+    // not strand the card on "In System Settings…" for the session. Anchor on
+    // the waiting arm's own button — `{waiting ? (` alone finds the BODY
+    // ternary first, whose arm holds no buttons at all.
+    const at = CARD.indexOf("Reopen System Settings");
+    expect(at).toBeGreaterThan(-1);
+    const waitingArm = CARD.slice(at, CARD.indexOf(") : (", at));
     expect(waitingArm).toContain("dismissFdaNudge()");
-    expect(CARD).toContain('} else if (!fda || fda.dismissed) {');
+    expect(CARD).toContain("} else if (!fda || fda.dismissed) {");
   });
 });
 
@@ -53,7 +57,7 @@ describe("what the buttons do", () => {
   });
 
   it("while waiting, the grant landing hides the card and fires a toast", () => {
-    expect(CARD).toContain("config.fda?.granted");
+    expect(CARD).toContain("if (fda?.granted)");
     expect(CARD).toContain('pushToast({ msg: "Full Disk Access is on');
   });
 
