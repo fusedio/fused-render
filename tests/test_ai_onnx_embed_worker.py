@@ -121,6 +121,16 @@ def test_the_four_manifests_agree_beyond_their_onnxruntime_line():
         assert rest == shared, folder
 
 
+#: The one import name that is legitimately satisfied by a distribution whose
+#: name it is only a PREFIX of: `import onnxruntime` is answered by whichever
+#: of `onnxruntime` / `onnxruntime-gpu` / `onnxruntime-directml` /
+#: `onnxruntime-rocm` a given folder declares. Nothing else gets this
+#: leniency — a generic prefix match here would also let a declared
+#: `pillow-heif` silently stand in for an imported `pillow`, which is the
+#: exact shape of hole this test exists to close.
+_PREFIX_MATCHED_IMPORT = "onnxruntime"
+
+
 def test_every_third_party_import_of_onnx_embed_is_declared_everywhere():
     """The regression itself: `onnx_embed.py` is free to `import` anything, but
     only `onnxruntime`'s own transitive dependencies rode along for free — and
@@ -128,14 +138,19 @@ def test_every_third_party_import_of_onnx_embed_is_declared_everywhere():
     pull (this is how `numpy` went missing) is invisible on every other
     distribution and fatal on that one. Every third-party import this runner
     makes, lazy ones included, must be a distribution named in all four
-    manifests."""
+    manifests — matched EXACTLY, except for `onnxruntime` itself (see
+    `_PREFIX_MATCHED_IMPORT`)."""
     imported = _onnx_embed_third_party_imports()
     assert imported, "the parser found nothing — it is broken, not the runner"
     for folder in _MANIFEST_DIRS:
         declared = {_distribution_name(dep) for dep in _manifest_dependencies(folder)}
-        missing = {name for name in imported
-                  if name not in declared
-                  and not any(d.startswith(name) for d in declared)}
+        missing = set()
+        for name in imported:
+            if name == _PREFIX_MATCHED_IMPORT:
+                if not any(d.startswith(name) for d in declared):
+                    missing.add(name)
+            elif name not in declared:
+                missing.add(name)
         assert not missing, f"{folder}: undeclared imports {missing}"
 
 #: Not 384: the fake graphs do not care what side length they are handed, and a
