@@ -19,9 +19,17 @@ export function modelName(model: AiCatalogModel): string {
  *  style) instead of dumping prose into the prompt box. `detail` carries the
  *  same instructions the old inline seed used to open with — model id, what
  *  it's good for, the settings tuned in the Playground, the page API that
- *  reaches it — spliced into the prompt at submit time, invisible to the user. */
+ *  reaches it — spliced into the prompt at submit time, invisible to the user.
+ *  `capability` rides along as its own field as well as shaping `detail`: the
+ *  composer filters its starter chips by it, and re-deriving it from the prose
+ *  is not something the other side can do. */
 export function buildAppAnnotation(model: AiCatalogModel, capability: string): AppAnnotation {
-  return { id: model.id, name: modelName(model), detail: buildAppSeedDetail(model, capability) };
+  return {
+    id: model.id,
+    name: modelName(model),
+    detail: buildAppSeedDetail(model, capability),
+    capability,
+  };
 }
 
 /** Everything the Playground knows about the moment — which model, what it is
