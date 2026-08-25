@@ -4,6 +4,8 @@
 mtime), so the client's fuzzy scoring is untouched by where the corpus came
 from — the only difference is that this one is instant and cross-session.
 """
+import asyncio
+import logging
 import os
 
 import pyarrow as pa
@@ -11,6 +13,7 @@ import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_ranked, search_under
 from fused_render.index.runner import canonical_root
@@ -294,6 +297,65 @@ def test_rank_route_requires_a_root(home, tmp_path):
     assert resp.status_code == 400
 
 
+def test_rank_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    """The end-to-end shape of section 1: an abandoned request is cancelled,
+    answered with a body nobody reads, and does NOT log as an error — a
+    cancelled rank is normal operation for a per-keystroke request, the same
+    reasoning the candidate-cap DEBUG line already applies.
+
+    `_rank_body` is monkeypatched to a controllable stand-in rather than a
+    real (tiny, near-instant) index: the real query would very likely finish
+    before `_watch_disconnect` — polling an ALWAYS-disconnected fake request —
+    gets scheduled at all, making the outcome a coin flip on scheduling order
+    instead of a pinned behaviour. The stand-in sleeps briefly (blocking only
+    its OWN worker thread — asyncio.to_thread — never the event loop the
+    watcher runs on) and then consults the very token `api_index_rank` handed
+    it, exactly as the real `search_ranked` does."""
+    from fused_render.index.cancel import Cancelled
+    from fused_render.server.routers import index as index_router
+
+    def slow_cancellable_rank(cfg, root, q, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"covered": True, "hits": [], "truncated": False, "total": 0,
+                "escalated": False, "reason": ""}
+
+    monkeypatch.setattr(index_router, "_rank_body", slow_cancellable_rank)
+
+    class _DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_rank(
+                request=_DisconnectedRequest(), root=str(tmp_path), q="x", limit=10))
+    assert resp.status_code == 499
+    # Debug is fine (and expected — the "abandoned by the client" line); an
+    # ERROR-or-louder record would mean this is being treated as a failure.
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_rank_route_is_unaffected_by_cancellation_machinery_when_nothing_disconnects(
+    home, tmp_path,
+):
+    """Regression: a normal (non-abandoned) request must answer exactly as it
+    did before section 1 — the async rewrite and the CancelToken plumbing
+    must be invisible to the common case."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md", root + "/other.bin"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme.md"}).json()
+    assert body["ok"] is True and body["covered"] is True
+    assert body["hits"][0]["rel"] == "readme.md"
+
+
 def test_rank_route_filters_a_gitignored_dir_under_a_NON_repo_root(home, tmp_path):
     """The hole a narrowed payload opens, closed.
 
@@ -471,6 +533,156 @@ def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
     cfg = _index(tmp_path, "/r", ["/r/alpha.txt"])
     out = search_ranked(cfg, "/elsewhere", "alpha")
     assert out["covered"] is False and out["hits"] == []
+
+
+# -- cancellation: a `token` handed to search_ranked -------------------------
+#
+# `asyncio.to_thread` (server/routers/index.py) cannot kill the thread it
+# dispatches search_ranked onto, so cancelling has to make the QUERY itself
+# return — CancelToken.check() at the phase boundaries in `pass_over`.
+# CancelToken's own bind/cancel/check mechanics (the interrupt() plumbing) are
+# unit-tested in isolation in tests/test_index_cancel.py; these are about
+# search_ranked actually consulting the token it is handed.
+
+def test_an_uncancelled_token_changes_nothing(tmp_path):
+    """Regression: passing a token that is never cancelled must be byte-
+    identical to not passing one at all."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md", "/r/unrelated.bin"])
+    token = CancelToken()
+    with_token = search_ranked(cfg, "/r", "readme.md", token=token)
+    without_token = search_ranked(cfg, "/r", "readme.md")
+    # `age_s` is a wall-clock measurement taken independently by each call, so
+    # it is the one field expected to differ between two otherwise-identical
+    # calls made microseconds apart.
+    with_token.pop("age_s")
+    without_token.pop("age_s")
+    assert with_token == without_token
+
+
+def test_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    """The between-passes check is the highest-value one (the plan's own
+    words) — cancelled BEFORE the call is the simplest case that exercises it:
+    `pass_over`'s very first `check()`, ahead of any SQL at all."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_a_cancelled_token_still_closes_the_connection(tmp_path, monkeypatch):
+    """The `finally: con.close()` this section adds must run on the
+    `Cancelled` path too, not only on a normal return.
+
+    A real `duckdb.DuckDBPyConnection`'s methods are read-only C-extension
+    attributes (assigning `con.close = ...` raises AttributeError), so this
+    wraps the connection in a thin delegating proxy rather than patching the
+    method in place — `search_ranked` only ever calls a handful of methods on
+    `con`, and `__getattr__` forwards everything else untouched."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    closed = []
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+    assert closed == [True]
+
+
+def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkeypatch):
+    """The other path into `Cancelled`, alongside the between-phase `check()`
+    calls: an `execute()` that raises `duckdb.InterruptException` while THIS
+    token is the one that called `interrupt()` (the case a real cross-thread
+    cancel lands mid-statement, which `check()` between phases cannot reach)
+    must still come out as `Cancelled`, not a raw duckdb exception.
+
+    Forcing a REAL mid-statement interrupt deterministically needs a query
+    slow enough to race a background thread against — exactly
+    test_index_guarded_query.py's `test_a_runaway_statement_is_interrupted`,
+    which already pins that duckdb's own interrupt() does what this relies
+    on. This test is about search_ranked's OWN logic: given that exception,
+    with a token that says it caused it, the result is `Cancelled`."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            # Only pass_over's own SELECT — search_ranked runs several OTHER
+            # execute() calls first (_coverage_reason, _ignore_roots) that are
+            # not wrapped in the try/except this test is targeting.
+            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+                # The real cross-thread sequence: `cancel()` flips the flag
+                # AND calls interrupt(), which is what makes THIS raise.
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_an_interrupt_with_no_token_is_not_swallowed_as_cancellation(tmp_path, monkeypatch):
+    """An interrupted connection that ISN'T this function's doing (no token at
+    all — someone else's timeout, or a genuine duckdb abort) must keep
+    surfacing as a real error rather than being read as `Cancelled`.
+
+    duckdb only actually raises `InterruptException` while a query is
+    genuinely running (a plain `interrupt()` before any query starts is a
+    no-op — verified directly against real duckdb, not asserted from memory),
+    which is awkward to force deterministically in a unit test. The exception
+    handling this section adds is tested directly instead: `con.execute`
+    raising `InterruptException` with no token bound must propagate, not
+    become `Cancelled`. The Timer-forced REAL interrupt is already covered
+    for this exact exception class by
+    test_index_guarded_query.py::test_a_runaway_statement_is_interrupted."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+                raise duckdb_module.InterruptException("simulated, not this token's doing")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(duckdb_module.InterruptException):
+        search_ranked(cfg, "/r", "readme.md")
 
 
 def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):

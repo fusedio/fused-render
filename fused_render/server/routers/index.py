@@ -25,11 +25,12 @@ import os
 import re
 import threading
 
-from fastapi import APIRouter, Body, Header, Query
+from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
@@ -245,7 +246,8 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
 WARM_RANK_QUERY = "zqxjv"
 
 
-def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dict:
+def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
+               token: CancelToken | None = None) -> dict:
     """`search_ranked` with the server's gitignore filter wired in.
 
     The index package cannot import the server, so `search_ranked` takes the
@@ -258,14 +260,20 @@ def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dic
     `oracle_rels` comes from the caller, not from the payload: a ranked answer
     is ~200 rows with no dot-leading rels among them, so the filter's own
     discovery would find no `.gitignore`, decide nothing, and drop nothing
-    (index_gitignore.filter_corpus says this at length)."""
+    (index_gitignore.filter_corpus says this at length).
+
+    `token`, when given, is forwarded to `search_ranked` unchanged — it
+    already checks it right before calling `drop_ignored` (query.py's
+    `pass_over`), which is "before entering the sweep" from this function's
+    side without anything extra needed here."""
     def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
         index_root = enclosing_root(scan_roots(cfg), canonical_root)
         return filter_corpus({"covered": True, "root": canonical_root,
                               "entries": hits}, index_root=index_root,
                              oracle_rels=oracle_rels)["entries"]
 
-    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
+    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
+                      token=token)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -447,7 +455,7 @@ def run_startup_warm() -> None:
         # connection cost, same gitignore pool, but its own two-stage SQL —
         # warming only the corpus would leave the home page's first keystroke
         # paying for the ranked plan.
-        _ranked(cfg, out.get("root") or root, WARM_RANK_QUERY)
+        _rank_body(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
 
@@ -935,9 +943,30 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
 
 
+# How often the disconnect watcher polls `request.is_disconnected()` while a
+# rank request is in flight on the worker thread. `is_disconnected()` is the
+# only signal an async route that is ALSO doing real work off the event loop
+# has for "the client gave up" — the same tradeoff `api_fs_walk` already makes
+# (fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a `receive`-driven variant
+# is not worth the added complexity here.
+_RANK_DISCONNECT_POLL_S = 0.1
+
+
+async def _watch_disconnect(request: Request, token: CancelToken) -> None:
+    """Cancel `token` the moment `request` disconnects; otherwise run forever
+    until the caller cancels THIS task (the route's `finally`, once the rank
+    finished on its own — see `api_index_rank`)."""
+    while True:
+        if await request.is_disconnected():
+            token.cancel()
+            return
+        await asyncio.sleep(_RANK_DISCONNECT_POLL_S)
+
+
 @router.get("/api/index/rank")
-def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
-                   limit: int = Query(default=RANK_LIMIT)):
+async def api_index_rank(request: Request, root: str = Query(default=""),
+                         q: str = Query(default=""),
+                         limit: int = Query(default=RANK_LIMIT)):
     """The home search: filtered AND ranked here, top `limit` hits returned.
 
     The corpus route next door hands the client every entry under `root`
@@ -964,13 +993,51 @@ def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
     platform/lib/fuzzy.ts stays the single source of truth for what highlights
     — and the ranker here stays free to carry positions internally without
     them becoming a wire contract.
+
+    ASYNC, and doing real cancellation, not merely handling a request that
+    happens to be a coroutine — a fast typist fires and abandons this route
+    on every keystroke, and the abandoned ones used to run to completion:
+    both duckdb ladder passes, the Python ranking, and (worst case) up to
+    `SWEEP_WAIT_MAX_S` blocked on another request's git sweep
+    (index_gitignore.py). The actual query runs on a worker thread
+    (`asyncio.to_thread`), watched by `_watch_disconnect` polling
+    `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
+    which is index/cancel.py's job from there. Two honest limitations:
+
+      * `asyncio.to_thread` cannot kill the thread it started — nothing in
+        Python can. `token.cancel()` is what makes the QUERY inside that
+        thread return (the `check()` calls between phases); `con.interrupt()`
+        (also part of `cancel()`) is what unblocks a `con.execute()` already
+        running, which a between-phase check cannot reach. The route still
+        `await`s the worker thread either way — cancellation makes that wait
+        take milliseconds instead of seconds, it does not make the `await`
+        itself skippable.
+      * `is_disconnected()` polling is the only disconnect signal available
+        to a route that is also doing work; a `receive`-driven variant is not
+        worth the complexity here (see `_watch_disconnect`).
+
+    `Cancelled` escaping the worker thread is NOT logged as an error — a
+    cancelled rank is a client that stopped waiting, which is normal
+    operation for a per-keystroke request (same reasoning the candidate-cap
+    line above already applies to `logger.debug`) — and the response is a
+    body nobody reads, because nobody is listening by the time it is sent.
     """
     if not root.strip():
         return _error("'root' is required")
     import time
     t0 = time.monotonic()
     cfg = load_config()
-    out = _ranked(cfg, root, q, limit)
+    token = CancelToken()
+    work = asyncio.create_task(asyncio.to_thread(_rank_body, cfg, root, q, limit, token))
+    watch = asyncio.create_task(_watch_disconnect(request, token))
+    try:
+        out = await work
+    except Cancelled:
+        logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                    q, root, (time.monotonic() - t0) * 1000)
+        return Response(status_code=499)
+    finally:
+        watch.cancel()
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
