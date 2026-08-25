@@ -201,7 +201,8 @@ DIFFUSERS_INDEX = "model_index.json"
 #: space, which is what `get_text_features` / `get_image_features` are.
 #:
 #: **`siglip` covers SigLIP AND SigLIP2**: `google/siglip2-base-patch16-384`
-#: declares `"model_type": "siglip"` (checked 2026-08-21, and it is what makes
+#: and `onnx-community/siglip2-base-patch16-384-ONNX` both
+#: declare `"model_type": "siglip"` (checked 2026-08-25, and it is what makes
 #: the MLX runner able to read it at all — mlx-embeddings 0.1.x ships a `siglip`
 #: module and no `siglip2` one, and dispatches on this very field). There is no
 #: separate spelling to add.
@@ -212,10 +213,11 @@ DIFFUSERS_INDEX = "model_index.json"
 EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
 
 #: …and the subset MLX reads. Same field, shorter list: mlx-embeddings has a
-#: SigLIP port and no CLIP one, so a CLIP repo is loadable by the torch runner
-#: and by nothing else here. Split rather than shared because this is exactly
-#: what `loaders()` answers — a Mac that resolved to MLX must not be offered a
-#: Load for a checkpoint its engine has no module for.
+#: SigLIP port and no CLIP one, so a CLIP checkpoint in SAFETENSORS is loadable
+#: by nothing here at all — the ONNX runner reads a `clip` export happily, but
+#: it reads the export and not the safetensors. Split rather than shared because
+#: this is exactly what `loaders()` answers: a Mac that resolved to MLX must not
+#: be offered a Load for a checkpoint its engine has no module for.
 MLX_EMBED_MODEL_TYPES = frozenset({"siglip"})
 
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
@@ -942,26 +944,21 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # keeps for the diffusers pair just above.
             "llamacpp-text", "llamacpp-text-vulkan",
             # A `siglip`/`clip` model_type is decisive too, and it has to be: a
-            # dual encoder is a directory of safetensors, so without this the
-            # text branch would claim it and a cached SigLIP card would offer to
-            # load a vision-text encoder as a chat model. All four codes appear
-            # for `DIFFUSERS_RUNNERS`' reason — membership is a statement about
-            # the FORMAT, and a config saying `siglip` says the same thing
-            # whichever of the four engines opens it. `transformers-embed-cuda`
-            # and `-rocm` are spelled literally rather than via
-            # `TRANSFORMERS_EMBED_RUNNERS` for the same forward-declaration
-            # reason `LLAMACPP_RUNNERS` is spelled literally just above.
-            "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-            "transformers-embed-rocm",
-            # …and the four ONNX rows, for the identical reason. An
-            # `onnx-community/*-ONNX` export carries the same `model_type:
-            # siglip` and an `onnx/` tree instead of `model.safetensors`, and it
-            # is just as decisive: without these codes here a cached export with
-            # no pipeline_tag would come back with NO capability at all, so
+            # dual encoder is a directory of weights like any other, so without
+            # this the text branch would claim it and a cached SigLIP card would
+            # offer to load a vision-text encoder as a chat model. Every code
+            # appears for `DIFFUSERS_RUNNERS`' reason — membership is a
+            # statement about the FORMAT, and a config saying `siglip` says the
+            # same thing whichever engine opens it. That covers BOTH weight
+            # layouts: an `onnx-community/*-ONNX` export carries the same
+            # `model_type: siglip` with an `onnx/` tree instead of
+            # `model.safetensors`, and without its codes here a cached export
+            # with no pipeline_tag would come back with NO capability at all —
             # `hub_cache._resolve` would find no candidate runner and the card
-            # would show a repo nothing can load. Spelled literally rather than
-            # via `ONNX_EMBED_RUNNERS` for the same forward-declaration reason
-            # `LLAMACPP_RUNNERS` is.
+            # would show a repo nothing can load. All spelled literally rather
+            # than via `ONNX_EMBED_RUNNERS` for the same forward-declaration
+            # reason `LLAMACPP_RUNNERS` is spelled literally just above.
+            "mlx-embed",
             "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
             "onnx-embed-rocm")
 
@@ -1115,31 +1112,19 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
 #: `llamacpp-text` here is exactly the trap this comment already describes for
 #: the other two families (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
-#: All three transformers embedding builds — CPU, CUDA and ROCm — for the same
-#: reason as the two tuples above: a `siglip`/`clip` `model_type` is the same
-#: FORMAT whichever wheel's `AutoModel` opens it, and a branch that named only
-#: the CPU row would be exactly the trap
-#: `test_every_registered_runner_appears_in_loaders` exists to catch — a
-#: registered runner with no engine tag, no Load button and no cached repos
-#: offered, on precisely the machines that chose it.
-#: `mlx-embed` stays OUT: it has no hardware variant of its own to enumerate,
-#: and it is appended separately in `loaders()` because it is gated on
-#: `MLX_EMBED_MODEL_TYPES` in a way none of these three are.
-TRANSFORMERS_EMBED_RUNNERS = ("transformers-embed", "transformers-embed-cuda",
-                              "transformers-embed-rocm")
 #: All four ONNX Runtime embedding builds — CPU, DirectML, CUDA and ROCm — for
-#: `TRANSFORMERS_EMBED_RUNNERS`' reason exactly: an `onnx/` tree holding a
+#: the same reason as the two tuples above: an `onnx/` tree holding a
 #: `text_model.onnx` is the same FORMAT whichever execution provider's
 #: `InferenceSession` opens it, and a branch that named only the CPU row would be
-#: the trap `test_every_registered_runner_appears_in_loaders` exists to catch — a
-#: registered runner with no engine tag, no Load button and no cached repos
-#: offered, on precisely the machines that chose it.
+#: exactly the trap `test_every_registered_runner_appears_in_loaders` exists to
+#: catch — a registered runner with no engine tag, no Load button and no cached
+#: repos offered, on precisely the machines that chose it.
 #:
-#: A SEPARATE tuple from the torch family rather than a widening of it, because
-#: the two read DIFFERENT FILES out of the same checkpoint: `onnxruntime` cannot
-#: open `model.safetensors` and `AutoModel` cannot open `model.onnx`. That is why
-#: `loaders()` below takes two independent weight facts and appends the two
-#: families independently, instead of forking on one.
+#: `mlx-embed` stays OUT: it has no hardware variant of its own to enumerate,
+#: and it is appended separately in `loaders()` because it is gated on
+#: `MLX_EMBED_MODEL_TYPES` in a way none of these four are — and, since the
+#: three `transformers-embed*` rows went, because it reads a different weight
+#: layout entirely (safetensors, not `.onnx`).
 ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
                       "onnx-embed-rocm")
 
@@ -1228,21 +1213,19 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     if family and (torch_weights or onnx_weights):
         # TWO independent appends, not a fork. The same `onnx-community` account
         # sometimes re-uploads `model.safetensors` beside its export, and such a
-        # repo really is readable by both families — so each engine's rows are
-        # gated on ITS OWN weight fact and neither excludes the other.
-        if torch_weights:
-            if family in MLX_EMBED_MODEL_TYPES:
-                found.append("mlx-embed")
-            # All three torch builds, not just the CPU row —
-            # `TRANSFORMERS_EMBED_RUNNERS`'s own comment gives the reason, and it
-            # is the DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
-            # registered but absent here is invisible to the page.
-            found.extend(TRANSFORMERS_EMBED_RUNNERS)
+        # repo really is readable by both engines — so each engine's rows are
+        # gated on ITS OWN weight fact and neither excludes the other: MLX
+        # reads safetensors and `onnxruntime` reads the `onnx/` graphs, and
+        # those are two separate questions about one repo.
+        if torch_weights and family in MLX_EMBED_MODEL_TYPES:
+            found.append("mlx-embed")
         if onnx_weights:
-            # All four execution providers, for the identical reason — see
-            # `ONNX_EMBED_RUNNERS`. `mlx-embed` gets no analogue here: MLX has no
-            # ONNX reader at all, so an export is invisible to it whatever the
-            # family says.
+            # All four execution providers, not just the CPU row —
+            # `ONNX_EMBED_RUNNERS`' own comment gives the reason, and it is the
+            # DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
+            # registered but absent here is invisible to the page. `mlx-embed`
+            # gets no analogue on this side: MLX has no ONNX reader at all, so an
+            # export is invisible to it whatever the family says.
             found.extend(ONNX_EMBED_RUNNERS)
         # …and NOTHING else, for the `.gguf` branch's reason: an embedding
         # snapshot is a directory of weights like any other, so the text branch

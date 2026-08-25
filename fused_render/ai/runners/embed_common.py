@@ -1,7 +1,7 @@
 """Validating and shaping one `fused.ai.embed()` request, written once (SPEC §40).
 
-`mlx_embed` and `transformers_embed` are two DIFFERENT engines that read the
-SAME repos (see `catalog.py`'s embeddings block, and `registry.EMBEDDINGS`'s
+`mlx_embed` and `onnx_embed` are two DIFFERENT engines that produce vectors in
+the SAME SPACE (see `catalog.py`'s embeddings blocks, and `registry.EMBEDDINGS`'s
 own comment) — the one pair here where that is true. A caller must therefore
 get the same answer to "is this request well-formed" and "what does this
 vector mean" whichever engine served it, which is exactly the kind of rule a
@@ -9,12 +9,16 @@ second copy drifts on. This module is where both halves of `generate()` that
 have nothing to do with a text tower or a vision tower live, so neither
 worker has to re-derive them.
 
+(They read different FILES — MLX safetensors against an `onnx/` graph export —
+which is why `catalog.py` keeps two lists. That is a fact about downloads and
+changes nothing about the request shape, which is this module's whole subject.)
+
 **Mostly stdlib, and no import of `fused_render`** — the same constraint
 `formats.py` documents, for the same reason: this is imported by both runners'
 own interpreters through the same `sys.path` insert that reaches
 `worker_base`. `open_image` is the one exception, and it defers its PIL import
 to the call itself (never at module load) — pillow is a dependency BOTH of
-these two runners declare, unlike torch or mlx-embeddings, so importing it
+these two runners declare, unlike onnxruntime or mlx-embeddings, so importing it
 lazily here costs nothing neither runner already pays, and costs it only when
 a page actually asked to embed an image.
 """
@@ -36,7 +40,7 @@ def request_kind(body: dict) -> tuple[str, list]:
 
     The one shape both engines accept: EXACTLY one of `texts`/`paths`, a
     non-empty list of non-empty strings, at most `MAX_ITEMS` long. Checked
-    once so a batch of 65 does not read as a torch limit on one engine and an
+    once so a batch of 65 does not read as an ONNX limit on one engine and an
     MLX one on the other — the same argument `MAX_ITEMS` above makes.
     """
     texts = body.get("texts")
@@ -135,8 +139,8 @@ def unit_normalize(vectors: list) -> list:
     **Framework-agnostic on purpose.** Both runners hand this the SAME shape —
     a plain list of lists, already off the GPU/Metal device and out of numpy —
     so the one piece of arithmetic that makes two engines' vectors comparable
-    (the whole point of `catalog.py`'s embeddings block) is read in one place
-    rather than risking a torch call and an mx call quietly disagreeing on it.
+    (the whole point of the shared space `registry.py` documents) is read in one
+    place rather than risking a numpy call and an mx call quietly disagreeing.
 
     A zero vector is left as zero rather than raising or dividing by it — not
     a real embedding a resident model produces, but a mocked one in a test

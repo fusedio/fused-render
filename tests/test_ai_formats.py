@@ -110,7 +110,7 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y",
         names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"},
         dirnames=set(), config={}, torch_weights=True))
-    # `mlx-embed`/`transformers-embed` short-circuit too (see `loaders()`'s own
+    # The embedding branch short-circuits too (see `loaders()`'s own
     # comment on the branch), so — like the MLX whisper and Parakeet cases
     # above — a code reachable only from below it would otherwise look absent.
     seen |= set(formats.loaders(
@@ -349,7 +349,7 @@ def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
     assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
     assert not _TEXT & set(formats.DECISIVE)
     assert set(formats.LLAMACPP_RUNNERS) <= set(formats.DECISIVE)
-    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
+    assert set(formats.ONNX_EMBED_RUNNERS) <= set(formats.DECISIVE)
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():
@@ -716,33 +716,47 @@ def _clip_config():
     return {"model_type": "clip"}
 
 
-def test_a_siglip_snapshot_resolves_to_mlx_and_every_torch_embedding_runner():
-    """Renamed from "...resolves_to_both_embedding_runners": since the
-    accelerated torch rows landed there are FOUR engines that read a SigLIP
-    checkpoint, not two — `TRANSFORMERS_EMBED_RUNNERS` is `transformers-embed` plus its
-    CUDA and ROCm siblings, all three genuinely readable regardless of which
-    wheel happens to be installed on this machine, exactly the
-    `DIFFUSERS_RUNNERS` argument applied to embeddings."""
+def test_a_siglip_SAFETENSORS_snapshot_resolves_to_mlx_and_nothing_else():
+    """Since the torch embedding family went, exactly ONE engine here reads a
+    SigLIP checkpoint in safetensors: mlx-embeddings, through its own SigLIP
+    port. `onnx-embed` reads the same MODEL and a different FILE — an
+    `onnx-community` graph export — so it correctly does not claim this
+    snapshot."""
     codes = formats.loaders(
         repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
         dirnames=set(), config=_siglip_config(), torch_weights=True)
-    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert set(codes) == {"mlx-embed"}
 
 
-def test_a_clip_snapshot_resolves_to_the_torch_embedding_runners_only():
+def test_a_clip_SAFETENSORS_snapshot_resolves_to_nothing_at_all():
     """mlx-embeddings 0.1.x has a `siglip` module and no `clip` one
-    (`MLX_EMBED_MODEL_TYPES`) — the one difference between the two families
-    this app treats identically everywhere else. All three torch builds still
-    apply, for `TRANSFORMERS_EMBED_RUNNERS`'s own reason."""
+    (`MLX_EMBED_MODEL_TYPES`) — and the torch runner that used to be the answer
+    for a CLIP checkpoint is gone. So a `clip` config with safetensors beside it
+    is now "a dual encoder nothing here can load", which is the honest answer:
+    the ONNX runner opens a CLIP EXPORT (see the test below) and not this file.
+
+    It still must not fall through to `mlx-text` and be offered as a chat model,
+    which is what the embed branch's early `return` is for."""
     codes = formats.loaders(
         repo_id="openai/clip-vit-base-patch32", names={"model.safetensors"},
         dirnames=set(), config=_clip_config(), torch_weights=True)
-    assert codes == formats.TRANSFORMERS_EMBED_RUNNERS
+    assert codes == ()
+
+
+def test_a_clip_ONNX_export_resolves_to_the_four_onnx_rows():
+    """The other half of the pair above, and the reason that one is not a
+    regression: `onnxruntime` has no per-architecture module list to be missing
+    a `clip` entry from — it runs whatever graph it is handed."""
+    codes = formats.loaders(
+        repo_id="onnx-community/clip-vit-base-patch32-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_clip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
 
 
 def test_an_embed_config_with_no_torch_weights_loads_nowhere():
     """A `model_type: siglip` config with nothing but a README is not a
-    loadable snapshot — `torch_weights` is what tells the two apart, the same
+    loadable snapshot — the weight flags are what tell the two apart, the same
     guard the text branch at the bottom of `loaders()` has."""
     codes = formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
@@ -763,7 +777,7 @@ def test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners():
     # is the one runner left that reads a bare directory of safetensors, so a
     # family tuple would have nothing to hold together.
     assert "mlx-text" not in codes
-    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert set(codes) == {"mlx-embed"}
 
 
 # -- embeddings, the ONNX exports -----------------------------------------------
@@ -815,15 +829,15 @@ def test_an_onnx_export_is_not_offered_to_the_text_runner():
     assert "mlx-text" not in codes
 
 
-def test_a_torch_siglip_snapshot_matches_exactly_what_it_matched_before_onnx():
-    """The no-regression half, and the one this task could actually break: a
-    `model.safetensors` SigLIP snapshot carries no `.onnx` anywhere, so the ONNX
-    rows must not appear on it merely because the branch now knows about them."""
+def test_a_safetensors_siglip_snapshot_claims_no_onnx_row():
+    """The no-regression half: a `model.safetensors` SigLIP snapshot carries no
+    `.onnx` anywhere, so the ONNX rows must not appear on it merely because the
+    branch knows about them."""
     codes = formats.loaders(
         repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
         dirnames=set(), config=_siglip_config(), torch_weights=True,
         onnx_weights=False)
-    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert set(codes) == {"mlx-embed"}
     assert not set(codes) & set(formats.ONNX_EMBED_RUNNERS)
 
 
@@ -834,8 +848,7 @@ def test_a_repo_carrying_both_layouts_matches_both_families():
     codes = formats.loaders(
         repo_id="x/y", names={"model.safetensors"}, dirnames={"onnx"},
         config=_siglip_config(), torch_weights=True, onnx_weights=True)
-    assert set(codes) == ({"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
-                          | set(formats.ONNX_EMBED_RUNNERS))
+    assert set(codes) == {"mlx-embed"} | set(formats.ONNX_EMBED_RUNNERS)
 
 
 def test_an_embed_config_with_neither_weight_layout_loads_nowhere():
@@ -869,10 +882,10 @@ def test_embed_model_type_rejects_anything_else():
 
 
 def test_the_embed_codes_are_decisive():
-    """A directory of safetensors says nothing about the modality on its own
+    """A directory of weights says nothing about the modality on its own
     (`DECISIVE`'s own comment) — a `siglip`/`clip` config is what settles it,
     exactly like a Parakeet NeMo target or an MLX whisper weights file. Every
-    torch build is decisive, not just the CPU row, for `DIFFUSERS_RUNNERS`'s
+    ONNX build is decisive, not just the CPU row, for `DIFFUSERS_RUNNERS`'s
     own reason applied here."""
     assert "mlx-embed" in formats.DECISIVE
-    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
+    assert set(formats.ONNX_EMBED_RUNNERS) <= set(formats.DECISIVE)

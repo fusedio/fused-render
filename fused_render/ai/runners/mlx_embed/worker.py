@@ -6,20 +6,21 @@ state machine are `worker_base`'s; what lives here is only what is true of
 `mlx-embeddings`' SigLIP port in particular.
 
 **Only SigLIP, never CLIP.** `mlx-embeddings` 0.1.x ships a `siglip` module and
-no `clip` one, so a CLIP repo resolves to `transformers-embed` and NOTHING
-else (`formats.MLX_EMBED_MODEL_TYPES`, and `registry`'s comment on this row) —
-this file never sees one and has no branch for it.
+no `clip` one, so a CLIP checkpoint in safetensors resolves to NOTHING at all
+here (`formats.MLX_EMBED_MODEL_TYPES`, and `registry`'s comment on this row) —
+`onnx_embed` reads a CLIP graph export, but that is a different file. This file
+never sees one and has no branch for it.
 
 **`mlx_embeddings.load()` does the whole load**, unlike `mlx_text`'s bare
 `mlx_lm.load`: it also resolves the processor (`AutoProcessor` for a model
 whose config carries a `vision_config`, which SigLIP's does), so there is no
-separate processor line here the way `runners/torch_embed.py` has one — the
+separate processor line here the way `runners/onnx_embed.py` has one — the
 library already made that choice for a checkpoint shaped like this one.
 
 `embed_common.py` (one directory up) is where the request validation and the
-unit-normalization live, shared with `runners/torch_embed.py` because the two
-engines answer for the SAME repos (`catalog.py`'s embeddings block) and must
-refuse and shape a request identically.
+unit-normalization live, shared with `runners/onnx_embed.py` because the two
+engines produce vectors in the SAME SPACE (`registry.py`'s comment on this row)
+and must refuse and shape a request identically.
 """
 
 import os
@@ -47,7 +48,7 @@ _loaded = {}
 _STREAMS = {}
 _STREAMS_LOCK = threading.Lock()
 
-#: SigLIP's own padding rule. See `runners/torch_embed.py`'s `_TEXT_PADDING`
+#: SigLIP's own padding rule. See `runners/onnx_embed.py`'s `_TEXT_PADDING`
 #: — the same convention, because it is a fact about how the checkpoint was
 #: trained and not about which engine is reading it.
 _TEXT_PADDING = "max_length"
@@ -164,7 +165,7 @@ def _to_lists(array):
     `.tolist()` on an mx array already returns plain Python numbers (mlx has
     no numpy dependency to round-trip through), so this is a name for the
     conversion rather than a computation of its own — kept as a function so
-    both call sites below read the same way `runners/torch_embed.py`'s
+    both call sites below read the same way `runners/onnx_embed.py`'s
     two do.
     """
     import mlx.core as mx
@@ -190,7 +191,7 @@ def _image_vectors(model, processor, paths):
     """One vector per path in `paths`, unnormalized, as a plain nested list.
 
     Opened one at a time through `embed_common.open_image`, exactly
-    `runners/torch_embed.py`'s `_image_vectors` — see that function's docstring
+    `runners/onnx_embed.py`'s `_image_vectors` — see that function's docstring
     for why a bad path in the middle of a batch must be opened here rather than
     handed to the processor as a filename.
     """
@@ -223,8 +224,8 @@ def generate(body):
 def main():
     """Serve, forever. This file's own `__main__` calls it directly — no shell
     folder, unlike text and image generation, because this is the only folder
-    this engine installs (see the module docstring on `transformers_embed`'s
-    sibling comment)."""
+    this engine installs — unlike `onnx_embed`, which has four, one per
+    execution provider."""
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False, memory=memory)
 

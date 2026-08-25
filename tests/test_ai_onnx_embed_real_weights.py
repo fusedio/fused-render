@@ -19,15 +19,15 @@ Download) and are never a dependency of the venv the rest of the suite runs
 under. Do not read a green run of the default suite as evidence this file
 executed.
 
-**The torch side goes through `AutoModel` directly, not through
-`runners/torch_embed.py`.** That is deliberate and it is what lets this file
-outlive the runner it is a gate on: Stage 2 deletes `torch_embed.py`, and a
-parity test that imported it would have to be deleted with it — leaving the
-claim it exists to support unverifiable from that commit onwards. Reproducing
-the four lines that matter here (`AutoProcessor`, `padding="max_length"`,
-`get_text_features`, `pooler_output`) pins the ONNX runner against
-TRANSFORMERS' contract rather than against our wrapper of it, which is the
-stronger statement anyway.
+**The torch side goes through `AutoModel` directly, and never through a runner
+of ours.** That is deliberate and it is what lets this file outlive the runner it
+is a gate on: the torch embedding runner is GONE — this test is what licensed
+removing it — and a parity test that had imported it would have had to be deleted
+with it, leaving the claim it exists to support unverifiable from that commit
+onwards. Reproducing the four lines that mattered in it (`AutoProcessor`,
+`padding="max_length"`, `get_text_features`, `pooler_output`) pins the ONNX
+runner against TRANSFORMERS' contract rather than against our wrapper of it,
+which is the stronger statement anyway.
 
 **Three ways to run it:**
 
@@ -127,8 +127,9 @@ def _require_or_skip(condition, reason):
     asked this file to actually run, in which case the same condition is a hard
     failure naming what is missing. One gate, two behaviours, so the opt-in
     cannot be satisfied by the thing it exists to catch: a quiet skip that reads
-    like a pass. Copied from `test_ai_transformers_embed_real_weights.py`, whose
-    docstring argues it at length.
+    like a pass. The withdrawn torch reproducer used the identical gate, and
+    `CONTRIBUTING.md`'s "Real-weights reproducers" section is where the
+    invocation lives now.
     """
     if condition:
         return
@@ -241,7 +242,7 @@ def torch_vectors(probe_image):
     """The same probes through `transformers`, as `(texts, images)`.
 
     Four lines of transformers and they are the four that matter — see the
-    module docstring on why this does not go through `runners/torch_embed.py`.
+    module docstring on why this does not go through a runner of ours.
     `padding="max_length"` and `pooler_output` are reproduced verbatim from that
     runner's own `_TEXT_PADDING` and `_pooled`, because a parity test that
     quietly used a different padding or a different output field would compare
@@ -323,11 +324,11 @@ def test_image_vectors_are_768_dim_and_unit_norm(worker, probe_image):
 def test_semantically_closer_texts_cosine_higher(worker):
     """Two animals should read as closer than an animal and a vehicle.
 
-    The same assertion `test_ai_transformers_embed_real_weights.py` makes about
-    the torch runner, restated here so the ONNX runner's own semantics are
-    pinned even in a venv with no torch at all: the ORDERING plus a loose band,
-    never the exact float — a point release reproducing the same relationship to
-    three decimals is not a promise this test should make.
+    The assertion the withdrawn torch reproducer made about its own runner,
+    restated here so the ONNX runner's semantics are pinned even in a venv with
+    no torch at all: the ORDERING plus a loose band, never the exact float — a
+    point release reproducing the same relationship to three decimals is not a
+    promise this test should make.
     """
     result = worker.generate({"texts": PROBE_TEXTS})
     cat, dog, bicycle = result["vectors"][0], result["vectors"][1], result["vectors"][2]

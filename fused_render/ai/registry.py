@@ -301,38 +301,13 @@ def _always() -> Availability:
     return Availability(True)
 
 
-def _torch_platform() -> Availability:
-    """`transformers-embed`'s supported production platforms.
-
-    This is the probe the withdrawn `transformers-text` family used (D416),
-    kept alive because the embed runner installs the same torch from the same
-    `whl/cpu` index — the withdrawal was about maintaining three TEXT rows
-    llama.cpp had obsoleted, not about torch ceasing to run anywhere. MLX is
-    preferred on Apple Silicon by registry order, but torch's MPS path is a
-    working fallback when the MLX runner is unavailable. Intel macOS is not a
-    distribution target, and availability drives the catalog and Load button,
-    so it must not be advertised merely because torch happens to publish a
-    wheel there.
-    """
-    system = platform.system()
-    machine = platform.machine()
-    if (
-        system in ("Windows", "Linux")
-        or (system == "Darwin" and machine == "arm64")
-    ):
-        return Availability(True)
-    return Availability(
-        False,
-        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
-    )
-
-
 def _onnx_platform() -> Availability:
     """`onnx-embed`'s supported platforms — a HARD exclusion, meaning "there is
     no wheel to install", the same kind of claim `_llamacpp_platform` makes.
 
-    Narrower than `_torch_platform` by ARCHITECTURE, and deliberately so: PyPI's
-    `onnxruntime` 1.29 publishes `macosx_14_0_arm64`,
+    Narrower by ARCHITECTURE than the withdrawn torch gate this replaces
+    (Windows or Linux on ANY machine, plus Apple Silicon), and deliberately so:
+    PyPI's `onnxruntime` 1.29 publishes `macosx_14_0_arm64`,
     `manylinux_2_28_{x86_64,aarch64}`, `win_amd64` and `win_arm64` — read off
     the release's own wheel list rather than assumed — and nothing else. There
     is no macOS x86_64 build and no Linux riscv64 one, so both are excluded
@@ -1334,19 +1309,26 @@ _RUNNERS: tuple[Runner, ...] = (
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
-    # the Macs and the torch row below it keeps every other platform — plus the
+    # the Macs and the ONNX row below it keeps every other platform — plus the
     # Macs whenever the MLX folder is not built yet or its package cannot run.
     #
     # **The two runners share an embedding SPACE, which no other pair here
-    # does.** mlx-embeddings reads the same `google/siglip2-*` safetensors
-    # transformers reads, through its own port of the same architecture, and the
-    # cosine similarities the two produce for the same texts and images agree to
-    # about three decimals (measured on `siglip2-base-patch16-384`). So a page
-    # that embedded a folder of images on one engine and searches it from the
-    # other gets sensible answers, which is a promise the whisper and text pairs
-    # explicitly cannot make about their weights. It is not a promise this app
-    # relies on anywhere — vectors are the caller's to store, and a switch is
-    # still a switch — but it is why the engine choice here is genuinely free.
+    # does.** They read DIFFERENT FILES out of the same models — mlx-embeddings
+    # opens `mlx-community` safetensors through its own port of the
+    # architecture, `onnx-embed` opens an `onnx-community` graph export — and
+    # the cosine similarities the two produce for the same texts and images
+    # still agree to about three decimals (measured on
+    # `siglip2-base-patch16-384`). So a page that embedded a folder of images on
+    # one engine and searches it from the other gets sensible answers, which is a
+    # promise the whisper and text pairs explicitly cannot make about their
+    # weights. It is not a promise this app relies on anywhere — vectors are the
+    # caller's to store, and a switch is still a switch — but it is why the
+    # engine choice here is genuinely free.
+    #
+    # **The two engines' CATALOG lists are separate, and that follows from the
+    # files rather than from the vectors** (`catalog.py`'s keying rule): a Mac
+    # cannot open an ONNX export and this engine cannot open MLX safetensors, so
+    # the shared space does not make the downloads interchangeable.
     Runner(
         code="mlx-embed",
         capability=EMBEDDINGS,
@@ -1358,122 +1340,47 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="MLX Embeddings",
         # ONE LINE, per the naming note above the table. It describes the
         # DEFAULT on a Mac, so what it leads with is what the reader gets.
-        note="Embeds on the GPU, in the same vector space the Transformers "
-             "engine produces.",
+        note="Embeds on the GPU, in the same vector space the ONNX engine "
+             "produces.",
         _available=_apple_silicon,
     ),
-    Runner(
-        code="transformers-embed",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed"),
-        # "(CPU)" now that `transformers-embed-cuda`/`-rocm` sit below it, for
-        # the same reason `llamacpp-text` carries it once
-        # `llamacpp-text-vulkan` existed: the qualifier names the BUILD —
-        # PyPI's `whl/cpu` wheel, which also happens to run on Apple Silicon's
-        # GPU through MPS — never a prediction about the device, and a family
-        # with a sibling needs it on every row or two engines print the same
-        # name.
-        label="Transformers Embeddings (CPU)",
-        short_label="Transformers Embeddings (CPU)",
-        family_label="Transformers Embeddings",
-        # "the CPU build" rather than "runs on the CPU on any machine": with
-        # accelerated siblings now registered, this row is one build among
-        # three rather than the only way to run this engine, and the note has
-        # to say which one this is rather than describe the family.
-        note="The CPU build — quick on any machine, or Apple Silicon's GPU, "
-             "since one item is a single forward pass.",
-        _available=_torch_platform,
-    ),
-    # The CUDA and ROCm siblings, and neither contradicts the CPU row's own
-    # case for having no accelerated variant: a dual encoder is one forward
-    # pass over a short sequence or one image, milliseconds already on a CPU,
-    # so neither row buys meaningful speed. What they buy is DEVICE — a
-    # machine with a working NVIDIA or fully ROCm-capable AMD card runs
-    # `transformers-embed` in fp32 on the CPU by default, because that row
-    # pins PyPI's `whl/cpu` torch on every platform (see its own comment).
-    # These rows are for whoever would rather their card do it, opted into
-    # from the Engines tab exactly like `diffusers-image-cuda`/`-rocm` above —
-    # nobody is moved here who did not ask, because the speed argument
-    # genuinely is a wash.
+    # **ONNX Runtime — the cross-platform embedding engine, and the
+    # Apple-Silicon fallback behind `mlx-embed`.** There were three
+    # `transformers-embed*` rows here until this branch, running the identical
+    # checkpoints through torch; they went because a dual encoder is one forward
+    # pass over a short sequence or one image, so the compute was never the
+    # argument — the WHEEL was. Those rows installed 0.2 GB on the CPU index and
+    # up to 5.9 GB on an accelerated one to run a model whose own weights are
+    # 1.5 GB, where `onnxruntime` is tens of megabytes reading the same
+    # checkpoint re-exported. `tests/test_ai_onnx_embed_real_weights.py` is what
+    # licensed the swap: it asserts ≥0.999 cosine between the two engines'
+    # vectors on real weights, both towers.
     #
-    # Both below `transformers-embed`, CUDA before ROCm — the same order the
-    # image family uses — and per the naming note over this table and
-    # `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`,
-    # `auto` must keep resolving to the CPU/MPS row on every platform.
-    Runner(
-        code="transformers-embed-cuda",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_cuda"),
-        label="Transformers Embeddings (CUDA)",
-        short_label="Transformers Embeddings (CUDA)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and, like the ROCm row below, no
-        # desktop-stall warning: that hazard is a denoise holding the GPU for
-        # minutes, and an embed call is one forward pass at
-        # `embed_common.MAX_ITEMS` items, over in under a second.
-        note="Embeds on an NVIDIA GPU — a larger download for a workload "
-             "that is already fast on the CPU.",
-        _available=_cuda,
-    ),
-    Runner(
-        code="transformers-embed-rocm",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_rocm"),
-        label="Transformers Embeddings (ROCm)",
-        short_label="Transformers Embeddings (ROCm)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and unlike the image ROCm row's note, no
-        # desktop-stall warning: that hazard comes from holding the GPU for
-        # minutes during a denoise, and an embed call is one forward pass at
-        # `embed_common.MAX_ITEMS` items, over in under a second.
-        note="Embeds on a supported AMD GPU under Linux — a larger download "
-             "for a workload that is already fast on the CPU.",
-        _available=_rocm,
-    ),
-    # **ONNX Runtime — the family that REPLACES the four rows above, landing
-    # below them for exactly as long as they are still here.** A dual encoder is
-    # one forward pass over a short sequence or one image, so the compute was
-    # never the argument; the WHEEL was. The torch rows above install 0.2 GB on
-    # the CPU index and up to 5.9 GB on an accelerated one to run a model whose
-    # own weights are 1.5 GB, where `onnxruntime` is tens of megabytes reading
-    # the same checkpoint re-exported.
-    #
-    # **The ordering is deliberately transitional and reverses itself by
-    # deletion.** `tests/test_ai_onnx_embed_real_weights.py` is what licenses
-    # removing the torch family — it asserts ≥0.999 cosine between the two
-    # engines' vectors on real weights — and until that gate has run, `auto`
-    # must keep resolving to the engine this app has actually shipped. So these
-    # rows sit last, reachable only by an explicit Engines-tab choice; when the
-    # torch rows go, `mlx-embed` -> `onnx-embed` -> the three accelerated ONNX
-    # rows is what is left, with no row moved to get there.
-    #
-    # Same four-row shape as the torch family: an unaccelerated build first,
-    # then the accelerated ones, opt-in and gated on the device actually being
-    # there. DirectML leads them because it is the only one Windows can take —
-    # and unlike the CUDA/ROCm pair it is vendor-neutral, so ONE row covers
-    # every Windows GPU rather than a folder per vendor.
+    # Same four-row shape the torch family had: an unaccelerated build first —
+    # what every `auto` machine off Apple Silicon resolves to — then the
+    # accelerated ones, opt-in from the Engines tab and gated on the device
+    # actually being there. DirectML leads those three because it is the only
+    # one Windows can take, and unlike the CUDA/ROCm pair it is vendor-neutral,
+    # so ONE row covers every Windows GPU rather than a folder per vendor.
     Runner(
         code="onnx-embed",
         capability=EMBEDDINGS,
         folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
-        # "(CPU)" on every row of a family with siblings, the discipline the
-        # `transformers-embed` row below documents: the qualifier names the
-        # BUILD — PyPI's plain `onnxruntime`, which has no GPU provider compiled
-        # in — never a prediction about the device, and a family missing it on
-        # one row prints two engines under one name.
+        # "(CPU)" on every row of a family with siblings, the discipline
+        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
+        # `onnxruntime`, which has no GPU provider compiled in — never a
+        # prediction about the device, and a family missing it on one row prints
+        # two engines under one name.
         label="ONNX Embeddings (CPU)",
         short_label="ONNX Embeddings (CPU)",
         # The format claim with the hardware taken out: these weights are the
         # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
         family_label="ONNX Embeddings",
-        # ONE LINE, per the naming note above the table. What it leads with is
-        # the download, because that is the difference a reader choosing between
-        # this row and the Transformers one can actually act on — the speed is a
-        # wash, one item being a single forward pass either way.
-        note="Tens of megabytes of engine instead of a torch wheel — one item "
-             "is a single forward pass either way.",
+        # ONE LINE, per the naming note above the table. It describes the
+        # DEFAULT off a Mac, so what it leads with is what most readers get: a
+        # workload that is already fast, on an engine that is a small download.
+        note="Quick on any machine, since one item is a single forward pass — "
+             "and tens of megabytes of engine rather than gigabytes.",
         _available=_onnx_platform,
     ),
     Runner(

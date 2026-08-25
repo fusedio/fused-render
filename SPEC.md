@@ -5776,11 +5776,11 @@ an AI Models page that could say what was on disk but not what was *running*.
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
   (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
-  runner is three (`transformers_embed`, `transformers_embed_cuda`,
-  `transformers_embed_rocm`), whose manifests are identical except for the
+  runner is four (`onnx_embed`, `onnx_embed_directml`, `onnx_embed_cuda`,
+  `onnx_embed_rocm`), whose manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
   is a `sys.path` insert and a call into `runners/torch_image.py`,
-  `runners/llama_text.py` or `runners/torch_embed.py`. (D416 removed an
+  `runners/llama_text.py` or `runners/onnx_embed.py`. (D416 removed an
   earlier such family — `transformers_text` and its `_cuda`/`_rocm` siblings
   over `runners/torch_text.py`, which is where this rule was first written;
   the embeddings family above is a LATER, separate instance of the same rule,

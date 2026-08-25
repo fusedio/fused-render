@@ -1,34 +1,35 @@
 """Embeddings on ONNX Runtime: one resident dual encoder, two towers (SPEC §40).
 
 **This module is the whole of the runner and it sits at the runners ROOT**,
-beside `worker_base.py`, `embed_common.py` and `torch_embed.py` — the rule
-`preview.py` states about itself, applied to embeddings a second time. FOUR
-folders serve this engine — `onnx_embed/`, `onnx_embed_directml/`,
-`onnx_embed_cuda/` and `onnx_embed_rocm/` — and they differ only in which
-`onnxruntime` distribution their `pyproject.toml` installs. Each folder's
-`worker.py` is a five-line shell around `onnx_embed.main()`, exactly as
-`transformers_embed/worker.py` is around `torch_embed.main()`; a second copy of
-the padding rule, the output-name assertion or the provider order under any of
-them would fail no test, because each copy would pass its own.
+beside `worker_base.py`, `embed_common.py` and `torch_image.py` — the rule
+`preview.py` states about itself, applied to embeddings. FOUR folders serve this
+engine — `onnx_embed/`, `onnx_embed_directml/`, `onnx_embed_cuda/` and
+`onnx_embed_rocm/` — and they differ only in which `onnxruntime` distribution
+their `pyproject.toml` installs. Each folder's `worker.py` is a five-line shell
+around `onnx_embed.main()`, the same shape `diffusers_image_cuda/worker.py`
+documents at length for the image family; a second copy of the padding rule, the
+output-name assertion or the provider order under any of them would fail no
+test, because each copy would pass its own.
 
 The HTTP contract, the download reporting and the state machine are
 `worker_base`'s; what lives here is only what is true of a SigLIP/CLIP export
 read through an `InferenceSession` in particular.
 
-**Why this exists beside the torch runner at all.** A dual encoder is one
-forward pass over a short sequence or one image — the compute was never the
-problem. The WHEEL was: `transformers_embed/` installs torch plus transformers,
-0.2 GB on the CPU index and up to 5.9 GB on an accelerated one, for a model
-whose own weights are 1.5 GB. `onnxruntime` is 14-202 MB depending on the
-provider and reads the same checkpoint re-exported. Same vectors (there is a
-real-weights parity gate, `tests/test_ai_onnx_embed_real_weights.py`), a
-fraction of the environment.
+**Why this replaced a working torch runner.** A dual encoder is one forward
+pass over a short sequence or one image — the compute was never the problem. The
+WHEEL was: the withdrawn `transformers_embed*` folders installed torch plus
+transformers, 0.2 GB on the CPU index and up to 5.9 GB on an accelerated one,
+for a model whose own weights are 1.5 GB. `onnxruntime` is 14-202 MB depending
+on the provider and reads the same checkpoint re-exported. Same vectors — there
+is a real-weights parity gate, `tests/test_ai_onnx_embed_real_weights.py`,
+asserting >=0.999 cosine on both towers, and it is what licensed the removal —
+for a fraction of the environment.
 
 **`allow_patterns` is correctness here, not an optimization.** These exports
 ship every quantization side by side — `onnx-community/siglip2-base-patch16-384
 -ONNX` is 33 files and 11.42 GB in total, the so400m export 29.5 GB — so the
-bare `download_snapshot(model_id)` call `torch_embed.download` makes would fetch
-seven redundant copies of both towers. `download()` below pins the fp32 set, and
+bare `download_snapshot(model_id)` call every other runner here makes would
+fetch seven redundant copies of both towers. `download()` below pins the fp32 set, and
 `test_ai_onnx_embed_real_weights.py` asserts the fetched byte total against
 `catalog.py`'s own figure so a widened pattern list cannot quietly reintroduce
 the full pull. **fp32, not fp16 or int8**: the parity gate is what licenses this
@@ -44,8 +45,9 @@ output NAME and raises naming the model and what the graph actually publishes.
 The fakes in `tests/test_ai_onnx_embed_worker.py` carry outputs of deliberately
 different ranks for the same reason.
 
-**No `memory()`, unlike `torch_embed`.** That runner supplies one because torch
-keeps CUDA and MPS weights in an allocator pool RSS cannot see. onnxruntime
+**No `memory()`, unlike `mlx_embed/worker.py`.** That runner supplies one
+because MLX keeps memory-mapped, lazy arrays RSS reports as the interpreter
+rather than as the model. onnxruntime
 publishes no equivalent query, and a CPU session's weights are ordinary process
 memory that `worker_base`'s default RSS probe already measures — so `serve()` is
 called without `memory=` rather than with a function that can only ever answer
@@ -53,9 +55,9 @@ called without `memory=` rather than with a function that can only ever answer
 is a known gap and better than an invented number.
 
 `embed_common.py` (this same directory) is where the request validation and the
-unit-normalization live, shared with `mlx_embed/worker.py` and
-`runners/torch_embed.py` because these engines answer for the SAME requests and
-must refuse and shape them identically.
+unit-normalization live, shared with `mlx_embed/worker.py` because these two
+engines produce vectors in the SAME SPACE and must refuse and shape a request
+identically.
 """
 
 import json
@@ -75,8 +77,8 @@ import worker_base  # noqa: E402 - the path insert above is what makes it import
 #: execution provider they are on. One per process.
 _loaded = {}
 
-#: SigLIP's own padding rule, and the same constant `torch_embed._TEXT_PADDING`
-#: and `mlx_embed.worker._TEXT_PADDING` name — a fact about how the checkpoint
+#: SigLIP's own padding rule, and the same constant
+#: `mlx_embed.worker._TEXT_PADDING` names — a fact about how the checkpoint
 #: was TRAINED, not about which engine is reading it. SigLIP was trained with
 #: every sequence padded to the tokenizer's max length rather than to the
 #: batch's longest; padding to the batch's longest still runs and still returns
@@ -193,8 +195,9 @@ def download(model_id):
 #: Execution providers this runner will use, best first, with the device string
 #: `/health` reports for each. Every folder's `onnxruntime` distribution
 #: registers exactly one accelerated provider (or none, for the CPU folder), so
-#: this one table serves all four and no folder needs a branch of its own —
-#: `torch_embed._placement`'s argument, in the vocabulary onnxruntime uses.
+#: this one table serves all four and no folder needs a branch of its own — the
+#: argument the withdrawn torch embedding runner made for its own single
+#: `_placement()`, in the vocabulary onnxruntime uses.
 #: `CPUExecutionProvider` is always present and always last, which is what makes
 #: the CPU folder's answer fall out of the same loop.
 _PROVIDERS = (
@@ -213,9 +216,9 @@ def _placement():
     because onnxruntime falls back per OPERATOR: a graph node an accelerated
     provider has no kernel for runs on the CPU instead of failing the session.
     So the chain is "the best provider available, then CPU", and `device` names
-    the head of it — the same "which device is serving" claim
-    `torch_embed._placement` makes, with the same caveat that it describes the
-    placement asked for.
+    the head of it — the same "which device is serving" claim every runner's
+    `/health` makes (`worker_base.STATE["device"]`), with the same caveat that it
+    describes the placement asked for rather than the kernel each operator got.
     """
     import onnxruntime
 
@@ -473,7 +476,7 @@ def _preprocess_images(paths):
     left to a default.
 
     Opened one at a time through `embed_common.open_image` rather than in a
-    comprehension inside the array build, exactly `torch_embed._image_vectors`'
+    comprehension inside the array build, for `mlx_embed.worker._image_vectors`'
     reason: a bad path in the middle of a batch names itself instead of
     surfacing as a PIL error with no filename attached.
     """
@@ -528,7 +531,7 @@ def main():
 
     A function rather than a `__main__` block because this file is imported, not
     run: the process the supervisor spawns is `<variant>/worker.py`, whose whole
-    body is a path insert and a call to this — see `torch_embed.main()`.
+    body is a path insert and a call to this — see `torch_image.main()`.
 
     No `memory=`: see the module docstring on why RSS is the honest answer for
     an onnxruntime session.

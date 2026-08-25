@@ -26,7 +26,7 @@
 #                   assumed because both are load-bearing.
 #   pillow          opens the image half of a request
 #                   (`embed_common.open_image`) — the same reason
-#                   `transformers_embed/pyproject.toml` declares it, so both
+#                   `onnx_embed/pyproject.toml` declares it, so both
 #                   folders can serve the identical `generate()` contract.
 #   huggingface_hub downloads
 #   psutil          the RSS half of "how much memory is this costing" — the

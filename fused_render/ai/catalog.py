@@ -766,44 +766,19 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "transcribes faster than real time.",
         },
     ],
-    # Embeddings, and the ONE capability here whose two backends read the same
-    # bytes — which is why `mlx-embed` has no list of its own and is aliased onto
-    # this one (`_SHARED_SUGGESTIONS`). `google/siglip2-*` publishes a single
-    # format: a `model.safetensors` beside a `"model_type": "siglip"` config.
-    # Transformers reads it, and mlx-embeddings' own SigLIP port reads the same
-    # file — there is no `mlx-community` re-upload to prefer and nothing to
-    # convert, so pointing both engines at the same repos is not a coincidence to
-    # be maintained by hand, it is the format rule this file is keyed on.
+    # Embeddings on MLX — the `google/siglip2-*` SAFETENSORS, which is a
+    # different download from the ONNX block below and not a second copy of it.
+    # These two repos were curated under the withdrawn `transformers-embed` row
+    # and moved here unchanged when it went: mlx-embeddings' own SigLIP port
+    # reads `model.safetensors` beside a `"model_type": "siglip"` config
+    # directly, so there is no `mlx-community` re-upload to prefer and nothing
+    # to convert.
     #
-    # Keyed under the TORCH row rather than the MLX one because this is the
-    # platform-agnostic backend: every machine can resolve here, and only Apple
-    # Silicon can resolve to the other.
-    #
-    # **Why these two and nothing else.** Smallest first, per the module rule,
-    # so the base model is what a bare `fused.ai.embed()` loads: 768 dimensions
-    # is a comfortable vector to keep a few thousand of in a page, and 1.5GB is
-    # the smallest download that gets a genuinely good multilingual encoder.
-    # The so400m is the accuracy option at three times the disk and three times
-    # the compute per item, and its 1152-dim vectors are a third more storage
-    # for whoever is keeping them.
-    #
-    # **`openai/clip-vit-base-patch32` is deliberately absent**, and it is the
-    # entry a future reader is most likely to try to add — it is the famous one,
-    # it is 512-dim, and the model itself is about 600MB. The repo is not:
-    # it ships TensorFlow, Flax and PyTorch-pickle copies of the same weights
-    # beside the safetensors, so the whole-repo download this app's
-    # `size_gb` rule measures (and `download_snapshot` actually performs) is
-    # 3.6GB — more than twice the SigLIP2 base for a weaker, English-only
-    # encoder. mlx-embeddings has no CLIP module either, so it would also be an
-    # entry that vanishes when a Mac switches engines. The torch runner still
-    # LOADS a CLIP repo a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
-    # this file is curation, and curating that download is a different question.
-    #
-    # Sizes are the Hub's per-file byte sums for the whole snapshot (2026-08-21),
-    # rounded to one decimal like every other list here. Both repos are ungated
-    # and Apache-2.0. **One line each**, per the rule the transformers text list
-    # states.
-    "transformers-embed": [
+    # `size_gb` is the WHOLE snapshot here, this file's ordinary convention —
+    # these repos publish one format, so the whole-repo pull IS the fetched set.
+    # (The ONNX block below documents why it has to deviate.) Hub per-file byte
+    # sums, 2026-08-21. Both ungated and Apache-2.0.
+    "mlx-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
             "params": "375M",
@@ -825,22 +800,30 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
-    # The SAME two checkpoints, re-exported for ONNX Runtime — `onnx-community`'s
-    # conversions of the two `google/siglip2-*` repos above, which is why the
-    # rows read almost identically. What differs is the ENGINE that opens them:
-    # `onnxruntime` is tens of megabytes where torch plus transformers is 0.2 GB
-    # on the CPU index and up to 5.9 GB on an accelerated one, for a workload
-    # that is one forward pass either way. A separate list rather than an alias
-    # onto the block above, per this file's keying rule: the two engines read
-    # DIFFERENT FILES out of these repos — `onnx/text_model.onnx` against
-    # `model.safetensors` — so an alias would offer each engine a repo it cannot
-    # open.
+    # Embeddings — `onnx-community`'s ONNX Runtime exports of the two
+    # `google/siglip2-*` checkpoints above. The safetensors were served here by
+    # three withdrawn `transformers-embed*` rows until this branch: a dual
+    # encoder is one forward pass over a short sequence or one image, so the
+    # compute was never the argument — the WHEEL was, at 0.2 GB on the CPU index
+    # and up to 5.9 GB on an accelerated one to run a model whose own weights
+    # are 1.5 GB, where `onnxruntime` is tens of megabytes.
+    #
+    # **Two embeddings blocks, and `mlx-embed` is no longer ALIASED onto this
+    # one.** It was, and correctly, while `google/siglip2-*` published a single
+    # format both engines read — one list served both by construction, and
+    # `_SHARED_SUGGESTIONS` carried the only cross-RUNNER alias in this file.
+    # An ONNX export ends that coincidence: mlx-embeddings cannot open a `.onnx`
+    # graph and `onnxruntime` cannot open MLX safetensors, so an alias would
+    # offer every Mac a download its engine has no reader for. The two engines
+    # still produce vectors in the SAME SPACE (`registry.py`'s comment on the
+    # `mlx-embed` row), which is why a page can switch between them — the space
+    # is shared, the files are not, and this file is keyed on the files.
     #
     # **`size_gb` here is the FETCHED file set, not the whole snapshot, and that
     # is a deliberate exception to this file's own convention.** Everywhere else
     # the figure is the Hub's per-file byte sum for the entire repo, because
     # that is what `download_snapshot` actually pulls — and the CLIP rejection
-    # note above rests on exactly that reading. These two repos break the
+    # note below rests on exactly that reading. These two repos break the
     # assumption behind it: they publish EIGHT quantizations of each tower side
     # by side, so the whole snapshot is 11.42 GB for the base export and 29.5 GB
     # for the so400m, none of which this app fetches.
@@ -851,13 +834,33 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   so400m:  1,796,589,568 vision + 2,968,151,040 text (0.6 MB of graph plus
     #            its external-data sidecar) + 34,362,880 tokenizer = 4.58 GB
     # Measured against the Hub's own per-file byte sums, 2026-08-25. That they
-    # round to the same 1.5/4.6 GB as the torch rows above is a coincidence
-    # worth stating rather than relying on: the ONNX export of a tower is a
-    # different file from its safetensors, and a future re-export could move
-    # either figure without moving the other.
+    # round to the same 1.5/4.6 GB the torch repos did is a coincidence worth
+    # stating rather than relying on: the ONNX export of a tower is a different
+    # file from its safetensors, and a future re-export could move either figure
+    # without moving the other. `tests/test_ai_onnx_embed_real_weights.py`
+    # asserts the on-disk total against these numbers on a machine that really
+    # downloaded one, which is the only place the pin can be checked.
     #
-    # Smallest first, per the module rule, so the base export is what a bare
-    # `fused.ai.embed()` loads on any machine that resolves to this engine.
+    # **Why these two and nothing else.** Smallest first, per the module rule,
+    # so the base export is what a bare `fused.ai.embed()` loads: 768 dimensions
+    # is a comfortable vector to keep a few thousand of in a page, and this is
+    # the smallest download that gets a genuinely good multilingual encoder. The
+    # so400m is the accuracy option at three times the disk and three times the
+    # compute per item, and its 1152-dim vectors are a third more storage for
+    # whoever is keeping them.
+    #
+    # **A CLIP export is deliberately absent**, and it is the entry a future
+    # reader is most likely to try to add — CLIP is the famous one and it is
+    # 512-dim. `onnx-community/clip-vit-base-patch32-ONNX` would even avoid the
+    # reason the torch curation refused `openai/clip-vit-base-patch32` (that
+    # repo ships TensorFlow, Flax and PyTorch-pickle copies beside the
+    # safetensors, so the whole-repo pull is 3.6 GB for a weaker, English-only
+    # encoder). What survives that change is the other half of the argument:
+    # mlx-embeddings has no CLIP module, so a curated CLIP is an entry that
+    # vanishes the moment a Mac switches engines. This runner still LOADS a
+    # `clip` export a user fetches themselves (`formats.EMBED_MODEL_TYPES`);
+    # this file is curation, and curating that download is a different question.
+    #
     # Both repos are ungated and Apache-2.0, like their upstreams. **One line
     # each**, per the rule the transformers text list states.
     "onnx-embed": [
@@ -985,11 +988,6 @@ _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
     "llamacpp-text-vulkan": "llamacpp-text",
-    # Hardware variants of `transformers-embed` — same repos, same format,
-    # different wheel — for the identical reason the Diffusers pair above is
-    # aliased rather than copied.
-    "transformers-embed-cuda": "transformers-embed",
-    "transformers-embed-rocm": "transformers-embed",
     # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
     # different execution provider — for the identical reason. The four ONNX
     # builds differ in which `onnxruntime*` distribution is installed and in
@@ -998,11 +996,13 @@ _SHARED_SUGGESTIONS = {
     "onnx-embed-directml": "onnx-embed",
     "onnx-embed-cuda": "onnx-embed",
     "onnx-embed-rocm": "onnx-embed",
-    # Not a hardware variant of the same runner — a DIFFERENT runner that reads
-    # the same repos (see the comment on the embeddings block above). Aliased
-    # for the same reason as the pairs above: one list to keep in step rather
-    # than two copies drifting apart.
-    "mlx-embed": "transformers-embed",
+    # **`mlx-embed` used to be aliased here and deliberately is not any more.**
+    # It was the one entry in this table that aliased a DIFFERENT RUNNER rather
+    # than a hardware variant, and it was correct while `google/siglip2-*`
+    # published one format that both the torch runner and mlx-embeddings read.
+    # `onnx-embed` reads a graph export instead, which MLX has no reader for, so
+    # the coincidence that justified the alias is gone — see the embeddings
+    # block above, and `test_ai_catalog_embeddings.py`, which pins the absence.
 }
 
 

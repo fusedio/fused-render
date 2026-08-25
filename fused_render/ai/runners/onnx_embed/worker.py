@@ -19,8 +19,8 @@ becomes the process that runs.
 Nothing here may grow a second line of behaviour. A provider order or a padding
 rule that lived in one of these shells would be a difference between variants
 that no test can see — the drift `runners/preview.py` documents at length, one
-level out, and the same rule `transformers_embed/worker.py` states for the torch
-family.
+level out, and the same rule `diffusers_image_cuda/worker.py` states at length
+for the image family.
 """
 
 import os

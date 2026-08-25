@@ -47,13 +47,12 @@ def test_embeddings_is_a_registered_capability():
 
 
 def test_the_embedding_runners_are_registered():
-    """Eight rows while both engine families are registered: MLX, the four ONNX
-    Runtime builds, and the three torch ones the ONNX family replaces. The torch
-    rows go in Stage 2, once the real-weights parity gate has run."""
+    """Five rows: MLX for the Macs, and the four ONNX Runtime builds. There were
+    three `transformers-embed*` rows here too until the parity gate
+    (`tests/test_ai_onnx_embed_real_weights.py`) showed the two engines produce
+    the same vectors; they went with the torch wheel they existed to install."""
     codes = {r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS}
     assert codes == {"mlx-embed",
-                     "transformers-embed", "transformers-embed-cuda",
-                     "transformers-embed-rocm",
                      "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
                      "onnx-embed-rocm"}
 
@@ -63,14 +62,15 @@ def test_mlx_embed_is_registered_before_every_other_embed_row():
     the table): MLX must come first so an Apple Silicon machine resolves there
     by default, exactly like text generation and image generation. Widened
     from asserting the two-row list verbatim to the property this test actually
-    cares about: MLX is first, ahead of every other build — and each family's
-    unaccelerated row is ahead of its own accelerated ones, which is what keeps
-    `auto` off a GPU.
+    cares about: MLX is first, ahead of every other build — and the
+    unaccelerated ONNX row is ahead of its own accelerated siblings, which is
+    what keeps `auto` off a GPU.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes[0] == "mlx-embed"
-    assert codes.index("transformers-embed") < codes.index("transformers-embed-cuda")
+    assert codes.index("onnx-embed") < codes.index("onnx-embed-directml")
     assert codes.index("onnx-embed") < codes.index("onnx-embed-cuda")
+    assert codes.index("onnx-embed") < codes.index("onnx-embed-rocm")
 
 
 def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
@@ -80,15 +80,6 @@ def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
     assert not _runner("mlx-embed").available().ok
     _mac_arm(monkeypatch)
     assert _runner("mlx-embed").available().ok
-
-
-def test_transformers_embed_runs_everywhere(monkeypatch):
-    """The platform-agnostic row — `_torch_platform`, the gate the withdrawn
-    `transformers-text` family used (D416), so wherever that CPU fallback ran,
-    embeddings does too."""
-    for setter in (_mac_arm, _windows, _linux):
-        setter(monkeypatch)
-        assert _runner("transformers-embed").available().ok
 
 
 def test_apple_silicon_resolves_to_mlx_embed(monkeypatch):
@@ -118,15 +109,13 @@ def test_onnx_embed_is_refused_on_intel_macos(monkeypatch):
     assert "Apple Silicon" in status.reason
 
 
-def test_windows_still_resolves_to_transformers_embed_until_stage_2(monkeypatch):
-    """The ONNX rows land BELOW the torch family and stay there until the
-    real-weights parity gate has run — see the table's own comment. So `auto` is
-    unchanged by their arrival, which is the point of registering them last:
-    nothing about how this app resolves today moves on the strength of an engine
-    whose vectors have not yet been compared."""
+def test_windows_resolves_to_onnx_embed(monkeypatch):
+    """Was `transformers-embed` until the torch family went. `onnx-embed` is now
+    the cross-platform row and the Apple-Silicon fallback, so this is the engine
+    every machine off a Mac resolves to with no preference set."""
     _windows(monkeypatch)
     resolved = registry.for_capability(registry.EMBEDDINGS)
-    assert resolved is not None and resolved.code == "transformers-embed"
+    assert resolved is not None and resolved.code == "onnx-embed"
 
 
 def test_directml_is_gated_to_windows_on_x86_64(monkeypatch):
@@ -155,27 +144,25 @@ def test_the_accelerated_onnx_rows_reuse_the_existing_hardware_probes():
 def test_the_embeddings_rows_are_ordered_with_auto_on_an_unaccelerated_row():
     """The decision this test used to pin — no accelerated embed variant,
     because a dual encoder is "too cheap to justify a second or third wheel"
-    — was DELIBERATELY REVERSED on this branch, not overlooked. The speed
-    argument for the TEXT tower still holds (one short sequence, milliseconds
-    on a CPU), but an image tower run at `embed_common.MAX_ITEMS` (64) items
-    per call is real work a GPU meaningfully speeds up, and a machine that
-    already has a working NVIDIA or fully ROCm-capable AMD card was otherwise
-    stuck running every one of those batches in fp32 on the CPU with no way to
-    opt out. `transformers-embed-cuda`/`-rocm` are that opt-in, gated on the
-    same `_cuda`/`_rocm` probes `diffusers-image-cuda`/`-rocm` use.
+    — was DELIBERATELY REVERSED, not overlooked. The speed argument for the TEXT
+    tower still holds (one short sequence, milliseconds on a CPU), but an image
+    tower run at `embed_common.MAX_ITEMS` (64) items per call is real work a GPU
+    meaningfully speeds up, and a machine that already has a working NVIDIA or
+    fully ROCm-capable AMD card was otherwise stuck running every one of those
+    batches in fp32 on the CPU with no way to opt out.
 
-    The ONNX family that replaces them repeats that shape exactly —
-    `onnx-embed` then DirectML, CUDA and ROCm — and lands BELOW the whole torch
-    family, so `auto` resolves to an UNACCELERATED torch row on every
+    Those rows were `transformers-embed-cuda`/`-rocm`; they are now
+    `onnx-embed-directml`/`-cuda`/`-rocm`, gated on `_directml` and on the same
+    `_cuda`/`_rocm` probes `diffusers-image-cuda`/`-rocm` use. All three sit
+    BELOW `onnx-embed`, so `auto` resolves to an unaccelerated row on every
     platform (`test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_rows`
-    in `test_ai_runtime.py` pins that through platform mocks; this test pins
-    only the static ordering). DirectML leads the accelerated three because it
-    is the only one of them Windows can take.
+    in `test_ai_runtime.py` pins that through platform mocks; this test pins only
+    the static ordering). DirectML leads the three because it is the only one of
+    them Windows can take.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
         "mlx-embed",
-        "transformers-embed", "transformers-embed-cuda", "transformers-embed-rocm",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
     ]
 

@@ -3,16 +3,17 @@ and `embed_common` together, not what `test_ai_embed_common.py` already covers
 on its own.
 
 Targets `runners/onnx_embed.py` directly, not any of the four folders'
-`worker.py` shells — the same choice `tests/test_ai_transformers_embed_worker.py`
-makes for `torch_embed.py`, and for the identical reason: `onnx_embed/`,
+`worker.py` shells — the same choice `tests/test_ai_diffusers_worker.py` makes
+for `torch_image.py`, and for the identical reason: `onnx_embed/`,
 `onnx_embed_directml/`, `onnx_embed_cuda/` and `onnx_embed_rocm/` each hold a
 five-line shell that imports this file, so testing a shell would test four
 copies of the same five lines rather than the runner itself.
 
-Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as the torch
-sibling does it: the runner finds its base off `sys.path` in an interpreter of
-its own, so importing it the packaged way (`fused_render.ai.runners.…`) would be
-testing an import that never ships. `embed_common` is NOT stubbed — it is
+Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
+`tests/test_ai_transformers_worker.py` does it: the runner finds its base off
+`sys.path` in an interpreter of its own, so importing it the packaged way
+(`fused_render.ai.runners.…`) would be testing an import that never ships.
+`embed_common` is NOT stubbed — it is
 stdlib-plus-PIL and both are really installed here, so the runner's own
 `sys.path.insert` reaches the real file, exactly as it does in production.
 `numpy` is not stubbed either, for a stronger reason: the preprocessing and the

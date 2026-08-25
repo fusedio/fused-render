@@ -368,7 +368,7 @@ def _bench_job_title(model: str) -> str:
 #: `llama_text.py` (llamacpp-text/-vulkan) and `mlx_text/worker.py` check it
 #: between tokens, `torch_image.py` checks it in its per-step callback, and
 #: `faster_whisper`/`mlx_whisper` check it in their segment loop. The embedding
-#: runners (`mlx_embed`, `transformers_embed`) make ONE blocking
+#: runners (`mlx_embed`, `onnx_embed`) make ONE blocking
 #: `model.encode()` call with no callback to check anything from — a cancel
 #: request against one would sit unread until the call returns on its own,
 #: complete normally, and get recorded as `ok:true` for a run somebody tried to
