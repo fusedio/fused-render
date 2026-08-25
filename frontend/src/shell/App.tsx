@@ -26,6 +26,7 @@ import { maybeAutoStartTour } from "@platform/lib/tour";
 import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
+import { slugFromAppPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -56,6 +57,7 @@ const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
 const AiModels = lazy(() => import("@apps/ai_models").then((m) => ({ default: m.AiModels })));
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
@@ -558,10 +560,16 @@ export default function App({ config }: { config: Config }) {
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
   // hop the route had to hold a blank frame for. Both are gone with the route:
   // an app folder is an ordinary fs path, which /explorer/view/<path> already
-  // carries with no lookup at all. Anything under /apps that isn't the hub falls
-  // through to the "Unrecognized URL" branch below, deliberately unredirected.
+  // carries with no lookup at all. That two-level shape still falls through to
+  // the "Unrecognized URL" branch below, deliberately unredirected.
+  //
+  // ONE level under the hub is the app PAGE (D488, shell/AppPage.tsx):
+  // `/apps/<slug>` is <fused_dir>/local/<slug> as a place — the app running in
+  // an Overview tab, its tasks in a Tasks tab. Asked through the lib's own
+  // codec, which is also the validation (no `..`, no separator, one segment).
+  const appPageSlug = slugFromAppPath(pathname);
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
+    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || appPageSlug !== null || isExplorerHome || isHome || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
@@ -585,6 +593,8 @@ export default function App({ config }: { config: Config }) {
                 ? "AI Models"
                 : isApps
                 ? "Apps"
+                : appPageSlug
+                ? appPageSlug
                 : isHome
                   ? "Home"
                 : isExplorerHome
@@ -749,6 +759,19 @@ export default function App({ config }: { config: Config }) {
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
           <Apps config={config} />
+        </Suspense>
+      </div>
+    );
+  } else if (appPageSlug !== null) {
+    // The app page (D488): the app live in an Overview frame, its tasks in a
+    // Tasks tab. Keyed on the SLUG, not the epoch (the CanvasWorkspace
+    // exception): the tab is a URL param, so switching it is a navigation, and
+    // a remount would reload the running app to change tabs. A different slug
+    // still mounts fresh.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <AppPage key={appPageSlug} slug={appPageSlug} config={config} />
         </Suspense>
       </div>
     );

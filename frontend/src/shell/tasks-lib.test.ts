@@ -6167,7 +6167,10 @@ describe("the tasks toolbar", () => {
     // (2026-08-20), which is a no-op for List and Board and drops the dead
     // Archive facet only when the calendar is the active view. See the
     // "the calendar's Archive facet" describe block below for the semantics.
-    expect(PAGE).toContain("filterTasks(tasks, filtersForView(filters, view))");
+    // `inScope` since D488: the app page mounts this page narrowed to one folder,
+    // and the scope is applied BEFORE these filters (`tasks` unscoped = what
+    // publishTasks hands the sidebar).
+    expect(PAGE).toContain("filterTasks(inScope, filtersForView(filters, view))");
     expect(PAGE).toContain("<TaskBoard tasks={shown}");
   });
 
