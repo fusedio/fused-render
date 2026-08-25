@@ -16,6 +16,7 @@ import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -219,11 +220,12 @@ function PreferencesPopover({
             role="menuitem"
             className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
             onClick={(e) => {
-              // preventDefault + navigateUrl keeps left-click on the SPA's own
-              // history-pushState navigation; the real href is what lets the
-              // browser handle middle-click/ctrl-click "open in new tab" and
-              // right-click "copy link" natively, same as NavItem/rail items
-              // (SidebarFrame.tsx) do for the primary nav rows.
+              // A plain left click is the SPA's — hijack it into the same
+              // history-pushState navigation the rest of the shell uses.
+              // Anything the browser already owns (middle-click, ctrl/cmd/
+              // shift/alt-click) is left alone so "open in new tab" and
+              // friends work on the real href (see appEntry.isBrowserHandledClick).
+              if (isBrowserHandledClick(e)) return;
               e.preventDefault();
               onClose();
               navigateUrl(entry.href);
