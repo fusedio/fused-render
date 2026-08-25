@@ -205,6 +205,19 @@ const KINDS = [
     title: "Prefix these as DOCUMENTS — the things you are searching THROUGH" },
 ];
 
+/** The last segment of a path, on either separator.
+ *
+ * `pickFile` hands back a NATIVE path, so a Windows `C:\\photos\\cat.png` split
+ * on "/" alone has no separator to find and the whole string becomes the
+ * "name" — the full drive path rendered as a filename in the corpus list and in
+ * every ranked row. Both separators, because this string's shape depends on the
+ * reader's OS and not on anything this component controls.
+ */
+function basename(path: string): string {
+  const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return (at >= 0 ? path.slice(at + 1) : path) || path;
+}
+
 interface Ranked {
   text: string;
   score: number;
@@ -247,6 +260,23 @@ export function EmbedStage({
   const [pictures, setPictures] = useState<string[]>([]);
   const [rankedPictures, setRankedPictures] = useState<RankedPicture[] | null>(null);
   const [attaching, setAttaching] = useState(false);
+
+  // **Which model produced the scores currently on screen — recorded at the run,
+  // not read live.** `model` is the SIDEBAR's selection and changes the instant
+  // the reader picks another one, while the results below are still the old
+  // model's. Rendering `model` beside them would label a list with the name of
+  // something that did not compute it, which is worse than saying nothing: this
+  // stage is where a person watches scores change and forms a belief about what
+  // a model does.
+  //
+  // It matters here more than the shape suggests. Two models on ONE engine's
+  // list can share a dimension — `nomic-embed-text-v1.5` and the SigLIP2 base
+  // export are both 768 — so switching models produces vectors that are the same
+  // size, in a different space, with no error anywhere. The scores just quietly
+  // stop meaning what they meant. `SKILL.md`'s "Store the model beside the
+  // vectors" is that rule for a page that persists them; this is the same rule
+  // for a surface that displays them.
+  const [vectorModel, setVectorModel] = useState<string | null>(null);
 
   // The run itself is one quick POST, but the cold-start watch loop is not —
   // leaving the stage must stop it, same as the chat stage's rule.
@@ -298,6 +328,10 @@ export function EmbedStage({
       }));
       scored.sort((a, b) => b.score - a.score);
       setRanked(scored);
+      // `result.model` — what the SERVER says it used, not what was asked for. A
+      // bare call takes the capability's default, so the request's own `model` is
+      // not always the answer.
+      setVectorModel(result.model ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -367,7 +401,7 @@ export function EmbedStage({
       const queryVector = phrase.vectors[0] ?? [];
       const scored = pictures.map((path, at) => ({
         path,
-        name: path.split("/").pop() || path,
+        name: basename(path),
         score: (images.vectors[at] || []).reduce(
           (sum, value, dim) => sum + value * (queryVector[dim] ?? 0),
           0,
@@ -375,6 +409,7 @@ export function EmbedStage({
       }));
       scored.sort((a, b) => b.score - a.score);
       setRankedPictures(scored);
+      setVectorModel(images.model ?? model);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -480,7 +515,7 @@ export function EmbedStage({
               {pictures.map((path) => (
                 <div key={path} className="pg-embed-picture-row">
                   <span className="pg-embed-picture-name" title={path}>
-                    {path.split("/").pop() || path}
+                    {basename(path)}
                   </span>
                   <button
                     type="button"
@@ -538,7 +573,17 @@ export function EmbedStage({
         {pictureMode ? (
           rankedPictures && !busy ? (
             <div className="pg-answer-block">
-              <p className="pg-answer-label">Ranked by meaning</p>
+              <p className="pg-answer-label">
+                Ranked by meaning
+                {vectorModel && (
+                  <span className="pg-answer-provenance" title={
+                    `These scores were computed by ${vectorModel}. Vectors from two `
+                    + `models are not comparable, even when they are the same size.`}
+                  >
+                    {vectorModel}
+                  </span>
+                )}
+              </p>
               <ol className="pg-embed-results pg-embed-thumbs">
                 {rankedPictures.map((row) => (
                   <li
@@ -574,7 +619,17 @@ export function EmbedStage({
           )
         ) : ranked && !busy ? (
           <div className="pg-answer-block">
-            <p className="pg-answer-label">Ranked by meaning</p>
+            <p className="pg-answer-label">
+              Ranked by meaning
+              {vectorModel && (
+                <span className="pg-answer-provenance" title={
+                  `These scores were computed by ${vectorModel}. Vectors from two `
+                  + `models are not comparable, even when they are the same size.`}
+                >
+                  {vectorModel}
+                </span>
+              )}
+            </p>
             <ol className="pg-embed-results">
               {ranked.map((row, at) => (
                 <li

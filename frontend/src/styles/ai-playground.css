@@ -1430,6 +1430,28 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--fg-muted);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* Which model produced the scores beneath this label. Same weight and hue as
+   `.pg-audio-name`, the sibling stage's metadata line, rather than a new
+   treatment — it is the same kind of fact (what the model was given / what the
+   model was) and should not read as louder than the label it qualifies.
+   `min-width: 0` plus the ellipsis because a repo id is long and must not push
+   the label off its own row. */
+.pg-answer-provenance {
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  opacity: 0.75;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The same block, before anything has run: the result canvas idle (ResultSlot

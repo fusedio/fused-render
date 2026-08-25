@@ -63,6 +63,47 @@ Defaults: model `claude-haiku-4-5-20251001` (or the user's configured default); 
 
 `onChunk(text)` opts into streaming: it fires per delta and the promise **still resolves with the same `{text, model, usage}`**. Both destinations stream.
 
+### Store the model beside the vectors
+
+`embed` returns the `model` it actually used. **Persist it with anything you
+persist the vectors in, and treat a query embedded under a different model as
+invalid** — not as a result to rank, as a bug to refuse.
+
+```js
+const { vectors, dim, model } = await fused.ai.embed({ texts: chunks, kind: "document" });
+await fused.writeFile("index.json", JSON.stringify({ model, dim, vectors }));
+
+// …and at query time
+const index = JSON.parse(await fused.readFile("index.json"));
+const q = await fused.ai.embed({ texts: [question], kind: "query" });
+if (q.model !== index.model) throw new Error(
+  `index was built with ${index.model}, cannot search it with ${q.model}`);
+```
+
+Two models produce two different spaces. A cosine between them is not a low
+score, it is a meaningless number — and it will not look like one, because
+nearest neighbours come back ranked and plausible.
+
+**A dimension check does NOT catch this, and that is the whole point.** The
+dangerous case is same-dim, and it is the common one — both of these pairs are
+768:
+
+| Engine | These two models are both 768-dim |
+|---|---|
+| `onnx-embed` | `nomic-ai/nomic-embed-text-v1.5` and `onnx-community/siglip2-base-patch16-384-ONNX` |
+| `mlx-embed` | `mlx-community/nomicai-modernbert-embed-base-bf16` and `google/siglip2-base-patch16-384` |
+
+Index with one, switch models, query with the other: **same engine, same machine,
+same `dim`, no error, wrong neighbours.** So `dim` is a sanity check on your own
+storage, never a provenance check — the two so400m rows happening to be 1152
+against 768 is luck, not protection.
+
+This is the `kind` failure one level up. There, using the wrong prefix costs
+recall silently; here, using the wrong model costs the answer entirely, just as
+silently. Both are invisible to the endpoint, which sees one call and cannot know
+what your index was built with — which is exactly why the field is returned to
+you rather than checked for you.
+
 ### Rejections
 
 Every rejection is an `Error` with `.type`, and `err.jobId` is set on any rejection that had a row:

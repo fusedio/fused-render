@@ -118,3 +118,51 @@ describe("the capability dispatch is untouched", () => {
     expect(stage.slice(0, 400)).toContain("entry={selected.model}");
   });
 });
+
+describe("the displayed scores say which model produced them", () => {
+  // Same source-text approach as everything above, and for a sharper version of
+  // the same reason: what is being pinned is that the label reads RECORDED
+  // state, not the live selection. A render test could show the right string
+  // while reading the wrong variable, because on first run the two agree.
+
+  it("records the model at the run instead of rendering the live selection", () => {
+    // `model` is the sidebar's choice and changes the moment the reader picks
+    // another one, while the results on screen are still the previous model's.
+    // A label reading `model` would therefore name something that did not
+    // compute the scores beneath it.
+    expect(STAGE).toContain("const [vectorModel, setVectorModel]");
+    expect(STAGE).toContain("setVectorModel(result.model ?? model)");
+    expect(STAGE).toContain("setVectorModel(images.model ?? model)");
+    // The label renders the recorded value, never the prop.
+    expect(STAGE).toContain("{vectorModel}");
+    expect(STAGE).not.toContain('pg-answer-provenance">\n                    {model}');
+  });
+
+  it("prefers the SERVER's answer over the requested id", () => {
+    // A bare call takes the capability's default, so the request's own `model`
+    // is not always what ran. `result.model` first, the prop only as the
+    // older-server fallback.
+    const setters = STAGE.match(/setVectorModel\([^)]*\)/g) ?? [];
+    expect(setters.length).toBe(2);
+    for (const setter of setters) expect(setter).toContain(".model ??");
+  });
+
+  it("both result surfaces carry it, texts and pictures alike", () => {
+    // Two `pg-answer-block`s, two labels — the picture mode is where a model
+    // switch is most tempting, since the corpus stays put.
+    const labels = STAGE.match(/pg-answer-provenance/g) ?? [];
+    expect(labels.length).toBe(2);
+  });
+});
+
+describe("a picture's display name survives a native path", () => {
+  it("splits on both separators, not just the POSIX one", () => {
+    // `pickFile` returns a NATIVE path, so on Windows `C:\\photos\\cat.png` has no
+    // "/" to find and the whole drive path became the "name" — in the corpus
+    // list and in every ranked row.
+    expect(STAGE).toContain("function basename(");
+    expect(STAGE).toContain('path.lastIndexOf("\\\\")');
+    // …and no caller left on the old one-separator split.
+    expect(STAGE).not.toContain('path.split("/").pop()');
+  });
+});
