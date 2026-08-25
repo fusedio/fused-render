@@ -57,13 +57,16 @@ const CLAUDE_CONFIG_ICON = (
 // sessions.. let's remove this we don't need this") — Tasks supersedes it, and
 // a route nothing links to is a page nobody maintains.
 
-// Stacked disks — the AI Models entry is an inventory of what the Hugging
-// Face cache is storing on this machine, so it reads as storage, not as a chip.
+// A processor die with its pins (ionicons' hardware-chip-outline): the AI
+// Models entry is about what this machine can RUN, not about the bytes the
+// Hugging Face cache is parking on disk — the stacked-disks storage icon it
+// replaces read as the latter. Three pins a side, not ionicons' four: at 16px
+// the fourth pair closes the gap into a smudge.
 const AI_MODELS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <ellipse cx="12" cy="5" rx="8" ry="3" />
-    <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-    <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="5" y="5" width="14" height="14" rx="3" />
+    <rect x="9" y="9" width="6" height="6" rx="1" />
+    <path d="M8.5 5V2.5M12 5V2.5M15.5 5V2.5M8.5 19v2.5M12 19v2.5M15.5 19v2.5M5 8.5H2.5M5 12H2.5M5 15.5H2.5M19 8.5h2.5M19 12h2.5M19 15.5h2.5" />
   </svg>
 );
 
