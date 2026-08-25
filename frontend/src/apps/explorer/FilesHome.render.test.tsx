@@ -351,3 +351,60 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 });
+
+/** Whether the AI row's `<kbd>↵</kbd>` Enter-affordance is on screen. Scoped
+ * to `.fh-ai-hint` specifically — the page has other `<kbd>`s (the open-row
+ * hint, the "↑↓ to pick" caption) that a bare `n.type === "kbd"` search would
+ * also match. */
+function hasAiEnterHint(box: { renderer: ReactTestRenderer }): boolean {
+  const hint = box.renderer.root.findByProps({ className: "fh-ai-hint" });
+  return hint.findAll((n) => n.type === "kbd").length > 0;
+}
+
+function pressArrow(box: { input: () => any }, dir: "down" | "up"): Promise<void> {
+  return flush(() =>
+    box.input().props.onKeyDown({
+      key: dir === "down" ? "ArrowDown" : "ArrowUp",
+      preventDefault: () => {},
+    }),
+  );
+}
+
+describe("the AI row's ↵ hint only claims Enter when Enter runs it", () => {
+  // The badge is the strongest affordance in the row; it used to render
+  // unconditionally whenever the row wasn't `running`, including while the
+  // top FILE hit — not the AI row — was what Enter would actually commit.
+  test("absent with file hits showing and the AI row not highlighted", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() =>
+      rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })),
+    );
+    // The top file row pre-selects (the highlight fix); the AI row is on
+    // screen but not the active one, so its Enter hint must not be.
+    expect(hasAiEnterHint(box)).toBe(false);
+    box.unmount();
+  });
+
+  test("appears once the highlight reaches the AI row", async () => {
+    const box = mount();
+    await type(box, "readme");
+    await flush(() =>
+      rankCalls[0].resolve(answer({ hits: [hit("readme.md")], total: 1 })),
+    );
+    expect(hasAiEnterHint(box)).toBe(false);
+    await pressArrow(box, "down"); // file row 0 -> the AI row (a one-hit list)
+    expect(hasAiEnterHint(box)).toBe(true);
+    box.unmount();
+  });
+
+  test("present in the settled-zero-hit case, where the AI row pre-selects", async () => {
+    const box = mount();
+    await type(box, "zzzqqqnomatch");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [], total: 0 })));
+    // No file hits and settled: activeRow pre-selects the AI row unprompted,
+    // so its hint should already show without pressing a key.
+    expect(hasAiEnterHint(box)).toBe(true);
+    box.unmount();
+  });
+});

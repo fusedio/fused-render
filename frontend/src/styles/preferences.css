@@ -668,9 +668,19 @@
 
 /* The `↵` hint — its own column, not `.fh-result-meta` (the file rows'
    size/date column): aligning it with the dates above claimed it was more
-   metadata about a hit, when it is the key that runs the action. */
+   metadata about a hit, when it is the key that runs the action WHEN THE ROW
+   IS SELECTED — with file hits on screen Enter opens the top hit instead, so
+   the badge only renders while `active` (FilesHome.tsx's AiActionRow).
+
+   A fixed width (sized to "Asking…", the widest of the three states this
+   span cycles through — the badge, that text, or nothing while unselected)
+   keeps the row's columns from reflowing as the highlight moves onto or off
+   it; `text-align: right` keeps the badge and the text sharing the same
+   right edge the way the empty state's blank column implicitly does. */
 .fh-ai-hint {
   flex: none;
+  width: 52px;
+  text-align: right;
   font-size: 11.5px;
   color: var(--fg-muted);
 }

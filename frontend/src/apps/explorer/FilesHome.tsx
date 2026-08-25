@@ -260,8 +260,16 @@ function AiActionRow({
         </span>
         <span className="fh-result-name">Search with AI</span>
         <span className="fh-ai-query">“{query}”</span>
+        {/* The badge only claims Enter when Enter actually runs THIS row.
+            `activeRow` pre-selects the AI row exactly when it is the only
+            content on screen (settled, zero file hits) — every other time
+            Enter opens the top file hit instead, and showing `↵` here would
+            be the strongest affordance in the row pointing the wrong way.
+            The span stays in the layout (not conditionally rendered) even
+            empty, so the row's columns do not reflow as the highlight moves
+            onto or off it. */}
         <span className="fh-ai-hint">
-          {running ? "Asking…" : <kbd>↵</kbd>}
+          {running ? "Asking…" : active ? <kbd>↵</kbd> : null}
         </span>
       </button>
     </li>
