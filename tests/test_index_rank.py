@@ -82,3 +82,38 @@ def test_the_span_bound_refuses_a_whole_path_smear():
 def test_hidden_entries_need_a_dot_leading_query_segment():
     assert ".env" not in [h["rel"] for h in rank_entries("env", FIXTURE["entries"])]
     assert ".env" in [h["rel"] for h in rank_entries(".env", FIXTURE["entries"])]
+
+
+def _rels(query, entries):
+    return [h["rel"] for h in rank_entries(query, [{"rel": r} for r in entries])]
+
+
+def test_a_shallow_name_match_beats_a_deep_ancestor_only_match():
+    """A vague query where the deep candidate's own name doesn't match at all
+    (tier 3) must not beat a shallow candidate whose name matches, even
+    fuzzily (tier 2) — this is `tier` doing its job, not the depth penalty,
+    but it's the floor the penalty is layered on top of."""
+    deep = "a/b/c/d/e/f/g/h/notes.txt"
+    shallow = "cfg-manager.txt"
+    assert _rels("cfg", [deep, shallow])[0] == shallow
+
+
+def test_a_deep_scattered_ancestor_only_match_no_longer_wins_on_score_alone():
+    """The reported bug: a vague query where NOBODY's own name matches (tier 3
+    for everyone), so the sort falls through to raw score — where a long
+    ancestor chain simply offers more +5 segment-start bonuses than a short
+    one, independent of relevance. Same tier, same longest_run (a scattered
+    subsequence for both), so this is decided by score/depth alone — exactly
+    the case DEPTH_PENALTY exists for. Mirrors search.test.ts's identical
+    case, which is where this pair was found."""
+    deep = ("src/chat/ChatInterface/components/MessageList/components/"
+            "MessageScrollbackRail/index.ts")
+    shallow = "cache-config/comp/widget.ts"
+    assert _rels("cccm", [deep, shallow])[0] == shallow
+
+
+def test_a_deep_exact_name_match_still_wins_over_a_shallow_fuzzy_one():
+    """The penalty must not swamp the +100 exact-name bonus."""
+    deep = "a/b/c/d/e/f/g/h/exact-match.txt"
+    shallow = "s/fuzzy-only.txt"
+    assert _rels("exact-match.txt", [shallow, deep])[0] == deep
