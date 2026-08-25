@@ -41,14 +41,18 @@ import { fuzzyMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
-// interesting: "Search with AI" is the LAST row of this list, so any cap that
-// overflows the viewport hides the one action a user who isn't finding their file
-// needs — at 40 it sat two screens down, reachable only by scrolling past the
-// results that had already failed them. Ten rows plus the AI row fit a laptop
-// screen. Ranking still runs over the whole corpus (the note below owns up to
-// what is not shown); past ten rows the useful move is a better query or the AI
-// row, not more scrolling.
-export const HOME_RESULT_CAP = 10;
+// interesting: at 40 "Search with AI" — the LAST row of this list, and the one
+// action a user who isn't finding their file needs — sat two screens down,
+// reachable only by scrolling past results that had already failed them.
+// Twenty rows go below the fold on their own, which is why the AI row is now a
+// STICKY footer (`.fh-ai-row`, preferences.css — `position: sticky; bottom: 0`
+// over a scrolling `.fh-results`) instead of a row that scrolls away with the
+// rest of the list: the row is always reachable without scrolling, which is
+// the guarantee this constant originally existed to protect, at four times the
+// cap it was first sized for. Ranking still runs over the whole corpus (the
+// note below owns up to what is not shown); past twenty rows the useful move
+// is a better query or the AI row, not more scrolling.
+export const HOME_RESULT_CAP = 20;
 
 // Below this many characters, a query is not sent at all. One or two letters
 // match almost every file in a home tree — a substring-pass candidate cap gets

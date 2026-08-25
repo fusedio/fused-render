@@ -485,14 +485,23 @@
 }
 
 /* Search results: a flat scannable list (relevance order), not the launcher
-   card grid — icon, name, path, then size/date pushed to the right edge. */
+   card grid — icon, name, path, then size/date pushed to the right edge.
+
+   HOME_RESULT_CAP (home-search.ts) is 20, which does not fit a laptop
+   viewport on its own — so the list SCROLLS internally rather than pushing
+   the AI row below the fold: `max-height` bounds it to comfortably fewer than
+   20 rows, and `.fh-ai-row`'s `position: sticky; bottom: 0` keeps the action
+   in view regardless of how far the file rows scroll underneath it. Without
+   the max-height the sticky row would simply sit at the end of a tall list,
+   never actually needing to stick. */
 .fh-results {
   list-style: none;
   margin: 0;
   padding: 0;
+  max-height: 440px;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
 }
 
 .fh-results li + li {
@@ -571,16 +580,35 @@
 
 /* -- the AI action row -------------------------------------------------------
    The last row in the list is not a file: it costs a model call and a wait, so
-   it reads as an action — accent glyph, accent label, a faint accent wash — and
-   never like the hits above it. On a zero-hit query it is the only row, and
-   FilesHome pre-selects it. */
-.fh-ai-row {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
-}
+   it reads as an action — accent glyph, accent label — and never like the hits
+   above it. On a zero-hit query it is the only row, and FilesHome pre-selects
+   it.
 
-.fh-ai-row:hover,
-.fh-ai-row.is-active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+   It used to ALSO carry a faint accent background wash at rest, which is what
+   made it look like a second selected row: a background wash is this app's
+   existing signal for "the keyboard is here" (`.fh-result:hover,
+   .fh-result.is-active` below), and painting a resting row with one made a
+   hovered file row and the untouched AI row read as the same gesture at
+   different tints. The wash is gone; selection now means exactly one thing
+   across the whole list, and this row leans on the glyph/label/rule instead —
+   which does the "this is an action, not a hit" job without competing with
+   selection for the same visual channel.
+
+   Structural separation instead: a rule ABOVE it (border-top) says "the
+   results end here, this is something else", and STICKY positioning
+   (`.fh-results`'s max-height/overflow-y above) keeps it reachable at the
+   bottom of the viewport regardless of how many file rows scroll past above
+   it — the fix for both this row reading as a stray selection and for it
+   sliding below the fold at HOME_RESULT_CAP=20. `background: var(--bg)` here
+   is not a selection tint — it is an opaque backdrop so scrolling rows
+   disappear cleanly UNDER a sticky element instead of showing through it. */
+.fh-ai-row {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
 .fh-ai-row .fh-result-name {
@@ -595,12 +623,36 @@
   cursor: default;
 }
 
-.fh-ai-row .fh-result-meta kbd {
+/* The query echo — its own column, not `.fh-result-path` (the file rows' PATH
+   column): "parquet" is not a filesystem path, and sharing the class made it
+   read as one. Muted and quoted rather than the path's plain-text treatment,
+   so it reads as an ECHO of what was typed. */
+.fh-ai-query {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* The `↵` hint — its own column, not `.fh-result-meta` (the file rows'
+   size/date column): aligning it with the dates above claimed it was more
+   metadata about a hit, when it is the key that runs the action. */
+.fh-ai-hint {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.fh-ai-hint kbd {
   font: inherit;
   padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg);
+  background: var(--bg-alt);
 }
 
 /* The AI badge on the spec echo above AI results — the results on screen came

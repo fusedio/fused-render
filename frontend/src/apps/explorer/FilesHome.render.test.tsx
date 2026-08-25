@@ -52,21 +52,6 @@ const { FilesSearch } = await import("@apps/explorer/FilesHome");
 
 const HOME = "/Users/me";
 
-function answer(over: Partial<IndexRankResult> = {}): IndexRankResult {
-  return {
-    covered: true,
-    fresh: true,
-    reason: "",
-    root: HOME,
-    hits: [],
-    truncated: false,
-    total: 0,
-    updated: 1,
-    age_s: 1,
-    ...over,
-  };
-}
-
 const clock = new Clock();
 
 beforeEach(() => {

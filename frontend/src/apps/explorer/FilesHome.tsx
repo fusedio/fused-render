@@ -179,6 +179,14 @@ function FileRow({
 // it (accent glyph, no path, no size) because activating it costs a model call
 // and a wait, and because on a zero-hit query it is the only thing on screen.
 //
+// It does NOT reuse `.fh-result-path` / `.fh-result-meta` for the query echo
+// and the `↵` hint, even though it reuses `.fh-result`/`.fh-result-name` for
+// layout: those two classes are the file rows' PATH and DATE/SIZE columns, and
+// borrowing them here made the query — "parquet" — land in the same visual
+// column as a file's `~/Work/...` path, and the `↵` align with a date. Nothing
+// about this row is a file, so it gets its own two classes instead
+// (`.fh-ai-query`, `.fh-ai-hint`; preferences.css).
+//
 // Deliberately NOT hoverable, unlike the file rows: setting the highlight on
 // mousemove meant nudging the pointer across the list armed Enter to spend a
 // model call. A pointer merely crossing a row must not arm a paid action —
@@ -208,8 +216,8 @@ function AiActionRow({
           <SparkIcon />
         </span>
         <span className="fh-result-name">Search with AI</span>
-        <span className="fh-result-path">“{query}”</span>
-        <span className="fh-result-meta">
+        <span className="fh-ai-query">“{query}”</span>
+        <span className="fh-ai-hint">
           {running ? "Asking…" : <kbd>↵</kbd>}
         </span>
       </button>
