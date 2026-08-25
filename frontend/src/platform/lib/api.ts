@@ -235,9 +235,12 @@ export interface UpdateStatus {
   // dmg: the app downloads and swaps its own bundle; none: not updatable.
   method: string;
   latest_version: string | null;
-  // Bytes downloaded so far (dmg method only) — the manifest carries no total
-  // size, so the UI shows MB downloaded rather than a percentage.
+  // Bytes downloaded so far (dmg method only).
   progress: number | null;
+  // Total bytes to download, from the download response's Content-Length —
+  // the manifest itself carries no size field. Null when the CDN omits that
+  // header, in which case the UI falls back to showing MB downloaded.
+  progress_total: number | null;
   error: string | null;
   // Set when the user must run the update themselves (brew-managed installs,
   // state "available") — shown with a copy button.

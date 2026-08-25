@@ -18,9 +18,10 @@ import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
 
-function formatMb(bytes: number | null): string {
-  if (!bytes) return "";
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
+function formatProgress(done: number | null, total: number | null): string {
+  if (total) return `${Math.min(100, Math.round((100 * (done ?? 0)) / total))}%`;
+  if (!done) return "";
+  return `${Math.round(done / (1024 * 1024))} MB`;
 }
 
 export default function UpdateBadge() {
@@ -142,7 +143,7 @@ export default function UpdateBadge() {
           )}
           {status.state === "installing" && (
             <div className="update-badge-text">
-              Downloading… {formatMb(status.progress)}
+              Downloading… {formatProgress(status.progress, status.progress_total)}
             </div>
           )}
           {status.state === "error" && (
