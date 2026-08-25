@@ -272,7 +272,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     full = _tasks(client)
     pulse = _pulse(client)
 
-    pulse_fields = ("key", "status", "unread", "last_active")
+    # `project` rides along for the sidebar's Current apps section (D487) —
+    # the one listing fact that reader needs beyond the status summary.
+    pulse_fields = ("key", "status", "unread", "last_active", "project")
     assert pulse == [
         {field: row[field] for field in pulse_fields}
         for row in full

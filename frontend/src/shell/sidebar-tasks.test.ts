@@ -209,7 +209,9 @@ describe("one poll behind both readers", () => {
     // stops with the last, like aiRuntime's.
     expect(STORE).toContain("listeners.add(setCurrent)");
     expect(STORE).toContain("listeners.delete(setCurrent)");
-    expect(STORE).toMatch(/if \(listeners\.size === 0 \|\| feeders > 0\) return;/);
+    // Both reader sets count — the summary readers and the Current apps section's
+    // row readers (D487) share the one poll, so either alone keeps it alive.
+    expect(STORE).toMatch(/if \(listeners\.size \+ rowListeners\.size === 0 \|\| feeders > 0\) return;/);
     // Cadence follows the state, and idle is slower than the page's own 20s.
     expect(STORE).toContain("pulse.running > 0 ? ACTIVE_MS : IDLE_MS");
     expect(STORE).toContain("const IDLE_MS = 30_000");
@@ -508,7 +510,7 @@ describe("pokeTasks", () => {
   it("polls itself immediately when unfed — through the guarded poll()", () => {
     // poll(), not a bare fetch: the in-flight and generation guards are what
     // stop a poke's answer landing over a fresher publish.
-    expect(STORE).toMatch(/if \(listeners\.size === 0\) return;\s*\n\s*void poll\(\);/);
+    expect(STORE).toMatch(/if \(listeners\.size \+ rowListeners\.size === 0\) return;\s*\n\s*void poll\(\);/);
   });
 
   it("the Tasks page listens for the poke with its own reload", () => {

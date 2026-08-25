@@ -26,6 +26,7 @@ import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
+import CurrentAppsSection from "@shell/CurrentAppsSection";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -536,6 +537,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             }
           />
         </div>
+        {/* Current apps (D487): the workspace apps with unfiled tasks, above the
+            permanent Bookmarks tree. Renders nothing when there are none. */}
+        <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
