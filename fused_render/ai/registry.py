@@ -1061,6 +1061,14 @@ _RUNNERS: tuple[Runner, ...] = (
         label="MLX LM (Apple Silicon)",
         short_label="MLX LM",
         family_label="MLX LM",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). The
+        # download fact is `mlx_text/pyproject.toml`'s own: every model in
+        # this app's MLX text catalog is a unified vision-language checkpoint,
+        # and `download()` pulls the whole repo with no allow/ignore
+        # patterns — mlx-vlm reads only the language tower for a text-only
+        # chat, but the vision one comes down anyway.
+        note="Generates text on the GPU. Downloads the full checkpoint, "
+             "including vision weights it doesn't use.",
         _available=_apple_silicon,
     ),
     # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
@@ -1301,6 +1309,16 @@ _RUNNERS: tuple[Runner, ...] = (
         # rather than used. The MLX row above is the sequel that argument
         # always allowed for — it takes the Macs and leaves everything else
         # here, and no user loses a capability to it.
+        #
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). Both
+        # facts are `_placement()`'s own (faster_whisper/worker.py): CUDA when
+        # `ctranslate2.get_cuda_device_count()` finds one, CPU otherwise —
+        # CTranslate2 has no Metal backend, so this is what an Apple Silicon
+        # machine gets whenever the MLX row above it is unavailable — and
+        # that CPU path is still, in the module's own words, "several times
+        # faster than real time".
+        note="Transcribes on an NVIDIA GPU when available, otherwise the "
+             "CPU. Several times faster than real time.",
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
