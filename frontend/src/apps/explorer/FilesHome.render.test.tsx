@@ -30,6 +30,7 @@ import { createElement } from "react";
 import type { IndexRankResult, StatResult } from "@platform/lib/api";
 import { Clock } from "@apps/explorer/listing/hook-harness";
 import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
+import { resetFsMutations } from "@platform/lib/index-freshness";
 
 // --- the module boundary: a fetch stub, not a module mock -------------------
 interface RankCall {
@@ -110,6 +111,15 @@ beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
+  // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
+  // `mutatedAt` set by real, non-virtual `Date.now()` — a leaked subscriber
+  // isn't the only way that module bites a later file; a PREDECESSOR test
+  // (anywhere in the process) that called `noteFsMutation` and never reset
+  // leaves this app "still indexing" for up to a real minute, and nothing
+  // about mounting/unmounting a component clears it. Reset unconditionally
+  // so every test here mounts against a known-idle index, whatever ran
+  // before it in CI's single bun process.
+  resetFsMutations();
   clock.install();
   // Clock.install() sets up `window`/`location`; the real router module also
   // touches `history` (replaceSearch/navigateUrl) and `document` (the
@@ -134,6 +144,7 @@ afterEach(() => {
   clock.restore();
   delete (globalThis as Record<string, unknown>).history;
   delete (globalThis as Record<string, unknown>).document;
+  resetFsMutations();
 });
 
 /** Run `fn` inside `act` and let any microtasks it releases settle. */
