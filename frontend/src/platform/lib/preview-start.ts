@@ -109,13 +109,6 @@ const START_TIMEOUT_MS = 10_000;
 // down now costs nothing until the reader approaches it.
 const NEAR_VIEWPORT_MARGIN = "300px 0px";
 
-// The scrollers a card grid can live in — one selector, because two features
-// now have to agree about WHICH element scrolls under a card: this observer's
-// root, and the scroll offset thumb-focus.ts pins when a thumbnail's page
-// displaces it (frame-focus.ts's contract). Two copies of the list would drift
-// the moment a fourth surface grows a card grid.
-export const CARD_SCROLLER_SELECTOR = ".apps-page, .files-home, .home-page";
-
 // Two observers, not one: `near` (the lookahead margin above) decides whether an
 // iframe may exist at all, `visible` (the real viewport) decides which of the
 // waiting ones goes first. One observer cannot answer both — rootMargin is
@@ -139,7 +132,7 @@ export function useNearViewport<T extends Element>(): [RefObject<T>, boolean, ()
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const root = el.closest(CARD_SCROLLER_SELECTOR);
+    const root = el.closest(".apps-page, .files-home, .home-page");
     const observe = (rootMargin: string, set: (v: boolean) => void) => {
       const io = new IntersectionObserver(
         (entries) => set(entries[entries.length - 1].isIntersecting),

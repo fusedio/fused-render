@@ -19,8 +19,7 @@ import {
   EMBED_PREFIX,
   VIEW_PREFIX,
 } from "@platform/lib/router";
-import { withNoFocus } from "@platform/lib/frame-focus";
-import { shieldThumbFrame } from "@platform/lib/thumb-focus";
+import { THUMB_SEAL, withNoFocus } from "@platform/lib/frame-focus";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -96,22 +95,14 @@ export function LivePreview({ src }: { src: string }) {
     );
   }
   return (
-    /* `inert` says what the box already IS: a picture, aria-hidden, behind a
-       pointer shield. Where an engine carries inertness into the nested
-       document it also stops the frame taking focus at all, which PREVENTS the
-       scroll yank the guard below otherwise undoes. Spread, and an empty STRING
-       rather than `true`, because React 18 passes an unknown string attribute
-       through and drops an unknown boolean — see AppPreviewCard. */
-    <span ref={previewRef} className="fhb-preview" aria-hidden="true" {...{ inert: "" }}>
+    <span ref={previewRef} className="fhb-preview" aria-hidden="true">
       {/* The near-viewport observer is the lazy gate; the shared scheduler is
           the concurrency gate. Keeping them separate means a browser-delayed
           iframe never holds one of the scheduler's two permits. */}
       {!loaded && <span className="fhb-preview-skel" />}
       <iframe
         src={src}
-        /* A peek that takes focus drags the card grid's scroller to its own
-           row; the shell guard puts the scroller back (thumb-focus.ts). */
-        ref={shieldThumbFrame}
+        {...THUMB_SEAL}
         style={{
           width: `${100 / PREVIEW_SCALE}%`,
           height: `${100 / PREVIEW_SCALE}%`,

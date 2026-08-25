@@ -397,29 +397,42 @@
   // which is where the contract is written down; the shell-side guard there is
   // what covers frames this suppression cannot reach.
   var NO_FOCUS_PARAM = "_nofocus";
+  // The other half of what a shell-mounted frame is told: this render is a
+  // PICTURE of a page, not a use of one (D301 records opens off its absence).
+  // Read here as well as by the shell, because two of the containments below
+  // are about being a thumbnail rather than about focus.
+  var PREVIEW_PARAM = "_preview";
 
-  function noFocusRequested(search) {
+  // One reader for both: an affirmative `=1` and nothing else, so a `_nofocus=0`
+  // is a "no" rather than "the key is present, therefore yes".
+  function flagRequested(search, param) {
     try {
-      return new URLSearchParams(String(search).replace(/^\?/, "")).get(NO_FOCUS_PARAM) === "1";
+      return new URLSearchParams(String(search).replace(/^\?/, "")).get(param) === "1";
     } catch (e) {
       return false;
     }
   }
 
+  function noFocusRequested(search) {
+    return flagRequested(search, NO_FOCUS_PARAM);
+  }
+
   // INHERITED, not just requested. A page the shell mounts as a picture may
   // frame a page of its own, and that inner URL is the app author's — it carries
   // none of the shell's stamps, so asking only about `location.search` left
-  // every nested frame free to take focus while its scroll chain still reached
-  // the card grid or the listing. The thumbnail flag has had this inheritance on
-  // the shell side all along (router.ancestorIsPreview); this is the same climb
-  // for the focus flag: up while same-origin, stopping where a cross-origin
-  // read throws, since nothing above that boundary is ours to read anyway.
-  function ancestorNoFocus() {
+  // every nested frame free to take focus (and to write the shell's URL) while
+  // its scroll chain still reached the card grid. The thumbnail flag has had
+  // this inheritance on the shell side all along (router.ancestorIsPreview);
+  // this is the same climb, for either flag: up while same-origin, stopping
+  // where a cross-origin read throws, since nothing above that boundary is ours
+  // to read anyway.
+  function selfOrAncestorHasFlag(param) {
+    if (flagRequested(location.search, param)) return true;
     try {
       var w = window;
       while (w.parent && w.parent !== w) {
         w = w.parent;
-        if (noFocusRequested(w.location.search)) return true;
+        if (flagRequested(w.location.search, param)) return true;
       }
     } catch (e) {
       /* cross-origin ancestor: the climb ends here */
@@ -427,28 +440,14 @@
     return false;
   }
 
-  // Ask every same-origin ancestor shell to put its card scroller back where the
-  // reader left it (frontend/src/platform/lib/thumb-focus.ts publishes the hook).
-  // Focus inside a frame — and scrollIntoView from inside one — scrolls the FRAME
-  // into view in the embedder, and that scroll is already done by the time this
-  // page can react to it. The embedder is the only side that knows where its
-  // scroller was, so this page just says "now", and every ancestor is asked
-  // rather than only the nearest: the frame chain can be shell → thumbnail →
-  // app, and it is the outermost one that owns the grid.
-  function pinThumbScroll() {
-    try {
-      var w = window;
-      while (w.parent && w.parent !== w) {
-        w = w.parent;
-        if (typeof w.__fusedPinThumbScroll === "function") w.__fusedPinThumbScroll();
-      }
-    } catch (e) {
-      /* cross-origin ancestor, or a shell without the hook: nothing to ask */
-    }
-  }
+  // --- end of the flag readers ---
+
+  // Is this render a card thumbnail — mine or an ancestor's? One containment
+  // hangs off it: a thumbnail writes no URL but its own (findTarget below).
+  var IS_THUMBNAIL = selfOrAncestorHasFlag(PREVIEW_PARAM);
 
   function startNoFocus() {
-    if (!noFocusRequested(location.search) && !ancestorNoFocus()) return;
+    if (!selfOrAncestorHasFlag(NO_FOCUS_PARAM)) return;
     window.__fusedNoAutofocus = true;
 
     // Anything that manages to take focus anyway gives it straight back. This
@@ -465,58 +464,97 @@
     var bounceFocus = function (e) {
       var el = e.target;
       if (el && typeof el.blur === "function") el.blur();
-      // The focus is given back here, but the SCROLL it caused is not: the
-      // focusing steps scroll the frame into view in the embedder before any
-      // focus event fires, so by now the card grid (or the listing) has already
-      // jumped. Blurring does not undo a scroll — the embedder has to, and it
-      // is asked on every bounce because this is the one moment both sides can
-      // still agree on: the displacement is a task old, so the offset the
-      // embedder remembers is still the one the reader was looking at.
-      pinThumbScroll();
     };
     document.addEventListener("focusin", bounceFocus, true);
 
-    // scrollIntoView is the same yank with no focus in it at all: it scrolls
-    // every scroll container up the chain, and that chain does not stop at the
-    // frame — it walks out into the embedder's scroller, so a thumbnail whose
-    // app scrolls a chat log to the bottom on boot drags the grid to its own
-    // row. The call is LET THROUGH rather than blocked: the page's own
-    // containers are what the author meant to scroll, and inside a thumbnail
-    // (which cannot be scrolled by the reader anyway) that is harmless. Only
-    // the part that escaped the frame is undone, by the side that owns it.
+    // `select()` joins the focus gate. It is the escape nobody expects, because
+    // it reads as a selection call: `input.select()` FOCUSES the input on the
+    // way (Blink, WebKit), and it does it natively — so the patched
+    // `HTMLElement.prototype.focus` below never sees it and the suppression it
+    // is under does not apply. Suppressed outright rather than reduced to
+    // "select without focusing": a thumbnail is a picture, and a selection
+    // highlight on a control nobody clicked says nothing about the app.
+    var selectOwners = [window.HTMLInputElement, window.HTMLTextAreaElement];
+    var realSelects = [];
+    for (var si = 0; si < selectOwners.length; si++) {
+      if (!selectOwners[si]) continue;
+      realSelects.push([selectOwners[si], selectOwners[si].prototype.select]);
+      selectOwners[si].prototype.select = function () {
+        /* embedded and unasked: no selection, and so no focus with it */
+      };
+    }
+
+    // scrollIntoView, CONTAINED. Same jump as a stolen focus with no focus in
+    // it at all: the native call scrolls every scroll container up the chain,
+    // and the chain does not stop at this frame — it walks out into the
+    // embedder's own scroller, so a thumbnail whose app scrolls a chat log to
+    // the bottom on boot drags the card grid to its own row. There is no native
+    // way to stop that from either side (w3c/csswg-drafts#7134 is the open
+    // request for one; WebKit blocks cross-origin bubbling, Blink does not), and
+    // a thumbnail is same-origin with the shell by design (THUMB_SEAL).
     //
-    // The behaviour is forced to `instant` first, and that is what makes the
-    // single pin below provably enough. A SMOOTH scroll — asked for by the
-    // caller, or by a `scroll-behavior: smooth` anywhere up the chain, which is
-    // why `auto` is not sufficient — has not moved the embedder at all when this
-    // returns: it animates over later rendering updates, each of which fires a
-    // scroll event that this shell's listener records as the reader's own value,
-    // so a chasing pin would be racing an animation to be the first to define
-    // "where the reader was". Instant makes the displacement synchronous, and a
-    // scroll event is always dispatched strictly later than the offset change
-    // that caused it — so the pin that runs on the next line sees the real
-    // before-value and the real after-value, every time.
+    // So the native call is not made. What the author meant — bring this element
+    // into view INSIDE this page — is done here instead, walking this document's
+    // own scrollable ancestors and stopping at its own viewport. Nothing crosses
+    // the frame boundary, and the shell needs to know nothing about it: an app
+    // that scrolls its own log to the bottom still shows its bottom in the
+    // thumbnail.
     //
-    // A thumbnail is a picture and is owed no animation. The pane is under
-    // `_nofocus` too, so a preview's BOOT-PATH smooth scroll lands instantly
-    // until the reader's first gesture lifts the suppression — a deliberate
-    // trade, and only until then.
+    // Instant, always: an animated scroll inside a picture is frames of work for
+    // something nobody is watching, and it is the reason this cannot be done by
+    // measuring afterwards.
     var realScrollIntoView = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (arg) {
       // The three argument shapes, kept faithful: `false` aligns to the end,
       // `true`/nothing to the start, an options object keeps its own alignment.
-      var opts = { block: arg === false ? "end" : "start", inline: "nearest" };
+      var block = arg === false ? "end" : "start";
+      var inline = "nearest";
       if (arg && typeof arg === "object") {
-        opts = {};
-        for (var k in arg) {
-          if (Object.prototype.hasOwnProperty.call(arg, k)) opts[k] = arg[k];
-        }
+        if (arg.block) block = arg.block;
+        if (arg.inline) inline = arg.inline;
       }
-      opts.behavior = "instant";
-      var r = realScrollIntoView.call(this, opts);
-      pinThumbScroll();
-      return r;
+      containScroll(this, block, inline);
     };
+
+    // How far a container must move to satisfy one axis of an alignment. Reads
+    // as the spec does: start/end/center are absolute, `nearest` is the smallest
+    // move that makes the element visible and nothing at all if it already is.
+    function alignDelta(tStart, tEnd, cStart, cEnd, mode) {
+      if (mode === "start") return tStart - cStart;
+      if (mode === "end") return tEnd - cEnd;
+      if (mode === "center") return (tStart + tEnd) / 2 - (cStart + cEnd) / 2;
+      if (tStart >= cStart && tEnd <= cEnd) return 0; // already in view
+      if (tEnd - tStart > cEnd - cStart) return tStart - cStart; // taller than the box
+      return Math.abs(tStart - cStart) < Math.abs(tEnd - cEnd) ? tStart - cStart : tEnd - cEnd;
+    }
+
+    function containScroll(el, block, inline) {
+      if (!el || typeof el.getBoundingClientRect !== "function") return;
+      var node = el.parentElement;
+      var guard = 0;
+      while (node && guard++ < 100) {
+        var canY = node.scrollHeight > node.clientHeight;
+        var canX = node.scrollWidth > node.clientWidth;
+        if (canY || canX) {
+          // Re-measured per container: moving an outer one moves the element.
+          var t = el.getBoundingClientRect();
+          var box = node.getBoundingClientRect();
+          if (canY) node.scrollTop += alignDelta(t.top, t.bottom, box.top, box.bottom, block);
+          if (canX) node.scrollLeft += alignDelta(t.left, t.right, box.left, box.right, inline);
+        }
+        node = node.parentElement;
+      }
+      // This frame's own viewport, and the walk ENDS here — scrolling it moves
+      // nothing outside the frame, which is the whole point.
+      try {
+        var f = el.getBoundingClientRect();
+        var dy = alignDelta(f.top, f.bottom, 0, window.innerHeight, block);
+        var dx = alignDelta(f.left, f.right, 0, window.innerWidth, inline);
+        if (dx || dy) window.scrollBy(dx, dy);
+      } catch (e) {
+        /* no layout to scroll (a detached element): nothing to do */
+      }
+    }
 
     // Strip `autofocus` from anything already parsed and anything that arrives
     // while the document streams. Belt and braces beside the blur above — an
@@ -553,9 +591,13 @@
       released = true;
       HTMLElement.prototype.focus = realFocus;
       // Restored with the rest of it: after a deliberate gesture the page owns
-      // itself, and a reader scrolling something into view in a preview they
-      // just clicked into is entitled to have the pane follow.
+      // itself, and a reader who has clicked into a preview is entitled to have
+      // `select()` select and `scrollIntoView` scroll exactly as written —
+      // including out into the pane, which is now their scroll to ask for.
       Element.prototype.scrollIntoView = realScrollIntoView;
+      for (var ri = 0; ri < realSelects.length; ri++) {
+        realSelects[ri][0].prototype.select = realSelects[ri][1];
+      }
       window.__fusedNoAutofocus = false;
       if (observer) observer.disconnect();
       // Every part of the suppression lifts at once, this one included — a
@@ -590,6 +632,16 @@
   // a cross-origin window throws, so a try/catch marks the boundary.
   function findTarget() {
     let t = window;
+    // A THUMBNAIL DOES NOT CLIMB. Params reaching the ancestor URL is the point
+    // of D46 for a pane preview — the reader's state belongs in the address bar
+    // — and it is a leak for a card: `fused.params.set` in an app that scrubs a
+    // slider on boot was rewriting the /apps URL from inside a picture, one
+    // `history.replaceState` on the shell per card. Its own window instead, so
+    // the page's own reads still answer (`standalone` below) and nothing outside
+    // the frame moves. Only replaceState can be reached from in here anyway: the
+    // push path needs a gesture, and a thumbnail's pointer shield means it never
+    // sees one — so this cannot add joint history entries and break Back either.
+    if (IS_THUMBNAIL) return t;
     try {
       while (t.parent && t.parent !== t) {
         // Probe: throws if t.parent is cross-origin — stop at the last

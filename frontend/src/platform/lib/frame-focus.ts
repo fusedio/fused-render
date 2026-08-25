@@ -32,19 +32,25 @@
 //      means the shell can see the frame take focus and simply take it back —
 //      belt and braces for a page loaded from somewhere runtime.js does not
 //      reach, and for the frames the browser focuses itself.
-//   4. The CARDS guard theirs too (thumb-focus.ts) — which D348 said they did
-//      not need. That reading was measured against a probe app doing the two
-//      obvious things, an `autofocus` attribute and a `focus()` on load, and
-//      step 2 does beat both. What it does not cover is the other routes into
-//      focus: `input.select()`, `dialog.showModal()`, an engine that applies a
-//      queued autofocus candidate before the bounce can matter, and — until
-//      now — any page a thumbnail's page frames ITSELF, whose own URL carries
-//      none of the shell's stamps (runtime.js inherits the flag from a
-//      same-origin ancestor for exactly that). Every one of them ends in the
-//      same place: the grid scrolled to a row the reader did not ask for. So
-//      the card guard is written against the CONSEQUENCE rather than against
-//      the list — the shell remembers what its card scroller was at, and puts
-//      it back — and no future route into focus needs it changed.
+//   4. The CARD THUMBNAILS are SEALED, which is a different kind of answer
+//      from 1–3 and the one that carries the weight for them (THUMB_SEAL at the
+//      foot of this file): `sandbox` + an empty `allow`, attributes of the
+//      EMBEDDER, which the page cannot opt out of and the shell does not have
+//      to police. `autofocus` and autoplay stop applying at all, and the other
+//      things a thumbnail could do to the page around it — navigate the shell
+//      away, pop up a window, start a download, block everything with a
+//      `confirm`, ask for the camera — stop being possible rather than being
+//      undone afterwards.
+//
+//      This replaces a first attempt that put the guard in the SHELL: remember
+//      where the card grid's scroller was, notice a frame displacing it, put it
+//      back. That worked, and it was the wrong shape — the shell repairing
+//      damage a thumbnail had already done, once per escape route, forever. The
+//      containment belongs at the boundary and inside the frame, which is where
+//      it now is. What is left of the scripted routes — `focus()`, `select()`,
+//      `scrollIntoView()` — is handled in the page by runtime.js under this
+//      flag, and `_nofocus=1` is inherited from a same-origin ancestor there,
+//      so a page a thumbnail's page frames itself is covered too.
 //
 // Deliberate acts are untouched: clicking into the pane, tabbing into it, or
 // expanding the preview full-screen all move focus for real. The contract is
@@ -128,56 +134,50 @@ export function tabEntersFrame<T>(
 }
 
 
-// -- THE CARD GRID'S SCROLL, as arithmetic ------------------------------------
+// -- THE SEAL: what the browser enforces about a thumbnail -----------------------
 //
-// A thumbnail that takes focus (or calls scrollIntoView) scrolls ITSELF into
-// view, and the scroll walks out of the frame into the embedder's scroller: the
-// /apps grid jumps to that card's row mid-scroll. By the time the shell hears
-// about the focus the scroll has already happened — the focusing steps scroll
-// first and fire the focus events after — so on this side the fix cannot be
-// prevention. It is restoration: the shell remembers where its scroller was,
-// and a frame that displaces it gets put back.
+// Spread onto every display-only thumbnail frame. It is the half of the contract
+// that is NOT cooperation: the shell asks for nothing and the page cannot opt
+// out, because these are the embedder's attributes rather than the page's code.
 //
-// "Remembers where it was" is the SCROLL EVENT's value, which is what makes the
-// comparison below a fact rather than a guess. A scroll event is dispatched in
-// a later rendering update than the offset change that caused it, so at the
-// moment a frame steals focus the remembered value is still the last one the
-// reader could see and the live value is already the displaced one. A
-// difference therefore means "moved during this task, ahead of any scroll
-// event" — programmatic, from inside the frame — and not "the reader is
-// scrolling". The worst case if that ever slipped by a frame is that a reader
-// mid-flick loses one frame of momentum, against a jump of thousands of pixels.
+//   • `sandbox` — every restriction on, and only two lifted back. Scripts,
+//     because a thumbnail of an app that cannot run is a blank box.
+//     Same-origin, because the app has to be able to render: `/api`
+//     (runPython, fused.ai, readFile) and the theme it reads out of
+//     localStorage are both origin-bound, and an opaque origin turns every
+//     data-driven card into its own empty state.
 //
-// The epsilon is for fractional offsets (scrollTop is not an integer at a
-// fractional device pixel ratio): a sub-pixel difference is noise, and pinning
-// against it would fight the reader over tenths of a pixel.
-export const PIN_EPSILON_PX = 1;
-
-export type ScrollOffset = { top: number; left: number };
-
-// Which of a frame's candidate scrollers moved without the reader, and what to
-// put each back to. DOM-free — the caller supplies both readings — so the rule
-// stays pinnable by a test that has no layout.
-export function displacedScrollers<T>(
-  scrollers: readonly T[],
-  remembered: (el: T) => ScrollOffset | undefined,
-  live: (el: T) => ScrollOffset,
-): { el: T; to: ScrollOffset }[] {
-  const out: { el: T; to: ScrollOffset }[] = [];
-  for (const el of scrollers) {
-    const was = remembered(el);
-    // No record means nothing to restore TO, and a restore to a
-    // remembered-from-nowhere zero would be a worse jump than the one it is
-    // meant to undo. The shell records a scroller the moment a thumbnail
-    // registers, so this is the never-tracked case, not the never-scrolled one.
-    if (!was) continue;
-    const now = live(el);
-    if (
-      Math.abs(now.top - was.top) > PIN_EPSILON_PX ||
-      Math.abs(now.left - was.left) > PIN_EPSILON_PX
-    ) {
-      out.push({ el, to: was });
-    }
-  }
-  return out;
-}
+//     What the attribute's mere PRESENCE buys is the sandboxed automatic
+//     features flag, for which no re-enabling token exists: `autofocus` never
+//     applies and media never autoplays. That is the single biggest cause of
+//     the /apps grid jumping (D486) closed by the browser, in markup, with no
+//     runtime involved — and a thumbnail can no longer make noise either.
+//
+//     Everything not listed stays denied, and each one is something a
+//     thumbnail could otherwise do TO the page around it: navigate the shell
+//     away (`allow-top-navigation`), open a popup, start a download, submit a
+//     form, take pointer lock, or raise an `alert`/`confirm`/`print` that
+//     blocks the whole window (`allow-modals`).
+//
+//     `allow-scripts allow-same-origin` together is famously not a security
+//     boundary — a frame with both can reach out through `parent` and delete
+//     the sandbox attribute off its own iframe element — and it is not used as
+//     one here. These are the reader's own local apps; the attribute is doing
+//     feature containment, not privilege separation. The scripted escapes it
+//     leaves open are closed inside the page instead, by runtime.js under
+//     `_nofocus=1`.
+//
+//   • `allow=""` — an empty permissions policy: camera, microphone,
+//     geolocation, display capture and fullscreen are all undelegated, so a
+//     thumbnail cannot raise a permission prompt in the reader's name.
+//
+// Deliberately NOT here: `inert`. It reads like the answer — a picture should
+// not be focusable — but the part that would matter, inertness propagating into
+// the frame's own document, is the part being REMOVED from Blink (it is a
+// cross-site leak and blocks fenced frames) and never existed in WebKit or
+// Gecko (whatwg/html#7605). What it does cover — hit-testing and the tab order
+// — these frames already have from the card's pointer shield and `tabIndex={-1}`.
+export const THUMB_SEAL = {
+  sandbox: "allow-scripts allow-same-origin",
+  allow: "",
+} as const;
