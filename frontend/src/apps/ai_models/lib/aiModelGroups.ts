@@ -37,18 +37,24 @@ export const UNRECOGNISED = "unrecognised";
  *  below — the fix was never about WHICH order won, only that there is
  *  exactly one.
  *
- *  **TEXT GENERATION LEADS NOW** (2026-08-24), moved up from second: it is
- *  the capability a reader arrives at this app FOR — the one every other
- *  capability here is compared against by reputation — so it is what a
- *  reader should find first on all three tabs, not the second thing after
- *  image generation. This changes what Playground opens on by default,
- *  which capability's card is first on the Models tab, and which section
- *  the Benchmark tab draws first — deliberately, since keeping one shared
- *  list (rather than reintroducing a per-tab order) is the entire point
- *  D475 already settled; a change here is a change everywhere on purpose.
- *  Everything else keeps its PRIOR relative order (image, then speech,
- *  then embeddings, then video) — this was a promotion of one entry, not
- *  a fresh ranking of all five.
+ *  **IMAGE GENERATION LEADS** (2026-08-25), swapped back above text: it is
+ *  the capability that SHOWS what a local model does — a picture on the page
+ *  is the demonstration, where a paragraph of text reads like every other
+ *  text box — so it is what a reader should meet first. This reverses the
+ *  2026-08-24 promotion of text generation, which had argued the opposite
+ *  case (text is what a reader arrives for); the two are a judgement call
+ *  about the first impression, not a fact one of them got wrong.
+ *
+ *  It changes what Playground opens on by default, which capability's card
+ *  is first on the Models tab, and which section the Benchmark tab draws
+ *  first — deliberately, since keeping one shared list (rather than
+ *  reintroducing a per-tab order) is the entire point D475 already settled;
+ *  a change here is a change everywhere on purpose. Home's own strip is a
+ *  SECOND array (`PLAYGROUND_GROUPS`, playground/groups.ts) carrying blurbs
+ *  this list has no room for, and it is ordered to match by hand — the two
+ *  have to be edited together or the front door and the tab disagree.
+ *  Everything else keeps its relative order (speech, then embeddings, then
+ *  video) — this is a swap of the top two, not a fresh ranking of all five.
  *
  *  VIDEO IS LISTED, deliberately, rather than left to fall through to the
  *  end by accident (its own history, from when the Playground had no
@@ -66,8 +72,8 @@ export const UNRECOGNISED = "unrecognised";
  *  reading order are two reading orders one edit apart.
  */
 export const CAPABILITY_ORDER = [
-  "text-generation",
   "text-to-image",
+  "text-generation",
   "automatic-speech-recognition",
   "embeddings",
   "text-to-video",

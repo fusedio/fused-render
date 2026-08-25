@@ -20,16 +20,26 @@ export type PlaygroundGroup = {
   blurb: string;
 };
 
+// The HEAD of this list tracks `CAPABILITY_ORDER` (lib/aiModelGroups.ts) by
+// hand, not by import: that list is capability strings only, and these carry
+// the label and blurb Home's cards are made of. A strip that leads with a
+// different capability than the tab it opens is the front door disagreeing
+// with the room, so the leading entries are edited together — image generation
+// leads (2026-08-25) for the reason recorded there.
+//
+// The TAIL deliberately does not match: this array's last two are swapped
+// against that one's, because only here does the order decide what gets
+// DROPPED (see the two notes below).
 export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
-  {
-    capability: "text-generation",
-    label: "Text generation",
-    blurb: "Ask questions, write and rewrite text.",
-  },
   {
     capability: "text-to-image",
     label: "Image generation",
     blurb: "Turn a description into a picture.",
+  },
+  {
+    capability: "text-generation",
+    label: "Text generation",
+    blurb: "Ask questions, write and rewrite text.",
   },
   {
     capability: "automatic-speech-recognition",

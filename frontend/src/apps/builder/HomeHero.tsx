@@ -241,22 +241,19 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     [],
   );
 
+  // Grow the box with its content, capped at the shared COMPOSER_MAX_LINES —
+  // the same ten lines `.home-composer-input`'s max-height names, and the same
+  // hook the Playground's composers use. Keyed on `prompt`, which is what makes
+  // a starter chip's brief (the longest text that lands in here, and it never
+  // goes through onChange) open at its full height rather than three lines with
+  // the rest scrolled away.
+  const { ref: inputRef } = useAutoGrow(prompt);
+
   // A `?annot=` in the URL pre-fills the chip — the Playground's "Build an
   // app with this AI" hands its model + tuned settings through here as a
   // JSON `AppAnnotation`, encoded rather than dumped into the prompt text.
   // Consumed once and removed (replaceSearch, no history entry): an annot
   // that survived in the URL would reappear on the next mount.
-  // Grow the box with its content. `Infinity` because the ceiling here is CSS,
-  // not pixels: the 3-row floor and 10-row ceiling are min/max-height on
-  // `.home-composer-input`, and past the ceiling the textarea scrolls. The hook
-  // is what keeps the height it writes from going stale when the box's WIDTH
-  // changes (a sidebar toggle, a window resize) and the same text rewraps —
-  // this composer had that bug for exactly as long as it grew itself inline.
-  // Driven from an effect on `prompt` rather than onChange because a starter
-  // chip sets the text programmatically and has the longest briefs of anything
-  // that lands in here.
-  const { ref: inputRef, grow } = useAutoGrow(Infinity);
-  useEffect(grow, [prompt, grow]);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const raw = params.get("annot");
