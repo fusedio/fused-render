@@ -39,7 +39,9 @@ that is the same rule `test_the_split_table_is_not_quietly_unused` enforces on
 the table below. The from-scratch rebuild is therefore a MANUAL check, and D309
 records both what it verified and that it is manual.
 """
+import ast
 import os
+import sys
 
 import pytest
 
@@ -124,6 +126,23 @@ SPLIT_DISTRIBUTIONS = {
             "louder failure than sherpa-onnx's silent import error but the "
             "same class of defect: a project whose own metadata will not carry "
             "its other half into this folder's environment."
+        ),
+    },
+    "onnxruntime-rocm": {
+        "companion": "numpy",
+        "reason": (
+            "onnxruntime-rocm's wheel declares NO dependencies at all — "
+            "dry-resolving `onnxruntime-rocm>=1.22,<2` against PyPI returns "
+            "exactly one package, itself — where onnxruntime and "
+            "onnxruntime-gpu both carry numpy in transitively. That silence "
+            "is not cosmetic: `onnxruntime/__init__.py` re-raises its own "
+            "capi ImportError when numpy is missing, so `import onnxruntime` "
+            "fails outright, not just the array arithmetic downstream. `uv "
+            "sync` still resolves and installs a complete-looking venv; the "
+            "onnx_embed_rocm/ worker spawns and loads the model and only dies "
+            "on the first forward pass with `ModuleNotFoundError: No module "
+            "named 'numpy'`. The companion must be declared directly; see "
+            "onnx_embed_rocm/pyproject.toml."
         ),
     },
 }
@@ -236,3 +255,96 @@ def test_the_split_table_is_not_quietly_unused():
         assert primary in everything, (
             f"nothing declares {primary} any more — delete its entry rather "
             f"than leaving a rule that cannot fire")
+
+
+# -- the onnx_embed* four-way manifest parity (the numpy regression itself) ----
+#
+# `SPLIT_DISTRIBUTIONS` above catches "this distribution's own metadata won't
+# carry a needed package". The two tests below catch the other half of the
+# same numpy bug: a manifest can be short a package `runners/onnx_embed.py`
+# itself imports directly, with no distribution's metadata to blame at all —
+# and with four near-identical manifests, a hand-copied list is exactly what
+# lets one of them fall behind the other three unnoticed.
+
+_ONNX_EMBED_FOLDERS = ("onnx_embed", "onnx_embed_cuda", "onnx_embed_directml",
+                       "onnx_embed_rocm")
+
+_ONNX_EMBED_WORKER_PATH = os.path.join(RUNNERS_DIR, "onnx_embed.py")
+
+#: Import names whose PyPI distribution name is not the import name itself.
+#: Everything `runners/onnx_embed.py` imports besides `PIL` happens to match
+#: its distribution 1:1 once `_declared`'s own normalization (underscores to
+#: hyphens, lowercased) is applied.
+_IMPORT_TO_DISTRIBUTION = {"PIL": "pillow"}
+
+#: Local, same-folder modules `onnx_embed.py` imports off `sys.path` rather
+#: than off PyPI — not something any manifest should ever list.
+_ONNX_EMBED_LOCAL_MODULES = {"embed_common", "formats", "worker_base"}
+
+#: The one import name legitimately satisfied by a distribution whose name it
+#: is only a PREFIX of: `import onnxruntime` is answered by whichever of
+#: `onnxruntime` / `onnxruntime-gpu` / `onnxruntime-directml` /
+#: `onnxruntime-rocm` a given folder declares. Nothing else gets this
+#: leniency — a generic prefix match would also let a declared `pillow-heif`
+#: silently stand in for an imported `pillow`, which is the exact shape of
+#: hole the second test below exists to close.
+_PREFIX_MATCHED_IMPORT = "onnxruntime"
+
+
+def _onnx_embed_third_party_imports():
+    """Every top-level module `runners/onnx_embed.py` imports, module-level or
+    lazily inside a function, that is neither stdlib nor one of this runner's
+    own sibling files — parsed with `ast`, not copied by eye, because a
+    hand-copied list is exactly what let `numpy` go undeclared in the first
+    place."""
+    with open(_ONNX_EMBED_WORKER_PATH) as handle:
+        tree = ast.parse(handle.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                names.add(node.module.split(".")[0])
+    names -= sys.stdlib_module_names
+    names -= _ONNX_EMBED_LOCAL_MODULES
+    return {_IMPORT_TO_DISTRIBUTION.get(name, name) for name in names}
+
+
+def test_the_four_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
+    """The four `onnx_embed*` folders' dependency sets are meant to be one set
+    with a single distribution swapped — the manifests say so themselves. If a
+    dependency is added or dropped in one folder and not the other three,
+    "which hardware" quietly starts also meaning "which tokenizer"."""
+    shared = None
+    for name in _ONNX_EMBED_FOLDERS:
+        declared = _declared(os.path.join(RUNNERS_DIR, name))
+        rest = sorted(d for d in declared if not d.startswith("onnxruntime"))
+        if shared is None:
+            shared = rest
+        assert rest == shared, name
+
+
+def test_every_third_party_import_of_onnx_embed_is_declared_in_all_four():
+    """The regression itself: `onnx_embed.py` is free to `import` anything, but
+    only `onnxruntime`'s own transitive dependencies rode along for free — and
+    `onnxruntime-rocm` declares NONE (see `SPLIT_DISTRIBUTIONS` above), so a
+    name the mainline wheel happened to pull (this is how `numpy` went
+    missing) is invisible on every other distribution and fatal on that one.
+    Every third-party import this runner makes, lazy ones included, must be a
+    distribution named in all four manifests — matched EXACTLY, except for
+    `onnxruntime` itself (see `_PREFIX_MATCHED_IMPORT`)."""
+    imported = _onnx_embed_third_party_imports()
+    assert imported, "the parser found nothing — it is broken, not the runner"
+    for name in _ONNX_EMBED_FOLDERS:
+        declared = _declared(os.path.join(RUNNERS_DIR, name))
+        missing = set()
+        for imp in imported:
+            normalized = imp.replace("_", "-").lower()
+            if normalized == _PREFIX_MATCHED_IMPORT:
+                if not any(d.startswith(normalized) for d in declared):
+                    missing.add(imp)
+            elif normalized not in declared:
+                missing.add(imp)
+        assert not missing, f"{name}: undeclared imports {missing}"

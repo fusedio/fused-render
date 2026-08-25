@@ -35,12 +35,10 @@ went green against a model that structurally could not exhibit it. Here
 `last_hidden_state` comes FIRST in every fake graph and has a third axis, so a
 wrong read fails on shape instead of passing with nonsense.
 """
-import ast
 import importlib.util
 import re
 import sys
 import threading
-import tomllib
 import types
 from pathlib import Path
 
@@ -52,106 +50,6 @@ WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
     / "fused_render" / "ai" / "runners" / "onnx_embed.py"
 )
-
-#: The four `onnx_embed*` folders, in the order the registry lists their
-#: hardware. Each holds a `pyproject.toml` that is meant to be a verbatim copy
-#: of the others except for the single `onnxruntime*` distribution line — see
-#: the manifests' own headers.
-_MANIFEST_DIRS = ["onnx_embed", "onnx_embed_cuda", "onnx_embed_directml",
-                  "onnx_embed_rocm"]
-
-#: Import names whose PyPI distribution name is not the import name itself.
-#: Everything this runner imports besides `PIL` happens to match its
-#: distribution 1:1.
-_IMPORT_TO_DISTRIBUTION = {"PIL": "pillow"}
-
-#: Local, same-folder modules `onnx_embed.py` imports off `sys.path` rather
-#: than off PyPI — not something any manifest should ever list.
-_LOCAL_MODULES = {"embed_common", "formats", "worker_base"}
-
-
-def _manifest_dependencies(folder):
-    """The bare `[project.dependencies]` list of one `onnx_embed*` manifest,
-    read with `tomllib` rather than eyeballed, so a hand-copied list can't
-    silently diverge from what `uv sync` will actually install."""
-    path = (Path(__file__).resolve().parents[1] / "fused_render" / "ai"
-            / "runners" / folder / "pyproject.toml")
-    data = tomllib.loads(path.read_text())
-    return list(data["project"]["dependencies"])
-
-
-def _distribution_name(dependency_line):
-    """The bare distribution name off one `dependencies` entry, with any
-    PEP 508 version specifier stripped (`"pillow-heif>=1.5,<2"` -> `"pillow-heif"`)."""
-    return re.split(r"[<>=!~\[; ]", dependency_line, maxsplit=1)[0]
-
-
-def _onnx_embed_third_party_imports():
-    """Every top-level module `runners/onnx_embed.py` imports, module-level or
-    lazily inside a function, that is neither stdlib nor one of this runner's
-    own sibling files — parsed with `ast`, not copied by eye, because a
-    hand-copied list is exactly what let `numpy` go undeclared in the first
-    place."""
-    tree = ast.parse(Path(WORKER_PATH).read_text())
-    names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                names.add(node.module.split(".")[0])
-    names -= sys.stdlib_module_names
-    names -= _LOCAL_MODULES
-    return {_IMPORT_TO_DISTRIBUTION.get(name, name) for name in names}
-
-
-def test_the_four_manifests_agree_beyond_their_onnxruntime_line():
-    """The four `onnx_embed*` folders' dependency lists are meant to be one
-    list with a single line swapped — the manifests say so themselves. If a
-    dependency is added, bumped, or dropped in one folder and not the other
-    three, "which hardware" quietly starts also meaning "which tokenizer"."""
-    shared = None
-    for folder in _MANIFEST_DIRS:
-        deps = _manifest_dependencies(folder)
-        rest = sorted(dep for dep in deps
-                      if not _distribution_name(dep).startswith("onnxruntime"))
-        if shared is None:
-            shared = rest
-        assert rest == shared, folder
-
-
-#: The one import name that is legitimately satisfied by a distribution whose
-#: name it is only a PREFIX of: `import onnxruntime` is answered by whichever
-#: of `onnxruntime` / `onnxruntime-gpu` / `onnxruntime-directml` /
-#: `onnxruntime-rocm` a given folder declares. Nothing else gets this
-#: leniency — a generic prefix match here would also let a declared
-#: `pillow-heif` silently stand in for an imported `pillow`, which is the
-#: exact shape of hole this test exists to close.
-_PREFIX_MATCHED_IMPORT = "onnxruntime"
-
-
-def test_every_third_party_import_of_onnx_embed_is_declared_everywhere():
-    """The regression itself: `onnx_embed.py` is free to `import` anything, but
-    only `onnxruntime`'s own transitive dependencies rode along for free — and
-    `onnxruntime-rocm` declares NONE, so a name the mainline wheel happened to
-    pull (this is how `numpy` went missing) is invisible on every other
-    distribution and fatal on that one. Every third-party import this runner
-    makes, lazy ones included, must be a distribution named in all four
-    manifests — matched EXACTLY, except for `onnxruntime` itself (see
-    `_PREFIX_MATCHED_IMPORT`)."""
-    imported = _onnx_embed_third_party_imports()
-    assert imported, "the parser found nothing — it is broken, not the runner"
-    for folder in _MANIFEST_DIRS:
-        declared = {_distribution_name(dep) for dep in _manifest_dependencies(folder)}
-        missing = set()
-        for name in imported:
-            if name == _PREFIX_MATCHED_IMPORT:
-                if not any(d.startswith(name) for d in declared):
-                    missing.add(name)
-            elif name not in declared:
-                missing.add(name)
-        assert not missing, f"{folder}: undeclared imports {missing}"
 
 #: Not 384: the fake graphs do not care what side length they are handed, and a
 #: small one keeps `_preprocess_images`' assertions readable. The runner reads
