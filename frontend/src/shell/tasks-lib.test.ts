@@ -1943,9 +1943,14 @@ describe("the unread mark", () => {
     expect(CARD).not.toContain("const ring =");
     expect(CARD).not.toContain("tasks-news");
     expect(SCHEDULE_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain("tasks-news");
+    // The class expression is what this pins; the element carries the card's
+    // caption too since 2026-08-24 (hints.ts — a hint on the card BUTTON spoke
+    // over every child that had one of its own), so it is no longer a one-line
+    // tag.
     expect(CARD).toContain(
-      '<span className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}>',
+      'className={"schedule-tv-card-title" + (unread > 0 ? " is-unread" : "")}',
     );
+    expect(CARD).toContain("data-hint={task.title}");
     expect(block(SCHEDULE_CSS, ".schedule-tv-card-title.is-unread")).toContain(
       "font-weight: 600",
     );
@@ -1969,8 +1974,11 @@ describe("the unread mark", () => {
       ".tasks-title.is-unread",
     );
     // ...and the title is still a title: the words, then nothing an eye can see.
+    // The element gained `data-hint` on 2026-08-24, so the class expression is no
+    // longer the last attribute before `>` — the assertion allows the attributes
+    // between them rather than pinning their order.
     expect(CARD).toMatch(
-      /className=\{"schedule-tv-card-title"[^}]*\}>\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}/,
+      /className=\{"schedule-tv-card-title"[\s\S]*?>\s*\{firstLine\(task\.title\) \|\| "\(untitled\)"\}/,
     );
     // WEIGHT IS NOT A FACT A SCREEN READER HAS (bugbot, PR #596): bold is the whole
     // visual signal and `font-weight` never reaches the accessibility tree, so the

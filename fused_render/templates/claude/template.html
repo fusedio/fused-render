@@ -11413,10 +11413,48 @@ async function refreshArchiveOpt() {
 
 archiveOpt.addEventListener("click", async () => {
   if (!archiveKey) return;
-  const filed = archiveOpt.dataset.filed === "1";
+  let filed = archiveOpt.dataset.filed === "1";
   archiveOpt.disabled = true;
   archiveBusy = true;
   try {
+    // THE DIRECTION IS CONFIRMED AGAINST THE SERVER BEFORE IT IS SPENT (bugbot,
+    // PR #794). The item paints from cache so it can appear in the menu's first
+    // frame, and the cost of that is a window — between the open and the
+    // re-read landing — where the cached verb can be stale: file the task from
+    // the Tasks page in another tab, open this menu, click fast, and "Archive"
+    // would archive something already archived (or the reverse). Painting a
+    // DISABLED item until the read lands would trade the bug for the lateness
+    // the instant paint exists to remove, so the check moves to the press,
+    // where one extra read is invisible next to the write that follows it.
+    // ITS OWN try, INSIDE this one, and that nesting is the whole point (bugbot,
+    // PR #802). Sharing the outer `try` with the write below meant a THROWN
+    // fetch — offline, a dropped connection, a body that would not parse — went
+    // straight to the catch and never attempted the POST at all: the press
+    // refused because its own confirmation failed, which is exactly the failure
+    // mode the comment above forbids. Only a non-OK STATUS fell through, which
+    // is the one unreachable-server case that does not throw.
+    //
+    // So every way this read can fail is one way: it declines to override, and
+    // the cached verb — the one the reader actually read off the button — is
+    // spent. A confirmation is an improvement on a guess, never a precondition
+    // for acting on it.
+    try {
+      const check = await fetch("/api/tasks");
+      if (check.ok) {
+        const listing = await check.json();
+        const now = ((listing && listing.tasks) || []).find((t) => t && t.key === archiveKey);
+        // Only a POSITIVE answer overrides the cache. An unreadable listing, or a
+        // task the listing no longer holds, leaves the reader's own reading of the
+        // button in force — refusing the press on a listing we could not read
+        // would make a network blip look like a broken control.
+        if (now) {
+          filed = now.status === "archived";
+          archiveStates.set(archiveKey, filed);
+        }
+      }
+    } catch (err) {
+      /* the cached verb stands — see above */
+    }
     const res = await fetch(filed ? "/api/tasks/unarchive" : "/api/tasks/archive", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Fused": "1" },

@@ -904,6 +904,37 @@ def test_archiving_says_what_it_actually_did(template):
     assert "refreshArchiveOpt()" in handler
 
 
+def test_the_press_confirms_its_direction_without_depending_on_the_answer(template):
+    """The item paints from cache so it can appear in the menu's first frame, so
+    the cached verb can be stale — archived from the Tasks page in another tab,
+    then clicked fast here, would file the wrong way. The press re-reads the
+    listing first.
+
+    **And the re-read must never be able to REFUSE the press.** It has its own
+    `try` inside the handler's: sharing one meant a thrown fetch (offline, a
+    dropped connection, an unparseable body) jumped to the catch and never
+    attempted the POST — the press failing because its own confirmation did.
+    Only a non-OK status fell through, which is the one unreachable-server case
+    that does not throw. A confirmation is an improvement on a guess, never a
+    precondition for acting on it."""
+    handler = template[template.index('archiveOpt.addEventListener("click"'):]
+    handler = handler[:handler.index("\n});")]
+    # The verb is a `let`, because the read may replace it.
+    assert "let filed = archiveOpt.dataset.filed" in handler
+    # The confirming read happens BEFORE the write it decides the direction of.
+    check = handler.index('fetch("/api/tasks")')
+    write = handler.index('"/api/tasks/unarchive" : "/api/tasks/archive"')
+    assert check < write, "confirm the direction before spending it"
+    # …and it is wrapped in its own try, which is what keeps a failed read from
+    # taking the write down with it. The nested catch sits between the two.
+    nested = handler[:write]
+    assert nested.count("try {") >= 2, "the confirming read needs its own try"
+    assert "} catch (err) {" in nested
+    # Only a POSITIVE answer overrides the cache.
+    assert "if (now) {" in handler
+    assert 'filed = now.status === "archived";' in handler
+
+
 def test_a_hidden_menu_item_takes_no_space(template):
     """`.kebab-opt` sets `display: block`, which beats the UA sheet's
     `[hidden] { display: none }` — so an item hidden in markup still took its

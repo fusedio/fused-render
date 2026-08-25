@@ -781,13 +781,35 @@ describe("the short refusal on the card", () => {
     expect(loadRefusalShort(QWEN_NO_ENGINE)).toContain("format");
   });
 
-  it("leads with the server's own per-task sentence when it sent one", () => {
-    const tts = repo({
-      id: "coqui/tts",
+  // bugbot, PR #794: these sentences must NOT go through the clause cut written
+  // for the registry's engine-preference prose. `ai/tasks.py` builds them the
+  // other way round — "A chat model does this from a prompt — no separate runner
+  // ships for it" — so the lead-in is the consolation and the REFUSAL is after
+  // the dash. Cutting at the joint kept the soft half and dropped why Load is
+  // dead.
+  it("uses the server's own per-task sentence WHOLE, never cut at a joint", () => {
+    const summarise = repo({
+      id: "org/summariser",
       capability: null,
-      supportReason: "Text to speech is not supported yet, and nothing here can serve it",
+      supportReason: "A chat model does this from a prompt — no separate runner ships for it.",
     });
-    expect(loadRefusalShort(tts)).toBe("Text to speech is not supported yet.");
+    const short = loadRefusalShort(summarise) ?? "";
+    expect(short).toContain("no separate runner ships for it");
+    // The comma form is the other shape `ai/tasks.py` writes, and it must
+    // survive too — the clause after the comma is the refusal there as well.
+    const encoder = repo({
+      id: "sentence-transformers/all-MiniLM-L6-v2",
+      capability: null,
+      supportReason:
+        "The embedding runners here serve dual encoders (image and text into one space), "
+        + "not text-only sentence encoders.",
+    });
+    expect(loadRefusalShort(encoder)).toContain("not text-only sentence encoders");
+  });
+
+  it("falls back to the group heading's own fact when the server sent none", () => {
+    const mystery = repo({ id: "org/mystery", capability: null });
+    expect(loadRefusalShort(mystery)).toBe("The model type is not supported.");
   });
 });
 
