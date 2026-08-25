@@ -344,6 +344,11 @@ TEXT_EMBED_DEFAULT_KIND = "document"
 TEXT_EMBED_SCHEMES = {
     "nomic-ai/nomic-embed-text-v1.5": "nomic",
     "intfloat/multilingual-e5-small": "e5",
+    # Not curated in `catalog.py` — see the ONNX block's comment on why its
+    # 0.44 GB would make it the default — but named here anyway, so a user who
+    # fetches it themselves is prompted correctly rather than falling to the
+    # id heuristic below. The curation rule is that every curated row IS here;
+    # the reverse is not required.
     "BAAI/bge-base-en-v1.5": "bge",
 }
 

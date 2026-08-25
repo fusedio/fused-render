@@ -10,6 +10,7 @@ a download its engine has no reader for. This file pins the split, and pins that
 the alias is GONE rather than repointed.
 """
 from fused_render.ai import catalog, registry
+from fused_render.ai.runners import formats
 
 
 MLX_IDS = {"google/siglip2-base-patch16-384",
@@ -59,18 +60,29 @@ def test_the_returned_lists_are_independent_copies():
     assert b != a
 
 
-def test_siglip2_base_is_the_default_on_both_engines(monkeypatch):
-    """`default_for` takes the CAPABILITY and resolves the runner itself
-    (`_runner_for`), so the default is checked on both platforms rather than
-    assumed from one list. Two DIFFERENT repo ids for the same checkpoint now,
-    which is the visible consequence of the split."""
+def test_the_default_moves_OFF_siglip2_on_the_onnx_engine(monkeypatch):
+    """**The user-visible change on this branch**, and the reason the risk is
+    worth an assertion rather than a comment: a bare `fused.ai.embed({texts})`
+    used to load a 64-token caption encoder and now loads a 2048-token paragraph
+    encoder. The two models' vectors are not comparable, so anyone who indexed a
+    corpus with the old default has to re-index — and nothing downstream can
+    detect that they did not.
+
+    `default_for` takes the CAPABILITY and resolves the runner itself
+    (`_runner_for`), so both platforms are checked rather than one being assumed
+    from the other's list.
+
+    A Mac still answers SigLIP2, and that asymmetry is deliberate for now — see
+    `catalog.py`'s comment on the `mlx-embed` block for why curating a prose row
+    there needs a download-scoping change first.
+    """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     assert catalog.default_for(registry.EMBEDDINGS) == "google/siglip2-base-patch16-384"
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     assert catalog.default_for(registry.EMBEDDINGS) == (
-        "onnx-community/siglip2-base-patch16-384-ONNX")
+        "nomic-ai/nomic-embed-text-v1.5")
 
 
 def test_the_mlx_list_is_smallest_first():
@@ -94,8 +106,11 @@ def test_clip_is_deliberately_not_curated_on_either_engine():
 # -- the ONNX block -------------------------------------------------------------
 
 
-ONNX_IDS = {"onnx-community/siglip2-base-patch16-384-ONNX",
-            "onnx-community/siglip2-so400m-patch14-384-ONNX"}
+DUAL_ONNX_IDS = {"onnx-community/siglip2-base-patch16-384-ONNX",
+                 "onnx-community/siglip2-so400m-patch14-384-ONNX"}
+PROSE_ONNX_IDS = {"nomic-ai/nomic-embed-text-v1.5",
+                  "intfloat/multilingual-e5-small"}
+ONNX_IDS = DUAL_ONNX_IDS | PROSE_ONNX_IDS
 
 
 def test_onnx_embed_has_its_own_curated_list():
@@ -124,6 +139,52 @@ def test_the_onnx_list_is_smallest_first():
     assert sizes == sorted(sizes)
 
 
+def test_every_curated_embedding_id_resolves_to_a_PROMPT_SCHEME():
+    """**A curation rule, not a coincidence.** A retrieval encoder instructs a
+    question and a passage differently, and a model whose convention this app
+    does not know embeds both verbatim — still unit-length vectors of the right
+    dimension, just worse ones, with nothing downstream able to tell. So
+    recommending a model we cannot prompt correctly would be recommending a
+    silent accuracy loss.
+
+    "Resolves" means `text_embed_scheme` answers, which it always does — the
+    real assertion is that every PROSE row resolves to a scheme that is not
+    `"none"`, and that it comes from the curated table rather than from the id
+    heuristic. A dual encoder correctly answers `"none"`: it has no query/passage
+    convention, and that is what the route refuses `kind` on.
+    """
+    for code in ("mlx-embed", "onnx-embed"):
+        for entry in catalog.SUGGESTIONS[code]:
+            scheme = formats.text_embed_scheme(entry["id"])
+            assert scheme in formats.TEXT_EMBED_PROMPTS, entry["id"]
+            if entry["id"] in PROSE_ONNX_IDS:
+                assert scheme != "none", entry["id"]
+                assert entry["id"] in formats.TEXT_EMBED_SCHEMES, entry["id"]
+            else:
+                assert scheme == "none", entry["id"]
+
+
+def test_all_MiniLM_is_deliberately_not_curated():
+    """`catalog.py`'s own comment gives the reason, and it is the smallest-first
+    rule that makes it decisive rather than a preference: the ONNX export is
+    90 MB, so it would take position 0 and BE the default — and it is not
+    retrieval-trained, has no query/passage convention to prompt with, and is
+    the one candidate here that is bad at the job the capability exists for."""
+    for code in ("mlx-embed", "onnx-embed"):
+        ids = {entry["id"] for entry in catalog.SUGGESTIONS[code]}
+        assert not any("minilm" in repo_id.lower() for repo_id in ids)
+
+
+def test_the_prose_rows_lead_the_onnx_list():
+    """Position 0 IS the default (`default_for`), so this is the same fact as
+    the default test above, asserted structurally — a re-order is what would
+    change it, and a re-order is invisible in a diff of two dicts."""
+    ids = [entry["id"] for entry in catalog.SUGGESTIONS["onnx-embed"]]
+    assert ids[:2] == ["nomic-ai/nomic-embed-text-v1.5",
+                       "intfloat/multilingual-e5-small"]
+    assert set(ids[2:]) == DUAL_ONNX_IDS
+
+
 def test_the_onnx_sizes_are_the_FETCHED_set_not_the_whole_snapshot():
     """The deliberate exception to this file's whole-snapshot convention, and
     the reason it is documented in the block's own comment.
@@ -140,6 +201,11 @@ def test_the_onnx_sizes_are_the_FETCHED_set_not_the_whole_snapshot():
     by_id = {entry["id"]: entry for entry in catalog.SUGGESTIONS["onnx-embed"]}
     assert by_id["onnx-community/siglip2-base-patch16-384-ONNX"]["size_gb"] == 1.5
     assert by_id["onnx-community/siglip2-so400m-patch14-384-ONNX"]["size_gb"] == 4.6
+    # The prose rows deviate further: their repos ship a full safetensors copy
+    # AND (for e5) an OpenVINO one beside the quantizations, so the whole
+    # snapshot is four to five times the fetch.
+    assert by_id["nomic-ai/nomic-embed-text-v1.5"]["size_gb"] == 0.5
+    assert by_id["intfloat/multilingual-e5-small"]["size_gb"] == 0.5
 
 
 def test_every_id_still_appears_in_exactly_one_list():
@@ -159,9 +225,14 @@ def test_the_onnx_repos_are_exports_and_not_the_safetensors_repos():
     """Distinct repo ids for the same weights, which is what makes two lists
     correct rather than redundant: `onnx-community/*-ONNX` and `google/siglip2-*`
     are different downloads, and a machine holding one does not hold the other.
+
+    Only the DUAL rows carry the `-ONNX` suffix: the prose entries are the
+    publishers' own repos, which ship an `onnx/` folder beside their safetensors
+    rather than being re-exported under a separate account. Same rule either
+    way — the id names a repo holding a graph this engine can open.
     """
     assert not (ONNX_IDS & MLX_IDS)
-    for repo_id in ONNX_IDS:
+    for repo_id in DUAL_ONNX_IDS:
         assert repo_id.endswith("-ONNX")
 
 

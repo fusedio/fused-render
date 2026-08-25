@@ -778,6 +778,19 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # these repos publish one format, so the whole-repo pull IS the fetched set.
     # (The ONNX block below documents why it has to deviate.) Hub per-file byte
     # sums, 2026-08-21. Both ungated and Apache-2.0.
+    #
+    # **No prose rows here yet, so a Mac's default is still SigLIP2 while every
+    # other machine's has moved to a paragraph encoder.** That asymmetry is
+    # known and is about the DOWNLOADS rather than the engine: `mlx_embed`
+    # serves a text encoder perfectly well (mlx-embeddings ships bert,
+    # modernbert and xlm_roberta modules, and `formats.MLX_EMBED_MODEL_TYPES`
+    # admits them), so a Mac user who fetches one themselves gets the widened
+    # capability. What is missing is a curated row, and curating one means
+    # paying this list's whole-snapshot convention on repos that publish an ONNX
+    # export and an OpenVINO copy beside their safetensors — 2.3 GB for a 470 MB
+    # model — which would price a Mac's default above the SigLIP2 it replaced.
+    # Fixing that is a download-scoping change to `mlx_embed.download` and is
+    # deliberately not smuggled in here.
     "mlx-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
@@ -829,6 +842,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # for the so400m, none of which this app fetches.
     # `runners/onnx_embed.py`'s `download()` pins `allow_patterns` to the fp32
     # graphs plus the tokenizer, and the figures below are that set:
+    #   nomic:   573,899,776 graph + tokenizer + pooling config = 0.55 GB
+    #            (whole repo 2.2 GB — eight quantizations plus a safetensors copy)
+    #   e5:      493,097,472 graph + sentencepiece + tokenizer = 0.49 GB
+    #            (whole repo 2.3 GB — it also ships openvino and a .bin)
     #   base:    390,995,264 vision + 1,184,301,056 text + 34,362,880 tokenizer
     #            + configs = 1.54 GB
     #   so400m:  1,796,589,568 vision + 2,968,151,040 text (0.6 MB of graph plus
@@ -841,13 +858,22 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # asserts the on-disk total against these numbers on a machine that really
     # downloaded one, which is the only place the pin can be checked.
     #
-    # **Why these two and nothing else.** Smallest first, per the module rule,
-    # so the base export is what a bare `fused.ai.embed()` loads: 768 dimensions
-    # is a comfortable vector to keep a few thousand of in a page, and this is
-    # the smallest download that gets a genuinely good multilingual encoder. The
-    # so400m is the accuracy option at three times the disk and three times the
-    # compute per item, and its 1152-dim vectors are a third more storage for
-    # whoever is keeping them.
+    # **THE PROSE ROWS LEAD THIS LIST, and that is the user-visible change on
+    # this branch.** A bare `fused.ai.embed({texts})` used to load a 64-token
+    # caption encoder; it now loads a 2048-token paragraph encoder. That is the
+    # point of widening the capability — a SigLIP text tower truncates at 64
+    # tokens, so no chunk size turns it into a document encoder, and RAG,
+    # clustering and document search were all impossible at any setting. Anyone
+    # who indexed a corpus with the old default has to re-index: the two models'
+    # vectors are not comparable, and nothing can detect that they are not.
+    #
+    # Smallest first, per the module rule, so the smallest PROSE row is what a
+    # bare `fused.ai.embed()` loads on any machine that resolves to this engine.
+    # The two SigLIP2 exports keep their places below it: 768 dimensions is a
+    # comfortable vector to keep a few thousand of in a page, and the so400m is
+    # the accuracy option at three times the disk and three times the compute
+    # per item, with 1152-dim vectors that are a third more storage for whoever
+    # is keeping them.
     #
     # **A CLIP export is deliberately absent**, and it is the entry a future
     # reader is most likely to try to add — CLIP is the famous one and it is
@@ -863,17 +889,73 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #
     # Both repos are ungated and Apache-2.0, like their upstreams. **One line
     # each**, per the rule the transformers text list states.
+    #
+    # **Every row here has a KNOWN PROMPT SCHEME, and that is a curation rule
+    # rather than a coincidence** (`formats.TEXT_EMBED_SCHEMES`, asserted by
+    # `test_ai_catalog_embeddings.py`). A retrieval encoder instructs a question
+    # and a passage differently, and a model whose convention this app does not
+    # know embeds both verbatim — which still returns unit-length vectors of the
+    # right dimension, just worse ones, with nothing downstream able to tell.
+    # Recommending a model we cannot prompt correctly would be recommending a
+    # silent accuracy loss.
+    #
+    # **`sentence-transformers/all-MiniLM-L6-v2` is deliberately absent**, and
+    # it is the entry a future reader is most likely to try to add: it is the
+    # famous small one, its ONNX export is 90 MB, and it would take position 0
+    # on size alone. It is not retrieval-trained — it was distilled on a
+    # symmetric sentence-similarity objective, has no query/passage convention
+    # to prompt with, and is measurably behind every row below on retrieval. Put
+    # differently: the smallest-first rule would make it the DEFAULT, so adding
+    # it would mean a bare embed call loading the one model here that is bad at
+    # the job the capability exists for.
+    #
+    # **`BAAI/bge-base-en-v1.5` is absent for the same structural reason, and
+    # this one IS a deviation from the plan worth naming.** It is a good
+    # retrieval encoder with a known scheme, and its fetched fp32 set is 0.44 GB
+    # — SMALLER than either row below. Under the smallest-first rule that makes
+    # it position 0 and therefore the default, and it is English-only at 512
+    # tokens: a worse default than a 2048-token one for a capability whose whole
+    # point is paragraphs, and a narrower one than the multilingual SigLIP2 the
+    # default is moving away from. Curating it would mean either shipping that
+    # default or adding the separate `default:` field this file's module
+    # docstring explicitly rejects. It loads fine if a user fetches it
+    # themselves, and its scheme is in `TEXT_EMBED_SCHEMES` for exactly that
+    # case.
     "onnx-embed": [
+        {
+            "id": "nomic-ai/nomic-embed-text-v1.5",
+            "params": "137M",
+            "recommended": True,
+            "label": "Nomic Embed Text v1.5",
+            "nickname": "Nomic Embed",
+            # onnx/model.onnx 547.31 MB + tokenizer.json + vocab.txt + the
+            # pooling and tokenizer configs = 0.55 GB. The whole repo is 2.2 GB
+            # (eight quantizations plus a safetensors copy this engine cannot
+            # open), which is the deviation the block header documents.
+            "size_gb": 0.5,
+            "note": "The default: 2048 tokens of context and 768-dim vectors, "
+                    "so a whole paragraph embeds at once — what makes document "
+                    "search and RAG possible at all.",
+        },
+        {
+            "id": "intfloat/multilingual-e5-small",
+            "params": "118M",
+            "label": "Multilingual E5 small",
+            "nickname": "E5 small",
+            # onnx/model.onnx 470.27 MB + tokenizer.json 17.08 MB +
+            # sentencepiece.bpe.model 5.07 MB + configs = 0.49 GB.
+            "size_gb": 0.5,
+            "note": "100 languages in one space, at 384-dim — a third of the "
+                    "storage per vector, for 512 tokens rather than 2048.",
+        },
         {
             "id": "onnx-community/siglip2-base-patch16-384-ONNX",
             "params": "375M",
-            "recommended": True,
             "label": "SigLIP2 base (384px)",
             "nickname": "SigLIP2 base",
             "size_gb": 1.5,
-            "note": "The smallest here and what a bare embed call loads — "
-                    "768-dim vectors, multilingual, and quick enough to index a "
-                    "folder of photos.",
+            "note": "The one that reads IMAGES — text and photos in one space, "
+                    "768-dim, multilingual, but only 64 tokens of text.",
         },
         {
             "id": "onnx-community/siglip2-so400m-patch14-384-ONNX",
