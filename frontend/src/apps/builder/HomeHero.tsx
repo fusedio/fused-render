@@ -246,6 +246,18 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // Consumed once and removed (replaceSearch, no history entry): an annot
   // that survived in the URL would reappear on the next mount.
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // Grow the box with its content: reset to auto so a deleted line shrinks it,
+  // then take scrollHeight. The 3-row floor and 10-row ceiling are CSS
+  // min/max-height on `.home-composer-input`; past the ceiling the textarea
+  // scrolls. Runs on `prompt` rather than onChange so a starter chip landing
+  // a long brief resizes too.
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [prompt]);
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const raw = params.get("annot");
@@ -344,7 +356,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
           placeholder="What do you want to build?"
           aria-label="What do you want to build?"
           value={prompt}
-          rows={3}
+          rows={1}
           disabled={busy}
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
