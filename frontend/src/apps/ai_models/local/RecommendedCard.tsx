@@ -31,7 +31,11 @@ import {
   type ResultDisk,
   type SectionRunner,
 } from "@apps/ai_models/lib/aiModelGroups";
-import { engineHueStyle } from "@apps/ai_models/lib/engines";
+// No `engineHueStyle` import any more: one hue per engine family was a signal
+// for a reader SWEEPING a grid of tags, and there are no engine tags on these
+// faces to sweep — the engine is a row in the (i) now, in the same grey as
+// every other fact in there.
+import { tabHref } from "@apps/ai_models/routes";
 import { gateChrome } from "@apps/ai_models/lib/hubSearchView";
 import {
   hubSizeLabel,
@@ -39,13 +43,15 @@ import {
   knownTotalSize,
   lookupTotalSize,
 } from "@apps/ai_models/lib/hubSize";
+import { InfoButton } from "./ModelInfo";
+import { modelName, RecommendedMark } from "./RepoCard";
 import { CancelButton } from "@apps/ai_models/shared/CancelButton";
-import { ModelProgress } from "@apps/ai_models/shared/ModelProgress";
+import { DownloadGlyph, ModelProgress } from "@apps/ai_models/shared/ModelProgress";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
 import { type AiCatalogModel, type HubModel } from "@platform/lib/api";
 import { timeAgo } from "@platform/lib/format";
 import { type Job } from "@platform/lib/jobs";
-import { navigate, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 
 /** The card every model on this page that is not a cache repo is drawn as.
  *
@@ -60,8 +66,11 @@ function ModelCard({
   hoverNote,
   cardRef,
   name,
+  marked,
   badges,
   size,
+  slug,
+  info,
   what,
   progress,
   meta,
@@ -89,8 +98,18 @@ function ModelCard({
   name: { href: string; text: string; title: string };
   /** ✓ downloaded, a gate, whatever else the head has to state. */
   badges?: ReactNode;
-  /** What it costs, in the slot every card on this page puts a figure in. */
+  /** What it costs, in the slot every card on this page puts a figure in — the
+   *  CAPTION line under the name, ahead of the repo id. */
   size: { text: string; title?: string };
+  /** The repo id, after the figure on that same line. */
+  slug: string;
+  /** The (i) in the head. Everything that is identity rather than state lives
+   *  behind it, which on these cards is the engine tag. */
+  info?: ReactNode;
+  /** Whether the curation names this model — the seal after the name. Always
+   *  true for a recommendation; asked per row for a Hub search result, which is
+   *  a list the curation has no say over. */
+  marked?: boolean;
   what?: ReactNode;
   progress?: ReactNode;
   meta?: ReactNode;
@@ -109,16 +128,35 @@ function ModelCard({
           href={name.href}
           target="_blank"
           rel="noopener noreferrer"
-          title={name.title}
+          data-hint={name.title}
         >
           {name.text}
         </a>
+        {/* THE CURATION'S SEAL, on every card that earns it and not only the
+            downloaded ones (Akshil, 2026-08-25: "do we show the badge on fused
+            selected models that are downloaded only? I think we should show it
+            on non-downloaded models as well"). It marks the MODEL, not the
+            download — a recommendation is the one card that is curated by
+            construction, so hiding the mark until the weights land was the page
+            saying least where it was surest. */}
+        {marked && <RecommendedMark />}
         {badges}
-        <span className="am-card-size" title={size.title}>
+        {info}
+      </div>
+      {/* THE CAPTION LINE, identical to the disk card's (2026-08-25). The figure
+          used to sit in the head beside the name and the repo id down in the
+          footer in mono, which made a recommendation a visibly different SHAPE
+          from the cached card drawn next to it in the same row — "why are they
+          not the same? at least the name, the mlx-community thing and the size
+          should be same".
+          Cost first, then the address of the thing it is the cost of. */}
+      <div className="am-card-sub" data-hint={slug}>
+        <span className="am-card-size" data-hint={size.title}>
           {size.text}
         </span>
+        <span className="am-card-slug cc-mono">{slug}</span>
       </div>
-      <div className="am-card-what">{what}</div>
+      {what && <div className="am-card-what">{what}</div>}
       {progress}
       <div className="cc-mdcard-foot">
         <span className="cc-mdcard-meta cc-mono">{meta}</span>
@@ -147,40 +185,46 @@ function ModelCard({
  *  promising a backend and then, one download later, drawing the same repo with
  *  `no engine` on it.
  */
-function EngineTag({
-  runner,
-  capabilityOnly = false,
-}: {
-  runner: SectionRunner | null;
-  capabilityOnly?: boolean;
-}) {
-  if (!runner?.shortLabel) return null;
+function engineRow(runner: SectionRunner | null, capabilityOnly = false) {
+  if (!runner?.shortLabel) return { label: "Engine", value: null };
+  return {
+    label: "Engine",
+    value: runner.shortLabel,
+    hint: !runner.available
+      ? `This is a ${runner.shortLabel} model, and it cannot be loaded here: ${runner.reason ?? "unavailable"}.`
+      : capabilityOnly
+        ? `This kind of model loads in the ${runner.shortLabel} engine here — the backend chosen for the capability on the Engines tab. Whether this repo ships the weight format that engine reads is settled when the download lands.`
+        : `Loads in the ${runner.shortLabel} engine — the backend chosen for this capability on the Engines tab.`,
+  };
+}
+
+/** The way out of an engine that cannot serve this model here — the same amber
+ *  `Switch engines` the disk card puts beside a dead Load.
+ *
+ *  It is what is left of `EngineTag`'s unavailable arm. The tag itself moved
+ *  into the (i) (2026-08-25) because it is IDENTITY: which backend reads these
+ *  weights is a fact about the model, read once, by someone who has stopped at
+ *  one card. But the tag was carrying a second job in its `-off` state — the
+ *  only thing on the card explaining why Download is greyed — and that half is
+ *  not identity, it is the reason the control beside it does nothing. So it
+ *  stays on the face, as the verb rather than the noun. */
+function SwitchEngines({ runner }: { runner: SectionRunner | null }) {
+  const why = `${runner?.shortLabel ?? "This model"} cannot be loaded here: ${runner?.reason ?? "no engine serves this capability on this machine"}.`;
   return (
-    <span
-      className={
-        "am-card-engine" + (runner.available ? " am-card-engine-family" : " am-card-engine-off")
-      }
-      /* Same hue table as the disk card's tag (D436), resolved from the SHORT
-         label here because that is all a card for a model nobody has downloaded
-         has — `engineHue` matches the family prefix inside it. One engine, one
-         colour, whichever card the reader is looking at. */
-      style={engineHueStyle(runner.shortLabel)}
-      tabIndex={runner.available ? undefined : 0}
-      aria-label={
-        runner.available
-          ? undefined
-          : `${runner.shortLabel} — cannot be loaded here: ${runner.reason ?? "unavailable"}`
-      }
-      title={
-        !runner.available
-          ? `This is a ${runner.shortLabel} model, and it cannot be loaded here: ${runner.reason ?? "unavailable"}.`
-          : capabilityOnly
-            ? `This kind of model loads in the ${runner.shortLabel} engine here — the backend chosen for the capability on the Engines tab. Whether this repo ships the weight format that engine reads is settled when the download lands.`
-            : `Loads in the ${runner.shortLabel} engine — the backend chosen for this capability on the Engines tab.`
-      }
+    <a
+      className="am-card-fix"
+      href={tabHref("engines", "")}
+      data-hint={why}
+      aria-label={`Switch engines — ${why}`}
+      onClick={(e) => {
+        if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+          return;
+        e.preventDefault();
+        navigateUrl(tabHref("engines", ""));
+      }}
     >
-      {runner.shortLabel}
-    </span>
+      Switch engines
+    </a>
   );
 }
 
@@ -232,11 +276,15 @@ export function RecommendedCard({
       name={{
         href: hubModelUrl(model.id),
         /* The curation's `label` rather than the repo id, which is the id's
-           readable half; the id itself is in the footer, in mono, where a
-           reader who needs to type it looks. */
+           readable half; the id itself is on the caption line below, in mono,
+           where a reader who needs to type it looks — and where the disk card
+           keeps its own. */
         text: model.label,
         title: `Open ${model.id} on the Hugging Face Hub`,
       }}
+      slug={model.id}
+      marked
+      info={<InfoButton name={model.id} rows={[engineRow(runner)]} />}
       size={{
         /* Same slot, same figure, one difference: this one is what the download
            WILL cost — the catalog's approximate constant, or the fetcher's own
@@ -252,20 +300,27 @@ export function RecommendedCard({
               ? `About ${size.text} to download`
               : `${size.text} — the size this download itself is reporting, which is more than the recorded estimate`,
       }}
-      /* A recommendation for a capability nothing can serve is still worth
-         showing (hiding it leaves somebody hunting for a feature that never
-         was) — it just has no Download below it. */
-      what={<EngineTag runner={runner} />}
+      /* Nothing on the face any more: the engine tag it used to hold is a row
+         in the (i) above. A recommendation for a capability nothing can serve is
+         still worth showing (hiding it leaves somebody hunting for a feature
+         that never was) — it just has `Switch engines` and a dead Download. */
+      what={null}
       /* No `detail` override: the job says what it is actually doing
          ("Fetching weights…", "Preparing MLX…") and a fixed word here would
          paper over a venv build with "Downloading". */
       progress={busy && <ModelProgress job={job} />}
-      meta={<span title={model.id}>{model.id}</span>}
+      /* The footer's left half is empty now — the repo id it held moved up to
+         the caption line, where the disk card keeps its own. Nothing replaces
+         it: a recommendation has no "used 4h ago" to state, because nothing on
+         this machine has ever used it. */
+      meta={null}
       actions={
         busy ? (
           <CancelButton id={model.id} job={job} onCancel={onCancel} />
         ) : (
-          <button
+          <>
+            {!runner?.available && <SwitchEngines runner={runner} />}
+            <button
             type="button"
             className="am-card-power"
             /* Offered only where it can end in a model that runs. The tag
@@ -285,10 +340,12 @@ export function RecommendedCard({
                 ? `Download ${model.id}`
                 : `Download ${model.id} — unavailable: ${runner?.reason ?? "no engine serves this capability on this machine"}`
             }
-            onClick={onDownload}
-          >
-            Download
-          </button>
+              onClick={onDownload}
+            >
+              <DownloadGlyph />
+              Download
+            </button>
+          </>
         )
       }
     />
@@ -327,6 +384,7 @@ function count(n: number | null): string | null {
  */
 export function HubResultCard({
   model,
+  recommended,
   runner,
   disk,
   authenticated,
@@ -336,6 +394,11 @@ export function HubResultCard({
   onCancel,
 }: {
   model: HubModel;
+  /** Whether the curation names this exact repo id. A search is the Hub's list,
+   *  not ours, so most rows are not marked — but a search that turns up a model
+   *  this app recommends should say so, or the page's own opinion depends on
+   *  which surface you found the model through. */
+  recommended: boolean;
   /** Which backend would load this capability here, from the catalog — the same
    *  table the recommended cards read. */
   runner: SectionRunner | null;
@@ -460,9 +523,14 @@ export function HubResultCard({
       cardRef={card}
       name={{
         href: model.url,
-        text: model.id,
+        /* The MODEL half, like every other card on this page — the owner leads
+           the caption line below rather than eating the head's first third. */
+        text: modelName(model.id),
         title: `Open ${model.id} on the Hub`,
       }}
+      slug={model.id}
+      marked={recommended}
+      info={<InfoButton name={model.id} rows={[engineRow(runner, true)]} />}
       badges={
         <>
           {disk.state === "downloaded" && !busy && (
@@ -483,25 +551,24 @@ export function HubResultCard({
       }
       size={{ text: size ?? "—", title: hubSizeTitle(model, total) }}
       what={
+        /* The one tag left on the face, and it is STATE rather than identity —
+           the same reason `RepoCard` kept it (D424). A half-fetched snapshot is
+           not a model an engine can read, and it is what makes Download mean
+           "resume" instead of "fetch". The engine tag that used to be the other
+           arm of this ternary is a row in the (i) now. */
         disk.state === "partial" ? (
-          /* The tag `RepoCard` wears for the same state, in the slot the engine
-             tag would have used (D424): a half-fetched snapshot is not a model
-             an engine can read, so naming one here would be a claim about a
-             file set that is not all there yet. */
           <span
             className="am-card-engine am-card-engine-partial"
             tabIndex={0}
             aria-label={`${PARTIAL_TAG} — Download picks this up from the bytes already here.`}
-            title={
+            data-hint={
               `${model.id} is a download that did not finish. Download picks it up from the ` +
               "bytes already here rather than starting over; the Local view's trash discards them."
             }
           >
             {PARTIAL_TAG}
           </span>
-        ) : (
-          <EngineTag runner={runner} capabilityOnly />
-        )
+        ) : null
       }
       progress={busy && <ModelProgress job={job} />}
       meta={
@@ -563,6 +630,9 @@ export function HubResultCard({
                 {gate.action}
               </a>
             )}
+            {/* The reason that Download is dead, where it is — same amber verb
+                the other two cards use. */}
+            {!loadable && <SwitchEngines runner={runner} />}
             {/* Nothing at all while the walk has not answered: both the ✓ and
                 the button would be a claim about a disk nobody has read yet.
                 And nothing on a copy we already have — the ✓ above and the
@@ -587,6 +657,7 @@ export function HubResultCard({
                   }
                   onClick={onDownload}
                 >
+                  <DownloadGlyph />
                   Download
                 </button>
               )}

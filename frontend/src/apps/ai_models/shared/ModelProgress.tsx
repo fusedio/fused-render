@@ -13,6 +13,37 @@
 import { formatSize } from "@platform/lib/format";
 import type { Job } from "@platform/lib/jobs";
 
+/** The arrow-into-a-tray every Download on this page now leads with.
+ *
+ *  Lives here rather than in one of the cards because three different buttons
+ *  draw it — a recommendation, a Hub result, and a partly downloaded repo's
+ *  "Continue downloading" — and the whole point of the glyph is that those read
+ *  as one act. A second copy of the path is a second chance for one of them to
+ *  drift a stroke width.
+ *
+ *  `aria-hidden`, because every one of those buttons already says the word.
+ */
+export function DownloadGlyph() {
+  return (
+    <svg
+      className="am-dl-glyph"
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3v12" />
+      <path d="m7 10 5 5 5-5" />
+      <path d="M4 21h16" />
+    </svg>
+  );
+}
+
 /**
  * `stop` is the way OUT of the work this row is reporting, drawn at the END of
  * the row (Akshil, 2026-08-24).

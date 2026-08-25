@@ -1,18 +1,22 @@
-// The two delete confirmations, and nothing else.
+// The delete confirmation, and nothing else.
 //
-// They are the only surfaces on this page that DESTROY something, and they are
-// the reason the flow has a `Pending` state at all: no click goes straight to a
-// delete, every one becomes a target the user reads back first. Both state the
-// bytes they free, because that number is the whole reason someone is here —
-// and the revision dialog additionally states what it does NOT free (blobs
-// shared with the surviving revisions), which is the one arithmetic a reader
-// cannot do from the card.
+// It is the only surface on this page that DESTROYS something, and it is the
+// reason the flow has a `Pending` state at all: no click goes straight to a
+// delete, every one becomes a target the user reads back first. It states the
+// bytes it frees, because that number is the whole reason someone is here.
+//
+// There was a SECOND dialog here, for deleting one revision of a repo, and it
+// went with the revision UI on 2026-08-24 (see `RepoCard`'s headstone). It was
+// the most carefully written dialog on the page — it stated the blobs a
+// revision shares with its siblings and therefore does NOT free — and none of
+// that was a question anyone brought to this page: it asked a reader to pick a
+// git commit off a folder whose only real question is what it costs. The whole
+// repo is the target now, which is the number the card shows.
 //
 // Split out of the page file so the Local tab reads as its grid plus a dialog
 // prop, rather than as a grid with 90 lines of modal markup hanging off the
 // bottom of the same component.
 import { type Pending } from "./LocalTab";
-import { shortCommit } from "./hub";
 import { type AiModelDeleteTarget } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -68,60 +72,6 @@ export function DeleteDialogs({
       </Modal>
     )}
 
-    {pending?.kind === "revision" && (
-      <Modal
-        title={`Delete revision ${shortCommit(pending.revision.commit)}?`}
-        busy={busy}
-        onClose={onClose}
-        footer={
-          <>
-            <button
-              type="button"
-              className="btn btn-secondary"
-              disabled={busy}
-              onClick={onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="btn btn-danger"
-              disabled={busy}
-              onClick={() =>
-                onConfirm(
-                  [{ dir: pending.repo.dir, revision: pending.revision.commit }],
-                  `deleted ${pending.repo.id} @ ${shortCommit(pending.revision.commit)}`,
-                )
-              }
-            >
-              {busy ? "Deleting…" : `Delete · ${formatSize(pending.revision.size)}`}
-            </button>
-          </>
-        }
-      >
-        <p>
-          Removes revision <span className="cc-mono">{shortCommit(pending.revision.commit)}</span>{" "}
-          of <b>{pending.repo.id}</b>, freeing <b>{formatSize(pending.revision.size)}</b>.
-          {pending.revision.shared > 0 && (
-            <>
-              {" "}
-              The <b>{formatSize(pending.revision.shared)}</b> it shares with the other revisions
-              stays.
-            </>
-          )}
-        </p>
-        {pending.revision.refs.length > 0 && (
-          <p>
-            {pending.revision.refs.join(", ")}{" "}
-            {pending.revision.refs.length === 1 ? "points" : "point"} at this revision and will be
-            removed with it.
-          </p>
-        )}
-        {pending.repo.revisions === 1 && (
-          <p>It is the only revision left, so the whole repo folder goes.</p>
-        )}
-      </Modal>
-    )}
     </>
   );
 }

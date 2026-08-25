@@ -766,7 +766,30 @@ describe("the short refusal on the card", () => {
     // Capitalised to stand alone, cut at the sentence's own comma: the middle
     // clause is what the dashed amber tag already says, and everything past the
     // dash is the remedy, which is the link's job.
-    expect(loadRefusalShort(off)).toBe("Text-to-image is set to MLX FLUX.");
+    //
+    // And the CAPABILITY LEAD-IN goes too, since the line moved into the actions
+    // strip (2026-08-24): the card sits under a heading reading IMAGE
+    // GENERATION, and at strip width those four words were exactly what pushed
+    // the engine's own name past the ellipsis — leaving "Text-to-image is set
+    // to …", which is the half the reader already had.
+    expect(loadRefusalShort(off)).toBe("Set to MLX FLUX");
+  });
+
+  // Keyed on `repo.capability`, a field this page HOLDS — never on words in the
+  // prose. A reason that opens some other way keeps every word of its first
+  // clause, so the worst case is a line as long as it was before.
+  it("strips only a lead-in that restates the capability", () => {
+    const odd = repo({
+      id: "some/model",
+      capability: "text-to-image",
+      engine: engine({
+        code: "diffusers-image",
+        shortLabel: "Diffusers",
+        available: false,
+        reason: "needs Apple Silicon, which this machine is not",
+      }),
+    });
+    expect(loadRefusalShort(odd)).toBe("Needs Apple Silicon");
   });
 
   // Bugbot, PR #794: the first cut of this function returned the weight-format
@@ -777,8 +800,11 @@ describe("the short refusal on the card", () => {
     const short = loadRefusalShort(WESPEAKER) ?? "";
     expect(short).not.toContain("format");
     expect(short).toContain("not supported");
-    // …and the format line survives for the card it IS true of.
-    expect(loadRefusalShort(QWEN_NO_ENGINE)).toContain("format");
+    // …and the ENGINE line survives for the card it IS true of. It reads "No
+    // engine reads it" rather than "…this weight format" since the line moved
+    // into the actions strip: the noun was the part being ellipsised, and the
+    // full sentence is one instant hint away.
+    expect(loadRefusalShort(QWEN_NO_ENGINE)).toBe("No engine reads it");
   });
 
   it("leads with the server's own per-task sentence when it sent one", () => {
@@ -787,7 +813,11 @@ describe("the short refusal on the card", () => {
       capability: null,
       supportReason: "Text to speech is not supported yet, and nothing here can serve it",
     });
-    expect(loadRefusalShort(tts)).toBe("Text to speech is not supported yet.");
+    // No trailing full stop: this is a label beside a button now, not prose
+    // under one. The lead-in survives here because `capability` is null — there
+    // is no field saying it is a restatement, and this function never guesses
+    // that from the words.
+    expect(loadRefusalShort(tts)).toBe("Text to speech is not supported yet");
   });
 });
 

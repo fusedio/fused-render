@@ -55,6 +55,15 @@
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
 
+  /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
+     One model, at two ends of one question: this machine HAS it, or it does
+     not. Declared per palette rather than as a `color-mix` against --fg-muted
+     and --bg, because a mix states a DIRECTION and the two themes need
+     different distances along it — the dark values below are the mixes they
+     replace, to the byte; the light ones are not (see the light block). */
+  --am-surface-have: #24262b;
+  --am-surface-none: #17191d;
+
   /* Quiet control chrome — the bars' two bordered controls (the labelled mode
      trigger and .bar-ctl-bordered). These are TOKENS
      rather than an alpha spelled into the rules because the SAME alpha reads
@@ -289,6 +298,17 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  /* The same axis, and the reason it is a token at all. The mix these replace
+     was 14% of --fg-muted over --bg-alt, which on this palette is a warm
+     #dcdde0 — darker and greyer than the page, so a downloaded model read as a
+     DISABLED card rather than a present one, and the axis ran the wrong way
+     against a white page. Here "present" goes the other direction: `have` sits
+     just off the card's own --bg-alt, and `none` recedes to nearly the page
+     white. Both stay lighter than --border (#d8dade), so a card's own outline
+     still reads at either end. */
+  --am-surface-have: #eceef2;
+  --am-surface-none: #fbfbfc;
 
   /* Quiet control chrome (see the dark block). These four are the values the
      component rules carried inline before the group existed, so light mode is

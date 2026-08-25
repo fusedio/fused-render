@@ -3,8 +3,6 @@ import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import {
   capabilityLabel,
   choiceReason,
-  engineHue,
-  engineHueStyle,
   engineNote,
   ignoredWarning,
   parseAiIdleMinutes,
@@ -432,52 +430,3 @@ describe("unloadCountdown", () => {
   });
 });
 
-describe("engineHue", () => {
-  it("gives each engine family a hue of its own", () => {
-    // The point of the feature: two backends a reader must not confuse — the
-    // three Whisper formats are mutually unloadable — cannot share a colour.
-    const hues = [
-      "MLX LM",
-      "MLX Whisper",
-      "MLX FLUX",
-      "MLX Embeddings",
-      "Diffusers",
-      "llama.cpp",
-      "Faster Whisper",
-      "Transformers Embeddings",
-    ].map(engineHue);
-    expect(hues.every((h) => h !== null)).toBe(true);
-    expect(new Set(hues).size).toBe(hues.length);
-  });
-
-  it("resolves a hardware-qualified label to its family's hue", () => {
-    // The two cards that draw a tag for a model NOT on disk have only the
-    // runner's short label. All three torch builds read the same safetensors,
-    // so one colour for them is the right answer as well as the available one.
-    expect(engineHue("Diffusers (CUDA)")).toBe(engineHue("Diffusers"));
-    expect(engineHue("MLX LM (Apple Silicon)")).toBe(engineHue("MLX LM"));
-  });
-
-  it("prefers the longest family a label starts with", () => {
-    // "MLX Embeddings" starts with neither "MLX LM" nor "MLX FLUX", but the
-    // rule has to be longest-match anyway: a family named as a prefix of
-    // another must never capture it.
-    expect(engineHue("MLX Embeddings (Apple Silicon)")).toBe(engineHue("MLX Embeddings"));
-    expect(engineHue("MLX Embeddings")).not.toBe(engineHue("MLX LM"));
-  });
-
-  it("has no colour for an engine it cannot place", () => {
-    // A hue invented for a name we do not know is a claim we cannot back — the
-    // tag stays muted instead.
-    expect(engineHue("Some Future Backend")).toBeNull();
-    expect(engineHue(null)).toBeNull();
-    expect(engineHue("")).toBeNull();
-  });
-
-  it("hands the card a custom property, or nothing at all", () => {
-    expect(engineHueStyle("Diffusers")).toEqual({ "--am-eng": "var(--task-c5)" });
-    // Not `{}`: an empty style object would still be a style attribute, and the
-    // fallback in the stylesheet is what should answer here.
-    expect(engineHueStyle("Some Future Backend")).toBeUndefined();
-  });
-});

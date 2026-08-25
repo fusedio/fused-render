@@ -67,7 +67,6 @@ import {
   type AiCatalogCapability,
   type AiModelDeleteTarget,
   type AiModelRepo,
-  type AiModelRevision,
 } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { cancelJob, type Job } from "@platform/lib/jobs";
@@ -76,9 +75,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 
 /** What a confirmation is about. Every destructive action becomes one of these
  *  first — there is no path from a click straight to a delete. */
-export type Pending =
-  | { kind: "repo"; repo: AiModelRepo }
-  | { kind: "revision"; repo: AiModelRepo; revision: AiModelRevision };
+export type Pending = { kind: "repo"; repo: AiModelRepo };
 
 /** A section heading, and no figure beside it.
  *
@@ -111,7 +108,6 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     scanEpoch,
     publishListing,
   } = scan;
-  const [expanded, setExpanded] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending | null>(null);
   const [busy, setBusy] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
@@ -341,6 +337,15 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
     ),
   );
 
+  // Which repo ids the curation actually names — the tick beside a card's name.
+  // Same source as the two maps around it, and deliberately the same `id`
+  // equality the merge uses to drop a recommendation for a model already on
+  // disk: the tick and that de-duplication have to agree, or a card could wear
+  // "recommended" while a second card recommending it sat in the same section.
+  const curated = new Set<string>(
+    (catalog ?? []).flatMap((entry) => entry.models.map((m) => m.id)),
+  );
+
   // What the curation says a model's whole download WEIGHS, in bytes — the
   // denominator a partly downloaded card paints its fraction against when no
   // live job is reporting real byte counts (`partialFraction`).
@@ -405,7 +410,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
       <RepoCard
         key={r.path}
         repo={r}
-        expanded={expanded === r.dir}
+        recommended={curated.has(r.id)}
         loaded={loadedById.get(r.id)}
         job={jobByModel.get(r.id)}
         busy={busy}
@@ -413,9 +418,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
         refusal={loadRefusal(r)}
         resumeCapability={resumeCapability}
         estimate={estimateById.get(r.id) ?? null}
-        onToggle={() => setExpanded(expanded === r.dir ? null : r.dir)}
         onDeleteRepo={() => setPending({ kind: "repo", repo: r })}
-        onDeleteRevision={(revision) => setPending({ kind: "revision", repo: r, revision })}
         onDownload={() => resumeCapability && runDownload(r.id, resumeCapability)}
         onCancel={runCancelDownload}
         onLoad={() => runLoad(r)}
@@ -457,6 +460,7 @@ export function LocalTab({ scan }: { scan: CacheScan }) {
           settled={settled}
           cards={onCard}
           runners={runners}
+          curated={curated}
           jobByModel={jobByModel}
           pulling={pulling}
           onDownload={runDownload}
