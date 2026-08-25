@@ -493,6 +493,11 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import prefetch as shell_prefetch
 
     app.include_router(shell_mounts.router)
+    # Full Disk Access nudge (shell/fda.py): open the Settings pane + persist
+    # "Not now". The state itself rides /api/config's `fda` field.
+    from fused_render.shell import fda as shell_fda
+
+    app.include_router(shell_fda.router)
     shell_mounts.startup()
     # Background mount-health monitor (shell/mounts.py): polls every mount on a
     # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect

@@ -1,0 +1,198 @@
+"""Full Disk Access detection + the one-time nudge's backend (macOS).
+
+The packaged app triggers a separate TCC prompt per protected-folder
+category (Desktop, Documents, Downloads, removable volumes, network
+volumes) the first time it reads under each one. Full Disk Access — granted
+once in System Settings — silences all of them permanently, and because the
+release build is Developer ID signed with a stable bundle id (D73), the
+grant survives upgrades. macOS has no API to request FDA: an app can only
+DETECT it and open the right Settings pane. That is everything this module
+does; the shell renders the nudge (platform/ui/FdaCard.tsx) off the `fda`
+field /api/config gets from snapshot().
+
+Detection probes paths that only FDA unlocks. FDA-class paths never raise a
+TCC prompt (unlike the per-folder categories) — a failed probe is silent,
+so probing on every /api/config read costs nothing but a stat.
+"""
+import os
+import subprocess
+import sys
+
+from fastapi import APIRouter, Header
+from fastapi.responses import JSONResponse
+
+from fused_render.shell import storage
+
+router = APIRouter()
+
+#: Deep-link straight to System Settings -> Privacy & Security -> Full Disk
+#: Access. The legacy `com.apple.preference.security` anchor still routes on
+#: macOS 13+'s System Settings.
+SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+)
+
+#: Force the nudge on ("1") or off ("0") regardless of packaging — a dev
+#: server is never `sys.frozen == "macosx_app"`, so without the override the
+#: banner could not be exercised outside a DMG install. "demo" additionally
+#: forces the probe to answer not-granted: a terminal-launched dev server
+#: inherits the TERMINAL's TCC identity, which on a dev machine usually has
+#: FDA already, so "1" alone often probes True and renders nothing.
+FORCE_ENV = "FUSED_RENDER_FDA_BANNER"
+
+#: FDA-gated probe targets, each `(path, how)`. `listdir` needs the dir's
+#: contents (a bare stat on the dir succeeds without FDA); `read` opens the
+#: file and reads one byte. Several candidates because none is guaranteed to
+#: exist on every install — the first that exists decides.
+_PROBES: list[tuple[str, str]] = [
+    ("~/Library/Safari", "listdir"),
+    ("~/Library/Mail", "listdir"),
+    ("/Library/Application Support/com.apple.TCC/TCC.db", "read"),
+]
+
+
+def offered() -> bool:
+    """Whether this process should surface the FDA nudge at all.
+
+    True only for the packaged macOS app (`py2app` sets `sys.frozen` to
+    "macosx_app") — a dev-from-source server's TCC identity is the terminal
+    that launched it, so a grant would land on the wrong app. FORCE_ENV
+    overrides both ways for testing.
+    """
+    force = os.environ.get(FORCE_ENV)
+    if force in ("1", "demo"):
+        return True
+    if force == "0":
+        return False
+    return sys.platform == "darwin" and getattr(sys, "frozen", None) == "macosx_app"
+
+
+def granted() -> bool | None:
+    """Whether Full Disk Access is granted to THIS process.
+
+    True on the first probe that succeeds, False on the first that raises
+    PermissionError, None when every probe target is missing (no basis to
+    nag — the caller must treat None as "don't show anything").
+    """
+    if os.environ.get(FORCE_ENV) == "demo":
+        return False
+    for raw, how in _PROBES:
+        path = os.path.expanduser(raw)
+        try:
+            if how == "listdir":
+                os.listdir(path)
+            else:
+                with open(path, "rb") as fh:
+                    fh.read(1)
+            return True
+        except PermissionError:
+            return False
+        except OSError:
+            continue
+    return None
+
+
+#: Whether THIS session has read under a protected-folder category — the
+#: moment macOS fires (or would fire) an Allow prompt. The nudge renders only
+#: after that moment: a user who never leaves unprotected territory never
+#: sees a TCC prompt, so a card about prompts would be noise to them. In-
+#: memory on purpose — persisting it would bring the card back at launch on
+#: every later session, which is exactly the out-of-nowhere nag this exists
+#: to avoid. Bare bool write under the GIL; no lock needed.
+_touched = False
+
+#: The TCC per-folder categories, each a prompt the first time the app reads
+#: under it. /Volumes covers both removable and network volumes (the boot
+#: volume itself is not browsed via /Volumes in this app).
+def _protected_roots() -> list[str]:
+    return [
+        os.path.expanduser("~/Desktop"),
+        os.path.expanduser("~/Documents"),
+        os.path.expanduser("~/Downloads"),
+        "/Volumes",
+    ]
+
+
+def note_touch(path: str) -> None:
+    """Record that `path` is being read; flips the session's touched flag when
+    it falls under a protected category. Called from the fs routes on every
+    list/stat — first line bails, so the steady-state cost is one bool read."""
+    global _touched
+    if _touched or not offered():
+        return
+    for root in _protected_roots():
+        if path == root or path.startswith(root + os.sep):
+            _touched = True
+            return
+
+
+def _path() -> str:
+    return os.path.join(storage.home_dir(), "fda.json")
+
+
+def dismissed() -> bool:
+    data = storage.read_json(_path())
+    return bool(isinstance(data, dict) and data.get("banner_dismissed"))
+
+
+def set_dismissed() -> None:
+    storage.write_json(_path(), {"banner_dismissed": True})
+
+
+def snapshot() -> dict | None:
+    """The `fda` field of /api/config, or None to omit it.
+
+    Omitted when the nudge isn't offered (non-mac, dev server) and when the
+    probe is inconclusive — an absent field is the shell's "render nothing
+    AND stop watching", so uncertainty never nags and never polls.
+
+    `relevant` is the touched flag: the card renders only once this session
+    has read under a protected folder — the moment the Allow prompts start —
+    and until then the shell only keeps watching this field.
+    """
+    if not offered():
+        return None
+    state = granted()
+    if state is None:
+        return None
+    return {"granted": state, "dismissed": dismissed(), "relevant": _touched}
+
+
+def _require_fused(x_fused: str | None) -> JSONResponse | None:
+    # Same D3 guard as server._require_fused, duplicated to keep shell↛server
+    # acyclic (see shell/bookmarks.py).
+    if x_fused != "1":
+        return JSONResponse({"error": "missing X-Fused header"}, status_code=403)
+    return None
+
+
+def _require_offered() -> JSONResponse | None:
+    if not offered():
+        return JSONResponse({"error": "not available"}, status_code=404)
+    return None
+
+
+@router.post("/api/fda/settings")
+def api_fda_settings(x_fused: str | None = Header(default=None)):
+    """Open System Settings on the Full Disk Access pane."""
+    guard = _require_fused(x_fused) or _require_offered()
+    if guard is not None:
+        return guard
+    # `open` returns immediately; no output worth capturing. Popen (not run)
+    # so a wedged LaunchServices can't hold the request thread.
+    subprocess.Popen(
+        ["open", SETTINGS_URL],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return {"ok": True}
+
+
+@router.post("/api/fda/dismiss")
+def api_fda_dismiss(x_fused: str | None = Header(default=None)):
+    """Persist "Not now" — the nudge never renders again on this machine."""
+    guard = _require_fused(x_fused) or _require_offered()
+    if guard is not None:
+        return guard
+    set_dismissed()
+    return {"ok": True}
