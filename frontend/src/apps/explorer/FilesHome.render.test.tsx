@@ -409,6 +409,28 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 
+  test("the stale-clear deadline still fires while suppressRank holds the rank request back", async () => {
+    // `pending` is false on the suppressed-rank path (the rank effect
+    // early-returns before ever setting it) — the deadline effect used to
+    // gate on `pending`, which never fires here, so the held answer (and its
+    // `is-stale` dimming) stayed behind indefinitely instead of clearing once
+    // narrowing empties it out, same as the pending-request path does.
+    const box = mount();
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    expect(statCalls).toHaveLength(1); // the stat is issued but left hanging
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
+
+    await flush(() => clock.advance(STALE_CLEAR_MS + 50));
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");

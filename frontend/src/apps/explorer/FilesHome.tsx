@@ -612,8 +612,24 @@ export function FilesSearch({
   // deadline drop to `answer = null`, which renders as the plain "Searching…"
   // note — no rows and an honest label beats rows for a query the user has
   // visibly moved past.
+  //
+  // `pending` was the only qualifying condition before `suppressRank`
+  // existed — there was always a real request "outliving" the query to time
+  // out on. An address-shaped query holds ranking back entirely (`suppressRank`
+  // is a THIRD reason `behind` can be true, alongside `pending` and, briefly,
+  // neither): `pending` is never true on that path (the rank effect
+  // early-returns before setting it), so a guard reading only `pending` never
+  // fires here at all — the held answer, and its `is-stale` dimming, stayed
+  // behind indefinitely regardless of how long the stat took. `suppressRank`
+  // is included in the gate for exactly the same reason `pending` is: it is
+  // the other case where nothing is going to replace `answer` for THIS query
+  // on its own — this one because the stat, not the ranking round trip, is
+  // what has to resolve first (and if it resolves to "missing", 7d's fallback
+  // fires a real rank request, which unsticks this the normal way, but until
+  // then the deadline is what stops a slow stat from pinning a stale answer
+  // in place).
   useEffect(() => {
-    if (!pending || !behind) return;
+    if (!behind || (!pending && !suppressRank)) return;
     const timer = window.setTimeout(() => {
       setAnswer((prev) => {
         if (prev === null || prev.query === q) return prev;
@@ -621,7 +637,7 @@ export function FilesSearch({
       });
     }, STALE_CLEAR_MS);
     return () => window.clearTimeout(timer);
-  }, [pending, behind, q]);
+  }, [pending, suppressRank, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
