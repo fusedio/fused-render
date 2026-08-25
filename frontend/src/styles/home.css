@@ -19,29 +19,14 @@
   padding: 40px 28px 72px;
 }
 
-/* Hero card: bordered panel with a faint accent wash drifting out of the top
-   corner — the page's one decorative moment; everything inside stays on
-   tokens so both themes hold. */
+/* Hero: no card around it any more (the bordered panel and its accent wash are
+   gone); it is spacing only. The side padding is what sets the composer's
+   width — narrower than the rows below on purpose. */
 .home-hero {
   position: relative;
   overflow: hidden;
-  padding: 36px 36px 34px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  padding: 36px 64px 34px;
   margin-bottom: 22px;
-}
-
-.home-hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    120% 130% at 100% 0%,
-    color-mix(in srgb, var(--accent) 12%, transparent),
-    transparent 55%
-  );
 }
 
 .home-hero > * {
@@ -184,6 +169,15 @@
   padding: 14px 16px 6px;
   font-size: 14px;
   line-height: 1.5;
+  /* 3 to 10 lines of 21px plus the 20px vertical padding; the height itself is
+     written inline by `useAutoGrow` (platform/lib/autoGrow.ts), these are only
+     the clamp. The ceiling has to name the same ten lines as that hook's
+     `COMPOSER_MAX_LINES`, or the smaller of the two wins and the other is
+     dead — this one is the backstop that keeps the box scrollable rather than
+     unbounded if the inline height is ever stale. */
+  min-height: 83px;
+  max-height: 230px;
+  overflow-y: auto;
 }
 
 .home-composer-bar {
