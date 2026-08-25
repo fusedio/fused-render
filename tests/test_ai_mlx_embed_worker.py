@@ -362,6 +362,80 @@ def test_load_records_the_family_off_the_checkpoint_config(worker, monkeypatch,
     assert worker._loaded["length"] == 512
 
 
+def test_load_reads_the_CURATED_conversions_own_config_shape(worker, monkeypatch,
+                                                              tmp_path):
+    """The curated MLX prose row, driven through `load()` with the config that
+    repo really ships.
+
+    **Every field here was read off
+    `mlx-community/nomicai-modernbert-embed-base-bf16` itself** (2026-08-25), not
+    invented, because each one is a way the row could be silently wrong:
+
+    * `model_type: "modernbert"` — in `formats.MLX_EMBED_MODEL_TYPES`, so the
+      family resolves to `_TEXT` and the prose path serves it. A conversion whose
+      `model_type` had been rewritten would land in `_DUAL` or raise.
+    * `max_position_embeddings: 8192`, and the repo's `sentence_bert_config.json`
+      agrees at `max_seq_length: 8192` — which is why the catalog note claims
+      8192 rather than a number nobody read. It is also exactly
+      `_MAX_TEXT_LENGTH`, so `_text_length` returns it unclamped; a conversion
+      claiming more would be clamped rather than trusted.
+    * `classifier_pooling: "mean"` — read by mlx-embeddings' own modernbert
+      module (`models/modernbert.py` pools on `config.classifier_pooling` and
+      returns an already-normalized `text_embeds`), which is why this runner has
+      no pooling branch. **The repo ships no `1_Pooling/` directory at all** even
+      though its `modules.json` names one, and that is harmless HERE for exactly
+      that reason — the ONNX runner would need that file, this engine never opens
+      it.
+    * the scheme resolves to `nomic`, which it does only because the curated
+      table names it: the id spells the account `nomicai-`, so no hint matches.
+    """
+    import json
+
+    monkeypatch.setattr(worker, "_mlx_load", lambda _arg: ("MODEL", "TOKENIZER"))
+    (tmp_path / "config.json").write_text(json.dumps({
+        "model_type": "modernbert",
+        "architectures": ["ModernBertModel"],
+        "max_position_embeddings": 8192,
+        "classifier_pooling": "mean",
+    }))
+    worker.load("mlx-community/nomicai-modernbert-embed-base-bf16", str(tmp_path))
+
+    assert worker._loaded["family"] == worker._TEXT
+    assert worker._loaded["tokenizer"] == "TOKENIZER"
+    assert worker._loaded["length"] == 8192
+    assert worker._loaded["scheme"] == "nomic"
+
+
+def test_the_curated_mlx_prose_row_is_one_this_runner_can_actually_open():
+    """The catalog's MLX prose row against this runner's own gate.
+
+    A curated row whose `model_type` the gate rejects is a Load button that
+    refuses — `formats.MLX_EMBED_MODEL_TYPES` is deliberately NARROWER than
+    mlx-embeddings' module list (a decoder-derived embedder wears its chat
+    architecture's `model_type`, so admitting `qwen3` would route every Qwen3
+    chat checkpoint here), which makes "the library ships a module for it" the
+    wrong test and this the right one.
+
+    Kept as a static pair rather than a live config read: this file never
+    touches the network, and the `model_type` is the fact the catalog comment
+    already records for each row.
+    """
+    from fused_render.ai import catalog
+    from fused_render.ai.runners import formats
+
+    curated = {e["id"] for e in catalog.SUGGESTIONS["mlx-embed"]}
+    families = {
+        "mlx-community/nomicai-modernbert-embed-base-bf16": "modernbert",
+        "google/siglip2-base-patch16-384": "siglip",
+        "google/siglip2-so400m-patch14-384": "siglip",
+    }
+    assert curated == set(families), (
+        "the MLX list changed — add the new row's model_type here, since a row "
+        "outside MLX_EMBED_MODEL_TYPES is a Load button that refuses")
+    for repo_id, family in families.items():
+        assert family in formats.MLX_EMBED_MODEL_TYPES, repo_id
+
+
 def test_there_is_no_second_mlx_embedding_FOLDER():
     """PR #780's `mlx_text_embed/` is deliberately not carried over, and this is
     the assertion that keeps it from creeping back.

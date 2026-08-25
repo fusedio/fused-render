@@ -343,6 +343,23 @@ TEXT_EMBED_DEFAULT_KIND = "document"
 #: take a repo id, so that is the key.
 TEXT_EMBED_SCHEMES = {
     "nomic-ai/nomic-embed-text-v1.5": "nomic",
+    # **The curated MLX prose row, and it is here because the HEURISTIC BELOW
+    # MISSES IT.** `mlx-community/nomicai-modernbert-embed-base-bf16` is nomic's
+    # own ModernBERT embed model and takes nomic's prefixes — the upstream card
+    # says so outright ("adding `search_query: ` to the query and
+    # `search_document: ` to the documents will be sufficient") and links to
+    # nomic-embed-text-v1.5's own task-instruction-prefixes section. But the
+    # conversion's id spells the account as `nomicai-`, so it contains no
+    # `nomic-embed` substring and `TEXT_EMBED_SCHEME_HINTS` falls through every
+    # entry to `"none"` — which would embed every query with no prefix at all,
+    # the exact silent recall loss this whole table exists to prevent.
+    #
+    # Left as a curated entry rather than fixed by widening the hint to
+    # `"nomic"`: two letters shorter and it starts matching every unrelated repo
+    # with "nomic" in the name, which is the trap the e5 hints are spelled with
+    # their size suffix to avoid. The explicit row is also what the curation rule
+    # already demands of it.
+    "mlx-community/nomicai-modernbert-embed-base-bf16": "nomic",
     "intfloat/multilingual-e5-small": "e5",
     # Not curated in `catalog.py` — see the ONNX block's comment on why its
     # 0.44 GB would make it the default — but named here anyway, so a user who

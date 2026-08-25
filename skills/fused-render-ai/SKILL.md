@@ -526,10 +526,16 @@ other gets sensible answers.
 
 **Their catalogs are still different, and that is about the FILES.** MLX reads
 safetensors and ONNX reads a graph export, so the two engines' curated lists name
-different repos for the same checkpoint (`google/siglip2-base-patch16-384` against
-`onnx-community/siglip2-base-patch16-384-ONNX`). Take the model from
-`catalog()`, never from memory — the same rule the speech section states, and for
-the same reason.
+different repos — sometimes for the same checkpoint
+(`google/siglip2-base-patch16-384` against
+`onnx-community/siglip2-base-patch16-384-ONNX`), and sometimes for a different
+one, because the two formats do not always exist for the same model: each
+engine's default is a nomic prose encoder, but MLX's is
+`mlx-community/nomicai-modernbert-embed-base-bf16` (8192 tokens) and ONNX's is
+`nomic-ai/nomic-embed-text-v1.5` (2048). So **take the model from `catalog()`,
+never from memory** — the same rule the speech section states, and here it is
+also why: an id that works on one machine may name a format the other's engine
+cannot open, and switching engines can change which model a bare call loads.
 
 ## What Actually Runs Locally Today
 

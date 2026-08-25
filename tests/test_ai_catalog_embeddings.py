@@ -13,8 +13,13 @@ from fused_render.ai import catalog, registry
 from fused_render.ai.runners import formats
 
 
-MLX_IDS = {"google/siglip2-base-patch16-384",
-           "google/siglip2-so400m-patch14-384"}
+DUAL_MLX_IDS = {"google/siglip2-base-patch16-384",
+                "google/siglip2-so400m-patch14-384"}
+# The MLX prose row is an `mlx-community` CONVERSION where the dual rows are
+# upstream safetensors, and `catalog.py`'s block header carries the reason: it is
+# where a single-format MLX build of a prose encoder exists.
+PROSE_MLX_IDS = {"mlx-community/nomicai-modernbert-embed-base-bf16"}
+MLX_IDS = DUAL_MLX_IDS | PROSE_MLX_IDS
 
 
 def test_the_withdrawn_torch_rows_are_gone_from_the_catalog():
@@ -39,6 +44,33 @@ def test_mlx_embed_has_its_own_list_and_is_no_longer_aliased():
     assert ids == MLX_IDS
 
 
+def test_BOTH_engines_curate_a_prose_row():
+    """**There is no Mac prose gap any more, and this is the assertion that
+    keeps it closed.** For a while the MLX list was dual-encoders-only, so a Mac
+    default was a 64-token caption encoder while every other machine had a
+    paragraph encoder — an asymmetry about the DOWNLOADS rather than the engine,
+    since `mlx_embed` serves a text encoder perfectly well.
+
+    Asserted per engine rather than in total, because a list is what ONE machine
+    sees: a total would let the Mac list go proseless behind a well-stocked ONNX
+    one, which is exactly the state this replaced.
+    """
+    for code, prose in (("mlx-embed", PROSE_MLX_IDS),
+                        ("onnx-embed", PROSE_ONNX_IDS)):
+        ids = {entry["id"] for entry in catalog.SUGGESTIONS[code]}
+        assert ids & prose, code
+
+
+def test_the_mlx_prose_row_leads_its_list_and_is_the_recommended_one():
+    """Position 0 IS the default (`default_for`), and smallest-first is what puts
+    it there rather than a preference: the conversion is 0.30 GB against the
+    SigLIP2 base's 1.5."""
+    entries = catalog.SUGGESTIONS["mlx-embed"]
+    assert entries[0]["id"] in PROSE_MLX_IDS
+    assert entries[0]["recommended"] is True
+    assert {e["id"] for e in entries[1:]} == DUAL_MLX_IDS
+
+
 def test_the_mlx_list_holds_safetensors_repos_and_the_onnx_list_does_not():
     """The two lists must not overlap, and the reason is the FILES: MLX reads
     `model.safetensors` out of `google/siglip2-*`, `onnxruntime` reads
@@ -60,7 +92,7 @@ def test_the_returned_lists_are_independent_copies():
     assert b != a
 
 
-def test_the_default_moves_OFF_siglip2_on_the_onnx_engine(monkeypatch):
+def test_the_default_moves_OFF_siglip2_on_BOTH_engines(monkeypatch):
     """**The user-visible change on this branch**, and the reason the risk is
     worth an assertion rather than a comment: a bare `fused.ai.embed({texts})`
     used to load a 64-token caption encoder and now loads a 2048-token paragraph
@@ -72,13 +104,14 @@ def test_the_default_moves_OFF_siglip2_on_the_onnx_engine(monkeypatch):
     (`_runner_for`), so both platforms are checked rather than one being assumed
     from the other's list.
 
-    A Mac still answers SigLIP2, and that asymmetry is deliberate for now — see
-    `catalog.py`'s comment on the `mlx-embed` block for why curating a prose row
-    there needs a download-scoping change first.
+**Both** engines answer with a prose encoder now, and both answers are nomic
+    models — deliberately, since the two produce vectors in the same space and
+    defaults from one family make that promise easier to believe.
     """
     monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
-    assert catalog.default_for(registry.EMBEDDINGS) == "google/siglip2-base-patch16-384"
+    assert catalog.default_for(registry.EMBEDDINGS) == (
+        "mlx-community/nomicai-modernbert-embed-base-bf16")
     monkeypatch.setattr(registry.platform, "system", lambda: "Windows")
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     assert catalog.default_for(registry.EMBEDDINGS) == (
@@ -156,12 +189,19 @@ def test_every_curated_embedding_id_resolves_to_a_PROMPT_SCHEME():
     heuristic. A dual encoder correctly answers `"none"`: it has no query/passage
     convention, and that is what the route refuses `kind` on.
     """
+    prose = PROSE_ONNX_IDS | PROSE_MLX_IDS
     for code in ("mlx-embed", "onnx-embed"):
         for entry in catalog.SUGGESTIONS[code]:
             scheme = formats.text_embed_scheme(entry["id"])
             assert scheme in formats.TEXT_EMBED_PROMPTS, entry["id"]
-            if entry["id"] in PROSE_ONNX_IDS:
+            if entry["id"] in prose:
                 assert scheme != "none", entry["id"]
+                # Named OUTRIGHT, never left to the id heuristic. The MLX row is
+                # why this half of the assertion earns its keep: its id spells
+                # the account `nomicai-`, so no hint matches it and it resolved
+                # `"none"` until it was curated here — a curated model embedding
+                # every query with no prefix, which nothing downstream could
+                # have detected.
                 assert entry["id"] in formats.TEXT_EMBED_SCHEMES, entry["id"]
             else:
                 assert scheme == "none", entry["id"]

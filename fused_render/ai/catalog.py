@@ -766,56 +766,94 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "transcribes faster than real time.",
         },
     ],
-    # Embeddings on MLX — the `google/siglip2-*` SAFETENSORS, which is a
-    # different download from the ONNX block below and not a second copy of it.
-    # These two repos were curated under the withdrawn `transformers-embed` row
-    # and moved here unchanged when it went: mlx-embeddings' own SigLIP port
-    # reads `model.safetensors` beside a `"model_type": "siglip"` config
-    # directly, so there is no `mlx-community` re-upload to prefer and nothing
-    # to convert.
+    # Embeddings on MLX. TWO SHAPES, and they come from two different kinds of
+    # repo for one reason: which account publishes a SINGLE-FORMAT build of the
+    # thing this engine reads.
     #
-    # `size_gb` is the WHOLE snapshot here, this file's ordinary convention —
-    # these repos publish one format, so the whole-repo pull IS the fetched set.
-    # (The ONNX block below documents why it has to deviate.) Hub per-file byte
-    # sums, 2026-08-21. Both ungated and Apache-2.0.
+    # * The `google/siglip2-*` DUAL encoders stay on the upstream safetensors.
+    #   mlx-embeddings' own SigLIP port reads `model.safetensors` beside a
+    #   `"model_type": "siglip"` config directly, so there is nothing to convert
+    #   and no `mlx-community` re-upload that would be preferable.
+    # * The PROSE row is an `mlx-community` conversion, because that is where a
+    #   single-format MLX build of a prose encoder exists at all. The upstream
+    #   `nomic-ai/*` repos ship an ONNX export and (for some) an OpenVINO copy
+    #   beside their safetensors, so this list's whole-snapshot convention would
+    #   charge four or five times the weights for one; the conversion ships MLX
+    #   safetensors and tokenizer files and nothing else, so the convention costs
+    #   nothing there. That is also the re-upload convention every other MLX row
+    #   in this file already follows.
     #
-    # **No prose rows here yet, so a Mac's default is still SigLIP2 while every
-    # other machine's has moved to a paragraph encoder.** That asymmetry is
-    # known and is about the DOWNLOADS rather than the engine: `mlx_embed`
-    # serves a text encoder perfectly well (mlx-embeddings ships bert,
-    # modernbert and xlm_roberta modules, and `formats.MLX_EMBED_MODEL_TYPES`
-    # admits them), so a Mac user who fetches one themselves gets the widened
-    # capability. What is missing is a curated row, and curating one means
-    # paying this list's whole-snapshot convention on repos that publish an ONNX
-    # export and an OpenVINO copy beside their safetensors — 2.3 GB for a 470 MB
-    # model — which would price a Mac's default above the SigLIP2 it replaced.
-    # Fixing that is a download-scoping change to `mlx_embed.download` and is
-    # deliberately not smuggled in here.
+    # `size_gb` is the WHOLE snapshot for all three, this file's ordinary
+    # convention — each of these repos publishes one format, so the whole-repo
+    # pull IS the fetched set. (The ONNX block below documents why it has to
+    # deviate.) Hub per-file byte sums, 2026-08-25. All three ungated;
+    # Apache-2.0.
     #
-    # **And that change is now the ONLY way to close the gap, which was not true
-    # a moment ago.** While `intfloat/multilingual-e5-small` was curated under
-    # `onnx-embed` there was a shortcut available: it is `model_type: bert` (a
-    # `BertModel` with an XLM-R sentencepiece tokenizer), which
-    # `formats.MLX_EMBED_MODEL_TYPES` admits, so the row could have been copied
-    # or aliased into this list and a Mac would have had a curated prose encoder
-    # for the cost of one literal. It was removed (see the `onnx-embed` block's
-    # own note), and the curated prose set is now nomic alone — `nomic_bert`,
-    # which MLX has no module for. So the curated prose set is ONNX-ONLY BY
-    # CONSTRUCTION: there is no existing row left to borrow, and any fix here has
-    # to start by scoping this engine's download. Read that as a cost, not as a
-    # prohibition — but do not go looking for the cheap version, because it is
-    # gone on purpose.
+    # **The prose row leads, so a Mac's default is a paragraph encoder too** —
+    # 0.30 GB against the ONNX default's 0.55, with four times the context. Both
+    # engines' defaults are now nomic models, which is deliberate rather than a
+    # coincidence: the two produce vectors in the same space
+    # (`registry.py`'s comment on this row), and defaults from one family make
+    # that promise easier to believe than two unrelated picks would.
+    #
+    # **Every curated row has a KNOWN PROMPT SCHEME**, the same curation rule the
+    # ONNX block states. The prose row needed an explicit
+    # `formats.TEXT_EMBED_SCHEMES` entry to get one: its id spells the account
+    # `nomicai-`, so the substring heuristic misses it and would have resolved
+    # `"none"` — see that table's own comment.
+    #
+    # **What is deliberately NOT here, and why**, because each of these is a
+    # trip a later reader would otherwise take:
+    #
+    # * `mlx-community/bge-small-en-v1.5-bf16` (0.07 GB) and
+    #   `mlx-community/multilingual-e5-small-mlx` (0.25 GB). Both LOAD — `bert`
+    #   is in the gate — and both would take position 0 on size, which under the
+    #   smallest-first rule makes them the default. One is English-only and both
+    #   cap at 512 tokens, so either would make a Mac's default the weakest model
+    #   in this list for the job the capability exists for. The identical
+    #   structural argument keeps bge off the ONNX list.
+    # * `mlx-community/embeddinggemma-300m-bf16` (0.65 GB) and
+    #   `mlx-community/Qwen3-Embedding-0.6B-8bit` (0.65 GB). These do NOT load:
+    #   `gemma3_text` and `qwen3` are not in `formats.MLX_EMBED_MODEL_TYPES`, and
+    #   that set is deliberately narrower than mlx-embeddings' module list — a
+    #   decoder-derived embedder wears its CHAT architecture's `model_type`, so
+    #   admitting it would route every Qwen3 chat checkpoint on the disk to this
+    #   runner. Both schemes are already in `TEXT_EMBED_PROMPTS`, which makes
+    #   them look one line from ready; the gate is what blocks them, not the
+    #   prompts.
+    # * `mlx-community/nomicai-modernbert-embed-base-4bit` (0.09 GB), the same
+    #   model a third the size. Quantization costs retrieval quality and costs it
+    #   into the VECTOR, where there is no sampling step afterwards to absorb it
+    #   — the same class of silent loss the prompt table guards against. bf16 is
+    #   the honest default; the 4-bit build is a fine thing to fetch by hand.
+    # * `mlx-community/siglip2-so400m-patch16-384` (2.31 GB, against the 4.6 GB
+    #   row below). Tempting, and wrong: it is **patch16** where the ONNX row is
+    #   **patch14** — a different checkpoint, not a smaller build of the same
+    #   one. The two engines' rows are matched deliberately so a page's vectors
+    #   survive an engine switch, and halving a download by breaking that is not
+    #   the trade. Do not "optimize" this one.
     "mlx-embed": [
+        {
+            "id": "mlx-community/nomicai-modernbert-embed-base-bf16",
+            "params": "149M",
+            "recommended": True,
+            "label": "ModernBERT Embed base",
+            "nickname": "ModernBERT Embed",
+            # 298.04 MB weights + 3.58 MB tokenizer + configs = 0.30 GB, and
+            # that IS the whole repo: the conversion ships one format.
+            "size_gb": 0.3,
+            "note": "The default: 8192 tokens of context and 768-dim vectors, "
+                    "so whole documents embed at once — nomic's ModernBERT, "
+                    "converted for MLX.",
+        },
         {
             "id": "google/siglip2-base-patch16-384",
             "params": "375M",
-            "recommended": True,
             "label": "SigLIP2 base (384px)",
             "nickname": "SigLIP2 base",
             "size_gb": 1.5,
-            "note": "The smallest here and what a bare embed call loads — "
-                    "768-dim vectors, multilingual, and quick enough to index a "
-                    "folder of photos.",
+            "note": "The one that reads IMAGES — text and photos in one space, "
+                    "768-dim, multilingual, but only 64 tokens of text.",
         },
         {
             "id": "google/siglip2-so400m-patch14-384",
@@ -943,17 +981,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # this capability wants, and a second one that is smaller-but-shorter-context
     # is a comparison put in front of a reader who came to embed a paragraph.
     #
-    # **It leaves one constraint behind, and it is the reason this note is here
-    # rather than in a commit message.** e5-small is `model_type: bert` (a
-    # `BertModel` with an XLM-R sentencepiece tokenizer), which is in
-    # `formats.MLX_EMBED_MODEL_TYPES`; nomic is `nomic_bert`, which is not. So e5
-    # was the ONLY curated prose model MLX could open, and with it gone the
-    # curated prose set is ONNX-ONLY BY CONSTRUCTION. The Mac prose gap can
-    # therefore no longer be closed by aliasing or copying a row that already
-    # exists — it strictly requires the `mlx_embed.download` scoping change the
-    # `mlx-embed` block above describes. Re-adding an `xlm-roberta` or `bert`
-    # prose row here would reopen that shortcut; that is a decision, not a
-    # cleanup.
+    # **It leaves one fact behind worth keeping, though it is no longer a
+    # constraint.** e5-small is `model_type: bert` (a `BertModel` with an XLM-R
+    # sentencepiece tokenizer — not `xlm-roberta`, which is the easy thing to
+    # assume from its tokenizer files), and `bert` is in
+    # `formats.MLX_EMBED_MODEL_TYPES` while nomic's `nomic_bert` is not. So while
+    # e5 was curated here it was also the only curated prose model MLX could
+    # open, and removing it briefly left the curated prose set ONNX-only.
+    #
+    # That is no longer the state: the `mlx-embed` block above curates
+    # `mlx-community/nomicai-modernbert-embed-base-bf16`, a `modernbert`
+    # conversion the gate admits, so each engine has its own curated prose row
+    # from its own kind of repo. Nothing here needs to be re-added to close a
+    # gap — and a row added back to THIS list would be an ONNX row, which is not
+    # what a Mac reads.
     "onnx-embed": [
         {
             "id": "nomic-ai/nomic-embed-text-v1.5",
