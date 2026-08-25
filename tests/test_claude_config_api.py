@@ -537,6 +537,28 @@ def test_option_shaped_names_never_reach_the_cli(client, claude_dir, monkeypatch
             "ok": False, "error": "unknown plugin"}
 
 
+def test_plugins_update_runs_headlessly_like_install_does(
+        client, claude_dir, monkeypatch):
+    """`-y` on update, not only on install. The CLI documents the flag on both,
+    and re-prompts for consent when a marketplace CHANGES its declared install
+    command — with stdout captured, that prompt can only be answered by the
+    timeout, so the user is told the update timed out rather than that consent
+    was wanted."""
+    seen = {}
+
+    def fake_cli(*args, timeout=25):
+        seen["args"] = args
+        return {"ok": True, "stdout": "updated", "stderr": ""}
+
+    monkeypatch.setattr(lib, "claude_cli", fake_cli)
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"widget@acme": True}}))
+
+    body = _post(client, "plugins", action="update", id="widget@acme").json()
+    assert body == {"ok": True, "id": "widget@acme", "stdout": "updated"}
+    assert seen["args"] == ("plugin", "update", "widget@acme", "--scope", "user", "-y")
+
+
 def test_update_refuses_an_option_shaped_id_even_when_settings_lists_it(
         client, claude_dir, monkeypatch):
     # `update` checks membership in settings.json + installed_plugins.json —

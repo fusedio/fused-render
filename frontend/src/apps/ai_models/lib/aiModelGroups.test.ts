@@ -473,7 +473,7 @@ describe("video generation's place in the reading order", () => {
     const catalogWithVideo: AiCatalogCapability[] = [
       capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
         available: false,
-        reason: "needs Apple Silicon — MLX runs on Metal only (this is linux/x86_64)",
+        reason: "needs Apple Silicon (this is linux/x86_64)",
         default: null,
       }),
     ];
@@ -662,7 +662,7 @@ describe("what a merged row says it costs, and which engine loads it", () => {
       [
         capability("text-to-image", [curated("a/flux")], {
           available: false,
-          reason: "needs Apple Silicon — MLX runs on Metal only",
+          reason: "needs Apple Silicon (this is linux/x86_64)",
         }),
       ],
       resident(),
@@ -670,7 +670,7 @@ describe("what a merged row says it costs, and which engine loads it", () => {
     );
     expect(sections[0].recommended.map((m) => m.id)).toEqual(["a/flux"]);
     expect(sections[0].runner?.available).toBe(false);
-    expect(sections[0].runner?.reason).toBe("needs Apple Silicon — MLX runs on Metal only");
+    expect(sections[0].runner?.reason).toBe("needs Apple Silicon (this is linux/x86_64)");
   });
 
   it("labels a recommended-only capability the way every other heading is labelled", () => {

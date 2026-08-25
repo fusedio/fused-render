@@ -285,12 +285,19 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     assert apps[0]["tag"] == "local"
 
 
-def test_new_app_has_no_dot_claude_and_syncs_user_skills(
+def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
     client, workspace, tmp_path, monkeypatch
 ):
-    """D185: the app folder itself carries no .claude/; creating an app
-    installs the canonical skills at Claude Code's user level instead."""
-    from fused_render import user_skills
+    """D185: the app folder carries no .claude/ of its own. What supplies the
+    skills the starter CLAUDE.md names is the plugin root the scaffolding
+    session is handed (D216), refreshed here at create time — so the assertion
+    is that the root exists and the env var points at it.
+
+    And what create-app must NOT do (D492): touch the user's Claude config. The
+    user's own sessions are covered by the published plugin, synced once at
+    startup on a thread, because it is a network clone — running one on this
+    request would put a `claude` spawn on a UI path."""
+    from fused_render import skill_plugin, skill_sources
 
     claude_dir = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
@@ -298,10 +305,10 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
     assert not (workspace / "local" / "demo" / ".claude").exists()
-    for name in user_skills.SKILLS:
-        skill = claude_dir / "skills" / name
-        assert (skill / "SKILL.md").is_file()
-        assert (skill / user_skills._MARKER).is_file()
+    root = os.environ[skill_plugin.PLUGIN_DIR_ENV]
+    for name in skill_sources.skill_names():
+        assert os.path.isfile(os.path.join(root, "skills", name, "SKILL.md"))
+    assert not claude_dir.exists()
 
 
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):

@@ -1537,7 +1537,16 @@ def describe() -> list[dict]:
                 # payload because it is the answer to "what is the runner
                 # serving this capability like", which is a question about the
                 # catalog and not about where a page chose to print it.
-                "runnerNote": runner.note or None if runner else None,
+                #
+                # Gated on `status.ok`, unlike `runnerLabel`/`runnerShortLabel`
+                # above: `_runner_for`'s fallback hands back the first
+                # REGISTERED runner even when it cannot run here (so an
+                # unservable capability still names what it would be and why
+                # not), but the note describes what using that backend is
+                # LIKE — and a backend this machine cannot use has nothing to
+                # be like yet. `reason` already says why not; a note on top of
+                # it would describe an experience nobody here is having.
+                "runnerNote": (runner.note or None) if runner and status.ok else None,
                 "available": status.ok,
                 "reason": status.reason or None,
                 # Gated on `status.ok`, which every capability before video

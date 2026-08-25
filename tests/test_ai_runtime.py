@@ -815,6 +815,10 @@ def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch):
         assert row["effective"] == "llamacpp-text"
         assert row["ignoredReason"]
         assert stale not in {c["code"] for c in row["choices"]}
+        # WITHDRAWN, not merely stranded: `by_code(stale)` is None, so there is
+        # no label to give — `strandedLabel` stays null and the Engines tab
+        # falls back to the bare code (`EngineSelect`'s stranded option).
+        assert row["strandedLabel"] is None, stale
 
 
 def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
@@ -826,6 +830,30 @@ def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
     assert resolution.runner is not None
     assert resolution.runner.capability == registry.TEXT_GENERATION
     assert "does not do" in resolution.ignored_reason
+
+
+def test_a_stranded_wrong_capability_preference_carries_its_own_display_name(
+        monkeypatch):
+    """The OTHER half of the code review's finding: a stranded code that IS
+    registered (just for a different capability) has a real label to give,
+    unlike a withdrawn one — and the label `describe_engines` sends has to be
+    the SAME name `resolve()` already put in `ignoredReason` (`runner.short`,
+    D416's "MLX Whisper does not do text-generation" shape), or the Engines
+    tab's substring dedup (`ignoredWarning`) can't recognise its own reason and
+    prints the name twice: "faster-whisper is not used here — Faster Whisper
+    does not do text-generation."
+
+    `describe_engines` is the only place that can compute this: it has
+    `by_code`, which the frontend payload does not, and the frontend must not
+    paraphrase a registry sentence to extract a name from it.
+    """
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "faster-whisper")
+    row = next(r for r in registry.describe_engines()
+               if r["capability"] == registry.TEXT_GENERATION)
+    assert row["selected"] == "faster-whisper"
+    assert "faster-whisper" not in {c["code"] for c in row["choices"]}
+    assert row["strandedLabel"] == registry.by_code("faster-whisper").short
+    assert row["strandedLabel"] in row["ignoredReason"]
 
 
 def test_a_broken_preferences_file_costs_the_preference_and_nothing_else(
@@ -1921,24 +1949,22 @@ def test_the_cpu_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
     never about torch. `llamacpp-text` took its place in the list, which is the
     check that matters: it is now the row a Mac with no MLX falls back to.
     """
-    for code, cap in (("llamacpp-text", 170), ("diffusers-image", 110)):
+    for code, cap in (("llamacpp-text", 90), ("diffusers-image", 100)):
         runner = registry.by_code(code)
         assert runner.label == runner.short_label
         assert "(CPU)" in runner.label
         note = runner.note
         assert "Apple Silicon" in note, (code, note)
-        # ONE LINE is the constraint the field documents, so the Mac clause has
-        # to be paid for rather than appended. The caps differ because
-        # `llamacpp-text`'s sentence carries a second irreducible fact no other
-        # row has to state — that its wheels come from the maintainer's index
-        # rather than PyPI — and since D416 made this the default engine on two
-        # platforms, that provenance is the one thing a reader cannot discover
-        # from anywhere else on the page.
+        # ONE OR TWO SHORT SENTENCES is the constraint the field documents.
+        # The caps track the current notes (68 and 82 chars) with roughly 20
+        # chars of headroom each — generous enough that a small rewording
+        # doesn't trip the test, tight enough to still catch a note that
+        # grows back into a paragraph.
         assert len(note) <= cap, (code, len(note), note)
 
 
 def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
-    """The ROCm note names the desktop risk, and stays one line while doing it.
+    """The ROCm note names the desktop risk within its two-sentence budget.
 
     Observed rather than theorised (D383): a sustained submission on an RX 9060
     XT (gfx1200) starved `gfx_0.0.0` until the driver reset the ring, and the
@@ -1948,12 +1974,14 @@ def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
     promised the speed and said nothing about what paying for it can cost.
 
     Pinned because it is the kind of clause a later tidy-up deletes as hedging.
-    The length assertion is the same one-line budget the CPU rows are held to —
-    the warning had to be paid for out of the sentence, not appended to it.
+    130 gives the current 109-char note real headroom (the CPU rows' caps
+    above are the same idea, ~20 chars over their own notes) rather than the
+    old 110 cap, which left this note ONE character of room — not a budget,
+    a trip wire.
     """
     runner = registry.by_code("diffusers-image-rocm")
     assert "desktop" in runner.note, runner.note
-    assert len(runner.note) <= 110, (len(runner.note), runner.note)
+    assert len(runner.note) <= 130, (len(runner.note), runner.note)
 
 
 def test_every_test_this_module_cites_by_name_exists(monkeypatch):

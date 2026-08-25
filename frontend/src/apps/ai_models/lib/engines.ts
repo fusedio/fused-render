@@ -16,10 +16,10 @@
 // than as an unsupported machine. So the wording lives here, as plain
 // functions over the server's payload, and `engines.test.ts` drives them.
 //
-// Nothing here invents copy about a MACHINE. Availability reasons ("needs Apple
-// Silicon — MLX runs on Metal only (this is windows/amd64)") come from the
-// registry and are passed through untouched: the page cannot know them, and a
-// second copy would drift from the one the AI Models page shows.
+// Nothing here invents copy about a MACHINE. Availability reasons ("needs
+// Apple Silicon (this is windows/amd64)") come from the registry and are
+// passed through untouched: the page cannot know them, and a second copy
+// would drift from the one the AI Models page shows.
 import type { CapabilityEngine, EngineChoice, Prefs } from "@platform/lib/api";
 
 // The capability vocabulary is the Hub's own tags, which are exact and not
@@ -38,14 +38,27 @@ export function capabilityLabel(capability: string): string {
   return CAPABILITY_LABELS[capability] ?? capability;
 }
 
-/** The line under the control: what is serving this capability right now.
+/** The line under the control: what is serving this capability right now, or
+ *  null when the control's own trigger already says it.
  *
  *  Reports the EFFECTIVE runner, never the selected one — the same discipline
  *  the Call log section follows with `effective_enabled`. The control shows the
  *  choice you made; this line reports reality, and they are allowed to differ.
+ *
+ *  Null exactly when they CANNOT differ in any way worth a second line: the
+ *  stored selection names a concrete engine (not "auto"), it is honoured
+ *  (`ignoredReason === null`), and it equals `effective`. `EngineSelect`'s
+ *  trigger shows only the current choice's own label in that case — "llama.cpp
+ *  (Vulkan)" — and a line reading "Using llama.cpp (Vulkan)." underneath it is
+ *  the same word run twice. "Automatic" is the one selection that never
+ *  qualifies: the trigger's label does not name a runner, so the line under it
+ *  is the only place that does.
  */
-export function servingLine(row: CapabilityEngine): string {
+export function servingLine(row: CapabilityEngine, auto: string): string | null {
   if (!row.effective) return "Not available on this machine.";
+  if (row.selected !== auto && row.ignoredReason === null && row.selected === row.effective) {
+    return null;
+  }
   // The SHORT name. This line sits directly under the picker, whose options
   // carry "(Apple Silicon)" because that is where the reader is choosing
   // between backends; saying it again one line below is the repetition the
@@ -67,13 +80,33 @@ export function servingLine(row: CapabilityEngine): string {
 export function ignoredWarning(row: CapabilityEngine): string | null {
   if (!row.ignoredReason) return null;
   const chosen = row.choices.find((c) => c.code === row.selected);
-  const name = chosen?.label ?? row.selected;
+  // A STRANDED selection (`strandedSelection` fires) has no `chosen` option to
+  // find, so `name` falls back to `row.strandedLabel` — the registry's own
+  // name for the stored code, computed server-side because only the registry
+  // can tell a withdrawn code (no label to give — null) from one that is
+  // merely registered for a different capability (a real label). It is null
+  // for the withdrawn case too, which is when the raw code IS the honest
+  // answer: a withdrawn engine has no label at all.
+  const name = chosen?.label ?? row.strandedLabel ?? row.selected;
   // One sentence, and it survives the trim because it is the ONLY signal that
   // a stored preference was dropped: the select still shows the user's choice,
   // so without this the page states something untrue. The reason is the
   // registry's own and is passed through; what went is the second sentence
   // about the choice being kept for another machine, which is reassurance
   // rather than information — the choice being still selected says it.
+  //
+  // The registry's own reason for a stranded code routinely NAMES the same
+  // engine this line is about to name again — a withdrawn code's reason
+  // ("onnx-embed is not a runner this build knows") names the CODE, and a
+  // wrong-capability one ("MLX Whisper does not do text-generation") names
+  // the SHORT LABEL, which is exactly what `strandedLabel` is (see its own
+  // comment on `CapabilityEngine`) so this comparison finds it either way.
+  // Prefixing "<name> is not used here —" in front of a reason that already
+  // says the name repeats it; when it does, the sentence folds into one
+  // "Ignored — …" instead of stating the name twice.
+  if (row.ignoredReason.includes(name)) {
+    return `Ignored — ${row.ignoredReason}.`;
+  }
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 
@@ -121,11 +154,15 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
  *  this case for the page to render.
  *
  *  The caller renders the returned code as one extra DISABLED option, so the
- *  select shows what is stored, cannot be re-picked, and reads consistently with
- *  the warning below it. The raw code rather than a label, because there may be
- *  no label to be had: a withdrawn engine has none, and using the registered
- *  label of a wrong-capability engine would dress a stale value up as a real
- *  choice.
+ *  picker shows what is stored, cannot be re-picked, and reads consistently
+ *  with the warning below it — labelled with `row.strandedLabel` when the
+ *  registry has one to give (a wrong-capability code) and the bare code
+ *  itself when it does not (a withdrawn one has no runner left to name).
+ *  This function returns only the CODE — the value the control keys
+ *  `EngineSelect`'s stranded option on — because that is the one fact it can
+ *  establish from the payload alone; the display name is `strandedLabel`'s
+ *  job precisely because telling "withdrawn" from "wrong capability" needs
+ *  `registry.by_code`, which lives on the server.
  *
  *  Null for `auto` — the caller renders that option itself, unconditionally.
  */

@@ -17,6 +17,7 @@ import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
+import { TOURS, startTour } from "@platform/lib/tours";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
@@ -111,11 +112,32 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
+// A circled question mark — the app's one help affordance, and what a reader
+// looks for when they want the walkthrough back.
+const TOURS_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M9.4 9.2a2.7 2.7 0 1 1 3.4 2.6v1.6" />
+    <circle cx="12.8" cy="16.8" r="0.6" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 interface PrefsMenuEntry {
+  /** Where the entry goes — or, for an `onPick` entry, a stable key that also
+      says where its subject lives (the tours have no page of their own). */
   href: string;
   label: string;
-  icon: React.ReactNode;
+  /** Optional, because a flyout of plain titles (the tours) has none: the icon
+      column is reserved per group, so those rows sit flush instead of behind an
+      empty gutter — the same rule ContextMenu's `showIcon` applies. */
+  icon?: React.ReactNode;
   extra?: React.ReactNode;
+  /** Run this instead of navigating to `href` — the tour entries replay a
+      walkthrough in place rather than going anywhere. */
+  onPick?: () => void;
+  /** A one-level flyout hung off this row (Tours). Its own entries never carry
+      a `submenu` of their own — one level, like ContextMenu's. */
+  submenu?: PrefsMenuEntry[];
 }
 
 // The bottom Settings trigger (a NavItem-shaped row in the expanded sidebar,
@@ -125,6 +147,37 @@ interface PrefsMenuEntry {
 // itself must stay mounted regardless of collapse state, so its open/closed
 // position lives in GlobalSidebar and the popover renders as a sibling of
 // SidebarFrame rather than nested inside one trigger's markup.
+
+// Close-on-outside-pointerdown / Escape / window blur, shared by the two
+// bottom-edge popovers. `triggerRef`'s element is NOT outside: a click there is
+// the trigger's own toggle-closed and must be left to that handler, or
+// pointerdown closes the menu here first and the paired click — which re-checks
+// "is it open" after React 18 has batched the setState — reopens it right back.
+function useDismiss(
+  rootRef: React.RefObject<HTMLElement | null>,
+  triggerRef: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+) {
+  useEffect(() => {
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (rootRef.current?.contains(target)) return;
+      if (triggerRef.current?.contains(target)) return;
+      onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    window.addEventListener("blur", onClose);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+      window.removeEventListener("blur", onClose);
+    };
+  }, [onClose]);
+}
 
 // The expanded-sidebar trigger row.
 function PreferencesTrigger({
@@ -162,6 +215,96 @@ function PreferencesTrigger({
   );
 }
 
+// Whether a group of entries reserves the fixed icon column: true if any real
+// entry in it carries an icon. Same rule (and same reason) as ContextMenu's
+// `showIcon` — a flyout of pure-text rows sits flush rather than behind a 20px
+// gutter nothing is ever drawn in.
+function groupHasIcon(entries: (PrefsMenuEntry | "separator")[]): boolean {
+  return entries.some((e) => e !== "separator" && e.icon != null);
+}
+
+// One menu row, used for both the popover's own entries and a flyout's. The
+// markup is deliberately the shared .context-menu-item / -icon / -label / -arrow
+// vocabulary the explorer's right-click menu uses (ContextMenu.tsx), so the two
+// surfaces stay one thing to restyle rather than two.
+function PrefsRow({
+  entry,
+  open,
+  showIcon,
+  onActivate,
+  onClose,
+}: {
+  entry: PrefsMenuEntry;
+  /** This row's flyout is showing — the same `open` tint a submenu parent gets
+      in the context menu. */
+  open: boolean;
+  showIcon: boolean;
+  onActivate: () => void;
+  /** Closes the whole popover — passed straight through so a real link (below)
+      can close it even on a gesture the browser owns, one that never reaches
+      `onActivate` because navigation itself is left to the anchor. */
+  onClose: () => void;
+}) {
+  const hasSub = !!entry.submenu;
+  // A row with neither a flyout nor an in-place action actually GOES
+  // somewhere — that's the only shape a real `<a href>` makes sense for.
+  // A flyout parent has no page, and a tour's onPick replays in place, so
+  // both stay plain <div>s with nothing for the browser to open elsewhere.
+  const isLink = !hasSub && !entry.onPick;
+  const className =
+    "context-menu-item" +
+    (hasSub ? " has-submenu" : "") +
+    (open ? " open" : "") +
+    // A flyout parent is never "the page you are on": it has no page.
+    (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
+  const content = (
+    <>
+      {showIcon && (
+        <span className="context-menu-icon" aria-hidden="true">
+          {entry.icon}
+        </span>
+      )}
+      <span className="context-menu-label">{entry.label}</span>
+      {entry.extra}
+      {hasSub && <span className="context-menu-arrow">›</span>}
+    </>
+  );
+  if (isLink) {
+    return (
+      <a
+        href={entry.href}
+        role="menuitem"
+        className={className}
+        onClick={(e) => {
+          // Picking a real destination closes the popover either way. A
+          // plain left click also hijacks the navigation into the SPA's own
+          // route via onActivate (pick → navigateUrl); anything the browser
+          // already owns (middle-click, ctrl/cmd/shift/alt-click) is left
+          // alone so "open in new tab" and friends work on the real href
+          // (see appEntry.isBrowserHandledClick).
+          onClose();
+          if (isBrowserHandledClick(e)) return;
+          e.preventDefault();
+          onActivate();
+        }}
+      >
+        {content}
+      </a>
+    );
+  }
+  return (
+    <div
+      role="menuitem"
+      aria-haspopup={hasSub ? "menu" : undefined}
+      aria-expanded={hasSub ? open : undefined}
+      className={className}
+      onClick={onActivate}
+    >
+      {content}
+    </div>
+  );
+}
+
 // The floating menu itself — a fixed-position panel growing UP from whichever
 // trigger opened it (that row/icon sits on the sidebar's bottom edge). Closes
 // on outside pointerdown / Escape / blur, or on picking an entry.
@@ -174,34 +317,24 @@ function PreferencesPopover({
   pos: { left: number; bottom: number };
   entries: (PrefsMenuEntry | "separator")[];
   onClose: () => void;
-  /** The element that opened this popover. A click there is NOT an outside
-      click — it's the trigger's own toggle-closed, and must be left to that
-      handler. Otherwise pointerdown closes it here first, and by the time
-      the paired click re-checks "is it open" (React 18 batches the setState
-      before that click fires), it sees closed and reopens it right back. */
+  /** The element that opened this popover — see useDismiss. */
   triggerRef: React.RefObject<HTMLElement | null>;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(rootRef, triggerRef, onClose);
+  // Which row's flyout is open, keyed by href rather than index so a menu whose
+  // gated entries change under it can't point the flyout at another row. One at
+  // a time; null is none.
+  const [openSub, setOpenSub] = useState<string | null>(null);
 
-  useEffect(() => {
-    const onDown = (e: PointerEvent) => {
-      const target = e.target as Node;
-      if (rootRef.current?.contains(target)) return;
-      if (triggerRef.current?.contains(target)) return;
-      onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("pointerdown", onDown);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("blur", onClose);
-    return () => {
-      document.removeEventListener("pointerdown", onDown);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onClose);
-    };
-  }, [onClose]);
+  // Picking anything — top level or inside the flyout — closes the WHOLE menu.
+  const pick = (entry: PrefsMenuEntry) => {
+    onClose();
+    if (entry.onPick) entry.onPick();
+    else navigateUrl(entry.href);
+  };
+
+  const showIcon = groupHasIcon(entries);
 
   return (
     <div
@@ -209,36 +342,48 @@ function PreferencesPopover({
       className="context-menu placed sidebar-prefs-menu"
       role="menu"
       style={{ left: pos.left, bottom: pos.bottom }}
+      /* The pointer leaving the menu takes the flyout with it; while it is
+         inside, entering any row is what closes the previous one (below). */
+      onMouseLeave={() => setOpenSub(null)}
     >
       {entries.map((entry, i) =>
         entry === "separator" ? (
           <div key={"sep" + i} className="context-menu-sep" role="separator" />
         ) : (
-          <a
+          <div
             key={entry.href}
-            href={entry.href}
-            role="menuitem"
-            className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
-            onClick={(e) => {
-              // Picking an entry closes the popover either way. A plain left
-              // click also hijacks the navigation itself into the SPA's own
-              // history-pushState route; anything the browser already owns
-              // (middle-click, ctrl/cmd/shift/alt-click) is left alone so
-              // "open in new tab" and friends work on the real href (see
-              // appEntry.isBrowserHandledClick) — only preventDefault/navigateUrl
-              // are skipped, not the close.
-              onClose();
-              if (isBrowserHandledClick(e)) return;
-              e.preventDefault();
-              navigateUrl(entry.href);
-            }}
+            className="context-menu-row"
+            /* Hover opens the flyout and hovering any other row closes it —
+               click also toggles it (PrefsRow's onActivate), which is the
+               keyboard/touch path onto the same state. */
+            onMouseEnter={() => setOpenSub(entry.submenu ? entry.href : null)}
           >
-            <span className="context-menu-icon" aria-hidden="true">
-              {entry.icon}
-            </span>
-            <span className="context-menu-label">{entry.label}</span>
-            {entry.extra}
-          </a>
+            <PrefsRow
+              entry={entry}
+              open={openSub === entry.href}
+              showIcon={showIcon}
+              onActivate={() =>
+                entry.submenu
+                  ? setOpenSub(openSub === entry.href ? null : entry.href)
+                  : pick(entry)
+              }
+              onClose={onClose}
+            />
+            {entry.submenu && openSub === entry.href && (
+              <div className="context-menu context-submenu placed" role="menu">
+                {entry.submenu.map((sub) => (
+                  <PrefsRow
+                    key={sub.href}
+                    entry={sub}
+                    open={false}
+                    showIcon={groupHasIcon(entry.submenu ?? [])}
+                    onActivate={() => pick(sub)}
+                    onClose={onClose}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         )
       )}
     </div>
@@ -431,6 +576,33 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // double-selection the Tasks note rejects.
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
+  // The tour replays, at the menu's tail, behind ONE row: four sibling entries
+  // each prefixed "Tour: " repeated the category name in every line and made a
+  // short settings menu twice as long as its actual destinations. Nested, the
+  // menu reads as its pages plus one help affordance, and the four titles are
+  // just titles.
+  //
+  // Picking one runs it against the DOM on screen NOW — steps whose targets
+  // aren't there drop out (presentSteps), seen keys are ignored: this is the
+  // deliberate ask. From a route the tour is not about, startTour goes to its
+  // `startPath` first and waits for the page's chrome.
+  menuEntries.push("separator");
+  menuEntries.push({
+    href: "/preferences#tours",
+    // "Help", not "Tours": what a stuck reader scans a settings menu for is
+    // help — the walkthroughs are what the row holds, not what it is named.
+    label: "Help",
+    icon: TOURS_ICON,
+    submenu: TOURS.map((tour) => ({
+      href: `/preferences#tour-${tour.id}`,
+      label: tour.title,
+      // Next frame, not now: driver.js measures its highlight the moment it is
+      // told to drive, and closing the menu only queues the unmount — it is
+      // still over the sidebar rows some tours point at until React has painted
+      // without it.
+      onPick: () => requestAnimationFrame(() => startTour(tour)),
+    })),
+  });
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show
   // "you are on one of the menu's pages" — highlight it on any of them.

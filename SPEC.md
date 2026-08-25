@@ -6547,9 +6547,9 @@ an AI Models page that could say what was on disk but not what was *running*.
   test asks it of BOTH with the reason each one needs it, because "supplies a
   probe" is a property of a runner rather than a fact about MLX.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
-  so `available()` returns "needs Apple Silicon — MLX runs on Metal only (this is
-  linux/x86_64)", and resolution SKIPS an unavailable runner rather than picking
-  it and failing at load time — which would report "the model failed to load" for
+  so `available()` returns "needs Apple Silicon (this is linux/x86_64)", and
+  resolution SKIPS an unavailable runner rather than picking it and failing at
+  load time — which would report "the model failed to load" for
   a machine that was never going to load it. A capability this machine cannot
   serve is still listed, with its reason: hiding it leaves a user hunting for a
   feature that was never there. **A probe may ask the KERNEL, and it asks at

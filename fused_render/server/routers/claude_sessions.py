@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
 
 router = APIRouter()
 
-# CLAUDE_CONFIG_DIR wins where set (same rule as user_skills.py, the claude
+# CLAUDE_CONFIG_DIR wins where set (same rule as user_plugin.py, the claude
 # template agent's CLAUDE_DIR, and templates/shared/file_history.py's
 # config_dir()) — duplicated locally rather than imported cross-package, same
 # posture as those sites.
