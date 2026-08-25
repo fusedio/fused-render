@@ -127,22 +127,34 @@ function CapabilityEngineRow({
           to be three stacked blocks, which is what made "Engine" a visible
           label at all: a select on its own line has to say what it is for.
           Beside the capability's own name it does not, and the repeated word
-          down a column of three was the loudest thing on the tab. The name
-          IS the label, so it is a <label> and the select has no other. */}
+          down a column of three was the loudest thing on the tab. The name IS
+          the label — but a <label htmlFor> pointing at the trigger is NOT how
+          that gets said to a screen reader: `for`/`htmlFor` makes the label
+          the control's WHOLE accessible name (HTML-AAM ranks it above the
+          button's own content), so a reader heard "Speech to text, button"
+          and never which engine was actually selected. A plain <span> with an
+          id, and `EngineSelect` builds its own `aria-labelledby` from it
+          (see that component's comment) that names BOTH the capability and
+          the current value. This also stops a click on the label from
+          forwarding to the button while the popup is open (a `<label>`'s
+          default behaviour, and the second half of the same bug: mousedown
+          closed the popup as an outside click, and the forwarded click then
+          reopened it). */}
       <div className="am-engine-row">
-        <label className="am-engine-cap" htmlFor={`engine-${row.capability}`}>
+        <span id={`engine-${row.capability}-label`} className="am-engine-cap">
           {label}
-        </label>
+        </span>
         {/* The stranded stored code (`strandedSelection`) and each real
             choice's disabled-reason (`choiceReason`) are both rendered INSIDE
             the popup by `EngineSelect` itself — see its own comment for why a
             listbox can say what a native `<select>` could not. */}
         <EngineSelect
-          id={`engine-${row.capability}`}
+          labelId={`engine-${row.capability}-label`}
           auto={auto}
           selected={row.selected}
           choices={row.choices}
           stranded={stranded}
+          strandedLabel={row.strandedLabel}
           disabled={busy}
           onChange={choose}
         />
@@ -168,11 +180,12 @@ function CapabilityEngineRow({
           backend is like. */}
       {note && <div className="am-engine-note">{note}</div>}
       {/* The one line on this card that IS reporting a problem — a stored
-          preference this machine is not honouring — so it gets its own class
-          and the app's `--warning` colour rather than sharing the muted grey
-          every other line here uses. Everything else on the card describes
-          normal state; this one says a choice silently didn't take. */}
-      {warning && <div className="am-engine-warning">{warning}</div>}
+          preference this machine is not honouring — so it carries the
+          `.warning` modifier and the app's `--warning` colour rather than the
+          muted grey every other line here uses. Everything else on the card
+          describes normal state; this one says a choice silently didn't
+          take. */}
+      {warning && <div className="am-engine-note warning">{warning}</div>}
       {/* The consequence, in four words at most. It stays because an unload is
           a real thing that just happened to the user's machine and nothing else
           on screen would report it — but the paragraph explaining WHY the model

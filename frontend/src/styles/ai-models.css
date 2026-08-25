@@ -117,7 +117,12 @@
   cursor: pointer;
 }
 
-.am-engine-trigger:disabled {
+/* `.disabled`, not `:disabled` — the trigger is never actually the native
+   disabled attribute (see EngineSelect.tsx's own comment on `aria-disabled`):
+   a disabled button drops out of the tab order and can't hold focus, which is
+   exactly what broke refocusing it after a pick kicks off the PUT that sets
+   this. */
+.am-engine-trigger.disabled {
   cursor: default;
   opacity: 0.6;
 }
@@ -130,24 +135,22 @@
   white-space: nowrap;
 }
 
-/* The popup: same surface vocabulary as the context menu and icon picker
-   (`context-menu.css`, `.icon-picker`) — this app has exactly one "small
-   floating panel over a control" language, and a second one here would read
-   as a different control family. `position: fixed`, placed against the
-   trigger's rect by `EngineSelect` itself (JS sets top/left/min-width inline),
-   same as those two. Capped at ~420px so a long registry sentence wraps
-   across several lines rather than making the popup as wide as the page. */
+/* The popup IS a `.context-menu` (context-menu.css) — `EngineSelect.tsx`
+   renders both classes on the same element — rather than a second copy of
+   that surface's background/border/radius/shadow: this app has exactly one
+   "small floating panel over a control" language, and re-declaring its
+   tokens here is how two of them drift apart the next time one changes.
+   `.context-menu`'s own `min-width: 220px` never actually applies — the
+   inline `min-width` `EngineSelect` sets from the trigger's own rect wins
+   over ANY class rule for the same property regardless of value — so nothing
+   here needs to override it. What IS specific to this popup: capped at
+   ~420px so a long registry sentence wraps across several lines rather than
+   making the popup as wide as the page, and a max-height with its own
+   scrollbar so a capability with many engines doesn't run off the viewport. */
 .am-engine-popup {
-  position: fixed;
-  z-index: 1000;
   max-width: 420px;
   max-height: 320px;
   overflow-y: auto;
-  padding: 5px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 28px var(--shadow-lg);
 }
 
 .am-engine-popup:focus {
@@ -232,19 +235,16 @@
 
 /* The one line on a card that reports a PROBLEM — a stored preference this
    machine is silently not honouring — rather than describing normal state.
-   Same metrics and alignment as `.am-engine-note`, `--warning` instead of the
-   muted grey every other line here uses, so it is the one thing on the card
-   that reads as needing attention. */
-.am-engine-warning {
-  margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
-  max-width: 60ch;
-  font-size: 12px;
+   A MODIFIER on `.am-engine-note` (same element, both classes) rather than a
+   second rule re-declaring its metrics: only the colour differs, `--warning`
+   instead of the muted grey every other line here uses, so it is the one
+   thing on the card that reads as needing attention. */
+.am-engine-note.warning {
   color: var(--warning);
 }
 
 @media (max-width: 620px) {
-  .am-engine-note,
-  .am-engine-warning {
+  .am-engine-note {
     margin-left: 0;
   }
 }
