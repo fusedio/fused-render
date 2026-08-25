@@ -1755,17 +1755,17 @@ describe("what the primary button says it will do", () => {
     expect(saveActionLabel(new Date("2026-09-01T08:00:00"), false, now)).toBe("Schedule");
   });
 
-  test("now, or already past, is a Run", () => {
+  test("now, or already past, is a Create", () => {
     // MINUTE precision, matching the field: a card opened on this minute and
     // saved unchanged runs, and must not offer to schedule the moment it is in.
-    expect(saveActionLabel(new Date("2026-08-17T09:00:40"), false, now)).toBe("Run");
-    expect(saveActionLabel(new Date("2026-08-17T08:59:00"), false, now)).toBe("Run");
-    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), false, now)).toBe("Run");
+    expect(saveActionLabel(new Date("2026-08-17T09:00:40"), false, now)).toBe("Create");
+    expect(saveActionLabel(new Date("2026-08-17T08:59:00"), false, now)).toBe("Create");
+    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), false, now)).toBe("Create");
   });
 
   test("a repeat is always a Schedule, past anchor included", () => {
     // A past anchor gets ONE catch-up run and then a standing pattern, and the
-    // pattern is the bigger fact — "Run" would name the catch-up and hide it.
+    // pattern is the bigger fact — "Create" would name the catch-up and hide it.
     expect(saveActionLabel(new Date("2026-08-10T09:00:00"), true, now)).toBe("Schedule");
     expect(saveActionLabel(new Date("2026-09-10T09:00:00"), true, now)).toBe("Schedule");
   });
