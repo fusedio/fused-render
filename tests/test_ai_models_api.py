@@ -2391,20 +2391,20 @@ def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     # A partial fetch: a blob with our own in-progress suffix and no snapshot
     # file materialised for it.
-    repo = _repo(hub, "models--google--siglip2-so400m-patch14-384",
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
                  blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
                  refs={"main": "c1"})
     # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
     (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
 
-    row = _repo_row(client, "google/siglip2-so400m-patch14-384")
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
     assert row["partial"] is True
     engine = row["engine"]
     assert engine is not None, "a curated id must not report a null engine"
     assert engine["shortLabel"] == "MLX Embeddings"
     assert engine["available"] is False
     assert engine["unservable"] is True
-    assert "onnx-community/siglip2-so400m-patch14-384-ONNX" in engine["reason"]
+    assert "onnx-community/siglip2-base-patch16-384-ONNX" in engine["reason"]
 
 
 @requires_symlinks
@@ -2414,13 +2414,13 @@ def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
     broken the platform the model is FOR."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
-    repo = _repo(hub, "models--google--siglip2-so400m-patch14-384",
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
                  blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
                  refs={"main": "c1"})
     # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
     (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
 
-    row = _repo_row(client, "google/siglip2-so400m-patch14-384")
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
     assert row["partial"] is True
     engine = row["engine"]
     # Either no engine claim at all (no format evidence, nothing curated against

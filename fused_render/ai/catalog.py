@@ -770,10 +770,14 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # repo for one reason: which account publishes a SINGLE-FORMAT build of the
     # thing this engine reads.
     #
-    # * The `google/siglip2-*` DUAL encoders stay on the upstream safetensors.
-    #   mlx-embeddings' own SigLIP port reads `model.safetensors` beside a
-    #   `"model_type": "siglip"` config directly, so there is nothing to convert
-    #   and no `mlx-community` re-upload that would be preferable.
+    # * The `google/siglip2-*` upstream safetensors are used where no
+    #   `mlx-community` build is BETTER, not as a rule. mlx-embeddings' own
+    #   SigLIP port reads `model.safetensors` beside a `"model_type": "siglip"`
+    #   config directly, so an upstream repo needs no conversion to work — which
+    #   makes the conversion worth taking only when it buys something. For
+    #   so400m it buys half the download at the same capability (bf16 against
+    #   upstream fp32) and it is taken; for the base row the only conversion on
+    #   offer is 224px and 8-bit, a weaker model, and it is not.
     # * The PROSE row is an `mlx-community` conversion, because that is where a
     #   single-format MLX build of a prose encoder exists at all. The upstream
     #   `nomic-ai/*` repos ship an ONNX export and (for some) an OpenVINO copy
@@ -790,11 +794,25 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # Apache-2.0.
     #
     # **The prose row leads, so a Mac's default is a paragraph encoder too** —
-    # 0.30 GB against the ONNX default's 0.55, with four times the context. Both
-    # engines' defaults are now nomic models, which is deliberate rather than a
-    # coincidence: the two produce vectors in the same space
-    # (`registry.py`'s comment on this row), and defaults from one family make
-    # that promise easier to believe than two unrelated picks would.
+    # 0.30 GB against the ONNX default's 0.55, with four times the context.
+    #
+    # **Cross-engine vector comparability is NOT a goal of this table, and this
+    # paragraph used to say the opposite.** It claimed the two engines' rows were
+    # matched so a page's vectors would survive an engine switch, and it told the
+    # next reader not to "optimize" the bigger row. That was a real constraint
+    # once and it has been withdrawn: nobody is asked to move an index between a
+    # Mac and a Linux box, and holding both lists to the intersection of what the
+    # two engines can read cost real download size for a promise no one wanted.
+    # Each engine now curates the best build IT can read.
+    #
+    # What DOES matter, and is a live hazard, is provenance WITHIN one engine.
+    # Two models on the same list can share a dimension — `onnx-embed`'s nomic
+    # default and its SigLIP2 base row are both 768 — so vectors indexed under
+    # one and queried under the other have the same shape, no error, and
+    # different meanings. There is nothing this table can do about that: the fix
+    # is that `/api/ai/embed` returns the `model` it used and a caller stores it
+    # beside the vectors. `skills/fused-render-ai/SKILL.md` states that rule, and
+    # it is the reason the field exists.
     #
     # **Every curated row has a KNOWN PROMPT SCHEME**, the same curation rule the
     # ONNX block states. The prose row needed an explicit
@@ -826,12 +844,15 @@ SUGGESTIONS: dict[str, list[dict]] = {
     #   into the VECTOR, where there is no sampling step afterwards to absorb it
     #   — the same class of silent loss the prompt table guards against. bf16 is
     #   the honest default; the 4-bit build is a fine thing to fetch by hand.
-    # * `mlx-community/siglip2-so400m-patch16-384` (2.31 GB, against the 4.6 GB
-    #   row below). Tempting, and wrong: it is **patch16** where the ONNX row is
-    #   **patch14** — a different checkpoint, not a smaller build of the same
-    #   one. The two engines' rows are matched deliberately so a page's vectors
-    #   survive an engine switch, and halving a download by breaking that is not
-    #   the trade. Do not "optimize" this one.
+    # * `mlx-community/siglip2-base-patch16-224-8bit` (the base row's only
+    #   `mlx-community` counterpart). NOT a cheaper build of
+    #   `google/siglip2-base-patch16-384`: it is 224px and 8-BIT, a weaker model
+    #   on both axes rather than the same one converted. The so400m row above
+    #   took the conversion precisely because that one IS the same capability at
+    #   half the bytes (bf16 against fp32); this one is not, so the base row
+    #   stays upstream. The two decisions are consistent, not contradictory —
+    #   the question each time is "same model, cheaper build?" and here the
+    #   answer is no.
     "mlx-embed": [
         {
             "id": "mlx-community/nomicai-modernbert-embed-base-bf16",
@@ -856,13 +877,23 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "768-dim, multilingual, but only 64 tokens of text.",
         },
         {
-            "id": "google/siglip2-so400m-patch14-384",
+            "id": "mlx-community/siglip2-so400m-patch16-384",
+            # 2272.20 MB safetensors + 34.36 MB tokenizer + configs = 2.31 GB,
+            # the whole repo (10 files, safetensors only). Hub per-file byte
+            # sums, 2026-08-25.
+            #
+            # Half the upstream row it replaces, and the saving is PRECISION not
+            # capability: 2272 MB over ~1.14B parameters is two bytes each, where
+            # `google/siglip2-so400m-patch14-384`'s 4.6 GB is four. `config.json`
+            # reports no `quantization`, so this is a bf16 conversion and not a
+            # quantized build — the distinction that keeps the 4-bit ModernBERT
+            # off this list.
             "params": "1.1B",
             "label": "SigLIP2 so400m (384px)",
             "nickname": "SigLIP2 so400m",
-            "size_gb": 4.6,
-            "note": "Noticeably better matches than the base model, for three "
-                    "times the download and 1152-dim vectors to store.",
+            "size_gb": 2.31,
+            "note": "Noticeably better matches than the base model, for 1152-dim "
+                    "vectors to store instead of 768.",
         },
     ],
     # Embeddings — `onnx-community`'s ONNX Runtime exports of the two
@@ -1271,11 +1302,23 @@ def runners_offering(model_id: str) -> tuple[str, ...]:
 #: same cache on a Mac. `counterpart_for` below is what checks that a
 #: counterpart is REALLY curated for the engine being offered it, so this table
 #: cannot outlive the rows it points at.
+#: **The so400m pair was here and was REMOVED, because it stopped being a pair.**
+#: The MLX so400m row is now `mlx-community/siglip2-so400m-patch16-384` and the
+#: ONNX one is still patch14 — a genuinely different checkpoint, not the same
+#: weights in another format. This table's entire claim is "the SAME model in the
+#: format this machine's engine does read", and offering a patch14 export as the
+#: counterpart of a patch16 conversion would break exactly the promise the
+#: sentence makes. A stranded so400m snapshot now falls to `engine_gap`'s
+#: no-counterpart branch, which names the engine that serves embeddings here and
+#: recommends nothing — the honest answer.
+#:
+#: The base row stays: `google/siglip2-base-patch16-384` and
+#: `onnx-community/siglip2-base-patch16-384-ONNX` are patch16 both, one export of
+#: one checkpoint, which is the only relationship this table is allowed to
+#: assert.
 COUNTERPART_IDS = {
     "google/siglip2-base-patch16-384":
         "onnx-community/siglip2-base-patch16-384-ONNX",
-    "google/siglip2-so400m-patch14-384":
-        "onnx-community/siglip2-so400m-patch14-384-ONNX",
 }
 
 

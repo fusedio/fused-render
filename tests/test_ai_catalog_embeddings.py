@@ -13,8 +13,12 @@ from fused_render.ai import catalog, registry
 from fused_render.ai.runners import formats
 
 
+# The base row is upstream and the so400m row is an `mlx-community` bf16
+# conversion — half the bytes at the same capability. `catalog.py`'s block header
+# carries the rule: take the conversion where it is the same model in a cheaper
+# build, stay upstream where the only conversion on offer is a weaker model.
 DUAL_MLX_IDS = {"google/siglip2-base-patch16-384",
-                "google/siglip2-so400m-patch14-384"}
+                "mlx-community/siglip2-so400m-patch16-384"}
 # The MLX prose row is an `mlx-community` CONVERSION where the dual rows are
 # upstream safetensors, and `catalog.py`'s block header carries the reason: it is
 # where a single-format MLX build of a prose encoder exists.
@@ -352,27 +356,52 @@ def test_the_same_ids_are_offered_and_ungapped_on_a_MAC(monkeypatch):
 def test_the_gap_names_the_engine_the_reason_and_the_counterpart(monkeypatch):
     """What the sentence has to contain to be actionable, asserted by part
     rather than verbatim — the wording may improve, the four facts may not go
-    missing."""
+    missing.
+
+    The BASE row, because it is the one with a true counterpart: it and
+    `onnx-community/siglip2-base-patch16-384-ONNX` are patch16 both, one export
+    of one checkpoint. The so400m rows are no longer a pair — see
+    `COUNTERPART_IDS` — and the test below covers that.
+    """
     _linux(monkeypatch)
-    gap = catalog.engine_gap("google/siglip2-so400m-patch14-384")
+    gap = catalog.engine_gap("google/siglip2-base-patch16-384")
     assert gap is not None
     reason = gap["reason"]
-    assert "google/siglip2-so400m-patch14-384" in reason      # which model
+    assert "google/siglip2-base-patch16-384" in reason         # which model
     assert "MLX Embeddings" in reason                          # which engine
     assert "Apple Silicon" in reason                           # why not here
-    assert "onnx-community/siglip2-so400m-patch14-384-ONNX" in reason  # what to do
+    assert "onnx-community/siglip2-base-patch16-384-ONNX" in reason  # what to do
     # And it says the snapshot is not being thrown away, because the honest
     # answer to "then why is it on my disk" is "it still works on a Mac".
     assert "stays on disk" in reason
-    assert gap["counterpart"] == "onnx-community/siglip2-so400m-patch14-384-ONNX"
+    assert gap["counterpart"] == "onnx-community/siglip2-base-patch16-384-ONNX"
     assert gap["engines"] == ("mlx-embed",)
     assert gap["serving"] == "onnx-embed"
+
+
+def test_the_so400m_rows_are_NOT_offered_as_each_others_counterpart(monkeypatch):
+    """**The MLX so400m row is patch16 and the ONNX one is patch14.**
+
+    A different checkpoint, not the same weights in another format, so
+    recommending one as the other's replacement would break the exact promise
+    the sentence makes ("the same model in the format this machine's engine does
+    read"). The stranded snapshot still gets a gap — it just gets the
+    no-counterpart sentence, which names what serves embeddings here and
+    recommends nothing.
+    """
+    _linux(monkeypatch)
+    gap = catalog.engine_gap("mlx-community/siglip2-so400m-patch16-384")
+    assert gap is not None
+    assert gap["counterpart"] is None
+    assert "ONNX Embeddings" in gap["reason"]
+    assert "patch14" not in gap["reason"]
 
 
 def test_a_gap_with_no_counterpart_still_says_what_serves_here(monkeypatch):
     """The curated MLX prose row has no ONNX equivalent curated for it, so there
     is nothing to recommend — and the sentence must not trail off. It names the
-    engine that DOES serve the capability here instead."""
+    engine that DOES serve the capability here instead. (The so400m row is the
+    other case, for a different reason — see the counterpart test above.)"""
     _linux(monkeypatch)
     gap = catalog.engine_gap("mlx-community/nomicai-modernbert-embed-base-bf16")
     assert gap is not None and gap["counterpart"] is None
@@ -396,6 +425,9 @@ def test_counterpart_for_is_checked_against_the_curation_not_trusted(monkeypatch
     _linux(monkeypatch)
     assert catalog.counterpart_for("google/siglip2-base-patch16-384", "onnx-embed") == (
         "onnx-community/siglip2-base-patch16-384-ONNX")
+    # The so400m row has no table entry at all now, patch16 against patch14.
+    assert catalog.counterpart_for(
+        "mlx-community/siglip2-so400m-patch16-384", "onnx-embed") is None
     # Not curated for the MLX engine, so not offered to it.
     assert catalog.counterpart_for("google/siglip2-base-patch16-384", "mlx-embed") is None
     # An id with no table row at all.
@@ -408,9 +440,10 @@ def test_runners_offering_is_the_narrow_companion_to_all_suggested_ids():
     cross-runner breadth (the mirror's privacy gate reads it); `runners_offering`
     is what says WHICH engine, which is what an offer needs."""
     every = catalog.all_suggested_ids()
-    assert "google/siglip2-so400m-patch14-384" in every
+    assert "mlx-community/siglip2-so400m-patch16-384" in every
     assert "nomic-ai/nomic-embed-text-v1.5" in every
-    assert catalog.runners_offering("google/siglip2-so400m-patch14-384") == ("mlx-embed",)
+    assert catalog.runners_offering(
+        "mlx-community/siglip2-so400m-patch16-384") == ("mlx-embed",)
     assert catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed"
     # Hardware variants report as offering their family's list, the same
     # resolution `for_runner` does.

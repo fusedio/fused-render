@@ -395,8 +395,12 @@ def _linux(monkeypatch):
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
 
 
-MLX_ONLY = "google/siglip2-so400m-patch14-384"
-COUNTERPART = "onnx-community/siglip2-so400m-patch14-384-ONNX"
+# The BASE row: patch16 upstream and patch16 export, one checkpoint, so the
+# refusal can name a counterpart. The so400m rows are no longer a pair (patch16
+# conversion against a patch14 export) and take `engine_gap`'s no-counterpart
+# sentence instead — `test_ai_catalog_embeddings.py` covers that half.
+MLX_ONLY = "google/siglip2-base-patch16-384"
+COUNTERPART = "onnx-community/siglip2-base-patch16-384-ONNX"
 
 
 def test_a_model_only_MLX_can_read_is_refused_with_the_engine_named(

@@ -427,7 +427,7 @@ def test_the_curated_mlx_prose_row_is_one_this_runner_can_actually_open():
     families = {
         "mlx-community/nomicai-modernbert-embed-base-bf16": "modernbert",
         "google/siglip2-base-patch16-384": "siglip",
-        "google/siglip2-so400m-patch14-384": "siglip",
+        "mlx-community/siglip2-so400m-patch16-384": "siglip",
     }
     assert curated == set(families), (
         "the MLX list changed — add the new row's model_type here, since a row "
