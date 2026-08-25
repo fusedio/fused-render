@@ -1713,7 +1713,11 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     # resolved, so a malformed request costs nothing rather than a 409 that
     # implies the fix is to wait.
     try:
-        kind, items = embed_common.request_kind(body)
+        # The retrieval `kind` is validated here and forwarded UNCHANGED in the
+        # body below — the route does not re-derive it, and the worker validates
+        # the same field again through the same function, exactly as it does the
+        # batch ceiling.
+        kind, items, _retrieval = embed_common.request_kind(body)
     except ValueError as e:
         return _embed_error("bad_request", str(e), status=400)
 

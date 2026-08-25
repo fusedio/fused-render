@@ -26,6 +26,57 @@ a page actually asked to embed an image.
 from __future__ import annotations
 
 import math
+import os
+import sys
+
+# `formats` sits in THIS directory. Two loaders reach this file — both runners
+# put `runners/` on `sys.path` and import it bare, while
+# `server/routers/ai_runtime.py` imports it as
+# `fused_render.ai.runners.embed_common` — and the package-relative reading must
+# be tried FIRST so the server does not end up with a second copy of `formats`
+# under a second name. `partial.py` carries the same two-line guard for the same
+# two loaders; see its comment for the drift it prevents.
+try:
+    from . import formats
+except ImportError:  # pragma: no cover - the runner reading, exercised in prod
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import formats
+
+#: The two things a text can BE to a retrieval model, and what a caller who says
+#: nothing gets. Both live in `formats` because BOTH runners and the SERVER read
+#: them — the route reports the resolved scheme on every catalog entry — and a
+#: second literal here is the copy that goes stale.
+KINDS = formats.TEXT_EMBED_KINDS
+
+#: **"document", and it is the one defaulting decision in this file that could
+#: quietly cost someone their recall, so here is the whole argument** (ported
+#: from PR #780, whose `text_embed_common.py` argues it at length).
+#:
+#: There is no neutral option. Every scheme in `formats.TEXT_EMBED_PROMPTS` has
+#: two sides and a call must pick one, so the question is only which wrong guess
+#: is cheaper when the caller has not thought about it yet.
+#:
+#: * Default "query", and someone who indexes a corpus with a bare call stamps
+#:   the query instruction onto ten thousand passages. Every later search then
+#:   compares a properly-prefixed query against a corpus that claims to be ten
+#:   thousand queries — the mismatched state, which is measurably worse than
+#:   using no prefix at all (the e5 card says so outright about its own pair).
+#: * Default "document", and the same person gets a corpus that is internally
+#:   consistent. If they never discover `kind`, every text in the system —
+#:   corpus and query alike — carries the same prefix, which is the SYMMETRIC
+#:   behaviour every one of these models supports and the behaviour every
+#:   encoder had before asymmetric prompting existed. It is not optimal; it
+#:   degrades gracefully rather than to the mismatched state.
+#:
+#: The tie-breaker is `bge`: its document side is the EMPTY string, because its
+#: card instructs the query only. So on that family this default means a bare
+#: call embeds text verbatim — precisely what someone who has not read about
+#: prompt schemes expects to happen — while the opposite default would silently
+#: prepend a sentence about searching to text nobody was searching.
+#:
+#: Documented on the bridge (`fused.ai.embed`) as well, because a default whose
+#: reasoning lives only in the runner is a default page authors cannot act on.
+DEFAULT_KIND = formats.TEXT_EMBED_DEFAULT_KIND
 
 #: Above this a batch is refused rather than run. The same number
 #: `ai_runtime.api_ai_embed` checks before a job ever starts — restated here,
@@ -35,13 +86,34 @@ import math
 MAX_ITEMS = 64
 
 
-def request_kind(body: dict) -> tuple[str, list]:
-    """`("texts"|"paths", items)`, or raises `ValueError` naming what is wrong.
+def request_kind(body: dict) -> tuple[str, list, str]:
+    """`("texts"|"paths", items, "query"|"document")`, or a `ValueError` naming
+    what is wrong.
 
     The one shape both engines accept: EXACTLY one of `texts`/`paths`, a
-    non-empty list of non-empty strings, at most `MAX_ITEMS` long. Checked
-    once so a batch of 65 does not read as an ONNX limit on one engine and an
-    MLX one on the other — the same argument `MAX_ITEMS` above makes.
+    non-empty list of non-empty strings, at most `MAX_ITEMS` long, and an
+    optional retrieval `kind`. Checked once so a batch of 65 does not read as an
+    ONNX limit on one engine and an MLX one on the other — the same argument
+    `MAX_ITEMS` above makes.
+
+    **THREE values, and the third is why this is a wider tuple rather than a
+    second function beside it.** `kind` picks which half of a retrieval model's
+    prompt pair goes in front of these texts, and a caller who never asked for
+    it gets `DEFAULT_KIND` — so a worker that forgot to call an
+    `embed_common.retrieval_kind(body)` would silently embed every query with
+    the document prefix and return vectors that are unit length, correctly
+    shaped and worse. Widening the tuple makes that omission a `ValueError` at
+    unpack time instead of a recall regression nobody attributes to this call.
+    Two engines and one route read this; the compiler is the reviewer.
+
+    **An unrecognised `kind` is refused rather than defaulted**, for the same
+    reason stated the other way round: it is the one field here whose wrong
+    value produces no error anywhere downstream.
+
+    **`kind` beside `paths` is refused too.** A prompt scheme instructs TEXT —
+    `"search_query: "` glued to the front of a sentence — so there is nothing
+    for it to prefix on an image. Accepting it would mean silently ignoring the
+    only field the caller set.
     """
     texts = body.get("texts")
     paths = body.get("paths")
@@ -51,13 +123,47 @@ def request_kind(body: dict) -> tuple[str, list]:
         raise ValueError("pass exactly one of 'texts' or 'paths', not both")
     if not has_texts and not has_paths:
         raise ValueError("pass 'texts' or 'paths' — a non-empty list of strings")
-    kind, items = ("texts", texts) if has_texts else ("paths", paths)
+    source, items = ("texts", texts) if has_texts else ("paths", paths)
     if len(items) > MAX_ITEMS:
         raise ValueError(f"at most {MAX_ITEMS} items at a time, got {len(items)}")
     for index, item in enumerate(items):
         if not isinstance(item, str) or not item:
-            raise ValueError(f"'{kind}[{index}]' must be a non-empty string")
-    return kind, items
+            raise ValueError(f"'{source}[{index}]' must be a non-empty string")
+
+    kind = body.get("kind")
+    # `None` is JSON's "I did not say", and the bridge forwards an `undefined`
+    # option as an absent key — but a page building its body with
+    # `kind: state || null` sends the null, and that must mean the default
+    # rather than a 400.
+    if kind is None:
+        kind = DEFAULT_KIND
+    elif source == "paths":
+        raise ValueError(
+            "'kind' applies to 'texts' only — it picks which half of a "
+            "retrieval model's prompt pair goes in front of them, and there is "
+            "nothing to prefix on an image. Drop it, or pass 'texts'.")
+    if kind not in KINDS:
+        raise ValueError(
+            f"'kind' must be one of {', '.join(repr(k) for k in KINDS)} "
+            f"(got {kind!r}) — a retrieval model instructs a question and a "
+            f"passage differently, so this picks which prompt goes in front "
+            f"of these texts. Leave it out for {DEFAULT_KIND!r}.")
+    return source, items, kind
+
+
+def prompted(texts: list, kind: str, scheme: str) -> list:
+    """`texts` with this model's prefix for `kind` glued to the front of each.
+
+    A plain concatenation and nothing cleverer, because every scheme in
+    `formats.TEXT_EMBED_PROMPTS` is literally a string the model's own card puts
+    in front of the text. The `"none"` scheme's prefix is `""`, so this returns
+    the input unchanged for a model with no convention — as a NEW list, because
+    the caller may hold the original for its own reporting.
+    """
+    prefix = formats.text_embed_prompt(scheme, kind)
+    if not prefix:
+        return list(texts)
+    return [prefix + text for text in texts]
 
 
 #: Whether `register_heif_opener()` has run in this process. Once, not per call:

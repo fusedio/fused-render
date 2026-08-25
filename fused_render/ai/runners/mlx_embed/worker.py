@@ -213,8 +213,12 @@ def generate(body):
     if model is None or processor is None:
         raise RuntimeError("no model is loaded")
 
-    kind, items = embed_common.request_kind(body)
-    vectors = (_text_vectors(model, processor, items) if kind == "texts"
+    # `retrieval` is unpacked and deliberately unused HERE: this runner serves
+    # SigLIP only until the prose path lands, and SigLIP has no prompt scheme to
+    # apply. Unpacked rather than dropped so the day it starts mattering is a
+    # one-line change and not a search for the call site.
+    source, items, _retrieval = embed_common.request_kind(body)
+    vectors = (_text_vectors(model, processor, items) if source == "texts"
               else _image_vectors(model, processor, items))
     vectors = embed_common.unit_normalize(vectors)
     dim = len(vectors[0]) if vectors else 0

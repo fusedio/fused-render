@@ -266,6 +266,159 @@ EMBED_MODEL_TYPES = DUAL_EMBED_MODEL_TYPES | TEXT_EMBED_MODEL_TYPES
 MLX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
                                    "modernbert"})
 
+#: Prompt scheme -> `(query_prefix, document_prefix)`. Ported from PR #780
+#: (Aman Bagrecha) essentially verbatim, comments included.
+#:
+#: **Retrieval encoders are asymmetric and this is not a detail.** A question
+#: and the passage that answers it are different kinds of text, and every
+#: model named here was trained with that difference spelled out in its
+#: input. Embedding both sides identically costs real recall on the models
+#: that instruct one side — and costs it SILENTLY, which is the part that
+#: matters: the vectors still come back, still unit length, still comparable,
+#: just worse. Nothing downstream can detect it.
+#:
+#: Each value is `(query_prefix, document_prefix)`, applied by plain
+#: concatenation — no template engine, because every scheme here is literally
+#: a string glued to the front, checked against each model's own card.
+#:
+#: `"none"` is a REAL scheme and the fallback, not an absence: a model whose
+#: convention this table does not know is embedded verbatim on both sides,
+#: which is the symmetric behaviour every encoder supports and the only
+#: honest answer for a repo nobody here has read the card for. Guessing a
+#: prefix would be worse than not prefixing — a wrong instruction is not
+#: ignored, it is text the model dutifully encodes as though it were content.
+#: It is also how a DUAL ENCODER answers: SigLIP has no retrieval convention
+#: at all, so `"none"` is what `ai_runtime` reads to refuse `kind` on one.
+TEXT_EMBED_PROMPTS = {
+    "none": ("", ""),
+    # bge v1.5. The card instructs the QUERY only and says in as many words
+    # that the passage side takes none ("no instruction needed for
+    # passages"), so this is the one asymmetric scheme whose document branch
+    # is genuinely the empty string rather than a second prefix.
+    "bge": ("Represent this sentence for searching relevant passages: ", ""),
+    # nomic-embed-text v1 and v1.5. Its card is explicit that the task
+    # prefixes are REQUIRED rather than advisory — the model was trained
+    # multi-task and the prefix is what selects the task, so an unprefixed
+    # call is out of distribution on both sides, not merely un-tuned.
+    "nomic": ("search_query: ", "search_document: "),
+    # The e5 family (intfloat/e5-*-v2, multilingual-e5-*). Both sides
+    # prefixed, and the card warns that swapping the two is worse than using
+    # neither.
+    "e5": ("query: ", "passage: "),
+    # Qwen3-Embedding ships NAMED prompts in
+    # `config_sentence_transformers.json` (`query` and `document`); the query
+    # one is an instruction block and the document one is empty. The task
+    # sentence is Qwen's own default out of that file, kept verbatim rather
+    # than reworded — it is part of what the model was tuned against, not a
+    # comment this app is free to improve.
+    "qwen3": ("Instruct: Given a web search query, retrieve relevant passages "
+              "that answer the query\nQuery:", ""),
+    # EmbeddingGemma's card gives a prompt per task; these are its
+    # `Retrieval-query` and `Retrieval-document` forms. The document form
+    # ends at `text: ` because the card's template carries an optional
+    # `title:` ahead of it, and `none` is what that field takes when there is
+    # no title — which is always, here, since this API takes a flat list of
+    # strings and has nowhere for a caller to put one.
+    "gemma-embedding": ("task: search result | query: ", "title: none | text: "),
+}
+
+#: The two values `kind` may take. A closed set, checked at the edge
+#: (`embed_common.request_kind`) rather than defaulted through, because a
+#: typo'd `"queries"` silently falling back to the document prefix is the exact
+#: silent-degradation failure this whole table exists to prevent.
+TEXT_EMBED_KINDS = ("query", "document")
+
+#: What a caller who says nothing gets. See `embed_common.DEFAULT_KIND` for the
+#: whole argument.
+TEXT_EMBED_DEFAULT_KIND = "document"
+
+#: Repo id -> its prompt scheme, for every model this app CURATES. Checked
+#: before the heuristic below, so the guess never runs for the models most
+#: people will ever load — and `test_ai_catalog_embeddings.py` asserts every
+#: curated embeddings id resolves to a scheme, which makes "has a known
+#: convention" a curation rule rather than a hope.
+#:
+#: PR #780 carried the same idea keyed by GGUF FILENAME, because llama.cpp
+#: addresses a model as a `(repo, file)` pair. Nothing here does: both engines
+#: take a repo id, so that is the key.
+TEXT_EMBED_SCHEMES = {
+    "nomic-ai/nomic-embed-text-v1.5": "nomic",
+    "intfloat/multilingual-e5-small": "e5",
+    "BAAI/bge-base-en-v1.5": "bge",
+}
+
+#: Substrings of a REPO ID that identify a prompt scheme, most specific first —
+#: the fallback for a repo `TEXT_EMBED_SCHEMES` above does not curate.
+#:
+#: **A heuristic, and named as one.** A model's prompt convention is a fact
+#: about its training that no file in the snapshot records, so for an uncurated
+#: repo the id is the only evidence there is. It is reasonable evidence — an
+#: embedding repo is named after the model it holds, near universally — but it
+#: is evidence and not proof, which is why the scheme actually resolved travels
+#: back on the catalog entry (`ai_runtime`'s `promptScheme`) rather than being
+#: applied out of sight. A caller who sees the wrong one can pass `kind`
+#: deliberately or name a curated id instead.
+#:
+#: `qwen3-embedding` ahead of any bare `qwen3` and `nomic-embed` ahead of any
+#: bare `nomic` for the obvious reason; the e5 hints are spelled with their
+#: size suffix rather than as a bare `e5` because two letters that common
+#: match ids with nothing to do with the family.
+TEXT_EMBED_SCHEME_HINTS = (
+    ("qwen3-embedding", "qwen3"),
+    ("embeddinggemma", "gemma-embedding"),
+    ("gemma-embedding", "gemma-embedding"),
+    ("nomic-embed", "nomic"),
+    ("multilingual-e5", "e5"),
+    ("e5-small", "e5"),
+    ("e5-base", "e5"),
+    ("e5-large", "e5"),
+    # bge-m3 is the family member that takes NO query instruction — its card
+    # says so outright — so it must not inherit the `bge` scheme below by
+    # substring. Ordered ahead of `bge-` for exactly that.
+    ("bge-m3", "none"),
+    ("bge-", "bge"),
+)
+
+
+def text_embed_prompt(scheme: str, kind: str) -> str:
+    """The prefix to glue in front of one text, for `scheme` and `kind`.
+
+    An unknown scheme falls back to `"none"` rather than raising: this is
+    reached from a worker holding a resident model with a validated batch in
+    hand, and a scheme name that has drifted out of the table is a reason to
+    embed plainly, not to fail a call that would otherwise work.
+    """
+    query, document = TEXT_EMBED_PROMPTS.get(scheme) or TEXT_EMBED_PROMPTS["none"]
+    return query if kind == "query" else document
+
+
+def text_embed_scheme(model_id: str) -> str:
+    """The prompt scheme for a model — the curated table, then the repo id.
+
+    Curated first: `TEXT_EMBED_SCHEMES` states the scheme outright for every id
+    this app recommends, so the heuristic never runs for the models most people
+    will ever load. Everything else falls to `TEXT_EMBED_SCHEME_HINTS` over the
+    repo id, and finally to `"none"`.
+
+    Lowercased before matching: publishers capitalise inconsistently
+    (`BAAI/bge-*` against `BAAI/BGE-*` in their own docs), and a scheme that
+    turned on that would be precisely the silent wrong answer this table exists
+    to avoid.
+
+    `"none"` for a DUAL ENCODER, and that is the answer rather than a gap:
+    SigLIP and CLIP have no query/passage convention, so there is no prefix to
+    apply and `kind` is a parameter with nothing to do — which is exactly what
+    `ai_runtime` refuses it on.
+    """
+    curated = TEXT_EMBED_SCHEMES.get(model_id)
+    if curated:
+        return curated
+    haystack = model_id.lower()
+    for hint, scheme in TEXT_EMBED_SCHEME_HINTS:
+        if hint in haystack:
+            return scheme
+    return "none"
+
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
 #:
 #: **Repos the user never chose.** They land in the Hub cache because a runner
