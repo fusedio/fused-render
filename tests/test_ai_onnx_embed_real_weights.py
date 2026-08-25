@@ -63,6 +63,19 @@ DirectML, CUDA and ROCm rows have no hardware here to place onto, so this
 exercises the CONTRACT (the outputs `_output_index` reads, the shapes
 `generate()` returns) and the NUMERICS (that they match torch's), not the
 accelerated kernels those three rows would need real hardware to check.
+
+**This file's own ≥0.999 cosine gate (`test_semantically_closer_texts_...`,
+below) would have caught the `_text_length` regression on the very first dual
+forward pass** — padding SigLIP2's 64-position text tower to 512 does not
+shave a few thousandths off the cosine, it runs position ids 64..511 through a
+64-row embedding table, which is not a close vector, it is an out-of-range
+gather. And it caught nothing, for the whole time that bug was live, because
+this gate has never actually been executed anywhere: it is real-weights-only,
+skipped by default, and no CI job or local run in this repo's history has ever
+set `FUSED_RENDER_REAL_WEIGHTS=1` with all four packages and both snapshots
+present. A gate that is correct but never run is exactly as protective as no
+gate at all — the lesson is not "write a stronger assertion", it is "make sure
+the assertion runs".
 """
 import glob
 import importlib.util

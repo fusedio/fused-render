@@ -354,10 +354,11 @@ def test_the_sequence_length_comes_off_the_config_not_a_constant(worker,
     here would truncate one or ask the other for positions its graph has no
     weights for."""
     config = {"text_config": {"max_position_embeddings": 12}}
-    assert worker._text_length(config, {}) == 12
+    assert worker._text_length(config, {}, worker._TEXT, "test-model") == 12
     # The `1e30` sentinel some exporters leave in `model_max_length`: padding
     # every sequence to it is an allocation failure, not a slow call.
-    assert worker._text_length({}, {"model_max_length": 10 ** 30}) == 512
+    assert worker._text_length({}, {"model_max_length": 10 ** 30},
+                                worker._TEXT, "test-model") == 512
 
 
 def test_only_the_inputs_the_graph_declares_are_fed(worker):
@@ -822,8 +823,10 @@ def test_a_length_over_the_ceiling_is_CLAMPED_not_discarded(pure):
     truncating a long-context encoder to a sixteenth of its context with the
     vectors still coming back unit length.
     """
-    assert pure._text_length({"max_position_embeddings": 8194}, {}) == 8192
-    assert pure._text_length({}, {"model_max_length": 100_000}) == 8192
+    assert pure._text_length({"max_position_embeddings": 8194}, {},
+                              pure._TEXT, "jinaai/jina-embeddings-v3") == 8192
+    assert pure._text_length({}, {"model_max_length": 100_000},
+                              pure._TEXT, "jinaai/jina-embeddings-v3") == 8192
 
 
 def test_the_sentinel_is_discarded_so_a_real_claim_still_wins(pure):
@@ -832,8 +835,10 @@ def test_the_sentinel_is_discarded_so_a_real_claim_still_wins(pure):
     the config's own 8192 is the answer and the sentinel is skipped, and where
     nothing else speaks the floor is."""
     assert pure._text_length({"max_position_embeddings": 8192},
-                              {"model_max_length": 10 ** 30}) == 8192
-    assert pure._text_length({}, {"model_max_length": 10 ** 30}) == 512
+                              {"model_max_length": 10 ** 30},
+                              pure._TEXT, "test-model") == 8192
+    assert pure._text_length({}, {"model_max_length": 10 ** 30},
+                              pure._TEXT, "test-model") == 512
 
 
 def test_roberta_style_plus_two_does_not_reach_the_graph(pure):
@@ -846,12 +851,16 @@ def test_roberta_style_plus_two_does_not_reach_the_graph(pure):
     config preferred.
     """
     assert pure._text_length({"max_position_embeddings": 514},
-                              {"model_max_length": 512}) == 512
+                              {"model_max_length": 512},
+                              pure._TEXT,
+                              "intfloat/multilingual-e5-large") == 512
     # Also in the other order, so this is a min and not a "believe the tokenizer"
     # rule: a tokenizer shipping the larger number must not raise the ceiling
     # above what the graph has weights for.
     assert pure._text_length({"max_position_embeddings": 512},
-                              {"model_max_length": 8192}) == 512
+                              {"model_max_length": 8192},
+                              pure._TEXT,
+                              "intfloat/multilingual-e5-large") == 512
 
 
 def test_siglip2s_short_text_tower_is_still_read_from_text_config(pure):
@@ -859,18 +868,66 @@ def test_siglip2s_short_text_tower_is_still_read_from_text_config(pure):
     `text_config`, where a dual encoder declares it."""
     assert pure._text_length(
         {"text_config": {"max_position_embeddings": 64}},
-        {"model_max_length": 64}) == 64
+        {"model_max_length": 64},
+        pure._DUAL, "google/siglip2-base-patch16-384") == 64
     # And the vision-side config around it does not leak in.
     assert pure._text_length(
         {"text_config": {"max_position_embeddings": 64},
-         "max_position_embeddings": 8192}, {}) == 64
+         "max_position_embeddings": 8192}, {},
+        pure._DUAL, "google/siglip2-base-patch16-384") == 64
 
 
 def test_junk_claims_fall_through_to_the_floor(pure):
     """`bool` is an `int` in Python and `True` would otherwise read as a
     one-token sequence."""
     for claim in (0, -1, True, False, "512", None, 1.5):
-        assert pure._text_length({"max_position_embeddings": claim}, {}) == 512
+        assert pure._text_length({"max_position_embeddings": claim}, {},
+                                  pure._TEXT, "test-model") == 512
+
+
+# -- SigLIP2's undeclared 64-position text tower: the regression this branch
+# introduced, and the fix ------------------------------------------------------
+#
+# Every curated SigLIP2 dual row is shaped exactly like this: `text_config`
+# carries only `model_type` and `vocab_size`, no `max_position_embeddings`
+# anywhere, and `tokenizer_config.json`'s `model_max_length` is the unstripped
+# `1e30` sentinel. A test that only checked "not the sentinel" would have
+# passed throughout this bug's life — `_DEFAULT_TEXT_LENGTH` (512) is also
+# "not the sentinel" and is exactly the wrong answer for a 64-position table.
+
+
+#: `text_config` shaped like `google/siglip2-base-patch16-384`'s real one —
+#: see this module's docstring and `onnx_embed._ARCH_TEXT_LENGTH`'s comment for
+#: where these exact values were read.
+_SIGLIP2_TEXT_CONFIG = {"model_type": "siglip", "vocab_size": 256000}
+_SIGLIP2_SENTINEL_TOKENIZER_CONFIG = {"model_max_length": 10 ** 30 + 19884624838656}
+
+
+def test_siglip2_curated_rows_resolve_to_64_not_512(pure):
+    """The regression itself: a SigLIP2 config with neither
+    `max_position_embeddings` nor a usable `model_max_length` must resolve to
+    the text tower's real 64 positions, not fall through to
+    `_DEFAULT_TEXT_LENGTH`. 512 would gather position ids 64..511 against a
+    64-row `text_model.embeddings.position_embedding.weight` — not a worse
+    vector, a crash."""
+    config = {"model_type": "siglip", "text_config": _SIGLIP2_TEXT_CONFIG}
+    for model_id in ("google/siglip2-base-patch16-384",
+                      "onnx-community/siglip2-base-patch16-384-ONNX",
+                      "onnx-community/siglip2-so400m-patch14-384-ONNX"):
+        assert pure._text_length(
+            config, _SIGLIP2_SENTINEL_TOKENIZER_CONFIG,
+            pure._DUAL, model_id) == 64
+
+
+def test_a_dual_encoder_with_no_length_anywhere_refuses_by_name(pure):
+    """`_ARCH_TEXT_LENGTH` has no entry for `clip` — no curated row is one, so
+    there is no checkpoint to read a tensor shape off — so a dual encoder of an
+    unknown architecture with nothing declared must refuse rather than pad to
+    `_DEFAULT_TEXT_LENGTH` and risk the exact SigLIP2 gather failure this
+    module was fixed for."""
+    with pytest.raises(RuntimeError, match="some/clip-export"):
+        pure._text_length({"model_type": "clip"}, {}, pure._DUAL,
+                           "some/clip-export")
 
 
 # -- the pad token: read both serializations, never guess an id ---------------

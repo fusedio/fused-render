@@ -94,6 +94,21 @@ _DEFAULT_TEXT_LENGTH = 512
 #: threshold and same reasoning as `onnx_embed`'s.
 _SENTINEL_TEXT_LENGTH = 1_000_000
 
+#: A per-`model_type` ARCHITECTURAL default, consulted only when a checkpoint's
+#: config leaves the length undeclared — the last stop before
+#: `_DEFAULT_TEXT_LENGTH`, never ahead of a real declared value. Same dict,
+#: same provenance, same reasoning as `runners/onnx_embed.py`'s
+#: `_ARCH_TEXT_LENGTH`: `"siglip": 64` is read off
+#: `google/siglip2-base-patch16-384`'s `model.safetensors` header —
+#: `text_model.embeddings.position_embedding.weight: [64, 768]`, fetched by an
+#: HTTP byte-range read rather than assumed — because no config here or in
+#: `onnx_embed`'s copy carries `max_position_embeddings` for a SigLIP2 export.
+#: `"clip"` stays out for the same reason it stays out there: `mlx-embeddings`
+#: 0.1.x ships no `clip` module at all (this file's own docstring, and
+#: `formats.MLX_EMBED_MODEL_TYPES`), so there is no checkpoint reachable from
+#: this runner to read a tensor shape off.
+_ARCH_TEXT_LENGTH = {"siglip": 64}
+
 #: The MLX streams every thread in this process works on, keyed by device
 #: name. Exactly `mlx_text/worker.py`'s `_STREAMS`/`_pin_stream` — this worker
 #: is threaded the same way (`worker_base.serve`'s bring-up thread loads, a
@@ -222,7 +237,7 @@ def _family(config, model_id):
     return _DUAL if family in formats.DUAL_EMBED_MODEL_TYPES else _TEXT
 
 
-def _text_length(config):
+def _text_length(config, family, model_id):
     """Where a text is cut off, from the CHECKPOINT rather than a constant.
 
     **PR #780 used a flat `_MAX_LENGTH = 512` and its own docstring conceded the
@@ -253,6 +268,21 @@ def _text_length(config):
     usable-length-plus-two offset. It has no need to yet: the offset only appears
     on RoBERTa/XLM-R, and neither curated MLX row is one. Anything from that
     family arriving on this list is the signal to bring the min over.
+
+    **`_ARCH_TEXT_LENGTH` is consulted only when the config says nothing at
+    all, and only before `_DEFAULT_TEXT_LENGTH` — never ahead of a declared
+    value.** Every curated SigLIP2 row is exactly that silent case: no config
+    here carries `max_position_embeddings` for one, and this runner never even
+    reads `tokenizer_config.json`'s `model_max_length` (see the paragraph
+    above), so without this dict a SigLIP2 config with nothing declared would
+    fall straight to `_DEFAULT_TEXT_LENGTH` — 512 against a 64-position text
+    tower.
+
+    A DUAL encoder that is silent on BOTH counts refuses instead: the caller
+    (`_text_vectors`, through `load()`) pads to exactly this length with
+    `padding="max_length"` against a graph that takes no attention mask, so a
+    wrong number here is not a worse vector, it is a real gather past the
+    checkpoint's own position-embedding table.
     """
     for value in (config.get("max_position_embeddings"),
                   (config.get("text_config") or {}).get("max_position_embeddings")
@@ -260,6 +290,24 @@ def _text_length(config):
         if (isinstance(value, int) and not isinstance(value, bool)
                 and 0 < value < _SENTINEL_TEXT_LENGTH):
             return min(value, _MAX_TEXT_LENGTH)
+
+    model_type = config.get("model_type")
+    if isinstance(model_type, str):
+        architectural = _ARCH_TEXT_LENGTH.get(model_type.strip().lower())
+        if architectural is not None:
+            return architectural
+
+    if family == _DUAL:
+        raise RuntimeError(
+            f"{model_id}'s config declares no usable text sequence length — "
+            f"no `max_position_embeddings` at the top level or under "
+            f"`text_config`, and model_type={model_type!r} has no "
+            f"architectural default this runner knows. Padding this DUAL "
+            f"encoder to `_DEFAULT_TEXT_LENGTH` ({_DEFAULT_TEXT_LENGTH}) "
+            f"regardless would gather position ids past whatever the "
+            f"checkpoint's own table actually holds — the SigLIP2 failure "
+            f"this refusal exists to catch — so this runner refuses rather "
+            f"than guessing.")
     return _DEFAULT_TEXT_LENGTH
 
 
@@ -309,11 +357,22 @@ def load(model_id, path):
     # `prompted()` returns the texts unchanged and `kind` is a parameter with
     # nothing to do, which is what `ai_runtime` refuses it on.
     _loaded["scheme"] = formats.text_embed_scheme(model_id)
+    # Read for BOTH families now, not only the prose one. A dual encoder needs
+    # it just as much: `AutoProcessor.from_pretrained` above hands back a plain
+    # `transformers.SiglipTokenizer`, whose OWN `model_max_length` gets
+    # overwritten by whatever `tokenizer_config.json` says — the `1e30`
+    # sentinel on every curated SigLIP2 row — and transformers' own padding
+    # code silently turns `padding="max_length"` into no padding at all once
+    # `model_max_length` is that large (`_get_padding_truncation_strategies`,
+    # checked against the installed transformers on 2026-08-25). Leaving this
+    # unset let `_text_vectors` hand the processor no `max_length` and trust
+    # that library default, which is exactly the sentinel that stops it from
+    # padding or truncating anything.
+    _loaded["length"] = _text_length(config, family, model_id)
     if family == _DUAL:
         _loaded["processor"] = second
     else:
         _loaded["tokenizer"] = second
-        _loaded["length"] = _text_length(config)
 
 
 def memory():
@@ -351,12 +410,23 @@ def _to_lists(array):
     return array.astype(mx.float32).tolist()
 
 
-def _text_vectors(model, processor, texts):
-    """One vector per string in `texts`, unnormalized, as a plain nested list."""
+def _text_vectors(model, processor, texts, length):
+    """One vector per string in `texts`, unnormalized, as a plain nested list.
+
+    `max_length=length` is passed EXPLICITLY, not left for the processor's
+    tokenizer to supply from its own `model_max_length` — that attribute is
+    the checkpoint's `tokenizer_config.json` value, which is the `1e30`
+    sentinel on every curated SigLIP2 row, and transformers silently turns
+    `padding="max_length"` into no padding at all once `model_max_length`
+    is that large. `length` is `_loaded["length"]`, resolved once in `load()`
+    by `_text_length` off the config (and its architectural default for
+    SigLIP2) — the same number `onnx_embed._tokenizer` bakes into its
+    tokenizer's `enable_padding(length=...)` for the identical reason.
+    """
     import mlx.core as mx
 
     inputs = processor(text=texts, padding=_TEXT_PADDING, truncation=True,
-                       return_tensors="np")
+                       max_length=length, return_tensors="np")
     input_ids = mx.array(inputs["input_ids"])
     attention_mask = mx.array(inputs["attention_mask"]) if "attention_mask" in inputs else None
     features = model.get_text_features(input_ids=input_ids, attention_mask=attention_mask)
@@ -460,7 +530,7 @@ def generate(body):
     elif family == _DUAL:
         # `kind` reaches nothing here: SigLIP has no retrieval convention, so
         # its scheme is `"none"` and there is no prefix to apply.
-        vectors = _text_vectors(model, second, items)
+        vectors = _text_vectors(model, second, items, _loaded["length"])
     else:
         vectors = _prose_vectors(model, second, items, kind)
     vectors = embed_common.unit_normalize(vectors)

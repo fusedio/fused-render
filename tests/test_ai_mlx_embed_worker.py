@@ -69,10 +69,20 @@ class FakeMlxCore(types.ModuleType):
 class FakeProcessor:
     """`processor(text=..., ...)` / `processor(images=..., ...)`, `np`-shaped —
     the worker only reads the keys back off to wrap them in `mx.array`, never
-    the content, so a plain Python list stands in for a real numpy array."""
+    the content, so a plain Python list stands in for a real numpy array.
 
-    def __call__(self, text=None, images=None, **_kwargs):
+    `calls` records every text invocation's kwargs, exactly `FakeProseTokenizer`
+    does below — the SigLIP2 regression is only observable in whether
+    `max_length` reaches this call at all, so it has to be recorded rather than
+    only its return value.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, text=None, images=None, **kwargs):
         if text is not None:
+            self.calls.append({"text": list(text), **kwargs})
             return {"input_ids": [[0]] * len(text), "attention_mask": [[1]] * len(text)}
         return {"pixel_values": [[0]] * len(images)}
 
@@ -112,6 +122,10 @@ def worker(monkeypatch):
     module._loaded["family"] = module._DUAL
     module._loaded["scheme"] = "none"
     module._loaded["model_id"] = "google/siglip2-base-patch16-384"
+    # SigLIP2's real text tower — what `load()` would have resolved via
+    # `_text_length`'s architectural default, since the real checkpoint's
+    # config declares no `max_position_embeddings` anywhere.
+    module._loaded["length"] = 64
     return module
 
 
@@ -305,12 +319,69 @@ def test_the_sequence_cap_comes_from_the_CHECKPOINT_and_not_a_constant(prose):
 
 
 def test_the_length_is_read_off_the_config_with_a_sane_ceiling(worker):
-    assert worker._text_length({"max_position_embeddings": 8192}) == 8192
-    assert worker._text_length({"max_position_embeddings": 512}) == 512
+    assert worker._text_length({"max_position_embeddings": 8192},
+                                worker._TEXT, "test-model") == 8192
+    assert worker._text_length({"max_position_embeddings": 512},
+                                worker._TEXT, "test-model") == 512
     # The `1e30` sentinel some exporters leave in, and an absent field: both
-    # fall back rather than asking the tokenizer to pad to infinity.
-    assert worker._text_length({"max_position_embeddings": 10 ** 30}) == 512
-    assert worker._text_length({}) == 512
+    # fall back rather than asking the tokenizer to pad to infinity — for a
+    # `model_type` with no architectural default and a non-dual family, the
+    # floor is still `_DEFAULT_TEXT_LENGTH`.
+    assert worker._text_length({"max_position_embeddings": 10 ** 30},
+                                worker._TEXT, "test-model") == 512
+    assert worker._text_length({}, worker._TEXT, "test-model") == 512
+
+
+# -- SigLIP2's undeclared 64-position text tower -------------------------------
+#
+# `mlx_embeddings.utils.load` hands a dual checkpoint's config to
+# `transformers.AutoProcessor.from_pretrained`, which for SigLIP is a plain
+# `SiglipTokenizer`. That tokenizer's OWN `model_max_length` — 64 by the class
+# signature's default — is overwritten the moment `tokenizer_config.json`
+# supplies one, and every curated SigLIP2 row's `tokenizer_config.json` carries
+# the unstripped `1e30` sentinel. transformers' own
+# `_get_padding_truncation_strategies` then treats `padding="max_length"` with
+# no explicit `max_length` and `model_max_length` above `LARGE_INTEGER` as
+# `DO_NOT_PAD` — no padding AND no truncation — so a call that never states
+# `max_length` explicitly does not silently pad to 512 the way `onnx_embed`
+# does; it pads to nothing at all, and a batch of unequal-length texts fails to
+# stack into a rectangular array. Either way the fix is the same: state the
+# length explicitly, off the checkpoint's architecture rather than the
+# library's own fallback.
+
+
+def test_siglip2_curated_rows_resolve_to_64_not_512(worker):
+    """A SigLIP2 config with nothing declared must resolve to the real
+    64-position text tower, not `_DEFAULT_TEXT_LENGTH`. A test that only
+    checked "not the sentinel" would have passed throughout this bug's life —
+    512 is also not the sentinel, and is exactly the wrong answer here."""
+    config = {"model_type": "siglip",
+              "text_config": {"model_type": "siglip_text_model",
+                               "vocab_size": 256000}}
+    for model_id in ("google/siglip2-base-patch16-384",
+                      "mlx-community/siglip2-so400m-patch16-384"):
+        assert worker._text_length(config, worker._DUAL, model_id) == 64
+
+
+def test_a_dual_encoder_with_no_length_anywhere_refuses_by_name(worker):
+    """No curated MLX row is a `clip` one (`mlx-embeddings` ships no `clip`
+    module at all), so there is no architectural default for it — a dual
+    encoder that declares neither a length nor a recognised architecture must
+    refuse rather than pad to `_DEFAULT_TEXT_LENGTH` and risk the SigLIP2
+    gather failure this module exists to prevent."""
+    with pytest.raises(RuntimeError, match="some/clip-export"):
+        worker._text_length({"model_type": "clip"}, worker._DUAL,
+                             "some/clip-export")
+
+
+def test_the_dual_text_call_states_max_length_explicitly(worker):
+    """The seam the regression actually lived in: `_text_vectors` must hand
+    the processor an explicit `max_length`, not trust the tokenizer's own
+    `model_max_length` — that attribute is silently the SigLIP2 sentinel on
+    every curated row, and relying on it produces no padding at all rather
+    than a padded-to-512 vector."""
+    worker.generate({"texts": ["a cat", "a dog"]})
+    assert worker._loaded["processor"].calls[0]["max_length"] == 64
 
 
 def test_the_retrieval_PREFIX_reaches_the_tokenizer(prose):

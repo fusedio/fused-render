@@ -454,7 +454,7 @@ def _tokenizer(path, config, tokenizer_config, model_id, family):
             "the fast tokenizer file directly and has no transformers "
             "fallback to build one from a vocabulary.")
     tokenizer = Tokenizer.from_file(path)
-    length = _text_length(config, tokenizer_config)
+    length = _text_length(config, tokenizer_config, family, model_id)
     pad_token, pad_id = _pad_token(model_id, tokenizer, tokenizer_config)
     tokenizer.enable_truncation(max_length=length)
     # `length=length` for a dual encoder, which is what `_TEXT_PADDING` MEANS —
@@ -600,7 +600,7 @@ def _pad_token(model_id, tokenizer, tokenizer_config):
     return pad_token, pad_id
 
 
-def _text_length(config, tokenizer_config):
+def _text_length(config, tokenizer_config, family, model_id):
     """How long a sequence the text tower was built for.
 
     Off the CONFIG, never a constant: SigLIP2's text tower is 64 positions and a
@@ -626,6 +626,24 @@ def _text_length(config, tokenizer_config):
     `sentence-transformers` itself does when a repo ships `max_seq_length: 512`
     beside an 8192-position config. A sequence LONGER than the graph allows is
     not a degradation, it is a crash.
+
+    **A declared value always wins; `_ARCH_TEXT_LENGTH` is consulted only when
+    the config and the tokenizer are both silent, and it is the last stop
+    BEFORE `_DEFAULT_TEXT_LENGTH`, never ahead of it.** Every curated SigLIP2
+    dual row is exactly that silent case — see `_ARCH_TEXT_LENGTH`'s own
+    comment for why 64 is not a guess there.
+
+    **And on a DUAL encoder, running out of both sources — declared AND
+    architectural — is not a case this function may paper over with
+    `_DEFAULT_TEXT_LENGTH`.** `_tokenizer` pads a dual encoder's text tower to
+    exactly the length this function returns (`_TEXT_PADDING`), and SigLIP's
+    text graph takes no `attention_mask` — every padded position is a real
+    gather against the checkpoint's position-embedding table. `512` is a
+    plausible-looking number that is simply wrong for a 64-position table, and
+    wrong there is not a worse vector, it is a gather off the end of the
+    table — the exact failure this function exists to prevent, so a dual
+    encoder this silent is refused by name instead of quietly padded to a
+    number that happens to fit prose encoders.
     """
     candidates = []
     text_config = config.get("text_config")
@@ -635,7 +653,29 @@ def _text_length(config, tokenizer_config):
     candidates.append(_declared_length(config.get("max_position_embeddings")))
     candidates.append(_declared_length(tokenizer_config.get("model_max_length")))
     usable = [value for value in candidates if value is not None]
-    return min(usable) if usable else _DEFAULT_TEXT_LENGTH
+    if usable:
+        return min(usable)
+
+    model_type = config.get("model_type")
+    if isinstance(model_type, str):
+        architectural = _ARCH_TEXT_LENGTH.get(model_type.strip().lower())
+        if architectural is not None:
+            return architectural
+
+    if family == _DUAL:
+        raise RuntimeError(
+            f"{model_id}'s text tower declares no usable sequence length — "
+            f"no `max_position_embeddings` at the top level or under "
+            f"`text_config`, `tokenizer_config.json`'s `model_max_length` is "
+            f"absent or an unstripped sentinel, and model_type="
+            f"{model_type!r} has no architectural default this runner knows. "
+            f"Padding this DUAL encoder to `_DEFAULT_TEXT_LENGTH` "
+            f"({_DEFAULT_TEXT_LENGTH}) regardless would gather position ids "
+            f"past whatever the checkpoint's own table actually holds — "
+            f"exactly the failure SigLIP2's 64-position text tower hit before "
+            f"this refusal existed — so this runner refuses rather than "
+            f"guessing.")
+    return _DEFAULT_TEXT_LENGTH
 
 
 #: A sanity ceiling on what a config may claim, and a floor to fall back to.
@@ -647,6 +687,33 @@ _DEFAULT_PAD_TOKEN = "</s>"
 
 _MAX_TEXT_LENGTH = 8192
 _DEFAULT_TEXT_LENGTH = 512
+
+#: A per-`model_type` ARCHITECTURAL default, consulted only when a checkpoint's
+#: own config and tokenizer both leave the length undeclared — see
+#: `_text_length`'s docstring for the ordering. Unlike `_DEFAULT_TEXT_LENGTH`
+#: this is not a guess: each entry is a property of the architecture, fixed by
+#: the checkpoint's own weight shapes, and independently re-checkable.
+#:
+#: `"siglip": 64` — `google/siglip2-base-patch16-384`'s `model.safetensors`
+#: header (read directly over HTTP with a byte-range request, no download)
+#: declares `text_model.embeddings.position_embedding.weight: [64, 768]`
+#: beside `vision_model.embeddings.position_embedding.weight: [576, 768]`, so
+#: 64 is the text tower's row count on the actual tensor, not an assumption
+#: about it. No config at any level — top, `text_config`, or the richer copy
+#: `mlx-community/siglip2-so400m-patch16-384` ships — carries
+#: `max_position_embeddings`, and `tokenizer_config.json`'s `model_max_length`
+#: is the unstripped `1e30` sentinel on every curated row (checked
+#: 2026-08-25), so this is the value every curated SigLIP2 row actually needs.
+#: The withdrawn transformers-based runners never had to state this: it came
+#: for free from `SiglipTextConfig`'s own class default, which is invisible to
+#: a runner that reads the checkpoint's raw JSON instead of instantiating that
+#: class — reading JSON is what loses it, and this entry is what puts it back.
+#: `"clip"` is deliberately absent: `formats.DUAL_EMBED_MODEL_TYPES` admits it,
+#: but no curated row is one (`catalog.py`'s comment on that row: a CLIP export
+#: is something a user fetches themselves), so there is no checkpoint here to
+#: read a tensor shape off, and inventing 77 from memory would be exactly the
+#: guess this dict exists to avoid.
+_ARCH_TEXT_LENGTH = {"siglip": 64}
 
 #: Above this a length claim is not a claim, it is an unstripped sentinel:
 #: `model_max_length` is `1000000000000000019884624838656` on a checkpoint whose
