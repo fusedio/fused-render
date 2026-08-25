@@ -93,6 +93,7 @@ import {
   type Job,
   type QueueCount,
 } from "@platform/lib/jobs";
+import { repoName } from "@platform/lib/format";
 const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
 function loadCollapsed(): boolean {
@@ -345,7 +346,18 @@ export function JobRow({
         {/* Suppressed when it just repeats the title (`_start_resident`/`load`
             set both `title` and `model` to the same model id) — otherwise a
             model-load row would draw the model name twice. */}
-        {job.model && job.model !== job.title && <span className="dl-model">{job.model}</span>}
+        {job.model && job.model !== job.title && (
+          // The MODEL name only, not the whole `owner/model` repo id. The owner
+          // is the same for every row a given model ever draws, so it spent the
+          // head's scarcest resource on the one part that never distinguishes
+          // anything — and `.dl-model` is `flex: 0 0 auto` (notifications.css),
+          // so the space it took came out of `.dl-title`, ellipsizing the user's
+          // actual prompt down to a few characters. Full id stays on hover,
+          // since shortening makes two owners' same-named models identical.
+          <span className="dl-model" title={job.model}>
+            {repoName(job.model)}
+          </span>
+        )}
         {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>

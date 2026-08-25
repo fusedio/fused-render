@@ -355,12 +355,31 @@ def test_key_is_stable_across_calls_and_relative_spellings(home, monkeypatch):
     assert projectenv.venv_key_for("proj") == projectenv.venv_key_for(str(proj))
 
 
-def test_uv_cache_dir_sits_beside_the_venvs(home, tmp_path):
-    """One filesystem, so uv hardlinks instead of silently copying."""
+def test_uv_cache_dir_is_isolated_under_an_explicit_FUSED_RENDER_HOME(home, tmp_path):
+    """The one thing worth keeping from the old, always-explicit design: the
+    test suite (via the `home` fixture, here and everywhere else) sets
+    `FUSED_RENDER_HOME` precisely so a build under test can never reach a
+    developer's real, shared uv cache. That isolation must survive exactly —
+    renamed and re-documented from `test_uv_cache_dir_sits_beside_the_venvs`,
+    which pinned this same call as the UNCONDITIONAL behaviour it used to be.
+    """
     assert os.path.dirname(projectenv.uv_cache_dir()) == os.path.dirname(
         projectenv.venvs_root()
     )
     assert projectenv.uv_cache_dir().startswith(str(tmp_path / "home"))
+
+
+def test_uv_cache_dir_defers_to_uvs_own_default_without_FUSED_RENDER_HOME(monkeypatch):
+    """The new contract's other half. Per-branch cache fragmentation (three
+    worktrees on one machine each holding their own multi-gigabyte torch
+    download while `~/.cache/uv` already had it, on the SAME filesystem) came
+    from `uv_cache_dir()` being unconditional, not from a decision that it
+    should be. Outside test isolation, this must answer None — the cue
+    `_env_install_worker._build` uses to leave `UV_CACHE_DIR` unset entirely
+    and let uv resolve its own platform default.
+    """
+    monkeypatch.delenv("FUSED_RENDER_HOME", raising=False)
+    assert projectenv.uv_cache_dir() is None
 
 
 # ---------------------------------------------------------------------------

@@ -1584,6 +1584,12 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     cannot call `projectenv` itself. Two independent derivations of the venv
     directory is exactly how a loader ends up filling a directory no run reads.
 
+    The uv cache slot (4) carries the SAME empty-string-means-None idiom slots
+    5 and 6 use, for the same reason: `projectenv.uv_cache_dir()` answers
+    `None` — "let uv pick its own default" — whenever `FUSED_RENDER_HOME` is
+    not set, which argv cannot carry directly. See that function for why an
+    explicit sibling cache is no longer the unconditional default.
+
     Slot 5 is the base interpreter — `uv sync --python`. The backend's
     `_python_executable()` rather than the worker's own `sys.executable`: the
     backend runs the code, so its interpreter and the environment's have to be
@@ -1617,7 +1623,13 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
         child = subprocess.Popen(
             [sys.executable, worker, key, d,
              os.path.abspath(project_dir), venv_dir_for(project_dir),
-             projectenv.uv_cache_dir(),
+             # Empty means "let uv pick its own default cache" — the SAME
+             # empty-string-means-None idiom slots 5 and 6 already use, and
+             # `projectenv.uv_cache_dir()` returns exactly that (`None`)
+             # whenever `FUSED_RENDER_HOME` is not set. See that function
+             # for why: an explicit sibling cache used to be unconditional,
+             # and fragmented per branch as a result.
+             projectenv.uv_cache_dir() or "",
              _python_executable() or "", acquire_python or ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,

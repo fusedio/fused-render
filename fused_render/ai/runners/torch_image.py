@@ -367,9 +367,15 @@ def generate(body):
         # `report_or_cancel`, not `report`: this callback is the ONLY point in a
         # minutes-long `pipe()` call where a stop can be honoured, and the reply
         # to this tick is how the ✕ gets here.
+        # NO step count in the detail. `done`/`total` are right here in the same
+        # call, and the row renders them itself — as "1 / 28" plus a percentage
+        # in its head (`jobAmount`/`dl-pct`, DownloadManager.tsx). Spelling the
+        # same pair into the caption too printed it twice on one row, in the
+        # half that has the least space to spare. The ETA stays: it is the one
+        # thing here that `done`/`total` cannot be turned into downstream.
         worker_base.report_or_cancel(
             job=job, kind="task", unit="", done=done, total=steps,
-            detail="Denoising — step %d/%d%s" % (done, steps, _eta(remaining)))
+            detail="Denoising%s" % _eta(remaining))
         if worker_base.CANCEL.is_set():
             raise worker_base.Cancelled()
         return callback_kwargs
@@ -379,7 +385,7 @@ def generate(body):
     # until the second step. `runtime.js` documents that early 404 as ordinary
     # and tells a page to hide the <img> on error.
     worker_base.report(job=job, state="running", kind="task", unit="",
-                       done=0, total=steps, detail="Denoising — step 0/%d" % steps)
+                       done=0, total=steps, detail="Denoising")
     # The sink wraps the SAVE as well as the render: its exit is the lifecycle,
     # and a clean one means the real PNG has landed and the preview is now
     # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).
