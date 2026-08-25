@@ -48,6 +48,12 @@ interface StatCall {
 }
 const rankCalls: RankCall[] = [];
 const statCalls: StatCall[] = [];
+/** Every `history.pushState(..., url)` the router's `navigate()` makes — the
+ * observable trace of a navigation, since `navigate` itself is a frozen ES
+ * module export this file cannot spy on (see the file-header comment on why
+ * `mock.module` is out) and `window.dispatchEvent`/`history.pushState` are
+ * plain stubbed globals same as `fetch` above. */
+const navPushes: string[] = [];
 
 const realFetch = globalThis.fetch;
 
@@ -110,6 +116,7 @@ const mounted: ReactTestRenderer[] = [];
 beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
+  navPushes.length = 0;
   globalThis.fetch = fakeFetch as typeof fetch;
   // `indexRescanPending` (platform/lib/index-freshness) reads a module-level
   // `mutatedAt` set by real, non-virtual `Date.now()` — a leaked subscriber
@@ -125,10 +132,17 @@ beforeEach(() => {
   // touches `history` (replaceSearch/navigateUrl) and `document` (the
   // "typing anywhere is typing here" redirect), which nothing here calls
   // directly but which module-level or effect code may still reach for.
+  // `navigate()` (router.ts) also fires `window.dispatchEvent(new
+  // Event(NAV_EVENT))` — Clock's stubbed `window` has no such method, so
+  // anything that reaches `navigate()` (an Enter that commits a resolved
+  // address) throws without this.
+  (globalThis as unknown as { window: Record<string, unknown> }).window.dispatchEvent = () => true;
   (globalThis as Record<string, unknown>).history = {
     state: null,
     replaceState: () => {},
-    pushState: () => {},
+    pushState: (_state: unknown, _title: string, url?: string | URL | null) => {
+      if (url) navPushes.push(String(url));
+    },
   };
   (globalThis as Record<string, unknown>).document = {
     addEventListener: () => {},
@@ -289,7 +303,7 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     box.unmount();
   });
 
-  test("an unrelated query narrows to nothing, and the deadline drops to a bare 'Searching…'", async () => {
+  test("an unrelated query narrows to nothing: the note says so immediately, and the deadline only clears the stale-rows dimming", async () => {
     const box = mount();
     await type(box, "form");
     await flush(() => rankCalls[0].resolve(
@@ -301,11 +315,52 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
     await flush(() => clock.advance(200));
     expect(rankCalls).toHaveLength(2);
 
-    // Before the deadline: still the previous (stale) note, not "Searching…".
-    expect(noteText(box)).not.toBe("Searching…");
+    // Before the deadline: the note already reads the RENDERED (narrowed,
+    // now-empty) rows, not the previous request's non-zero count — it used
+    // to keep reporting that stale count until the deadline dropped `answer`
+    // to null, over a list that had already narrowed to nothing.
+    expect(noteText(box)).toBe("Searching…");
+    // The rows themselves are still `behind` (dimmed): the held answer is
+    // for "form", not yet given up on.
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .toContain("is-stale");
 
     await flush(() => clock.advance(STALE_CLEAR_MS + 50));
+    // Past the deadline `answer` itself drops to null: the note still reads
+    // "Searching…" (nothing changed about what's on screen), but the rows
+    // are no longer flagged stale — there is nothing stale left to dim.
     expect(noteText(box)).toBe("Searching…");
+    expect(box.renderer.root.findByProps({ id: "fh-result-list" }).props.className)
+      .not.toContain("is-stale");
+    box.unmount();
+  });
+
+  test("the count note narrows together with the rows, not left describing the held answer", async () => {
+    const box = mount();
+    await type(box, "form");
+    // A broad first answer: the note claims 137 matches.
+    await flush(() => rankCalls[0].resolve(
+      answer({
+        hits: [hit("formula.txt"), hit("format.md"), hit("formal.doc")],
+        total: 137,
+        truncated: true,
+      }),
+    ));
+    expect(noteText(box)).toContain("137");
+
+    // Extend to a query only ONE of the three held hits still matches
+    // ("formula.txt" — the others lack a "u"). The second request is left
+    // hanging, so this is all narrowing, no round trip.
+    await flush(() => box.input().props.onChange({ target: { value: "formu" } }));
+    await flush(() => clock.advance(200));
+    // Only the file row with an href is a FILE hit — the AI row also carries
+    // `.fh-result-name` (its "Search with AI" label), so counting that class
+    // alone would double-count it.
+    expect(box.renderer.root.findAll((n) => typeof n.props?.href === "string")).toHaveLength(1);
+    // The note used to keep reporting the OLD request's total (137) over the
+    // now-narrowed 1-row list — describing a search that was never sent for
+    // "formu" at all. It must track what's actually on screen.
+    expect(noteText(box)).not.toContain("137");
     box.unmount();
   });
 });
@@ -334,6 +389,26 @@ describe("a query that is really an address (section 7)", () => {
     box.unmount();
   });
 
+  test("the note does not describe a search that was never sent while the stat is in flight", async () => {
+    const box = mount();
+    // A normal query first, so a stale answer with a real count exists to
+    // wrongly fall back to.
+    await type(box, "readme");
+    await flush(() => rankCalls[0].resolve(
+      answer({ hits: [hit("readme.md")], total: 137, truncated: true })));
+    expect(noteText(box)).toContain("137");
+
+    // Paste a path over it: suppressRank holds the rank request back
+    // entirely (no request goes out for "/tmp/report.csv"), and the stat
+    // hasn't answered yet (showOpenRow is false) — so the note must not fall
+    // through to describing the OLD answer.
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/report.csv" } }));
+    expect(statCalls).toHaveLength(1);
+    expect(rankCalls).toHaveLength(1); // no second rank request
+    expect(noteText(box)).not.toContain("137");
+    box.unmount();
+  });
+
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");
@@ -348,6 +423,59 @@ describe("a query that is really an address (section 7)", () => {
     const box = mount();
     await type(box, "readme");
     expect(findByClass(box, "fh-ai-glyph").length).toBeGreaterThan(0);
+    box.unmount();
+  });
+});
+
+function pressEnter(box: { input: () => any }): Promise<void> {
+  return flush(() =>
+    box.input().props.onKeyDown({ key: "Enter", preventDefault: () => {} }),
+  );
+}
+
+describe("Enter while a pasted path's stat is still resolving (section 7 paste-and-go)", () => {
+  // `submitRow` has nothing to commit here: `suppressRank` holds ranking
+  // back (no rank request, no file rows), `showOpenRow` is false (the stat
+  // hasn't answered yet) and the AI row is suppressed too (`address !==
+  // null`). Enter used to be a silent no-op in this exact window — which is
+  // precisely the paste-and-go gesture the address feature exists for.
+  test("commits the address once the in-flight stat resolves", async () => {
+    const box = mount();
+    await type(box, "/tmp/report.csv");
+    expect(statCalls).toHaveLength(1);
+    await pressEnter(box);
+    expect(navPushes).toHaveLength(0); // nothing yet — the stat is still out
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
+    expect(navPushes.some((u) => u.includes("report.csv"))).toBe(true);
+    box.unmount();
+  });
+
+  test("does NOT navigate when the stat resolves to missing", async () => {
+    const box = mount();
+    await type(box, "/tmp/does-not-exist");
+    await pressEnter(box);
+    await flush(() => statCalls[0].reject());
+    expect(navPushes).toHaveLength(0);
+    box.unmount();
+  });
+
+  test("a superseded stat (aborted by a newer keystroke) still does not navigate", async () => {
+    const box = mount();
+    await type(box, "/tmp/report.csv");
+    await pressEnter(box);
+    // Edit the query before the stat comes back — the pending commit must
+    // not fire for an address the user has since typed past.
+    await flush(() => box.input().props.onChange({ target: { value: "/tmp/other.csv" } }));
+    await flush(() =>
+      statCalls[0].resolve({
+        path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
+      }),
+    );
+    expect(navPushes).toHaveLength(0);
     box.unmount();
   });
 });

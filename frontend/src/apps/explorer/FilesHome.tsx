@@ -400,6 +400,35 @@ export function FilesSearch({
     return () => window.clearTimeout(timer);
   }, [address]);
   useEffect(() => () => addrCtl.current?.abort(), []);
+
+  // Enter pressed WHILE the stat above is still in flight (addr.status ===
+  // "unknown") used to be a silent no-op: `suppressRank` holds the rank
+  // request back, `showOpenRow` is false (nothing has resolved yet), and the
+  // AI row is suppressed too (`address !== null`) — so `submitRow` has
+  // nothing to commit. That drops exactly the paste-and-go gesture the
+  // address feature exists for: paste a path, hit Enter immediately, expect
+  // it to open the moment the stat lands.
+  //
+  // `awaitingCommit` remembers the SPECIFIC address Enter was pressed for.
+  // The effect below fires once `addr` settles (either resolution) and
+  // commits — navigating only on "exists", never on "missing" — but ONLY if
+  // `address` still equals the address the commit was requested for: a newer
+  // keystroke changes `address` before the stat answers (and aborts the old
+  // stat's controller, so a still-in-flight reply for the OLD address is
+  // also ignored on its own terms), and the mismatch here is what stops a
+  // late-arriving answer for an address the user has since typed past from
+  // committing anyway.
+  const awaitingCommit = useRef<string | null>(null);
+  useEffect(() => {
+    if (awaitingCommit.current === null || addr.status === "unknown") return;
+    const target = awaitingCommit.current;
+    awaitingCommit.current = null;
+    if (target !== address) return; // superseded by a newer keystroke
+    if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+    // "missing" resolves to nothing: Enter must not navigate to a path that
+    // does not exist.
+  }, [addr, address]);
+
   // There is no "Open" row until the stat is back and says the address is
   // real.
   const showOpenRow = address !== null && addr.status === "exists";
@@ -751,6 +780,13 @@ export function FilesSearch({
   // effect above as the query is typed, so by the time Enter is pressed the
   // row model already reflects it — `activeRow`/`submitRow` do the rest.
   const submit = () => {
+    if (address !== null && addr.status === "unknown") {
+      // The paste-and-go gesture: Enter fired before the stat came back.
+      // Await it instead of dropping the keystroke — the effect above
+      // commits once `addr` settles.
+      awaitingCommit.current = address;
+      return;
+    }
     const row = submitRow(highlight, rowModel, settled);
     if (row !== null) activateRow(row);
   };
@@ -838,13 +874,23 @@ export function FilesSearch({
                 address resolves, the row IS the content, and reporting on
                 `answer` (whatever a previous, non-address query left behind,
                 or nothing at all) would describe a search that was never
-                sent (7c skips it entirely). */}
+                sent (7c skips it entirely). `suppressRank`, right below it,
+                is the SAME protection one beat earlier in the address's
+                lifecycle: the stat hasn't resolved yet (addr.status is
+                "unknown", neither "exists" nor "missing"), so no rank
+                request went out for this query either — `answer` is still
+                whatever the PREVIOUS, non-address query left behind. This
+                used to fall all the way through to the count-note branch
+                below, reporting that stale answer's total over rows that
+                (see `hits`, above) have likely narrowed to nothing. */}
             {showOpenRow ? (
               <>
                 <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
               </>
             ) : !searchable ? (
               "Keep typing…"
+            ) : suppressRank ? (
+              "Checking…"
             ) : answer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
             ) : answer === null ? (
@@ -869,19 +915,39 @@ export function FilesSearch({
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
-            ) : answer.hits.length === 0 && settled && rowModel.aiRow ? (
+            ) : hits.length === 0 && settled && rowModel.aiRow ? (
+              // `hits`, not `answer.hits`: `settled` already rules out
+              // `behind` (see `hits`'s own comment — `rankingSettled` is
+              // false whenever `answer.query !== q`), so the two agree here,
+              // but reading the rendered array rather than the held answer's
+              // is what keeps every branch below honest about what's on
+              // screen instead of what a previous request found.
               `No file name matched “${q}” — AI search can look at dates, types and sizes.`
-            ) : answer.hits.length === 0 && settled ? (
+            ) : hits.length === 0 && settled ? (
               // Settled, zero hits, but the AI row is suppressed (address !==
               // null: this query is shaped like a path that did not resolve —
               // 7e). Offering AI search here would point at a row that is not
               // being rendered.
               `No file name matched “${q}”.`
-            ) : answer.hits.length === 0 ? (
+            ) : hits.length === 0 ? (
+              // Reads `hits`, the narrowed set, not `answer.hits`: while
+              // `behind`, the previous answer can hold plenty of hits that
+              // narrowed to none for THIS query — "Searching…" (a new answer
+              // may yet fill the list) is the honest note there, not silence
+              // followed by whatever the old answer's non-zero count would
+              // have said below.
               "Searching…"
             ) : (
               <>
-                {homeCountNote(answer.total, answer.truncated)}
+                {/* `behind` (narrowed, no round trip landed for `q` yet) means
+                    `answer.total`/`answer.truncated` describe the PREVIOUS
+                    query, not this one — the only honest total for the
+                    current query is a LOWER bound, `hits.length` (narrowing
+                    can only ever remove rows, never add — see `narrowAnswer`),
+                    and `truncated` must read as true unconditionally: more
+                    could still be out there for `q` that the held answer
+                    never had a chance to include. */}
+                {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
