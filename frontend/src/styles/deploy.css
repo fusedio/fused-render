@@ -112,6 +112,15 @@
   font-size: 13px;
 }
 
+/* The chassis body WITHOUT the form vocabulary (Modal `plainBody`, D489): the
+   same box — padding, scroll — and none of the `.deploy-body button` / `p`
+   descendant skins above and in fields.css, for a component hosted verbatim
+   from a page that arrives already designed (the /apps composer). */
+.modal-body-plain {
+  padding: 14px 16px 16px;
+  overflow-y: auto;
+}
+
 /* Canonical field controls inside modals and mount forms — ONE background
    (--bg, recessed against the --bg-alt dialog surface), ONE padding, ONE
    focus treatment. :where() keeps specificity at the scope class alone, so

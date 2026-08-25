@@ -146,6 +146,10 @@ export default function CurrentAppsSection() {
           onClose={() => setComposing(false)}
           width={640}
           dialogClassName="current-apps-compose"
+          // The composer arrives with its own skin (chips, pickers, the round
+          // send button); the chassis' form vocabulary would re-style every
+          // button in it. Owner: "we should not be redesigning anything".
+          plainBody
         >
           <HeroComposer onCreated={() => setComposing(false)} />
         </Modal>
