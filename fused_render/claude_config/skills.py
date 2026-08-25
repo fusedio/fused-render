@@ -21,9 +21,13 @@ SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 SKILL_LOCK_PATH = os.path.join(lib.CLAUDE_DIR, "..", ".agents", ".skill-lock.json")
 
 
-def _parse_frontmatter(text: str) -> dict:
+def parse_frontmatter(text: str) -> dict:
     """Extract name/description scalars from a leading --- ... --- YAML block.
-    Minimal line parser, no YAML dep (skills.md §3)."""
+    Minimal line parser, no YAML dep (skills.md §3).
+
+    Public because `plugins.py` reads the same frontmatter out of the skills
+    inside an injected plugin root — one parser, so a skill cannot be described
+    one way in this section and another way there."""
     out = {"name": "", "description": ""}
     if not text.startswith("---"):
         return out
@@ -67,7 +71,7 @@ def _list() -> dict:
         if not os.path.isfile(skill_md):  # dangling link or non-skill dir
             continue
         with open(skill_md, "r", encoding="utf-8") as f:
-            fm = _parse_frontmatter(f.read())
+            fm = parse_frontmatter(f.read())
         source = sources.get(name)
         skills.append({
             "slug": name,

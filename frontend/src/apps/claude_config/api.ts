@@ -171,6 +171,27 @@ export interface UpdateResult extends OkResult {
   stdout?: string;
 }
 
+// A plugin root fused-render hands its OWN sessions with `--plugin-dir`. Not a
+// `Plugin`: it has no marketplace, no id the CLI speaks, and no enabled state
+// to carry — `enabledPlugins` has no say over `--plugin-dir`, so the UI must
+// not offer a toggle for one. `available: false` (root null) is a real answer:
+// nothing was published, or — for the workbench root — no canvas has been
+// opened on this machine yet.
+export interface InjectedPlugin {
+  name: string;
+  scope: string;
+  env: string;
+  root: string | null;
+  available: boolean;
+  skills: { slug: string; name: string; description: string }[];
+  assembled: number | null;
+}
+
+export interface RebuildResult extends OkResult {
+  root?: string;
+  plugins?: InjectedPlugin[];
+}
+
 export const plugins = {
   list: () => callModule<{ plugins: Plugin[] }>("plugins", { action: "list" }),
   available: () => callModule<AvailablePlugins>("plugins", { action: "available" }),
@@ -184,6 +205,10 @@ export const plugins = {
   // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
   // the caller must show a busy state rather than assume a quick answer.
   install: (id: string) => callModule<UpdateResult>("plugins", { action: "install", id }),
+  // What fused-render itself injects — a different question from `list`, which
+  // reads the user's config. See the block above `_injected` in plugins.py.
+  injected: () => callModule<{ plugins: InjectedPlugin[] }>("plugins", { action: "injected" }),
+  rebuild: () => callModule<RebuildResult>("plugins", { action: "rebuild" }),
 };
 
 // -- marketplaces -------------------------------------------------------------

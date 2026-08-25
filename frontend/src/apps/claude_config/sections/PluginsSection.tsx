@@ -1,5 +1,14 @@
-// Plugins section: what is on this machine (Installed) and what the
-// marketplaces you have cloned publish that you don't have yet (Discover).
+// Plugins section: what fused-render injects into its own sessions (pinned at
+// the top), what is on this machine (Installed), and what the marketplaces you
+// have cloned publish that you don't have yet (Discover).
+//
+// The injected block is FIRST and outside the tabs/filter/pager for one reason:
+// a user who could not get the model to know about `fused.ai` came looking here
+// and found nothing, because all three sections of this page read their config
+// and `--plugin-dir` is not in it (see the block above `_injected` in
+// plugins.py). It is two rows at most, so it costs nothing to show always, and
+// showing it behind a tab would reproduce the failure — the answer has to be on
+// the screen they already opened.
 //
 // Both lists are ONE LINE PER PLUGIN, through the app's shared `ListRow`. The
 // old layout gave each plugin a card with a head row, a sub line and an actions
@@ -24,7 +33,7 @@ import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
-import type { AvailablePlugin, AvailablePlugins, Plugin } from "../api";
+import type { AvailablePlugin, AvailablePlugins, InjectedPlugin, Plugin } from "../api";
 import {
   Empty,
   Icon,
@@ -61,6 +70,104 @@ function indexOf(items: { marketplace: string }[]): { name: string; n: number }[
     else out.push({ name: p.marketplace, n: 1 });
   }
   return out;
+}
+
+// -- what fused-render injects ------------------------------------------------
+
+// "3 minutes ago" for the assembly time. Coarse on purpose: the useful question
+// is "is this from this run of the server or an older one", not the second.
+function since(epoch: number): string {
+  const mins = Math.round((Date.now() / 1000 - epoch) / 60);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+// One row per plugin root fused-render hands its sessions. No toggle, because
+// `enabledPlugins` has no say over `--plugin-dir` — a switch here would be a
+// lie in either position — and the read-only pill says so rather than leaving
+// the missing control to be read as a bug.
+//
+// The skill NAMES are in the expandable panel, not just a count, because the
+// count alone cannot answer the question people come here with: not "how many"
+// but "is the one I need in there".
+function InjectedRow({
+  p,
+  busy,
+  onRebuild,
+}: {
+  p: InjectedPlugin;
+  busy: boolean;
+  onRebuild?: () => void;
+}) {
+  return (
+    <ListRow
+      name={p.name}
+      pills={
+        <>
+          <Pill tone="ro">injected</Pill>
+          {!p.available && <Pill tone="err">not published</Pill>}
+        </>
+      }
+      secondary={p.root || `${p.env} is unset`}
+      secondaryTitle={p.root || `${p.env} is unset`}
+      secondaryMono
+      secondaryClass="cc-lrow-sub-path"
+      details={
+        <>
+          <p>
+            Loaded per session with <code>--plugin-dir</code>, {p.scope}. It is not in
+            your Claude config, so it cannot be enabled or disabled here — and
+            disabling anything on this page cannot take it away.
+          </p>
+          {p.available ? (
+            <dl className="cc-lrow-dl">
+              {p.skills.map((sk) => (
+                <div key={sk.slug}>
+                  <dt className="cc-lrow-dt cc-mono">{sk.slug}</dt>
+                  <dd className="cc-lrow-dd">{sk.description || sk.name}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p>
+              Nothing was published for this root. For fused-render's own skills that
+              means the assembly failed at startup — Rebuild says why. For workbench
+              it usually just means no canvas has been opened on this machine yet.
+            </p>
+          )}
+        </>
+      }
+      meta={
+        <>
+          {p.available && (
+            <span className="cc-lrow-meta">
+              {p.skills.length} skill{p.skills.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {p.assembled != null && (
+            <span className="cc-lrow-meta">{since(p.assembled)}</span>
+          )}
+          <span className="cc-lrow-meta">{p.scope}</span>
+        </>
+      }
+      actions={
+        onRebuild ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            title="Reassemble this root from the installed fused-render and republish it"
+            onClick={onRebuild}
+          >
+            {busy ? "Rebuilding…" : "Rebuild"}
+          </button>
+        ) : null
+      }
+    />
+  );
 }
 
 function matches(q: string, ...fields: (string | null | undefined)[]): boolean {
@@ -126,6 +233,44 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   // id -> optimistically-shown enabled flag, overriding the fetched value.
   const [flipped, setFlipped] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
+
+  // The injected roots, fetched EAGERLY unlike the catalog below: it is a scan
+  // of at most two small directories, and it is the answer to the question that
+  // brings people to this page ("why doesn't the model know about X"). Deferring
+  // it would be deferring the answer.
+  const [injected, setInjected] = useState<InjectedPlugin[] | null>(null);
+  const loadInjected = useCallback(() => {
+    // A failure here is deliberately silent — no banner, no row. This block is
+    // a diagnostic, and a diagnostic that shouts about its own plumbing on a
+    // page whose actual subject (Installed) loaded fine is worse than a block
+    // that simply isn't there.
+    cc.plugins.injected().then(
+      (r) => setInjected(r.plugins),
+      () => setInjected(null),
+    );
+  }, []);
+  useEffect(loadInjected, [loadInjected]);
+  const [rebuilding, setRebuilding] = useState(false);
+
+  const rebuild = async () => {
+    setRebuilding(true);
+    try {
+      const res = await cc.plugins.rebuild();
+      if (!res.ok) {
+        toastErr(res.error || "Rebuild failed");
+        return;
+      }
+      // The response already carries the fresh rows, so the list updates
+      // without a second round trip — and the skill count moving is the
+      // feedback that the rebuild did something.
+      if (res.plugins) setInjected(res.plugins);
+      toastOk("Rebuilt — the next session picks it up");
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setRebuilding(false);
+    }
+  };
 
   // The catalog read is DEFERRED until you actually ask for Discover: it is the
   // longer of the two lists (a marketplace can publish hundreds of plugins) and
@@ -340,6 +485,22 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           ))}
         </nav>
         <div className="cc-rows">
+          {/* Pinned above the tabbed list, and only on Installed — Discover is
+              about what you could add, and these are not installable. The
+              fused-render root shows even when it is MISSING (that absence is
+              the whole diagnosis); workbench only when it is really there,
+              since "no canvas opened yet" is not a fault to report. */}
+          {tab === "installed" &&
+            injected
+              ?.filter((p) => p.available || p.name === "fused-render")
+              .map((p) => (
+                <InjectedRow
+                  key={p.env}
+                  p={p}
+                  busy={rebuilding}
+                  onRebuild={p.name === "fused-render" ? rebuild : undefined}
+                />
+              ))}
           {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
           {/* A marketplace whose catalog we could not read is stated, not
               swallowed: the list below is short for a reason the user can act
@@ -498,7 +659,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             >
               {tab === "installed"
                 ? data.plugins.length === 0
-                  ? "No plugins installed. Discover shows what your marketplaces offer."
+                  ? "No plugins installed. Discover shows what your marketplaces offer — anything injected by fused-render is listed above and needs no install."
                   : "No plugin matches this filter."
                 : (avail?.plugins.length ?? 0) === 0
                   ? "No marketplace catalog to read. Add a marketplace and its plugins show up here."
