@@ -16,6 +16,7 @@ word`). This file is the parser and the streaming plumbing in isolation.
 import importlib.util
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -160,6 +161,87 @@ def test_the_prepared_line_moves_into_the_installing_phase():
     assert "installing" in activity
 
 
+def test_a_late_downloading_line_reopens_the_downloading_phase_from_preparing():
+    """Review issue #2: uv's concurrency cap (50) means a big package
+    (torch) can be announced AFTER a moment where everything announced so
+    far had already landed — which is exactly what latches `preparing`. A
+    phase machine that only ever advances would freeze there, reporting a
+    full bar and "preparing packages" for the entire torch download that
+    follows. It must instead read as downloading again, naming torch."""
+    tracker = worker._UvProgress()
+    tracker.feed("Downloading numpy (15.9MiB)")
+    tracker.feed(" Downloaded numpy")
+    assert tracker.phase == "preparing"
+
+    tracker.feed("Downloading torch (3400.0MiB)")
+    assert tracker.phase == "downloading"
+    activity, done, total = tracker.snapshot("30s")
+    assert "torch" in activity
+    assert done < total  # torch has not landed yet — this must not read as 100%
+
+
+def test_a_fully_cached_sync_reports_nothing_not_a_bogus_zero():
+    """Review issue #4: every wheel already cached means uv prints
+    `Prepared`/`Installed` with NO `Downloading` line at all — confirmed
+    against real uv. `_sizes` is empty, so `(word, 0, 0)` would be technically
+    true but renders as a bare "0" in the frontend's byte column
+    (`jobAmount`, frontend/src/platform/lib/jobs.ts) instead of nothing.
+    `0` is a real download size; "never announced" must not be spelled the
+    same way."""
+    tracker = worker._UvProgress()
+    tracker.feed("Resolved 2 packages in 4ms")
+    tracker.feed("Prepared 2 packages in 3ms")
+    assert tracker.phase == "installing"
+    assert tracker.snapshot("1s") == (None, None, None)
+
+    tracker.feed("Installed 2 packages in 2ms")
+    assert tracker.snapshot("1s") == (None, None, None)
+
+
+def test_feed_and_snapshot_race_without_corrupting_or_raising():
+    """Review issue #1, reproduced directly: `snapshot` used to iterate
+    `_sizes`/`_downloaded` with no lock while `feed` mutated them from another
+    thread — CPython raises `RuntimeError('...changed size during
+    iteration')` for exactly this, which escaped the heartbeat thread and
+    killed it permanently (the exact "stuck installer" symptom this feature
+    exists to remove). Hammers both methods from two threads at once; the
+    only acceptable outcome is silence — no exception recorded, in either
+    thread, for the whole run.
+    """
+    tracker = worker._UvProgress()
+    errors = []
+    stop = threading.Event()
+
+    def feeder():
+        try:
+            i = 0
+            while not stop.is_set():
+                name = "pkg%d" % (i % 200)
+                tracker.feed("Downloading %s (%d.0MiB)" % (name, i % 50 + 1))
+                if i % 3 == 0:
+                    tracker.feed(" Downloaded %s" % name)
+                i += 1
+        except BaseException as e:  # noqa: BLE001
+            errors.append(("feed", e))
+
+    def snapshotter():
+        try:
+            while not stop.is_set():
+                tracker.snapshot("1s")
+        except BaseException as e:  # noqa: BLE001
+            errors.append(("snapshot", e))
+
+    threads = [threading.Thread(target=feeder), threading.Thread(target=snapshotter)]
+    for t in threads:
+        t.start()
+    time.sleep(0.5)
+    stop.set()
+    for t in threads:
+        t.join(5)
+
+    assert errors == [], errors
+
+
 def test_a_sync_with_no_downloads_at_all_never_leaves_resolving():
     """Every wheel already cached: uv never prints a single `Downloading`
     line, and the whole point is that this reads exactly as it did before —
@@ -216,6 +298,7 @@ class _FakeStreamingPopen:
         self._lines = list(lines)
         self.returncode = returncode
         self.seen_before_exhausted = []
+        self.killed = False
 
     @property
     def stdout(self):
@@ -235,6 +318,15 @@ class _FakeStreamingPopen:
 
     def wait(self):
         return self.returncode
+
+    def kill(self):
+        self.killed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
 
 
 def test_build_feeds_every_stderr_line_to_the_tracker_it_is_given(tmp_path, monkeypatch):
@@ -258,6 +350,43 @@ def test_build_feeds_every_stderr_line_to_the_tracker_it_is_given(tmp_path, monk
     worker._build(str(proj), venv_dir, str(tmp_path / "cache"), "3.12", tracker)
 
     assert tracker.phase == "installed"
+
+
+def test_an_exception_while_reading_uv_still_kills_the_child(tmp_path, monkeypatch):
+    """Review issue #5: `subprocess.run` wraps its child in `with Popen(...)`
+    PLUS an explicit `kill()` on any exception (its own source is
+    `with Popen(...) as process: try: ... except: process.kill(); raise`).
+    `with` alone only closes pipes and waits — it does not kill — so if
+    `_build`'s read loop raises (a bug in `tracker.feed`, a cancel unwinding
+    through here) without an explicit kill, a multi-GB `uv sync` is left
+    running unsupervised. This feeds a tracker that blows up partway through
+    the transcript and asserts the fake child was killed.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname = 't'\nversion = '0.1'\ndependencies = ['pip']\n",
+        encoding="utf-8",
+    )
+    fake_proc = _FakeStreamingPopen(_SAMPLE_TRANSCRIPT)
+
+    def _fake_popen(cmd, **kw):
+        return fake_proc
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    class _BoomingTracker(worker._UvProgress):
+        def feed(self, line):
+            if "scipy" in line:
+                raise RuntimeError("a bug in the parser, not in uv")
+            super().feed(line)
+
+    with pytest.raises(RuntimeError, match="a bug in the parser"):
+        worker._build(str(proj), str(tmp_path / "venv"), str(tmp_path / "cache"),
+                      "3.12", _BoomingTracker())
+
+    assert fake_proc.killed, "the uv child was left running after the reader raised"
 
 
 def test_a_failed_sync_still_raises_the_tail_of_stderr_verbatim(tmp_path, monkeypatch):
@@ -312,6 +441,7 @@ def test_the_stderr_ring_buffer_is_bounded(tmp_path, monkeypatch):
     assert "noise line 0\n" not in message  # the earliest lines were dropped
 
 
+@pytest.mark.integration
 def test_uv_actually_line_flushes_to_a_pipe_not_just_at_exit():
     """The empirical check the handoff required before building any of this:
     does uv block-buffer its stderr when it is not a tty? Run a REAL, small
@@ -320,8 +450,16 @@ def test_uv_actually_line_flushes_to_a_pipe_not_just_at_exit():
     print at once, this would only ever see output after `poll()` is no
     longer None, and the whole streaming design would be pointless.
 
-    Skipped if `uv` is not on PATH or there is no network — this is an
-    integration check of uv's own behaviour, not of this repository's code.
+    `integration`, and so OUT of the default run (`pyproject.toml`'s
+    `-m "not integration"`): this hits the real `uv` binary and the real
+    network, which is exactly what the assertion needs but makes the test
+    non-deterministic in both directions — a warm `uv` cache prints no
+    `Downloading` line at all and this then only sees `skip`, and no network
+    means the same skip for a different reason. It stays in the suite (opt in
+    with `pytest -m integration`) because it is the evidence that justified
+    streaming over capturing in the first place, but it must not gate or flake
+    the default run, and it is asserting uv's OWN behaviour rather than this
+    repository's.
     """
     if not worker.shutil.which("uv"):
         pytest.skip("uv is not on PATH")

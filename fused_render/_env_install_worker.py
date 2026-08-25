@@ -264,15 +264,26 @@ class _UvProgress:
     """Tracks one `uv sync`'s stderr, line by line, into numbers a heartbeat
     tick can report without inventing anything uv did not say.
 
-    One instance is shared between TWO threads without a lock: `_build`'s
-    thread calls `feed()` as it reads uv's stderr, and the heartbeat thread
-    calls `snapshot()` on its own timer. That is deliberate, not an oversight
-    — `feed` only ever ADDS to `_sizes`/`_downloaded` or advances `phase`
-    forward, so the worst a `snapshot()` racing a `feed()` can see is a name
-    counted as announced but not yet downloaded (or vice versa on the same
-    line's two effects), which is exactly the state a heartbeat one beat
-    earlier or later would have shown anyway. This is a progress readout, not
-    an invariant anything downstream depends on being instantaneous.
+    **Locked, because two threads genuinely touch this concurrently**:
+    `_build`'s thread calls `feed()` as it reads uv's stderr, and the
+    heartbeat thread calls `snapshot()` on its own timer. An earlier version
+    of this class argued that was safe WITHOUT a lock because `feed` "only
+    ever adds" to `_sizes`/`_downloaded` — that argument is wrong, not just
+    incomplete: CPython raises `RuntimeError` for a mutation racing an
+    iteration of the SAME container, and `snapshot` iterates both
+    (`sum(self._sizes.values())`, the `for name in self._downloaded` sum, and
+    the `self._sizes.items()` comprehension while picking the biggest pending
+    package) — confirmed empirically (`RuntimeError('Set changed size during
+    iteration')` within a second of a real install). That exception escaped
+    the heartbeat thread, which killed it permanently: `progress.json` (`ts`
+    included) then froze for the rest of a multi-GB install — the exact
+    "stuck installer" symptom this feature exists to remove, reached by a new
+    path. `fused_render.envinstall._remember_ending` documents the same
+    hazard for `_ENDINGS`: a dict `pop`/iterate pair is not atomic just
+    because each single dict operation is. The fix is the same house pattern
+    — one lock across every read AND write, including copies (`list(...)`/
+    `frozenset(...)` still iterate the source, so the copy has to happen
+    UNDER the lock too, not instead of it).
 
     **The announced total is a LOWER BOUND that can only grow**, never shrink
     or get corrected downward: uv prints `Downloading` lines as it starts
@@ -297,12 +308,17 @@ class _UvProgress:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self._sizes = {}          # package name -> announced bytes
         self._downloaded = set()  # names uv has confirmed landed
         #: resolving -> downloading -> preparing -> installing -> installed.
         #: Stays "resolving" forever for a sync where every wheel is already
         #: cached (no `Downloading` line ever prints), which is exactly the
-        #: case `snapshot` below answers with "nothing new to say".
+        #: case `snapshot` below answers with "nothing new to say". NOT
+        #: monotonic across `resolving`/`downloading`/`preparing`: a
+        #: `Downloading` line seen while `preparing` moves back to
+        #: `downloading` (see `feed`) — only `installing`/`installed`, reached
+        #: from uv's own `Prepared`/`Installed` lines, are one-way.
         self.phase = "resolving"
 
     def feed(self, line):
@@ -312,28 +328,42 @@ class _UvProgress:
         m = _DOWNLOADING_RE.match(line)
         if m:
             name, value, unit = m.groups()
-            self._sizes[name] = float(value) * _UNIT_BYTES[unit]
-            if self.phase == "resolving":
-                self.phase = "downloading"
+            with self._lock:
+                self._sizes[name] = float(value) * _UNIT_BYTES[unit]
+                if self.phase in ("resolving", "preparing"):
+                    # `preparing` too, not just `resolving`: uv's concurrency
+                    # cap (50) means a `Downloading` line can arrive AFTER a
+                    # moment where everything announced so far had already
+                    # landed (which is what latched `preparing` in the first
+                    # place — see below). Without this, a late-announced
+                    # torch sitting behind 50 smaller packages would freeze
+                    # the phase at `preparing` — a full bar, reporting
+                    # "preparing packages" — for the entire multi-GB torch
+                    # download that follows it.
+                    self.phase = "downloading"
             return
         m = _DOWNLOADED_RE.match(line)
         if m:
-            self._downloaded.add(m.group(1))
-            if self.phase == "downloading" and self._sizes and \
-                    set(self._sizes) <= self._downloaded:
-                # Every size uv has ANNOUNCED so far has also been confirmed
-                # landed. uv may still announce more later (the lower-bound
-                # comment above), but nothing is in flight right now — uv is
-                # between the last `Downloaded` and the `Prepared` line,
-                # i.e. unpacking/linking, which for torch is the slow part
-                # this phase exists to name rather than let read as 100%.
-                self.phase = "preparing"
+            with self._lock:
+                self._downloaded.add(m.group(1))
+                if self.phase == "downloading" and self._sizes and \
+                        set(self._sizes) <= self._downloaded:
+                    # Every size uv has ANNOUNCED so far has also been
+                    # confirmed landed. uv may still announce MORE later —
+                    # the `feed` branch above is what un-latches this — but
+                    # nothing is in flight right now: uv is between the last
+                    # `Downloaded` and the `Prepared` line, i.e. unpacking/
+                    # linking, which for torch is the slow part this phase
+                    # exists to name rather than let read as 100%.
+                    self.phase = "preparing"
             return
         if _PREPARED_RE.match(line):
-            self.phase = "installing"
+            with self._lock:
+                self.phase = "installing"
             return
         if _INSTALLED_RE.match(line):
-            self.phase = "installed"
+            with self._lock:
+                self.phase = "installed"
 
     def snapshot(self, elapsed):
         """`(activity, bytes_done, bytes_total)` right now.
@@ -342,16 +372,34 @@ class _UvProgress:
         final `Installed` line — the two states in which this has nothing to
         add over the stage word already being reported, which is the
         contract `_ensure_venv` (fused_render/ai/supervisor.py) relies on to
-        fall back cleanly.
+        fall back cleanly. It is also None whenever nothing has actually been
+        ANNOUNCED yet even though a later phase was reached — a fully-cached
+        sync prints `Prepared`/`Installed` with no `Downloading` line at all,
+        and `(word, 0, 0)` would render as a bare "0" in the frontend's byte
+        column (`jobAmount`, `frontend/src/platform/lib/jobs.ts`) instead of
+        nothing. `0` is a real, meaningful download size; "never announced"
+        is not the same fact and must not be spelled the same way.
         """
-        if self.phase in ("resolving", "installed"):
+        with self._lock:
+            phase = self.phase
+            if phase in ("resolving", "installed"):
+                return None, None, None
+            # Copies taken UNDER the lock: iterating a `list`/`set` COPY after
+            # releasing the lock is still safe even if `feed` mutates the
+            # originals concurrently, but the copy itself must happen while
+            # the lock is held, or the copy operation is the very iteration
+            # racing a mutation this lock exists to prevent.
+            sizes = dict(self._sizes)
+            downloaded = frozenset(self._downloaded)
+        total = sum(sizes.values())
+        if total == 0:
+            # Nothing has been ANNOUNCED at all — see the docstring above.
             return None, None, None
-        total = sum(self._sizes.values())
-        done = sum(self._sizes[name] for name in self._downloaded if name in self._sizes)
+        done = sum(sizes[name] for name in downloaded if name in sizes)
         done = min(done, total)  # see the class docstring: belt, not suspenders
-        if self.phase == "downloading":
-            pending = [(name, size) for name, size in self._sizes.items()
-                      if name not in self._downloaded]
+        if phase == "downloading":
+            pending = [(name, size) for name, size in sizes.items()
+                      if name not in downloaded]
             # Named for the biggest package still in flight — concurrency is
             # 50, so several may be downloading at once, and the biggest is
             # the one most likely to be why the bar is not moving.
@@ -364,7 +412,7 @@ class _UvProgress:
         # (done == total by construction), but uv is not finished — it is
         # unpacking wheels and linking them into the venv, which the wording
         # says explicitly rather than letting the bar read as stuck at 100%.
-        word = "preparing" if self.phase == "preparing" else "installing"
+        word = "preparing" if phase == "preparing" else "installing"
         return "%s packages (%s)" % (word, elapsed), total, total
 
 
@@ -789,25 +837,34 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     # needs and piping it too would only be a second buffer to drain. Streamed
     # line by line rather than read all at once so a heartbeat elsewhere can see
     # `tracker`'s state WHILE uv is still running, which is the entire point.
-    proc = subprocess.Popen(cmd, cwd=sync_root, env=env,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                            text=True, bufsize=1, close_fds=False,
-                            encoding="utf-8", errors="replace",
-                            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     # A bounded ring, not the growing list `capture_output` used to hand back:
     # `_STDERR_RING_LINES` caps memory against a pathological or merely chatty
     # uv run, while still keeping enough of the TAIL to raise verbatim below —
     # a resolver failure's own explanation is always the last thing uv prints
     # before exiting non-zero, never the first.
     ring = collections.deque(maxlen=_STDERR_RING_LINES)
-    try:
-        for line in proc.stderr:
-            line = line.rstrip("\n")
-            ring.append(line)
-            tracker.feed(line)
-    finally:
-        proc.stderr.close()
-    proc.wait()
+    # `with Popen(...)` PLUS an explicit `kill()` on any exception — the same
+    # two-part discipline `subprocess.run` itself uses internally (its source
+    # is `with Popen(...) as process: try: ... except: process.kill(); raise`).
+    # The `with` alone is not enough: `Popen.__exit__` only closes the pipes
+    # and calls `wait()`, it does NOT kill — so a plain `with` here would wait
+    # forever for a `uv sync` that has no reason to exit just because ITS
+    # reader raised. Without the explicit kill, an exception out of this loop
+    # (a bug in `tracker.feed`, a cancel unwinding through here) would leave a
+    # multi-GB `uv sync` running unsupervised, attached to nothing.
+    with subprocess.Popen(cmd, cwd=sync_root, env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True, bufsize=1, close_fds=False,
+                          encoding="utf-8", errors="replace",
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0) as proc:
+        try:
+            for line in proc.stderr:
+                line = line.rstrip("\n")
+                ring.append(line)
+                tracker.feed(line)
+        except BaseException:
+            proc.kill()
+            raise
     if proc.returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the

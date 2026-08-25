@@ -3018,11 +3018,24 @@ def _fake_popen(fake_run):
         result = fake_run(cmd, **kw)
 
         class _FakeProc:
+            """Also a context manager: `_build` now does `with Popen(...) as
+            proc:`, matching `subprocess.run`'s own kill-on-exception
+            discipline (see `_build`'s comment)."""
+
             stderr = _Lines(result.stderr)
             returncode = result.returncode
 
             def wait(self):
                 return self.returncode
+
+            def kill(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
 
         return _FakeProc()
 
