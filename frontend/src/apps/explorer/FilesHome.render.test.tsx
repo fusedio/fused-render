@@ -5,49 +5,88 @@
 // exactly what sections 2 and 7 of the overhaul touch.
 //
 // react-test-renderer, the same tool hook-harness.ts uses: no DOM, real React,
-// real effects. The Clock/Deferred/flush trio is reused from there rather than
+// real effects. The Clock/flush pair is reused from there rather than
 // re-invented — the same virtual-timer shape a per-query round trip needs.
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+//
+// Deliberately NOT `mock.module("@platform/lib/api", ...)`. That looks like
+// the obvious way to control indexRank/statPath, and it is exactly what broke
+// CI: `mock.module` replaces the module for the WHOLE bun process — every
+// FILE, not just this one — and a real ES module namespace export is frozen
+// (confirmed directly: assigning to one throws "Attempted to assign to
+// readonly property"), so there is no way to patch just the two functions
+// this file needs and leave the rest of the module alone. Registering the
+// mock AGAIN with the real module as the factory does not reliably undo it
+// either — a module that already imported the mocked version (fs-actions.ts,
+// loaded fresh by fs-actions.test.ts AFTER this file's restore had already
+// run) still came back with a stale/broken binding, which is what turned
+// into a passing-locally, hanging-in-CI 5s timeout in a file this diff never
+// touches. The REAL functions here are both thin `getJson`/fetch wrappers, so
+// this stubs `globalThis.fetch` instead — a plain, unfrozen global — exactly
+// the technique fs-actions.test.ts/fs-clipboard.test.ts already use for the
+// same reason.
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import type { IndexRankResult, StatResult } from "@platform/lib/api";
-import { Clock, Deferred } from "@apps/explorer/listing/hook-harness";
+import { Clock } from "@apps/explorer/listing/hook-harness";
 import { STALE_CLEAR_MS } from "@platform/lib/instant-search";
 
-// --- the module boundary -----------------------------------------------------
-const rankCalls: { root: string; q: string; reply: Deferred<IndexRankResult> }[] = [];
-const statCalls: { path: string; reply: Deferred<StatResult> }[] = [];
+// --- the module boundary: a fetch stub, not a module mock -------------------
+interface RankCall {
+  root: string;
+  q: string;
+  resolve: (data: IndexRankResult) => void;
+}
+interface StatCall {
+  path: string;
+  resolve: (data: StatResult) => void;
+  /** A 404, exactly what the real /api/fs/stat sends for a path that does not
+   * exist — not a network-level rejection, so this matches what statPath()
+   * actually throws (an HttpError) in that case. */
+  reject: () => void;
+}
+const rankCalls: RankCall[] = [];
+const statCalls: StatCall[] = [];
+
+const realFetch = globalThis.fetch;
+
+/** Every indexRank/statPath call becomes an entry in rankCalls/statCalls,
+ * settled only when the test calls `.resolve()`/`.reject()` — the same
+ * leading-edge control the old Deferred-based mock gave, without touching
+ * the module registry at all. */
+function fakeFetch(url: string | URL): Promise<Response> {
+  const u = String(url);
+  if (u.startsWith("/api/index/rank")) {
+    const params = new URL(u, "http://localhost").searchParams;
+    return new Promise<Response>((settle) => {
+      rankCalls.push({
+        root: params.get("root") ?? "",
+        q: params.get("q") ?? "",
+        resolve: (data) => settle(new Response(JSON.stringify(data), { status: 200 })),
+      });
+    });
+  }
+  if (u.startsWith("/api/fs/stat")) {
+    const params = new URL(u, "http://localhost").searchParams;
+    return new Promise<Response>((settle) => {
+      statCalls.push({
+        path: params.get("path") ?? "",
+        resolve: (data) => settle(new Response(JSON.stringify(data), { status: 200 })),
+        reject: () =>
+          settle(new Response(JSON.stringify({ error: "no such file" }), { status: 404 })),
+      });
+    });
+  }
+  throw new Error("FilesHome.render.test.tsx: unexpected fetch " + u);
+}
 
 // router.ts reads `location` at MODULE INIT (a legacy /embed/ rewrite), before
 // any beforeEach runs — this has to exist before FilesHome (which imports it
-// transitively) is ever imported below.
+// transitively) is ever imported below. It is torn down again in `afterEach`
+// (below) exactly like the other globals this file stubs — module-scope
+// setup with no matching teardown is what leaked `document` across files the
+// first time this file was written (see the afterEach comment).
 (globalThis as Record<string, unknown>).location = { pathname: "/explorer", search: "" };
-(globalThis as Record<string, unknown>).history = {
-  state: null,
-  replaceState: () => {},
-  pushState: () => {},
-};
-// FilesSearch listens on `document` (the "typing anywhere is typing here"
-// redirect) and calls `.focus()` on the input ref.
-(globalThis as Record<string, unknown>).document = {
-  addEventListener: () => {},
-  removeEventListener: () => {},
-};
-
-const realApi = await import("@platform/lib/api");
-mock.module("@platform/lib/api", () => ({
-  ...realApi,
-  indexRank: (root: string, q: string) => {
-    const reply = new Deferred<IndexRankResult>();
-    rankCalls.push({ root, q, reply });
-    return reply.promise;
-  },
-  statPath: (path: string) => {
-    const reply = new Deferred<StatResult>();
-    statCalls.push({ path, reply });
-    return reply.promise;
-  },
-}));
 
 const { FilesSearch } = await import("@apps/explorer/FilesHome");
 
@@ -55,22 +94,46 @@ const HOME = "/Users/me";
 
 const clock = new Clock();
 
+// Every renderer `mount()` creates, so `afterEach` can unmount it
+// UNCONDITIONALLY — including when a test's own assertions throw partway
+// through and never reach its own `box.unmount()` call. An unmounted-less
+// FilesSearch keeps its `subscribeFsMutations`/`subscribeIndexLifecycle`
+// listeners registered on those SHARED, module-level Sets
+// (platform/lib/index-freshness) for the rest of the process: the next
+// unrelated test file to call `noteFsMutation` invokes every listener still
+// registered, including this stale one, which is exactly the kind of
+// leaked-subscriber failure a "clean" run cannot reproduce locally but CI
+// (running every file in one process) can.
+const mounted: ReactTestRenderer[] = [];
+
 beforeEach(() => {
   rankCalls.length = 0;
   statCalls.length = 0;
+  globalThis.fetch = fakeFetch as typeof fetch;
   clock.install();
   // Clock.install() sets up `window`/`location`; the real router module also
-  // touches `history` (replaceSearch/navigateUrl), which nothing here calls
-  // directly but which module-level code may still reach for.
+  // touches `history` (replaceSearch/navigateUrl) and `document` (the
+  // "typing anywhere is typing here" redirect), which nothing here calls
+  // directly but which module-level or effect code may still reach for.
   (globalThis as Record<string, unknown>).history = {
     state: null,
     replaceState: () => {},
     pushState: () => {},
   };
+  (globalThis as Record<string, unknown>).document = {
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  };
 });
 afterEach(() => {
+  while (mounted.length) {
+    const renderer = mounted.pop()!;
+    act(() => renderer.unmount());
+  }
+  globalThis.fetch = realFetch;
   clock.restore();
   delete (globalThis as Record<string, unknown>).history;
+  delete (globalThis as Record<string, unknown>).document;
 });
 
 /** Run `fn` inside `act` and let any microtasks it releases settle. */
@@ -94,6 +157,10 @@ function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () =
       }),
     );
   });
+  // Tracked for the unconditional afterEach sweep (above) — removed here on a
+  // NORMAL unmount so that sweep does not try to unmount an already-unmounted
+  // renderer for every test that reaches its own cleanup.
+  mounted.push(renderer);
   return {
     renderer,
     input: () => renderer.root.findByProps({ className: "files-search-input" }),
@@ -101,7 +168,11 @@ function mount(): { renderer: ReactTestRenderer; input: () => any; unmount: () =
     // document listener) must run in the same batched world the rest of the
     // test drives, or React can warn about — or in practice mis-schedule —
     // work outside act().
-    unmount: () => act(() => renderer.unmount()),
+    unmount: () => {
+      const i = mounted.indexOf(renderer);
+      if (i !== -1) mounted.splice(i, 1);
+      act(() => renderer.unmount());
+    },
   };
 }
 
@@ -189,7 +260,7 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
   test("an extending query narrows the held rows with no round trip, and survives the deadline", async () => {
     const box = mount();
     await type(box, "form");
-    await flush(() => rankCalls[0].reply.resolve(
+    await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
 
     // Extend the query; the second request is left hanging.
@@ -210,7 +281,7 @@ describe("stale rows: narrow first, clear only if narrowing empties out", () => 
   test("an unrelated query narrows to nothing, and the deadline drops to a bare 'Searching…'", async () => {
     const box = mount();
     await type(box, "form");
-    await flush(() => rankCalls[0].reply.resolve(
+    await flush(() => rankCalls[0].resolve(
       answer({ hits: [hit("formula.txt"), hit("format.md")], total: 2 })));
     expect(noteText(box)).not.toContain("Searching");
 
@@ -236,7 +307,7 @@ describe("a query that is really an address (section 7)", () => {
     expect(rankCalls).toHaveLength(0);
     expect(statCalls.map((c) => c.path)).toEqual(["/tmp/report.csv"]);
 
-    await flush(() => statCalls[0].reply.resolve({
+    await flush(() => statCalls[0].resolve({
       path: "/tmp/report.csv", name: "report.csv", is_dir: false, size: 1, mtime: 1, templates: [],
     }));
     // The Open row renders in place of any AI row.
@@ -255,7 +326,7 @@ describe("a query that is really an address (section 7)", () => {
   test("suppresses the AI row even when the address does not resolve", async () => {
     const box = mount();
     await type(box, "/tmp/does-not-exist");
-    await flush(() => statCalls[0].reply.reject(new Error("not found")));
+    await flush(() => statCalls[0].reject());
     // Falls through to a normal search (7d) — but still no AI row (7e).
     expect(rankCalls.map((c) => c.q)).toEqual(["/tmp/does-not-exist"]);
     expect(findByClass(box, "fh-ai-glyph")).toHaveLength(0);
