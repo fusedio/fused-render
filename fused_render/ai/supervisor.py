@@ -980,6 +980,17 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         finally:
             _release_install(worker, cancel=still_running)
         if envinstall.is_installed(runner.folder):
+            # The loop above breaks on `record.get("done")` BEFORE ever
+            # reporting the terminal record — the byte counters it may have
+            # set (owner only) therefore survive on the job row exactly as
+            # they stood on the last "still downloading" tick, done == total.
+            # `_bring_up` reports "Starting the model process…" right after
+            # this return with no reset of its own (mirroring the ENTRY point
+            # above, which does `done=None, total=None` for the same reason),
+            # so without this a finished venv build would leave a full
+            # "3.4 GB / 3.4 GB" bar sitting under that sentence until the
+            # runner's own first weight tick overwrote it.
+            _report(job, done=None, total=None, unit="")
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
 

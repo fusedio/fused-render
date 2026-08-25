@@ -3483,6 +3483,48 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
     assert "Preparing ROCm" in reported["detail"]
 
 
+def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_path):
+    """Review issue #3: the install loop breaks on `record.get("done")`
+    BEFORE reporting anything, so without an explicit reset the job row keeps
+    whatever `done`/`total`/`unit="bytes"` its last "still downloading" tick
+    left behind. `_bring_up` then reports "Starting the model process…" with
+    no reset of its own, which would draw a full "3.4 GB / 3.4 GB" bar under
+    that sentence until the runner's first weight tick overwrote it — a
+    finished download that still looks like it is running.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="ROCm")
+    ticks = [
+        {"done": False, "stage": "install",
+         "activity": "downloading torch — 3.4 GB of 3.4 GB (2m14s)",
+         "bytes_done": 3_400_000_000, "bytes_total": 3_400_000_000},
+        {"done": True, "error": None, "stage": "done"},
+    ]
+
+    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    job = "sys:ai-model:m"
+    jobs.upsert({"id": job, "title": "m", "kind": "download", "state": "running",
+                 "owner": "server"}, server=True)
+
+    assert supervisor._ensure_venv(runner, worker, job) == "/venv/bin/python"
+
+    row = _row_now(job)
+    assert row["done"] is None, row
+    assert row["total"] is None, row
+    assert row["unit"] == "", row
+
+
 def test_the_cross_pressed_during_the_download_stops_the_load(fake_runner, monkeypatch):
     """The ✕ has to reach the phase that actually takes the time.
 
