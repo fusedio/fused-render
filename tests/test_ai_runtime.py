@@ -3421,6 +3421,68 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     assert len(rounds) == 2
 
 
+def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
+    """The bug this whole feature shipped to fix: `_ensure_venv` used to read
+    only `record["stage"]` (the coarse "installing") and threw away the
+    `activity`/`bytes_done`/`bytes_total` `_env_install_worker._UvProgress`
+    computes from uv's own stderr — so a ROCm torch install sat on "Preparing
+    Transformers Embeddings (ROCm) — installing…" with no bytes, no elapsed
+    time the user could see move, for however many minutes the download took.
+
+    This is the test that would have failed before those keys were read: the
+    row's detail must carry uv's compact phrase, and the job's `done`/`total`/
+    `unit` must be set from the same record so `ModelProgress` draws a real
+    bar instead of a dot.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="ROCm")
+    ticks = [
+        {"done": False, "stage": "install", "activity": None,
+         "bytes_done": None, "bytes_total": None},
+        {"done": False, "stage": "install",
+         "activity": "downloading torch — 1.2 GB of 3.6 GB (2m14s)",
+         "bytes_done": 1_200_000_000, "bytes_total": 3_600_000_000},
+        {"done": True, "error": None, "stage": "done"},
+    ]
+
+    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    job = "sys:ai-model:m"
+    jobs.upsert({"id": job, "title": "m", "kind": "download", "state": "running",
+                 "owner": "server"}, server=True)
+
+    seen_bytes_row = []
+    real_report = supervisor._report
+
+    def _watch(job_id, **fields):
+        real_report(job_id, **fields)
+        if fields.get("total"):
+            seen_bytes_row.append(dict(fields))
+
+    monkeypatch.setattr(supervisor, "_report", _watch)
+
+    assert supervisor._ensure_venv(runner, worker, job) == "/venv/bin/python"
+
+    assert seen_bytes_row, "the byte-carrying tick never reached the job row"
+    reported = seen_bytes_row[0]
+    assert reported["done"] == 1_200_000_000
+    assert reported["total"] == 3_600_000_000
+    assert reported["unit"] == "bytes"
+    assert "downloading torch" in reported["detail"]
+    assert "1.2 GB of 3.6 GB" in reported["detail"]
+    assert "Preparing ROCm" in reported["detail"]
+
+
 def test_the_cross_pressed_during_the_download_stops_the_load(fake_runner, monkeypatch):
     """The ✕ has to reach the phase that actually takes the time.
 

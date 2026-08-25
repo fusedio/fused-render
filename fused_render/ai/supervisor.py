@@ -952,10 +952,30 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
                 # differently: the owner is building the environment, the joiner
                 # is parked behind somebody else's build. See
                 # `_JOINED_INSTALL_DETAIL`.
+                #
+                # `activity`/`bytes_done`/`bytes_total` are `_env_install_worker`'s
+                # (its `_UvProgress`, streaming uv's own stderr) — `None` before
+                # uv has printed its first `Downloading` line, or when the
+                # record came from an older/other writer that never learned
+                # these keys. Falling back to `record["stage"]` in that case is
+                # exactly what this line did before the byte-level work landed,
+                # so a build with nothing to report yet (or a python-bootstrap
+                # round, which never gets a tracker) reads identically to
+                # before.
+                #
+                # Bytes go on the OWNER's row only. A joiner's row is not doing
+                # any work (`_JOINED_INSTALL_DETAIL` exists specifically so it
+                # does not read as though it were), so it must not draw a bar
+                # that implies otherwise — see that constant's own comment.
+                activity = record.get("activity") if worker.install_owned else None
+                bytes_done = record.get("bytes_done") if worker.install_owned else None
+                bytes_total = record.get("bytes_total") if worker.install_owned else None
                 _report(job, detail=(
-                    f"Preparing {runner.short} — {record.get('stage') or 'installing'}…"
+                    f"Preparing {runner.short} — {activity or record.get('stage') or 'installing'}…"
                     if worker.install_owned
-                    else _JOINED_INSTALL_DETAIL.format(short=runner.short)))
+                    else _JOINED_INSTALL_DETAIL.format(short=runner.short)),
+                    done=bytes_done, total=bytes_total,
+                    unit="bytes" if bytes_total else "")
                 time.sleep(0.5)
         finally:
             _release_install(worker, cancel=still_running)
