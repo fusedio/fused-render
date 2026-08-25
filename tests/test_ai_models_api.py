@@ -1406,22 +1406,26 @@ def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     """None is the honest answer, and the page turns it into "no Load button" —
     rather than a button that is offered and always fails.
 
-    `sentence-similarity` (task label "sentence embeddings"), NOT the module's
-    own `modules.json` detection this test used before the embedding runners
-    shipped: that path sets `meta.task` to the bare string "embeddings", which
-    is now the label the embedding runners serve (`registry.EMBEDDINGS`) — a
-    sentence-transformers pooling checkpoint genuinely IS an embedding model by
-    that name, so it now reports `capability: "embeddings", engine: None`, the
-    same honest trap `openai/whisper-large-v3` reports (a real task, a format
-    nothing here reads) rather than "not classified at all". `NO_RUNNER_YET`
-    keeps "sentence embeddings" itself unclassified (see `registry.py`'s own
-    comment on the embeddings block: a sentence-transformers checkpoint has no
-    `get_text_features`/`get_image_features` for these runners to call), so
-    that label is what still answers `None` here.
+    **`image-feature-extraction`, and the tag had to change twice.** This test
+    first used the module's own `modules.json` detection, which sets `meta.task`
+    to the bare string "embeddings" — a label the embedding runners now serve, so
+    that stopped being an unserved task. It then used `sentence-similarity`,
+    which was unserved for as long as the capability meant DUAL ENCODERS only.
+    SPEC §40's widening claimed that one too: both engines load a prose encoder
+    now, so a sentence-transformers checkpoint is genuinely loadable and
+    reporting `None` for it would be the lie this test exists to prevent, in
+    reverse.
+
+    `image-feature-extraction` is the neighbour that did NOT move, and it is
+    unserved for a structural reason rather than a scheduling one: it wears an
+    IMAGE-ONLY encoder (DINOv2/v3), which has no text tower at all — the dual
+    load path wants both towers and the prose path wants a tokenizer, so neither
+    can open one. That makes it a stable choice here rather than the next tag to
+    be claimed.
     """
     embed = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: sentence-similarity\n---\n")
-    assert _repo_row(client, "org/st")["task"] == "sentence embeddings"
+    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: image-feature-extraction\n---\n")
+    assert _repo_row(client, "org/st")["task"] == "image embeddings"
     assert _repo_row(client, "org/st")["capability"] is None
 
 

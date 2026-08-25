@@ -133,23 +133,32 @@ _TASKS: tuple[Task, ...] = (
     _t("zero-shot-image-classification", "zero-shot image classification", "cv", EMBEDDINGS,
        "Says what an image shows, against labels you supply at the time rather than a fixed set."),
 
+    # ------------------------------------------------------ text, and SERVED
+    # **The two rows the embedding capability finally does claim.** They were
+    # `None` with a withheld reason for as long as the capability meant dual
+    # encoders only: what wears these tags is a sentence-transformers
+    # checkpoint — a text encoder plus a pooling configuration, with no vision
+    # tower — and the runners of the day had nothing but
+    # `get_text_features`/`get_image_features` to call on it, so mapping them
+    # would have put a Load button on `sentence-transformers/all-MiniLM-L6-v2`
+    # and offered a download that then refused. That note ended "when it ships,
+    # these two move", and this is the change where it shipped: both embedding
+    # runners now load a text-only encoder (`formats.TEXT_EMBED_MODEL_TYPES`,
+    # `runners/onnx_embed.py`'s prose path) and pool it correctly.
+    #
+    # **So EMBEDDINGS is now the one capability reached by many tags, and that
+    # is worth saying out loud**: `zero-shot-image-classification` for a dual
+    # encoder, and these two for a prose one. Every other capability here is
+    # one-tag-to-one-capability, or close to it; this one covers two genuinely
+    # different model shapes under one resident slot, which is the whole point
+    # of `_accepts_paths` gating the image half per model rather than per
+    # capability.
+    _t("feature-extraction", "embeddings", "multimodal", EMBEDDINGS,
+       "Turns text into vectors, so things can be compared or searched by meaning."),
+    _t("sentence-similarity", "sentence embeddings", "nlp", EMBEDDINGS,
+       "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG."),
+
     # ------------------------------------------------- text, nothing serves it
-    # **The two rows the embedding capability does NOT claim, despite being its
-    # own name.** What wears these tags is overwhelmingly a sentence-transformers
-    # checkpoint: a text encoder plus a pooling configuration, with no vision
-    # tower and no `get_text_features`/`get_image_features` for the embedding
-    # runners to call. Mapping them would put a Load button on
-    # `sentence-transformers/all-MiniLM-L6-v2` — a download that then refuses.
-    # Mean-pooling a text-only encoder is a different load path and a different
-    # catalog; when it ships, these two move.
-    _t("feature-extraction", "embeddings", "multimodal", None,
-       "Turns text into vectors, so things can be compared or searched by meaning.",
-       "The embedding runners here serve dual encoders (image and text into one space), "
-       "not text-only sentence encoders."),
-    _t("sentence-similarity", "sentence embeddings", "nlp", None,
-       "Turns sentences into vectors, so similar sentences land near each other — search, clustering, RAG.",
-       "The embedding runners here serve dual encoders (image and text into one space), "
-       "not text-only sentence encoders."),
     _t("summarization", "summarization", "nlp", None,
        "Shortens a long text into its main points.",
        "A chat model does this from a prompt — no separate runner ships for it."),
@@ -202,10 +211,19 @@ _TASKS: tuple[Task, ...] = (
        "Outlines every distinct thing in an image, unprompted."),
     _t("keypoint-detection", "keypoint detection", "cv", None,
        "Finds landmark points — joints on a body, corners on an object."),
+    # **The neighbour that did NOT move when `feature-extraction` and
+    # `sentence-similarity` did, and the difference is a tower rather than a
+    # policy.** Those two wear a text encoder, which both embedding runners now
+    # load. This one wears an IMAGE-ONLY encoder — DINOv2 and DINOv3 are the
+    # models people download for it — and an image-only encoder has no text
+    # tower at all, so there is nothing here that can open one: the dual path
+    # wants both towers and the prose path wants a tokenizer. Not "a use case we
+    # have not got to" but a third model shape, and admitting it would need a
+    # third load path.
     _t("image-feature-extraction", "image embeddings", "cv", None,
        "Turns an image into a vector, so images can be compared or searched.",
-       "The embedding runners here serve dual encoders that take BOTH images and text; "
-       "an image-only encoder has no runner."),
+       "The embedding runners here load a dual encoder (images AND text) or a text "
+       "encoder; an image-only encoder has no text tower for either to read."),
     # The Hub's OTHER tag for the same checkpoints `image-text-to-text` above
     # already maps: a repo carrying this tag instead is still the identical
     # unified vision-language chat model, and mlx-vlm answers a question about

@@ -78,6 +78,10 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     # The tag a SigLIP or CLIP repo actually carries: a dual encoder, named
     # after one thing you can do with its two towers.
     ("zero-shot-image-classification", registry.EMBEDDINGS),
+    # …and the two a PROSE encoder carries. Three tags onto one capability,
+    # which is unique to this row — see `registry.EMBEDDINGS`'s docstring.
+    ("feature-extraction", registry.EMBEDDINGS),
+    ("sentence-similarity", registry.EMBEDDINGS),
     # `ltx-video` serves this one prompt-only; its image-conditioned siblings
     # (image-to-video, image-text-to-video) stay unmapped below.
     ("text-to-video", registry.VIDEO_GENERATION),
@@ -86,20 +90,33 @@ def test_the_tags_a_runner_serves(tag, capability):
     assert tasks.classify(tag).capability == capability
 
 
-def test_the_embedding_capabilitys_own_names_are_deliberately_unserved():
-    """The trap this capability sets for itself: `feature-extraction` and
-    `sentence-similarity` read like the obvious tags for it and are not.
+def test_the_IMAGE_only_encoder_tag_is_still_deliberately_unserved():
+    """`image-feature-extraction` did NOT move when its two text neighbours did,
+    and the difference is a tower rather than a policy.
 
-    What wears them is a sentence-transformers checkpoint — a text encoder plus
-    a pooling config, with no vision tower and no `get_text_features`/
-    `get_image_features` for either embedding runner to call. Mapping them would
-    put a Load button on `sentence-transformers/all-MiniLM-L6-v2`, a download
-    that then refuses.
+    `feature-extraction` and `sentence-similarity` wear a text encoder, which
+    both embedding runners now load and pool. This tag wears an IMAGE-ONLY one —
+    DINOv2 and DINOv3 are what people download for it — and that has no text
+    tower at all: the dual path wants both towers and the prose path wants a
+    tokenizer, so neither can open it. A third model shape, not a use case
+    nobody got to.
     """
-    for tag in ("feature-extraction", "sentence-similarity", "image-feature-extraction"):
+    reading = tasks.classify("image-feature-extraction")
+    assert reading.ruled_out
+    assert "text tower" in reading.reason
+
+
+def test_the_two_text_embedding_tags_carry_no_withheld_reason_any_more():
+    """The other half: a SUPPORTED tag must not keep the excuse it had while it
+    was unsupported. `test_a_supported_task_carries_no_excuse` enforces that
+    generally; these two are named because their reason strings had been there
+    long enough to read as permanent, and the comment above them in `tasks.py`
+    predicted this move for just as long."""
+    for tag in ("feature-extraction", "sentence-similarity"):
         reading = tasks.classify(tag)
-        assert reading.ruled_out, tag
-        assert "dual encoder" in reading.reason, tag
+        assert reading.supported, tag
+        assert not reading.ruled_out, tag
+        assert reading.capability == registry.EMBEDDINGS, tag
 
 
 @pytest.mark.parametrize("tag", [

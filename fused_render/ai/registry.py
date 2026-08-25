@@ -77,13 +77,41 @@ IMAGE_GENERATION = "text-to-image"
 #: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
 #: one string rather than three that have to be kept in step.
 SPEECH_TO_TEXT = "automatic-speech-recognition"
-#: Vectors, not words: one dual-encoder model that turns a piece of text OR an
-#: image into a point in the same space, so a page can compare them. The plain
-#: English name rather than the Hub's `feature-extraction`, unlike
-#: `SPEECH_TO_TEXT` above — the tag a SigLIP repo actually carries is
-#: `zero-shot-image-classification`, which describes one thing you can DO with
-#: those vectors and not what the runner returns, so borrowing it would have
-#: named the capability after a use case it does not implement.
+#: Vectors, not words: one model that turns a piece of text — or, where the
+#: checkpoint has a vision tower, an image — into a point in one space, so a page
+#: can compare them.
+#:
+#: **TWO MODEL SHAPES under one capability, which no other row here has.** A
+#: DUAL ENCODER (SigLIP, CLIP) projects text and pictures into the same space and
+#: answers `paths`; a PROSE ENCODER (BERT-family, 512 to 8192 tokens) answers
+#: text alone and is what makes RAG, document search and clustering possible —
+#: impossible on a dual encoder at any chunk size, since a SigLIP text tower
+#: truncates at 64 tokens. `formats.DUAL_EMBED_MODEL_TYPES` and
+#: `formats.TEXT_EMBED_MODEL_TYPES` are the two halves, and both engines here
+#: serve both.
+#:
+#: **So `paths` and `kind` are PER-MODEL rather than per-capability**, and that
+#: is the design consequence: the route refuses `paths` for a model with no
+#: vision tower and `kind` for a model with no retrieval convention, each with a
+#: 400 naming the model — the shape `_accepts_image` already uses for text
+#: generation. A capability-level answer would have to be the union (offer
+#: everything, fail inside a worker) or the intersection (offer neither, and the
+#: image half of this capability disappears).
+#:
+#: **This capability was split until this branch, and the split is what got
+#: reversed.** A separate `embed-text` capability meant two resident slots on a
+#: machine that has budget for one, two catalogs, two bridge calls and two sets
+#: of docs, to serve one question — "turn this into a vector" — whose answer
+#: differs only in whether the checkpoint has a second tower.
+#:
+#: **It is also the one capability reached by MANY Hub tags**
+#: (`ai/tasks.py`): `zero-shot-image-classification` for a dual encoder,
+#: `feature-extraction` and `sentence-similarity` for a prose one. The plain
+#: English name rather than any of them, unlike `SPEECH_TO_TEXT` above, and for
+#: two reasons that both still hold: `zero-shot-image-classification` describes
+#: one thing you can DO with these vectors rather than what the runner returns,
+#: and no single tag covers both shapes. A future `reranking` capability sits
+#: beside this one without renaming it.
 EMBEDDINGS = "embeddings"
 #: The Hub's own tag, like `IMAGE_GENERATION` and `SPEECH_TO_TEXT` are — a
 #: diffusers text-to-video pipeline's `_class_name` folds onto "video
