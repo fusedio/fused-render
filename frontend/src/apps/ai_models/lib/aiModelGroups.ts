@@ -838,7 +838,14 @@ function firstClause(text: string): string {
 /** First letter up, rest untouched — the registry writes its reasons mid-sentence
  *  ("text-to-image is set to…") because they were always a clause inside a longer
  *  one, and standing alone they need a capital. Deliberately not `toUpperCase` on
- *  a word: `MLX` must survive. */
-function capitalise(text: string): string {
+ *  a word: `MLX` must survive.
+ *
+ *  Exported because `EngineSelect` needs the identical fix for the identical
+ *  reason: `choiceReason` (lib/engines.ts) is the same registry sentence,
+ *  spliced mid-sentence elsewhere (`ignoredWarning`'s "X is not used here —
+ *  {reason}"), so it has to stay lowercase in the data and gets capitalised
+ *  only where it stands alone as an option's own description line. */
+export function capitalise(text: string): string {
+  if (text.length === 0) return text;
   return text.charAt(0).toUpperCase() + text.slice(1);
 }

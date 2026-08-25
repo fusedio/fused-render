@@ -24,6 +24,11 @@ function mac(over: Partial<CapabilityEngine> = {}): CapabilityEngine {
     effectiveLabel: "MLX Whisper (Apple Silicon)",
     effectiveShortLabel: "MLX Whisper",
     ignoredReason: null,
+    // Null on every fixture but the ones that deliberately construct a
+    // stranded row (`strandedSelection`'s two describe blocks below): a
+    // selection that matches a real choice, or names "auto", is never
+    // stranded, and `_stranded_label` (registry.py) returns null for both.
+    strandedLabel: null,
     choices: [
       {
         code: "mlx-whisper",
@@ -52,15 +57,14 @@ function windows(): CapabilityEngine {
     effective: "faster-whisper",
     effectiveLabel: "Faster Whisper (CTranslate2)",
     effectiveShortLabel: "Faster Whisper",
-    ignoredReason:
-      "needs Apple Silicon — MLX runs on Metal only (this is windows/amd64)",
+    ignoredReason: "needs Apple Silicon (this is windows/amd64)",
     choices: [
       {
         code: "mlx-whisper",
         label: "MLX Whisper (Apple Silicon)",
         note: "Transcribes on the GPU.",
         available: false,
-        reason: "needs Apple Silicon — MLX runs on Metal only (this is windows/amd64)",
+        reason: "needs Apple Silicon (this is windows/amd64)",
       },
       {
         code: "faster-whisper",
@@ -112,14 +116,35 @@ describe("servingLine", () => {
     // The SHORT name: this line sits under the picker, which is the one
     // surface that keeps the platform qualifier. What the test is about is
     // WHICH runner gets named, and that is unchanged.
-    expect(servingLine(windows())).toContain("Faster Whisper");
-    expect(servingLine(windows())).not.toContain("CTranslate2");
-    expect(servingLine(windows())).not.toContain("MLX");
+    expect(servingLine(windows(), AUTO)).toContain("Faster Whisper");
+    expect(servingLine(windows(), AUTO)).not.toContain("CTranslate2");
+    expect(servingLine(windows(), AUTO)).not.toContain("MLX");
   });
 
   it("says so plainly when nothing serves the capability here", () => {
     const row = mac({ effective: null, effectiveLabel: null, effectiveShortLabel: null });
-    expect(servingLine(row)).toContain("Not available");
+    expect(servingLine(row, AUTO)).toContain("Not available");
+  });
+
+  it("is null when the concrete selection is honoured and matches what serves — the control already names it", () => {
+    // A stored concrete engine, in force, naming exactly what is running: the
+    // trigger's own label already says "Faster Whisper", and a line under it
+    // reading "Using Faster Whisper." repeats it word for word.
+    const row = mac({ selected: "faster-whisper", effective: "faster-whisper" });
+    expect(servingLine(row, AUTO)).toBeNull();
+  });
+
+  it("still reports when the selection is auto, even though it matches effective", () => {
+    // "Automatic" the trigger shows does not name the runner — the line under
+    // it is the only place that does.
+    expect(servingLine(mac(), AUTO)).toBe("Using MLX Whisper.");
+  });
+
+  it("still reports when the concrete selection is IGNORED, even though the picker still shows it", () => {
+    // The control shows the (ignored) selected choice, not what is actually
+    // running — so the serving line is the only place naming reality, exactly
+    // as before.
+    expect(servingLine(windows(), AUTO)).toBe("Using Faster Whisper.");
   });
 });
 
@@ -145,9 +170,71 @@ describe("ignoredWarning", () => {
     // second sentence this used to carry — reassurance that the choice is kept
     // for another machine, which the selection itself already says.
     expect(warning).toBe(
-      "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon — MLX runs on"
-      + " Metal only (this is windows/amd64).",
+      "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon"
+      + " (this is windows/amd64).",
     );
+  });
+
+  it("does not say the name twice when the registry's own reason already names it", () => {
+    // The WITHDRAWN-code shape: `strandedLabel` is null (no runner left to
+    // name — see the withdrawn/wrong-capability split in `strandedSelection`'s
+    // own describe block below), so `name` falls back to the raw stored code
+    // ("onnx-embed") — and `ignoredReason` already reads "onnx-embed is not a
+    // runner this build knows". Prefixing "onnx-embed is not used here — " in
+    // front of that repeats the code. When the resolved display name already
+    // occurs inside the reason, the sentence folds into one "Ignored — …"
+    // instead.
+    const row = mac({
+      capability: "embeddings",
+      selected: "onnx-embed",
+      effective: "sentence-transformers",
+      effectiveLabel: "Sentence Transformers",
+      effectiveShortLabel: "Sentence Transformers",
+      ignoredReason: "onnx-embed is not a runner this build knows",
+      strandedLabel: null,
+      choices: [
+        {
+          code: "sentence-transformers",
+          label: "Sentence Transformers",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+    expect(ignoredWarning(row)).toBe("Ignored — onnx-embed is not a runner this build knows.");
+  });
+
+  it("does not say the name twice for the WRONG-CAPABILITY shape either, where the reason names a LABEL and the code alone would not match it", () => {
+    // The bug this fixture exists to catch: `resolve()` writes
+    // `f"{runner.short} does not do {capability}"` — "MLX Whisper does not do
+    // text-generation" — which names the runner's SHORT LABEL, not its code
+    // ("mlx-whisper"). Before `strandedLabel` existed, `name` fell back to the
+    // raw code here, `reason.includes("mlx-whisper")` was false, and the card
+    // read "mlx-whisper is not used here — MLX Whisper does not do
+    // text-generation." — the same engine, named twice, in two different
+    // spellings. `strandedLabel` is the registry's OWN short label for the
+    // stranded code precisely so this comparison uses the same spelling
+    // `resolve()` already wrote.
+    const row = mac({
+      capability: "text-generation",
+      selected: "mlx-whisper",
+      effective: "llamacpp-text",
+      effectiveLabel: "llama.cpp (CPU)",
+      effectiveShortLabel: "llama.cpp (CPU)",
+      ignoredReason: "MLX Whisper does not do text-generation",
+      strandedLabel: "MLX Whisper",
+      choices: [
+        {
+          code: "llamacpp-text",
+          label: "llama.cpp (CPU)",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+    expect(ignoredWarning(row)).toBe("Ignored — MLX Whisper does not do text-generation.");
   });
 });
 
@@ -192,6 +279,10 @@ describe("strandedSelection", () => {
       effectiveLabel: "llama.cpp (CPU)",
       effectiveShortLabel: "llama.cpp (CPU)",
       ignoredReason: "MLX Whisper does not do text-generation",
+      // The registry's own short label for the stranded code (D416/`resolve`'s
+      // `f"{runner.short} does not do {capability}"` shape) — see the
+      // dedicated `ignoredWarning` fixture above for what this fixes.
+      strandedLabel: "MLX Whisper",
       choices: [
         {
           code: "llamacpp-text",
@@ -244,10 +335,10 @@ describe("strandedSelection", () => {
     const warning = ignoredWarning(withdrawn()) ?? "";
     expect(warning).toContain("transformers-text");
     expect(warning).toContain("not a runner this build knows");
-    // …and the line NAMES THE CODE rather than a label, because a withdrawn
-    // engine has no label to be had: `ignoredWarning` falls back to `selected`
-    // exactly when `strandedSelection` fires.
-    expect(warning.startsWith("transformers-text is not used here")).toBe(true);
+    // The code and the reason both name "transformers-text", so the sentence
+    // folds into one "Ignored — …" rather than repeating the code in front of
+    // a reason that already contains it (`ignoredWarning`'s de-duplication).
+    expect(warning).toBe("Ignored — transformers-text is not a runner this build knows.");
   });
 });
 
