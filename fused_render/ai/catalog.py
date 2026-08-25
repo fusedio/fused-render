@@ -825,6 +825,63 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "times the download and 1152-dim vectors to store.",
         },
     ],
+    # The SAME two checkpoints, re-exported for ONNX Runtime — `onnx-community`'s
+    # conversions of the two `google/siglip2-*` repos above, which is why the
+    # rows read almost identically. What differs is the ENGINE that opens them:
+    # `onnxruntime` is tens of megabytes where torch plus transformers is 0.2 GB
+    # on the CPU index and up to 5.9 GB on an accelerated one, for a workload
+    # that is one forward pass either way. A separate list rather than an alias
+    # onto the block above, per this file's keying rule: the two engines read
+    # DIFFERENT FILES out of these repos — `onnx/text_model.onnx` against
+    # `model.safetensors` — so an alias would offer each engine a repo it cannot
+    # open.
+    #
+    # **`size_gb` here is the FETCHED file set, not the whole snapshot, and that
+    # is a deliberate exception to this file's own convention.** Everywhere else
+    # the figure is the Hub's per-file byte sum for the entire repo, because
+    # that is what `download_snapshot` actually pulls — and the CLIP rejection
+    # note above rests on exactly that reading. These two repos break the
+    # assumption behind it: they publish EIGHT quantizations of each tower side
+    # by side, so the whole snapshot is 11.42 GB for the base export and 29.5 GB
+    # for the so400m, none of which this app fetches.
+    # `runners/onnx_embed.py`'s `download()` pins `allow_patterns` to the fp32
+    # graphs plus the tokenizer, and the figures below are that set:
+    #   base:    390,995,264 vision + 1,184,301,056 text + 34,362,880 tokenizer
+    #            + configs = 1.54 GB
+    #   so400m:  1,796,589,568 vision + 2,968,151,040 text (0.6 MB of graph plus
+    #            its external-data sidecar) + 34,362,880 tokenizer = 4.58 GB
+    # Measured against the Hub's own per-file byte sums, 2026-08-25. That they
+    # round to the same 1.5/4.6 GB as the torch rows above is a coincidence
+    # worth stating rather than relying on: the ONNX export of a tower is a
+    # different file from its safetensors, and a future re-export could move
+    # either figure without moving the other.
+    #
+    # Smallest first, per the module rule, so the base export is what a bare
+    # `fused.ai.embed()` loads on any machine that resolves to this engine.
+    # Both repos are ungated and Apache-2.0, like their upstreams. **One line
+    # each**, per the rule the transformers text list states.
+    "onnx-embed": [
+        {
+            "id": "onnx-community/siglip2-base-patch16-384-ONNX",
+            "params": "375M",
+            "recommended": True,
+            "label": "SigLIP2 base (384px)",
+            "nickname": "SigLIP2 base",
+            "size_gb": 1.5,
+            "note": "The smallest here and what a bare embed call loads — "
+                    "768-dim vectors, multilingual, and quick enough to index a "
+                    "folder of photos.",
+        },
+        {
+            "id": "onnx-community/siglip2-so400m-patch14-384-ONNX",
+            "params": "1.1B",
+            "label": "SigLIP2 so400m (384px)",
+            "nickname": "SigLIP2 so400m",
+            "size_gb": 4.6,
+            "note": "Noticeably better matches than the base model, for three "
+                    "times the download and 1152-dim vectors to store.",
+        },
+    ],
     # LTX-2.3 on MLX, through `ltx-2-mlx` — the accessible video engine (see
     # the plan's "ltx-2-mlx, not mlx-video" decision) that a bare
     # `fused.ai.video()` now reaches first (`registry.py`'s ordering).
@@ -933,6 +990,14 @@ _SHARED_SUGGESTIONS = {
     # aliased rather than copied.
     "transformers-embed-cuda": "transformers-embed",
     "transformers-embed-rocm": "transformers-embed",
+    # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
+    # different execution provider — for the identical reason. The four ONNX
+    # builds differ in which `onnxruntime*` distribution is installed and in
+    # nothing about which files are loadable, so their lists must be identical
+    # BY CONSTRUCTION rather than by nobody having edited one of them yet.
+    "onnx-embed-directml": "onnx-embed",
+    "onnx-embed-cuda": "onnx-embed",
+    "onnx-embed-rocm": "onnx-embed",
     # Not a hardware variant of the same runner — a DIFFERENT runner that reads
     # the same repos (see the comment on the embeddings block above). Aliased
     # for the same reason as the pairs above: one list to keep in step rather

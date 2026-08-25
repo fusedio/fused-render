@@ -66,11 +66,87 @@ def test_clip_is_deliberately_not_curated():
     assert not any("clip" in repo_id.lower() for repo_id in ids)
 
 
+# -- the ONNX block -------------------------------------------------------------
+
+
+ONNX_IDS = {"onnx-community/siglip2-base-patch16-384-ONNX",
+            "onnx-community/siglip2-so400m-patch14-384-ONNX"}
+
+
+def test_onnx_embed_has_its_own_curated_list():
+    """A SEPARATE list, never an alias onto the torch one — which is the whole
+    keying rule of this file. The two engines read DIFFERENT FILES out of the
+    same checkpoints (`onnx/text_model.onnx` against `model.safetensors`), so a
+    shared list would offer each engine a repo it cannot open."""
+    ids = {entry["id"] for entry in catalog.SUGGESTIONS["onnx-embed"]}
+    assert ids == ONNX_IDS
+    assert catalog._SHARED_SUGGESTIONS.get("onnx-embed") is None
+
+
+def test_the_three_onnx_hardware_variants_are_aliased_not_duplicated():
+    """Same repos, same graphs, a different execution provider — the
+    `diffusers-image-cuda` argument exactly. Only the alias table proves there
+    is one list; three copied literals would be equal until somebody edited
+    one, and that failure is silent on the page."""
+    for code in ("onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm"):
+        assert catalog._SHARED_SUGGESTIONS.get(code) == "onnx-embed"
+        assert code not in catalog.SUGGESTIONS
+        assert catalog.for_runner(code) == catalog.for_runner("onnx-embed")
+
+
+def test_the_onnx_list_is_smallest_first():
+    sizes = [entry["size_gb"] for entry in catalog.SUGGESTIONS["onnx-embed"]]
+    assert sizes == sorted(sizes)
+
+
+def test_the_onnx_sizes_are_the_FETCHED_set_not_the_whole_snapshot():
+    """The deliberate exception to this file's whole-snapshot convention, and
+    the reason it is documented in the block's own comment.
+
+    These repos publish eight quantizations of each tower side by side: the
+    whole base snapshot is 11.42 GB and the so400m one 29.5 GB. Neither is what
+    this app downloads — `runners/onnx_embed.py`'s `download()` pins
+    `allow_patterns` to the fp32 graphs — so a whole-snapshot figure here would
+    price a download nobody performs, and would put an 11 GB "no" fit verdict on
+    a 1.5 GB model. The exact figures are asserted rather than merely bounded
+    because `tests/test_ai_onnx_embed_real_weights.py` checks the FETCHED bytes
+    against them, and the two must not drift.
+    """
+    by_id = {entry["id"]: entry for entry in catalog.SUGGESTIONS["onnx-embed"]}
+    assert by_id["onnx-community/siglip2-base-patch16-384-ONNX"]["size_gb"] == 1.5
+    assert by_id["onnx-community/siglip2-so400m-patch14-384-ONNX"]["size_gb"] == 4.6
+
+
+def test_every_id_still_appears_in_exactly_one_list():
+    """The invariant `all_suggested_ids()` and `capability_of` both read. Adding
+    a second embeddings block is the first change that could break it by
+    accident — the ONNX repos are re-exports of the torch ones and share their
+    labels, so a copy-paste that reused an `id` would be easy to miss."""
+    seen = []
+    for entries in catalog.SUGGESTIONS.values():
+        seen.extend(entry["id"] for entry in entries)
+    assert len(seen) == len(set(seen)), sorted(
+        repo_id for repo_id in set(seen) if seen.count(repo_id) > 1)
+    assert ONNX_IDS <= catalog.all_suggested_ids()
+
+
+def test_the_onnx_repos_are_the_exports_of_the_torch_ones_and_not_the_same_repos():
+    """Distinct repo ids for the same weights, which is what makes two lists
+    correct rather than redundant: `onnx-community/*-ONNX` and `google/siglip2-*`
+    are different downloads, and a machine holding one does not hold the other.
+    """
+    torch_ids = {entry["id"] for entry in catalog.SUGGESTIONS["transformers-embed"]}
+    assert not (ONNX_IDS & torch_ids)
+    for repo_id in ONNX_IDS:
+        assert repo_id.endswith("-ONNX")
+
+
 def test_every_embedding_suggestion_is_loadable_by_its_runner():
     """The same rule `test_every_suggested_model_could_be_loaded_by_the_page`
     (in `test_ai_models_api.py`) checks for every runner in the app — restated
     here for the two new codes so this file does not depend on that one."""
-    for code in ("mlx-embed", "transformers-embed"):
+    for code in ("mlx-embed", "transformers-embed", "onnx-embed",
+                 "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm"):
         runner = registry.by_code(code)
         assert runner is not None
         for entry in catalog.for_runner(code):
