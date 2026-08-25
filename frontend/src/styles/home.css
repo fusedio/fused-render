@@ -33,11 +33,6 @@
   position: relative;
 }
 
-/* Icon-only round chip that advances to the next batch of ideas. */
-.home-composer-shuffle {
-  padding: 5px 8px;
-}
-
 .home-section {
   margin-top: 36px;
 }
