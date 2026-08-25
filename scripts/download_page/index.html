@@ -18,9 +18,9 @@
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28'>%E2%9C%A6</text></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
 <script type="application/fused-bundle">
-{ "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg"] }
+{ "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png"] }
 </script>
 <style>
   /* ============================================================
@@ -129,7 +129,7 @@
     font-weight: 620; letter-spacing: -0.01em; text-decoration: none;
     font-size: 15.5px;
   }
-  .brand .spark { color: var(--ink-3); font-size: 19px; line-height: 1; }
+  .brand .spark { color: var(--accent-fill); font-size: 19px; line-height: 1; }
   .top nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
   .top nav .navcta {
     padding: 8px 16px; border-radius: 99px;
@@ -438,7 +438,9 @@
     text-decoration: none;
     transition: border-color 0.22s var(--ease), transform 0.22s var(--ease);
   }
-  .os b { font-size: var(--t-base); font-weight: 640; letter-spacing: -0.015em; }
+  .os b { font-size: var(--t-base); font-weight: 640; letter-spacing: -0.015em;
+          display: flex; align-items: center; gap: 8px; }
+  .os b svg { width: 16px; height: 16px; flex: none; }
   .os span { font-size: var(--t-sm); color: var(--ink-2); }
   /* This section's single accent: the OS the visitor is actually on. */
   .os.primary {
@@ -508,6 +510,60 @@
   }
   @keyframes pulse-fwd  { 0% { left: 0; opacity: 0; } 12% { opacity: 1; } 42% { opacity: 1; } 55% { left: 100%; opacity: 0; } 100% { left: 100%; opacity: 0; } }
   @keyframes pulse-back { 0% { left: 100%; opacity: 0; } 12% { opacity: 1; } 42% { opacity: 1; } 55% { left: 0; opacity: 0; } 100% { left: 0; opacity: 0; } }
+
+  /* One 10s beat in the duo diagram: page lit 1s, 1s in transit, Python lit
+     1s, 1s back, page lit 2s — then every glow goes away for a 4s rest
+     before the cycle repeats.
+     Gated on html.anim so reduced-motion visitors keep the static diagram. */
+  html.anim #under-the-hood .howside.pg { animation: duo-pg 10s linear infinite; }
+  html.anim #under-the-hood .howside.py { animation: duo-py 10s linear infinite; }
+  html.anim #under-the-hood .pg .dot { animation: duo-pg-dot 10s linear infinite; }
+  html.anim #under-the-hood .py .dot { animation: duo-py-dot 10s linear infinite; }
+  html.anim #under-the-hood .pulse.pf { animation: duo-pf 10s linear infinite; }
+  html.anim #under-the-hood .pulse.pb { animation: duo-pb 10s linear infinite; }
+  @keyframes duo-pg {
+    0%, 9.9%    { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    10%, 39.9%  { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+    40%, 59.9%  { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    60%, 100%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+  }
+  @keyframes duo-pg-dot {
+    0%, 9.9%    { background: var(--accent-fill); }
+    10%, 39.9%  { background: var(--ink-3); }
+    40%, 59.9%  { background: var(--accent-fill); }
+    60%, 100%   { background: var(--ink-3); }
+  }
+  @keyframes duo-py {
+    0%, 19.9%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+    20%, 29.9%  { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    30%, 100%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+  }
+  @keyframes duo-py-dot {
+    0%, 19.9%   { background: var(--ink-3); }
+    20%, 29.9%  { background: var(--accent-fill); }
+    30%, 100%   { background: var(--ink-3); }
+  }
+  @keyframes duo-pf {
+    0%, 10% { left: 0; opacity: 0; }
+    11.3%   { opacity: 1; }
+    18.7%   { opacity: 1; }
+    20%     { left: 100%; opacity: 0; }
+    100%    { left: 100%; opacity: 0; }
+  }
+  @keyframes duo-pb {
+    0%, 30% { left: 100%; opacity: 0; }
+    31.3%   { opacity: 1; }
+    38.7%   { opacity: 1; }
+    40%     { left: 0; opacity: 0; }
+    100%    { left: 0; opacity: 0; }
+  }
   .howarrow { display: flex; flex-direction: column; align-items: center; }
   .howarrow .lbl { font-size: 11px; color: var(--ink-2); margin-bottom: 6px; white-space: nowrap; }
   .track { position: relative; width: 100%; height: 2px; border-radius: 2px; }
@@ -519,9 +575,14 @@
     transform: translateY(-50%);
   }
   .track.fwd .head { right: -6px; border-left: 8px solid var(--accent-edge); }
-  .track.back .head { left: -6px; border-right: 8px solid var(--rule-hi); }
+  .track.back .head { left: -6px; border-right: 8px solid var(--accent-edge); }
   .bridge { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: 16px; }
   .bridge code { color: var(--accent-text); }
+  .ecofig { margin: 0; display: flex; justify-content: center; }
+  .ecofig img {
+    width: min(720px, 100%); height: auto;
+    border-radius: 12px; border: 1px solid var(--rule);
+  }
   @media (max-width: 900px) {
     .howrow.hub { grid-template-columns: 1fr; gap: 14px; }
     .howconn { flex-direction: row; justify-content: center; }
@@ -578,6 +639,8 @@
   .sess-name { font-weight: 560; }
   .sess-meta { font-size: var(--t-xs); color: var(--ink-3); }
   .st { width: 9px; height: 9px; border-radius: 50%; }
+  .sched { display: flex; }
+  .sched img { width: 100%; height: 100%; object-fit: contain; }
   .st.run { background: var(--accent-fill); border: 1px solid var(--accent-edge); }
   .st.sch { background: transparent; border: 1.5px dashed var(--ink-3); }
   .st.done { background: var(--ink-4); }
@@ -722,18 +785,33 @@
   }
 
 
-  /* ---------- apps carousel: one row, scroll-snap ---------- */
+  /* ---------- apps carousel: one row, auto-scrolling loop ---------- */
   .carousel {
     display: flex; gap: 14px;
     overflow-x: auto;
-    scroll-snap-type: x mandatory;
     padding-bottom: 14px;
-    scrollbar-width: thin;
+    scrollbar-width: none;
   }
+  .carousel::-webkit-scrollbar { display: none; }
   .carousel .tile {
     flex: 0 0 clamp(300px, 34vw, 430px);
-    scroll-snap-align: start;
   }
+  #apps .sec-head { position: relative; }
+  .car-nav {
+    position: absolute; right: 0; bottom: var(--s5);
+    display: flex; gap: 8px;
+  }
+  .car-btn {
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    background: var(--tile);
+    border: 1px solid var(--rule-hi);
+    color: var(--ink-2);
+    padding: 0; cursor: pointer;
+  }
+  .car-btn:hover { border-color: var(--accent-edge); color: var(--ink); }
+  .car-btn svg { width: 14px; height: 14px; }
+  @media (max-width: 700px) { .car-nav { display: none; } }
 
   /* ---------- footer ---------- */
   footer {
@@ -820,13 +898,24 @@
 <svg class="sr" aria-hidden="true"><defs>
   <g id="i-check"><path d="M4 10.5l4 4 8-9" fill="none" stroke="currentColor"
      stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g id="i-down"><path d="M10 3.4v8.2M6.6 8.6l3.4 3.4 3.4-3.4" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4.2 13.8v1.4a1.6 1.6 0 0 0 1.6 1.6h8.4a1.6 1.6 0 0 0 1.6-1.6v-1.4" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
   <g id="i-search"><circle cx="9.1" cy="9.1" r="5.2" fill="none" stroke="currentColor"
      stroke-width="1.6"/><path d="M12.9 12.9L16.1 16.1" fill="none" stroke="currentColor"
      stroke-width="1.6" stroke-linecap="round"/></g>
-  <g id="i-brain" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" transform="translate(10 10) scale(1.22) translate(-10 -10)">
-    <path d="M10 4.2c-.6-1-1.9-1.4-3-.9-1 .4-1.6 1.4-1.4 2.4-.9.4-1.5 1.3-1.4 2.3 0 .6.3 1.2.8 1.6-.4.5-.6 1.2-.4 1.9.2 1 1.1 1.7 2.1 1.7.1 0 .3 0 .4-.1.3.9 1.2 1.6 2.2 1.5.7 0 1.3-.4 1.7-.9"/>
-    <path d="M10 4.2c.6-1 1.9-1.4 3-.9 1 .4 1.6 1.4 1.4 2.4.9.4 1.5 1.3 1.4 2.3 0 .6-.3 1.2-.8 1.6.4.5.6 1.2.4 1.9-.2 1-1.1 1.7-2.1 1.7-.1 0-.3 0-.4-.1-.3.9-1.2 1.6-2.2 1.5-.7 0-1.3-.4-1.7-.9"/>
-    <path d="M10 4.2v10.4M7.6 8.2c.9.3 1.6 1 2.4 1M12.4 11c-.9-.3-1.6-1-2.4-1"/></g>
+  <!-- Brain mark: Lucide "brain" (ISC), rescaled from its 24 grid to ours. -->
+  <g id="i-brain" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" transform="translate(10 10) scale(0.84) translate(-12 -11.5)">
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
+    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/>
+    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>
+    <path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>
+    <path d="M19.938 10.5a4 4 0 0 1 .585.396"/>
+    <path d="M6 18a4 4 0 0 1-1.967-.516"/>
+    <path d="M19.967 17.484A4 4 0 0 1 18 18"/></g>
   <g id="i-chip"><rect x="6.2" y="6.2" width="7.6" height="7.6" rx="1.4" fill="none"
      stroke="currentColor" stroke-width="1.6"/>
      <rect x="8.9" y="8.9" width="2.2" height="2.2" fill="currentColor"/>
@@ -860,7 +949,7 @@
       Fused Render
     </a>
     <nav>
-      <a href="about.html">Why we built it</a>
+      <a rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
       <a class="navcta" href="#get">Get the app</a>
     </nav>
   </header>
@@ -878,7 +967,7 @@
       <li>
         <a class="pt" href="#apps">
           <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-build"/></svg>
-          <b>Build and share AI-powered apps.</b><span>Describe a tool, get it built, share it.</span>
+          <b>Build and share local AI-powered apps.</b><span>Describe a tool, get it built, share it.</span>
         </a>
       </li>
       <li>
@@ -946,62 +1035,10 @@
       machine&rsquo;s own APIs.</p>
     </div>
 
-    <div class="howflow">
-      <div class="howrow hub">
-        <div class="howstack">
-          <div class="howside py mini">
-            <h3><span class="dot" aria-hidden="true"></span>The Python</h3>
-            <div class="eg">pandas, DuckDB, your files &amp; APIs.</div>
-            <div class="loc mono">fused.runPython()</div>
-          </div>
-          <div class="howside nd mini">
-            <h3><span class="dot" aria-hidden="true"></span>Local AI models</h3>
-            <div class="eg">Text, images, speech &mdash; resident on your hardware.</div>
-            <div class="loc mono">fused.ai()</div>
-          </div>
-        </div>
-        <div class="howconn" aria-hidden="true">
-          <div class="howarrow">
-            <div class="lbl">&larr; your inputs</div>
-            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
-          </div>
-          <div class="howarrow">
-            <div class="lbl">the result &rarr;</div>
-            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
-          </div>
-        </div>
-        <div class="howside pg">
-          <h3><span class="dot" aria-hidden="true"></span>The page</h3>
-          <div class="what">What you see</div>
-          <div class="eg">Sliders, maps, charts &mdash; the interface.</div>
-          <div class="loc">runs in the browser</div>
-        </div>
-        <div class="howconn" aria-hidden="true">
-          <div class="howarrow">
-            <div class="lbl">your inputs &rarr;</div>
-            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
-          </div>
-          <div class="howarrow">
-            <div class="lbl">&larr; the result</div>
-            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
-          </div>
-        </div>
-        <div class="howstack">
-          <div class="howside nd mini">
-            <h3><span class="dot" aria-hidden="true"></span>Claude Code</h3>
-            <div class="eg">Builds tools, answers about files &mdash; your login, no key.</div>
-            <div class="loc mono">claude</div>
-          </div>
-          <div class="howside nd mini">
-            <h3><span class="dot" aria-hidden="true"></span>Native APIs</h3>
-            <div class="eg">Microphone, screen and camera capture.</div>
-            <div class="loc mono">fused.capture</div>
-          </div>
-        </div>
-      </div>
-      <div class="bridge">The page hands inputs across and gets JSON back &mdash; every arrow
-      lands on this machine.</div>
-    </div>
+    <figure class="ecofig">
+      <img src="assets/showcase/ecosystem.jpg" width="1344" height="768" loading="lazy" decoding="async"
+           alt="Fused Render at the center of a network, connected to Python, Claude, local AI models and macOS.">
+    </figure>
   </section>
 
   <section id="models">
@@ -1041,7 +1078,7 @@
     <div class="bento">
       <div class="tile w7 hoverable">
         <div class="sess" role="img"
-             aria-label="A list of Claude tasks: one running, one scheduled daily at 9am, one finished.">
+             aria-label="A list of Claude tasks: one running, two on a schedule, three finished.">
           <div class="sess-head">
             <span class="sess-title">Tasks</span>
             <span class="sess-new">&#43; New task</span>
@@ -1057,19 +1094,31 @@
             <span class="sess-meta mono">daily &middot; 9:00</span>
           </div>
           <div class="sess-row">
+            <span class="st sch" aria-hidden="true"></span>
+            <span class="sess-name">Back up the photo library</span>
+            <span class="sess-meta mono">Fri &middot; 17:00</span>
+          </div>
+          <div class="sess-row">
             <span class="st done" aria-hidden="true"></span>
             <span class="sess-name">Build a CSV cleaner</span>
+            <span class="sess-meta mono">done</span>
+          </div>
+          <div class="sess-row">
+            <span class="st done" aria-hidden="true"></span>
+            <span class="sess-name">Rename scanned receipts by date</span>
+            <span class="sess-meta mono">done</span>
+          </div>
+          <div class="sess-row">
+            <span class="st done" aria-hidden="true"></span>
+            <span class="sess-name">Chart last month&rsquo;s expenses</span>
             <span class="sess-meta mono">done</span>
           </div>
         </div>
       </div>
 
-      <div class="tile w5 hoverable">
-        <div class="pad">
-          <h3>Schedule a task.</h3>
-          <p>Write the prompt once. The app sends it to Claude on time, with your
-          files and skills in place.</p>
-        </div>
+      <div class="w5 sched">
+        <img src="assets/showcase/schedule.png" width="675" height="496" loading="lazy" decoding="async"
+             alt="A calendar with 9:00 highlighted and an alarm clock; an arrow hands the prompt to a Claude window that runs on time.">
       </div>
     </div>
   </section>
@@ -1129,6 +1178,14 @@
     <div class="sec-head rule-top">
       <h2>Use community apps, or build your own.</h2>
       <p class="deck">A chatbot answers questions. A tool does the work.</p>
+      <div class="car-nav">
+        <button class="car-btn car-prev" type="button" aria-label="Previous apps">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 2 4 8l6 6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <button class="car-btn car-next" type="button" aria-label="Next apps">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+      </div>
     </div>
 
     <div class="carousel">
@@ -1179,13 +1236,13 @@
     </div>
     <div class="oses">
       <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b>macOS</b><span>Apple silicon</span>
+        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
       </a>
       <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b>Windows</b><span>64-bit installer</span>
+        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
       </a>
       <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b>Linux</b><span>AppImage</span>
+        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
       </a>
     </div>
     <span class="version" id="version" hidden></span>
@@ -1313,7 +1370,7 @@
       </a>
       <nav>
         <a href="index.html">Download page</a>
-        <a href="about.html">Why we built it</a>
+        <a rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
         <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
         <a rel="noopener" href="https://www.fused.io">fused.io</a>
       </nav>
@@ -1384,6 +1441,50 @@
       b.classList.add("animate");
     });
   }
+
+  // Apps carousel: the card row is doubled so it can wrap seamlessly; every
+  // 2.5s it snaps one card forward, pausing on hover and for 6s after any
+  // user input. Arrows step the same way.
+  (function () {
+    var car = document.querySelector(".carousel");
+    if (!car || !car.children.length) return;
+    var count = car.children.length;
+    for (var i = 0; i < count; i++) {
+      var clone = car.children[i].cloneNode(true);
+      clone.setAttribute("aria-hidden", "true");
+      car.appendChild(clone);
+    }
+    function half() { return car.scrollWidth / 2; }
+    function cardStep() { return car.children[0].offsetWidth + 14; }
+    var mq = matchMedia("(prefers-reduced-motion: reduce)");
+    var hovered = false, holdUntil = 0;
+    car.addEventListener("pointerenter", function () { hovered = true; });
+    car.addEventListener("pointerleave", function () { hovered = false; });
+    ["pointerdown", "wheel", "touchstart"].forEach(function (ev) {
+      car.addEventListener(ev, function () { holdUntil = performance.now() + 6000; }, { passive: true });
+    });
+    function step(dir) {
+      var h = half(), s = cardStep();
+      var cur = car.scrollLeft;
+      // Normalize into the first copy before every step: the viewport shows
+      // identical content h pixels apart, so this jump is invisible and the
+      // smooth scroll that follows never runs into the real end of the row.
+      if (cur >= h) { cur -= h; car.scrollLeft = cur; }
+      else if (dir < 0 && cur < s) { cur += h; car.scrollLeft = cur; }
+      // Land exactly on a card boundary so every stop is a clean snap.
+      var target = (Math.round(cur / s) + dir) * s;
+      car.scrollTo({ left: target, behavior: mq.matches ? "auto" : "smooth" });
+    }
+    function nudge(dir) {
+      holdUntil = performance.now() + 6000;
+      step(dir);
+    }
+    document.querySelector(".car-prev").addEventListener("click", function () { nudge(-1); });
+    document.querySelector(".car-next").addEventListener("click", function () { nudge(1); });
+    setInterval(function () {
+      if (!hovered && !document.hidden && !mq.matches && performance.now() > holdUntil) step(1);
+    }, 2500);
+  })();
 
   // Troubleshooting master-detail: the app's error screens deep-link with
   // #troubleshooting-login/-notfound/-limit — honor the suffix and scroll.
