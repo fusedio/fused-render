@@ -89,10 +89,11 @@ def test_the_activity_phrase_never_carries_a_byte_pair():
     tuple's other two members onto the job row — so the row's own renderer
     (`jobAmount`) already draws the numbers whenever this phrase is shown. A
     phrase that ALSO spelled them out doubled them on one row, and the two
-    disagreed (`jobAmount` scales both sides by the larger value;
-    `_format_bytes` scales each side independently) — the same "one number
-    pair, two renderers" defect already fixed once for the Denoising
-    caption. The phrase may name a package and say how long, never how much.
+    disagreed (`jobAmount` scales both sides by the larger value; the old
+    phrase-formatting helper scaled each side independently) — the same
+    "one number pair, two renderers" defect already fixed once for the
+    Denoising caption. The phrase may name a package and say how long,
+    never how much.
     """
     tracker = worker._UvProgress()
     tracker.feed("Downloading torch (3400.0MiB)")
@@ -296,15 +297,6 @@ def test_an_unrecognised_line_does_not_raise_or_lose_state():
     assert total == pytest.approx(_mib(15.9), rel=1e-6)
 
 
-def test_format_bytes_reads_like_a_human_wrote_it():
-    """Binary steps (1024), decimal-looking labels — matching `formatSize` in
-    `frontend/src/platform/lib/format.ts` exactly, so this phrase and
-    `ModelProgress`'s own byte readout never disagree about the same number."""
-    assert worker._format_bytes(500) == "500 B"
-    assert worker._format_bytes(_mib(15.9)) == "15.9 MB"
-    assert worker._format_bytes(3.4 * 1024 ** 3) == "3.4 GB"
-
-
 # --- pty: in-flight bytes INSIDE one package, off a real terminal -----------
 #
 # uv only prints per-package in-flight bytes when it believes stdout is a
@@ -486,6 +478,43 @@ def test_pty_reader_lets_the_actual_resolver_diagnosis_through():
     ]
 
 
+def test_pty_reader_excludes_the_install_phase_bar_from_the_ring():
+    """Review issue #3: uv draws a DIFFERENT bar while linking wheels --
+    block glyphs and a `[n/m]` counter, no spinner, no byte-size row --
+    which none of the download-phase chrome signals recognised. Measured:
+    24 of 55 "genuine" ring lines in a real capture came from a link phase
+    that took 5ms; for the multi-GB torch case (a minutes-long link) that
+    is hundreds of near-duplicate frames pushing a real failure
+    (`Permission denied`, `No space left on device`) out of the ring.
+    """
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    lines = reader.feed_bytes(
+        "\x1b[2mInstalling wheels...\x1b[0m\r".encode("utf-8"))
+    assert lines == []
+    lines = reader.feed_bytes(
+        "░░░░░░░░░░░░░░░░░░░░ [7/30] markdown-it-py==4.2.0\r".encode("utf-8"))
+    assert lines == []
+    lines = reader.feed_bytes(
+        "████████████████████ [30/30] zarr==3.2.0\r".encode("utf-8"))
+    assert lines == []
+
+
+def test_a_real_failure_during_the_install_phase_still_reaches_the_ring():
+    """The other half of issue #3's fix, at the failure boundary: a genuine
+    diagnosis raised WHILE the install-phase bar is redrawing must still
+    reach the ring, unburied."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    reader.feed_bytes("\x1b[2mInstalling wheels...\x1b[0m\r".encode("utf-8"))
+    for i in range(1, 6):
+        reader.feed_bytes(
+            ("░" * i + "█" * (20 - i) + " [%d/30] pkg%d==1.0\r" % (i, i)).encode("utf-8"))
+    lines = reader.feed_bytes(
+        "  × Failed to install: Permission denied\r\n".encode("utf-8"))
+    assert lines == ["  × Failed to install: Permission denied"]
+
+
 def test_pty_reader_carry_is_bounded():
     """The live block can run for thousands of frames with no separator
     in between -- without a cap the carry would hold the whole download."""
@@ -494,6 +523,56 @@ def test_pty_reader_carry_is_bounded():
     noise = "x" * (worker._PTY_CARRY_MAX * 5)
     reader.feed_bytes(noise.encode("utf-8"))
     assert len(reader._carry) <= worker._PTY_CARRY_MAX
+
+
+def test_an_ansi_escape_split_across_two_reads_is_still_stripped():
+    """Review issue #2: a pty's kernel buffer is ~4KiB, so a read truncates
+    there whenever uv outruns the reader, and an ANSI escape sequence can
+    straddle that boundary. An earlier version decoded and stripped ANSI
+    PER READ, before rejoining with the carry -- so a torn escape's first
+    half was already-stripped-away-from text that no longer looked like an
+    escape, and its second half leaked through raw. Measured on a replayed
+    real failure capture: a `'\\x1b[1B'` fragment sitting between a
+    permanent line and uv's own diagnosis. Splitting on RAW BYTES first (a
+    CR/LF can never occur inside a CSI sequence) and decoding only once a
+    fragment is complete is what fixes it.
+    """
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    whole = b"\x1b[2Knumpy                ------ 8.00 MiB/15.94 MiB\r"
+    # Split exactly inside the escape sequence: "\x1b[2K" torn after "\x1b[".
+    split_at = whole.index(b"2K")
+    lines = reader.feed_bytes(whole[:split_at])
+    assert lines == []
+    lines = reader.feed_bytes(whole[split_at:])
+    assert not any("\x1b" in line for line in lines)
+    _, done, total = tracker.snapshot("1s")
+    assert done == pytest.approx(_mib(8), rel=1e-3)
+    assert total == pytest.approx(_mib(15.94), rel=1e-3)
+
+
+def test_a_multibyte_utf8_character_split_across_two_reads_decodes_cleanly():
+    """The other half of issue #2: a pty read can also truncate mid-way
+    through a multi-byte UTF-8 character (uv's spinner glyphs are 3 bytes
+    each). Decoding per read, before the halves are rejoined, cannot fix a
+    torn character either -- splitting on raw bytes first sidesteps this
+    the same way it sidesteps a torn escape (neither a CR nor an LF byte
+    value can occur inside a UTF-8 continuation byte).
+    """
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    spinner = "⠙".encode("utf-8")  # 3 bytes: \xe2\xa0\x99
+    assert len(spinner) == 3
+    whole = spinner + b" Resolving dependencies...\r"
+    lines = reader.feed_bytes(whole[:2])   # torn mid-character
+    assert lines == []
+    lines = reader.feed_bytes(whole[2:])
+    # The spinner line is chrome (a marker match) -- what matters here is
+    # that feeding it did not raise and did not corrupt the carry for
+    # whatever comes next.
+    assert lines == []
+    lines = reader.feed_bytes(b"Resolved 5 packages in 1ms\r\n")
+    assert lines == ["Resolved 5 packages in 1ms"]
 
 
 def test_a_row_with_no_separator_yet_reports_nothing_to_avoid_a_torn_number():
@@ -545,6 +624,178 @@ def test_a_name_that_vanishes_between_frames_is_confirmed_downloaded():
     _, done, total = tracker.snapshot("1s")
     # numpy counts as its full announced size now, not its last-seen 15.55.
     assert done == pytest.approx(_mib(15.94) + _mib(15.0), rel=1e-3)
+
+
+def test_a_name_that_vanishes_while_barely_downloaded_is_not_confirmed():
+    """Review issue #1 (HIGH): `pty.openpty()` sets no winsize, so uv falls
+    back to an 80x24 terminal and clamps its bar to ~23 rows while
+    downloading up to 50 wheels concurrently -- a package still downloading
+    simply scrolls out of the visible frame, and reading that vanish as
+    completion is wrong. `_run_uv_via_pty` now sets a tall winsize so this
+    should not happen in practice, but `feed_pty_frame` does not TRUST that:
+    a name vanishing while its last reading is far short of its own total
+    must be left alone -- neither confirmed nor discarded -- not credited
+    as done.
+    """
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    frame_1 = ("Preparing packages... (0/2) "
+              "networkx ------ 0 B/2.00 MiB "
+              "scipy ------ 10.00 MiB/33.68 MiB \r")
+    reader.feed_bytes(frame_1.encode("utf-8"))
+    # networkx scrolls out of view -- 50 OTHER packages started downloading
+    # and pushed it off the visible 23 rows -- while still at 0%.
+    frame_2 = "Preparing packages... (0/2) scipy ------ 15.00 MiB/33.68 MiB \r"
+    reader.feed_bytes(frame_2.encode("utf-8"))
+    assert "networkx" not in tracker._downloaded, (
+        "a displaced-not-finished package must not be credited as done"
+    )
+    assert tracker.phase != "preparing", (
+        "phase must not latch preparing while networkx's bytes are still outstanding"
+    )
+    # It reappears later with real progress -- that must still count.
+    frame_3 = "Preparing packages... (0/2) networkx ------ 1.20 MiB/2.00 MiB \r"
+    reader.feed_bytes(frame_3.encode("utf-8"))
+    _, done, total = tracker.snapshot("1s")
+    # networkx's fresh 1.20 MiB plus scipy's own last-known 15.00 MiB --
+    # scipy is not near its 33.68 MiB total either, so it is not confirmed.
+    assert done == pytest.approx(_mib(1.20) + _mib(15.00), rel=1e-3)
+
+
+# The three frames below are RAW BYTES sliced verbatim out of a real `uv
+# sync` capture (149 small-to-medium packages, deliberately run with NO
+# winsize set on the pty -- i.e. reproducing the exact pre-fix clamping
+# conditions -- so this fixture is not a paraphrase of the bug, it is the
+# bug, caught in the act). `networkx` is frame 25 of that capture (5
+# concurrent rows, at 0 B of its 1.97 MiB), frame 26 (23 rows, a burst of
+# 18 OTHER packages having started downloading pushed networkx off the
+# visible list entirely), and frame 61 (23 rows again, networkx back at
+# 318.38 KiB of 1.97 MiB -- genuine progress that happened while it was
+# off-screen). Real capture data, not represented as anything more or less
+# than one worktree's `uv sync` at one point in time.
+_REAL_DISPLACEMENT_FRAME_A = (
+    b'\x1b[2K\x1b[5A\x1b[37m\xe2\xa0\x99\x1b[0m \x1b[2mPreparing packages...\x1b[0m (0/153)  '
+    b'                                              \x1b[2mrich                \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/303.37 KiB      '
+    b'    \x1b[2mpydantic            \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/461.19 KiB          \x1b[2mmpmath              \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/523.63 KiB       '
+    b'   \x1b[2mpygments            \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/1.19 MiB            \x1b[2mnetworkx            \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/1.97 MiB          '
+    b'  \x1b[5A'
+)
+_REAL_DISPLACEMENT_FRAME_B = (
+    b'\x1b[2K\x1b[5A\x1b[37m\xe2\xa0\x99\x1b[0m \x1b[2mPreparing packages...\x1b[0m (0/153)  '
+    b'                                              \x1b[2mrich                \x1b[0m '
+    b'\x1b[32m-\x1b[30m\x1b[2m-----------------------------\x1b[0m\x1b[0m 14.77 KiB/303.37 KiB    '
+    b'    \x1b[2mwcwidth             \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/315.59 KiB          \x1b[2mtzdata              \x1b[0m '
+    b'\x1b[32m-\x1b[30m\x1b[2m-----------------------------\x1b[0m\x1b[0m 16.00 KiB/340.01 KiB    '
+    b'    \x1b[2mcontourpy           \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/354.10 KiB          \x1b[2mzarr                \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/355.16 KiB       '
+    b'   \x1b[2mrpds-py             \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/357.61 KiB          \x1b[2mprompt-toolkit      \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/383.09 KiB       '
+    b'   \x1b[2mmsgpack             \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/410.15 KiB          \x1b[2mnumexpr             \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/434.75 KiB       '
+    b'   \x1b[2mtornado             \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/440.14 KiB          \x1b[2mcelery              \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/440.66 KiB       '
+    b'   \x1b[2mnarwhals            \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m 14.77 KiB/456.42 KiB        \x1b[2mpydantic            \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m 14.76 KiB/461.19 KiB    '
+    b'    \x1b[2mpytz                \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/496.37 KiB          \x1b[2mmpmath              \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m 14.74 KiB/523.63 KiB    '
+    b'    \x1b[2mndindex             \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/534.06 KiB          \x1b[2mgreenlet            \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/606.87 KiB       '
+    b'   \x1b[2mpyyaml              \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/788.94 KiB          \x1b[2mdistributed         \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/985.00 KiB       '
+    b'   \x1b[2mpygments            \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m 14.76 KiB/1.19 MiB          \x1b[2mpynacl              \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/1.34 MiB         '
+    b'   \x1b[2mkiwisolver          \x1b[0m \x1b[32m\x1b[30m\x1b[2m------------------------------'
+    b'\x1b[0m\x1b[0m     0 B/1.41 MiB            \x1b[2mdask                \x1b[0m '
+    b'\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m     0 B/1.42 MiB          '
+    b'  \x1b[23A'
+)
+_REAL_DISPLACEMENT_FRAME_C = (
+    b'\x1b[2K\x1b[23A\x1b[37m\xe2\xa0\x8b\x1b[0m \x1b[2mPreparing packages...\x1b[0m (1/153)  '
+    b'                                              \x1b[2mtzdata              \x1b[0m '
+    b'\x1b[32m----------------------------\x1b[30m\x1b[2m--\x1b[0m\x1b[0m 319.98 KiB/340.01 KiB    '
+    b'   \x1b[2mcontourpy           \x1b[0m \x1b[32m-------------------------\x1b[30m\x1b[2m-----'
+    b'\x1b[0m\x1b[0m 301.01 KiB/354.10 KiB       \x1b[2mzarr                \x1b[0m '
+    b'\x1b[32m-------------------------\x1b[30m\x1b[2m-----\x1b[0m\x1b[0m 302.94 KiB/355.16 KiB    '
+    b'   \x1b[2mrpds-py             \x1b[0m \x1b[32m--------------------------\x1b[30m\x1b[2m----'
+    b'\x1b[0m\x1b[0m 313.82 KiB/357.61 KiB       \x1b[2mprompt-toolkit      \x1b[0m '
+    b'\x1b[32m------------------------\x1b[30m\x1b[2m------\x1b[0m\x1b[0m 318.13 KiB/383.09 KiB    '
+    b'   \x1b[2mmsgpack             \x1b[0m \x1b[32m-------------------------\x1b[30m\x1b[2m-----'
+    b'\x1b[0m\x1b[0m 350.07 KiB/410.15 KiB       \x1b[2mnumexpr             \x1b[0m '
+    b'\x1b[32m-----------------------\x1b[30m\x1b[2m-------\x1b[0m\x1b[0m 334.06 KiB/434.75 KiB    '
+    b'   \x1b[2mtornado             \x1b[0m \x1b[32m---------------------\x1b[30m\x1b[2m---------'
+    b'\x1b[0m\x1b[0m 318.04 KiB/440.14 KiB       \x1b[2mcelery              \x1b[0m '
+    b'\x1b[32m-------------------\x1b[30m\x1b[2m-----------\x1b[0m\x1b[0m 285.62 KiB/440.66 KiB    '
+    b'   \x1b[2mnarwhals            \x1b[0m \x1b[32m----------------------\x1b[30m\x1b[2m--------'
+    b'\x1b[0m\x1b[0m 334.77 KiB/456.42 KiB       \x1b[2mpydantic            \x1b[0m '
+    b'\x1b[32m---------------------\x1b[30m\x1b[2m---------\x1b[0m\x1b[0m 334.82 KiB/461.19 KiB    '
+    b'   \x1b[2mpytz                \x1b[0m \x1b[32m--------------------\x1b[30m\x1b[2m----------'
+    b'\x1b[0m\x1b[0m 334.67 KiB/496.37 KiB       \x1b[2mmpmath              \x1b[0m '
+    b'\x1b[32m-------------------\x1b[30m\x1b[2m-----------\x1b[0m\x1b[0m 334.88 KiB/523.63 KiB    '
+    b'   \x1b[2mndindex             \x1b[0m \x1b[32m------------------\x1b[30m\x1b[2m------------'
+    b'\x1b[0m\x1b[0m 333.85 KiB/534.06 KiB       \x1b[2mgreenlet            \x1b[0m '
+    b'\x1b[32m---------------\x1b[30m\x1b[2m---------------\x1b[0m\x1b[0m 318.04 KiB/606.87 KiB    '
+    b'   \x1b[2mpyyaml              \x1b[0m \x1b[32m-----------\x1b[30m\x1b[2m-------------------'
+    b'\x1b[0m\x1b[0m 304.00 KiB/788.94 KiB       \x1b[2mdistributed         \x1b[0m '
+    b'\x1b[32m----------\x1b[30m\x1b[2m--------------------\x1b[0m\x1b[0m 334.03 KiB/985.00 KiB    '
+    b'   \x1b[2mpygments            \x1b[0m \x1b[32m--------\x1b[30m\x1b[2m----------------------'
+    b'\x1b[0m\x1b[0m 337.12 KiB/1.19 MiB         \x1b[2mpynacl              \x1b[0m '
+    b'\x1b[32m------\x1b[30m\x1b[2m------------------------\x1b[0m\x1b[0m 318.22 KiB/1.34 MiB      '
+    b'   \x1b[2mkiwisolver          \x1b[0m \x1b[32m------\x1b[30m\x1b[2m------------------------'
+    b'\x1b[0m\x1b[0m 336.00 KiB/1.41 MiB         \x1b[2mdask                \x1b[0m '
+    b'\x1b[32m------\x1b[30m\x1b[2m------------------------\x1b[0m\x1b[0m 317.17 KiB/1.42 MiB      '
+    b'   \x1b[2maiohttp             \x1b[0m \x1b[32m-----\x1b[30m\x1b[2m-------------------------'
+    b'\x1b[0m\x1b[0m 304.00 KiB/1.71 MiB         \x1b[2mnetworkx            \x1b[0m '
+    b'\x1b[32m----\x1b[30m\x1b[2m--------------------------\x1b[0m\x1b[0m 318.38 KiB/1.97 MiB      '
+    b'   \x1b[23A'
+)
+
+
+def test_a_real_capture_shows_networkx_displaced_and_not_wrongly_confirmed():
+    """The exact bug, from a real `uv sync` with no winsize set (149
+    packages, deliberately reproducing the pre-fix clamping): `networkx`
+    is visible at 0 B of 1.97 MiB (frame A), then a burst of 18 OTHER
+    packages starting to download pushes it off the clamped ~23-row
+    display entirely (frame B has no mention of it at all), then it comes
+    back (frame C) having genuinely downloaded 318.38 KiB while off-screen.
+
+    Before the near-total-fraction fix, `networkx` vanishing between frame
+    A and frame B would have been read as FINISHED — it was at 0%. This
+    pins that it is not: `feed_pty_progress`'s early-return for an already-
+    `_downloaded` name means a wrong confirmation here would have been
+    PERMANENT, silently dropping the 318.38 KiB frame C actually reports.
+    """
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+
+    reader.feed_bytes(_REAL_DISPLACEMENT_FRAME_A + b"\r")
+    assert "networkx" not in tracker._downloaded
+
+    reader.feed_bytes(_REAL_DISPLACEMENT_FRAME_B + b"\r")
+    assert "networkx" not in tracker._downloaded, (
+        "networkx vanished at 0% -- displaced, not finished, and must not be confirmed"
+    )
+    assert tracker.phase != "preparing"
+
+    reader.feed_bytes(_REAL_DISPLACEMENT_FRAME_C + b"\r")
+    # Still not confirmed (only 318.38 KiB of 1.97 MiB -- genuinely not
+    # done), but its real progress is counted, not silently dropped.
+    assert "networkx" not in tracker._downloaded
+    assert tracker._inflight.get("networkx") == pytest.approx(318.38 * 1024, rel=1e-3)
 
 
 def test_the_final_clear_with_nothing_left_is_confirmed_by_the_Prepared_line():

@@ -77,15 +77,20 @@ import os
 import re
 import select
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
 
 try:
-    import pty  # POSIX only; Windows raises ImportError, handled below.
+    import fcntl  # POSIX only; Windows raises ImportError, handled below.
+    import pty
+    import termios
 except ImportError:  # pragma: no cover - exercised on Windows CI, not here
+    fcntl = None
     pty = None
+    termios = None
 
 # Stages and their percentages, kept in step with fused_render/envinstall.py's
 # STAGES/STAGE_PCT. Duplicated rather than imported because this file must stay
@@ -262,23 +267,6 @@ _INSTALLED_RE = re.compile(r"^Installed \d+ packages? ")
 _UNIT_BYTES = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 
 
-def _format_bytes(n):
-    """`1.2 GB` / `340 MB` — BINARY steps (1024), labelled with the decimal
-    names, matching `formatSize` in `frontend/src/platform/lib/format.ts`
-    exactly (that function also divides by 1024 while calling the units
-    "KB"/"MB"/"GB"). This phrase and `ModelProgress`'s own byte readout — which
-    calls that JS function on the very `bytes_done`/`bytes_total` this worker
-    writes — can appear side by side on one row, and two different numbers for
-    the same install would look like a bug even though both would be "correct"
-    under a different labelling convention. Deliberately NOT uv's own
-    Ki/Mi/GiB spelling, for the same reason: one vocabulary end to end."""
-    n = float(n)
-    for unit, div in (("GB", 1024.0 ** 3), ("MB", 1024.0 ** 2), ("KB", 1024.0)):
-        if n >= div:
-            return "%.1f %s" % (n / div, unit)
-    return "%d B" % int(n)
-
-
 class _UvProgress:
     """Tracks one `uv sync`'s stderr, line by line, into numbers a heartbeat
     tick can report without inventing anything uv did not say.
@@ -448,28 +436,61 @@ class _UvProgress:
         no separate confirmation under a tty the way a pipe's `Downloaded`
         line does (see `feed`'s docstring) — so a name that WAS in the
         previous frame and is gone from this one, while still short of its
-        own announced total, has finished by elimination. Confirmed against
-        a real, multi-package capture: names drop out of the display ONE AT
-        A TIME as each completes, not all together — except at the very
-        final clear, which drops everyone remaining at once with no marker
-        text of its own; `feed`'s `_PREPARED_RE` branch is the backstop for
-        exactly that gap.
+        own announced total, USUALLY has finished by elimination. Confirmed
+        against a real, multi-package capture: names drop out of the
+        display ONE AT A TIME as each completes, not all together — except
+        at the very final clear, which drops everyone remaining at once
+        with no marker text of its own; `feed`'s `_PREPARED_RE` branch is
+        the backstop for exactly that gap.
 
-        Without this, `_downloaded` gains almost no members under a pty at
-        all: `feed_pty_progress`'s OWN route to `_mark_downloaded_locked`
-        (a `done >= total` reading) fires on very little in practice,
-        because uv's LAST redraw of a row measures short of the total — a
-        real capture's numpy install: 15.55 of 15.94 MiB on its last
-        observed row. Before this method existed, `done` sat a few hundred
-        KB under `total` for as long as `downloading` lasted, and
-        `preparing` was never reached through this route at all.
+        **"Usually", not "always" — a vanished name can also mean DISPLACED,
+        not finished.** `pty.openpty()` sets no winsize, so uv falls back to
+        an 80x24 terminal and renders at most ~23 rows while downloading up
+        to 50 wheels concurrently; a package still downloading simply
+        scrolls out of the visible frame, and reading that as completion is
+        indistinguishable from a real completion at THIS layer alone.
+        Measured on a real 149-package capture: 44 names vanished from a
+        frame while their last reading was under 90% of their own announced
+        total (several at 0 B), and 4 of those reappeared in a LATER frame
+        still downloading — 153.2 MB was credited as transferred that had
+        not been, and the run reported 147.3 of 152.5 MB nowhere near done.
+        `_run_uv_via_pty` now sets a tall winsize specifically so this
+        should not happen in practice (uv never has a reason to clamp), but
+        this method does not TRUST that — it is the second, independent
+        layer: a vanished name is confirmed only when its last known
+        in-flight reading was at or near its own total already
+        (`_PTY_NEAR_TOTAL_FRACTION`). One that vanished well short of it is
+        left exactly as it was — neither confirmed nor discarded, so its
+        last-known bytes keep counting toward `done` (honest, if slightly
+        stale) until it either reappears with fresh progress or the
+        `Prepared` backstop confirms it. The damage of confirming wrongly
+        would otherwise be PERMANENT: `feed_pty_progress` early-returns for
+        any name already in `_downloaded`, so a displaced package's real
+        bytes could never be counted again, and `_mark_downloaded_locked`
+        would latch `phase = "preparing"` with `done == total` while
+        gigabytes were still arriving — precisely the "stuck at 100%" lie
+        this whole feature exists to remove, reached by a different route.
+
+        Without this method at all, `_downloaded` gains almost no members
+        under a pty: `feed_pty_progress`'s OWN route to
+        `_mark_downloaded_locked` (a `done >= total` reading) fires on very
+        little in practice, because uv's LAST redraw of a row measures short
+        of the total even for a genuinely finished one — a real capture's
+        numpy install: 15.55 of 15.94 MiB on its last observed row.
         """
         with self._lock:
             frame = frozenset(names_in_frame)
             if self._last_pty_frame_names is not None:
-                finished = self._last_pty_frame_names - frame - self._downloaded
-                for name in finished:
-                    self._mark_downloaded_locked(name)
+                vanished = self._last_pty_frame_names - frame - self._downloaded
+                for name in vanished:
+                    total = self._sizes.get(name, 0.0)
+                    last_seen = self._inflight.get(name, 0.0)
+                    if total > 0 and last_seen >= total * _PTY_NEAR_TOTAL_FRACTION:
+                        self._mark_downloaded_locked(name)
+                    # else: DISPLACED, not finished (see the docstring) — its
+                    # `_inflight` reading is left exactly as it was, so
+                    # `snapshot` keeps counting it honestly without lying
+                    # that it landed.
             self._last_pty_frame_names = frame
 
     def feed_pty_progress(self, name, done_bytes, total_bytes):
@@ -543,10 +564,11 @@ class _UvProgress:
         SECOND pair right next to the row's own `0.25 / 5.76 GB` — the same
         "one number pair, two renderers, one row" defect already fixed once
         for the Denoising caption (`torch_image.py`) — and the two did not
-        even agree: `jobAmount` scales both sides by the larger value,
-        `_format_bytes` scales each side independently, so one instant
-        produced two different-looking numbers for a user not even trying
-        to compare them.
+        even agree: `jobAmount` scales both sides by the larger value, while
+        the phrase's own formatting scaled each side independently (the
+        helper that did that, `_format_bytes`, was removed with this fix —
+        its only caller), so one instant produced two different-looking
+        numbers for a user not even trying to compare them.
         """
         with self._lock:
             phase = self.phase
@@ -669,14 +691,16 @@ class _PtyUnavailable(Exception):
 #: this is scoped to what was actually seen, not to "ANSI in general".
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
-#: uv's own frame/line separator, once ANSI is stripped: a bare carriage
-#: return between live redraws, CR-then-LF before a permanent one (see the
-#: module comment above). Splitting on the CHARACTER CLASS, not on the two
-#: bytes as one token, because consecutive redraws are CR-only with no LF
-#: at all — treating CRLF as one inseparable unit would still glue every
-#: redraw frame onto the permanent line that finally follows it, which is
-#: the exact bug this replaced.
-_PTY_LINE_SPLIT_RE = re.compile("[\r\n]")
+#: uv's own frame/line separator, RAW BYTES, before any decoding: a bare
+#: carriage return between live redraws, CR-then-LF before a permanent one
+#: (see the module comment above `_PtyUnavailable`). Splitting BYTES, not
+#: decoded text — see `_PtyProgressReader.feed_bytes` for why decoding has
+#: to happen AFTER this split, not before it. Splitting on the CHARACTER
+#: CLASS, not on the two bytes as one token, because consecutive redraws
+#: are CR-only with no LF at all — treating CRLF as one inseparable unit
+#: would still glue every redraw frame onto the permanent line that finally
+#: follows it, which is the exact bug this replaced.
+_PTY_LINE_SPLIT_RE = re.compile(rb"[\r\n]")
 
 #: One package's live progress row, after `_ANSI_RE` has stripped the escapes
 #: around it: `<name>` padded with spaces, a dash-filled bar of variable
@@ -692,72 +716,133 @@ _PTY_PROGRESS_RE = re.compile(
 
 #: Text markers of a live-redraw fragment that carries no per-package row of
 #: its own (yet) — the "Preparing packages... (n/m)" header before any row
-#: has appeared, and the "Resolving dependencies..." spinner that precedes
-#: it. Both observed, verbatim, in real captures. A fragment matching either
-#: of these — OR `_PTY_PROGRESS_RE`, OR `_PTY_SPINNER_RE` below — is chrome:
-#: kept OUT of the ring `_build` raises on failure with (SPEC PY-18), because
-#: it is not uv's diagnosis, it is the redraw ahead of it. A REAL capture of
-#: a resolver failure measured a 1,303-character spinner/redraw prefix ahead
-#: of the actual "No solution found" text — exactly what this exists to
-#: strip before that text ever reaches a `RuntimeError`.
-_PTY_CHROME_MARKERS = ("Preparing packages...", "Resolving dependencies...")
+#: has appeared, the "Resolving dependencies..." spinner that precedes it,
+#: and "Installing wheels..." — the header of the DIFFERENT bar uv draws
+#: while linking (see `_PTY_INSTALL_ROW_RE` below for its per-package row).
+#: A fragment matching any of these — OR `_PTY_PROGRESS_RE`, OR
+#: `_PTY_SPINNER_RE`, OR `_PTY_INSTALL_ROW_RE` — is chrome: kept OUT of the
+#: ring `_build` raises on failure with (SPEC PY-18), because it is not uv's
+#: diagnosis, it is the redraw ahead of it. A REAL capture of a resolver
+#: failure measured a 1,303-character spinner/redraw prefix ahead of the
+#: actual "No solution found" text — exactly what this exists to strip
+#: before that text ever reaches a `RuntimeError`.
+_PTY_CHROME_MARKERS = ("Preparing packages...", "Resolving dependencies...",
+                       "Installing wheels...")
 
 #: A live-redraw fragment starts with one of uv's spinner glyphs (the
 #: Braille Patterns Unicode block) in every capture taken so far — the
 #: resolving spinner, the per-package "name==version" resolver status, and
-#: the download bar all begin this way, while every PERMANENT line
+#: the DOWNLOAD bar all begin this way, while every PERMANENT line
 #: (`Resolved`/`Prepared`/`Installed`, uv's own error text) does not. Used
-#: as a THIRD, independent chrome signal alongside the two above — belt and
+#: as an independent chrome signal alongside the others — belt and
 #: suspenders, because a locale or terminal this was not captured against
 #: could plausibly pick a different (ASCII) spinner character set, and a
 #: false NEGATIVE here (a chrome fragment let through to the ring) is only
 #: noise, while a false POSITIVE (real diagnosis text mistaken for chrome)
 #: is silent data loss — so nothing is excluded from the ring on this
-#: signal alone unless the other two also miss it, biasing toward keeping
+#: signal alone unless the others also miss it, biasing toward keeping
 #: unrecognised text rather than discarding it.
 _PTY_SPINNER_RE = re.compile("^[⠀-⣿]")
 
-#: Bound on the text kept between reads while looking for a split point.
-#: Now that a split point is a CR OR an LF (see `_PTY_LINE_SPLIT_RE`), the
-#: carry is ordinarily short — just the still-arriving tail of the CURRENT
-#: frame — but the cap stays as a defensive bound against a pathological
-#: stretch of output with no separator at all for an extended run. Only the
-#: tail matters if it is ever hit: a value already extracted is in the
-#: tracker via its max()-based aggregation (`_UvProgress.feed_pty_progress`),
-#: and a row cut off at the cut point reappears whole on the very next
-#: frame, milliseconds later.
+#: The INSTALL-phase bar's per-package row — a different shape than the
+#: download bar entirely, block glyphs and a `[n/m]` counter rather than a
+#: spinner and a byte-size row: `'░░░░░░░░░░░░░░░░░░░░ [7/30]
+#: markdown-it-py==4.2.0'`, observed verbatim in a real capture. Missed by
+#: every OTHER chrome signal (`_PTY_PROGRESS_RE` needs a byte-size row that
+#: this shape does not have; it has no spinner glyph; "Installing wheels..."
+#: is its header, not its per-row text) — measured letting 24 of 55 "genuine"
+#: ring lines through from a link phase that took 5ms, which for the
+#: multi-GB torch case (a minutes-long link, hundreds of these rows, against
+#: `_STDERR_RING_LINES` = 400) is exactly the flooding the classifier exists
+#: to prevent, on the failures a real Permission/disk-space error would
+#: raise from that phase.
+_PTY_INSTALL_ROW_RE = re.compile(r"^[░█\s]*\[\d+/\d+\]")
+
+#: Bound on the RAW BYTES kept between reads while looking for a split
+#: point. Now that a split point is a CR OR an LF (see
+#: `_PTY_LINE_SPLIT_RE`), the carry is ordinarily short — just the
+#: still-arriving tail of the CURRENT frame — but the cap stays as a
+#: defensive bound against a pathological stretch of output with no
+#: separator at all for an extended run. Only the tail matters if it is
+#: ever hit: a value already extracted is in the tracker via its
+#: max()-based aggregation (`_UvProgress.feed_pty_progress`), and a row cut
+#: off at the cut point reappears whole on the very next frame,
+#: milliseconds later. Never actually reached against a real capture (the
+#: largest single frame measured was 1,920 characters, uv's own 80x24
+#: fallback-terminal-size ceiling before `_run_uv_via_pty` started setting
+#: a real winsize).
 _PTY_CARRY_MAX = 8192
+
+#: How close to its own announced total a package's LAST-SEEN in-flight
+#: reading has to be before a name vanishing from the live display is
+#: trusted as "finished" (`_UvProgress.feed_pty_frame`). Exists because a
+#: displaced-not-finished row looks IDENTICAL to a finished one from here —
+#: both simply stop appearing — and `_run_uv_via_pty` now sets a tall
+#: winsize specifically so uv never has to clamp the bar and displace a row
+#: (see that function), but this is the second layer that still catches a
+#: displacement if that assumption ever breaks (a future uv raising its
+#: concurrency past what the winsize covers, a platform that ignores
+#: `TIOCSWINSZ`). Measured on a real 149-package capture: every GENUINELY
+#: finished row's last reading was at least this close to its total; the 44
+#: WRONGLY-vanished ones (some clamped out at 0 B) were all under 90%.
+_PTY_NEAR_TOTAL_FRACTION = 0.90
 
 
 class _PtyProgressReader:
-    """Feeds one `_UvProgress` from a pty's raw output: ANSI-stripped, split
-    on a CR OR an LF into uv's own frames/lines (see the module comment for
-    why the CR matters), each one scanned for `_PTY_PROGRESS_RE`'s in-flight
-    byte rows and handed to the ORIGINAL line-based parser (`feed`).
+    """Feeds one `_UvProgress` from a pty's raw output: split on a CR OR an
+    LF into uv's own frames/lines (see the module comment for why the CR
+    matters), THEN decoded and ANSI-stripped, each one scanned for
+    `_PTY_PROGRESS_RE`'s in-flight byte rows and handed to the ORIGINAL
+    line-based parser (`feed`).
+
+    **The split happens on RAW BYTES, before decoding or ANSI-stripping —
+    not the other way around.** An earlier version decoded and stripped
+    PER READ, then joined the result with the text carry: `text =
+    _ANSI_RE.sub("", raw.decode(...)); buf = self._carry + text`. Both a
+    UTF-8 multi-byte character and an ANSI escape sequence can straddle a
+    `read()` boundary — a pty's kernel buffer is only ~4KiB, so a read
+    truncates there whenever uv outruns the reader — and decoding/stripping
+    before the halves are ever rejoined leaves the torn piece unfixable: a
+    replayed real failure capture at 4KiB reads left 11 bare ESC bytes
+    sitting in decoded text that `_ANSI_RE` could no longer recognise as an
+    escape (its other half was in the PREVIOUS read, already stripped), and
+    one of those leaked straight into the ring as `'\\x1b[1B'` between a
+    permanent line and uv's own diagnosis. Splitting on the raw bytes first
+    is safe because neither a CR nor an LF byte value can occur INSIDE a
+    valid ANSI CSI sequence or a UTF-8 continuation byte (both are
+    restricted byte ranges that exclude 0x0D/0x0A) — so accumulating raw
+    bytes until a real separator appears, and decoding only once a
+    complete, separator-delimited fragment exists, cannot tear either one.
 
     Only GENUINE, permanent lines are returned for the caller's ring buffer
-    (SPEC PY-18's verbatim-error contract) — a live-redraw fragment (a bar
-    frame, the resolving spinner) is chrome, identified inline below, and
-    must never reach it: a bounded ring flooded with near-duplicate redraws
-    is how a real resolver failure's own diagnosis gets pushed out by
+    (SPEC PY-18's verbatim-error contract) — a live-redraw fragment (a
+    download-bar frame, an install-bar frame, either spinner) is chrome,
+    identified inline below, and must never reach it: a bounded ring
+    flooded with near-duplicate redraws is how a real resolver failure's
+    own diagnosis gets pushed out by
     `_STDERR_RING_LINES`, or arrives mid-way through a single multi-KB
-    "line" that is mostly bar frames — both measured against a real capture
+    "line" that is mostly bar frames — both measured against real captures
     before this fix.
     """
 
     def __init__(self, tracker):
         self._tracker = tracker
-        self._carry = ""
+        self._carry = b""
 
     def feed_bytes(self, raw):
         """One read()'s worth of raw pty bytes. Returns the complete,
         GENUINE (non-chrome) lines found, for the caller to append to its
         ring."""
-        text = _ANSI_RE.sub("", raw.decode("utf-8", errors="replace"))
-        buf = self._carry + text
+        buf = self._carry + raw
         *complete, self._carry = _PTY_LINE_SPLIT_RE.split(buf)
         lines = []
-        for frag in complete:
+        for frag_bytes in complete:
+            if not frag_bytes:
+                continue
+            # Decoded and ANSI-stripped ONLY now that `frag_bytes` is known
+            # complete (bounded by two real separators) — see the class
+            # docstring for why this order is the fix.
+            frag = _ANSI_RE.sub("", frag_bytes.decode("utf-8", errors="replace"))
             if not frag:
                 continue
             matches = list(_PTY_PROGRESS_RE.finditer(frag))
@@ -771,6 +856,7 @@ class _PtyProgressReader:
                     float(total_v) * _UNIT_BYTES[total_u],
                 )
             is_chrome = bool(matches) or bool(_PTY_SPINNER_RE.match(frag)) or \
+                bool(_PTY_INSTALL_ROW_RE.match(frag)) or \
                 any(marker in frag for marker in _PTY_CHROME_MARKERS)
             if is_chrome:
                 # Part of the live "Preparing packages..." block — tell the
@@ -786,7 +872,9 @@ class _PtyProgressReader:
         if len(self._carry) > _PTY_CARRY_MAX:
             # See the constant's own comment: only the tail can still become
             # a real line, and a stale prefix has already been mined for
-            # whatever progress rows it held.
+            # whatever progress rows it held. Truncating raw bytes can cut a
+            # multi-byte UTF-8 character at the boundary; `errors="replace"`
+            # above turns that into one U+FFFD, not a crash.
             self._carry = self._carry[-_PTY_CARRY_MAX:]
         return lines
 
@@ -827,6 +915,40 @@ def _run_uv_piped(cmd, cwd, env, tracker):
             proc.kill()
             raise
     return proc.returncode, ring
+
+
+#: Rows/columns set on the pty before uv is spawned — tall enough that uv
+#: never has to clamp its live bar and displace a row out of view. See
+#: `_UvProgress.feed_pty_frame`'s docstring for what happens when it does:
+#: a real 149-package capture measured 44 names wrongly confirmed
+#: "downloaded" because they had simply scrolled off screen while still
+#: transferring. `pty.openpty()` sets NO winsize at all, which is why uv
+#: fell back to its own 80x24 default in every capture taken before this
+#: fix — every single frame measured exactly 1920 = 24*80 characters — while
+#: downloading up to 50 wheels concurrently. 200 rows is comfortably above
+#: that concurrency ceiling, with margin for a future uv raising it further;
+#: the width matters less (a name plus its byte row fits well inside 80
+#: columns) but costs nothing to widen too, since a virtual terminal size
+#: is two integers, not a real allocation.
+_PTY_WINSIZE_ROWS = 200
+_PTY_WINSIZE_COLS = 200
+
+
+def _set_pty_winsize(fd):
+    """Best-effort: tell the pty at *fd* it is `_PTY_WINSIZE_ROWS` x
+    `_PTY_WINSIZE_COLS` — see those constants for why. Never raises: a
+    `TIOCSWINSZ` failure (an exotic platform, a non-tty fd) is not worth
+    failing an install over. This is the FIRST layer against uv clamping
+    its bar; `_UvProgress.feed_pty_frame`'s near-total-fraction check is
+    the second, and stays in place regardless of whether this one works —
+    belt and suspenders, the same discipline `_PTY_SPINNER_RE`'s own
+    comment argues for.
+    """
+    try:
+        winsize = struct.pack("HHHH", _PTY_WINSIZE_ROWS, _PTY_WINSIZE_COLS, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
 
 
 def _run_uv_via_pty(cmd, cwd, env, tracker):
@@ -879,6 +1001,9 @@ def _run_uv_via_pty(cmd, cwd, env, tracker):
         master_fd, slave_fd = pty.openpty()
     except OSError as e:
         raise _PtyUnavailable(str(e)) from e
+    # BEFORE the spawn, so uv's own startup terminal-size query already
+    # sees it — see `_set_pty_winsize`/`_PTY_WINSIZE_ROWS`.
+    _set_pty_winsize(slave_fd)
     try:
         proc = subprocess.Popen(cmd, cwd=cwd, env=env,
                                 stdin=subprocess.DEVNULL,
