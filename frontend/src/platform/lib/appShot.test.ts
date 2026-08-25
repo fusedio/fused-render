@@ -19,6 +19,10 @@ const SHOT = read("appShot.ts");
 // drawing it (#765) and this path did not move with it, so the read threw
 // ENOENT and took the whole file down with it before a single test ran.
 const CARD = read("..", "ui", "AppPreviewCard.tsx");
+// The thumb mechanics (paintedness, the body iframe) live in AppThumb; the
+// cards around it only receive the painted element.
+const THUMB = read("..", "ui", "AppThumb.tsx");
+const HUB_CARD = read("..", "..", "apps", "builder", "AppsCard.tsx");
 const APPS = read("..", "..", "apps", "builder", "Apps.tsx");
 const PREVIEW = read("..", "..", "apps", "explorer", "Preview.tsx");
 
@@ -82,19 +86,25 @@ test("the card offers its thumb only once the body iframe has loaded", () => {
   // `bodyLive`, not `liveReady`: liveReady is the hover crossfade's flag and is
   // reset on every mouseenter, and the export chip is only reachable while
   // hovering — gating on it would gate on a flag the hover just cleared.
-  expect(CARD).toContain("exportAppFile(app, bodyLive ? thumbRef.current : null)");
-  expect(CARD).toContain("setBodyLive(true)");
+  // The thumb hands its element out exactly once, when the body iframe has
+  // loaded; both cards pass whatever they were handed (null until then).
+  expect(THUMB).toContain("onBodyLive?.(thumbRef.current)");
+  expect(THUMB).toContain("setBodyLive(true)");
+  expect(CARD).toContain("exportAppFile(app, liveThumb)");
+  expect(HUB_CARD).toContain("exportAppFile(app, liveThumb)");
   // Set on the BODY branch's load (the branch that renders when there is no
   // still), which is the only frame the capture ever crops.
-  const bodyBranch = CARD.slice(CARD.indexOf(") : liveSrc && nearViewport && liveStarted ? ("));
-  expect(bodyBranch).toContain("setBodyLive(true)");
+  const bodyBranch = THUMB.slice(THUMB.indexOf(") : liveSrc && nearViewport && liveStarted ? ("));
+  expect(bodyBranch).toContain("onLoad={bodyLoaded}");
+  const hoverBranch = THUMB.slice(THUMB.indexOf("{hovered && liveSrc && nearViewport && liveStarted && ("), THUMB.indexOf(") : liveSrc && nearViewport && liveStarted ? ("));
+  expect(hoverBranch).not.toContain("bodyLoaded");
 });
 
 test("the context menu finds the thumb by the card's paintedness attribute", () => {
   // Apps.tsx opens the menu and has no access to the card's state, so the
   // promise crosses as one attribute — same posture as the preview pane's
   // data-fused-annotate-target.
-  expect(CARD).toContain('data-capture-ready={bodyLive ? "" : undefined}');
+  expect(THUMB).toContain('data-capture-ready={bodyLive ? "" : undefined}');
   expect(APPS).toContain('".app-pcard-thumb[data-capture-ready]"');
   // Never the bare selector: that is the version that crops empty boxes.
   expect(APPS).not.toContain('querySelector(".app-pcard-thumb")');

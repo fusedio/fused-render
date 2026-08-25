@@ -145,7 +145,7 @@ test("an errored preview iframe reveals its frame instead of shimmering forever"
     join(import.meta.dir, "../apps/explorer/BookmarkCards.tsx"),
     "utf8",
   );
-  const appCard = readFileSync(join(import.meta.dir, "../platform/ui/AppPreviewCard.tsx"), "utf8");
+  const appCard = readFileSync(join(import.meta.dir, "../platform/ui/AppThumb.tsx"), "utf8");
   // Anchored to a whole line (a live JSX attribute sits alone on its own
   // line before the tag closes) rather than a bare substring match, since the
   // fix's own explanatory comments quote the buggy pattern in prose.
@@ -166,9 +166,9 @@ test("preview iframes are never marked loading=lazy", () => {
     join(import.meta.dir, "../apps/explorer/BookmarkCards.tsx"),
     "utf8",
   );
-  const appCard = readFileSync(join(import.meta.dir, "../platform/ui/AppPreviewCard.tsx"), "utf8");
+  const appCard = readFileSync(join(import.meta.dir, "../platform/ui/AppThumb.tsx"), "utf8");
   // Both files legitimately keep `loading="lazy"` on a still <img>
-  // (BookmarkCards' `ImagePreview`, AppPreviewCard's authored-still `<img>`)
+  // (BookmarkCards' `ImagePreview`, AppThumb's authored-still `<img>`)
   // — assert against the <iframe> tags specifically, not the file as a whole.
   for (const src of [cards, appCard]) {
     const iframeTags = src.match(/<iframe\b[\s\S]*?\/?>/g) ?? [];
