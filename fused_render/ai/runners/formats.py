@@ -446,11 +446,20 @@ TEXT_EMBED_SCHEMES = {
     # entry to `"none"` — which would embed every query with no prefix at all,
     # the exact silent recall loss this whole table exists to prevent.
     #
-    # Left as a curated entry rather than fixed by widening the hint to
-    # `"nomic"`: two letters shorter and it starts matching every unrelated repo
-    # with "nomic" in the name, which is the trap the e5 hints are spelled with
-    # their size suffix to avoid. The explicit row is also what the curation rule
-    # already demands of it.
+    # **The hint that fixes this is `("modernbert-embed", "nomic")`, and it is
+    # now in the table below** — but this row stays, because the curation rule is
+    # that every curated id appears here EXPLICITLY, and a hint that happens to
+    # match it does not discharge that.
+    #
+    # The reasoning this comment used to give was against widening the hint to
+    # `"nomic"`, which would start matching every unrelated repo with "nomic" in
+    # the name — the trap the e5 hints are spelled with their size suffix to
+    # avoid. That argument was right and it does not apply to
+    # `modernbert-embed`, which is nomic's embed line and nobody else's. Said
+    # plainly here because the old wording read as "do not widen the hint at
+    # all", and it cost the UPSTREAM repo its prefixes: `nomic-ai/
+    # modernbert-embed-base` matched neither this table nor any hint, so every
+    # query embedded unprefixed — the same silent recall loss, one repo over.
     "mlx-community/nomicai-modernbert-embed-base-bf16": "nomic",
     "intfloat/multilingual-e5-small": "e5",
     # Not curated in `catalog.py` — see the ONNX block's comment on why its
@@ -482,6 +491,16 @@ TEXT_EMBED_SCHEME_HINTS = (
     ("embeddinggemma", "gemma-embedding"),
     ("gemma-embedding", "gemma-embedding"),
     ("nomic-embed", "nomic"),
+    # nomic's ModernBERT embed line, which `nomic-embed` above does NOT catch:
+    # neither `nomic-ai/modernbert-embed-base` nor
+    # `mlx-community/nomicai-modernbert-embed-base-bf16` contains that substring.
+    # One hint covers both, and every future `-4bit`/`-8bit` conversion of them,
+    # which is why this is a hint rather than a pair of curated rows.
+    #
+    # Specific enough to be safe: `modernbert-embed` is nomic's embed line and
+    # nobody else's. A bare `modernbert` would NOT be — that is the base
+    # architecture, and plenty of repos wear it without nomic's prefixes.
+    ("modernbert-embed", "nomic"),
     ("multilingual-e5", "e5"),
     ("e5-small", "e5"),
     ("e5-base", "e5"),

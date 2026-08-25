@@ -1195,3 +1195,43 @@ def test_the_reranker_reaches_no_embedding_runner_through_loaders():
                 "architectures": ["BertForTokenClassification"]},
         torch_weights=True)
     assert "mlx-embed" not in ner
+
+
+# -- nomic's ModernBERT embed line, both spellings ----------------------------
+
+
+def test_the_UPSTREAM_modernbert_embed_repo_gets_nomics_prefixes():
+    """`nomic-ai/modernbert-embed-base` matched NEITHER the curated table nor any
+    hint: `modernbert-embed-base` contains no `nomic-embed` substring, so the
+    scheme resolved to `"none"` and every query embedded unprefixed — unit-length
+    vectors, no error, silently worse recall. The same silent loss the curated
+    `mlx-community` row exists to prevent, one repo over."""
+    assert formats.text_embed_scheme("nomic-ai/modernbert-embed-base") == "nomic"
+
+
+def test_one_hint_covers_every_spelling_of_that_line():
+    """Why a hint rather than a second curated row: the account is spelled
+    `nomic-ai` upstream and `nomicai-` in the conversion, and quantized builds
+    keep arriving. Enumerating them is a list to fall behind."""
+    for repo_id in ("nomic-ai/modernbert-embed-base",
+                    "mlx-community/nomicai-modernbert-embed-base-bf16",
+                    "mlx-community/nomicai-modernbert-embed-base-4bit",
+                    "someone/modernbert-embed-base-onnx"):
+        assert formats.text_embed_scheme(repo_id) == "nomic", repo_id
+
+
+def test_the_hint_does_not_swallow_plain_modernbert():
+    """**The reason it is `modernbert-embed` and not `modernbert`.** The bare
+    architecture is worn by plenty of repos that do not take nomic's prefixes,
+    and prefixing those would be the same class of error in the other
+    direction."""
+    assert formats.text_embed_scheme("answerdotai/ModernBERT-base") == "none"
+    assert formats.text_embed_scheme("answerdotai/ModernBERT-large") == "none"
+
+
+def test_the_curated_row_survives_the_hint():
+    """The curation rule is that every curated id appears in
+    `TEXT_EMBED_SCHEMES` EXPLICITLY — a hint that happens to match it does not
+    discharge that, so the row must still be there."""
+    assert ("mlx-community/nomicai-modernbert-embed-base-bf16"
+            in formats.TEXT_EMBED_SCHEMES)
