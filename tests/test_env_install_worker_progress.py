@@ -83,6 +83,24 @@ def test_a_downloading_line_is_parsed_into_announced_bytes():
     assert "3s" in activity
 
 
+def test_the_activity_phrase_never_carries_a_byte_pair():
+    """`activity` has exactly one consumer (`supervisor._ensure_venv`), and
+    that call site ALSO sets `done`/`total`/`unit="bytes"` from this same
+    tuple's other two members onto the job row — so the row's own renderer
+    (`jobAmount`) already draws the numbers whenever this phrase is shown. A
+    phrase that ALSO spelled them out doubled them on one row, and the two
+    disagreed (`jobAmount` scales both sides by the larger value;
+    `_format_bytes` scales each side independently) — the same "one number
+    pair, two renderers" defect already fixed once for the Denoising
+    caption. The phrase may name a package and say how long, never how much.
+    """
+    tracker = worker._UvProgress()
+    tracker.feed("Downloading torch (3400.0MiB)")
+    activity, _, _ = tracker.snapshot("34s")
+    assert activity == "downloading torch (34s)"
+    assert "MB" not in activity and "GB" not in activity and "/" not in activity
+
+
 def test_downloaded_moves_bytes_from_announced_to_done():
     tracker = worker._UvProgress()
     tracker.feed("Downloading numpy (15.9MiB)")
@@ -102,7 +120,7 @@ def test_the_biggest_still_pending_package_is_named():
     tracker.feed(" Downloaded numpy")
     activity, _, _ = tracker.snapshot("1m00s")
     assert "torch" in activity
-    assert "numpy" not in activity.split(" of ")[0]  # not named as the pending one
+    assert "numpy" not in activity  # not named as the pending one
 
 
 def test_bytes_done_never_exceeds_bytes_total():
@@ -398,20 +416,78 @@ def test_pty_reader_still_parses_plain_lines_through_the_original_parser():
     assert tracker.phase == "installing"
 
 
-def test_pty_reader_never_puts_a_live_redraw_fragment_into_the_returned_lines():
-    """The ring buffer (SPEC PY-18's verbatim-error contract) is fed only
-    from what this returns -- a live progress-bar redraw has no real newline
-    (confirmed empirically: hundreds of frames with none), so it must never
-    be reported as a "line" a caller would append to that ring."""
+def test_a_permanent_line_reached_only_by_a_CR_not_an_LF_still_matches():
+    """Review issue #1, reproduced directly: real uv's shape is
+    `<bar frames>\\rResolved 7 packages...\\r\\n` -- the CR immediately
+    before the permanent line is the ONLY thing that separates it from the
+    redraw before it. Splitting on `\\n` alone (the shipped bug) glues the
+    whole redraw history onto this line, so `_PREPARED_RE` (anchored at the
+    START of a fragment) never matches and `phase` sticks at `downloading`
+    forever -- confirmed against a real capture with 277 CRs against 7 LFs
+    for one two-package sync.
+    """
     tracker = worker._UvProgress()
     reader = worker._PtyProgressReader(tracker)
-    no_newline = _PTY_TRANSCRIPT_CHUNK[:-2]  # drop the trailing \r\n
-    lines = reader.feed_bytes(no_newline.encode("utf-8"))
+    # One CR-separated frame, no LF anywhere until the permanent line's own
+    # trailing CRLF -- exactly uv's real shape, not a paraphrase of it.
+    raw = ("\x1b[37m⠙\x1b[0m \x1b[2mResolving dependencies...\x1b[0m"
+          "\rResolved 7 packages in 368ms\r\n")
+    lines = reader.feed_bytes(raw.encode("utf-8"))
+    assert "Resolved 7 packages in 368ms" in lines
+    tracker.feed("Downloading torch (3400.0MiB)")
+    raw2 = ("\x1b[37m⠙\x1b[0m \x1b[2mPreparing packages...\x1b[0m (0/1)"
+            "\rPrepared 1 packages in 3.45s\r\n")
+    lines2 = reader.feed_bytes(raw2.encode("utf-8"))
+    assert "Prepared 1 packages in 3.45s" in lines2
+    assert tracker.phase == "installing"
+
+
+def test_pty_reader_excludes_a_complete_but_chrome_fragment_from_the_ring():
+    """Review issue #3: a live-redraw fragment that DOES end with a
+    separator (so it is "complete" in the line-reconstruction sense) must
+    still never reach the ring -- a bounded ring flooded with near-duplicate
+    redraws is how a real resolver failure's own diagnosis got pushed out,
+    measured against a real capture (a 1,303-character spinner/redraw
+    prefix ahead of the actual diagnosis)."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    # The SAME transcript chunk, but ending in a bare CR (one more redraw is
+    # coming) rather than the final CRLF -- still a COMPLETE fragment by the
+    # line-reconstruction rule, and still pure chrome.
+    chrome_frame = _PTY_TRANSCRIPT_CHUNK[:-2] + "\r"
+    lines = reader.feed_bytes(chrome_frame.encode("utf-8"))
     assert lines == []
 
 
+def test_pty_reader_excludes_the_resolving_spinner_from_the_ring():
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    lines = reader.feed_bytes(
+        "\x1b[37m⠋\x1b[0m \x1b[2mResolving dependencies...\x1b[0m\r".encode("utf-8"))
+    assert lines == []
+
+
+def test_pty_reader_lets_the_actual_resolver_diagnosis_through():
+    """The other half of issue #3's fix: excluding chrome must not become
+    excluding too MUCH. uv's real failure text (multi-line, no spinner, no
+    progress row) has to survive, unedited, to the ring."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    raw = (
+        "  × No solution found when resolving dependencies:\r\n"
+        "  ╰─▶ Because this-package-does-not-exist was not\r\n"
+        "      found in the package registry.\r\n"
+    )
+    lines = reader.feed_bytes(raw.encode("utf-8"))
+    assert lines == [
+        "  × No solution found when resolving dependencies:",
+        "  ╰─▶ Because this-package-does-not-exist was not",
+        "      found in the package registry.",
+    ]
+
+
 def test_pty_reader_carry_is_bounded():
-    """The live block can run for thousands of frames with no real newline
+    """The live block can run for thousands of frames with no separator
     in between -- without a cap the carry would hold the whole download."""
     tracker = worker._UvProgress()
     reader = worker._PtyProgressReader(tracker)
@@ -420,13 +496,79 @@ def test_pty_reader_carry_is_bounded():
     assert len(reader._carry) <= worker._PTY_CARRY_MAX
 
 
-def test_pty_reader_reconstructs_a_split_progress_row_across_two_reads():
+def test_a_row_with_no_separator_yet_reports_nothing_to_avoid_a_torn_number():
     """A real pty delivers whatever the kernel buffer happened to hand back
-    per `read()` -- a row can arrive split across two chunks, and the carry
-    is what makes that safe."""
+    per `read()` -- a row can arrive split across two reads with NO
+    separator anywhere yet. Scanning it before a separator arrives risks
+    parsing a truncated number (`"15.9"` read as the whole total when the
+    real text is `"15.94 MiB"` and the rest is still in flight) -- so
+    nothing is reported until a CR or LF actually terminates the fragment,
+    which arrives within milliseconds in real usage (the very next redraw).
+    """
     tracker = worker._UvProgress()
     reader = worker._PtyProgressReader(tracker)
     whole = "numpy                ------------------------------ 8.00 MiB/15.94 MiB         "
+    reader.feed_bytes(whole[:40].encode("utf-8"))
+    assert tracker.snapshot("1s") == (None, None, None)
+    reader.feed_bytes(whole[40:].encode("utf-8"))
+    # Still nothing -- no separator has arrived even now.
+    assert tracker.snapshot("1s") == (None, None, None)
+    # The NEXT redraw's leading CR is what finally terminates the row.
+    reader.feed_bytes(b"\r")
+    _, done, total = tracker.snapshot("1s")
+    assert done == pytest.approx(_mib(8), rel=1e-3)
+    assert total == pytest.approx(_mib(15.94), rel=1e-3)
+
+
+# --- pty: confirming a download uv itself never explicitly confirms --------
+#
+# Review issue #2, at the `_PtyProgressReader` level: uv stops redrawing a
+# package's row the instant it lands, measurably short of its own total (a
+# real numpy install's last observed row: 15.55 of 15.94 MiB) -- so
+# `feed_pty_progress`'s own `done >= total` route to confirmation fires on
+# almost nothing. `feed_pty_frame` (a name vanishing between frames) and the
+# `Prepared` backstop are what actually confirm a download under a pty.
+
+
+def test_a_name_that_vanishes_between_frames_is_confirmed_downloaded():
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    frame_1 = ("Preparing packages... (0/2) "
+              "numpy ------ 15.55 MiB/15.94 MiB "
+              "scipy ------ 10.00 MiB/33.68 MiB \r")
+    reader.feed_bytes(frame_1.encode("utf-8"))
+    assert "numpy" not in tracker._downloaded
+    # numpy's row is simply gone from the next frame -- it finished.
+    frame_2 = "Preparing packages... (1/2) scipy ------ 15.00 MiB/33.68 MiB \r"
+    reader.feed_bytes(frame_2.encode("utf-8"))
+    assert "numpy" in tracker._downloaded
+    _, done, total = tracker.snapshot("1s")
+    # numpy counts as its full announced size now, not its last-seen 15.55.
+    assert done == pytest.approx(_mib(15.94) + _mib(15.0), rel=1e-3)
+
+
+def test_the_final_clear_with_nothing_left_is_confirmed_by_the_Prepared_line():
+    """The one gap frame-diffing cannot see on its own: the display clears
+    ALL remaining rows at once, with no marker text of its own -- so
+    whatever was in the LAST frame must be confirmed by the `Prepared` line
+    that follows instead."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    reader.feed_bytes(b"Preparing packages... (0/1) torch ------ 3.3 GiB/3.4 GiB \r")
+    assert "torch" not in tracker._downloaded
+    reader.feed_bytes(b"Prepared 1 packages in 42.00s\r\n")
+    assert "torch" in tracker._downloaded
+    _, done, total = tracker.snapshot("1s")
+    assert done == total
+
+
+def test_pty_reader_reconstructs_a_split_progress_row_across_two_reads():
+    """A real pty delivers whatever the kernel buffer happened to hand back
+    per `read()` -- a row can arrive split across two chunks, and the carry
+    is what makes that safe, once a terminating separator finally arrives."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    whole = "numpy                ------------------------------ 8.00 MiB/15.94 MiB         \r"
     reader.feed_bytes(whole[:40].encode("utf-8"))
     reader.feed_bytes(whole[40:].encode("utf-8"))
     _, done, total = tracker.snapshot("1s")
@@ -718,14 +860,100 @@ def test_pty_unavailable_only_fires_before_the_child_is_spawned(monkeypatch):
         worker._run_uv_via_pty(["uv", "sync"], "/tmp", {}, worker._UvProgress())
 
 
+def test_stdin_is_devnull_not_the_pty_slave(monkeypatch):
+    """Review issue #4: uv's bar keys off stdout/stderr, not stdin, so
+    handing it a real terminal on stdin buys this feature nothing. What it
+    WOULD cost: anything in the sync that reads stdin blocks forever, since
+    nothing on our side ever writes to the master and neither the poll loop
+    nor `proc.wait()` carries a deadline. `DEVNULL` keeps such a read
+    failing instantly, exactly as it did before this feature existed.
+    """
+    captured = {}
+
+    class _FakeProc:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
+        def wait(self):
+            return 0
+
+    def _fake_popen(cmd, **kw):
+        captured.update(kw)
+        return _FakeProc()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
+    worker._run_uv_via_pty(["uv", "sync"], "/tmp", {}, worker._UvProgress())
+
+    assert captured["stdin"] == worker.subprocess.DEVNULL
+    assert captured["stdout"] == captured["stderr"]
+
+
+def test_a_read_loop_exception_both_kills_and_reaps_the_child(monkeypatch):
+    """Review issue #5: `proc.kill()` with no `proc.wait()` re-introduces
+    the unreaped child fixed once already -- the piped path gets its reap
+    from `Popen.__exit__`, and this path has no equivalent unless it calls
+    `wait()` itself. Uses a REAL pty pair (write, then let `_run_uv_via_pty`
+    read it) so the read loop genuinely receives data and genuinely raises,
+    rather than asserting on a code path that a mock never actually drove.
+    """
+    master_fd, slave_fd = worker.pty.openpty()
+    os.write(slave_fd, b"garbage\r\n")
+    monkeypatch.setattr(worker.pty, "openpty", lambda: (master_fd, slave_fd))
+
+    calls = []
+
+    class _FakeProc:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            calls.append("kill")
+
+        def wait(self):
+            calls.append("wait")
+            return 1
+
+    monkeypatch.setattr(worker.subprocess, "Popen", lambda cmd, **kw: _FakeProc())
+
+    class _BoomingTracker(worker._UvProgress):
+        def feed(self, line):
+            raise RuntimeError("boom in parser")
+
+    with pytest.raises(RuntimeError, match="boom in parser"):
+        worker._run_uv_via_pty(["uv", "sync"], "/tmp", {}, _BoomingTracker())
+
+    assert calls == ["kill", "wait"], (
+        "the child must be killed AND reaped before the exception propagates"
+    )
+
+
 def test_a_real_pty_child_streams_partial_bytes_into_the_tracker():
     """End-to-end against REAL OS pty mechanics -- `pty.openpty()`,
-    `subprocess.Popen` with the slave fd, `select.select`, `os.read` and EOF
-    detection -- with a tiny Python child standing in for uv, so this is a
-    regression test of the ACTUAL plumbing rather than of a mock. It writes a
-    growing "in-flight" row with real sleeps between writes; a background
-    thread runs `_run_uv_via_pty` while the main thread polls `snapshot()`
-    for a moment where SOME but not all of the announced bytes have arrived.
+    `subprocess.Popen`, `select.poll()`, `os.read` and EOF detection -- with
+    a tiny Python child standing in for uv, so this is a regression test of
+    the ACTUAL plumbing rather than of a mock. It writes a growing
+    "in-flight" row with real sleeps between writes; a background thread
+    runs `_run_uv_via_pty` while the main thread polls `snapshot()` for a
+    moment where SOME but not all of the announced bytes have arrived, and
+    then for the `preparing` phase issue #2 exists to make reachable.
+
+    The child's output is written BYTE-FAITHFUL to a real capture -- bare
+    CRs between redraws, never a real newline until a permanent line's own
+    trailing CRLF, and the last redraw deliberately SHORT of the announced
+    total (real uv's last redraw of a row measured 15.55 of 15.94 MiB, never
+    the full amount) -- specifically so this exercises the frame-vanishing/
+    `Prepared`-backstop confirmation route rather than accidentally passing
+    through the OTHER route (`feed_pty_progress`'s own `done >= total`
+    check). A synthetic transcript that used a real `\n` here, or reached
+    100% before the last row, is exactly the kind of test that let issue #1
+    and #2 ship unnoticed.
     """
     if worker.pty is None:
         pytest.skip("no pty support on this platform")
@@ -738,10 +966,11 @@ def test_a_real_pty_child_streams_partial_bytes_into_the_tracker():
         "w('Resolved 1 packages in 1ms\\r\\n')\n"
         "w('Preparing packages... (0/1)  numpy   ------ 0 B/10.00 MiB   ')\n"
         "time.sleep(0.3)\n"
-        "w('\\r\\x1b[2Knumpy   ------ 5.00 MiB/10.00 MiB   ')\n"
+        "w('\\rPreparing packages... (0/1)  numpy   ------ 5.00 MiB/10.00 MiB   ')\n"
         "time.sleep(0.3)\n"
-        "w('\\r\\x1b[2Knumpy   ------ 10.00 MiB/10.00 MiB   ')\n"
-        "w('\\r\\nPrepared 1 packages in 600ms\\r\\n')\n"
+        "w('\\rPreparing packages... (0/1)  numpy   ------ 9.99 MiB/10.00 MiB   ')\n"
+        "time.sleep(0.1)\n"
+        "w('\\rPrepared 1 packages in 600ms\\r\\n')\n"
         "w('Installed 1 packages in 1ms\\r\\n')\n"
     )
     tracker = worker._UvProgress()
@@ -754,18 +983,31 @@ def test_a_real_pty_child_streams_partial_bytes_into_the_tracker():
     t = threading.Thread(target=_run)
     t.start()
 
-    deadline = time.monotonic() + 10
-    saw_partial = False
-    while time.monotonic() < deadline and "value" not in result:
-        _, done, total = tracker.snapshot("1s")
-        if done is not None and 0 < done < total:
-            saw_partial = True
-            break
-        time.sleep(0.02)
-    t.join(10)
+    def _wait_for(predicate, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and "value" not in result:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return predicate()
 
+    saw_partial = _wait_for(lambda: (lambda s: s[1] is not None and 0 < s[1] < s[2])(
+        tracker.snapshot("1s")))
     assert saw_partial, "never observed partial in-flight bytes from a real pty child"
+
+    saw_preparing = _wait_for(lambda: tracker.phase in ("preparing", "installing", "installed"))
+    assert saw_preparing, (
+        "never reached `preparing` -- issue #2's confirmation routes did not fire"
+    )
+
+    t.join(10)
     returncode, ring = result["value"]
     assert returncode == 0
+    assert "numpy" in tracker._downloaded, (
+        "the last redraw was short of 10.00 MiB and nothing ever confirmed it"
+    )
+    assert "Resolved 1 packages in 1ms" in ring
     assert "Prepared 1 packages in 600ms" in ring
     assert "Installed 1 packages in 1ms" in ring
+    # Chrome never reaches the ring -- SPEC PY-18's verbatim-error contract.
+    assert not any("Preparing packages" in line for line in ring)

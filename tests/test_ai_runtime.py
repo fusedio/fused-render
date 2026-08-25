@@ -3444,7 +3444,7 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
         {"done": False, "stage": "install", "activity": None,
          "bytes_done": None, "bytes_total": None},
         {"done": False, "stage": "install",
-         "activity": "downloading torch — 1.2 GB of 3.6 GB (2m14s)",
+         "activity": "downloading torch (2m14s)",
          "bytes_done": 1_200_000_000, "bytes_total": 3_600_000_000},
         {"done": True, "error": None, "stage": "done"},
     ]
@@ -3479,8 +3479,8 @@ def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
     assert reported["total"] == 3_600_000_000
     assert reported["unit"] == "bytes"
     assert "downloading torch" in reported["detail"]
-    assert "1.2 GB of 3.6 GB" in reported["detail"]
     assert "Preparing ROCm" in reported["detail"]
+    assert "GB" not in reported["detail"] and "MB" not in reported["detail"]
 
 
 def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_path):
@@ -3500,7 +3500,7 @@ def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_pat
                              folder=str(folder), label="ROCm")
     ticks = [
         {"done": False, "stage": "install",
-         "activity": "downloading torch — 3.4 GB of 3.4 GB (2m14s)",
+         "activity": "downloading torch (2m14s)",
          "bytes_done": 3_400_000_000, "bytes_total": 3_400_000_000},
         {"done": True, "error": None, "stage": "done"},
     ]
