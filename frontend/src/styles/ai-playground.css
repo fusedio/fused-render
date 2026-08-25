@@ -1060,6 +1060,12 @@
    its widest plus the corner offset. */
 .pg-composer-stack textarea {
   padding-right: 64px;
+  /* Undoes the shared `flex: 1`, which is a rule written for the ROW
+     composers. There it sizes the box across the composer and the height is
+     the textarea's own; here the main axis IS the height, so `flex-basis: 0%`
+     overrode the inline height useAutoGrow writes and the box sat at its
+     three-line min-height with everything past line three scrolled away. */
+  flex: none;
 }
 
 .pg-clear-corner:hover:not(:disabled) {
