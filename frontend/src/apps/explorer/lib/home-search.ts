@@ -50,6 +50,17 @@ import { fuzzyMatch } from "@platform/lib/fuzzy";
 // row, not more scrolling.
 export const HOME_RESULT_CAP = 10;
 
+// Below this many characters, a query is not sent at all. One or two letters
+// match almost every file in a home tree — a substring-pass candidate cap gets
+// hit on "a" or "e" alone — so the round trip is pure cost: it burns the
+// escalation ladder's expensive half on a query that could never narrow
+// anything, and it pre-arms "Search with AI" (a paid model call) on a query
+// nobody meant to submit yet. Gated on the REQUEST, not on `active`
+// (`FilesHome.tsx`'s `q !== ""`): `active` is what gives the search panel the
+// page body, and flipping it on the first character would bounce the whole
+// page as the user types their second one.
+export const MIN_QUERY_CHARS = 2;
+
 // Hits asked of the server per query. The list renders HOME_RESULT_CAP of
 // them; the rest are what makes the count note ("Showing top 10 of 137") true
 // without a second request. 200 rows is a few KB.

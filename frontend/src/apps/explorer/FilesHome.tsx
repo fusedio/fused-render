@@ -35,6 +35,7 @@ import {
   searchDelay,
 } from "@platform/lib/instant-search";
 import {
+  MIN_QUERY_CHARS,
   RANK_FETCH_LIMIT,
   activeRow,
   answerFrom,
@@ -275,6 +276,12 @@ export function FilesSearch({
   const [highlight, setHighlight] = useState<number | null>(null);
   const q = query.trim();
   const active = q !== "";
+  // Below MIN_QUERY_CHARS the REQUEST is gated, not `active`: `active` is what
+  // hides bookmarks/recents and hands the page body to this panel, and doing
+  // that on the first character would bounce the whole page as the user types
+  // their second one. `searchable` instead governs whether a rank request goes
+  // out and whether the AI row can ever be armed for the current query.
+  const searchable = q.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
 
   // -- the ranked answer -----------------------------------------------------
@@ -342,7 +349,11 @@ export function FilesSearch({
   useEffect(() => () => inflight.current?.abort(), []);
 
   useEffect(() => {
-    if (!active) {
+    // `!searchable` is the same early-out as `!active`: nothing is asked, and
+    // anything already in flight (from a longer query since backspaced away)
+    // is abandoned rather than left to land over a query too short to have
+    // earned an answer.
+    if (!active || !searchable) {
       inflight.current?.abort();
       setPending(false);
       return;
@@ -397,7 +408,7 @@ export function FilesSearch({
     }
     const timer = window.setTimeout(run, delay);
     return () => window.clearTimeout(timer);
-  }, [home, q, active, lifecycle, mutations, retryNonce]);
+  }, [home, q, active, searchable, lifecycle, mutations, retryNonce]);
 
   useEffect(() => {
     if (!pending) {
@@ -536,8 +547,11 @@ export function FilesSearch({
   const showingAi = ai.status === "done" && ai.query === q;
   // Whether the instant list is a finished answer FOR THIS QUERY. Gates the AI
   // row's pre-selection, so Enter while the request is in flight cannot spend a
-  // model call on a query that was about to answer itself.
-  const settled = rankingSettled(answer, q, pending, failure !== "");
+  // model call on a query that was about to answer itself. `!searchable` short-
+  // circuits it to false outright: a query under MIN_QUERY_CHARS never asked
+  // anything, so there is nothing for it to be settled ON, and a model call on
+  // "a" is never the intent.
+  const settled = searchable && rankingSettled(answer, q, pending, failure !== "");
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as
@@ -554,7 +568,7 @@ export function FilesSearch({
   // changed a file, the server is re-indexing that folder, and until a status
   // poll catches the run nothing else would say so.
   const caveat =
-    active && !showingAi
+    active && !showingAi && searchable
       ? searchCaveat(indexScan, { behind, pending, rescanPending: indexRescanPending() })
       : null;
   const current = activeRow(highlight, hits.length, settled);
@@ -607,10 +621,10 @@ export function FilesSearch({
           placeholder="Search your files — or paste a path like ~/Downloads"
           aria-label="Search your files"
           role="combobox"
-          aria-expanded={active && !showingAi}
+          aria-expanded={active && !showingAi && searchable}
           aria-controls="fh-result-list"
           aria-activedescendant={
-            active && !showingAi && current !== null ? "fh-row-" + current : undefined
+            active && !showingAi && searchable && current !== null ? "fh-row-" + current : undefined
           }
           autoComplete="off"
           spellCheck={false}
@@ -618,7 +632,7 @@ export function FilesSearch({
           onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              if (!active || showingAi) return;
+              if (!active || showingAi || !searchable) return;
               e.preventDefault();
               setHighlight((h) => stepHighlight(h, hits.length, e.key === "ArrowDown" ? 1 : -1));
             } else if (e.key === "Enter") {
@@ -660,8 +674,15 @@ export function FilesSearch({
                 new query is in flight the previous answer is what is on screen,
                 and a note that denies having rows over rows that are visibly
                 there is the mid-rescan "still building" bug in another costume.
-                Only having never had an answer may say so. */}
-            {answer === null && failure !== "" ? (
+                Only having never had an answer may say so.
+
+                `!searchable` comes FIRST, ahead of every other branch: under
+                MIN_QUERY_CHARS no request went out, so `answer` (if any) is
+                whatever an earlier, longer query left behind, and reporting
+                on it here would describe a search that didn't happen. */}
+            {!searchable ? (
+              "Keep typing…"
+            ) : answer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
             ) : answer === null ? (
               "Searching…"
@@ -701,7 +722,9 @@ export function FilesSearch({
                 PENDING_INDICATOR_MS the answer beats the words onto the screen,
                 and a note that appears and vanishes reads as slower than one
                 that never appeared. */}
-            {slow && hits.length > 0 && <span className="fh-searching-note"> · Searching…</span>}
+            {searchable && slow && hits.length > 0 && (
+              <span className="fh-searching-note"> · Searching…</span>
+            )}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
                 {/* Only while a scan is actually running. The chip also carries
@@ -715,30 +738,36 @@ export function FilesSearch({
               </span>
             )}
           </p>
-          <ul
-            className={"fh-results" + (behind ? " is-stale" : "")}
-            id="fh-result-list"
-            role="listbox"
-            aria-label="Search results"
-          >
-            {hits.map((hit, i) => (
-              <FileRow
-                key={hit.path}
-                hit={hit}
-                home={home}
-                active={current === i}
-                id={"fh-row-" + i}
-                onHover={() => setHighlight(i)}
+          {/* Nothing to show below MIN_QUERY_CHARS: no request went out, so
+              `hits` is stale leftover from a longer query, and offering the AI
+              row here would arm a model call on "a". The note above already
+              says why the list is empty. */}
+          {searchable && (
+            <ul
+              className={"fh-results" + (behind ? " is-stale" : "")}
+              id="fh-result-list"
+              role="listbox"
+              aria-label="Search results"
+            >
+              {hits.map((hit, i) => (
+                <FileRow
+                  key={hit.path}
+                  hit={hit}
+                  home={home}
+                  active={current === i}
+                  id={"fh-row-" + i}
+                  onHover={() => setHighlight(i)}
+                />
+              ))}
+              <AiActionRow
+                query={q}
+                active={current === hits.length}
+                running={ai.status === "running"}
+                id={"fh-row-" + hits.length}
+                onRun={() => runAi(q)}
               />
-            ))}
-            <AiActionRow
-              query={q}
-              active={current === hits.length}
-              running={ai.status === "running"}
-              id={"fh-row-" + hits.length}
-              onRun={() => runAi(q)}
-            />
-          </ul>
+            </ul>
+          )}
         </div>
       )}
     </div>
