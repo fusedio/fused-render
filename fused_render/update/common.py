@@ -123,7 +123,10 @@ def download_verified(manifest: dict, *, dir: str | None = None,
     try:
         with os.fdopen(fd, "wb") as out, urlopen_fn(url, DOWNLOAD_TIMEOUT_S) as resp:
             content_length = resp.getheader("Content-Length")
-            size = int(content_length) if content_length is not None else None
+            try:
+                size = int(content_length) if content_length is not None else None
+            except ValueError:
+                size = None
             while chunk := resp.read(DOWNLOAD_CHUNK):
                 done += len(chunk)
                 if done > max_bytes:

@@ -149,6 +149,26 @@ def test_download_verified_progress_total_none_without_content_length(monkeypatc
     assert calls == [(len(installer), None)]
 
 
+def test_download_verified_progress_total_none_on_malformed_content_length(monkeypatch):
+    from fused_render.update import common
+
+    key = _install_key(monkeypatch)
+    installer = b"the real installer bytes"
+    sha256 = hashlib.sha256(installer).hexdigest()
+    manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
+                "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
+
+    class _BadLengthResponse(_Response):
+        def getheader(self, name, default=None):
+            return "not-a-number" if name == "Content-Length" else default
+
+    calls = []
+    common.download_verified(
+        manifest, progress=lambda done, total: calls.append((done, total)),
+        urlopen_fn=lambda url, timeout: _BadLengthResponse(installer))
+    assert calls == [(len(installer), None)]
+
+
 def test_fetch_manifest_verifies_signature_before_returning(monkeypatch):
     # The version is only trusted after the signature checks out, so a bad
     # signature is rejected at fetch — before any "up to date"/prompt decision.
