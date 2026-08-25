@@ -1816,6 +1816,45 @@ def _choice(runner: Runner) -> dict:
     }
 
 
+def _stranded_label(capability: str, requested: str) -> str | None:
+    """The display name for a STORED selection that matches none of
+    `capability`'s own choices — or None when there is no name to give.
+
+    Exists so the Engines tab never has to derive a name from registry PROSE.
+    It used to reach for `choices.find(c => c.code === selected)?.label`, which
+    is exactly what fails here BY DEFINITION (a stranded code is the one that
+    matches no choice) and left the frontend falling back to the raw stored
+    code — "mlx-whisper" rather than "MLX Whisper" — even when the code names a
+    real, registered runner. That raw fallback then broke `ignoredWarning`'s
+    de-duplication for the wrong-capability shape specifically: `resolve()`
+    writes `f"{runner.short} does not do {capability}"` (`"MLX Whisper does not
+    do text-generation"`), and a frontend name of `"mlx-whisper"` does not
+    occur inside a sentence that says `"MLX Whisper"` — so the page printed the
+    name twice, in two different spellings, on the one line whose entire job is
+    saying a preference did not take.
+
+    `.short`, not `.label`: that is the exact string `resolve()` already wrote
+    into the reason, and the two must be the SAME string for `ignoredWarning`'s
+    `reason.includes(name)` check to find it — a full qualified label
+    ("MLX Whisper (Apple Silicon)") would not occur inside a reason that only
+    ever names the short one.
+
+    Two cases return None, and the caller (`strandedSelection` on the frontend,
+    mirrored here) cannot always tell them apart from the payload alone: `auto`
+    is never stranded, and a WITHDRAWN code (`by_code` finds nothing — D416's
+    `transformers-text*`) has no runner to ask a label of. Both leave the
+    Engines tab to fall back to the bare stored code, which is the whole reason
+    that fallback exists.
+    """
+    if requested == AUTO:
+        return None
+    if any(runner.code == requested for runner in _RUNNERS
+           if runner.capability == capability):
+        return None  # Not stranded: a real choice already carries this label.
+    runner = by_code(requested)
+    return runner.short if runner is not None else None
+
+
 def describe_engines() -> list[dict]:
     """One row per capability: what was asked for, what is serving, what was
     ignored.
@@ -1851,6 +1890,10 @@ def describe_engines() -> list[dict]:
                 # UI is expected to show it — a control whose value does nothing,
                 # with nothing saying why, is the failure this field exists for.
                 "ignoredReason": resolution.ignored_reason or None,
+                # See `_stranded_label`. Null whenever `selected` is not
+                # stranded at all (it names `auto` or a real choice) AND
+                # whenever it is stranded but withdrawn (no runner to name).
+                "strandedLabel": _stranded_label(capability, resolution.requested),
                 "choices": [
                     _choice(runner)
                     for runner in _RUNNERS
