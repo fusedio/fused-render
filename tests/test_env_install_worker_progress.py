@@ -16,6 +16,7 @@ word`). This file is the parser and the streaming plumbing in isolation.
 import importlib.util
 import os
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -286,6 +287,153 @@ def test_format_bytes_reads_like_a_human_wrote_it():
     assert worker._format_bytes(3.4 * 1024 ** 3) == "3.4 GB"
 
 
+# --- pty: in-flight bytes INSIDE one package, off a real terminal -----------
+#
+# uv only prints per-package in-flight bytes when it believes stdout is a
+# terminal (confirmed empirically -- see the module comment above
+# `_PtyUnavailable`). These are unit tests of `_UvProgress.feed_pty_progress`,
+# the second entry point that lets a pty feed the SAME tracker the piped
+# `feed()` does.
+
+
+def test_feed_pty_progress_updates_inflight_bytes_without_confirming():
+    """A partial reading must show up in `snapshot()` -- the whole point of
+    the pty is a single dominant wheel (torch) having SOMETHING to report
+    before it fully lands -- but must not mark the package downloaded."""
+    tracker = worker._UvProgress()
+    tracker.feed_pty_progress("torch", _mib(500), _mib(3400))
+    activity, done, total = tracker.snapshot("30s")
+    assert done == pytest.approx(_mib(500), rel=1e-6)
+    assert total == pytest.approx(_mib(3400), rel=1e-6)
+    assert "torch" in activity
+
+
+def test_feed_pty_progress_confirms_once_done_reaches_total():
+    """The pty gives no separate "Downloaded" line (confirmed empirically) --
+    reaching the announced total off the row itself IS the confirmation."""
+    tracker = worker._UvProgress()
+    tracker.feed_pty_progress("numpy", _mib(15.9), _mib(15.9))
+    assert "numpy" in tracker._downloaded
+    assert "numpy" not in tracker._inflight
+
+
+def test_feed_pty_progress_never_unconfirms_an_already_landed_package():
+    tracker = worker._UvProgress()
+    tracker.feed_pty_progress("numpy", _mib(15.9), _mib(15.9))
+    # A stale/replayed row for the same package must not undo that.
+    tracker.feed_pty_progress("numpy", _mib(1), _mib(15.9))
+    assert "numpy" in tracker._downloaded
+    _, done, total = tracker.snapshot("1s")
+    assert done == total
+
+
+def test_pty_progress_reopens_downloading_from_preparing_too():
+    """Review issue #2's fix, reached through the OTHER entry point: a
+    package fully landing (via the pty, this time) latches `preparing`, and
+    a later pty row for a NEW package must still reopen `downloading` --
+    otherwise a small package finishing right before torch is announced
+    would freeze the phase exactly as issue #2 described."""
+    tracker = worker._UvProgress()
+    tracker.feed_pty_progress("numpy", _mib(15.9), _mib(15.9))
+    assert tracker.phase == "preparing"
+    tracker.feed_pty_progress("torch", _mib(1), _mib(3400))
+    assert tracker.phase == "downloading"
+    activity, done, total = tracker.snapshot("1m00s")
+    assert "torch" in activity
+    assert done < total
+
+
+def test_pty_and_piped_signals_compose_on_one_tracker():
+    """Both entry points feed one `_UvProgress` -- a plain `Downloaded` line
+    (should the pty ever be mixed with piped-style output) and a pty row for
+    a DIFFERENT package must both count toward the same aggregate."""
+    tracker = worker._UvProgress()
+    tracker.feed("Downloading numpy (15.9MiB)")
+    tracker.feed(" Downloaded numpy")
+    tracker.feed_pty_progress("torch", _mib(200), _mib(3400))
+    _, done, total = tracker.snapshot("10s")
+    assert done == pytest.approx(_mib(15.9) + _mib(200), rel=1e-4)
+    assert total == pytest.approx(_mib(15.9) + _mib(3400), rel=1e-4)
+
+
+# --- pty: reconstructing lines and bytes out of a raw, ANSI-laden stream ----
+#
+# `_PtyProgressReader` is fed the fixture below verbatim -- a REAL captured
+# transcript (ANSI escapes and all) from `uv sync` on two small packages
+# under an actual `pty.openpty()`, trimmed to the interesting stretch. It is
+# not a paraphrase: the escape sequences, the leading space uv puts before a
+# redrawn row, and the "no space"/"with space" unit spelling are all exactly
+# what a real uv 0.12.5 wrote.
+_PTY_TRANSCRIPT_CHUNK = (
+    "\x1b[37m⠙\x1b[0m \x1b[2mPreparing packages...\x1b[0m (0/2)"
+    "                                                   "
+    "\x1b[2mnumpy               \x1b[0m "
+    "\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m"
+    " 16.00 KiB/15.94 MiB         "
+    "\x1b[2mscipy               \x1b[0m "
+    "\x1b[32m\x1b[30m\x1b[2m------------------------------\x1b[0m\x1b[0m"
+    "     0 B/33.68 MiB           \r\n"
+)
+
+
+def test_pty_reader_extracts_in_flight_bytes_from_a_real_ansi_transcript():
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    reader.feed_bytes(_PTY_TRANSCRIPT_CHUNK.encode("utf-8"))
+    _, done, total = tracker.snapshot("1s")
+    assert done == pytest.approx(_mib(16 / 1024), rel=1e-3)
+    assert total == pytest.approx(_mib(15.94) + _mib(33.68), rel=1e-3)
+
+
+def test_pty_reader_still_parses_plain_lines_through_the_original_parser():
+    """`Resolved`/`Prepared`/`Installed` print identically in both modes
+    (confirmed empirically) -- the reader must still hand COMPLETE lines to
+    `tracker.feed`, not just mine them for in-flight bytes."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    lines = reader.feed_bytes(b"Resolved 5 packages in 368ms\r\n")
+    assert lines == ["Resolved 5 packages in 368ms"]
+    lines = reader.feed_bytes(b"Prepared 2 packages in 6.68s\r\n")
+    assert lines == ["Prepared 2 packages in 6.68s"]
+    assert tracker.phase == "installing"
+
+
+def test_pty_reader_never_puts_a_live_redraw_fragment_into_the_returned_lines():
+    """The ring buffer (SPEC PY-18's verbatim-error contract) is fed only
+    from what this returns -- a live progress-bar redraw has no real newline
+    (confirmed empirically: hundreds of frames with none), so it must never
+    be reported as a "line" a caller would append to that ring."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    no_newline = _PTY_TRANSCRIPT_CHUNK[:-2]  # drop the trailing \r\n
+    lines = reader.feed_bytes(no_newline.encode("utf-8"))
+    assert lines == []
+
+
+def test_pty_reader_carry_is_bounded():
+    """The live block can run for thousands of frames with no real newline
+    in between -- without a cap the carry would hold the whole download."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    noise = "x" * (worker._PTY_CARRY_MAX * 5)
+    reader.feed_bytes(noise.encode("utf-8"))
+    assert len(reader._carry) <= worker._PTY_CARRY_MAX
+
+
+def test_pty_reader_reconstructs_a_split_progress_row_across_two_reads():
+    """A real pty delivers whatever the kernel buffer happened to hand back
+    per `read()` -- a row can arrive split across two chunks, and the carry
+    is what makes that safe."""
+    tracker = worker._UvProgress()
+    reader = worker._PtyProgressReader(tracker)
+    whole = "numpy                ------------------------------ 8.00 MiB/15.94 MiB         "
+    reader.feed_bytes(whole[:40].encode("utf-8"))
+    reader.feed_bytes(whole[40:].encode("utf-8"))
+    _, done, total = tracker.snapshot("1s")
+    assert done == pytest.approx(_mib(8), rel=1e-3)
+    assert total == pytest.approx(_mib(15.94), rel=1e-3)
+
+
 # --- streaming: `_build` sees uv's stderr while uv is still running ----------
 
 
@@ -351,6 +499,13 @@ def test_build_feeds_every_stderr_line_to_the_tracker_it_is_given(tmp_path, monk
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    # This mocks `subprocess.Popen` itself, which is the PIPED path's whole
+    # I/O surface — `_build` now tries a pty first on POSIX, and a pty's
+    # actual bytes travel over a real OS-level fd this mock never writes to,
+    # not over the mocked Popen's `.stdout`/`.stderr`. `pty=None` forces the
+    # same fallback a real pty-less sandbox takes, so this keeps testing the
+    # exact path it always did. The pty path itself has its own tests below.
+    monkeypatch.setattr(worker, "pty", None)
 
     tracker = worker._UvProgress()
     worker._build(str(proj), venv_dir, str(tmp_path / "cache"), "3.12", tracker)
@@ -381,6 +536,7 @@ def test_an_exception_while_reading_uv_still_kills_the_child(tmp_path, monkeypat
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
 
     class _BoomingTracker(worker._UvProgress):
         def feed(self, line):
@@ -413,6 +569,7 @@ def test_a_failed_sync_still_raises_the_tail_of_stderr_verbatim(tmp_path, monkey
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
 
     with pytest.raises(RuntimeError) as excinfo:
         worker._build(str(proj), str(tmp_path / "venv"), str(tmp_path / "cache"), "3.12")
@@ -437,6 +594,7 @@ def test_the_stderr_ring_buffer_is_bounded(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
 
     with pytest.raises(RuntimeError) as excinfo:
         worker._build(str(proj), str(tmp_path / "venv"), str(tmp_path / "cache"), "3.12")
@@ -501,3 +659,113 @@ def test_uv_actually_line_flushes_to_a_pipe_not_just_at_exit():
         if not saw_a_line_before_exit:
             pytest.skip("no network, or uv finished before the first read landed")
         assert saw_a_line_before_exit
+
+
+# --- `_run_uv_via_pty`: setup-failure fallback, and a REAL pty end to end ---
+
+
+def test_pty_setup_failure_falls_back_to_the_piped_path(tmp_path, monkeypatch):
+    """`pty.openpty()` failing (no `/dev/ptmx`, a locked-down sandbox) is the
+    ONE thing that may fall back to the piped path -- and only because it
+    happens before `uv sync` is ever spawned, so there is no risk of running
+    it twice. `_build` must still succeed, on the SAME piped mock every
+    piped-path test above already uses.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "pyproject.toml").write_text(
+        "[project]\nname = 't'\nversion = '0.1'\ndependencies = ['pip']\n",
+        encoding="utf-8",
+    )
+    venv_dir = str(tmp_path / "venv")
+
+    def _fake_popen(cmd, **kw):
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
+        return _FakeStreamingPopen(_SAMPLE_TRANSCRIPT)
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    def _boom():
+        raise OSError("out of pty devices")
+
+    monkeypatch.setattr(worker.pty, "openpty", _boom)
+
+    tracker = worker._UvProgress()
+    venv_python = worker._build(str(proj), venv_dir, str(tmp_path / "cache"), "3.12", tracker)
+
+    assert venv_python == worker._venv_python(venv_dir)
+    assert tracker.phase == "installed"  # the piped parser still ran to completion
+
+
+def test_pty_unavailable_only_fires_before_the_child_is_spawned(monkeypatch):
+    """The safety property the fallback rests on: once `Popen` has been
+    called, a failure must NOT be `_PtyUnavailable` (which `_build` treats as
+    "safe to retry via the other path") -- it must propagate as itself, or a
+    second `uv sync` could end up racing the first one's still-live process.
+    """
+    monkeypatch.setattr(worker.pty, "openpty", lambda: (1, 2))
+    monkeypatch.setattr(worker.os, "close", lambda fd: None)
+
+    def _boom_popen(*a, **kw):
+        raise RuntimeError("spawn failed for an unrelated reason")
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _boom_popen)
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        worker._run_uv_via_pty(["uv", "sync"], "/tmp", {}, worker._UvProgress())
+
+
+def test_a_real_pty_child_streams_partial_bytes_into_the_tracker():
+    """End-to-end against REAL OS pty mechanics -- `pty.openpty()`,
+    `subprocess.Popen` with the slave fd, `select.select`, `os.read` and EOF
+    detection -- with a tiny Python child standing in for uv, so this is a
+    regression test of the ACTUAL plumbing rather than of a mock. It writes a
+    growing "in-flight" row with real sleeps between writes; a background
+    thread runs `_run_uv_via_pty` while the main thread polls `snapshot()`
+    for a moment where SOME but not all of the announced bytes have arrived.
+    """
+    if worker.pty is None:
+        pytest.skip("no pty support on this platform")
+
+    child_script = (
+        "import sys, time\n"
+        "def w(s):\n"
+        "    sys.stdout.write(s)\n"
+        "    sys.stdout.flush()\n"
+        "w('Resolved 1 packages in 1ms\\r\\n')\n"
+        "w('Preparing packages... (0/1)  numpy   ------ 0 B/10.00 MiB   ')\n"
+        "time.sleep(0.3)\n"
+        "w('\\r\\x1b[2Knumpy   ------ 5.00 MiB/10.00 MiB   ')\n"
+        "time.sleep(0.3)\n"
+        "w('\\r\\x1b[2Knumpy   ------ 10.00 MiB/10.00 MiB   ')\n"
+        "w('\\r\\nPrepared 1 packages in 600ms\\r\\n')\n"
+        "w('Installed 1 packages in 1ms\\r\\n')\n"
+    )
+    tracker = worker._UvProgress()
+    result = {}
+
+    def _run():
+        result["value"] = worker._run_uv_via_pty(
+            [sys.executable, "-c", child_script], None, dict(os.environ), tracker)
+
+    t = threading.Thread(target=_run)
+    t.start()
+
+    deadline = time.monotonic() + 10
+    saw_partial = False
+    while time.monotonic() < deadline and "value" not in result:
+        _, done, total = tracker.snapshot("1s")
+        if done is not None and 0 < done < total:
+            saw_partial = True
+            break
+        time.sleep(0.02)
+    t.join(10)
+
+    assert saw_partial, "never observed partial in-flight bytes from a real pty child"
+    returncode, ring = result["value"]
+    assert returncode == 0
+    assert "Prepared 1 packages in 600ms" in ring
+    assert "Installed 1 packages in 1ms" in ring

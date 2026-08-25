@@ -62,11 +62,17 @@ import hashlib
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
 import threading
 import time
+
+try:
+    import pty  # POSIX only; Windows raises ImportError, handled below.
+except ImportError:  # pragma: no cover - exercised on Windows CI, not here
+    pty = None
 
 # Stages and their percentages, kept in step with fused_render/envinstall.py's
 # STAGES/STAGE_PCT. Duplicated rather than imported because this file must stay
@@ -311,6 +317,15 @@ class _UvProgress:
         self._lock = threading.Lock()
         self._sizes = {}          # package name -> announced bytes
         self._downloaded = set()  # names uv has confirmed landed
+        #: package name -> bytes transferred so far, for a name NOT yet in
+        #: `_downloaded`. Populated only under a pty (`feed_pty_progress`) —
+        #: a pipe never gives us anything between "announced" and "landed"
+        #: for one package, which is the whole reason the pty exists: a
+        #: single dominant wheel (torch) has nothing else to report progress
+        #: FROM. Cleared for a name the moment it is marked downloaded, so
+        #: `snapshot` never double-counts a package as both in-flight and
+        #: confirmed.
+        self._inflight = {}
         #: resolving -> downloading -> preparing -> installing -> installed.
         #: Stays "resolving" forever for a sync where every wheel is already
         #: cached (no `Downloading` line ever prints), which is exactly the
@@ -321,10 +336,47 @@ class _UvProgress:
         #: from uv's own `Prepared`/`Installed` lines, are one-way.
         self.phase = "resolving"
 
+    def _mark_downloaded_locked(self, name):
+        """*name* has fully landed. Caller holds `self._lock`.
+
+        One place for the two routes that can decide this: a plain
+        ` Downloaded <name>` line (piped mode) and a pty progress row whose
+        own `done` has reached its own `total` (tty mode — uv prints no
+        separate confirmation there at all, so reaching the announced total
+        IS the confirmation). Both must apply the SAME "did everything
+        announced just land" phase check, or the two modes would disagree
+        about when `preparing` starts for no reason a user could see.
+        """
+        self._downloaded.add(name)
+        self._inflight.pop(name, None)
+        if self.phase == "downloading" and self._sizes and \
+                set(self._sizes) <= self._downloaded:
+            # Every size uv has ANNOUNCED so far has also been confirmed
+            # landed. uv may still announce MORE later — `feed`/
+            # `feed_pty_progress` are what un-latch this — but nothing is in
+            # flight right now: uv is between the last confirmation and the
+            # `Prepared` line, i.e. unpacking/linking, which for torch is the
+            # slow part this phase exists to name rather than let read as
+            # 100%.
+            self.phase = "preparing"
+
     def feed(self, line):
         """One line of uv's stderr. Never raises: an unrecognised line (a
         warning, a future uv version's new wording) is simply not progress,
-        not a reason to lose the ones already parsed."""
+        not a reason to lose the ones already parsed.
+
+        This is the PIPED-mode parser (`Downloading <name> (<size>)` /
+        ` Downloaded <name>`), and it stays exactly as it was: `_build`
+        still feeds it the plain lines it always has, in EITHER mode — a pty
+        session prints no such lines at all (confirmed empirically: uv never
+        writes "Downloading"/"Downloaded" once it believes stdout is a
+        terminal, it only draws the live multi-package bar `feed_pty_progress`
+        parses instead), so on a pty these two branches are simply dormant.
+        `Resolved`/`Prepared`/`Installed` are NOT dormant either way — uv
+        prints those the same in both modes, confirmed against the same
+        probe — which is why this method keeps being the one thing every
+        caller feeds complete lines through.
+        """
         m = _DOWNLOADING_RE.match(line)
         if m:
             name, value, unit = m.groups()
@@ -345,17 +397,7 @@ class _UvProgress:
         m = _DOWNLOADED_RE.match(line)
         if m:
             with self._lock:
-                self._downloaded.add(m.group(1))
-                if self.phase == "downloading" and self._sizes and \
-                        set(self._sizes) <= self._downloaded:
-                    # Every size uv has ANNOUNCED so far has also been
-                    # confirmed landed. uv may still announce MORE later —
-                    # the `feed` branch above is what un-latches this — but
-                    # nothing is in flight right now: uv is between the last
-                    # `Downloaded` and the `Prepared` line, i.e. unpacking/
-                    # linking, which for torch is the slow part this phase
-                    # exists to name rather than let read as 100%.
-                    self.phase = "preparing"
+                self._mark_downloaded_locked(m.group(1))
             return
         if _PREPARED_RE.match(line):
             with self._lock:
@@ -365,37 +407,89 @@ class _UvProgress:
             with self._lock:
                 self.phase = "installed"
 
+    def feed_pty_progress(self, name, done_bytes, total_bytes):
+        """One reading of *name*'s live in-flight bytes, off a PTY.
+
+        Only a terminal gets this from uv at all — pointed at a pipe, uv
+        suppresses per-package in-flight bytes entirely and only ever
+        confirms a package once it is fully landed (`feed`, above). Under a
+        pty it instead redraws a multi-line bar continuously, e.g.:
+
+            numpy                ------------------------------  6.31 MiB/15.94 MiB
+
+        parsed by `_PTY_PROGRESS_RE` in the reader that calls this (never a
+        plain `Downloading`/`Downloaded` line — confirmed empirically, see
+        `feed`'s docstring). This is what makes ONE dominant wheel (the
+        ROCm/CUDA torch install this feature shipped to fix) show movement
+        at all: package-level alone has nothing to report from until the
+        whole multi-gigabyte file lands.
+
+        `bytes_total` stays authoritative the same way an announced
+        `Downloading` size is: `max()`'d in, never lowered, because uv's own
+        number for a package's size does not change mid-download.
+        """
+        with self._lock:
+            if name in self._downloaded:
+                return  # already confirmed; a stale/replayed row must not un-confirm it
+            self._sizes[name] = max(self._sizes.get(name, 0.0), total_bytes)
+            if self.phase in ("resolving", "preparing"):
+                # Same reasoning as the `Downloading`-line branch in `feed` —
+                # and done FIRST, before the completed-on-first-report check
+                # below: a package that is already fully landed the very
+                # first time it is reported (a small file, or two `select()`
+                # ticks apart) must still pass through `downloading` on its
+                # way to `preparing`, or `_mark_downloaded_locked`'s own
+                # "did everything just land" check — which requires
+                # `phase == "downloading"` — would never fire, and the phase
+                # would stay `resolving` forever.
+                self.phase = "downloading"
+            if self._sizes[name] > 0 and done_bytes >= self._sizes[name]:
+                # The pty gives no separate "Downloaded" confirmation the way
+                # a pipe does (see `feed`'s docstring) — reaching the
+                # announced total off this row IS the confirmation.
+                self._mark_downloaded_locked(name)
+                return
+            self._inflight[name] = max(self._inflight.get(name, 0.0), done_bytes)
+
     def snapshot(self, elapsed):
         """`(activity, bytes_done, bytes_total)` right now.
 
-        `activity` is None before the first `Downloading` line and after the
-        final `Installed` line — the two states in which this has nothing to
-        add over the stage word already being reported, which is the
-        contract `_ensure_venv` (fused_render/ai/supervisor.py) relies on to
-        fall back cleanly. It is also None whenever nothing has actually been
-        ANNOUNCED yet even though a later phase was reached — a fully-cached
-        sync prints `Prepared`/`Installed` with no `Downloading` line at all,
-        and `(word, 0, 0)` would render as a bare "0" in the frontend's byte
-        column (`jobAmount`, `frontend/src/platform/lib/jobs.ts`) instead of
-        nothing. `0` is a real, meaningful download size; "never announced"
-        is not the same fact and must not be spelled the same way.
+        `activity` is None before the first `Downloading` line/pty progress
+        row and after the final `Installed` line — the two states in which
+        this has nothing to add over the stage word already being reported,
+        which is the contract `_ensure_venv` (fused_render/ai/supervisor.py)
+        relies on to fall back cleanly. It is also None whenever nothing has
+        actually been ANNOUNCED yet even though a later phase was reached —
+        a fully-cached sync prints `Prepared`/`Installed` with no
+        `Downloading` line at all, and `(word, 0, 0)` would render as a bare
+        "0" in the frontend's byte column (`jobAmount`,
+        `frontend/src/platform/lib/jobs.ts`) instead of nothing. `0` is a
+        real, meaningful download size; "never announced" is not the same
+        fact and must not be spelled the same way.
         """
         with self._lock:
             phase = self.phase
             if phase in ("resolving", "installed"):
                 return None, None, None
-            # Copies taken UNDER the lock: iterating a `list`/`set` COPY after
-            # releasing the lock is still safe even if `feed` mutates the
-            # originals concurrently, but the copy itself must happen while
-            # the lock is held, or the copy operation is the very iteration
-            # racing a mutation this lock exists to prevent.
+            # Copies taken UNDER the lock: iterating a `list`/`set`/`dict`
+            # COPY after releasing the lock is still safe even if `feed`/
+            # `feed_pty_progress` mutate the originals concurrently, but the
+            # copy itself must happen while the lock is held, or the copy
+            # operation is the very iteration racing a mutation this lock
+            # exists to prevent.
             sizes = dict(self._sizes)
             downloaded = frozenset(self._downloaded)
+            inflight = dict(self._inflight)
         total = sum(sizes.values())
         if total == 0:
             # Nothing has been ANNOUNCED at all — see the docstring above.
             return None, None, None
+        # Confirmed bytes PLUS whatever a pty says is in flight for the rest
+        # — `inflight` is empty in piped mode (nothing ever populates it
+        # there), so this is exactly the old `done` sum on a pipe and a
+        # finer one on a pty.
         done = sum(sizes[name] for name in downloaded if name in sizes)
+        done += sum(inflight.get(name, 0.0) for name in sizes if name not in downloaded)
         done = min(done, total)  # see the class docstring: belt, not suspenders
         if phase == "downloading":
             pending = [(name, size) for name, size in sizes.items()
@@ -427,6 +521,236 @@ class _UvProgress:
 #: dump does not run to hundreds), while capping memory at a small, fixed
 #: multiple of a typical line's length.
 _STDERR_RING_LINES = 400
+
+
+# --------------------------------------------------------------------------
+# In-flight bytes inside ONE package, off a pty (Item 3 of the streaming
+# feature, dropped once and revived here for a reason worth stating).
+#
+# Package-level progress (above) still leaves a venv dominated by one huge
+# wheel — the ROCm/CUDA torch install this whole feature shipped to fix —
+# reporting nothing for however long that single file takes, because there
+# is no SECOND package landing to move the aggregate. Measuring uv's own
+# cache-directory growth for that was investigated once already and
+# dropped: it tracks UNPACKED size, several times the compressed transfer,
+# with no single file to stat as "bytes so far" (see `_UvProgress`'s
+# docstring for that finding, still true and still why this is not built on
+# the cache directory).
+#
+# What changed is where to look instead. uv only prints per-package IN-FLIGHT
+# bytes when it believes stdout is a terminal — pointed at a pipe it never
+# announces anything between "Downloading" and "Downloaded" for one file, but
+# under a pty (confirmed empirically: `pty.openpty()` + a real `uv sync`,
+# transcript captured with per-chunk timestamps) it redraws a live multi-line
+# bar, ANSI escapes and all, e.g. — after stripping the escapes and folding
+# `\r`-driven redraws:
+#
+#   Preparing packages... (0/2)  numpy   ------------------------------  6.31 MiB/15.94 MiB
+#                                 scipy   ------------------------------  6.14 MiB/33.68 MiB
+#
+# — refreshed every few milliseconds while the download runs, which is
+# exactly the missing signal. uv prints NO "Downloading"/"Downloaded" lines
+# at all once it is on a tty (also confirmed empirically) — the live bar
+# replaces them, it does not supplement them — so `_PtyProgressReader` below
+# feeds the SAME `_UvProgress` through a second entry point
+# (`feed_pty_progress`) rather than a parallel one, and the plain-line parser
+# (`feed`) stays exactly as built: it is what still catches
+# `Resolved`/`Prepared`/`Installed`, which uv prints identically either way.
+#
+# POSIX only, and optional even there. `pty` does not exist on Windows —
+# guarded at import time above — and pty SETUP (not the sync itself) can fail
+# on a POSIX box with no `/dev/ptmx` available (a locked-down container,
+# some CI sandboxes). Either way this must never be the reason an install
+# fails: `_PtyUnavailable` is raised only for a failure BEFORE `uv sync` is
+# spawned, so `_build` can fall back to the ORIGINAL, already-tested pipe
+# path with no risk of running uv twice.
+class _PtyUnavailable(Exception):
+    """A pty could not be set up for this sync. Raised only before the uv
+    child is spawned — see the module comment above `_PtyUnavailable`."""
+
+
+#: Strips ANSI CSI sequences (`ESC [ ... letter`) — cursor movement
+#: (`\x1b[1A`), line-clear (`\x1b[2K`) and colour (`\x1b[36m`) are all this
+#: shape in uv's own output; confirmed against a real transcript rather than
+#: assumed. uv is not observed to use any other escape family (OSC, DCS), so
+#: this is scoped to what was actually seen, not to "ANSI in general".
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+#: One package's live progress row, after `_ANSI_RE` has stripped the escapes
+#: around it: `<name>` padded with spaces, a dash-filled bar of variable
+#: width, then `<done> <unit>/<total> <unit>` — WITH a space between the
+#: number and unit here (unlike the piped `Downloading name (15.9MiB)` form,
+#: which has none; both are handled, `_DOWNLOADING_RE`'s pattern tolerates
+#: either). `{5,}` on the bar run is deliberately loose (dashes, spaces, or a
+#: fill character a future uv version might use) rather than pinned to
+#: exactly what was observed, since the bar's APPEARANCE is not the signal —
+#: the trailing numbers are.
+_PTY_PROGRESS_RE = re.compile(
+    r"(\S+)[ \t]+[-#\s]{5,}([\d.]+)\s*(B|KiB|MiB|GiB)/([\d.]+)\s*(B|KiB|MiB|GiB)")
+
+#: Bound on the text kept between reads while looking for a split point. The
+#: live progress block redraws in place with NO real newline between frames —
+#: confirmed empirically (a two-package sync produced ~250 redraws of one
+#: unbroken stretch before the next real line) — so without a cap this would
+#: hold the whole download's worth of redraws. Only the tail matters: a
+#: value already extracted is in the tracker via its max()-based aggregation
+#: (`_UvProgress.feed_pty_progress`), and a row cut off at the boundary
+#: reappears whole on the very next frame, milliseconds later.
+_PTY_CARRY_MAX = 8192
+
+
+class _PtyProgressReader:
+    """Feeds one `_UvProgress` from a pty's raw output: ANSI-stripped,
+    scanned whole for `_PTY_PROGRESS_RE`'s in-flight byte rows, and split
+    into complete lines for the ORIGINAL line-based parser (`feed`).
+
+    Complete lines only go into the caller's ring buffer (SPEC PY-18's
+    verbatim-error contract) — never the raw carry. The live progress block
+    would flood a bounded ring with near-duplicate redraws and evict the
+    error text that contract depends on; a genuine result line (`Resolved`,
+    `Prepared`, an `error:`) is exactly what DOES end with a real newline, so
+    splitting on `\\n` is what already separates the two.
+    """
+
+    def __init__(self, tracker):
+        self._tracker = tracker
+        self._carry = ""
+
+    def feed_bytes(self, raw):
+        """One read()'s worth of raw pty bytes. Returns the complete,
+        ANSI-stripped lines found, for the caller to append to its ring."""
+        text = _ANSI_RE.sub("", raw.decode("utf-8", errors="replace"))
+        buf = self._carry + text
+        for m in _PTY_PROGRESS_RE.finditer(buf):
+            name, done_v, done_u, total_v, total_u = m.groups()
+            self._tracker.feed_pty_progress(
+                name,
+                float(done_v) * _UNIT_BYTES[done_u],
+                float(total_v) * _UNIT_BYTES[total_u],
+            )
+        *complete, self._carry = buf.split("\n")
+        lines = [line.rstrip("\r") for line in complete]
+        for line in lines:
+            self._tracker.feed(line)
+        if len(self._carry) > _PTY_CARRY_MAX:
+            # See the constant's own comment: only the tail can still become
+            # a real line, and a stale prefix has already been mined for
+            # whatever progress rows it held.
+            self._carry = self._carry[-_PTY_CARRY_MAX:]
+        return lines
+
+
+def _run_uv_piped(cmd, cwd, env, tracker):
+    """`uv sync` behind an ordinary pipe: the ORIGINAL streaming path (before
+    the pty), kept byte-for-byte as the fallback every platform still gets
+    when a pty is unavailable or unsupported (Windows, always; a POSIX
+    sandbox with no `/dev/ptmx`). Returns `(returncode, ring)`.
+
+    `stdout=DEVNULL, stderr=PIPE`: uv's own progress text goes to STDERR
+    (confirmed by probe), so stdout has nothing this needs and piping it too
+    would only be a second buffer to drain. Streamed line by line rather
+    than read all at once so a heartbeat elsewhere can see `tracker`'s state
+    WHILE uv is still running.
+
+    `with Popen(...)` PLUS an explicit `kill()` on any exception — the same
+    two-part discipline `subprocess.run` itself uses internally (its source
+    is `with Popen(...) as process: try: ... except: process.kill(); raise`).
+    The `with` alone is not enough: `Popen.__exit__` only closes the pipes
+    and calls `wait()`, it does NOT kill.
+    """
+    ring = collections.deque(maxlen=_STDERR_RING_LINES)
+    # close_fds=False for posix_spawn rather than fork()+exec — the same
+    # discipline every other spawn in this codebase follows; see
+    # `_acquire_python` above.
+    with subprocess.Popen(cmd, cwd=cwd, env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True, bufsize=1, close_fds=False,
+                          encoding="utf-8", errors="replace",
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0) as proc:
+        try:
+            for line in proc.stderr:
+                line = line.rstrip("\n")
+                ring.append(line)
+                tracker.feed(line)
+        except BaseException:
+            proc.kill()
+            raise
+    return proc.returncode, ring
+
+
+def _run_uv_via_pty(cmd, cwd, env, tracker):
+    """`uv sync` under a pty, so it prints the live in-flight bytes it
+    suppresses for a pipe (see the module comment above `_PtyUnavailable`).
+    Returns `(returncode, ring)` — same shape as `_run_uv_piped`, so `_build`
+    treats the two identically once either has returned.
+
+    Raises `_PtyUnavailable` only for a SETUP failure before `uv sync` is
+    spawned (`pty.openpty()` itself failing — no `/dev/ptmx`, an exhausted
+    pty allocation), which is what makes falling back to `_run_uv_piped`
+    always safe: the child never started, so there is no risk of running uv
+    twice. Once the child IS running, any exception here is genuine (kill +
+    re-raise, matching `_run_uv_piped`'s own discipline) — it does NOT fall
+    back, because a second `uv sync` racing the first one's still-live
+    process would be worse than the original failure.
+
+    `close_fds=False`, matching every other spawn in this file (see
+    `_acquire_python`): the child inherits an extra, unused copy of
+    `master_fd` as a result, which is harmless — it is closed the moment the
+    child exits — and consistency here is worth more than trimming one
+    inherited descriptor `close_fds=True` would also cost the posix_spawn
+    path on a system without `POSIX_SPAWN_CLOSEFROM`.
+    """
+    try:
+        master_fd, slave_fd = pty.openpty()
+    except OSError as e:
+        raise _PtyUnavailable(str(e)) from e
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
+                                close_fds=False)
+    except BaseException:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    # Only the CHILD needs the slave end from here — holding our own copy
+    # open would stop us ever seeing EOF on `master_fd`, because a pty only
+    # signals "the other side is gone" once EVERY reference to the slave is
+    # closed, ours included.
+    os.close(slave_fd)
+    reader = _PtyProgressReader(tracker)
+    ring = collections.deque(maxlen=_STDERR_RING_LINES)
+    try:
+        while True:
+            try:
+                ready, _, _ = select.select([master_fd], [], [], 0.5)
+            except (OSError, ValueError):
+                break
+            if ready:
+                try:
+                    chunk = os.read(master_fd, 65536)
+                except OSError:
+                    # EIO is how a pty master reports "every copy of the
+                    # slave end is closed" on Linux — the ordinary, expected
+                    # end of output, not a real error.
+                    chunk = b""
+                if chunk:
+                    for line in reader.feed_bytes(chunk):
+                        ring.append(line)
+                    continue
+                break  # empty read or EIO: nothing more will ever arrive
+            if proc.poll() is not None:
+                # The child exited between two `select()` waits with nothing
+                # left to read — the ordinary path once uv is done and this
+                # loop's own 0.5s poll notices before another byte arrives.
+                break
+    except BaseException:
+        proc.kill()
+        raise
+    finally:
+        os.close(master_fd)
+    proc.wait()
+    return proc.returncode, ring
+
 
 
 def _acquire_python(version):
@@ -828,50 +1152,33 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     sync_root = _sync_root(project_dir, venv_dir)
     if tracker is None:
         tracker = _UvProgress()  # nobody is watching; feed it anyway for one code path
-    # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
-    # every other spawn in this codebase follows; see `_acquire_python` above.
-    #
-    # `stdout=DEVNULL, stderr=PIPE`, not `capture_output=True`: uv's own progress
-    # text — everything the `_UvProgress` comment block above quotes — goes to
-    # STDERR (confirmed by the probe cited there), so stdout has nothing this
-    # needs and piping it too would only be a second buffer to drain. Streamed
-    # line by line rather than read all at once so a heartbeat elsewhere can see
-    # `tracker`'s state WHILE uv is still running, which is the entire point.
-    # A bounded ring, not the growing list `capture_output` used to hand back:
-    # `_STDERR_RING_LINES` caps memory against a pathological or merely chatty
-    # uv run, while still keeping enough of the TAIL to raise verbatim below —
-    # a resolver failure's own explanation is always the last thing uv prints
-    # before exiting non-zero, never the first.
-    ring = collections.deque(maxlen=_STDERR_RING_LINES)
-    # `with Popen(...)` PLUS an explicit `kill()` on any exception — the same
-    # two-part discipline `subprocess.run` itself uses internally (its source
-    # is `with Popen(...) as process: try: ... except: process.kill(); raise`).
-    # The `with` alone is not enough: `Popen.__exit__` only closes the pipes
-    # and calls `wait()`, it does NOT kill — so a plain `with` here would wait
-    # forever for a `uv sync` that has no reason to exit just because ITS
-    # reader raised. Without the explicit kill, an exception out of this loop
-    # (a bug in `tracker.feed`, a cancel unwinding through here) would leave a
-    # multi-GB `uv sync` running unsupervised, attached to nothing.
-    with subprocess.Popen(cmd, cwd=sync_root, env=env,
-                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-                          text=True, bufsize=1, close_fds=False,
-                          encoding="utf-8", errors="replace",
-                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0) as proc:
+
+    # Pty first, pipe as the fallback — POSIX only, and only when the pty
+    # module actually loaded (it does not exist on Windows) and its SETUP
+    # succeeds (see `_run_uv_via_pty`'s docstring for what "setup" means and
+    # why a failure there, and only there, is safe to fall back from). Every
+    # other platform/failure keeps running exactly the path this feature
+    # shipped with — `_run_uv_piped` is that same code, unchanged, just
+    # pulled into its own function so this call site could pick either.
+    if pty is not None and os.name != "nt":
         try:
-            for line in proc.stderr:
-                line = line.rstrip("\n")
-                ring.append(line)
-                tracker.feed(line)
-        except BaseException:
-            proc.kill()
-            raise
-    if proc.returncode != 0:
+            returncode, ring = _run_uv_via_pty(cmd, sync_root, env, tracker)
+        except _PtyUnavailable:
+            returncode, ring = _run_uv_piped(cmd, sync_root, env, tracker)
+    else:
+        returncode, ring = _run_uv_piped(cmd, sync_root, env, tracker)
+
+    if returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the
         # manifest), and that is the answer the user needs. The ring holds the
-        # TAIL of stderr rather than all of it (see above), which is the part
-        # that matters for a failure — uv prints its diagnosis right before
-        # exiting, not at the top of a long resolve.
+        # TAIL of stderr rather than all of it (see `_STDERR_RING_LINES`),
+        # which is the part that matters for a failure — uv prints its
+        # diagnosis right before exiting, not at the top of a long resolve.
+        # Under a pty this ring holds only COMPLETE lines (`_PtyProgressReader`
+        # never feeds it a live-redraw fragment), so a resolver failure's own
+        # text — confirmed against a real one — reaches here exactly as
+        # readable as it always was, merged stdout+stderr or not.
         raise RuntimeError(
             "Failed to build the environment for %s:\n%s"
             % (project_dir, "\n".join(ring).strip())

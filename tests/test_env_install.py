@@ -2030,6 +2030,12 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, cache, "3.12")
@@ -2073,6 +2079,12 @@ def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setenv("UV_LINK_MODE", "copy")
 
@@ -2111,6 +2123,12 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
@@ -2147,6 +2165,12 @@ def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2186,6 +2210,12 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(
         worker.os, "replace",
@@ -2238,6 +2268,12 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2275,6 +2311,12 @@ def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeyp
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2321,6 +2363,12 @@ def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2381,6 +2429,12 @@ def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2425,6 +2479,12 @@ def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2461,6 +2521,12 @@ def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypat
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2711,6 +2777,12 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(runner, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2744,6 +2816,12 @@ def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, mo
         return _P()
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
