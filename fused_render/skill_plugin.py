@@ -1,8 +1,8 @@
 """Assemble the canonical fused-render skills into a Claude Code **plugin root**
 that fused-render owns outright, under ``home_dir()/skill-plugin/`` (D216).
 
-Why a plugin root and not just the user-level skills dir (``user_skills.py``,
-D185): that sync is a *guess* about the machine, and every way it can miss is
+Why a plugin root and not just skills written into the user's own Claude
+config (D185, since replaced by ``user_plugin.py`` — D492): that sync is a *guess* about the machine, and every way it can miss is
 silent. The dir it writes to may not be the one the CLI reads
 (``CLAUDE_CONFIG_DIR`` set after we resolved it), a same-named user-authored
 skill correctly makes us skip (marker ownership), the user may delete a skill

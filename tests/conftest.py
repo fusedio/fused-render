@@ -10,9 +10,12 @@ copy would land in the real ~/.fused-render.
 FUSED_RENDER_DIR is redirected for the same reason: /api/config reads it (D81)
 and the seed tests write into it, so no test may see the real ~/Fused.
 
-CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
-writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
-test may touch the real ~/.claude.
+CLAUDE_CONFIG_DIR likewise: several modules read Claude Code's config dir
+(transcripts, settings, file history) and a test that wrote into the real
+~/.claude would edit the developer's own Claude Code. Nothing syncs into it any
+more — the user-level skill COPY is gone (D492 replaced it with the published
+plugin, installed on a thread at startup and never from a request) — but the
+redirect stays, because reading the real one is its own kind of wrong.
 
 FUSED_RENDER_ENGINE is pinned to `builtin` for the same class of reason. D204
 flipped the engine PREF's default to fused-when-available, so from then on the

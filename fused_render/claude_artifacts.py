@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from fused_render._view_url_codec import canonical_fs_path
 
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
-# duplication) as server/routers/claude_sessions.py, user_skills.py and the
+# duplication) as server/routers/claude_sessions.py, user_plugin.py and the
 # claude template's CLAUDE_DIR.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")

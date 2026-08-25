@@ -1,19 +1,18 @@
 """Which canonical skills exist, and where each one's source is (D490).
 
-Three deliveries hand the SAME skills to a Claude session, and each one used to
-carry its own hardcoded list of names:
+Two things hand these skills to a Claude session off a list of names, and each
+one used to carry its own copy of that list:
 
 * the plugin root every session fused-render spawns is handed
-  (``skill_plugin.py``, D216),
-* the best-effort user-level sync for sessions we did NOT spawn
-  (``user_skills.py``, D185),
-* the packaged copy at ``fused_render/skills/`` that both of those read on a
-  machine with no repo (``scripts/hatch_build.py``, D106).
+  (``skill_plugin.py``, D216), and
+* the packaged copy at ``fused_render/skills/`` that the root is assembled from
+  on a machine with no repo (``scripts/hatch_build.py``, D106).
 
-A fourth delivery never had a list: the repo root **is** a plugin root
-(committed ``.claude-plugin/plugin.json`` beside ``skills/``), so
-``claude plugin marketplace add fusedio/fused-render`` ships whatever is in
-``skills/``. That is what makes a list wrong rather than merely tedious — the
+A third delivery never had a list at all: the repo root **is** a plugin root
+(committed ``.claude-plugin/plugin.json`` beside ``skills/``), so the published
+``fusedio/fused-render`` plugin — which is what covers sessions we did NOT spawn
+(``user_plugin.py``, D492) — ships whatever is in ``skills/``. That asymmetry is
+what makes a list wrong rather than merely tedious — the
 published plugin and our own deliveries could disagree about what a skill even
 is, and they did: ``fused-render-ai`` was added to both runtime lists and not to
 the build hook's, so every wheel and DMG since shipped four of the five skills
@@ -30,14 +29,14 @@ packaged copy under ``fused_render/skills/`` (wheel builds).
 ``scripts/hatch_build.py`` deliberately does NOT import this module — a build
 hook must not import the package it is building — and carries the same scan
 instead; ``tests/test_skill_plugin.py`` pins the two against each other on the
-real repo, which is the guard the three lists never had.
+real repo, which is the guard the hardcoded lists never had.
 """
 import os
 
 # The two source roots, resolved once. They live HERE rather than once per
-# consumer: they were duplicated across `skill_plugin` and `user_skills` in
-# different spellings, pinned equal by a test — a seam that only ever needed to
-# be one thing.
+# consumer: they were duplicated across `skill_plugin` and the user-level skill
+# copy (D185, since deleted) in different spellings, pinned equal by a test — a
+# seam that only ever needed to be one thing.
 REPO_SKILLS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "skills")
 PACKAGED_SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),

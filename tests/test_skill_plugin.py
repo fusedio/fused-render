@@ -12,8 +12,8 @@ Three groups of properties, and they fail in different places:
   A dotted path that the build backend's globs quietly drop is a failure you
   only ever see in a built wheel on a user's machine.
 * **the seams** — the skill set and the source roots come from
-  `skill_sources.py`, shared with `user_skills.py`, and are re-derived a fourth
-  time by the build hook, which may not import the package it is building; the
+  `skill_sources.py`, and are re-derived a second time by the build hook,
+  which may not import the package it is building; the
   root reaches the claude template (which may not import the package either,
   SPEC PY-15) only as an env var, decision already made server-side. Each seam
   is pinned below, so the ends cannot drift apart unnoticed.
@@ -28,7 +28,7 @@ import time
 
 import pytest
 
-from fused_render import skill_plugin, skill_sources, user_skills
+from fused_render import skill_plugin, skill_sources
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -337,14 +337,6 @@ def test_the_build_hook_discovers_the_same_skills_as_the_runtime():
     from scripts.hatch_build import _canonical_skills
 
     assert _canonical_skills(REPO_ROOT) == skill_sources.skill_names()
-
-
-def test_the_two_skill_deliveries_read_the_same_sources():
-    """D216's plugin root and D185's user-level sync ship the same skills from
-    the same two source roots. Separate modules, deliberately — but a skill
-    delivered by one and not the other would be missing from half the sessions
-    on the machine, so neither resolves them itself any more."""
-    assert user_skills.skill_sources is skill_sources.skill_sources
 
 
 def _agent(template):

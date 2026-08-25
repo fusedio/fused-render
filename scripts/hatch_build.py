@@ -44,7 +44,7 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
 
 # The canonical skills ship ONLY as a package-level copy at
 # fused_render/skills/ — the wheel-install source for both the user-level skill
-# sync (fused_render/user_skills.py, D185) and the plugin root assembled under
+# sync (D185, now fused_render/user_plugin.py — D492) and the plugin root under
 # home_dir() (fused_render/skill_plugin.py, D216). The skills live once at
 # skills/<name>/ (single source, D106); the copy is gitignored and shipped via
 # the `artifacts` glob in pyproject — the same not-committed-but-packaged

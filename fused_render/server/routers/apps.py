@@ -39,9 +39,10 @@ An app folder carries no ``.claude/`` of its own (D185); the starter
 ``CLAUDE.md`` references the canonical skills by name and fused-render supplies
 them. The scaffolding session below gets them the way every session
 fused-render spawns does — from the plugin root under the app's home dir,
-loaded with ``--plugin-dir`` (skill_plugin.py, D216) — and the user-level copy
-(user_skills.py) covers the user's own later ``claude`` in the folder. Both are
-refreshed at server startup and again here at create time.
+loaded with ``--plugin-dir`` (skill_plugin.py, D216), refreshed at server
+startup and again here at create time. The user's own later ``claude`` in the
+folder is covered by the published plugin instead (user_plugin.py, D492), which
+is machine-wide and synced only at startup.
 """
 import os
 import shutil
@@ -59,7 +60,7 @@ router = APIRouter()
 
 # The packaged app starter kit: index.html + CLAUDE.md, both committed. No
 # .claude/ ships in it (D185) — skills are supplied by fused-render instead
-# (skill_plugin.py for the sessions it spawns, user_skills.py for the rest).
+# (skill_plugin.py for the sessions it spawns, user_plugin.py for the rest).
 _APP_STARTER_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "app_starter"
 )
@@ -578,16 +579,17 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
 
-    # Refresh the skills the starter CLAUDE.md references: the plugin root the
-    # scaffolding session below is handed (D216) and the user-level copy for the
-    # user's own sessions (D185). Startup already synced both; doing it again
-    # here repairs a deletion in the window before that session starts.
-    # Best-effort inside — never fails creation over a skill copy.
+    # Refresh the plugin root the scaffolding session below is handed (D216).
+    # Startup already synced it; doing it again here repairs a deletion in the
+    # window before that session starts. Best-effort inside — never fails
+    # creation over a skill copy.
+    #
+    # The user's own later sessions are covered by the published plugin
+    # (user_plugin.py, D492), which is not synced here on purpose: it is a
+    # network clone, and a create-app request is not the place for one.
     from fused_render.skill_plugin import export_skill_plugin_env
-    from fused_render.user_skills import sync_user_skills
 
     export_skill_plugin_env()
-    sync_user_skills()
 
     # Version control from birth: every new app is a git repo whose first
     # commit is the untouched starter, BEFORE any session runs — so the
