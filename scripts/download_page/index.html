@@ -20,7 +20,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
 <script type="application/fused-bundle">
-{ "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png"] }
+{ "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png", "assets/showcase/*.mp4"] }
 </script>
 <style>
   /* ============================================================
@@ -130,7 +130,9 @@
     font-size: 15.5px;
   }
   .brand .spark { color: var(--accent-fill); font-size: 19px; line-height: 1; }
-  .top nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  .top nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
+  a.gh { display: inline-flex; align-items: center; gap: 7px; }
+  a.gh svg { width: 15px; height: 15px; flex: none; }
   .top nav .navcta {
     padding: 8px 16px; border-radius: 99px;
     background: var(--accent-fill); color: var(--accent-on) !important;
@@ -175,13 +177,21 @@
 
   /* ---------- hero ---------- */
   .hero { padding: clamp(30px, 5vw, 60px) 0 0; }
+  .hero-grid {
+    display: grid; grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
+    gap: clamp(24px, 3.5vw, 52px); align-items: center;
+  }
+  @media (max-width: 860px) { .hero-grid { grid-template-columns: minmax(0, 1fr); } }
   h1 {
-    /* One line at desktop: the size is derived from the viewport so the
-       sentence fills the measure instead of wrapping at a fixed ch cap. */
-    font-size: clamp(2rem, 3.55vw, 3.6rem);
-    line-height: 1.02; letter-spacing: -0.045em; font-weight: 700;
-    text-wrap: balance;
-    text-align: center;
+    font-size: clamp(2rem, 4.2vw, 4rem);
+    line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
+    text-align: left; margin: 0;
+  }
+  .hero-video { margin: 0; }
+  .hero-video video {
+    display: block; width: 100%; height: auto;
+    border-radius: var(--r); border: 1px solid var(--rule);
+    background: var(--tile-2);
   }
   .points {
     display: grid; grid-template-columns: minmax(0, 1fr);
@@ -218,8 +228,8 @@
     .points { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
   }
   .acts {
-    display: flex; align-items: center; justify-content: center; gap: var(--s3);
-    flex-wrap: wrap; margin-top: clamp(40px, 5.2vw, 60px);
+    display: flex; align-items: center; gap: var(--s3);
+    flex-wrap: wrap; margin-top: clamp(28px, 3.4vw, 42px);
   }
   /* The one accent in the first viewport. */
   .btn {
@@ -238,8 +248,8 @@
     transition: border-color 0.22s var(--ease);
   }
   .fine {
-    margin-top: clamp(26px, 3vw, 36px);
-    text-align: center;
+    margin-top: clamp(18px, 2.2vw, 26px);
+    text-align: left;
     font: 500 var(--t-xs)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
     text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
   }
@@ -414,6 +424,22 @@
   }
   .shot .cap { padding: 15px clamp(16px, 2vw, 20px) 18px; }
   .shot-sq img { aspect-ratio: 1 / 1; }
+  /* Illustration plates: transparent cutouts floating on the page. */
+  .illo { display: flex; flex-direction: column; }
+  .illo img { width: 100%; height: auto; object-fit: contain; flex: 1; }
+  .illo .cap {
+    margin-top: 18px; border-top: 1px solid var(--rule);
+    padding: 14px 4px 0;
+  }
+  #models-alt .illo img { max-height: 360px; }
+  .illo .cap b {
+    display: block; font-size: var(--t-md); font-weight: 640;
+    letter-spacing: -0.018em; line-height: 1.35;
+  }
+  .illo .cap span {
+    display: block; margin-top: 3px;
+    font-size: var(--t-sm); color: var(--ink-2); line-height: 1.5;
+  }
   .shot .cap b {
     display: block; font-size: var(--t-md); font-weight: 640;
     letter-spacing: -0.018em;
@@ -424,10 +450,45 @@
   }
 
   /* ---------- download ---------- */
+  /* The download banner: the product itself is the background, and the
+     buttons sit inside the picture. */
+  .getcard {
+    position: relative; overflow: hidden;
+    border-radius: 16px; border: 1px solid var(--rule);
+    margin-top: var(--s5);
+    min-height: clamp(360px, 32vw, 470px);
+    display: flex; align-items: flex-end;
+  }
+  #get { padding-top: var(--s5); border-top: 1px solid var(--rule); }
+  .getbg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; object-position: top left;
+  }
+  .getveil {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(0deg, rgba(18, 18, 17, 0.97) 0%, rgba(18, 18, 17, 0.88) 38%, rgba(18, 18, 17, 0.4) 68%, rgba(18, 18, 17, 0.06) 100%),
+      linear-gradient(90deg, rgba(18, 18, 17, 0.6) 0%, rgba(18, 18, 17, 0) 60%);
+  }
+  .getbody {
+    position: relative; width: 100%;
+    padding: clamp(22px, 3vw, 40px);
+  }
+  .getbody h2 { max-width: none; }
+  .getbody .deck { margin-top: 6px; }
+  .getcard .os {
+    background: rgba(18, 18, 17, 0.55);
+    border-color: rgba(243, 242, 237, 0.16);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  }
+  .getcard .os.primary {
+    background: var(--accent-fill); border-color: var(--accent-edge);
+  }
   .oses {
     display: grid; grid-template-columns: minmax(0, 1fr);
     gap: 14px; margin-top: var(--s5); max-width: 780px;
   }
+  .getcard .oses { margin-top: clamp(18px, 2vw, 28px); }
   @media (min-width: 620px) { .oses { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .os {
     display: flex; flex-direction: column; gap: 3px;
@@ -469,9 +530,32 @@
     background: var(--tile); border: 1px solid var(--rule);
     border-radius: 16px; padding: 26px 26px 20px;
   }
-  .howrow.duo { display: grid; grid-template-columns: 1fr 156px 1fr; align-items: center; }
+  .howrow.duo {
+    display: grid; justify-content: center; align-items: center;
+    grid-template-columns: minmax(170px, 215px) minmax(230px, 320px) minmax(170px, 215px);
+  }
   @media (max-width: 900px) {
     .howrow.duo { grid-template-columns: 1fr; gap: 14px; }
+  }
+  /* Minimal duo: two icon cards, one dashed line, one code chip. */
+  .howrow.duo .howside {
+    min-height: 122px; align-items: center; justify-content: center; gap: 11px;
+    padding: 18px 16px;
+  }
+  .howrow.duo .howside > .dot { width: 30px; height: 30px; }
+  .howrow.duo .howside h3 { margin: 0; font-size: 15.5px; }
+  .howrow.duo .howarrow { position: relative; width: 100%; }
+  .howrow.duo .track {
+    background: none; height: 0; border-radius: 0;
+    border-top: 2px dashed var(--rule-hi);
+  }
+  .howrow.duo .pulse { width: 10px; height: 10px; }
+  .howrow.duo .chip {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--paper);
+    border: 1px solid var(--accent-edge); border-radius: 99px;
+    padding: 8px 15px;
+    font-size: 12px; color: var(--accent-text); white-space: nowrap;
   }
   .howrow.hub {
     display: grid;
@@ -496,9 +580,9 @@
     margin: 0 0 6px; font-size: 16px; font-weight: 660;
     display: flex; align-items: center; gap: 9px;
   }
-  .howside h3 .dot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
-  .howside.pg .dot { background: var(--ink); }
-  .howside.py .dot { background: var(--accent-fill); border: 1px solid var(--accent-edge); }
+  .howside h3 .dot { width: 17px; height: 17px; flex: 0 0 auto; }
+  .howside.pg .dot { color: var(--ink); }
+  .howside.py .dot { color: var(--accent-fill); }
   .howside .what { color: var(--ink); font-size: 13.5px; font-weight: 600; }
   .howside .eg { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
   .howside .loc { color: var(--ink-3); font-size: 11.5px; margin-top: auto; padding-top: 10px; }
@@ -532,10 +616,10 @@
                   box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
   }
   @keyframes duo-pg-dot {
-    0%, 9.9%    { background: var(--accent-fill); }
-    10%, 39.9%  { background: var(--ink-3); }
-    40%, 59.9%  { background: var(--accent-fill); }
-    60%, 100%   { background: var(--ink-3); }
+    0%, 9.9%    { color: var(--accent-fill); }
+    10%, 39.9%  { color: var(--ink-2); }
+    40%, 59.9%  { color: var(--accent-fill); }
+    60%, 100%   { color: var(--ink-2); }
   }
   @keyframes duo-py {
     0%, 19.9%   { border-color: var(--rule); border-top-color: var(--rule-hi);
@@ -546,9 +630,9 @@
                   box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
   }
   @keyframes duo-py-dot {
-    0%, 19.9%   { background: var(--ink-3); }
-    20%, 29.9%  { background: var(--accent-fill); }
-    30%, 100%   { background: var(--ink-3); }
+    0%, 19.9%   { color: var(--ink-2); }
+    20%, 29.9%  { color: var(--accent-fill); }
+    30%, 100%   { color: var(--ink-2); }
   }
   @keyframes duo-pf {
     0%, 10% { left: 0; opacity: 0; }
@@ -579,10 +663,7 @@
   .bridge { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: 16px; }
   .bridge code { color: var(--accent-text); }
   .ecofig { margin: 0; display: flex; justify-content: center; }
-  .ecofig img {
-    width: min(720px, 100%); height: auto;
-    border-radius: 12px; border: 1px solid var(--rule);
-  }
+  .ecofig img { width: min(720px, 100%); height: auto; }
   @media (max-width: 900px) {
     .howrow.hub { grid-template-columns: 1fr; gap: 14px; }
     .howconn { flex-direction: row; justify-content: center; }
@@ -826,7 +907,7 @@
   }
   footer .mark-bg {
     position: absolute;
-    right: clamp(-18px, -2vw, 0px);
+    right: 2px;
     bottom: -0.2em;
     display: flex; align-items: baseline; gap: 0.14em;
     font-size: clamp(76px, 14vw, 196px);
@@ -937,6 +1018,13 @@
      <rect x="2.8" y="2.8" width="6.2" height="6.2" rx="1.3"/>
      <rect x="11" y="11" width="6.2" height="6.2" rx="1.3"/>
      <path d="M14.1 3.2v5M11.6 5.7h5M3.4 14.1h5.4"/></g>
+  <g id="i-window"><rect x="2.6" y="3.6" width="14.8" height="12.8" rx="1.6" fill="none"
+     stroke="currentColor" stroke-width="1.5"/>
+     <path d="M2.6 7.2h14.8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+     <circle cx="5.2" cy="5.4" r="0.75" fill="currentColor"/>
+     <circle cx="7.5" cy="5.4" r="0.75" fill="currentColor"/></g>
+  <g id="i-python-mark" transform="scale(0.8333)"><path fill="currentColor" d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></g>
+  <g id="i-github" transform="scale(0.8333)"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></g>
   <g id="i-folder"><path d="M2.6 5.4a1.4 1.4 0 011.4-1.4h3.2l1.6 2h7.2a1.4 1.4 0 011.4 1.4v7.2a1.4 1.4 0 01-1.4 1.4H4a1.4 1.4 0 01-1.4-1.4z"
      fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></g>
 </defs></svg>
@@ -949,82 +1037,50 @@
       Fused Render
     </a>
     <nav>
-      <a rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
+      <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
       <a class="navcta" href="#get">Get the app</a>
     </nav>
   </header>
 
   <!-- ============ HERO ============ -->
   <section class="hero">
-    <h1>Your files, your AI, your apps.</h1>
-    <ol class="points">
-      <li>
-        <a class="pt" href="#claude">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-claude"/></svg>
-          <b>Use and manage Claude tasks.</b><span>See, resume and schedule every task.</span>
-        </a>
-      </li>
-      <li>
-        <a class="pt" href="#apps">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-build"/></svg>
-          <b>Build and share local AI-powered apps.</b><span>Describe a tool, get it built, share it.</span>
-        </a>
-      </li>
-      <li>
-        <a class="pt" href="#models">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-brain"/></svg>
-          <b>Run AI models on your machine.</b><span>Text, images and transcription, all local.</span>
-        </a>
-      </li>
-      <li>
-        <a class="pt" href="#views">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
-          <b>Open any file.</b><span>Previews for 100+ file types.</span>
-        </a>
-      </li>
-    </ol>
-    <div class="acts">
-      <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
+    <div class="hero-grid">
+      <div class="hero-left">
+        <h1>Your files,<br>your AI,<br>your apps.</h1>
+        <div class="acts">
+          <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
+        </div>
+        <p class="fine">No account needed.<br>Native support for macOS &amp; limited support on Windows &amp; Linux.</p>
+      </div>
+      <figure class="hero-video">
+        <video src="assets/showcase/hero.mp4" autoplay muted loop playsinline
+               aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
+      </figure>
     </div>
-    <p class="fine">No account needed. Native support for macOS &amp; limited support on Windows &amp; Linux.</p>
   </section>
 
   <!-- ============ §1 · THE EXPLORER ============ -->
   <section id="under-the-hood">
     <div class="sec-head rule-top">
       <h2>HTML powered by local Python</h2>
-      <p class="deck">A project is just a web page and a Python file in a folder. The page is
-      what you see; Python does the work, on your own machine. One line connects them:
-      <code class="mono hl">fused.runPython()</code>.</p>
+      <p class="deck">A web page you see, a Python file that does the work.</p>
     </div>
 
-    <div class="howflow">
-      <div class="howrow duo">
-        <div class="howside pg">
-          <h3><span class="dot" aria-hidden="true"></span>The page</h3>
-          <div class="what">What you see</div>
-          <div class="eg">Sliders, maps, charts &mdash; the interface.</div>
-          <div class="loc">runs in the browser</div>
-        </div>
-        <div class="howconn" aria-hidden="true">
-          <div class="howarrow">
-            <div class="lbl">your inputs &rarr;</div>
-            <div class="track fwd"><span class="head"></span><span class="pulse pf"></span></div>
-          </div>
-          <div class="howarrow">
-            <div class="lbl">&larr; the result</div>
-            <div class="track back"><span class="head"></span><span class="pulse pb"></span></div>
-          </div>
-        </div>
-        <div class="howside py">
-          <h3><span class="dot" aria-hidden="true"></span>The Python</h3>
-          <div class="what">What does the work</div>
-          <div class="eg">pandas, DuckDB, your files &amp; APIs.</div>
-          <div class="loc">runs on your machine</div>
+    <div class="howrow duo">
+      <div class="howside pg">
+        <svg class="dot" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-window"/></svg>
+        <h3>View</h3>
+      </div>
+      <div class="howconn" aria-hidden="true">
+        <div class="howarrow">
+          <div class="track fwd"><span class="pulse pf"></span><span class="pulse pb"></span></div>
+          <div class="chip mono">fused.runPython()</div>
         </div>
       </div>
-      <div class="bridge">The page hands inputs to Python and gets JSON back &mdash; that whole
-      arrow is one call to <code class="mono">fused.runPython()</code>.</div>
+      <div class="howside py">
+        <svg class="dot" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-python-mark"/></svg>
+        <h3>Execution</h3>
+      </div>
     </div>
   </section>
 
@@ -1036,33 +1092,61 @@
     </div>
 
     <figure class="ecofig">
-      <img src="assets/showcase/ecosystem.jpg" width="1344" height="768" loading="lazy" decoding="async"
+      <img src="assets/showcase/ecosystem.png" width="1344" height="768" loading="lazy" decoding="async"
            alt="Fused Render at the center of a network, connected to Python, Claude, local AI models and macOS.">
     </figure>
   </section>
 
-  <section id="models">
+  <!-- Hidden for now: the illustrated set below (#models-alt) is live instead. -->
+  <section id="models" hidden>
     <div class="sec-head rule-top">
       <h2>AI models run on your local machine.</h2>
       <p class="deck">No account, no API key, no per-token bill.</p>
     </div>
 
     <div class="bento">
-      <div class="tile w4 shot shot-sq hoverable">
-        <img src="assets/showcase/illo-playground.jpg" width="1024" height="1024" loading="lazy" decoding="async"
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-playground.png" width="1024" height="1024" loading="lazy" decoding="async"
              alt="Illustration of the Playground: a model picked from a list, a typed prompt, and the generated lighthouse drawing.">
         <div class="cap"><b>Playground</b><span>Type a prompt, see the output.</span></div>
       </div>
 
-      <div class="tile w4 shot shot-sq hoverable">
-        <img src="assets/showcase/illo-models.jpg" width="1024" height="1024" loading="lazy" decoding="async"
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-models.png" width="1024" height="1024" loading="lazy" decoding="async"
              alt="Illustration of the model library: a bookshelf of models for chat, images, speech and video, inside a dashed boundary labeled your machine.">
         <div class="cap"><b>Models</b><span>Bring any model: text, images, transcription, video.</span></div>
       </div>
 
-      <div class="tile w4 shot shot-sq hoverable">
-        <img src="assets/showcase/illo-benchmark.jpg" width="1024" height="1024" loading="lazy" decoding="async"
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-benchmark.png" width="1024" height="1024" loading="lazy" decoding="async"
              alt="Illustration of the benchmark: a stopwatch over a laptop and a race chart of models timed per step.">
+        <div class="cap"><b>Benchmark</b><span>Time any model on your machine.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="models-alt">
+    <div class="sec-head rule-top">
+      <h2>AI models run on your local machine.</h2>
+      <p class="deck">No account, no API key, no per-token bill.</p>
+    </div>
+
+    <div class="bento">
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-playground.png" width="652" height="332" loading="lazy" decoding="async"
+             alt="Illustration of the Playground: a typed prompt goes into a spark and comes out as image, audio and text.">
+        <div class="cap"><b>Playground</b><span>Type a prompt, see the output.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-models.png" width="398" height="558" loading="lazy" decoding="async"
+             alt="Illustration of the model library: a vending machine of AI models, one picked and dropping out.">
+        <div class="cap"><b>Models</b><span>Bring any model: text, images, transcription, video.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-benchmark.png" width="1024" height="1001" loading="lazy" decoding="async"
+             alt="Illustration of the benchmark: chip characters racing toward a checkered flag, the fastest one highlighted.">
         <div class="cap"><b>Benchmark</b><span>Time any model on your machine.</span></div>
       </div>
     </div>
@@ -1230,20 +1314,25 @@
   <!-- ============ DOWNLOAD ============ -->
 
   <section id="get">
-    <div class="sec-head rule-top" style="padding-bottom:0">
-      <h2>Free, and it stays on your machine.</h2>
-      <p class="deck">One download. No account, no key, no card.</p>
-    </div>
-    <div class="oses">
-      <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
-      </a>
-      <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
-      </a>
-      <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-        <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
-      </a>
+    <div class="getcard">
+      <img class="getbg" src="assets/showcase/app-home.jpg" width="2880" height="1800"
+           loading="lazy" decoding="async" alt="">
+      <div class="getveil" aria-hidden="true"></div>
+      <div class="getbody">
+        <h2>Free, and it stays on your machine.</h2>
+        <p class="deck">One download. No account, no key, no card.</p>
+        <div class="oses">
+          <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
+          </a>
+          <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
+          </a>
+          <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
+          </a>
+        </div>
+      </div>
     </div>
     <span class="version" id="version" hidden></span>
   </section>
@@ -1370,7 +1459,7 @@
       </a>
       <nav>
         <a href="index.html">Download page</a>
-        <a rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
+        <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
         <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
         <a rel="noopener" href="https://www.fused.io">fused.io</a>
       </nav>
