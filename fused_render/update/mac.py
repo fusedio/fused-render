@@ -130,6 +130,7 @@ class UpdateManager:
         self._error: str | None = None
         self._manual_command: str | None = None
         self._progress: float | None = None
+        self._progress_total: float | None = None
         self._install_thread: threading.Thread | None = None
 
     # -- status ---------------------------------------------------------------
@@ -151,6 +152,7 @@ class UpdateManager:
                 "method": self.method(),
                 "latest_version": self._latest["version"] if self._latest else None,
                 "progress": self._progress,
+                "progress_total": self._progress_total,
                 "error": self._error,
                 "manual_command": self._manual_command,
             }
@@ -273,6 +275,7 @@ class UpdateManager:
             self._error = None
             self._manual_command = None
             self._progress = 0.0
+            self._progress_total = None
             thread = threading.Thread(
                 target=self._install, args=(manifest,), daemon=True,
                 name="fused-render-update-install")
@@ -295,6 +298,7 @@ class UpdateManager:
         with self._lock:
             self._state = "installed"
             self._progress = None
+            self._progress_total = None
 
     # -- dmg path -------------------------------------------------------------
 
@@ -332,11 +336,13 @@ class UpdateManager:
         updates = self._updates_dir()
         self._check_disk_space(updates)
 
-        # Manifest carries no size field (schema 1), so progress is a raw byte
-        # count; the UI shows MB downloaded, not a percentage.
-        def on_bytes(done: int) -> None:
+        # The manifest itself carries no size field (schema 1); the total
+        # comes from the download response's Content-Length instead, so the
+        # UI can show a percentage when the CDN sends that header.
+        def on_bytes(done: int, size: int | None) -> None:
             with self._lock:
                 self._progress = float(done)
+                self._progress_total = float(size) if size is not None else None
 
         dmg = common.download_verified(
             manifest, dir=updates, prefix=_DOWNLOAD_PREFIX,

@@ -107,7 +107,9 @@ def download_verified(manifest: dict, *, dir: str | None = None,
     while hashing it, and confirm its SHA-256 matches the signed value. The
     manifest signature (over version + sha256) is already verified in
     fetch_manifest; the URL is not signed, so require HTTPS. `progress`
-    (optional) is called with bytes downloaded so far after each chunk."""
+    (optional) is called with (bytes downloaded so far, total bytes or None)
+    after each chunk — the total comes from the response's Content-Length
+    header, which the manifest itself does not carry."""
     if urlopen_fn is None:
         urlopen_fn = urlopen
     url = manifest["url"]
@@ -115,19 +117,21 @@ def download_verified(manifest: dict, *, dir: str | None = None,
         raise ValueError("update manifest url is not https")
     sha256 = manifest["sha256"]
     digest = hashlib.sha256()
-    total = 0
+    done = 0
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=dir)
     ok = False
     try:
         with os.fdopen(fd, "wb") as out, urlopen_fn(url, DOWNLOAD_TIMEOUT_S) as resp:
+            content_length = resp.getheader("Content-Length")
+            size = int(content_length) if content_length is not None else None
             while chunk := resp.read(DOWNLOAD_CHUNK):
-                total += len(chunk)
-                if total > max_bytes:
+                done += len(chunk)
+                if done > max_bytes:
                     raise ValueError("update download exceeds the size limit")
                 digest.update(chunk)
                 out.write(chunk)
                 if progress is not None:
-                    progress(total)
+                    progress(done, size)
         if digest.hexdigest() != sha256:
             raise ValueError("downloaded file does not match the signed manifest")
         ok = True

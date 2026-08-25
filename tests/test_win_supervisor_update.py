@@ -22,9 +22,10 @@ from fused_render.supervisor._win32 import update
 
 
 class _Response:
-    def __init__(self, payload: bytes):
+    def __init__(self, payload: bytes, *, content_length: int | None = None):
         self._payload = payload
         self._done = False
+        self._content_length = content_length
 
     def __enter__(self):
         return self
@@ -39,6 +40,11 @@ class _Response:
             return b""
         self._done = True
         return self._payload
+
+    def getheader(self, name, default=None):
+        if name == "Content-Length" and self._content_length is not None:
+            return str(self._content_length)
+        return default
 
 
 def _sign(key: Ed25519PrivateKey, version: str, sha256: str) -> str:
@@ -111,6 +117,36 @@ def test_download_verified_roundtrip(monkeypatch):
     path = update._download_verified(manifest)
     with open(path, "rb") as f:
         assert f.read() == installer
+
+
+def test_download_verified_reports_progress_with_content_length(monkeypatch):
+    from fused_render.update import common
+
+    key = _install_key(monkeypatch)
+    installer = b"the real installer bytes"
+    sha256 = hashlib.sha256(installer).hexdigest()
+    manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
+                "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
+    calls = []
+    common.download_verified(
+        manifest, progress=lambda done, total: calls.append((done, total)),
+        urlopen_fn=lambda url, timeout: _Response(installer, content_length=len(installer)))
+    assert calls == [(len(installer), len(installer))]
+
+
+def test_download_verified_progress_total_none_without_content_length(monkeypatch):
+    from fused_render.update import common
+
+    key = _install_key(monkeypatch)
+    installer = b"the real installer bytes"
+    sha256 = hashlib.sha256(installer).hexdigest()
+    manifest = {"schema": 1, "version": "0.4.0", "url": "https://x/setup.exe",
+                "sha256": sha256, "signature": _sign(key, "0.4.0", sha256)}
+    calls = []
+    common.download_verified(
+        manifest, progress=lambda done, total: calls.append((done, total)),
+        urlopen_fn=lambda url, timeout: _Response(installer))
+    assert calls == [(len(installer), None)]
 
 
 def test_fetch_manifest_verifies_signature_before_returning(monkeypatch):
