@@ -359,6 +359,25 @@ export function TextStage({
   const shown = reply ? splitThink(reply.text) : null;
   const stats = replyStats(reply?.usage);
 
+  // Hoisted because the composer has two shapes below and this button is the
+  // one thing both put in the same place — the bottom-right corner. Written
+  // twice it would be two buttons to keep in step.
+  const runButton = streaming ? (
+    <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
+      Stop
+    </button>
+  ) : (
+    <button
+      type="button"
+      className="btn btn-primary pg-send"
+      disabled={!prompt.trim()}
+      title="Enter to run · Shift+Enter for a new line"
+      onClick={() => void send()}
+    >
+      Run <kbd className="pg-kbd">⏎</kbd>
+    </button>
+  );
+
   return (
     <div className={"pg-work" + (configOpen ? " has-config" : "")}>
       <Card className="pg-work-card flex-none gap-3 px-(--card-spacing) [--card-spacing:--spacing(6)]">
@@ -370,15 +389,52 @@ export function TextStage({
         onToggleConfig={toggleConfig}
       />
 
-      <div className="pg-composer">
-        {/* The attachment row: only drawn where the server says this model can
-            actually be asked about a picture (AI-11j). Above the textarea
-            rather than in a footer row like `ImageStage`'s stacked composer,
-            because this stage's own layout keeps the prompt and the Run
-            column side by side, not stacked — the same pill and thumbnail
-            classes are reused so the two stages read as one feature. */}
-        {attachable && (
-          <div className="pg-attach-row">
+      {/* Two shapes, one composer. Without an attachment this stage is the
+          plain row every other text-in stage is: [prompt | Clear-over-Run].
+          The moment the model can be asked about a picture (AI-11j) it becomes
+          `ImageStage`'s STACKED composer instead — prompt across the whole box,
+          a floor holding the attach pill beside Run, Clear floating in the
+          corner. The attach row used to be a third child of the ROW flex,
+          which laid it out BESIDE the prompt: the pill took the left of the
+          box, the placeholder was squeezed into the middle, and neither read as
+          belonging to the other. Same classes as the image stage throughout, so
+          the two are one feature wearing one layout. */}
+      <div className={"pg-composer" + (attachable ? " pg-composer-stack" : "")}>
+        <textarea
+          ref={boxRef}
+          value={prompt}
+          rows={3}
+          placeholder={
+            attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
+          }
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              void send();
+            }
+          }}
+        />
+        {/* Stacked, Clear floats in the box's top-right corner rather than
+            taking a slot above Run: on this shape the two are not sharing a row
+            with the prompt, so a slot of its own would cost the box a permanent
+            40px of height for a button that only exists once there is a reply.
+            The row shape keeps the stack — see the column below. */}
+        {attachable && !streaming && reply && (
+          <button
+            type="button"
+            className="pg-ghost-btn pg-clear pg-clear-corner"
+            title="Clear the prompt and reply"
+            onClick={clear}
+          >
+            Clear
+          </button>
+        )}
+        {attachable ? (
+          /* The composer's floor: the way to attach a picture, the picture
+             itself once there is one, then Run — one cluster in the
+             bottom-right corner, exactly as the image stage arranges its own. */
+          <div className="pg-composer-foot">
             {attachedImage && (
               <span className="pg-attach">
                 <button
@@ -401,67 +457,42 @@ export function TextStage({
                 </button>
               </span>
             )}
-            <button
-              type="button"
-              className="pg-attach-btn"
-              title="Point at a picture already on this disk — nothing is copied"
-              disabled={attaching}
-              onClick={() => void choose()}
-            >
-              {StarterIcons.landscape}
-              <span>{attachedImage ? "Replace" : "Add an image"}</span>
-            </button>
-            {attaching && <span className="pg-attach-note">Working…</span>}
+            <div className="pg-attach-row">
+              <button
+                type="button"
+                className="pg-attach-btn"
+                title="Point at a picture already on this disk — nothing is copied"
+                disabled={attaching}
+                onClick={() => void choose()}
+              >
+                {StarterIcons.landscape}
+                <span>{attachedImage ? "Replace" : "Add an image"}</span>
+              </button>
+              {attaching && <span className="pg-attach-note">Working…</span>}
+            </div>
+            <div className="pg-composer-side">{runButton}</div>
+          </div>
+        ) : (
+          /* Clear at the top of this column, Run at the bottom — not inline with
+             the prompt. Inline, Clear appeared and disappeared BESIDE the text,
+             narrowing the box by its own width and rewrapping the prompt taller
+             than the height the grow already wrote. The column's width is set by
+             Run, the wider of the two, so nothing moves when Clear comes and
+             goes. */
+          <div className="pg-composer-side">
+            {!streaming && reply && (
+              <button
+                type="button"
+                className="pg-ghost-btn pg-clear"
+                title="Clear the prompt and reply"
+                onClick={clear}
+              >
+                Clear
+              </button>
+            )}
+            {runButton}
           </div>
         )}
-        <textarea
-          ref={boxRef}
-          value={prompt}
-          rows={3}
-          placeholder={
-            attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
-          }
-          onChange={(e) => setPrompt(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-        />
-        {/* Clear at the top of this column, Run at the bottom — not inline with
-            the prompt. Inline, Clear appeared and disappeared BESIDE the text,
-            narrowing the box by its own width and rewrapping the prompt taller
-            than the height the grow already wrote. The column's width is set by
-            Run, the wider of the two, so nothing moves when Clear comes and
-            goes. */}
-        <div className="pg-composer-side">
-          {!streaming && reply && (
-            <button
-              type="button"
-              className="pg-ghost-btn pg-clear"
-              title="Clear the prompt and reply"
-              onClick={clear}
-            >
-              Clear
-            </button>
-          )}
-          {streaming ? (
-            <button type="button" className="btn btn-secondary pg-send" onClick={stop}>
-              Stop
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="btn btn-primary pg-send"
-              disabled={!prompt.trim()}
-              title="Enter to run · Shift+Enter for a new line"
-              onClick={() => void send()}
-            >
-              Run <kbd className="pg-kbd">⏎</kbd>
-            </button>
-          )}
-        </div>
       </div>
 
       {/* The attached picture at full size — the whole modal, no title bar, no
