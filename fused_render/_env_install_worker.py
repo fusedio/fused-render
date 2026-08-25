@@ -13,15 +13,21 @@ of a cache key, which is how a loader ends up filling a directory no run reads.
 `<uv_cache_dir>` is EMPTY, same idiom, whenever `envinstall._spawn` was handed
 `projectenv.uv_cache_dir() is None` — which is the ordinary case now, not the
 exception: `_build` then runs `uv sync` with no `UV_CACHE_DIR` override at all,
-deferring to uv's OWN default (XDG on Linux, `~/Library/Caches` on macOS,
-`%LOCALAPPDATA%` on Windows) instead of an explicit sibling of the venv store.
-That sibling used to be unconditional and fragmented per branch/worktree as a
+deferring to uv's OWN default (XDG on Linux, `~/.cache/uv` on macOS too —
+NOT `~/Library/Caches`, `%LOCALAPPDATA%` on Windows) instead of an explicit
+sibling of the venv store — and to whatever `UV_CACHE_DIR` is already
+AMBIENT in this process's own environment, if one is: `_uv_env`'s base is a
+plain copy of `os.environ`, so a value set by the shell, or by CI's own
+`setup-uv` action, rides along untouched rather than being stripped, which
+would be imposing a different cache choice of our own. That explicit
+sibling used to be unconditional and fragmented per branch/worktree as a
 result — see `projectenv.uv_cache_dir()` for the history and the trade this
 accepts (giving up the one-filesystem hardlink guarantee everywhere the two
 happen to already coincide, to stop a guaranteed multi-gigabyte redownload
 everywhere they used to differ). An explicit path still arrives when the
-caller set `FUSED_RENDER_HOME` — the test suite's own isolation, preserved
-exactly.
+caller set `FUSED_RENDER_HOME` — not only the test suite's own isolation,
+but also the packaged Linux/Windows desktop app, which sets it
+unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131).
 
 `<python_executable>` is the base interpreter the environment is built on, and it
 must be the value `envinstall._python_executable()` returned — the backend runs
@@ -1470,12 +1476,15 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
         # ONLY when the caller asked for an isolated cache
         # (`envinstall._spawn` passes `projectenv.uv_cache_dir()`, which is
         # non-None only under `FUSED_RENDER_HOME`). Otherwise `UV_CACHE_DIR`
-        # is left OUT of the environment entirely — not set to an empty
-        # string, which uv would treat as a real, nonsensical path — so uv
-        # resolves its own platform default (XDG on Linux, `~/Library/
-        # Caches` on macOS, `%LOCALAPPDATA%` on Windows) exactly as it would
-        # for any other command a user ran. See `projectenv.uv_cache_dir()`
-        # for why an explicit sibling of the venv store is no longer the
+        # is left OUT of `env` entirely — not set to an empty string, which
+        # uv would treat as a real, nonsensical path — so uv resolves
+        # whatever it would for any other command a user ran: an AMBIENT
+        # `UV_CACHE_DIR` already in this process's environment (`_uv_env`'s
+        # base is a plain `dict(os.environ)` copy, so it is never stripped —
+        # CI's own `setup-uv` action exports one), or failing that its own
+        # platform default (XDG on Linux, `~/.cache/uv` on macOS too,
+        # `%LOCALAPPDATA%` on Windows). See `projectenv.uv_cache_dir()` for
+        # why an explicit sibling of the venv store is no longer the
         # unconditional choice: it made cache-target hardlinking work BY
         # CONSTRUCTION, and fragmented the cache per branch/worktree as an
         # unintended side effect of doing so.

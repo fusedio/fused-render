@@ -103,6 +103,15 @@ def uv_cache_dir() -> str | None:
     cache (`_env_install_worker._build` is the one caller, and the sentinel
     that survives the trip through argv — see its module docstring).
 
+    `None` means WE have no opinion, not that `UV_CACHE_DIR` must be
+    absent: `_build`'s environment starts as a plain copy of `os.environ`,
+    so an AMBIENT `UV_CACHE_DIR` — set by the shell, by CI's own
+    `setup-uv` action, by anything upstream of this process — rides along
+    untouched and wins, exactly as it would for uv invoked directly. Actively
+    deleting it here would be imposing a different cache choice ("no
+    override"), which is precisely what this function exists to STOP
+    doing.
+
     **This used to always be `<home_dir()>/uv-cache`, and per-branch
     fragmentation was the result — composition, not a decision.** Branch
     nesting landed first (`a8f50e2f`, 20 Jul: `home_dir()` nests under
