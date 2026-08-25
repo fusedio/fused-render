@@ -1188,16 +1188,55 @@ def test_a_listing_failure_with_NOTHING_cached_still_refuses(pure, tmp_path,
     assert "could not read org/m's file listing" in str(excinfo.value)
 
 
-def test_a_cached_repo_that_is_not_an_export_is_still_refused(pure, tmp_path,
-                                                             monkeypatch):
-    """The offline path must not skip the refusal either: a safetensors
-    checkpoint on disk has no graph this runner opens, and saying so beats
-    failing later inside a session."""
+def test_a_cached_repo_with_no_graph_on_disk_reraises_the_listing_error(
+        pure, tmp_path, monkeypatch):
+    """The offline path must not substitute a diagnosis the disk cannot back
+    up. A safetensors-only cache and an ONNX export's own snapshot with only
+    its metadata downloaded so far look identical from here — neither has
+    `onnx/text_model.onnx` et al — so claiming "no ONNX export" would be
+    exactly as wrong for a genuinely-interrupted download of a real export as
+    it happens to be right here. Only the LISTING can tell those apart, and
+    the listing is what failed, so its own error — not a verdict about the
+    repo's contents — is the honest one to raise."""
     folder = _snapshot_with(tmp_path, "model.safetensors", "config.json")
     monkeypatch.setattr(pure.worker_base, "repo_folder",
                         lambda _id: str(folder))
     monkeypatch.setattr(pure, "_repo_files",
                         lambda _id: (None, "could not read org/m's file listing: offline"))
+    with pytest.raises(RuntimeError) as excinfo:
+        pure.download("org/m")
+    assert "could not read org/m's file listing" in str(excinfo.value)
+    assert "no ONNX export" not in str(excinfo.value)
+
+
+def test_a_partial_onnx_download_offline_reraises_the_listing_error_too(
+        pure, tmp_path, monkeypatch):
+    """The scenario the fix is actually for: a real `-ONNX` export where only
+    `config.json`/`tokenizer.json` landed before the Hub went unreachable. The
+    old message here — "no ONNX export this runner can open … look for an
+    `-ONNX` export of it" — was actively wrong about a repo that IS one; this
+    is the regression test for that misdirection."""
+    folder = _snapshot_with(tmp_path, "config.json", "tokenizer.json")
+    monkeypatch.setattr(pure.worker_base, "repo_folder",
+                        lambda _id: str(folder))
+    monkeypatch.setattr(
+        pure, "_repo_files",
+        lambda _id: (None, "could not read org/m's file listing: offline"))
+    with pytest.raises(RuntimeError) as excinfo:
+        pure.download("org/m")
+    assert "could not read org/m's file listing" in str(excinfo.value)
+    assert "no ONNX export" not in str(excinfo.value)
+
+
+def test_a_networked_listing_that_finds_no_graph_still_says_so(pure, tmp_path,
+                                                               monkeypatch):
+    """The refusal this whole fix must NOT weaken: when the listing itself
+    succeeds and names no graph, that verdict is the real Hub state, not a
+    disk-side guess, and the specific "no ONNX export" message is still the
+    right and honest one to raise."""
+    monkeypatch.setattr(pure.worker_base, "repo_folder", lambda _id: None)
+    monkeypatch.setattr(pure, "_repo_files",
+                        lambda _id: (["model.safetensors", "config.json"], None))
     with pytest.raises(RuntimeError) as excinfo:
         pure.download("org/m")
     assert "no ONNX export this runner can open" in str(excinfo.value)

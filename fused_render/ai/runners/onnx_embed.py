@@ -319,20 +319,29 @@ def download(model_id):
     """
     names, listing_error = _repo_files(model_id)
     if names is None:
-        names = _cached_repo_files(model_id)
-        if not names:
-            # Nothing on disk either, so there is genuinely nothing to go on —
-            # the Hub error is the honest answer and keeps its original wording.
+        cached = _cached_repo_files(model_id)
+        weights = _weight_patterns(cached) if cached else ()
+        if not weights:
+            # The disk alone cannot stand in for the listing here. A snapshot
+            # with only metadata on it so far (an interrupted download of a
+            # genuine ONNX export) and a snapshot of a checkpoint that never
+            # had a graph at all look IDENTICAL from this side — neither has
+            # `onnx/text_model.onnx` et al yet — so "no ONNX export" is a
+            # verdict this function is not entitled to make without the
+            # listing. Re-raise the Hub's own failure instead of a diagnosis
+            # about the repo's contents that the disk cannot actually support.
             raise RuntimeError(listing_error)
-    weights = _weight_patterns(names)
-    if not weights:
-        raise RuntimeError(
-            f"{model_id} has no ONNX export this runner can open — it reads "
-            f"either {_TEXT_GRAPH} plus {_VISION_GRAPH} (a dual encoder) or "
-            f"{_PROSE_GRAPH} on its own (a text encoder), and neither is in the "
-            f"repo. A torch or safetensors checkpoint of the same model will "
-            f"not load here; look for an `-ONNX` export of it, or an `onnx/` "
-            f"folder in the repo itself.")
+    else:
+        weights = _weight_patterns(names)
+        if not weights:
+            raise RuntimeError(
+                f"{model_id} has no ONNX export this runner can open — it "
+                f"reads either {_TEXT_GRAPH} plus {_VISION_GRAPH} (a dual "
+                f"encoder) or {_PROSE_GRAPH} on its own (a text encoder), and "
+                f"neither is in the repo. A torch or safetensors checkpoint "
+                f"of the same model will not load here; look for an "
+                f"`-ONNX` export of it, or an `onnx/` folder in the repo "
+                f"itself.")
     return worker_base.download_snapshot(
         model_id, allow_patterns=list(_METADATA_PATTERNS) + list(weights))
 
