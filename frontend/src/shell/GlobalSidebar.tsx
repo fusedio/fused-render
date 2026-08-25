@@ -287,6 +287,10 @@ function PrefsRow({
           e.preventDefault();
           onActivate();
         }}
+        // A middle-click never fires `click` in modern browsers — it fires
+        // `auxclick` instead — so the close above would otherwise never run
+        // for the one gesture this row exists to support.
+        onAuxClick={onClose}
       >
         {content}
       </a>
