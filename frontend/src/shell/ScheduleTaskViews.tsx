@@ -2202,24 +2202,12 @@ function TaskNode({
             The live ping used to sit here (see LivePulse's headstone above): a
             blue disc in the one position, and the one shape, that means unread
             everywhere else. This is a hollow outline and never blue. */}
-        {/* ONE MARK, EITHER WAY (Akshil, 2026-08-24): the file glyph on a task
-            about a document, the folder glyph on a task about its folder — "if
-            there is a file icon already there then we don't add folder icon, if
-            file icon not present then we add a folder icon". Never both, because
-            they are two answers to the SAME question and a row wearing both
-            would be claiming both.
-
-            This is the other half of taking the glyph off the folder chip
-            (IdentityChip's note). There it was decoration on a word that already
-            said "folder"; here it is the row's answer to what the task is about,
-            in the position the file mark already held — so the mark a reader
-            learns is "the thing after the title tells me the scope", with two
-            values instead of one-value-or-nothing.
-
-            The FOLDER arm is the common case, so its tooltip has to be worth
-            having on nearly every row: it names the project path, the same
-            string the chip at the far end of the row carries — deliberately,
-            because the two are one hover habit.
+        {/* FILE MARK ONLY (Akshil, 2026-08-25: "drop the folder icon, keep the
+            file icon as is"). The folder arm briefly lived here as the fallback
+            (2026-08-24's one-mark-either-way rule), but a folder-scoped task is
+            the common case and the mark restated what the folder chip at the
+            row's far end already says — so the glyph is back to marking the one
+            genuinely extra fact: this task is about a single document.
 
             A NATIVE `title`, like every caption on this row (2026-08-24, third
             pass): the custom panel drew displaced from what it captioned, and
@@ -2233,14 +2221,6 @@ function TaskNode({
             aria-label={`This task is about ${basename(taskFile_)}`}
           >
             {ICON_FILE}
-          </span>
-        ) : task.project ? (
-          <span
-            className="tasks-row-file"
-            data-hint={tildePath(task.project, home)}
-            aria-label={`This task is about the folder ${basename(task.project)}`}
-          >
-            {ICON_FOLDER}
           </span>
         ) : null}
 

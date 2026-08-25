@@ -1773,30 +1773,33 @@ export function composeTaskMessage(title: string, description: string): string {
 //
 //   Schedule — the picked time is still ahead, or the task repeats. Something is
 //              being written into the future, and nothing runs on this press.
-//   Run      — the time is now or already past, which is what a card opened from
-//              the List or the Board and left alone means. The press starts work.
+//   Create   — the time is now or already past, which is what a card opened from
+//              the List or the Board and left alone means. It briefly said "Run"
+//              (2026-08-23), but the press creates the task — the run is a
+//              consequence — and "Run" over-promised on a card that may still be
+//              being written (Akshil, 2026-08-25).
 //
 // A repeat is always "Schedule" even when its anchor is behind: a past anchor
-// gets ONE catch-up run and then a pattern, and "Run" would describe the catch-up
-// while saying nothing about the standing rule, which is the bigger fact.
+// gets ONE catch-up run and then a pattern, and "Create" would describe the
+// catch-up while saying nothing about the standing rule, which is the bigger fact.
 //
 // An EDIT reads by the same rule rather than reverting to "Save": moving a task's
 // time forward and moving it into the past are the two things an edit does here,
 // and they deserve the same two words a create gets.
 //
 // Minute precision, matching the field and `pastNoteFor`: a card opened on the
-// current minute and saved unchanged says Run, not Schedule.
+// current minute and saved unchanged says Create, not Schedule.
 export function saveActionLabel(
   picked: Date | null,
   repeatOn: boolean,
   now: Date,
-): "Schedule" | "Run" {
+): "Schedule" | "Create" {
   if (repeatOn) return "Schedule";
   // An unreadable date cannot be claimed to run now. Save is refused on it
   // anyway (saveBlockedReason), so this is only about which word the disabled-
   // looking button wears.
   if (!picked || Number.isNaN(picked.getTime())) return "Schedule";
-  return startOfMinute(picked) > startOfMinute(now) ? "Schedule" : "Run";
+  return startOfMinute(picked) > startOfMinute(now) ? "Schedule" : "Create";
 }
 
 // The body POSTed to /api/schedule — api.ts's own parameter type, nothing
@@ -2881,7 +2884,7 @@ export default function NewJobModal({
               mid-save would schedule the message twice. */}
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
-            {busy ? `${actionLabel === "Run" ? "Running" : "Scheduling"}…` : actionLabel}
+            {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
           </button>
         </>
       }
