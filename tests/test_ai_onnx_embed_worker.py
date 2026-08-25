@@ -865,3 +865,77 @@ def test_junk_claims_fall_through_to_the_floor(pure):
     one-token sequence."""
     for claim in (0, -1, True, False, "512", None, 1.5):
         assert pure._text_length({"max_position_embeddings": claim}, {}) == 512
+
+
+# -- the pad token: read both serializations, never guess an id ---------------
+#
+# On a DUAL encoder this is not cosmetic. That graph declares `input_ids` and no
+# `attention_mask`, so pad tokens are real input that reaches the encoder — a
+# wrong pad id moves every text vector, and `unit_normalize` hands the result
+# back looking exactly as trustworthy as a good one.
+
+
+class FakeVocab:
+    """A `Tokenizer` stand-in for `_pad_token`, which reads only `token_to_id`."""
+
+    def __init__(self, known):
+        self._known = known
+
+    def token_to_id(self, token):
+        return self._known.get(token)
+
+
+def test_an_AddedToken_pad_token_is_read_from_its_content(pure):
+    """`tokenizer_config.json` holds the `AddedToken` OBJECT form whenever the
+    token was added rather than baked into the vocabulary. `isinstance(_, str)`
+    is False for it, so the old code fell through to `"</s>"` — a different
+    token with a different embedding row on a checkpoint that pads with
+    `<pad>`."""
+    vocab = FakeVocab({"<pad>": 1, "</s>": 2})
+    token, pad_id = pure._pad_token(
+        "org/m", vocab,
+        {"pad_token": {"content": "<pad>", "lstrip": False, "rstrip": False}})
+    assert (token, pad_id) == ("<pad>", 1)
+
+
+def test_the_plain_string_form_still_works(pure):
+    vocab = FakeVocab({"<pad>": 1, "</s>": 2})
+    assert pure._pad_token("org/m", vocab, {"pad_token": "<pad>"}) == ("<pad>", 1)
+
+
+def test_a_pad_id_of_ZERO_is_kept_rather_than_coalesced(pure):
+    """`pad_id or 0` mapped a legitimate 0 to itself by accident rather than by
+    agreement — right answer, wrong reason, and it hid the bug below."""
+    vocab = FakeVocab({"[PAD]": 0})
+    assert pure._pad_token("org/m", vocab, {"pad_token": "[PAD]"}) == ("[PAD]", 0)
+
+
+def test_a_pad_token_absent_from_the_vocabulary_is_REFUSED(pure):
+    """**The silent-zero this replaces.** `token_to_id` returns None, `pad_id or
+    0` made that id 0 — a real token on every vocabulary — and sixty `<s>` rows
+    padded into a 64-position SigLIP2 sequence come back as a confident unit
+    vector describing something the model never saw."""
+    vocab = FakeVocab({"<s>": 0, "hello": 7})
+    with pytest.raises(RuntimeError) as excinfo:
+        pure._pad_token("org/broken-export", vocab, {"pad_token": "<pad>"})
+    message = str(excinfo.value)
+    assert "org/broken-export" in message      # which model
+    assert "<pad>" in message                  # which token
+    assert "export" in message                 # whose fault, so the user can act
+    # And it must not read as bad user input, which is what sends someone
+    # editing their prompt instead of their model choice.
+    assert "your input" in message
+
+
+def test_an_undeclared_pad_token_falls_back_but_is_still_checked(pure):
+    """The `</s>` default survives as a guess of last resort — and is now a
+    guess that gets verified, so a vocabulary without it refuses instead of
+    silently padding with id 0."""
+    assert pure._pad_token("org/m", FakeVocab({"</s>": 2}), {}) == ("</s>", 2)
+    with pytest.raises(RuntimeError):
+        pure._pad_token("org/m", FakeVocab({"hello": 7}), {})
+    # A dict with no `content`, and an empty string, are both "undeclared".
+    assert pure._pad_token("org/m", FakeVocab({"</s>": 2}),
+                           {"pad_token": {"lstrip": False}}) == ("</s>", 2)
+    assert pure._pad_token("org/m", FakeVocab({"</s>": 2}),
+                           {"pad_token": ""}) == ("</s>", 2)

@@ -383,9 +383,7 @@ def _tokenizer(path, config, tokenizer_config, model_id, family):
             "fallback to build one from a vocabulary.")
     tokenizer = Tokenizer.from_file(path)
     length = _text_length(config, tokenizer_config)
-    pad_token = tokenizer_config.get("pad_token")
-    pad_token = pad_token if isinstance(pad_token, str) else "</s>"
-    pad_id = tokenizer.token_to_id(pad_token)
+    pad_token, pad_id = _pad_token(model_id, tokenizer, tokenizer_config)
     tokenizer.enable_truncation(max_length=length)
     # `length=length` for a dual encoder, which is what `_TEXT_PADDING` MEANS —
     # omit it and `tokenizers` pads to the batch's longest instead, silently
@@ -393,7 +391,7 @@ def _tokenizer(path, config, tokenizer_config, model_id, family):
     # `None` for a prose encoder, which is the correct answer there for the
     # opposite reason. See this function's docstring.
     tokenizer.enable_padding(length=length if family == _DUAL else None,
-                             pad_id=pad_id or 0, pad_token=pad_token)
+                             pad_id=pad_id, pad_token=pad_token)
     return tokenizer
 
 
@@ -480,6 +478,56 @@ def _declared_length(value):
     return min(value, _MAX_TEXT_LENGTH)
 
 
+def _pad_token(model_id, tokenizer, tokenizer_config):
+    """The pad token and its id, or a named refusal — never a guessed zero.
+
+    **Two failures the old three lines had, and on a dual encoder neither is
+    cosmetic.** That graph declares `input_ids` and NO `attention_mask`, so
+    there is nothing telling it which positions are padding: pad tokens are real
+    input, they reach the encoder, and a wrong pad id moves every text vector.
+
+    First, `pad_token` is commonly serialized as an `AddedToken` OBJECT —
+    `{"content": "<pad>", "lstrip": false, ...}` — which is what
+    `tokenizer_config.json` holds whenever the token was added rather than baked
+    into the vocabulary. `isinstance(pad_token, str)` is False for that, so the
+    old code substituted `"</s>"`, and on a checkpoint whose real pad token is
+    `<pad>` that is a different token with a different embedding row.
+
+    Second, `token_to_id` returns None for a token that is not in the vocabulary
+    at all, and `pad_id or 0` turned that into id 0 — which is a real token on
+    every vocabulary (`<s>` on RoBERTa, `[PAD]` on BERT only by luck). Padding a
+    64-position SigLIP2 sequence with sixty `<s>` tokens produces a confident
+    unit vector describing something the model never saw. `or` also swallows a
+    LEGITIMATE id of 0, mapping it to itself by accident rather than by
+    agreement.
+
+    So: read both serializations, and if the resulting token is not in the
+    vocabulary, say so and name the model. A refusal here is recoverable — the
+    user can pick another export — and a silently shifted embedding space is not,
+    because nothing downstream can tell it from a good one.
+    """
+    pad_token = tokenizer_config.get("pad_token")
+    if isinstance(pad_token, dict):
+        # The `AddedToken` form. `content` is the token itself; the surrounding
+        # flags describe how it STRIPS, which padding does not care about.
+        pad_token = pad_token.get("content")
+    if not isinstance(pad_token, str) or not pad_token:
+        # No declaration at all. `</s>` is the historical default and stays the
+        # guess of last resort, but it is now a guess that gets CHECKED below
+        # rather than one that silently becomes id 0.
+        pad_token = _DEFAULT_PAD_TOKEN
+    pad_id = tokenizer.token_to_id(pad_token)
+    if pad_id is None:
+        raise RuntimeError(
+            f"{model_id}'s tokenizer has no id for its pad token "
+            f"{pad_token!r}, so this runner cannot pad a batch without "
+            f"inventing one. Padding with id 0 instead would quietly use a real "
+            f"token — `<s>` on a RoBERTa vocabulary — and shift every embedding "
+            f"this model returns, which nothing downstream could detect. This is "
+            f"a problem with the export rather than with your input.")
+    return pad_token, pad_id
+
+
 def _text_length(config, tokenizer_config):
     """How long a sequence the text tower was built for.
 
@@ -520,6 +568,11 @@ def _text_length(config, tokenizer_config):
 
 #: A sanity ceiling on what a config may claim, and a floor to fall back to.
 #: The ceiling CLAMPS rather than rejects — see `_declared_length`.
+#: The pad token to try when `tokenizer_config.json` declares none. A GUESS,
+#: and one that is verified against the vocabulary before use — see
+#: `_pad_token`. Historically this runner's silent default.
+_DEFAULT_PAD_TOKEN = "</s>"
+
 _MAX_TEXT_LENGTH = 8192
 _DEFAULT_TEXT_LENGTH = 512
 
