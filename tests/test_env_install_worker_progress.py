@@ -339,8 +339,14 @@ def test_build_feeds_every_stderr_line_to_the_tracker_it_is_given(tmp_path, monk
     venv_dir = str(tmp_path / "venv")
 
     def _fake_popen(cmd, **kw):
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        # Derived from `_venv_python`, not re-spelled as `bin/python`: that
+        # function returns `Scripts\python.exe` on Windows, and a literal
+        # POSIX path here passed Linux CI while failing on Windows with
+        # "uv sync reported success but left no interpreter at ...python.exe"
+        # — a bug in the TEST's assumed venv layout, not in `_build`.
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
         return _FakeStreamingPopen(_SAMPLE_TRANSCRIPT)
 
     monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen)
