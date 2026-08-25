@@ -848,6 +848,18 @@ export interface CapabilityEngine {
   // it is (including "auto", which is honoured by definition). A control whose
   // value does nothing, with nothing saying why, is what this field prevents.
   ignoredReason: string | null;
+  /** The display name for `selected` when it matches none of `choices` — the
+   *  STRANDED case (`lib/engines.ts`'s `strandedSelection`) — else null.
+   *
+   *  Computed server-side (`registry.py`'s `_stranded_label`) because only the
+   *  registry can tell a WITHDRAWN code (no runner left to name — null) from
+   *  one that is merely registered for a different capability (a real label).
+   *  It is the runner's SHORT label, the exact string `resolve()` already
+   *  wrote into `ignoredReason` for that shape ("MLX Whisper does not do
+   *  text-generation") — so `ignoredWarning`'s substring de-duplication can
+   *  find its own name inside the reason instead of comparing it against the
+   *  raw stored code, which never matches. */
+  strandedLabel: string | null;
   choices: EngineChoice[];
 }
 
@@ -857,10 +869,10 @@ export interface EngineChoice {
   /** What using this backend is LIKE, when there is something worth saying. */
   note: string | null;
   available: boolean;
-  /** Why not — "needs Apple Silicon — MLX runs on Metal only (this is
-   *  windows/amd64)". The page renders this beside a disabled control rather
-   *  than writing its own copy, which it could not: this is a fact about the
-   *  machine and the backend, and only the server knows it. */
+  /** Why not — "needs Apple Silicon (this is windows/amd64)". The page
+   *  renders this beside a disabled control rather than writing its own copy,
+   *  which it could not: this is a fact about the machine and the backend,
+   *  and only the server knows it. */
   reason: string | null;
 }
 
