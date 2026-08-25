@@ -270,7 +270,7 @@ def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
         index_root = enclosing_root(scan_roots(cfg), canonical_root)
         return filter_corpus({"covered": True, "root": canonical_root,
                               "entries": hits}, index_root=index_root,
-                             oracle_rels=oracle_rels)["entries"]
+                             oracle_rels=oracle_rels, token=token)["entries"]
 
     return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
                       token=token)

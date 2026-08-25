@@ -10,6 +10,7 @@ import subprocess
 import time
 from threading import Event, Thread
 
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.ignore import norm
 from fused_render.server import index_gitignore
 from fused_render.server.index_gitignore import filter_corpus
@@ -511,6 +512,59 @@ def test_a_waiting_caller_still_sweeps_what_the_other_did_not_cover(tmp_path,
     first.join(timeout=30)
     assert [e["rel"] for e in out["entries"]] == ["proj/.gitignore",
                                                   "proj/a.py", "proj/b.py"]
+
+
+def test_a_cancelled_waiter_stops_in_a_poll_slice_not_the_full_ceiling(
+    tmp_path, monkeypatch,
+):
+    """Section 1, phase 2: an abandoned rank request must not sit out
+    SOMEONE ELSE'S in-flight sweep for up to SWEEP_WAIT_MAX_S (30s) of pure
+    dead time — it should stop in about one `_SWEEP_POLL_S` slice once its own
+    token is cancelled, the same way `test_a_waiting_caller_still_sweeps_...`
+    above proves the ORIGINAL wait-then-sweep behaviour still works when
+    nothing is cancelled."""
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(index_gitignore, "SWEEP_WAIT_MAX_S", 30.0)
+    monkeypatch.setattr(index_gitignore, "_SWEEP_POLL_S", 0.05)
+    root, rels = _proj_with_a_log(tmp_path)
+    real = index_gitignore._ignored
+    started = Event()
+
+    def slow(*a, **k):
+        started.set()
+        # Long enough that the second caller's cancellation (below) has to
+        # actually fire for this test to finish quickly, but short enough to
+        # keep the test itself fast — the assertion is on ELAPSED TIME, not
+        # on outliving this sleep.
+        time.sleep(1.0)
+        return real(*a, **k)
+
+    monkeypatch.setattr(index_gitignore, "_ignored", slow)
+    first = Thread(target=lambda: filter_corpus(_out(root, rels), index_root=root))
+    first.start()
+    started.wait(timeout=10)
+
+    token = CancelToken()
+
+    def cancel_soon():
+        time.sleep(0.15)  # a couple of poll slices into the wait
+        token.cancel()
+
+    Thread(target=cancel_soon, daemon=True).start()
+
+    t0 = time.monotonic()
+    try:
+        with_token_raised = False
+        filter_corpus(_out(root, rels + ["proj/b.log", "proj/b.py"]),
+                     index_root=root, token=token)
+    except Cancelled:
+        with_token_raised = True
+    elapsed = time.monotonic() - t0
+    assert with_token_raised
+    # Comfortably under the 30s ceiling — a regression here would time out
+    # this test at 5s+ instead of finishing in well under a second.
+    assert elapsed < 2.0
+    first.join(timeout=30)
 
 
 def test_the_disk_load_does_not_hold_the_cache_lock(tmp_path, monkeypatch):
