@@ -1,40 +1,39 @@
-// The Home hero — wordmark, headline, and the prompt-first composer that
-// names (haiku via /api/ai), scaffolds (POST /api/apps/new), and lands in the
-// new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
-// it lives in the builder app rather than the shell.
+// The /apps hero: the Fused mark, one headline, and the prompt composer — the
+// claude.ai / v0 "what do you want to build?" box. Submitting names the app
+// (haiku via /api/ai), scaffolds it, and lands in the new folder's claude chat
+// exactly like the New-app panel does. Built on shadcn primitives; the page's
+// only styling is Tailwind utilities on the stock palette.
 import { useEffect, useRef, useState } from "react";
+import { ArrowUpIcon, GaugeIcon, RefreshCwIcon, SparklesIcon, XIcon } from "lucide-react";
 import { aiComplete, createApp, type DefaultModel, type SessionEffort } from "@platform/lib/api";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
-import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
-import { useAutoGrow } from "@platform/lib/autoGrow";
 import { startersFor } from "./starterPrompts";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { Select, TextArea } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
+import { Alert, AlertDescription, AlertTitle } from "@platform/shadcn/ui/alert";
+import { Badge } from "@platform/shadcn/ui/badge";
+import { Button } from "@platform/shadcn/ui/button";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupTextarea,
+} from "@platform/shadcn/ui/input-group";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@platform/shadcn/ui/select";
+import { Spinner } from "@platform/shadcn/ui/spinner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@platform/shadcn/ui/tooltip";
 
-// URL of an app folder's claude chat, attached to a specific live run.
-// `_mode` is the shell's template selector; `run` is a plain view param the
-// claude template reads through fused.params (its boot resumes that
-// run, so a session started server-side is picked up exactly like one the
-// page started itself). Folder-scoped on purpose: the server starts the
-// scaffolding session via the claude agent on the app FOLDER, so the
-// re-attach must land in the same template — same runs dir.
-// (There is only one chat template now, so "which
-// chat" is no longer a question at all; the `_mode` still has to be spelled out
-// because the folder's default mode is the app itself, not the chat.)
-// An ORDINARY explorer URL for the folder. It used to be the builder route
-// (/apps/<tag>/<name>, rebuilt from the folder's last two path segments); that
-// namespace is gone, and urlForFsPath takes the whole abspath the server
-// returned — including its Windows-backslash normalization, which the old
-// segment split had to do by hand or silently take the drive-rooted path as one
-// segment.
-// `model`/`effort` ride along when the composer's pickers were used, so
-// the chat's own pills open showing what the scaffolding turn actually ran with
-// and the NEXT turn keeps it. Omitted when empty: the template reads these
-// through fused.params, and an empty param would beat its own detection of what
-// this project is really being worked in.
+// The claude-chat URL a freshly scaffolded app lands in (`_mode=claude`, the
+// run to attach to, and the session flags the composer chose).
 export function claudeChatUrl(
   appDir: string,
   runId: string,
@@ -47,11 +46,8 @@ export function claudeChatUrl(
   return urlForFsPath(appDir.replace(/\/+$/, ""), "?" + params.toString());
 }
 
-// -- Prompt-first creation (the hero composer) --------------------------------
-
-// Kebab-case whatever the model (or, as a fallback, the user's own prompt)
-// gave us into a safe app folder name: lowercase, [a-z0-9-] only, at most
-// five words. Never returns something _app_name_error would reject.
+// "Build me a habit tracker" → "build-me-a-habit-tracker" — the folder-name
+// fallback when the model has no better idea. Max five words, 48 chars.
 function kebabName(text: string): string {
   return (
     text
@@ -71,9 +67,7 @@ const NAME_SYSTEM_PROMPT =
   "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
   "letters and digits only. Reply with ONLY the name — no quotes, no prose.";
 
-// A kebab-case folder name for an app described by `prompt`: ask the AI relay
-// (haiku, the server default — cheap and fast), fall back to slugging the
-// prompt's own words when the relay is unavailable or answers garbage.
+// Ask the fast model for a name; fall back to slugging the prompt itself.
 async function suggestAppName(prompt: string): Promise<string> {
   try {
     const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) => t.trim());
@@ -111,28 +105,28 @@ async function createAppUnderFreeName(
 }
 
 // How many starter chips the row shows at once, and therefore how far the
-// shuffle button advances. Four rather than three because the pool is deep
-// enough now (starterPrompts.tsx) that three was showing a smaller share of it
-// than the row had room for — `.home-composer-samples` wraps, so a narrow
-// window folds the fourth chip onto its own line instead of overflowing.
+// shuffle button advances. The pool is deep enough (starterPrompts.tsx) that
+// four is still a small share of it; the row wraps on a narrow window.
 const SAMPLE_ROW = 4;
 
-// The composer's two session pickers — what the scaffolding turn runs
-// with, and what the chat it lands in opens showing. Both lists are the claude
+// The composer's two session pickers — what the scaffolding turn runs with,
+// and what the chat it lands in opens showing. Both lists are the claude
 // template's own vocabulary (template.html MODELS / EFFORTS, and the server
-// validates against the same sets), because these values are handed straight to
-// the CLI as --model / --effort.
+// validates against the same sets), because these values are handed straight
+// to the CLI as --model / --effort.
 //
-// "" is the FIRST option of each and the default: it means no flag at all, so
-// the session keeps whatever the template would have detected for this project
-// from its own transcripts and settings. A composer that shipped `sonnet` /
-// `medium` preselected would silently override that detection for every app
-// built from here, which is a stronger claim than the picker is making.
+// "" is the default and means no flag at all, so the session keeps whatever the
+// template would have detected for this project from its own transcripts and
+// settings. A composer that shipped `sonnet` / `medium` preselected would
+// silently override that detection for every app built from here.
 //
-// The labels are BARE — "Auto", "opus", "high" — and not "Auto model" / "high
-// effort": each pill's glyph names its axis, so repeating it in the text is the
-// same word twice in one control. It is also what keeps two pills quiet enough
-// to sit unbordered in the footer of the box rather than reading as buttons.
+// The Select carries AUTO in place of "" — a select's empty string is its
+// placeholder sentinel, not a value a user can pick back — and the two are
+// mapped at the edge (fromPick / toPick).
+const AUTO = "auto";
+const fromPick = <T extends string>(v: string | null): T => (v === null || v === AUTO ? "" : v) as T;
+const toPick = (v: string): string => (v === "" ? AUTO : v);
+
 const MODEL_CHOICES: { value: DefaultModel; label: string }[] = [
   { value: "", label: "Auto" },
   { value: "fable", label: "fable" },
@@ -150,79 +144,57 @@ const EFFORT_CHOICES: { value: SessionEffort; label: string }[] = [
   { value: "max", label: "max" },
 ];
 
-// A glyph each, because the two pickers sit side by side with no border to tell
-// them apart: the icon is what says which control you are looking at before the
-// value is read — and it is what lets the labels stay bare words ("Auto",
-// "high") instead of spelling their own axis out. Drawn in the composer's own weight (13px,
-// 2px stroke) rather than borrowed from MenuIcons, which is tuned 1.5px for menu
-// rows — a menu glyph beside these chips reads thin and unrelated.
-const PICK_GLYPHS = {
-  // Model — the sparkle MenuIcons uses for "new", the app's existing mark for
-  // the AI doing something on your behalf.
-  model: (
-    <path d="M11 3.5l1.6 4.4 4.4 1.6-4.4 1.6L11 15.5 9.4 11.1 5 9.5l4.4-1.6L11 3.5zM17.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z" />
-  ),
-  // Effort — a gauge: a needle on a dial is the one figure that reads as "how
-  // hard is this being pushed" without a word beside it.
-  effort: (
-    <>
-      <path d="M4.5 17a8 8 0 1 1 15 0" />
-      <path d="M12 15l3.5-4" />
-    </>
-  ),
-};
-
-// One borderless picker: glyph, then a native select carrying its own chevron.
-// A <label> around both so the glyph is part of the control's hit area rather
-// than decoration beside it — the pill has no border to aim at, so the target
-// has to be the whole thing.
+// One quiet picker in the composer's footer: an icon naming the axis, then the
+// bare value. Borderless (ghost) so two of them sit in the bar as controls of
+// the box rather than as buttons competing with Send.
 function ComposerPick<T extends string>({
-  glyph,
+  icon: Icon,
   label,
   value,
   choices,
   disabled,
   onPick,
 }: {
-  glyph: keyof typeof PICK_GLYPHS;
+  icon: typeof SparklesIcon;
   label: string;
   value: T;
   choices: { value: T; label: string }[];
   disabled: boolean;
   onPick: (next: T) => void;
 }) {
+  const items = choices.map((c) => ({ value: toPick(c.value), label: c.label }));
   return (
-    <label className="home-composer-pick">
-      <span className="home-composer-pick-glyph" aria-hidden="true">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          {PICK_GLYPHS[glyph]}
-        </svg>
-      </span>
-      <Select
-        className="home-composer-pick-sel"
+    <Select
+      items={items}
+      value={toPick(value)}
+      disabled={disabled}
+      onValueChange={(v) => onPick(fromPick<T>(v as string | null))}
+    >
+      <SelectTrigger
+        size="sm"
         aria-label={label}
-        value={value}
-        disabled={disabled}
-        onChange={(e) => onPick(e.target.value as T)}
+        className="border-transparent bg-transparent text-muted-foreground shadow-none hover:text-foreground dark:bg-transparent dark:hover:bg-accent"
       >
-        {choices.map((c) => (
-          <option key={c.value} value={c.value}>
-            {c.label}
-          </option>
-        ))}
-      </Select>
-    </label>
+        <Icon />
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectGroup>
+          {items.map((c) => (
+            <SelectItem key={c.value} value={c.value}>
+              {c.label}
+            </SelectItem>
+          ))}
+        </SelectGroup>
+      </SelectContent>
+    </Select>
   );
 }
 
-// The hero's prompt box — the claude.ai / v0 "what do you want to build?"
-// composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
-// lands in the new folder's claude chat exactly like the New-app panel does.
 function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
-  // AI" button (?annot=). null means no model is annotated; the composer
-  // reads as a plain prompt box exactly like today.
+  // AI" button (?annot=). null means no model is annotated.
   const [annotation, setAnnotation] = useState<AppAnnotation | null>(null);
   // Empty = "let the chat decide", the default; see MODEL_CHOICES.
   const [model, setModel] = useState<DefaultModel>("");
@@ -233,6 +205,7 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [sessionError, setSessionError] = useState<string | null>(null);
   // Which window of SAMPLE_ROW starter chips is showing; shuffle advances it.
   const [sampleOffset, setSampleOffset] = useState(0);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const alive = useRef(true);
   useEffect(
     () => () => {
@@ -240,14 +213,6 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
     },
     [],
   );
-
-  // Grow the box with its content, capped at the shared COMPOSER_MAX_LINES —
-  // the same ten lines `.home-composer-input`'s max-height names, and the same
-  // hook the Playground's composers use. Keyed on `prompt`, which is what makes
-  // a starter chip's brief (the longest text that lands in here, and it never
-  // goes through onChange) open at its full height rather than three lines with
-  // the rest scrolled away.
-  const { ref: inputRef } = useAutoGrow(prompt);
 
   // A `?annot=` in the URL pre-fills the chip — the Playground's "Build an
   // app with this AI" hands its model + tuned settings through here as a
@@ -274,23 +239,16 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const canSubmit = prompt.trim().length > 0 && !busy;
 
   // The starters on offer right now: the whole mixed pool, or — once a model is
-  // attached as a chip — only the briefs for what that model DOES, so the row
-  // under an image model is four image apps rather than four ideas it cannot
-  // help with. `startersFor` falls back to the full pool for a chip carrying no
-  // capability (an older `?annot=` link).
+  // attached as a chip — only the briefs for what that model DOES. The window
+  // restarts when the pool underneath it changes.
   const samples = startersFor(annotation?.capability);
-  // The window has to restart when the pool underneath it changes: an offset
-  // picked in the 30-odd mixed pool is meaningless in a five-brief capability
-  // slice — modulo would keep it in range but land somewhere arbitrary.
   useEffect(() => setSampleOffset(0), [annotation?.capability]);
 
   const submit = async () => {
     if (!canSubmit) return;
     const trimmed = prompt.trim();
     // The chip's detail is instructions for the CLAUDE SESSION, not something
-    // the user typed — spliced in ahead of what they wrote so it reads as
-    // "here's the model, here's the app I want" without the user ever
-    // seeing or editing the model prose.
+    // the user typed — spliced in ahead of what they wrote.
     const full = annotation ? `${annotation.detail}\n\nThe app I want: ${trimmed}` : trimmed;
     setError(null);
     setSessionError(null);
@@ -300,17 +258,13 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
       if (!alive.current) return;
       setPhase("creating");
       const res = await createAppUnderFreeName(name, full, model, effort);
-      // The folder exists from here on, so the Recent grid is stale — refresh it
-      // now, since the session-error branch below stays on this page.
+      // The folder exists from here on, so the grid is stale — refresh it now,
+      // since the session-error branch below stays on this page.
       onCreated();
       // Same landing logic as NewAppPanel: a session error must not read as
       // success, and a live run means the claude chat is the right landing.
       if (res.session_error) {
         if (alive.current) {
-          // The FOLDER exists; only the session failed. Kept as its own state
-          // so the card can say that plainly and still show the spawn error
-          // verbatim — folding the two into one string made the error
-          // unclassifiable (and unsearchable) by prefixing it.
           setSessionError(res.session_error);
           setPhase("idle");
         }
@@ -327,33 +281,35 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
   };
 
   return (
-    <div className="home-composer-wrap">
-      <div className={"home-composer" + (busy ? " is-busy" : "")}>
+    <div className="flex w-full max-w-2xl flex-col gap-4">
+      <InputGroup className={busy ? "opacity-70" : undefined}>
         {annotation && (
-          <div className="home-composer-annots">
-            <span className="home-composer-annot" title={annotation.detail}>
-              <span className="home-composer-annot-at" aria-hidden="true">@</span>
+          <InputGroupAddon align="block-start">
+            <Badge variant="secondary" className="gap-1 pr-1" title={annotation.detail}>
+              <span className="text-muted-foreground">@</span>
               {annotation.name}
               <button
                 type="button"
-                className="home-composer-annot-x"
                 aria-label={`Remove ${annotation.name} annotation`}
                 disabled={busy}
                 onClick={() => setAnnotation(null)}
+                className="ml-0.5 inline-flex size-4 items-center justify-center rounded-sm text-muted-foreground hover:bg-foreground/10 hover:text-foreground disabled:opacity-50"
               >
-                ✕
+                <XIcon className="size-3" />
               </button>
-            </span>
-          </div>
+            </Badge>
+          </InputGroupAddon>
         )}
-        <TextArea
+        <InputGroupTextarea
           ref={inputRef}
-          className="home-composer-input"
           placeholder="What do you want to build?"
           aria-label="What do you want to build?"
           value={prompt}
-          rows={1}
+          rows={2}
           disabled={busy}
+          // field-sizing grows the box with its content; the cap keeps a long
+          // starter brief from pushing the toolbar below the fold.
+          className="max-h-64 min-h-16 text-base md:text-sm"
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             // Enter submits (the composer is a one-shot prompt, not a
@@ -364,17 +320,10 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
             }
           }}
         />
-        <div className="home-composer-bar">
-          {/* The bar's left end used to spell out ↵ / ⇧↵. Those are the two
-              keystrokes every chat box on the machine already answers to, and
-              the space is worth more spent on the one thing this composer could
-              not say at all: WHICH Claude builds the app. The pickers
-              stay mounted while a create is in flight — disabled, like the
-              starter chips — and the phase text takes the space beside them
-              rather than replacing them, so nothing moves when it appears. */}
-          <div className="home-composer-picks">
+        <InputGroupAddon align="block-end" className="justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-0.5">
             <ComposerPick
-              glyph="model"
+              icon={SparklesIcon}
               label="Model"
               value={model}
               choices={MODEL_CHOICES}
@@ -382,105 +331,112 @@ function HeroComposer({ onCreated }: { onCreated: () => void }) {
               onPick={setModel}
             />
             <ComposerPick
-              glyph="effort"
+              icon={GaugeIcon}
               label="Effort"
               value={effort}
               choices={EFFORT_CHOICES}
               disabled={busy}
               onPick={setEffort}
             />
-            <span className="home-composer-hint">
-              {phase === "naming" && "Naming your app…"}
-              {phase === "creating" && "Creating the app…"}
-            </span>
+            {busy && (
+              <span className="ml-2 flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+                <Spinner />
+                {phase === "naming" ? "Naming your app…" : "Creating the app…"}
+              </span>
+            )}
           </div>
-          <button
-            type="button"
-            className="home-composer-send"
+          <InputGroupButton
+            size="icon-sm"
+            variant="default"
             aria-label="Build it"
-            title="Build it"
             disabled={!canSubmit}
             onClick={submit}
+            className="rounded-full"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <path d="M12 19V5M5 12l7-7 7 7" />
-            </svg>
-          </button>
-        </div>
-      </div>
-      <div className="home-composer-samples">
+            <ArrowUpIcon />
+          </InputGroupButton>
+        </InputGroupAddon>
+      </InputGroup>
+
+      <div className="flex flex-wrap items-center justify-center gap-2">
         {Array.from({ length: Math.min(SAMPLE_ROW, samples.length) }, (_, i) => {
           const s = samples[(sampleOffset + i) % samples.length];
           return (
-            <button
+            <Button
               key={s.label}
               type="button"
-              className="home-composer-sample"
+              variant="outline"
+              size="sm"
               title={s.prompt}
               disabled={busy}
               onClick={() => setPrompt(s.prompt)}
+              className="rounded-full font-normal text-muted-foreground hover:text-foreground"
             >
-              <span className="home-composer-sample-glyph" aria-hidden="true">
+              <span data-icon="inline-start" className="flex">
                 {s.glyph}
               </span>
               {s.label}
-            </button>
+            </Button>
           );
         })}
-        <button
-          type="button"
-          className="home-composer-sample home-composer-shuffle"
-          aria-label="More ideas"
-          title="More ideas"
-          disabled={busy}
-          onClick={() => setSampleOffset((o) => (o + SAMPLE_ROW) % samples.length)}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" />
-          </svg>
-        </button>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="More ideas"
+                disabled={busy}
+                onClick={() => setSampleOffset((o) => (o + SAMPLE_ROW) % samples.length)}
+                className="rounded-full text-muted-foreground"
+              />
+            }
+          >
+            <RefreshCwIcon />
+          </TooltipTrigger>
+          <TooltipContent>More ideas</TooltipContent>
+        </Tooltip>
       </div>
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-      {/* THE OTHER PLACE A USER REACHES FOR CLAUDE, and the one where being
-          told to install it matters most: they typed what to build. The app
-          folder is already there, so the card says so rather than reading as a
-          total failure — and the spawn error stays verbatim inside it, which a
-          prefixed string could not do. */}
+
+      {error && (
+        <Alert variant="destructive" className="text-left">
+          <AlertTitle>Could not create the app</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
+      {/* The folder exists; only the session failed. The card says so plainly
+          and keeps the spawn error verbatim. */}
       {sessionError && (
-        <TroubleCard
-          what="starting a Claude session to build a new app"
-          error={sessionError}
-          facts={{ page: location.pathname + location.search }}
-          onRetry={() => setSessionError(null)}
-        >
-          <span className="deploy-muted">
-            The app folder was created — only the session failed.
-          </span>
-        </TroubleCard>
+        <div className="text-left">
+          <TroubleCard
+            what="starting a Claude session to build a new app"
+            error={sessionError}
+            facts={{ page: location.pathname + location.search }}
+            onRetry={() => setSessionError(null)}
+          >
+            <span className="text-sm text-muted-foreground">
+              The app folder was created — only the session failed.
+            </span>
+          </TroubleCard>
+        </div>
       )}
     </div>
   );
 }
 
-// The hero card itself — wordmark, headline, and the prompt composer.
-// Exported so /apps can show the exact same hero above its grid; `onCreated`
-// lets each page refresh its own app list once the folder exists.
+// The hero itself — mark, headline, composer. `onCreated` lets the page
+// refresh its grid once the folder exists.
 export function HomeHero({ onCreated }: { onCreated: () => void }) {
   return (
-    <header className="home-hero">
-      {/* Fused mark + headline. The "App" wordmark that used to sit between
-          them is gone — the sidebar entry that got you here already names the
-          page — so the mark stands alone beside the tagline. Both theme
-          renders are in the DOM; CSS shows the one matching data-theme. */}
-      <h1 className="home-hero-brand">
-        <img className="home-hero-logo home-hero-logo-dark" src={logoMarkDark} alt="" aria-hidden="true" />
-        <img className="home-hero-logo home-hero-logo-light" src={logoMarkLight} alt="" aria-hidden="true" />
-        <span className="home-hero-tagline">
-          Build your next <span className="home-hero-accent">local app</span>
-        </span>
+    <header className="flex flex-col items-center gap-6 pt-6 text-center">
+      {/* Both theme renders are in the DOM; the `dark` variant (tailwind.css —
+          this app's default theme, `data-theme="light"` opts out) shows one. */}
+      <img src={logoMarkDark} alt="" aria-hidden="true" className="hidden h-9 w-auto dark:block" />
+      <img src={logoMarkLight} alt="" aria-hidden="true" className="block h-9 w-auto dark:hidden" />
+      <h1 className="text-3xl font-semibold tracking-tight text-balance">
+        Build your next local app
       </h1>
-      {/* The hero's only verb, prompt-first: describe the app right here
-          and a named, scaffolded folder + claude session comes back. */}
       <HeroComposer onCreated={onCreated} />
     </header>
   );

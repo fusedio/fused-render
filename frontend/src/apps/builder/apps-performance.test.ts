@@ -13,7 +13,7 @@ const apps = () => readFileSync(join(import.meta.dir, "Apps.tsx"), "utf8");
 // path did not move with it, so `card()` was reading a file that is no longer
 // there and the assertions below failed on a clean checkout of main.
 const card = () =>
-  readFileSync(join(import.meta.dir, "../../platform/ui/AppPreviewCard.tsx"), "utf8");
+  readFileSync(join(import.meta.dir, "../../platform/ui/AppThumb.tsx"), "utf8");
 
 test("the hub draws the recent row while the exhaustive catalog loads", () => {
   const src = apps();

@@ -176,4 +176,10 @@
     letter-spacing: inherit;
     color: inherit;
   }
+  /* The other preflight piece: a <button> with no `bg-*` utility of its own
+     (an inactive TabsTrigger, a ghost Toggle) otherwise paints the UA's grey
+     `buttonface`. Base layer, so every component's own `bg-*` still wins. */
+  button[data-slot] {
+    background-color: transparent;
+  }
 }
