@@ -38,14 +38,27 @@ export function capabilityLabel(capability: string): string {
   return CAPABILITY_LABELS[capability] ?? capability;
 }
 
-/** The line under the control: what is serving this capability right now.
+/** The line under the control: what is serving this capability right now, or
+ *  null when the control's own trigger already says it.
  *
  *  Reports the EFFECTIVE runner, never the selected one — the same discipline
  *  the Call log section follows with `effective_enabled`. The control shows the
  *  choice you made; this line reports reality, and they are allowed to differ.
+ *
+ *  Null exactly when they CANNOT differ in any way worth a second line: the
+ *  stored selection names a concrete engine (not "auto"), it is honoured
+ *  (`ignoredReason === null`), and it equals `effective`. `EngineSelect`'s
+ *  trigger shows only the current choice's own label in that case — "llama.cpp
+ *  (Vulkan)" — and a line reading "Using llama.cpp (Vulkan)." underneath it is
+ *  the same word run twice. "Automatic" is the one selection that never
+ *  qualifies: the trigger's label does not name a runner, so the line under it
+ *  is the only place that does.
  */
-export function servingLine(row: CapabilityEngine): string {
+export function servingLine(row: CapabilityEngine, auto: string): string | null {
   if (!row.effective) return "Not available on this machine.";
+  if (row.selected !== auto && row.ignoredReason === null && row.selected === row.effective) {
+    return null;
+  }
   // The SHORT name. This line sits directly under the picker, whose options
   // carry "(Apple Silicon)" because that is where the reader is choosing
   // between backends; saying it again one line below is the repetition the
@@ -74,6 +87,17 @@ export function ignoredWarning(row: CapabilityEngine): string | null {
   // registry's own and is passed through; what went is the second sentence
   // about the choice being kept for another machine, which is reassurance
   // rather than information — the choice being still selected says it.
+  //
+  // A STRANDED selection (`strandedSelection` fires) has no `chosen` option to
+  // find, so `name` falls back to the raw stored code — and the registry's own
+  // reason for a stranded code routinely NAMES that same code ("onnx-embed is
+  // not a runner this build knows"). Prefixing "onnx-embed is not used here —"
+  // in front of that repeats it. When the resolved name already occurs inside
+  // the reason, the sentence folds into one "Ignored — …" instead of stating
+  // the name twice.
+  if (row.ignoredReason.includes(name)) {
+    return `Ignored — ${row.ignoredReason}.`;
+  }
   return `${name} is not used here — ${row.ignoredReason}.`;
 }
 

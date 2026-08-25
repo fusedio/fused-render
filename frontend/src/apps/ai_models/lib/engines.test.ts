@@ -112,14 +112,35 @@ describe("servingLine", () => {
     // The SHORT name: this line sits under the picker, which is the one
     // surface that keeps the platform qualifier. What the test is about is
     // WHICH runner gets named, and that is unchanged.
-    expect(servingLine(windows())).toContain("Faster Whisper");
-    expect(servingLine(windows())).not.toContain("CTranslate2");
-    expect(servingLine(windows())).not.toContain("MLX");
+    expect(servingLine(windows(), AUTO)).toContain("Faster Whisper");
+    expect(servingLine(windows(), AUTO)).not.toContain("CTranslate2");
+    expect(servingLine(windows(), AUTO)).not.toContain("MLX");
   });
 
   it("says so plainly when nothing serves the capability here", () => {
     const row = mac({ effective: null, effectiveLabel: null, effectiveShortLabel: null });
-    expect(servingLine(row)).toContain("Not available");
+    expect(servingLine(row, AUTO)).toContain("Not available");
+  });
+
+  it("is null when the concrete selection is honoured and matches what serves — the control already names it", () => {
+    // A stored concrete engine, in force, naming exactly what is running: the
+    // trigger's own label already says "Faster Whisper", and a line under it
+    // reading "Using Faster Whisper." repeats it word for word.
+    const row = mac({ selected: "faster-whisper", effective: "faster-whisper" });
+    expect(servingLine(row, AUTO)).toBeNull();
+  });
+
+  it("still reports when the selection is auto, even though it matches effective", () => {
+    // "Automatic" the trigger shows does not name the runner — the line under
+    // it is the only place that does.
+    expect(servingLine(mac(), AUTO)).toBe("Using MLX Whisper.");
+  });
+
+  it("still reports when the concrete selection is IGNORED, even though the picker still shows it", () => {
+    // The control shows the (ignored) selected choice, not what is actually
+    // running — so the serving line is the only place naming reality, exactly
+    // as before.
+    expect(servingLine(windows(), AUTO)).toBe("Using Faster Whisper.");
   });
 });
 
@@ -148,6 +169,33 @@ describe("ignoredWarning", () => {
       "MLX Whisper (Apple Silicon) is not used here — needs Apple Silicon — MLX runs on"
       + " Metal only (this is windows/amd64).",
     );
+  });
+
+  it("does not say the name twice when the registry's own reason already names it", () => {
+    // The stranded-selection case: `strandedSelection` renders the raw code
+    // ("onnx-embed") as the option, and `ignoredReason` already reads
+    // "onnx-embed is not a runner this build knows" — prefixing "onnx-embed is
+    // not used here — " in front of that repeats the code. When the resolved
+    // display name already occurs inside the reason, the sentence folds into
+    // one "Ignored — …" instead.
+    const row = mac({
+      capability: "embeddings",
+      selected: "onnx-embed",
+      effective: "sentence-transformers",
+      effectiveLabel: "Sentence Transformers",
+      effectiveShortLabel: "Sentence Transformers",
+      ignoredReason: "onnx-embed is not a runner this build knows",
+      choices: [
+        {
+          code: "sentence-transformers",
+          label: "Sentence Transformers",
+          note: null,
+          available: true,
+          reason: null,
+        },
+      ],
+    });
+    expect(ignoredWarning(row)).toBe("Ignored — onnx-embed is not a runner this build knows.");
   });
 });
 
@@ -244,10 +292,10 @@ describe("strandedSelection", () => {
     const warning = ignoredWarning(withdrawn()) ?? "";
     expect(warning).toContain("transformers-text");
     expect(warning).toContain("not a runner this build knows");
-    // …and the line NAMES THE CODE rather than a label, because a withdrawn
-    // engine has no label to be had: `ignoredWarning` falls back to `selected`
-    // exactly when `strandedSelection` fires.
-    expect(warning.startsWith("transformers-text is not used here")).toBe(true);
+    // The code and the reason both name "transformers-text", so the sentence
+    // folds into one "Ignored — …" rather than repeating the code in front of
+    // a reason that already contains it (`ignoredWarning`'s de-duplication).
+    expect(warning).toBe("Ignored — transformers-text is not a runner this build knows.");
   });
 });
 
