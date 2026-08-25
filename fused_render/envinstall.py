@@ -1624,7 +1624,7 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
             [sys.executable, worker, key, d,
              os.path.abspath(project_dir), venv_dir_for(project_dir),
              # Empty means "let uv pick its own default cache" — the SAME
-             # empty-string-means-None idiom slots 6 and 7 already use, and
+             # empty-string-means-None idiom slots 5 and 6 already use, and
              # `projectenv.uv_cache_dir()` returns exactly that (`None`)
              # whenever `FUSED_RENDER_HOME` is not set. See that function
              # for why: an explicit sibling cache used to be unconditional,
