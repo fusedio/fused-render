@@ -212,6 +212,10 @@ export default function AiModelsPage() {
                 <a
                   key={name}
                   role="tab"
+                  // The tour's per-tab anchor (platform/lib/tours/ai.ts). An
+                  // attribute rather than nth-child, so reordering
+                  // AI_MODELS_TABS cannot silently repoint a step.
+                  data-tab={name}
                   aria-selected={tab === name}
                   className={"am-tab" + (tab === name ? " active" : "")}
                   href={tabHref(name)}

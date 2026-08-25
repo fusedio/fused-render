@@ -422,8 +422,14 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 would be recognition traded for guessing (design-principles §4)
                 — and the marks are lucide's, at the same 14px every other glyph
                 on this page uses (ScheduleCalendar's `icon`). */}
-            <div className="schedule-form-seg" role="radiogroup" aria-label="View">
+            {/* `schedule-view-seg` and the per-button `data-view` are the Tasks
+                tour's anchors (platform/lib/tours/tasks.ts): three other
+                controls in the app wear `.schedule-form-seg` (the calendar's
+                range, the modal's Ends), so the shared class cannot name this
+                one. Styling still hangs off `.schedule-form-seg`. */}
+            <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
               <button type="button"
+                      data-view="list"
                       className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
@@ -431,6 +437,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 List
               </button>
               <button type="button"
+                      data-view="board"
                       className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
@@ -438,6 +445,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 Board
               </button>
               <button type="button"
+                      data-view="calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
