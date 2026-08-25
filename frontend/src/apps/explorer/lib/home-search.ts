@@ -193,7 +193,18 @@ export function pathShortcut(query: string, home: string): string | null {
   let q = query.trim().replace(/[\r\n]+/g, " ").trim();
   const quoted = q.match(/^(['"])([\s\S]*)\1$/);
   if (quoted) q = quoted[2].trim();
-  if (/^file:\/\//i.test(q)) q = q.slice("file://".length);
+  if (/^file:\/\//i.test(q)) {
+    q = q.slice("file://".length);
+    // A Windows file:// URI's third slash is the URI's (empty) authority
+    // separator, not part of the path — file:///C:/Users/x is "C:/Users/x".
+    // Left in, it makes the string start with "/C:/…", which then PASSES the
+    // shape guard below via its leading-slash (POSIX) alternative instead of
+    // failing the drive-letter one, so a bogus absolute path is returned with
+    // full confidence instead of falling back to search. A bare POSIX
+    // file:// URL has no such extra slash: file:///home/x really is
+    // "/home/x", and is left untouched.
+    if (/^\/[A-Za-z]:[\\/]/.test(q)) q = q.slice(1);
+  }
   q = q.replace(/\\ /g, " ");
   if (!/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) return null;
   let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
@@ -327,10 +338,18 @@ export function isAiRow(index: number, m: RowModel): boolean {
   return m.aiRow && index === totalRows(m) - 1;
 }
 
-/** Move the highlight by one row, wrapping, entering the list from either end. */
-export function stepHighlight(current: number | null, m: RowModel, delta: 1 | -1): number {
+/**
+ * Move the highlight by one row, wrapping, entering the list from either end.
+ *
+ * Null on a genuinely empty model (no open row, no files, no AI row — reachable
+ * when a path-shaped query does not resolve: ranking runs and comes back with
+ * zero hits, but the AI row stays suppressed because the query is still
+ * shaped like a path). There is no row 0 to land the arrow key on; returning
+ * 0 here used to hand `activeRow` a position to clamp into -1 instead.
+ */
+export function stepHighlight(current: number | null, m: RowModel, delta: 1 | -1): number | null {
   const n = totalRows(m);
-  if (n === 0) return 0;
+  if (n === 0) return null;
   if (current === null) return delta === 1 ? 0 : n - 1;
   return (current + delta + n) % n;
 }
@@ -411,6 +430,13 @@ export function activeRow(
   m: RowModel,
   settled: boolean,
 ): number | null {
+  // A genuinely empty model — no open row, no files, no AI row — has no row
+  // to pre-select AND no row an explicit `highlight` could have meant, so
+  // this returns null unconditionally before consulting `highlight` at all.
+  // Falling through to `Math.min(highlight, totalRows(m) - 1)` below used to
+  // clamp any non-null highlight to -1 here (`totalRows(m) - 1` === -1),
+  // which `activateRow` (FilesHome.tsx) then dereferenced as `hits[-1]`.
+  if (totalRows(m) === 0) return null;
   if (highlight === null) {
     if (m.openRow) return 0;
     if (!settled) return null;

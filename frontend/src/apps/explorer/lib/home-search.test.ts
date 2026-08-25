@@ -105,6 +105,16 @@ describe("pathShortcut", () => {
     expect(pathShortcut("file:///etc/hosts", HOME)).toBe("/etc/hosts");
   });
 
+  it("strips a Windows file:// URI's authority slash ahead of the drive letter", () => {
+    // file:///C:/Users/x is "C:/Users/x", not "/C:/Users/x" — the third slash
+    // is the URI's (empty) authority separator, not part of the path. Getting
+    // this wrong used to pass the leading-slash guard branch as if it were an
+    // absolute POSIX path, producing a confidently wrong address.
+    expect(pathShortcut("file:///C:/Users/x", HOME)).toBe("C:/Users/x");
+    // A bare POSIX file:// URL has no such extra slash to drop.
+    expect(pathShortcut("file:///home/x", HOME)).toBe("/home/x");
+  });
+
   it("tolerates a trailing newline from a multi-line paste", () => {
     expect(pathShortcut("/etc/hosts\n", HOME)).toBe("/etc/hosts");
   });
@@ -320,6 +330,23 @@ describe("keyboard rows — without an open row (the pre-section-7 shape)", () =
     expect(isOpenRow(0, m)).toBe(false);
     expect(isAiRow(3, m)).toBe(true);
     expect(isAiRow(0, m)).toBe(false);
+  });
+
+  it("a genuinely empty model (no open row, no files, no AI row) has no row to move to or land on", () => {
+    // Reachable when a path-shaped query does not resolve (addr.status ===
+    // "missing"): ranking runs and comes back with zero hits, but the AI row
+    // stays suppressed because the query is still shaped like a path
+    // (rowModel.aiRow requires `address === null`). `stepHighlight` used to
+    // return 0 here — a row index into a list that has no row 0 — and
+    // `activeRow` used to clamp that into -1 (`Math.min(0, -1)`), which
+    // `activateRow` then dereferenced as `hits[-1]`.
+    const m = rowModel({ openRow: false, fileCount: 0, aiRow: false });
+    expect(stepHighlight(null, m, 1)).toBeNull();
+    expect(stepHighlight(null, m, -1)).toBeNull();
+    expect(stepHighlight(0, m, 1)).toBeNull();
+    expect(activeRow(null, m, true)).toBeNull();
+    expect(activeRow(null, m, false)).toBeNull();
+    expect(activeRow(0, m, true)).toBeNull();
   });
 });
 
