@@ -2029,7 +2029,7 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, cache, "3.12")
@@ -2072,7 +2072,7 @@ def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setenv("UV_LINK_MODE", "copy")
 
@@ -2110,7 +2110,7 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
@@ -2146,7 +2146,7 @@ def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2185,7 +2185,7 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(
         worker.os, "replace",
@@ -2237,7 +2237,7 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2274,7 +2274,7 @@ def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeyp
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2320,7 +2320,7 @@ def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2380,7 +2380,7 @@ def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2424,7 +2424,7 @@ def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2460,7 +2460,7 @@ def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypat
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     os.chmod(proj, 0o555)
@@ -2710,7 +2710,7 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(runner, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2743,7 +2743,7 @@ def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, mo
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2770,7 +2770,7 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     seen = []
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             seen.append(python_executable) or "/x/bin/python"
         ),
     )
@@ -2988,6 +2988,47 @@ def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
 # the wire and the page then polls forever — the same symptom, made permanent.
 
 
+def _fake_popen(fake_run):
+    """Adapts a `subprocess.run`-shaped fake to the `subprocess.Popen`-shaped
+    call `_build` now makes to stream uv's stderr line by line (see the worker
+    module docstring and `_UvProgress`).
+
+    These fakes predate that rewrite and describe uv's OBSERVABLE behaviour —
+    what it wrote to disk, what it returned — which has not changed; only how
+    `_build` reads uv's output has. Rather than rewrite every one of them
+    around a line-iterator, this adapter runs the existing fake and repackages
+    its `.stderr` string as the single-line-at-a-time object `_build` now
+    iterates, so every fake below still describes "what uv did" and nothing
+    about "how its output arrived".
+    """
+
+    class _Lines:
+        """A `Popen.stderr`-shaped iterator: line by line, closeable."""
+
+        def __init__(self, text):
+            self._lines = (text or "").splitlines(keepends=True)
+
+        def __iter__(self):
+            return iter(self._lines)
+
+        def close(self):
+            pass
+
+    def _popen(cmd, **kw):
+        result = fake_run(cmd, **kw)
+
+        class _FakeProc:
+            stderr = _Lines(result.stderr)
+            returncode = result.returncode
+
+            def wait(self):
+                return self.returncode
+
+        return _FakeProc()
+
+    return _popen
+
+
 def _worker_module(name="_env_install_worker_hb"):
     import importlib.util
 
@@ -3032,8 +3073,8 @@ def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
 
     real_write = worker._write
 
-    def _watch(progress_dir, stage, pct, detail="", done=False, error=None):
-        out = real_write(progress_dir, stage, pct, detail, done, error)
+    def _watch(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
+        out = real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
         if _is_beat(stage, detail):
             # `ts` is read back off DISK, because that is what the client polls.
             seen.append((pct, detail, _record(progress_dir)["ts"]))
@@ -3044,7 +3085,7 @@ def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
     monkeypatch.setattr(worker, "_write", _watch)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (beats.wait(10), "/x/venv/bin/python")[1]
         ),
     )
@@ -3078,8 +3119,8 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     calls = []
     real_write = worker._write
 
-    def _log(progress_dir, stage, pct, detail="", done=False, error=None):
-        out = real_write(progress_dir, stage, pct, detail, done, error)
+    def _log(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
+        out = real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
         calls.append((stage, done))
         return out
 
@@ -3088,12 +3129,12 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     beats = threading.Event()
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (beats.wait(10), "/x/venv/bin/python")[1]
         ),
     )
 
-    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if _is_beat(stage, detail) and len(
                 [c for c in calls if c == ("install", False)]) >= 2:
             beats.set()
@@ -3108,7 +3149,7 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     calls.clear()
     beats.clear()
 
-    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable):
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
         beats.wait(10)
         raise RuntimeError("Failed to install: no wheels for imagecodecs")
 
@@ -3142,16 +3183,16 @@ def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch)
     first_beat = threading.Event()
     real_write = worker._write
 
-    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if _is_beat(stage, detail) and not first_beat.is_set():
             first_beat.set()
             held.wait(10)  # the build finishes while this beat is parked here
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", _hold_the_first_beat)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (first_beat.wait(10), "/x/venv/bin/python")[1]
         ),
     )
@@ -3213,9 +3254,9 @@ def test_the_python_stage_reports_LIVENESS_not_an_invented_percentage(
     seen = []
     real_write = worker._write
 
-    def record_every(progress_dir, stage, pct, detail="", done=False, error=None):
+    def record_every(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         seen.append((stage, pct, detail))
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", record_every)
     monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.05)
@@ -3286,15 +3327,15 @@ def test_a_failed_terminal_write_does_not_latch_out_the_error_record(tmp_path, m
     d = str(tmp_path / "prog")
     real_write = worker._write
 
-    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if stage == "done":
             raise OSError(28, "No space left on device")
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", _fail_the_done_record)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: "/x/venv/bin/python",
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: "/x/venv/bin/python",
     )
     with pytest.raises(OSError):
         worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"), str(tmp_path / "cache"))
@@ -3323,13 +3364,13 @@ def test_the_heartbeat_thread_does_not_outlive_the_install(tmp_path, monkeypatch
     monkeypatch.setattr(worker.threading, "Thread", _capture)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: "/x/venv/bin/python",
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: "/x/venv/bin/python",
     )
     worker.install("k", str(tmp_path / "a"), str(tmp_path / "proj"), str(tmp_path / "venv"), str(tmp_path / "cache"))
     assert threads and all(t.daemon for t in threads)
     assert not any(t.is_alive() for t in threads), "the heartbeat outlived the install"
 
-    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable):
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
         raise RuntimeError("nope")
 
     monkeypatch.setattr(worker, "_build", _boom)
@@ -3384,7 +3425,7 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     seen = []
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             seen.append(python_executable) or "/x/bin/python"
         ),
     )
