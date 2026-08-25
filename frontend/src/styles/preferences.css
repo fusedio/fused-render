@@ -618,17 +618,30 @@
    it — the fix for both this row reading as a stray selection and for it
    sliding below the fold at HOME_RESULT_CAP=20. `background: var(--bg)` here
    is not a selection tint — it is an opaque backdrop so scrolling rows
-   disappear cleanly UNDER a sticky element instead of showing through it. */
+   disappear cleanly UNDER a sticky element instead of showing through it.
+
+   `.fh-ai-row` is on the <li>, NOT the <button> inside it (FilesHome.tsx's
+   `AiActionRow`). `position: sticky` offsets an element within its own
+   containing block, and a <li> that wraps exactly one full-width button has
+   no room of its own for the button to offset within — sticky landed on the
+   button once did nothing at all: the row scrolled out of view under the
+   fold exactly like an ordinary file row, silently reopening the very
+   problem HOME_RESULT_CAP=20 plus this scrolling list exists to fix.
+   `.fh-ai-action`, below, is the button's own class for what genuinely is
+   about the button. */
 .fh-ai-row {
   position: sticky;
   bottom: 0;
   background: var(--bg);
   border-top: 1px solid var(--border);
+}
+
+.fh-ai-action {
   padding-top: 12px;
   padding-bottom: 12px;
 }
 
-.fh-ai-row .fh-result-name {
+.fh-ai-action .fh-result-name {
   color: var(--accent);
 }
 
@@ -636,7 +649,7 @@
   color: var(--accent);
 }
 
-.fh-ai-row:disabled {
+.fh-ai-action:disabled {
   cursor: default;
 }
 

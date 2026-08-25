@@ -248,10 +248,17 @@ function AiActionRow({
   onRun: () => void;
 }) {
   return (
-    <li role="option" id={id} aria-selected={active}>
+    // `fh-ai-row` (sticky/background/border-top — preferences.css) lives on
+    // THIS <li>, not the button inside it: `position: sticky` is bound to its
+    // element's own containing block, and a <li> that wraps exactly one
+    // full-width button has no room of its own to offset within — sticky on
+    // the button was a no-op that never actually stuck. `fh-ai-action`
+    // carries what genuinely IS about the button (the accent name, the
+    // disabled cursor).
+    <li className="fh-ai-row" role="option" id={id} aria-selected={active}>
       <button
         type="button"
-        className={"fh-result fh-ai-row" + (active ? " is-active" : "")}
+        className={"fh-result fh-ai-action" + (active ? " is-active" : "")}
         disabled={running}
         onClick={onRun}
       >

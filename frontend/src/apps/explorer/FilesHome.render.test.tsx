@@ -536,3 +536,29 @@ describe("the AI row's ↵ hint only claims Enter when Enter runs it", () => {
     box.unmount();
   });
 });
+
+describe("the AI row's sticky positioning is on the LIST ITEM, not the button inside it", () => {
+  // `position: sticky` is constrained to its element's containing block —
+  // here the <li>, whose content box is exactly the <button>'s height once
+  // the class carrying `position: sticky; bottom: 0` sits on the button
+  // instead: the offset range is zero and the row never actually detaches,
+  // scrolling out of view underneath the fold like any other row (silently
+  // undoing the whole point of HOME_RESULT_CAP=20 plus a scrolling
+  // `.fh-results` — see home-search.ts's own comment on why the cap is safe
+  // only because this row is reachable without scrolling). preferences.css
+  // must carry `.fh-ai-row`'s sticky/background/border-top rules on the
+  // <li>, not the <button>.
+  test("the fh-ai-row class is on the <li>, not the <button>", async () => {
+    const box = mount();
+    await type(box, "zzzqqqnomatch");
+    await flush(() => rankCalls[0].resolve(answer({ hits: [], total: 0 })));
+    const carriers = box.renderer.root.findAll(
+      (n) =>
+        typeof n.props?.className === "string" &&
+        n.props.className.split(" ").includes("fh-ai-row"),
+    );
+    expect(carriers.length).toBeGreaterThan(0);
+    for (const n of carriers) expect(n.type).toBe("li");
+    box.unmount();
+  });
+});
