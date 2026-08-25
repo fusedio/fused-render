@@ -141,6 +141,38 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
 }
 
 /**
+ * The held answer's hits, re-filtered against a NEWER query with no round
+ * trip.
+ *
+ * The common case while a request is in flight is the new query EXTENDING the
+ * old one ("read" -> "readm"): re-running `fuzzyMatch` (the same matcher
+ * rank.py mirrors) over the hits already in hand and keeping only the ones
+ * that still match — with `positions` recomputed for the new query — narrows
+ * the list on screen with no round trip and no blank frame, which is strictly
+ * better than dimming rows that cannot possibly be answers to what is now
+ * typed.
+ *
+ * Deliberately does NOT re-rank or add rows: it can only ever REMOVE hits from
+ * the held answer, which is what makes the result a provable SUBSET of the
+ * true answer for `q` — it can never show something the fresh answer
+ * wouldn't. A query that is not an extension of the old one (a paste, a
+ * select-all retype) narrows to whichever held hits happen to still
+ * fuzzy-match `q` directly, which is usually few or none; that emptiness is
+ * exactly the signal the staleness deadline (`STALE_CLEAR_MS`,
+ * platform/lib/instant-search) uses to decide there is nothing worth holding
+ * onto.
+ */
+export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
+  const out: HomeHit[] = [];
+  for (const hit of answer.hits) {
+    const m = fuzzyMatch(q, hit.rel);
+    if (!m) continue;
+    out.push({ ...hit, positions: m.positions });
+  }
+  return out;
+}
+
+/**
  * The filesystem path a query is really an address for, or null.
  *
  * A pasted or typed `/…`, `~/…` or `C:\…` is an exact address, and searching

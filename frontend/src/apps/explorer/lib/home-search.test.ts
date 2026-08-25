@@ -5,6 +5,7 @@ import {
   answerFrom,
   homeCountNote,
   nameStart,
+  narrowAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -12,6 +13,7 @@ import {
   stepHighlight,
   submitRow,
   type HomeAnswer,
+  type HomeHit,
 } from "./home-search";
 import type { IndexRankHit, IndexRankResult } from "@platform/lib/api";
 
@@ -303,6 +305,43 @@ describe("rankingSettled", () => {
     // A failed request is settled: nothing further is coming, and the AI row is
     // the only content left — so Enter must reach it.
     expect(rankingSettled(null, "read", false, true)).toBe(true);
+  });
+});
+
+describe("narrowAnswer", () => {
+  function homeHit(rel: string, over: Partial<HomeHit> = {}): HomeHit {
+    return { path: `${HOME}/${rel}`, rel, is_dir: false, size: 1, mtime: 1, ...over };
+  }
+
+  it("keeps only the held hits that still match an EXTENDED query, no round trip", () => {
+    const held = answer({
+      query: "read",
+      hits: [homeHit("README.md"), homeHit("docs/readme.txt"), homeHit("other.txt")],
+    });
+    const narrowed = narrowAnswer(held, "readme");
+    expect(narrowed.map((h) => h.rel)).toEqual(["README.md", "docs/readme.txt"]);
+  });
+
+  it("recomputes positions for the NEW query, not the one the hits were fetched for", () => {
+    const held = answer({ query: "read", hits: [homeHit("README.md")] });
+    const [hit] = narrowAnswer(held, "readme");
+    expect(hit.positions!.map((i) => "README.md"[i]).join("").toLowerCase()).toBe("readme");
+  });
+
+  it("empties out for a query that is not an extension — a paste, not a keystroke", () => {
+    const held = answer({ query: "read", hits: [homeHit("README.md"), homeHit("other.txt")] });
+    expect(narrowAnswer(held, "zzz-nope")).toEqual([]);
+  });
+
+  it("never re-ranks or adds rows — it is a subset of what was held, in the same order", () => {
+    const held = answer({
+      query: "e",
+      hits: [homeHit("code-file.txt"), homeHit("readme.md"), homeHit("one-file.txt")],
+    });
+    const narrowed = narrowAnswer(held, "e-file");
+    // "readme.md" has no "e-file" subsequence and is dropped, but the
+    // surviving order is the HELD order, not a re-sort.
+    expect(narrowed.map((h) => h.rel)).toEqual(["code-file.txt", "one-file.txt"]);
   });
 });
 

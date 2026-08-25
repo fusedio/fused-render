@@ -4,8 +4,10 @@
 import { describe, expect, it } from "bun:test";
 import {
   INSTANT_DEBOUNCE_MS,
+  PENDING_INDICATOR_MS,
   QUERY_MEMO_LIMIT,
   QueryMemo,
+  STALE_CLEAR_MS,
   searchDelay,
 } from "@platform/lib/instant-search";
 
@@ -77,5 +79,16 @@ describe("QueryMemo", () => {
 
   it("defaults to a small trail, not a cache", () => {
     expect(QUERY_MEMO_LIMIT).toBe(20);
+  });
+});
+
+describe("STALE_CLEAR_MS", () => {
+  it("gives a request longer to answer than the pending indicator does", () => {
+    // Admitting a wait is happening (PENDING_INDICATOR_MS) is a much cheaper
+    // decision than throwing away the rows on screen (STALE_CLEAR_MS) — the
+    // second has to wait longer than the first, or a request that is merely
+    // slow (already past PENDING_INDICATOR_MS) would immediately also count
+    // as stale.
+    expect(STALE_CLEAR_MS).toBeGreaterThan(PENDING_INDICATOR_MS);
   });
 });

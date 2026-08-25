@@ -32,6 +32,7 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import {
   PENDING_INDICATOR_MS,
   QueryMemo,
+  STALE_CLEAR_MS,
   searchDelay,
 } from "@platform/lib/instant-search";
 import {
@@ -42,6 +43,7 @@ import {
   homeCountNote,
   isAiRow,
   nameStart,
+  narrowAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -431,8 +433,37 @@ export function FilesSearch({
   // next answer is in flight: results → nothing → results is the single most
   // visible way this can feel worse than ranking locally, which never had an
   // empty frame. `behind` is what dims them and what the caveat chip explains.
-  const hits = answer?.hits ?? [];
+  //
+  // While behind, render `narrowAnswer`'s re-filtered subset rather than the
+  // held answer's raw hits: the overwhelmingly common case is the query
+  // EXTENDING the held one ("read" -> "readme"), and re-running fuzzyMatch
+  // over hits already in hand narrows the list with no round trip and no
+  // blank frame — strictly better than dimming rows that cannot possibly
+  // match. It can only ever remove rows, never add or reorder them, so this
+  // is always a subset of the true (still in-flight) answer.
   const behind = answer !== null && answer.query !== q;
+  const hits = behind && answer ? narrowAnswer(answer, q) : (answer?.hits ?? []);
+
+  // The staleness deadline: past STALE_CLEAR_MS of a request outliving the
+  // query it was asked for, "a little behind" stops being true — this used to
+  // hold for a ~40ms local rank, not a multi-second round trip. Narrowing
+  // (above) is tried FIRST and takes priority: if it leaves real rows, those
+  // are a provable subset of the answer to THIS query, and the deadline must
+  // not throw them away out from under the user. Only when narrowing leaves
+  // nothing (an unrelated query, a paste, a select-all retype) does the
+  // deadline drop to `answer = null`, which renders as the plain "Searching…"
+  // note — no rows and an honest label beats rows for a query the user has
+  // visibly moved past.
+  useEffect(() => {
+    if (!pending || !behind) return;
+    const timer = window.setTimeout(() => {
+      setAnswer((prev) => {
+        if (prev === null || prev.query === q) return prev;
+        return narrowAnswer(prev, q).length > 0 ? prev : null;
+      });
+    }, STALE_CLEAR_MS);
+    return () => window.clearTimeout(timer);
+  }, [pending, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
