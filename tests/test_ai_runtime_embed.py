@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from fused_render import jobs
 from fused_render.ai import registry, supervisor
 from fused_render.server import create_app
+from fused_render.server.routers import ai_runtime
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +134,10 @@ def test_a_resident_model_answers_with_vectors(client, monkeypatch):
     assert body["ok"] is True
     assert body["result"] == {
         "vectors": [[0.6, 0.8]], "dim": 2, "model": "org/embed-x"}
-    assert calls == [("org/embed-x", {"texts": ["a cat"]})]
+    # `kind` is forwarded RESOLVED — the route decides it and the worker
+    # validates the same value again, so the two cannot disagree about what a
+    # caller who said nothing meant.
+    assert calls == [("org/embed-x", {"texts": ["a cat"], "kind": "document"})]
 
 
 def test_paths_are_forwarded_by_kind_not_texts(client, monkeypatch):
@@ -186,3 +190,187 @@ def test_a_runtime_failure_is_ai_error(client, monkeypatch):
     body = response.json()
     assert body["ok"] is False
     assert body["error"]["type"] == "ai_error"
+
+
+# -- the two per-model refusals (SPEC §40) --------------------------------------
+#
+# `paths` needs a vision tower and `kind` needs a retrieval convention, and
+# neither is a property of the REQUEST — both are facts about the model, so both
+# are asked after `default_for` has resolved one. Ported in shape from PR #780's
+# `tests/test_ai_runtime_embed_text.py`.
+#
+# **Refused, never ignored.** A `paths` request a text encoder accepted would
+# embed noise; a `kind` a dual encoder accepted would be a parameter with no
+# effect. Both return unit-length vectors of the right dimension either way, so
+# nothing downstream can tell.
+
+
+@pytest.fixture()
+def served(monkeypatch):
+    """`supervisor.generate_embed`, recording what reached it."""
+    calls = []
+    monkeypatch.setattr(
+        supervisor, "generate_embed",
+        lambda model, body: (calls.append((model, body)),
+                             {"vectors": [[0.6, 0.8]], "dim": 2})[1])
+    return calls
+
+
+def _families(monkeypatch, answers):
+    """`hub_cache.embed_family` as the route sees it, per model id.
+
+    Patched on the ROUTER's own name rather than on `hub_cache`, because the
+    module imports the function directly (`from ... import embed_family`) and a
+    patch on the source would not be seen — the same reason the image tests
+    patch `ai_runtime._accepts_image`'s inputs where they are read.
+    """
+    monkeypatch.setattr(ai_runtime, "embed_family", answers.get)
+
+
+def test_paths_on_a_TEXT_encoder_is_refused_by_name(client, monkeypatch, served):
+    _families(monkeypatch, {"BAAI/bge-base-en-v1.5": "text"})
+    response = _post(client, {"paths": ["/tmp/pic.png"],
+                              "model": "BAAI/bge-base-en-v1.5"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    # The MODEL, because the fix is to name a different one — and what to pass
+    # instead, because "not supported" is not actionable.
+    assert "BAAI/bge-base-en-v1.5" in message
+    assert "texts" in message
+    assert "vision tower" in message
+    assert served == [], "nothing may reach the worker after a refusal"
+
+
+def test_paths_on_a_DUAL_encoder_is_served(client, monkeypatch, served):
+    _families(monkeypatch, {"onnx-community/siglip2-base-patch16-384-ONNX": "dual"})
+    response = _post(client, {
+        "paths": ["/tmp/pic.png"],
+        "model": "onnx-community/siglip2-base-patch16-384-ONNX"})
+    assert response.status_code == 200
+    assert len(served) == 1
+    # …and `kind` is NOT forwarded on an image request: the worker refuses the
+    # pair outright, so sending it would turn a legal call into a 500.
+    assert "kind" not in served[0][1]
+
+
+def test_paths_on_a_COLD_model_still_answers_model_loading(client, monkeypatch):
+    """**The reason the route's refusal is keyed on positive evidence rather
+    than on `_accepts_paths`.** A model with no snapshot on disk has no config
+    to read, so `embed_family` answers None — and this call must still start the
+    download rather than being refused for a file that is not there yet.
+    """
+    _families(monkeypatch, {})
+
+    def not_ready(model, body):
+        raise supervisor.ModelNotReady("loading", job_id="sys:ai-load:x")
+
+    monkeypatch.setattr(supervisor, "generate_embed", not_ready)
+    response = _post(client, {"paths": ["/tmp/pic.png"], "model": "org/cold"})
+    assert response.status_code == 409
+    assert response.json()["error"]["type"] == "model_loading"
+
+
+def test_kind_on_a_model_with_NO_SCHEME_is_refused_by_name(client, monkeypatch,
+                                                           served):
+    """A SigLIP has no query/passage convention, so `kind` would change nothing
+    about the vectors — which is exactly why it must not be accepted: a caller
+    who passed it believes it did something."""
+    _families(monkeypatch, {"onnx-community/siglip2-base-patch16-384-ONNX": "dual"})
+    response = _post(client, {
+        "texts": ["a cat"], "kind": "query",
+        "model": "onnx-community/siglip2-base-patch16-384-ONNX"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "onnx-community/siglip2-base-patch16-384-ONNX" in message
+    assert "kind" in message
+    assert served == []
+
+
+def test_kind_on_a_RETRIEVAL_encoder_is_served_and_forwarded(client, monkeypatch,
+                                                             served):
+    _families(monkeypatch, {"BAAI/bge-base-en-v1.5": "text"})
+    response = _post(client, {"texts": ["red shoes"], "kind": "query",
+                              "model": "BAAI/bge-base-en-v1.5"})
+    assert response.status_code == 200
+    assert served == [("BAAI/bge-base-en-v1.5",
+                       {"texts": ["red shoes"], "kind": "query"})]
+
+
+def test_an_absent_kind_is_never_refused_even_on_a_model_with_no_scheme(
+        client, monkeypatch, served):
+    """The refusal is on the caller SAYING it, not on the default. Every bare
+    call carries `kind: "document"` by the time it reaches the worker, and
+    refusing that would break every SigLIP request in the app."""
+    _families(monkeypatch, {"onnx-community/siglip2-base-patch16-384-ONNX": "dual"})
+    response = _post(client, {
+        "texts": ["a cat"],
+        "model": "onnx-community/siglip2-base-patch16-384-ONNX"})
+    assert response.status_code == 200
+    assert served[0][1]["kind"] == "document"
+
+
+def test_an_explicit_null_kind_is_not_refused_either(client, monkeypatch, served):
+    """A page building its body with `kind: state || null` sends the null, and
+    that is "I did not say" rather than a value."""
+    _families(monkeypatch, {"onnx-community/siglip2-base-patch16-384-ONNX": "dual"})
+    response = _post(client, {
+        "texts": ["a cat"], "kind": None,
+        "model": "onnx-community/siglip2-base-patch16-384-ONNX"})
+    assert response.status_code == 200
+
+
+def test_a_bad_kind_VALUE_is_refused_before_the_model_is_even_resolved(client,
+                                                                      served):
+    """`embed_common.request_kind`'s own refusal, which fires first — so a typo
+    costs nothing rather than a 409 that implies the fix is to wait."""
+    response = _post(client, {"texts": ["a"], "kind": "queries"})
+    assert response.status_code == 400
+    message = response.json()["error"]["message"]
+    assert "'query'" in message and "'document'" in message
+    assert served == []
+
+
+def test_kind_beside_paths_is_refused_by_the_shared_validator(client, served):
+    response = _post(client, {"paths": ["/tmp/a.png"], "kind": "query",
+                              "model": "org/x"})
+    assert response.status_code == 400
+    assert "kind" in response.json()["error"]["message"]
+    assert served == []
+
+
+# -- the catalog fields the Playground draws off -------------------------------
+
+
+def test_the_catalog_publishes_acceptsPaths_and_promptScheme(client, monkeypatch):
+    """Both fields on EVERY embeddings entry, computed per entry — a picker
+    filtering on absence would offer a control the route then refuses, which is
+    the failure these fields exist to prevent."""
+    monkeypatch.setattr(
+        ai_runtime, "embed_family",
+        lambda model_id: "dual" if "siglip" in model_id else "text")
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    embeddings = next(r for r in rows if r["capability"] == "embeddings")
+    assert embeddings["models"], "the embeddings row must offer something"
+    for entry in embeddings["models"]:
+        assert "acceptsPaths" in entry
+        assert "promptScheme" in entry
+        if "siglip" in entry["id"]:
+            assert entry["acceptsPaths"] is True
+            # A dual encoder has no retrieval convention, and `"none"` travels
+            # as None so a frontend truthiness test agrees with the route.
+            assert entry["promptScheme"] is None
+        else:
+            assert entry["acceptsPaths"] is False
+            assert entry["promptScheme"] in ("bge", "e5", "nomic")
+
+
+def test_no_other_capability_claims_either_field(client):
+    """`_accepts_image`'s rule restated: treating "refuses nothing" as evidence
+    would have every text and speech entry claiming it takes a photo."""
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    for row in rows:
+        if row["capability"] == "embeddings":
+            continue
+        for entry in row["models"]:
+            assert entry["acceptsPaths"] is False, entry["id"]
+            assert entry["promptScheme"] is None, entry["id"]

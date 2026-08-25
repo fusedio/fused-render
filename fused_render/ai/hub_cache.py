@@ -1332,6 +1332,62 @@ class CacheReading(NamedTuple):
     runner_reason: str | None = None
 
 
+def embed_family(repo_id: str) -> str | None:
+    """`"dual"`, `"text"`, or None when the cached snapshot cannot say.
+
+    **Exported, and read TWICE by `ai_runtime` for two different questions**
+    (SPEC §40): whether the catalog entry may advertise `paths`, and whether the
+    embed route must refuse them. THREE-VALUED on purpose, because those two
+    questions want opposite treatment of "cannot tell":
+
+    * the CATALOG field fails closed — `== "dual"`, so an unknown answers False
+      and the Playground draws no image mode. `_accepts_image`'s discipline: an
+      affordance whose request then 400s is worse than a missing one.
+    * the ROUTE refusal fails OPEN — `== "text"`, so it refuses only on positive
+      evidence that there is no vision tower. A cold model has no snapshot to
+      read, and a `paths` call on one must still answer `model_loading` and
+      start the download, exactly as it does today; turning that into a 400
+      would break a working call on the strength of a file not being there yet.
+
+    Both readings are COMPUTED and neither is curated, which is what makes the
+    pair safe: they can only ever disagree in the direction where the picker
+    hides something the route would have allowed, never the reverse.
+
+    Read off `config.json`'s `model_type` through `formats`' own sets — the same
+    evidence `formats.loaders()` uses to decide which engines get a Load button
+    — rather than off a `vision_config` block alone. A dual encoder does declare
+    one, but `model_type` is the field this app already treats as decisive here,
+    and reading two different things would let the page and the route classify
+    one repo differently. None for a `model_type` that is not an embedding
+    family at all: this answers "which KIND of embedding model", not "is this an
+    embedding model".
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    if not config:
+        return None
+    family = formats.embed_model_type(config)
+    if family is None:
+        return None
+    return "dual" if family in formats.DUAL_EMBED_MODEL_TYPES else "text"
+
+
+def _embed_snapshot_dir(repo_id: str) -> str | None:
+    """`repo_id`'s default cached snapshot directory, or None.
+
+    Split out of `has_vision_tower` when `embed_family` needed the same three
+    lines: the path-segment guard is the part that must not be duplicated, since
+    a repo id reaches both of these out of a request body and is not a place to
+    go looking for `..` or a path separator.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    return _default_snapshot(os.path.join(hub_cache_dir(), dirname))
+
+
 def has_vision_tower(repo_id: str) -> bool:
     """Does the cached snapshot of `repo_id` declare a vision tower?
 
@@ -1363,14 +1419,12 @@ def has_vision_tower(repo_id: str) -> bool:
     and "no image support" is the failure-closed direction for a control this
     permissive.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    # The same path-segment guard `cached_capability` applies below: a repo id
-    # reaches here out of a request body, and is not a place to go looking
-    # for `..` or a path separator.
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
-        return False
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
-    snapshot_dir = _default_snapshot(repo_dir)
+    # `_embed_snapshot_dir` carries the path-segment guard `cached_capability`
+    # applies below — a repo id reaches here out of a request body, and is not a
+    # place to go looking for `..` or a path separator. Shared with
+    # `embed_family` above rather than written twice, because that guard is
+    # exactly the line a second copy would come to differ on.
+    snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return False
     config = _read_json(os.path.join(snapshot_dir, "config.json"))
