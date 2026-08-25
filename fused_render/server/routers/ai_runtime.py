@@ -34,6 +34,7 @@ the app.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import secrets
 import struct
@@ -1825,6 +1826,22 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+
+    # Checked first, same as `api_ai_image`/`api_ai_transcribe` — see
+    # `_reject_unknown`. `request_kind` below only ever READS `body.get("kind")`,
+    # so a misspelled key (`kimd`) is invisible to it and `kind` silently
+    # defaults to `DEFAULT_KIND` rather than raising — exactly the failure
+    # this endpoint's own `kind` argues hardest about. The envelope check has
+    # to catch the typo before `request_kind` gets a chance to default it away.
+    #
+    # `_reject_unknown` returns the OTHER three endpoints' bare `{"error": ...}`
+    # shape, not this endpoint's `{ok, error: {type, message}}` one, so its
+    # message is unwrapped and re-wrapped through `_embed_error` rather than
+    # returned as-is.
+    rejection = _reject_unknown(body, _EMBED_SERVER_OPTIONS, "/api/ai/embed")
+    if rejection is not None:
+        message = json.loads(bytes(rejection.body))["error"]
+        return _embed_error("bad_request", message, status=400)
 
     # Same rule `generate()` enforces inside each worker's own venv
     # (`embed_common.request_kind`) — refused HERE too, before a model is even

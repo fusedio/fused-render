@@ -39,6 +39,39 @@ def test_the_x_fused_header_is_required(client):
     assert response.status_code == 403
 
 
+# -- the envelope check: caught before request_kind ever reads a field ----------
+
+
+def test_a_misspelled_kind_key_is_a_bad_request_not_a_silent_default(client):
+    """`request_kind` only ever reads `body.get("kind")` — a typo'd key like
+    `kimd` is invisible to it, `kind` reads back `None`, and the request
+    silently defaults to `DEFAULT_KIND` ("document"). That is the one field
+    this whole endpoint argues hardest about (SPEC §40, PY-19): a retrieval
+    model given the wrong half of its prompt pair returns vectors that are
+    unit length, correctly shaped, and wrong neighbours, with nothing to show
+    it. The envelope check must catch the misspelling before `request_kind`
+    gets a chance to default it away."""
+    response = _post(client, {"texts": ["a cat"], "kimd": "query"})
+    assert response.status_code == 400
+    assert "kimd" in response.json()["error"]["message"]
+
+
+def test_an_unrecognised_embed_option_is_a_bad_request(client):
+    response = _post(client, {"texts": ["a cat"], "bogus": 1})
+    assert response.status_code == 400
+    assert "bogus" in response.json()["error"]["message"]
+
+
+def test_the_server_accepts_base_the_bridge_would_have_injected(client, monkeypatch):
+    """`base` is bridge-injected (RH-1) — the SERVER's accepted set is wider
+    than the caller-facing one on purpose, same asymmetry `/api/ai/image` and
+    `/api/ai/transcribe` carry. Passing it must not itself 400; the request is
+    left to fail downstream for an unrelated, easily distinguished reason."""
+    monkeypatch.setattr(registry, "_RUNNERS", ())
+    response = _post(client, {"texts": ["a cat"], "base": "/some/page.html"})
+    assert response.status_code != 400
+
+
 # -- 400s: the same shape `embed_common.request_kind` enforces ------------------
 
 
