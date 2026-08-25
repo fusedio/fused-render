@@ -1003,3 +1003,58 @@ def test_the_embed_codes_are_decisive():
     own reason applied here."""
     assert "mlx-embed" in formats.DECISIVE
     assert set(formats.ONNX_EMBED_RUNNERS) <= set(formats.DECISIVE)
+
+
+# -- the ONNX export LAYOUT, one answer for the page and the runner -----------
+#
+# `_has_onnx_weights` used to accept any `.onnx` anywhere while `onnx_embed`
+# required particular names in `onnx/`. Every gap between the two was a Load
+# button on the AI Models page that could only fail once the download had run —
+# the same defect as the engine-gap bug: an offer resting on weaker evidence
+# than the thing being offered needs.
+
+
+def test_a_prose_export_is_the_single_onnx_model_graph():
+    assert formats.onnx_export_graphs(
+        ["config.json", "tokenizer.json", "onnx/model.onnx"]
+    ) == ("onnx/model.onnx",)
+
+
+def test_a_dual_export_is_both_towers_and_never_the_merged_graph():
+    """A dual export ships `onnx/model.onnx` TOO — a merged graph this app never
+    opens, and a third full copy of both towers if it were fetched. The dual
+    branch is asked first for exactly that reason."""
+    assert formats.onnx_export_graphs(
+        ["onnx/model.onnx", "onnx/text_model.onnx", "onnx/vision_model.onnx"]
+    ) == ("onnx/text_model.onnx", "onnx/vision_model.onnx")
+
+
+def test_a_root_level_model_onnx_is_not_an_export_this_app_reads():
+    """**A perfectly normal `optimum` export, and the page used to offer a Load
+    for it.** The runner opens `onnx/model.onnx`; a graph at the snapshot root is
+    not that path, and the download would have succeeded and the session then
+    failed."""
+    assert formats.onnx_export_graphs(["config.json", "model.onnx"]) == ()
+
+
+def test_a_quantized_only_repo_is_not_an_export_this_app_reads():
+    """The runner opens the fp32 graphs by name. A repo publishing only
+    quantizations has an `.onnx` in `onnx/` and nothing this app can load."""
+    assert formats.onnx_export_graphs(
+        ["onnx/model_q4.onnx", "onnx/model_fp16.onnx", "onnx/model_quantized.onnx"]
+    ) == ()
+
+
+def test_a_dual_export_missing_its_vision_tower_is_not_loadable():
+    """Half a dual encoder is not a prose encoder: `onnx/text_model.onnx` alone
+    would open, and then `generate()` could reach an image path with no session
+    behind it. Refused rather than downgraded."""
+    assert formats.onnx_export_graphs(["onnx/text_model.onnx"]) == ()
+
+
+def test_the_sidecar_alone_is_not_weights():
+    """`.onnx_data` holds tensors for a graph over the 2 GB protobuf limit. With
+    no graph beside it there is nothing to open — and note it does not end in
+    `.onnx`, so the old suffix test missed this one correctly and everything
+    above it incorrectly."""
+    assert formats.onnx_export_graphs(["onnx/model.onnx_data"]) == ()

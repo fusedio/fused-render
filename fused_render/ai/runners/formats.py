@@ -556,6 +556,48 @@ TORCH_WEIGHTS = (".safetensors", ".bin", ".pt")
 #: parameters off safetensors headers, and no `.onnx` has one.
 ONNX_WEIGHTS = (".onnx",)
 
+#: The graph paths `runners/onnx_embed.py` actually opens, which is a STRICTER
+#: question than `ONNX_WEIGHTS` above and has to be asked separately.
+#:
+#: An `.onnx` file somewhere in a repo is not an export this app can load. The
+#: runner opens `onnx/model.onnx` for a prose encoder, or `onnx/text_model.onnx`
+#: AND `onnx/vision_model.onnx` for a dual one — in the `onnx/` subfolder, under
+#: those names, unquantized. A root-level `model.onnx` (a perfectly normal
+#: `optimum` export) or a repo publishing only `onnx/model_q4.onnx` satisfies
+#: `ONNX_WEIGHTS` and satisfies nothing the runner needs, so the page offered a
+#: Load button that could only fail once the download had run.
+ONNX_PROSE_GRAPH = "onnx/model.onnx"
+ONNX_TEXT_GRAPH = "onnx/text_model.onnx"
+ONNX_VISION_GRAPH = "onnx/vision_model.onnx"
+
+
+def onnx_export_graphs(names):
+    """The graphs to open for this file listing, in load order, or `()`.
+
+    **The single answer to "is this an export this app reads", shared by the page
+    and the runner**, which is the whole reason it lives in this module. The
+    AI Models page used to ask a weaker question than the runner answered —
+    "any `.onnx` anywhere" against "these names in this folder" — and every
+    disagreement between the two showed up as a Load button that failed at
+    download time. Same defect in miniature as the engine-gap bug: an offer made
+    on weaker evidence than the thing it offers requires.
+
+    The dual branch is asked FIRST because a dual export ships `onnx/model.onnx`
+    too — a merged graph this app never opens, and a third full copy of both
+    towers if it were fetched.
+
+    `names` are repo-relative and forward-slashed, so this reads the same whether
+    it was handed a Hub listing or a walk of a snapshot on disk.
+    """
+    listing = frozenset(names)
+    if ONNX_TEXT_GRAPH in listing:
+        return ((ONNX_TEXT_GRAPH, ONNX_VISION_GRAPH)
+                if ONNX_VISION_GRAPH in listing else ())
+    if ONNX_PROSE_GRAPH in listing:
+        return (ONNX_PROSE_GRAPH,)
+    return ()
+
+
 #: llama.cpp's single-file weights format (SPEC AI-11, `runners/llama_text.py`).
 #: Unlike every other format in this module a `.gguf` needs no companion
 #: config to identify — the vocabulary, the architecture and the model's own

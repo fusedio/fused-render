@@ -108,14 +108,18 @@ _TEXT_PADDING = "max_length"
 #: merged graph wants BOTH `input_ids` and `pixel_values` on every call, so a
 #: text-only request would have to invent a blank image (and pay for a pass
 #: through the vision tower) to get a text vector out of it.
-_TEXT_GRAPH = "onnx/text_model.onnx"
-_VISION_GRAPH = "onnx/vision_model.onnx"
+#: Aliases of the `formats` names rather than second copies of the strings: the
+#: page asks that module the same layout question this runner does
+#: (`formats.onnx_export_graphs`), and two spellings of a path is exactly how the
+#: two came to disagree in the first place.
+_TEXT_GRAPH = formats.ONNX_TEXT_GRAPH
+_VISION_GRAPH = formats.ONNX_VISION_GRAPH
 
 #: …and the ONE graph a prose export ships, under the name every `optimum`
 #: export uses. The two layouts are told apart by the repo LISTING rather than
 #: by the config, because `download()` runs before anything is on the disk —
 #: see `_weight_patterns`.
-_PROSE_GRAPH = "onnx/model.onnx"
+_PROSE_GRAPH = formats.ONNX_PROSE_GRAPH
 
 #: Tensors over the 2 GB protobuf limit live in a sidecar of this name beside
 #: the graph, and `onnxruntime` resolves it by relative path at session-open
@@ -269,16 +273,15 @@ def _weight_patterns(names):
     refusal, so this function stays a statement about the file layout and
     nothing else.
     """
-    if _TEXT_GRAPH in names:
-        graphs = (_TEXT_GRAPH, _VISION_GRAPH)
-    elif _PROSE_GRAPH in names:
-        graphs = (_PROSE_GRAPH,)
-    else:
+    # `formats.onnx_export_graphs` decides WHICH graphs, here and on the AI
+    # Models page both — see its docstring. This function is then only about the
+    # external-data sidecars, which are a download concern and nothing the page
+    # needs an opinion on.
+    graphs = formats.onnx_export_graphs(names)
+    if not graphs:
         return ()
     patterns = []
     for graph in graphs:
-        if graph not in names:
-            return ()
         patterns.append(graph)
         sidecar = graph + _EXTERNAL_DATA_SUFFIX
         if sidecar in names:

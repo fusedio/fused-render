@@ -680,7 +680,7 @@ def _has_torch_weights(snapshot_dir: str) -> bool:
 
 
 def _has_onnx_weights(snapshot_dir: str) -> bool:
-    """Is there anything in this revision an `InferenceSession` could open?
+    """Is there an export in this revision the ONNX runner could actually open?
 
     `_has_torch_weights`'s sibling, and a WALK for a stronger reason than that
     one has: every ONNX export this app reads keeps its graphs in an `onnx/`
@@ -688,14 +688,26 @@ def _has_onnx_weights(snapshot_dir: str) -> bool:
     snapshot's top level would conclude that no ONNX repo anywhere holds weights
     — the format's convention is the subfolder, not the root.
 
-    The suffixes are `formats.ONNX_WEIGHTS` rather than a list spelled here, for
-    `_has_torch_weights`'s reason exactly: the page and `formats.loaders()` must
-    not come to disagree about what counts as weights.
+    **The LAYOUT question, not "is there an `.onnx` here".** It used to be the
+    latter — `any(name.endswith(formats.ONNX_WEIGHTS))` over the walk — which is
+    weaker than what `onnx_embed` requires, and every gap between the two was a
+    Load button that could only fail once the download had run: a root-level
+    `model.onnx` from a plain `optimum` export, a repo publishing nothing but
+    `onnx/model_q4.onnx`, a dual export missing its vision tower. The page must
+    not offer what the runner will refuse, which is the same defect as the
+    engine-gap bug one level down.
+
+    `formats.onnx_export_graphs` is that question, in the module both this and
+    the runner read, for the reason the old docstring gave for sharing
+    `ONNX_WEIGHTS`: the page and the runner must not come to disagree.
     """
-    for _dirpath, _dirnames, filenames in os.walk(snapshot_dir):
-        if any(name.endswith(formats.ONNX_WEIGHTS) for name in filenames):
-            return True
-    return False
+    names = []
+    for dirpath, _dirnames, filenames in os.walk(snapshot_dir):
+        rel = os.path.relpath(dirpath, snapshot_dir)
+        for name in filenames:
+            joined = name if rel == "." else os.path.join(rel, name)
+            names.append(joined.replace(os.sep, "/"))
+    return bool(formats.onnx_export_graphs(names))
 
 
 def _safetensors_params(path: str, quantized_bits: int | None = None) -> tuple[int, bool]:
