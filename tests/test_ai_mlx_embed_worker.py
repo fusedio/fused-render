@@ -455,3 +455,47 @@ def test_there_is_no_second_mlx_embedding_FOLDER():
         if entry.is_dir() and "embed" in entry.name)
     assert embed_folders == ["mlx_embed", "onnx_embed", "onnx_embed_cuda",
                              "onnx_embed_directml", "onnx_embed_rocm"], embed_folders
+
+
+def test_a_family_MLX_cannot_read_is_refused_BY_NAME(worker, monkeypatch,
+                                                     tmp_path):
+    """**`_family` checked the union while its message named the MLX subset.**
+
+    `nomic_bert` and `clip` are in `EMBED_MODEL_TYPES` and not in
+    `MLX_EMBED_MODEL_TYPES`, so they passed the very check this function exists
+    to make and died inside `mlx_embeddings.load` instead — an opaque library
+    error where the named refusal below belongs.
+
+    The concrete case is the first one: a page hard-coding the ONNX default
+    `nomic-ai/nomic-embed-text-v1.5` and opened on a Mac.
+    """
+    import json
+
+    monkeypatch.setattr(worker, "_mlx_load", lambda _arg: ("MODEL", "TOKENIZER"))
+    for model_type, repo_id in (("nomic_bert", "nomic-ai/nomic-embed-text-v1.5"),
+                                ("clip", "openai/clip-vit-base-patch32")):
+        (tmp_path / "config.json").write_text(json.dumps(
+            {"model_type": model_type, "max_position_embeddings": 512}))
+        with pytest.raises(RuntimeError) as excinfo:
+            worker.load(repo_id, str(tmp_path))
+        message = str(excinfo.value)
+        assert repo_id in message
+        assert model_type in message
+        # The message lists what this runner DOES read, and the family being
+        # refused must not be in that list — which is what made the old error
+        # self-contradictory.
+        assert model_type not in message.split("reads")[1]
+
+
+def test_the_families_MLX_does_read_still_load(worker, monkeypatch, tmp_path):
+    """The guard against the stricter check becoming a wall — every member of
+    `MLX_EMBED_MODEL_TYPES` must still reach a family."""
+    import json
+
+    monkeypatch.setattr(worker, "_mlx_load", lambda _arg: ("MODEL", "TOKENIZER"))
+    for model_type in sorted(worker.formats.MLX_EMBED_MODEL_TYPES):
+        (tmp_path / "config.json").write_text(json.dumps(
+            {"model_type": model_type, "max_position_embeddings": 512,
+             "text_config": {"max_position_embeddings": 64}}))
+        worker.load("org/" + model_type, str(tmp_path))
+        assert worker._loaded["family"] in (worker._DUAL, worker._TEXT)

@@ -1042,3 +1042,26 @@ def test_a_cached_repo_that_is_not_an_export_is_still_refused(pure, tmp_path,
     with pytest.raises(RuntimeError) as excinfo:
         pure.download("org/m")
     assert "no ONNX export this runner can open" in str(excinfo.value)
+
+
+def test_every_prose_output_read_goes_through_output_index(prose, monkeypatch):
+    """**The #813 guard, asserted as the invariant it is claimed to be.**
+
+    `_output_index` is described as the one function standing between this runner
+    and a repeat of #813, and `_prose_vectors` used to re-implement the name to
+    index lookup inline — the exact shape of the bug that function exists to
+    prevent. Stubbing it here proves the prose path actually goes through it:
+    with the real one bypassed, the vectors could still be produced.
+    """
+    calls = []
+    real = prose._output_index
+
+    def spy(session, wanted, model_id, what):
+        calls.append(wanted)
+        return real(session, wanted, model_id, what)
+
+    monkeypatch.setattr(prose, "_output_index", spy)
+    result = prose.generate({"texts": ["a cat"]})
+    assert result["vectors"], "the prose path must still produce vectors"
+    assert calls, "_prose_vectors read an output without _output_index"
+    assert all(name in prose._PROSE_OUTPUTS for name in calls), calls

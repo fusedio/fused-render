@@ -200,7 +200,20 @@ def _family(config, model_id):
     the page never offered or refuse one it did.
     """
     family = formats.embed_model_type(config)
-    if family is None:
+    # **Checked against the MLX subset, not the union, because the union is not
+    # what this runner can read.** It used to test `embed_model_type(config) is
+    # None` — the whole gate — while the message named
+    # `MLX_EMBED_MODEL_TYPES`, so `nomic_bert` and `clip` passed the check this
+    # function exists to make and died inside `mlx_embeddings.load` instead. The
+    # concrete case: a page hard-coding the ONNX default
+    # `nomic-ai/nomic-embed-text-v1.5`, opened on a Mac, got an opaque library
+    # error where it should have got the named refusal below.
+    #
+    # `MLX_EMBED_MODEL_TYPES` is `formats.py`'s own constant, which is the point
+    # — the AI Models page decides Load buttons from it, so a runner reading the
+    # same field through a different set would accept a repo the page never
+    # offered or refuse one it did.
+    if family is None or family not in formats.MLX_EMBED_MODEL_TYPES:
         raise RuntimeError(
             f"{model_id}'s config declares "
             f"model_type={config.get('model_type')!r}, which is not an "

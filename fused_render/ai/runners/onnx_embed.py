@@ -237,7 +237,7 @@ def _cached_repo_files(model_id):
     commit is a graph this layout has.
 
     Forward slashes unconditionally, because the patterns are compared against
-    Hub paths and `os.walk` yields `\` on Windows.
+    Hub paths and `os.walk` yields backslashes on Windows.
     """
     folder = worker_base.repo_folder(model_id)
     if not folder:
@@ -824,8 +824,15 @@ def _prose_vectors(texts, kind):
     model_id = _loaded["model_id"]
     outputs, mask = _encode(texts, kind)
     name = _prose_output_name(session, model_id)
-    tensor = numpy.asarray(outputs[[o.name for o in session.get_outputs()].index(name)],
-                           dtype=numpy.float32)
+    # `_output_index`, not a second inline `.index(...)`: this module's stated
+    # invariant is that EVERY output read goes through that function (it is the
+    # #813 guard), and an open-coded lookup here is exactly the shape of the bug
+    # it exists to prevent — `_prose_output_name` has already established the
+    # name is present, so this cannot raise, and that is the argument for
+    # sharing it rather than against.
+    tensor = numpy.asarray(
+        outputs[_output_index(session, name, model_id, "text tower")],
+        dtype=numpy.float32)
     if name != _HIDDEN_OUTPUT:
         return tensor.tolist()
 
