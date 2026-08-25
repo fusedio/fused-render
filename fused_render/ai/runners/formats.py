@@ -952,7 +952,18 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # `TRANSFORMERS_EMBED_RUNNERS` for the same forward-declaration
             # reason `LLAMACPP_RUNNERS` is spelled literally just above.
             "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-            "transformers-embed-rocm")
+            "transformers-embed-rocm",
+            # …and the four ONNX rows, for the identical reason. An
+            # `onnx-community/*-ONNX` export carries the same `model_type:
+            # siglip` and an `onnx/` tree instead of `model.safetensors`, and it
+            # is just as decisive: without these codes here a cached export with
+            # no pipeline_tag would come back with NO capability at all, so
+            # `hub_cache._resolve` would find no candidate runner and the card
+            # would show a repo nothing can load. Spelled literally rather than
+            # via `ONNX_EMBED_RUNNERS` for the same forward-declaration reason
+            # `LLAMACPP_RUNNERS` is.
+            "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+            "onnx-embed-rocm")
 
 
 def unloadable_quant(config: dict) -> str | None:

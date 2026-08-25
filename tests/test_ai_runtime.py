@@ -1064,6 +1064,10 @@ _QUALIFIED_SHORT_NAMES = {
     "transformers-embed": "(CPU)",
     "transformers-embed-cuda": "(CUDA)",
     "transformers-embed-rocm": "(ROCm)",
+    "onnx-embed": "(CPU)",
+    "onnx-embed-directml": "(DirectML)",
+    "onnx-embed-cuda": "(CUDA)",
+    "onnx-embed-rocm": "(ROCm)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1071,7 +1075,11 @@ _QUALIFIED_SHORT_NAMES = {
 #: The vocabulary is closed on purpose: it is what
 #: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
 #: name against, and what Task B's family test forbids in a family name.
-_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
+#: `(DirectML)` joined the vocabulary with the ONNX embedding family: it names a
+#: BUILD (`onnxruntime-directml`) exactly as `(Vulkan)` does, and it is the
+#: Windows GPU path — vendor-neutral, so one row covers NVIDIA, AMD and Intel
+#: there rather than a folder per vendor.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)", "(DirectML)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -2318,23 +2326,33 @@ def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monk
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
-def test_the_embeddings_capability_orders_mlx_then_cpu_then_cuda_then_rocm(monkeypatch):
-    """Embeddings' four rows, pinned in full — the whole family shares one
-    ordering rule with the image and text families, and it is invisible in a
-    diff of the table.
+def test_the_embeddings_capability_orders_both_families_unaccelerated_first(monkeypatch):
+    """Embeddings' rows, pinned in full — the whole family shares one ordering
+    rule with the image and text families, and it is invisible in a diff of the
+    table.
 
     MLX takes the Macs (`_apple_silicon`), `transformers-embed` is the
-    cross-platform default and Apple-Silicon fallback, and
-    `transformers-embed-cuda`/`-rocm` are opt-in accelerated siblings of that
-    row — CUDA before ROCm, the same order `diffusers-image-cuda`/`-rocm` use.
-    Both accelerated rows sit LAST so `auto` never reaches either on any
-    platform, exactly as `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    cross-platform default and Apple-Silicon fallback, and its CUDA/ROCm
+    siblings are opt-in accelerated rows below it — CUDA before ROCm, the same
+    order `diffusers-image-cuda`/`-rocm` use. The four `onnx-embed*` rows repeat
+    that shape (unaccelerated, then DirectML, CUDA, ROCm) and land BELOW the
+    whole torch family. So no accelerated row of either family is reachable by
+    `auto` on any platform, exactly as
+    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
     pins for text generation's own accelerated tail.
+
+    **The ONNX rows being last is transitional and reverses by deletion.** They
+    are the engine that replaces the torch family, but the thing that licenses
+    that replacement is `tests/test_ai_onnx_embed_real_weights.py`'s parity gate
+    — so until Stage 2 removes the torch rows, `auto` keeps resolving to the
+    engine this app has actually shipped, and nothing has to be re-ordered when
+    they go.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-        "transformers-embed-rocm",
+        "mlx-embed",
+        "transformers-embed", "transformers-embed-cuda", "transformers-embed-rocm",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
     ]
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
@@ -4173,7 +4191,9 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
+        "mlx-embed",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
+        "transformers-embed", "transformers-embed-cuda",
         "transformers-embed-rocm", "ltx-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,

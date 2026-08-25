@@ -327,6 +327,60 @@ def _torch_platform() -> Availability:
     )
 
 
+def _onnx_platform() -> Availability:
+    """`onnx-embed`'s supported platforms — a HARD exclusion, meaning "there is
+    no wheel to install", the same kind of claim `_llamacpp_platform` makes.
+
+    Narrower than `_torch_platform` by ARCHITECTURE, and deliberately so: PyPI's
+    `onnxruntime` 1.29 publishes `macosx_14_0_arm64`,
+    `manylinux_2_28_{x86_64,aarch64}`, `win_amd64` and `win_arm64` — read off
+    the release's own wheel list rather than assumed — and nothing else. There
+    is no macOS x86_64 build and no Linux riscv64 one, so both are excluded
+    because `uv sync` has NOTHING to install, an immediate total failure the
+    moment a machine reaches this row.
+
+    Checked by architecture per OS for `_llamacpp_platform`'s reason exactly:
+    `machine()` spells one architecture differently per OS (`"AMD64"` on
+    Windows, `"x86_64"` on Linux, `"arm64"` on Darwin), so each branch checks
+    its own OS's spelling rather than one shared tuple that would silently stop
+    matching the moment a branch used the wrong OS's name for it.
+
+    Note this row is WIDER than `_llamacpp_platform` on Windows — onnxruntime
+    publishes `win_arm64` and the llama.cpp index does not — so a Windows ARM64
+    machine with no local text engine still gets local embeddings.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Linux" and machine in ("x86_64", "aarch64"):
+        return Availability(True)
+    if system == "Windows" and machine in ("AMD64", "ARM64"):
+        return Availability(True)
+    if system == "Darwin" and machine == "arm64":
+        return Availability(True)
+    if system == "Darwin":
+        return Availability(
+            False,
+            "needs Apple Silicon — onnxruntime publishes no macOS x86_64 wheel "
+            f"(this is {system.lower()}/{machine})",
+        )
+    if system == "Linux":
+        return Availability(
+            False,
+            "needs x86_64 or aarch64 — onnxruntime publishes no "
+            f"{machine} wheel for Linux (this is {system.lower()}/{machine})",
+        )
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 or ARM64 machine — onnxruntime publishes no "
+            f"{machine} wheel for Windows (this is {system.lower()}/{machine})",
+        )
+    return Availability(
+        False,
+        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+    )
+
+
 def _llamacpp_platform() -> Availability:
     """`llamacpp-text`'s supported platforms — a HARD exclusion, meaning "there
     is no wheel to install", not a business decision about where to distribute.
@@ -917,6 +971,56 @@ def _vulkan() -> Availability:
     )
 
 
+def _directml() -> Availability:
+    """`onnx-embed-directml`'s platform — Windows on x86_64, and that is all.
+
+    **The simplest probe in this section, and that is the right answer rather
+    than an omission.** `_vulkan` beside it is long because a Vulkan wheel
+    supplies neither the loader nor the driver ICD, so `import llama_cpp` HARD
+    FAILS on a machine missing either — there is a real, catastrophic failure to
+    gate against. DirectML has no equivalent: `onnxruntime-directml` links
+    against `DirectML.dll` and `d3d12.dll`, both of which ship with Windows
+    itself from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
+    adapter — a discrete NVIDIA or AMD card, Intel Arc, or the integrated GPU
+    every desktop Windows machine has. There is no "no driver installed" state
+    to detect and nothing to `dlopen`-check.
+
+    **So "plus a present GPU" is not modelled as a second probe.** Enumerating
+    D3D12 adapters needs a `ctypes` call into `dxgi.dll` — a system binary
+    question SPEC.md's rule keeps out of a per-page-render path — and every
+    answer it could give on a machine that reaches this row is "yes". A probe
+    that always answers yes is a probe whose failure mode is entirely its own
+    bugs. The row is also OPT-IN from the Engines tab and sits below the CPU row,
+    so `auto` never reaches it: nobody lands here without choosing to.
+
+    `win_amd64` only, from the distribution's own wheel list (checked against
+    `onnxruntime-directml` 1.24.4, which publishes `cp311`-`cp314` for
+    `win_amd64` and no other tag) — so a Windows ARM64 machine is refused here
+    even though plain `onnxruntime` serves it.
+
+    Not cached, for `_rocm`'s reasons: the platform cannot change under a
+    running app, but every other probe in this section declines caching and an
+    `lru_cache` on one of them would make test ORDER significant against the
+    monkeypatch style these tests use.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Windows" and machine == "AMD64":
+        return Availability(True)
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 machine — onnxruntime-directml publishes "
+            f"win_amd64 only, no win_arm64 (this is {system.lower()}/{machine})",
+        )
+    return Availability(
+        False,
+        "needs Windows — DirectML is Direct3D 12's compute layer and the "
+        f"onnxruntime-directml wheel is published for it alone (this is "
+        f"{system.lower()}/{machine})",
+    )
+
+
 # The table. Ordered, and first-match-wins per capability — which is what lets
 # TWO runners serve one: MLX takes Apple Silicon when available, and the row
 # below it serves Windows and Linux plus the Apple Silicon fallback. All four
@@ -1324,6 +1428,92 @@ _RUNNERS: tuple[Runner, ...] = (
         # desktop-stall warning: that hazard comes from holding the GPU for
         # minutes during a denoise, and an embed call is one forward pass at
         # `embed_common.MAX_ITEMS` items, over in under a second.
+        note="Embeds on a supported AMD GPU under Linux — a larger download "
+             "for a workload that is already fast on the CPU.",
+        _available=_rocm,
+    ),
+    # **ONNX Runtime — the family that REPLACES the four rows above, landing
+    # below them for exactly as long as they are still here.** A dual encoder is
+    # one forward pass over a short sequence or one image, so the compute was
+    # never the argument; the WHEEL was. The torch rows above install 0.2 GB on
+    # the CPU index and up to 5.9 GB on an accelerated one to run a model whose
+    # own weights are 1.5 GB, where `onnxruntime` is tens of megabytes reading
+    # the same checkpoint re-exported.
+    #
+    # **The ordering is deliberately transitional and reverses itself by
+    # deletion.** `tests/test_ai_onnx_embed_real_weights.py` is what licenses
+    # removing the torch family — it asserts ≥0.999 cosine between the two
+    # engines' vectors on real weights — and until that gate has run, `auto`
+    # must keep resolving to the engine this app has actually shipped. So these
+    # rows sit last, reachable only by an explicit Engines-tab choice; when the
+    # torch rows go, `mlx-embed` -> `onnx-embed` -> the three accelerated ONNX
+    # rows is what is left, with no row moved to get there.
+    #
+    # Same four-row shape as the torch family: an unaccelerated build first,
+    # then the accelerated ones, opt-in and gated on the device actually being
+    # there. DirectML leads them because it is the only one Windows can take —
+    # and unlike the CUDA/ROCm pair it is vendor-neutral, so ONE row covers
+    # every Windows GPU rather than a folder per vendor.
+    Runner(
+        code="onnx-embed",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
+        # "(CPU)" on every row of a family with siblings, the discipline the
+        # `transformers-embed` row below documents: the qualifier names the
+        # BUILD — PyPI's plain `onnxruntime`, which has no GPU provider compiled
+        # in — never a prediction about the device, and a family missing it on
+        # one row prints two engines under one name.
+        label="ONNX Embeddings (CPU)",
+        short_label="ONNX Embeddings (CPU)",
+        # The format claim with the hardware taken out: these weights are the
+        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
+        family_label="ONNX Embeddings",
+        # ONE LINE, per the naming note above the table. What it leads with is
+        # the download, because that is the difference a reader choosing between
+        # this row and the Transformers one can actually act on — the speed is a
+        # wash, one item being a single forward pass either way.
+        note="Tens of megabytes of engine instead of a torch wheel — one item "
+             "is a single forward pass either way.",
+        _available=_onnx_platform,
+    ),
+    Runner(
+        code="onnx-embed-directml",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_directml"),
+        label="ONNX Embeddings (DirectML)",
+        short_label="ONNX Embeddings (DirectML)",
+        family_label="ONNX Embeddings",
+        # One line, and it names the vendor-neutrality because that is the fact
+        # that distinguishes this row from the CUDA one on a Windows machine
+        # with an NVIDIA card — both would work, and this one needs no
+        # `nvidia-*` wheels. No desktop-stall warning: that hazard is a denoise
+        # holding the GPU for minutes, and an embed call is one forward pass at
+        # `embed_common.MAX_ITEMS` items, over in under a second.
+        note="Embeds on any Windows GPU — NVIDIA, AMD or Intel — through "
+             "Direct3D 12, with no vendor runtime to install.",
+        _available=_directml,
+    ),
+    Runner(
+        code="onnx-embed-cuda",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_cuda"),
+        label="ONNX Embeddings (CUDA)",
+        short_label="ONNX Embeddings (CUDA)",
+        family_label="ONNX Embeddings",
+        # Same `_cuda` probe the torch and diffusers CUDA rows use, unchanged:
+        # "does this machine have a usable NVIDIA GPU" does not become a
+        # different question because the wheel opening the model is onnxruntime.
+        note="Embeds on an NVIDIA GPU — a larger download for a workload that "
+             "is already fast on the CPU.",
+        _available=_cuda,
+    ),
+    Runner(
+        code="onnx-embed-rocm",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_rocm"),
+        label="ONNX Embeddings (ROCm)",
+        short_label="ONNX Embeddings (ROCm)",
+        family_label="ONNX Embeddings",
         note="Embeds on a supported AMD GPU under Linux — a larger download "
              "for a workload that is already fast on the CPU.",
         _available=_rocm,

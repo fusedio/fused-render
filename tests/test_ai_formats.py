@@ -116,6 +116,12 @@ def test_every_registered_runner_appears_in_loaders():
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
         config={"model_type": "siglip"}, torch_weights=True))
+    # Both weight layouts, because the branch appends the two engine families
+    # independently: a call with only `torch_weights` would leave the four
+    # `onnx-embed*` rows looking absent, which is exactly what this test is for.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames={"onnx"},
+        config={"model_type": "siglip"}, torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
