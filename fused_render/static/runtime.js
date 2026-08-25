@@ -378,20 +378,22 @@
   // was not special, and the next one with an input would have re-broken it.
   // The shell marks the frame's URL and every page gets the behaviour for free:
   //
-  //   • `autofocus` attributes are stripped as the document parses, before the
-  //     browser has finished parsing (and so before it applies the last one);
-  //   • el.focus() calls are DROPPED until the reader actually interacts with
-  //     the page — the whole boot path, however long its async tail, rather
-  //     than some guessed settle window;
-  //   • the first real user gesture in the document lifts both, permanently:
-  //     from then on focus() works exactly as written. Clicking into the pane
-  //     is a deliberate act and the page owns the keyboard after it.
+  //   • a focus that lands anyway is bounced straight back out — the case
+  //     `autofocus` falls into, since the browser queues its candidate when the
+  //     element is inserted and no cooperation in here can dequeue it;
+  //   • el.focus() and select() are DROPPED until the reader actually interacts
+  //     with the page — the whole boot path, however long its async tail,
+  //     rather than some guessed settle window;
+  //   • scrollIntoView keeps its scroll inside this document;
+  //   • the first real user gesture in the document lifts all of it,
+  //     permanently: from then on everything works exactly as written. Clicking
+  //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // `window.__fusedNoAutofocus` is published for pages that would rather ask
-  // than be corrected (the claude template gates its own boot focus on it).
-  // Deliberately not on `window.fused`: that is the documented portable bridge
-  // mirrored by the hosted runtime, and this is local-shell plumbing — same
-  // reason the other `_fused*` globals are bare.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
+  // flag used to be, so a page could gate its own boot focus instead of being
+  // corrected — and the claude template was its only reader, gating a focus()
+  // the patch below was already dropping. One mechanism, applied to every page
+  // including the ones nobody has written yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
@@ -448,7 +450,6 @@
 
   function startNoFocus() {
     if (!selfOrAncestorHasFlag(NO_FOCUS_PARAM)) return;
-    window.__fusedNoAutofocus = true;
 
     // Anything that manages to take focus anyway gives it straight back. This
     // is the one that catches `autofocus`, which cannot be beaten by stripping
@@ -556,27 +557,16 @@
       }
     }
 
-    // Strip `autofocus` from anything already parsed and anything that arrives
-    // while the document streams. Belt and braces beside the blur above — an
-    // attribute that never applies is one fewer focus flicker. The observer is
-    // disconnected at DOMContentLoaded: after that the attribute has no effect
-    // on its own, and the focus() suppression below covers a script that adds
-    // one and focuses.
-    var strip = function (root) {
-      var nodes = root.querySelectorAll ? root.querySelectorAll("[autofocus]") : [];
-      for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute("autofocus");
-    };
-    strip(document);
-    var observer = null;
-    try {
-      observer = new MutationObserver(function () {
-        strip(document);
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    } catch (e) {
-      /* no MutationObserver — the initial strip and the guard below still hold */
-    }
-
+    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
+    // MutationObserver re-stripping as the document streamed. It never worked on
+    // its own — the browser queues the candidate when the element is inserted
+    // and removing the attribute afterwards does not dequeue it — so the blur
+    // above was already carrying that case, and for a card thumbnail the
+    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // features flag, which has no re-enabling token — THUMB_SEAL). What is left
+    // is one focus flicker in a pane preview before the bounce lands, against
+    // an observer running over every mutation of every previewed document.
+    //
     // Suppress programmatic focus until the reader touches the page. Patched on
     // the prototype rather than per element because the point is to cover code
     // that has not been written yet; restored — not left wrapped — on the first
@@ -598,8 +588,6 @@
       for (var ri = 0; ri < realSelects.length; ri++) {
         realSelects[ri][0].prototype.select = realSelects[ri][1];
       }
-      window.__fusedNoAutofocus = false;
-      if (observer) observer.disconnect();
       // Every part of the suppression lifts at once, this one included — a
       // focusin bounce left installed would make the page permanently
       // unfocusable for the reader who just clicked into it.
@@ -621,9 +609,6 @@
     // such an act (see usePaneFocusGuard). An app-internal global, not part of
     // `fused`, for the same reason `__fusedFlushEdits` is.
     window.__fusedReleaseNoFocus = release;
-    document.addEventListener("DOMContentLoaded", function () {
-      if (observer) observer.disconnect();
-    });
   }
 
   startNoFocus();

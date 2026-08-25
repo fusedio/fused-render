@@ -38,8 +38,8 @@ import { appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { exportAppFile } from "@platform/lib/appShot";
 import { pushToast } from "@platform/lib/toast";
 import { MenuIcons } from "@platform/ui/MenuIcons";
-import { THUMB_SEAL, withNoFocus } from "@platform/lib/frame-focus";
-import { embedUrlForFsPath, navigateUrl, withPreviewFlag } from "@platform/lib/router";
+import { thumbFrame } from "@platform/lib/thumb-frame";
+import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import {
   appRecency,
   hrefFor,
@@ -56,19 +56,12 @@ import { timeAgo } from "@platform/lib/format";
 // exactly the .app-pcard-thumb box, whatever the grid column resolves to.
 const PREVIEW_SCALE = 0.25;
 
-// The URL a thumbnail's iframe loads. Both stamps say the same thing in two
-// registers — this frame is a PICTURE of the app, not a use of it:
-//
-//   • `_preview=1` — don't record an open (D301), or scrolling the grid would
-//     reshuffle the recency order the grid is sorted by.
-//   • `_nofocus=1` — don't take the keyboard (D348). Focusing an element inside
-//     a frame also scrolls that frame into view, and the scroll propagates out
-//     to the embedder's scroller: an app that focuses an input on boot yanked
-//     .apps-page down to its own card the moment the card mounted, so scrolling
-//     the grid jumped to whatever row that app sits in. The contract, and the
-//     runtime half that enforces it, are in platform/lib/frame-focus.ts.
-function thumbSrc(entryHtml: string): string {
-  return withNoFocus(withPreviewFlag(`/render?path=${encodeURIComponent(entryHtml)}`));
+// The page a card's live thumbnail shows. Plain: everything that makes it a
+// PICTURE rather than a use of the app — the two URL stamps, the sandbox seal,
+// the markup — arrives at the iframe from `thumbFrame` below, which is the one
+// place that description lives (platform/lib/thumb-frame.ts).
+function entryRenderUrl(entryHtml: string): string {
+  return `/render?path=${encodeURIComponent(entryHtml)}`;
 }
 
 export function AppPreviewCard({
@@ -163,9 +156,9 @@ export function AppPreviewCard({
   // thumb rather than a placeholder-in-a-frame, and a peek must not be the
   // first run of a stranger's pages anyway.
   const liveSrc = app.entry_html
-    ? thumbSrc(app.entry_html)
+    ? entryRenderUrl(app.entry_html)
     : app.kind === "appfile" && app.opened_at != null
-      ? withNoFocus(withPreviewFlag(embedUrlForFsPath(app.path)))
+      ? embedUrlForFsPath(app.path)
       : null;
   const wantsLive = Boolean(
     liveSrc && nearViewport && ((!shotSrc || shotFailed) || hovered),
@@ -284,7 +277,7 @@ export function AppPreviewCard({
                 until the 10s timeout. */}
             {hovered && liveSrc && nearViewport && liveStarted && (
               <iframe
-                src={liveSrc}
+                {...thumbFrame(liveSrc)}
                 style={{
                   width: `${100 / PREVIEW_SCALE}%`,
                   height: `${100 / PREVIEW_SCALE}%`,
@@ -303,10 +296,6 @@ export function AppPreviewCard({
                   liveSettled();
                   setLiveReady(true);
                 }}
-                tabIndex={-1}
-                scrolling="no"
-                title=""
-                {...THUMB_SEAL}
               />
             )}
             <img
@@ -344,7 +333,7 @@ export function AppPreviewCard({
             {/* No `loading="lazy"` — see the comment on the hover iframe
                 above; the same failure mode applies here to `bodyPainted`. */}
             <iframe
-              src={liveSrc}
+              {...thumbFrame(liveSrc)}
               style={{
                 width: `${100 / PREVIEW_SCALE}%`,
                 height: `${100 / PREVIEW_SCALE}%`,
@@ -358,10 +347,6 @@ export function AppPreviewCard({
                 opacity: bodyPainted ? 1 : 0,
                 transition: "opacity 0.15s ease",
               }}
-              tabIndex={-1}
-              scrolling="no"
-              title=""
-              {...THUMB_SEAL}
               // `bodyLive` as well as the queue's release: settling frees the
               // NEXT card's start slot, which says nothing about whether this
               // frame painted, and the export capture needs the latter.
@@ -382,10 +367,12 @@ export function AppPreviewCard({
                 setBodyPainted(true);
               }}
             />
-            {/* Shield: the preview is display-only — every pointer event lands
-                on the card's link, never inside the app — which is also what
-                keeps middle-click over the preview a new tab for the app. */}
-            <span className="app-pcard-shield" />
+            {/* No shield span here. `.app-pcard-thumb iframe` is already
+                `pointer-events: none` (apps.css), which retargets every press —
+                middle-click included — onto the card's own <a>. The `<img>`
+                branch above keeps its shield for a different reason: an image
+                carries the browser's native drag gesture, which pointer-events
+                does not stop. */}
           </>
         ) : null}
       </span>

@@ -15,11 +15,10 @@ import {
   navigateUrl,
   urlForFsPath,
   embedUrlForFsPath,
-  withPreviewFlag,
   EMBED_PREFIX,
   VIEW_PREFIX,
 } from "@platform/lib/router";
-import { THUMB_SEAL, withNoFocus } from "@platform/lib/frame-focus";
+import { thumbFrame } from "@platform/lib/thumb-frame";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -61,12 +60,6 @@ function joinPath(dir: string, name: string): string {
 // records the app open (GET /render records by default, D301) — without it,
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
-  // `_nofocus=1` beside the thumbnail stamp: a card peek must not take the
-  // keyboard, because focusing an element inside a frame scrolls that frame
-  // into view and the scroll propagates out to the page's own scroller — a
-  // peeked page that focuses an input on boot yanked the card grid down to
-  // itself mid-scroll (D348, platform/lib/frame-focus.ts).
-  src = withNoFocus(withPreviewFlag(src));
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   const { started, settled } = usePreviewStart(nearViewport);
   // Separate from `started`/`settled`: those track the SCHEDULER's slot (freed
@@ -101,8 +94,7 @@ export function LivePreview({ src }: { src: string }) {
           iframe never holds one of the scheduler's two permits. */}
       {!loaded && <span className="fhb-preview-skel" />}
       <iframe
-        src={src}
-        {...THUMB_SEAL}
+        {...thumbFrame(src)}
         style={{
           width: `${100 / PREVIEW_SCALE}%`,
           height: `${100 / PREVIEW_SCALE}%`,
@@ -110,9 +102,6 @@ export function LivePreview({ src }: { src: string }) {
           opacity: loaded ? 1 : 0,
           transition: "opacity 0.15s ease",
         }}
-        tabIndex={-1}
-        scrolling="no"
-        title=""
         onLoad={() => {
           setLoaded(true);
           settled();
@@ -127,7 +116,10 @@ export function LivePreview({ src }: { src: string }) {
           settled();
         }}
       />
-      <span className="fhb-shield" />
+      {/* No shield span: `.fhb-preview iframe` is already `pointer-events: none`
+          (preferences.css), so every press retargets onto the card itself. The
+          image peek below keeps its shield — an <img> carries the browser's
+          native drag gesture, which pointer-events does not stop. */}
     </span>
   );
 }

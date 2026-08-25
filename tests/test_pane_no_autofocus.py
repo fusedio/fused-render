@@ -15,9 +15,11 @@ half):
     typed here a second time — runtime.js and the shell agree or this fails;
   * runtime.js's reader answers the way the shell's does, run for real under
     node rather than eyeballed;
-  * the claude template no longer focuses on its own initiative — no
-    `autofocus` attribute, and every composer focus goes through its `focusBox`
-    gate, which is likewise run under node against the flag both ways.
+  * the claude template carries no `autofocus` attribute — the one thing no
+    gate inside the page can catch, since the browser queues the candidate when
+    the element is inserted;
+  * every live thumbnail frame is built by the one helper that makes a frame a
+    picture (`thumbFrame`), counted against the iframes in the file.
 
 Repo memory is explicit that a headless probe cannot see focus at all, which is
 exactly why these are the decisions being tested and not the behaviour: the
@@ -92,33 +94,6 @@ def test_the_claude_composer_no_longer_autofocuses():
     assert "autofocus" not in html
 
 
-def test_every_composer_focus_goes_through_the_gate():
-    """Not just the boot ones: after the first gesture focusBox IS a plain
-    focus(), so a second spelling buys nothing and is the obvious way for the
-    next boot-path focus to re-break the pane."""
-    html = open(TEMPLATE, encoding="utf-8").read()
-    assert not re.search(r"(?<![\w.])(home)?box\.focus\(\)", html)
-
-
-def test_the_gate_is_silent_in_the_pane_and_ordinary_everywhere_else():
-    """The template's real focusBox, run under node against the flag both ways.
-    A standalone page never sees the flag; the pane's page sees it until the
-    reader touches the document, at which point runtime.js clears it."""
-    fn = _fn(TEMPLATE, "function focusBox(", "\n}\n")
-    script = fn + """
-const calls = [];
-const el = { focus: () => calls.push("focused") };
-globalThis.window = {};
-focusBox(el);                       // standalone: no flag at all
-window.__fusedNoAutofocus = true;   // embedded in the pane, untouched
-focusBox(el);
-window.__fusedNoAutofocus = false;  // the reader has interacted
-focusBox(el);
-console.log(JSON.stringify(calls));
-"""
-    assert _node(script) == ["focused", "focused"]
-
-
 # -- The card grids (D348) -----------------------------------------------------
 #
 # The same contract, one surface further out: a LIVE CARD THUMBNAIL is a picture
@@ -136,29 +111,18 @@ BOOKMARK_CARDS = os.path.join("frontend", "src", "apps", "explorer", "BookmarkCa
 EMBED_SHELL = os.path.join("frontend", "src", "apps", "explorer", "Preview.tsx")
 
 
-def test_every_app_card_thumbnail_url_goes_through_the_stamp():
-    """Both thumbnail branches (the hover live preview over a preview.png, and
-    the no-png live card) build their src through the one helper, so a third
-    branch cannot quietly ship an unstamped frame."""
-    src = open(CARD, encoding="utf-8").read()
-    assert "withNoFocus(withPreviewFlag(" in src
-    # Both iframes read the SAME bound name (D396 added an exported .fused card
-    # whose live look is its own embed URL, not /render), so the stamp is applied
-    # once where `liveSrc` is built and cannot be forgotten at a use site.
-    assert src.count("src={liveSrc}") == 2
-    assert "<iframe" in src and src.count("<iframe") == 2
-    # `liveSrc`'s two arms — an ordinary app's entry page through `thumbSrc`, and
-    # an opened app file's embed URL — are each stamped where they are formed.
-    assert "thumbSrc(app.entry_html)" in src
-    assert "withNoFocus(withPreviewFlag(embedUrlForFsPath(app.path)))" in src
-    assert "src={`/render" not in src
-
-
-def test_a_bookmark_card_peek_is_stamped_too():
-    """The other live thumbnail in the shell: a bookmark/recent card peeking at
-    its target through the embed shell."""
-    src = open(BOOKMARK_CARDS, encoding="utf-8").read()
-    assert "withNoFocus(withPreviewFlag(src))" in src
+def test_every_live_thumbnail_frame_goes_through_the_one_helper():
+    """`thumbFrame` is what makes a frame a picture — both URL stamps, the
+    sandbox/permissions seal, and the markup that keeps it out of the tab order
+    and off the scrollbar. Asserted as a COUNT against the iframes in the file,
+    so a third thumbnail branch cannot ship with four of the five parts, which
+    is exactly how D348 shipped `_preview` without `_nofocus`."""
+    for path in (CARD, BOOKMARK_CARDS):
+        src = open(path, encoding="utf-8").read()
+        assert src.count("{...thumbFrame(") == src.count("<iframe"), path
+        # Nothing builds a thumbnail URL by hand any more.
+        assert "withNoFocus(" not in src, path
+        assert "src={`/render" not in src, path
 
 
 def test_the_embed_shell_forwards_the_stamp_with_the_thumbnail_flag():
