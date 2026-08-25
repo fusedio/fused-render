@@ -50,6 +50,7 @@ import {
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
+import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
 
 // The three formats `ImageStage`'s own picker restricts to (`ATTACH_EXTENSIONS`
@@ -284,6 +285,36 @@ export function TextStage({
     }
   };
 
+  // The camera, shared with the image stage (webcam.tsx). The only difference
+  // between the two is this stage's answer to the frame: there it is a picture
+  // to EDIT, here one to ask a question about — everything up to the blob is
+  // the same code.
+  const webcam = useWebcam({ onError: setError });
+
+  const openCamera = async () => {
+    setError(null);
+    await webcam.start();
+  };
+
+  /** The frame, written to the app's cache dir and attached. A capture is the
+   *  one attachment with no path of its own — it does not exist anywhere until
+   *  it is saved — which is why this is the only attach route that writes. */
+  const capture = () =>
+    webcam.capture((blob) => {
+      void (async () => {
+        setError(null);
+        setAttaching(true);
+        try {
+          const landed = await saveToCache(blob, "webcam.png");
+          if (aliveRef.current) setAttachment(landed);
+        } catch (e) {
+          if (aliveRef.current) setError((e as Error).message);
+        } finally {
+          if (aliveRef.current) setAttaching(false);
+        }
+      })();
+    });
+
   const settings = (): ChatSettings => ({
     ...(temperature !== DEFAULTS.temperature ? { temperature } : {}),
     ...(topP !== DEFAULTS.top_p ? { top_p: topP } : {}),
@@ -468,6 +499,16 @@ export function TextStage({
                 {StarterIcons.landscape}
                 <span>{attachedImage ? "Replace" : "Add an image"}</span>
               </button>
+              <button
+                type="button"
+                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
+                title="Take one with the webcam"
+                disabled={attaching}
+                onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
+              >
+                {StarterIcons.camera}
+                <span>Webcam</span>
+              </button>
               {attaching && <span className="pg-attach-note">Working…</span>}
             </div>
             <div className="pg-composer-side">{runButton}</div>
@@ -500,6 +541,10 @@ export function TextStage({
           exists because a 28px thumbnail cannot be looked at. Click the
           backdrop or press Escape to close, exactly as `ImageStage`'s own
           lightbox answers to both. */}
+      {webcam.open && (
+        <WebcamOverlay videoRef={webcam.videoRef} onCapture={capture} onClose={webcam.stop} />
+      )}
+
       {attachedImage && showAttachment && (
         <div
           className="pg-lightbox"

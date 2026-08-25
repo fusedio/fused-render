@@ -29,8 +29,8 @@
 // WATCH stops on unmount.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { getConfig, mkdir, pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
-import { startImage, uploadFile, watchJob, type ImageStarted } from "./client";
+import { pickFile, rawUrl, type AiCatalogModel } from "@platform/lib/api";
+import { startImage, watchJob, type ImageStarted } from "./client";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
@@ -48,7 +48,7 @@ import {
   type Starter,
 } from "./controls";
 import { StarterIcons } from "./starterIcons";
-import { Button } from "@platform/shadcn/ui/button";
+import { saveToCache, useWebcam, WebcamOverlay } from "./webcam";
 import {
   canEdit,
   fitToImage,
@@ -305,7 +305,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   // Is the attached picture open at full size? A thumbnail 28px on a side is a
   // reminder of WHICH picture, not a look at it.
   const [showBase, setShowBase] = useState(false);
-  const [camera, setCamera] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -328,34 +327,24 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   const abortRef = useRef<AbortController | null>(null);
   const { ref: boxRef } = useAutoGrow(prompt);
-  const streamRef = useRef<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   // Set on the way in as well as cleared on the way out, the same shape
   // TranscribeStage's own flag has: an upload awaits the config, a mkdir and
   // the POST, and a continuation that lands after an unmount must not write
-  // state (or leave a camera running) from a dead component.
+  // state from a dead component. The camera's own lifetime is the webcam
+  // hook's — it stops its stream on unmount, so this effect does not.
   const aliveRef = useRef(true);
   useEffect(() => {
     aliveRef.current = true;
     return () => {
       aliveRef.current = false;
       abortRef.current?.abort();
-      streamRef.current?.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
     };
   }, []);
 
-  // The live view is attached HERE, not in the click that opened the camera:
-  // the <video> does not exist until this render, so `srcObject` has nothing
-  // to be set on until the panel is mounted.
-  useEffect(() => {
-    if (!camera) return;
-    const video = videoRef.current;
-    const stream = streamRef.current;
-    if (!video || !stream) return;
-    video.srcObject = stream;
-    void video.play().catch(() => {});
-  }, [camera]);
+  // The webcam, shared with the text stage (webcam.tsx): the stream, the live
+  // view, Escape, and the canvas draw all live there — this stage only says
+  // what happens to the frame.
+  const webcam = useWebcam({ onError: setError });
 
   // The picture's own dimensions, off a decode in the browser rather than a new
   // endpoint: the shell can already read this file through `/api/fs/raw` (the
@@ -388,20 +377,6 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     return () => window.removeEventListener("keydown", onKey);
   }, [showBase]);
 
-  // Escape cancels the webcam, the same way it closes the preview overlay.
-  useEffect(() => {
-    if (!camera) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && stopCamera();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [camera]);
-
-  const stopCamera = () => {
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    setCamera(false);
-  };
-
   /** Point the render at a file that is ALREADY on this disk — no copy, no
    *  upload, the user's own path. `<input type=file>` cannot do this: a browser
    *  hands over bytes and strips the path on purpose, so the only way to a path
@@ -433,34 +408,15 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     }
   };
 
-  /** A webcam frame has no path — it does not exist anywhere yet — so this one
-   *  case genuinely has to be written before it can be pointed at. It lands in
-   *  the app's own scratch dir, `<cache>/image-playground`
-   *  (`~/.fused-render/cache/…`), and NOT anywhere in the user's home: bytes
-   *  this app invented belong with the app's state, and a capture dropped in
-   *  `ai/images` — a folder the user browses, holding renders — is a picture
-   *  nobody can tell from a generated one. Both levels are mkdir'd, because
-   *  `/api/fs/mkdir` creates ONE directory by design (a typo must not spawn a
-   *  tree) and on a fresh machine neither exists. */
+  /** Bytes into the cache dir and onto this stage: `saveToCache` (webcam.tsx)
+   *  does the writing, this adds the stage's own error line, its busy flag,
+   *  and the `attach` that a bare write knows nothing about. */
   const save = async (data: Blob, name: string, stamped = true): Promise<AttachedImage | null> => {
     setError(null);
     setAttaching(true);
     try {
-      const config = await getConfig();
-      await mkdir(config.cache_dir).catch(() => {});
-      const dir = `${config.cache_dir}/image-playground`;
-      await mkdir(dir).catch(() => {});
-      // A capture is stamped — every one is a different picture and losing the
-      // last one would be a surprise. A shipped SAMPLE is not: the same bytes
-      // land at the same path however many times the pill is clicked, so the
-      // examples cannot slowly fill the cache with copies of themselves.
-      const stamp = stamped
-        ? new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + "-"
-        : "sample-";
-      const path = `${dir}/${stamp}${name}`;
-      await uploadFile(path, data, name);
+      const landed = await saveToCache(data, name, stamped);
       if (!aliveRef.current) return null;
-      const landed = { path, name };
       attach(landed);
       // Handed back as well as put in state: a caller that wants to RUN on this
       // picture cannot read the state it just set, and passing the attachment
@@ -543,38 +499,10 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
 
   const openCamera = async () => {
     setError(null);
-    try {
-      streamRef.current = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-      });
-      if (!aliveRef.current) {
-        stopCamera();
-        return;
-      }
-      setCamera(true);
-    } catch (e) {
-      setError(
-        (e as Error).name === "NotAllowedError"
-          ? "Camera access was refused — allow it in the browser and try again."
-          : (e as Error).message,
-      );
-    }
+    await webcam.start();
   };
 
-  /** One frame off the live view, at the camera's own pixels. PNG because
-   *  `toBlob` is guaranteed to produce one and the server reads it. */
-  const capture = () => {
-    const video = videoRef.current;
-    if (!video || !video.videoWidth) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext("2d")?.drawImage(video, 0, 0);
-    stopCamera();
-    canvas.toBlob((blob) => {
-      if (blob) void save(blob, "webcam.png");
-    }, "image/png");
-  };
+  const capture = () => webcam.capture((blob) => void save(blob, "webcam.png"));
 
   // Keyed on the STARTED reply, not on `run`: the watch's onTick rewrites
   // `run` every poll (a fresh `{...r, job}`), so an effect keyed on the whole
@@ -777,10 +705,10 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               </button>
               <button
                 type="button"
-                className={"pg-attach-btn" + (camera ? " active" : "")}
+                className={"pg-attach-btn" + (webcam.open ? " active" : "")}
                 title="Take one with the webcam"
                 disabled={attaching}
-                onClick={() => (camera ? stopCamera() : void openCamera())}
+                onClick={() => (webcam.open ? webcam.stop() : void openCamera())}
               >
                 {StarterIcons.camera}
                 <span>Webcam</span>
@@ -952,28 +880,12 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         </div>
       )}
 
-      {/* The webcam, over everything — the lightbox's own shape: a scrim, the
-          live view where the picture goes, one ✕. Capture is the only action.
-          Click the backdrop or press Escape to cancel, the two things anybody
-          tries; both land in stopCamera, the one place the stream stops. */}
-      {camera && (
-        <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={stopCamera}>
-          <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
-            <video ref={videoRef} className="pg-webcam-video" playsInline muted />
-            <Button variant="outline" onClick={capture}>
-              Capture
-            </Button>
-          </div>
-          <button
-            type="button"
-            className="pg-lightbox-close"
-            title="Close without a picture"
-            aria-label="Close without a picture"
-            onClick={stopCamera}
-          >
-            ✕
-          </button>
-        </div>
+      {webcam.open && (
+        <WebcamOverlay
+          videoRef={webcam.videoRef}
+          onCapture={capture}
+          onClose={webcam.stop}
+        />
       )}
 
       {/* Examples first, under the box they fill; hidden once a picture is on
