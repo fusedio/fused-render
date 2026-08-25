@@ -934,7 +934,13 @@
   line-height: 1.5;
   resize: none;
   padding: 6px 4px;
-  max-height: 180px;
+  /* Ten lines of the box's own text, plus its 12px of padding — the ceiling
+     `COMPOSER_MAX_LINES` (controls.tsx) writes as an inline height. Both have
+     to name ten: this is the backstop that keeps a box scrollable rather than
+     unbounded if the inline height is ever stale, so a smaller value here
+     would clip the grow the hook is allowed to do. 15em is 10 × the 1.5
+     line-height; box-sizing is border-box globally. */
+  max-height: calc(15em + 12px);
   outline: none;
 }
 
@@ -1054,6 +1060,12 @@
    its widest plus the corner offset. */
 .pg-composer-stack textarea {
   padding-right: 64px;
+  /* Undoes the shared `flex: 1`, which is a rule written for the ROW
+     composers. There it sizes the box across the composer and the height is
+     the textarea's own; here the main axis IS the height, so `flex-basis: 0%`
+     overrode the inline height useAutoGrow writes and the box sat at its
+     three-line min-height with everything past line three scrolled away. */
+  flex: none;
 }
 
 .pg-clear-corner:hover:not(:disabled) {

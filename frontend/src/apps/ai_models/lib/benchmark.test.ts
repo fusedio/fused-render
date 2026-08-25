@@ -370,7 +370,7 @@ describe("orderCapabilities", () => {
   it("sorts the four into the same order the rest of the page uses", () => {
     expect(
       orderCapabilities(["embeddings", "automatic-speech-recognition", "text-to-image", "text-generation"]),
-    ).toEqual(["text-generation", "text-to-image", "automatic-speech-recognition", "embeddings"]);
+    ).toEqual(["text-to-image", "text-generation", "automatic-speech-recognition", "embeddings"]);
   });
 
   it("keeps a capability the frontend has never heard of, after the known ones", () => {

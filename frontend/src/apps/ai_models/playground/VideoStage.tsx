@@ -186,7 +186,7 @@ export function VideoStage({
     return () => window.clearTimeout(timer);
   }, [prompt, width, height, frames, steps, seed, modelSteps, engineTraits.defaultFrames]);
 
-  const { ref: boxRef, grow } = useAutoGrow();
+  const { ref: boxRef } = useAutoGrow(prompt);
 
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -235,11 +235,8 @@ export function VideoStage({
     setPrompt("");
     setRun(null);
     setError(null);
-    const box = boxRef.current;
-    if (box) {
-      box.style.height = "auto";
-      box.focus();
-    }
+    // The height follows the emptied prompt on its own (useAutoGrow).
+    boxRef.current?.focus();
   };
 
   const busy = !!run && !run.done;
@@ -264,10 +261,7 @@ export function VideoStage({
           rows={3}
           value={prompt}
           placeholder="Describe the video…"
-          onChange={(e) => {
-            setPrompt(e.target.value);
-            grow();
-          }}
+          onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

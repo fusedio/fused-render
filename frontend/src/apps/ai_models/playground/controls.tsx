@@ -14,9 +14,29 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Slider } from "@platform/shadcn/ui/slider";
 import { capabilityIcon } from "./capabilityIcons";
 
+/** How many lines a composer grows to before it becomes a scroller. Ten is
+ *  about as far as a prompt can push Run and the result down before they leave
+ *  the fold, and text longer than that is being pasted, not read back.
+ *  Mirrored by the `max-height` on `.pg-composer textarea` in
+ *  ai-playground.css — that rule and this cap have to name the same number of
+ *  lines, or the smaller of the two wins and the other is dead. */
+export const COMPOSER_MAX_LINES = 10;
+
 /** A composer textarea that grows with its own text, so a Shift+Enter newline
- *  is visible. Returns the ref to hand the textarea and the `grow` to call on
- *  change.
+ *  is visible and a wrapped prompt is read whole rather than through a
+ *  scroller. Hand it the value the textarea is showing; it returns the ref to
+ *  put on the box, and a `grow` for anywhere the height has to be re-measured
+ *  without the value moving.
+ *
+ *  Keyed on the VALUE rather than driven from `onChange`, because a prompt
+ *  arrives in these boxes three ways: typed, seeded from the `prompt` URL
+ *  param on first render, and handed over from an app card. Only the first of
+ *  those goes through onChange, and the other two are exactly the long
+ *  prompts — the box opened three lines tall with the rest scrolled away.
+ *
+ *  The cap is in LINES, not px: the box's font comes from the sheet, and a px
+ *  budget silently becomes a different number of lines the moment that font
+ *  moves. Measured off the box's own computed line-height on every grow.
  *
  *  The height it writes is an inline px value, which means it goes STALE the
  *  moment the box's width changes and the same text rewraps to more lines: the
@@ -28,14 +48,31 @@ import { capabilityIcon } from "./capabilityIcons";
  *  CSS `field-sizing: content` would delete this hook outright. Deliberately
  *  not used: it is Chromium-only, and this sheet is not a Chromium-only
  *  sheet. Revisit when Safari and Firefox ship it. */
-export function useAutoGrow(max = 180) {
+export function useAutoGrow(value: string, maxLines = COMPOSER_MAX_LINES) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   const grow = useCallback(() => {
     const box = ref.current;
     if (!box) return;
+    const style = getComputedStyle(box);
+    // `normal` is not a length, so parseFloat gives NaN there — 1.5 is the
+    // line-height this sheet gives every composer.
+    const line = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.5;
+    // scrollHeight counts padding but not border, and box-sizing is border-box
+    // globally, so the height written back has to carry both for the cap to be
+    // `maxLines` WHOLE lines. The composer's textarea has no border today; a
+    // stage that gives one to its own should still stop where it says it does.
+    const chrome =
+      parseFloat(style.paddingTop) +
+      parseFloat(style.paddingBottom) +
+      parseFloat(style.borderTopWidth) +
+      parseFloat(style.borderBottomWidth);
     box.style.height = "auto";
-    box.style.height = Math.min(box.scrollHeight, max) + "px";
-  }, [max]);
+    box.style.height =
+      Math.min(box.scrollHeight, Math.round(line * maxLines + chrome)) + "px";
+  }, [maxLines]);
+  // Layout effect, not effect: this runs between React writing the value and
+  // the browser painting, so the box is never on screen at the wrong height.
+  useLayoutEffect(grow, [grow, value]);
   useEffect(() => {
     const box = ref.current;
     if (!box || typeof ResizeObserver === "undefined") return;
