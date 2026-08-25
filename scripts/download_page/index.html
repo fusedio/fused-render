@@ -3,7 +3,7 @@
      partitioned hierarchy, dressed in the editorial variant's quiet monochrome
      paper-and-ink aesthetic. Content and hierarchy follow ai.html verbatim.
      Dark is home; light stays reachable via data-theme="light". Zero external requests:
-     system fonts, relative assets/*, same-origin /latest.json. -->
+     system fonts, relative assets/*, same-origin latest.json. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -18,6 +18,8 @@
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
+<!-- This page is also proxied at www.fused.io/render/; render.fused.io is canonical. -->
+<link rel="canonical" href="https://render.fused.io/">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
 <script type="application/fused-bundle">
 { "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png"] }
@@ -1419,7 +1421,10 @@
   // ---- release manifest ----
   // The links already work before this resolves, and simply stay pointed at
   // the releases page if it never does.
-  fetch("/latest.json", { cache: "no-cache" })
+  // Relative, not root-absolute: the page is also proxied at
+  // www.fused.io/render/ (kgateway HTTPRoute -> this CDN), where a
+  // root-absolute /latest.json would hit the fused.io app instead.
+  fetch("latest.json", { cache: "no-cache" })
     .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
     .then(function (m) {
       var v = document.getElementById("version");

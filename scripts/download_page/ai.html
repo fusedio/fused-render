@@ -14,7 +14,7 @@
 
      Every visual is drawn in CSS with real text content — no screenshots, no
      web fonts, no third-party scripts. The only network call at load is
-     same-origin /latest.json for the download links, exactly as ai.html and
+     same-origin latest.json for the download links, exactly as ai.html and
      index.html do it. That is also the claim the page makes about itself. -->
 <html lang="en">
 <head>
@@ -28,6 +28,7 @@
 <meta property="og:title" content="AI that lives on your computer">
 <meta property="og:description" content="Make small tools that do your work for you, and run them offline against your own files. Your files stay on your machine.">
 <meta property="og:url" content="https://render.fused.io/ai.html">
+<link rel="canonical" href="https://render.fused.io/ai.html">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta property="og:image:type" content="image/png">
 <meta property="og:image:width" content="1200">
@@ -1077,7 +1078,9 @@
   // ---- download links -------------------------------------------------
   // Same contract as index.html and ai.html: the buttons work before this
   // resolves and simply stay pointed at the releases page if it fails.
-  fetch("/latest.json", { cache: "no-cache" })
+  // Relative, not root-absolute: see the note in index.html -- the page is
+  // also proxied at www.fused.io/render/, where /latest.json is not ours.
+  fetch("latest.json", { cache: "no-cache" })
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (m) {
       if (!m) return;
