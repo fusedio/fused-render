@@ -55,13 +55,27 @@ const S = (paths: ReactNode): ReactNode => (
   </svg>
 );
 
-// Every AI starter closes on the same two facts, because they are what the
-// session cannot guess: the model runs locally (no key, no network) and the
-// page reaches it through `fused.ai.*`. The seed prose for an ATTACHED model
-// is far richer (appSeed.ts) — these briefs are what a user clicks when they
-// picked the idea first and the model second.
+// Every AI starter closes on the same facts, because they are what the
+// session cannot guess: the model runs locally (no key, no network), the page
+// reaches it through `fused.ai.*`, the fused-render-ai skill documents that
+// surface, and model ids come from the catalog rather than a hard-coded repo.
+// The seed prose for an ATTACHED model is far richer (appSeed.ts) — these
+// briefs are what a user clicks when they picked the idea first and the model
+// second.
 const LOCAL =
-  "Use the local AI models on this machine through the page's fused.ai API — no cloud keys, no network.";
+  "Use the local AI models on this machine through the page's fused.ai API — " +
+  "read the fused-render-ai skill first; no cloud keys, no network. Take model ids " +
+  "from fused.ai.models.catalog(), never hard-code one, and disable the run button " +
+  "while a call is in flight.";
+
+// The one capability that can be unservable on the machine running the page:
+// off Apple Silicon `catalog()` reports `default: null` for text-to-video and
+// every `fused.ai.video` call rejects `unavailable`. Appended to every video
+// brief so the session builds the check before it builds the button.
+const VIDEO =
+  "Before anything else read fused.ai.models.catalog(): if the text-to-video row's " +
+  "default is null this machine cannot run video, so say so plainly and hide the " +
+  "render button instead of offering one that always fails. ";
 
 export const STARTER_PROMPTS: StarterPrompt[] = [
   // -- No AI -----------------------------------------------------------------
@@ -70,30 +84,34 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     capability: null,
     glyph: S(<path d="M20 6L9 17l-5-5" />),
     prompt:
-      "A habit tracker. Let me define habits with a name and a target cadence " +
-      "(daily or specific weekdays), check them off for today, and edit or delete them. " +
-      "Show the current streak per habit and a weekly heatmap of completions. " +
-      "Persist everything locally so my history survives restarts.",
+      "A habit tracker. Let me define habits with a name and a target cadence (daily or " +
+      "specific weekdays), check them off for today, and edit or delete them. Show the " +
+      "current streak per habit and a 12-week heatmap of completions. Store the data as one " +
+      "JSON file in the app folder (fused.readFile/fused.writeFile) so my history survives " +
+      "restarts and stays portable.",
   },
   {
     label: "Markdown notes",
     capability: null,
-    glyph: S(<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />),
+    glyph: S(
+      <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />,
+    ),
     prompt:
-      "A markdown notes app. A sidebar lists my notes sorted by last edited; " +
-      "I can create, rename, and delete notes, and edit them with a live markdown preview. " +
-      "Include full-text search across all notes with matching snippets highlighted. " +
-      "Store notes as plain .md files in the app folder so they stay portable.",
+      "A markdown notes app. A sidebar lists my notes sorted by last edited; I can create, " +
+      "rename, and delete notes, and edit them in a split view with a live markdown " +
+      "preview. Include full-text search across all notes with matching snippets " +
+      "highlighted. Store notes as plain .md files in the app folder so they stay portable.",
   },
   {
     label: "CSV dashboard",
     capability: null,
     glyph: S(<path d="M3 3v18h18M8 17V9M13 17V5M18 17v-6" />),
     prompt:
-      "A CSV dashboard. Let me drop or pick a CSV file, then show a sortable, filterable " +
-      "table of its rows plus summary stats per numeric column (min, max, mean, nulls). " +
-      "Let me pick columns to chart as a bar, line, or scatter plot. " +
-      "Handle large-ish files gracefully and remember the last file I opened.",
+      "A CSV dashboard. Let me pick a CSV file, then show a sortable, filterable table of " +
+      "its rows plus summary stats per numeric column (min, max, mean, nulls). Let me pick " +
+      "columns to chart as a bar, line, or scatter plot. Do the parsing and stats in a " +
+      "Python data file via fused.runPython so large files stay fast, and remember the last " +
+      "file I opened.",
   },
   {
     label: "Mini game",
@@ -102,20 +120,21 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       <path d="M6 12h4M8 10v4M15 11h.01M18 13h.01M17.3 5H6.7a4.7 4.7 0 0 0-4.6 5.6l1 5A3 3 0 0 0 8 17.4l.6-1.4h6.8l.6 1.4a3 3 0 0 0 4.9-1.8l1-5A4.7 4.7 0 0 0 17.3 5z" />,
     ),
     prompt:
-      "A 2048-style sliding tile game. Arrow keys (and touch swipes) slide and merge " +
-      "tiles on a 4x4 grid, with smooth animations and a score counter. " +
-      "Detect game over and win states with a restart button, " +
-      "and keep the best score locally so it survives restarts.",
+      "A 2048-style sliding tile game. Arrow keys (and touch swipes) slide and merge tiles " +
+      "on a 4x4 grid, with smooth animations and a score counter. Detect game over and win " +
+      "states with a restart button, and keep the best score in a small JSON file in the " +
+      "app folder so it survives restarts.",
   },
   {
     label: "Finance calculator",
     capability: null,
     glyph: S(<path d="M22 12h-4l-3 9L9 3l-3 9H2" />),
     prompt:
-      "A compound-interest and loan calculator. Inputs for principal, rate, term, and " +
-      "monthly contribution or payment; show the resulting balance or amortization " +
-      "schedule as both a table and a line chart. " +
-      "Update results live as inputs change and format all amounts as currency.",
+      "A compound-interest and loan calculator. Inputs for principal, annual rate, term, " +
+      "and monthly contribution or payment; show the resulting balance or amortization " +
+      "schedule as both a table and a line chart. Update results live as inputs change, " +
+      "keep the inputs in URL params so a scenario is shareable, and format all amounts as " +
+      "currency.",
   },
   {
     label: "Pomodoro timer",
@@ -127,10 +146,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A pomodoro focus timer. Configurable work/short-break/long-break durations, " +
-      "a large countdown with start/pause/reset, and an automatic cycle through " +
-      "sessions with a chime between them. " +
-      "Log completed pomodoros per day and show a simple daily history.",
+      "A pomodoro focus timer. Configurable work/short-break/long-break durations, a large " +
+      "countdown with start/pause/reset, and an automatic cycle through sessions with a " +
+      "chime between them. Keep the countdown accurate when the tab is in the background, " +
+      "log completed pomodoros per day, and show a simple daily history.",
   },
   {
     label: "Expense splitter",
@@ -142,43 +161,51 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A shared-expenses splitter. Let me add people to a group, log expenses with " +
-      "who paid and who shares each one (equal or custom shares), and see each " +
-      "person's running balance. " +
-      "Compute the minimum set of transfers that settles the group and keep everything locally.",
+      "A shared-expenses splitter. Let me add people to a group, log expenses with who paid " +
+      "and who shares each one (equal or custom shares), and see each person's running " +
+      "balance. Compute the minimum set of transfers that settles the group, and store the " +
+      "group as JSON in the app folder.",
   },
   {
     label: "Reading board",
     capability: null,
-    glyph: S(<path d="M4 19.5V6a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 1.5zM9 8h6M9 12h4" />),
+    glyph: S(
+      <path d="M4 19.5V6a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 1.5zM9 8h6M9 12h4" />,
+    ),
     prompt:
       "A reading list as a kanban board. Columns for Want to read / Reading / Finished, " +
-      "with drag-and-drop between them; each card holds a title, author, link, tags, " +
-      "and a 1-5 rating once finished. " +
-      "Support search and tag filters, and store the board as JSON in the app folder.",
+      "with drag-and-drop between them; each card holds a title, author, link, tags, and a " +
+      "1-5 rating once finished. Support search and tag filters, and store the board as " +
+      "JSON in the app folder.",
   },
 
   // -- Text generation -------------------------------------------------------
   {
     label: "Local chat",
     capability: "text-generation",
-    glyph: S(<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />),
+    glyph: S(
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+    ),
     prompt:
-      "A private chat app that talks to a local language model. Stream the reply token " +
-      "by token, keep the conversation history in the request so follow-ups make sense, " +
-      "and let me start a new conversation or revisit an old one from a sidebar. " +
-      "Show which model is answering and let me switch it. " +
+      "A private chat app on a local language model. Call fused.ai with onChunk to stream " +
+      "the reply token by token, pass the prior turns as history so follow-ups make sense, " +
+      "and let me start a new conversation or reopen an old one from a sidebar (saved as " +
+      "JSON in the app folder). Show which model is answering, let me switch it from the " +
+      "text-generation rows of the catalog, and give me a Stop button wired to " +
+      "fused.ai.cancel(). " +
       LOCAL,
   },
   {
     label: "Rewrite tool",
     capability: "text-generation",
-    glyph: S(<path d="M15 4l5 5M17.5 2.5a2.1 2.1 0 0 1 3 3L8 18l-5 1 1-5L17.5 2.5z" />),
+    glyph: S(
+      <path d="M15 4l5 5M17.5 2.5a2.1 2.1 0 0 1 3 3L8 18l-5 1 1-5L17.5 2.5z" />,
+    ),
     prompt:
-      "A rewriting workbench. I paste text on the left, pick a tone (shorter, plainer, " +
-      "more formal, friendlier) and get the rewritten version streaming in on the right, " +
-      "with a diff view showing what changed and a copy button. " +
-      "Let me keep the last few rewrites so I can compare them. " +
+      "A rewriting workbench. I paste text on the left, pick a tone (shorter, plainer, more " +
+      "formal, friendlier) and the rewrite streams in on the right via fused.ai with " +
+      "onChunk, the tone carried in systemPrompt. Show a word-level diff of what changed " +
+      "and a copy button, and keep the last few rewrites so I can compare them. " +
       LOCAL,
   },
   {
@@ -188,10 +215,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       <path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3M9 12h5M9 16h3M14 3h7v7" />,
     ),
     prompt:
-      "A meeting-notes summarizer. I drop in raw notes or a transcript and get back a " +
-      "one-paragraph summary, the decisions made, and a checklist of action items with " +
-      "owners where the text names one. " +
-      "Let me edit the result and save it as markdown in the app folder. " +
+      "A meeting-notes summarizer. I paste raw notes or a transcript and one fused.ai call, " +
+      "with a systemPrompt that fixes the output shape, returns a one-paragraph summary, " +
+      "the decisions made, and a checklist of action items with owners where the text names " +
+      "one. Stream it in with onChunk, let me edit the result, and save it as markdown in " +
+      "the app folder. " +
       LOCAL,
   },
   {
@@ -204,10 +232,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A flashcard maker. I paste study material and a local model turns it into " +
-      "question/answer cards; I can edit, delete, or regenerate any card. " +
-      "Then drill them in a spaced-repetition review mode that tracks what I get wrong " +
-      "and persists the deck locally. " +
+      "A flashcard maker. I paste study material and fused.ai turns it into question/answer " +
+      "cards — ask for a JSON array and parse it defensively; I can edit, delete, or " +
+      "regenerate any card. Then drill them in a spaced-repetition review mode that tracks " +
+      "what I get wrong and persists the deck as JSON in the app folder. " +
       LOCAL,
   },
   {
@@ -220,10 +248,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A commit-message and changelog writer. Let me pick a git repo folder, read its " +
-      "staged diff (or a commit range) with Python, and have a local model draft a " +
-      "conventional-commit subject plus a short body explaining the why. " +
-      "For a range, group the commits into a release changelog I can copy. " +
+      "A commit-message and changelog writer. Let me pick a git repo folder; a Python data " +
+      "file run through fused.runPython reads the staged diff (or a commit range), and " +
+      "fused.ai drafts a conventional-commit subject plus a short body explaining the why, " +
+      "streamed with onChunk. For a range, group the commits into a release changelog I can " +
+      "copy. " +
       LOCAL,
   },
 
@@ -239,10 +268,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "An icon studio. I describe a subject and a style once, then generate a whole set " +
-      "of matching icons from a list of names, each on a flat single-colour background, " +
-      "with a seed I can lock so the set stays consistent. " +
-      "Show them as a grid and let me regenerate or save any one to disk. " +
+      "An icon studio. I describe a subject and a style once, then generate a matching set " +
+      "of icons from a list of names with fused.ai.image, each on a flat single-colour " +
+      "background, with a locked seed so the set stays consistent. Show the results as a " +
+      "grid (each resolves to a file — display it with fused.rawUrl), show job.previewUrl " +
+      "while a tile renders, and let me re-roll or save any one. " +
       LOCAL,
   },
   {
@@ -255,10 +285,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A poster and cover maker. I type a title and a description of the artwork; the page " +
-      "generates the image with a local model, then composes my title and subtitle over it " +
-      "with font, size, and placement controls. " +
-      "Let me re-roll the art without losing the text layout, and export the result as PNG. " +
+      "A poster and cover maker. I type a title and a description of the artwork; " +
+      "fused.ai.image renders it at the poster's width and height, then the page composes " +
+      "my title and subtitle over the image with font, size, and placement controls. Let me " +
+      "re-roll the art (new seed) without losing the text layout, and export the composite " +
+      "as PNG. " +
       LOCAL,
   },
   {
@@ -273,9 +304,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     ),
     prompt:
       "A storyboard sketcher. I write a scene per row — shot description plus a caption — " +
-      "and each row generates its frame with a local image model, sharing one style prompt " +
-      "and seed so the boards look like one film. " +
-      "Let me reorder rows, re-roll a single frame, and export the whole board as a contact sheet. " +
+      "and each row renders its frame with fused.ai.image, sharing one style prompt and " +
+      "seed so the boards look like one film; queue the renders one at a time with per-row " +
+      "progress. Let me reorder rows, re-roll a single frame, and export the whole board as " +
+      "a contact sheet. " +
       LOCAL,
   },
   {
@@ -288,10 +320,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A mood board generator. From one theme I get nine variations at once, each with a " +
-      "slightly different style modifier, laid out as a masonry grid with the prompt and " +
-      "seed shown under every tile. " +
-      "Let me pin the ones I like into a keep row and save that row to a folder. " +
+      "A mood board generator. From one theme, render nine variations with fused.ai.image, " +
+      "each with a different style modifier and seed, queued one at a time so the page " +
+      "stays usable, laid out as a masonry grid with the prompt and seed under every tile. " +
+      "Let me pin favourites into a keep row and save that row to a folder. " +
       LOCAL,
   },
   {
@@ -304,17 +336,18 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "An avatar maker. Pickers for style, hair, expression, and background colour build the " +
-      "prompt for me; a local image model renders a square portrait I can re-roll with a new " +
-      "seed or refine by editing the prompt directly. " +
-      "Crop to a circle preview and export at 512 and 1024 px. " +
+      "An avatar maker. Pickers for style, hair, expression, and background colour build " +
+      "the prompt; fused.ai.image renders a square portrait I can re-roll with a new seed " +
+      "or refine by editing the prompt directly, with a cancel button on " +
+      'fused.ai.cancel("text-to-image"). Crop to a circle preview and export at 512 and ' +
+      "1024 px. " +
       LOCAL,
   },
 
   // -- Video generation ------------------------------------------------------
-  // Every video brief ends by telling the session to check the catalog: this
-  // capability is Apple Silicon only with no fallback, so a page that assumes
-  // it is a page that is simply broken on the machine it was built for.
+  // Every video brief ends with VIDEO: this capability is Apple Silicon only
+  // with no fallback, so a page that assumes it is a page that is simply
+  // broken on the machine it was built for.
   {
     label: "Clip sketchpad",
     capability: "text-to-video",
@@ -325,11 +358,12 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A text-to-video sketchpad. I describe a shot, pick a resolution and frame count, and a " +
-      "local video model renders it with a visible progress bar; the clip plays inline with " +
-      "controls and its prompt and seed shown beside it. " +
-      "Keep every render in a session gallery I can replay and save from. " +
-      "Check the model catalog first and say plainly if this machine cannot run video. " +
+      "A text-to-video sketchpad. I describe a shot, pick a resolution and frame count, and " +
+      "fused.ai.video renders it with a visible progress bar; the clip plays inline with " +
+      "controls and its prompt and seed shown beside it, with a cancel button on " +
+      'fused.ai.cancel("text-to-video"). Keep every render in a session gallery I can ' +
+      "replay and save from. " +
+      VIDEO +
       LOCAL,
   },
   {
@@ -342,11 +376,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A logo-sting generator. I pick a brand colour and describe the motion (a slow reveal, " +
-      "an ink bloom, a light sweep); a local video model renders a two-second clip and the page " +
-      "overlays my wordmark on top of it. " +
-      "Let me re-roll the motion with a new seed and export the clip. " +
-      "Check the model catalog first and say plainly if this machine cannot run video. " +
+      "A logo-sting generator. I pick a brand colour and describe the motion (a slow " +
+      "reveal, an ink bloom, a light sweep); fused.ai.video renders a two-second clip and " +
+      "the page overlays my wordmark on top of it. Let me re-roll the motion with a new " +
+      "seed and export the clip. " +
+      VIDEO +
       LOCAL,
   },
   {
@@ -354,11 +388,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     capability: "text-to-video",
     glyph: S(<path d="M4 8h11a4 4 0 0 1 0 8H8m0 0l3-3m-3 3l3 3" />),
     prompt:
-      "A looping-background maker. I describe an ambient scene, the page renders a short clip " +
-      "with a local video model, then previews it as a seamless loop behind sample text so I can " +
-      "judge it as an actual backdrop. " +
-      "Offer a few length and resolution presets and let me save the loop. " +
-      "Check the model catalog first and say plainly if this machine cannot run video. " +
+      "A looping-background maker. I describe an ambient scene, fused.ai.video renders a " +
+      "short clip, then the page previews it as a seamless loop behind sample text so I can " +
+      "judge it as an actual backdrop. Offer a few length and resolution presets and let me " +
+      "save the loop. " +
+      VIDEO +
       LOCAL,
   },
   {
@@ -371,11 +405,12 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A how-to short builder. I list the steps of a recipe or task; each step becomes a vertical " +
-      "clip rendered by a local video model from that step's text, with the step caption burned " +
-      "over it, and the page plays the steps back to back as one short. " +
-      "Let me re-render a single step without touching the rest. " +
-      "Check the model catalog first and say plainly if this machine cannot run video. " +
+      "A how-to short builder. I list the steps of a recipe or task; each step becomes a " +
+      "vertical clip rendered by fused.ai.video from that step's text, one render at a time " +
+      "with per-step progress, the step caption burned over it, and the page plays the " +
+      "steps back to back as one short. Let me re-render a single step without touching the " +
+      "rest. " +
+      VIDEO +
       LOCAL,
   },
   {
@@ -383,11 +418,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
     capability: "text-to-video",
     glyph: S(<path d="M4 6h2M4 12h2M4 18h2M10 6h10M10 12h10M10 18h6" />),
     prompt:
-      "A shot-list renderer. I write a table of shots — description, camera move, seconds — and " +
-      "render them one at a time with a local video model, queued so the page stays usable, with " +
-      "per-row status and progress. " +
-      "Show the finished clips as a timeline strip I can play through in order. " +
-      "Check the model catalog first and say plainly if this machine cannot run video. " +
+      "A shot-list renderer. I write a table of shots — description, camera move, seconds — " +
+      "and fused.ai.video renders them one at a time, queued so the page stays usable, with " +
+      "per-row status and progress. Show the finished clips as a timeline strip I can play " +
+      "through in order. " +
+      VIDEO +
       LOCAL,
   },
 
@@ -402,10 +437,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A voice-memo notebook. I pick or drop an audio file and a local speech model transcribes " +
-      "it with segments streaming in as they land, timestamps down the side, and the text " +
-      "editable once it finishes. " +
-      "Keep every memo in a list with its date, duration, and a title I can rename. " +
+      "A voice-memo notebook. I pick an audio file (or record one with fused.capture.audio) " +
+      "and fused.ai.transcribe transcribes it, segments streaming in through onSegment as " +
+      "they land, timestamps down the side, and the text editable once it finishes. Keep " +
+      "every memo in a list with its date, duration, and a title I can rename. " +
       LOCAL,
   },
   {
@@ -418,10 +453,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A searchable transcript reader for podcasts and lectures. Transcribe a long audio or video " +
-      "file with a local speech model, then let me search the transcript and jump the player to " +
-      "any hit, with the current segment highlighted as it plays. " +
-      "Cache the transcript beside the media file so reopening is instant. " +
+      "A searchable transcript reader for podcasts and lectures. Transcribe a long audio or " +
+      "video file with fused.ai.transcribe, then let me search the transcript and jump the " +
+      "player to any hit, with the current segment highlighted as it plays. Cache the " +
+      "transcript JSON beside the media file so reopening is instant. " +
       LOCAL,
   },
   {
@@ -434,10 +469,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A subtitle maker. Transcribe a video with a local speech model, show the segments as an " +
-      "editable cue list beside the player, and let me fix text or nudge timings. " +
-      "Export valid .srt and .vtt next to the source video, and burn a live preview of the " +
-      "current cue over the player. " +
+      "A subtitle maker. Transcribe a video with fused.ai.transcribe, show the {start, end, " +
+      "text} segments as an editable cue list beside the player, and let me fix text or " +
+      "nudge timings. Export valid .srt and .vtt next to the source video, and burn a live " +
+      "preview of the current cue over the player. " +
       LOCAL,
   },
   {
@@ -450,9 +485,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A spoken-capture inbox. I drop a voice note, a local speech model transcribes it, and each " +
-      "sentence that sounds like a task becomes a checkbox I can accept, edit, or discard. " +
-      "Keep the accepted ones as a persistent todo list with the audio timestamp each came from. " +
+      "A spoken-capture inbox. I drop a voice note, fused.ai.transcribe turns it into " +
+      "segments, and each sentence that sounds like a task becomes a checkbox I can accept, " +
+      "edit, or discard. Keep the accepted ones as a persistent todo list (JSON in the app " +
+      "folder) with the audio timestamp each came from. " +
       LOCAL,
   },
   {
@@ -465,9 +501,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "An interview log. Transcribe a recorded conversation with a local speech model, let me " +
-      "label who is speaking for each segment, and keep those labels when I reopen the file. " +
-      "Let me star quotes and copy them out with their timestamp as a citation. " +
+      "An interview log. Transcribe a recorded conversation with fused.ai.transcribe using " +
+      "diarize: true, colour each segment by its speaker label, let me rename speakers, and " +
+      "keep those names when I reopen the file. Let me star quotes and copy them out with " +
+      "their timestamp as a citation. " +
       LOCAL,
   },
 
@@ -482,10 +519,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A meaning-based file search. Point it at a folder of text or markdown files, embed them in " +
-      "chunks with a local embedding model, and cache the vectors on disk so a rescan is cheap. " +
-      "Then I type a question in plain words and get the closest passages ranked by cosine " +
-      "similarity, each with its file path and a snippet. " +
+      "A meaning-based file search. Point it at a folder of text or markdown files, split " +
+      "them into chunks, embed them with fused.ai.embed({texts}), and cache the vectors as " +
+      "JSON on disk so a rescan is cheap. Then I type a question in plain words, embed it " +
+      "the same way, and get the closest passages ranked by cosine similarity, each with " +
+      "its file path and a snippet. " +
       LOCAL,
   },
   {
@@ -500,9 +538,10 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A related-notes finder. Embed every note in a folder with a local embedding model, then when " +
-      "I open one show the five most similar notes with their similarity scores and matching lines. " +
-      "Re-embed only files whose mtime changed, and draw the whole set as a simple similarity graph. " +
+      "A related-notes finder. Embed every note in a folder with fused.ai.embed({texts}), " +
+      "then when I open one show the five most similar notes with their cosine scores and " +
+      "matching lines. Re-embed only files whose mtime changed, and draw the whole set as a " +
+      "simple similarity graph. " +
       LOCAL,
   },
   {
@@ -517,10 +556,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A bookmark clusterer. I paste a list of links with titles and notes, they get embedded with a " +
-      "local model, and the page groups them into clusters by meaning with a generated name per " +
-      "cluster and an outlier bucket. " +
-      "Let me set how many clusters and drag a link into a different group. " +
+      "A bookmark clusterer. I paste a list of links with titles and notes, " +
+      "fused.ai.embed({texts}) turns them into vectors, and the page groups them with " +
+      "k-means into clusters by meaning, with a name per cluster taken from its most " +
+      "central items and an outlier bucket. Let me set how many clusters and drag a link " +
+      "into a different group. " +
       LOCAL,
   },
   {
@@ -533,9 +573,9 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A near-duplicate finder for text. Embed every row of a CSV or every file in a folder with a " +
-      "local embedding model, then list the pairs above a similarity threshold I control with a " +
-      "slider, side by side with their differences highlighted. " +
+      "A near-duplicate finder for text. Embed every row of a CSV or every file in a folder " +
+      "with fused.ai.embed({texts}), then list the pairs above a cosine-similarity " +
+      "threshold I control with a slider, side by side with their differences highlighted. " +
       "Let me mark a pair as keep-both or pick a survivor, and export the decisions. " +
       LOCAL,
   },
@@ -550,10 +590,11 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       </>,
     ),
     prompt:
-      "A photo search by description. Embed the images in a folder with a local multimodal " +
-      "embedding model, cache the vectors, then let me type what I remember about a picture and " +
-      "get the closest matches as a thumbnail grid with scores. " +
-      "Clicking a thumbnail shows the full image and its path. " +
+      "A photo search by description. Embed the images in a folder with " +
+      "fused.ai.embed({paths}) using a multimodal embedding model from the catalog, cache " +
+      "the vectors, then embed what I type with the same model and show the closest matches " +
+      "as a thumbnail grid with scores. Clicking a thumbnail shows the full image and its " +
+      "path. " +
       LOCAL,
   },
 ];
@@ -587,7 +628,9 @@ const SHUFFLED = shuffleStarters(STARTER_PROMPTS);
 // attached, and also when the capability is unknown here (an older `?annot=`
 // carrying no capability, or one this build has no starters for), where showing
 // everything beats showing nothing.
-export function startersFor(capability: string | null | undefined): StarterPrompt[] {
+export function startersFor(
+  capability: string | null | undefined,
+): StarterPrompt[] {
   if (!capability) return SHUFFLED;
   const hits = SHUFFLED.filter((s) => s.capability === capability);
   return hits.length ? hits : SHUFFLED;
