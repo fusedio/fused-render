@@ -44,6 +44,9 @@
    adds only the rows new to it — the two checkboxes, title and description,
    the past-time note. */
 @import "./styles/new-task.css";
+/* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
+   Tasks page inside its Tasks tab and adds only the header and frame around it. */
+@import "./styles/app-page.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";

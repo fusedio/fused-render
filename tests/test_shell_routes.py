@@ -84,6 +84,18 @@ def test_the_shell_actually_declares_routes():
     assert "/ai-models/playground" in routes
 
 
+def test_the_app_page_survives_a_refresh(client):
+    """`/apps/<slug>` (D488) is a PARAMETERISED route — App.tsx matches it through
+    `slugFromAppPath`, not a `pathname ===` literal — so the scrape above cannot
+    see it, the same blind spot the canvases workspace has. Requested by hand.
+    Two levels stays a 404: that is the retired `/apps/<tag>/<name>` builder
+    route, and shell.py deliberately does not serve it."""
+    res = client.get("/apps/some-app")
+    assert res.status_code == 200, res.status_code
+    assert res.headers["content-type"].startswith("text/html")
+    assert client.get("/apps/tag/name").status_code == 404
+
+
 @pytest.mark.parametrize("path", shell_routes())
 def test_every_shell_route_survives_a_refresh(client, path):
     res = client.get(path)

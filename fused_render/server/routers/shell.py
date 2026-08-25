@@ -72,6 +72,18 @@ def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path))
     return FileResponse(shell_path)
 
 
+# The app page (D488): `/apps/<slug>` is one workspace app, <fused_dir>/local/<slug>,
+# with the app running in an Overview tab and its tasks in a Tasks tab
+# (frontend shell/AppPage.tsx). ONE path segment, on purpose: the retired
+# `/apps/<tag>/<name>` shape above stays a 404, and the page's tab rides the
+# query (`?tab=tasks`) rather than a second segment so the two never look alike.
+# The slug is validated client-side (current-apps-lib.slugFromAppPath); this is
+# only the shell fallback that lets a refresh or a bookmark land on the page.
+@router.get("/apps/{slug}")
+def shell_app_page(slug: str, shell_path: str = Depends(get_shell_path)):
+    return FileResponse(shell_path)
+
+
 # The AI Models tabs. A wildcard rather than five literals because the tab set
 # is the FRONTEND's list (apps/ai_models/routes.ts) and the server has no
 # business holding a second copy of it — an unknown tab falls back to the
