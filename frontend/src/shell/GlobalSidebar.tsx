@@ -220,14 +220,16 @@ function PreferencesPopover({
             role="menuitem"
             className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
             onClick={(e) => {
-              // A plain left click is the SPA's — hijack it into the same
-              // history-pushState navigation the rest of the shell uses.
-              // Anything the browser already owns (middle-click, ctrl/cmd/
-              // shift/alt-click) is left alone so "open in new tab" and
-              // friends work on the real href (see appEntry.isBrowserHandledClick).
+              // Picking an entry closes the popover either way. A plain left
+              // click also hijacks the navigation itself into the SPA's own
+              // history-pushState route; anything the browser already owns
+              // (middle-click, ctrl/cmd/shift/alt-click) is left alone so
+              // "open in new tab" and friends work on the real href (see
+              // appEntry.isBrowserHandledClick) — only preventDefault/navigateUrl
+              // are skipped, not the close.
+              onClose();
               if (isBrowserHandledClick(e)) return;
               e.preventDefault();
-              onClose();
               navigateUrl(entry.href);
             }}
           >
