@@ -94,13 +94,49 @@ def venvs_root() -> str:
     return os.path.join(home_dir(), "venvs")
 
 
-def uv_cache_dir() -> str:
-    """`<home_dir()>/uv-cache` — deliberately a sibling of `venvs_root()`.
+def uv_cache_dir() -> str | None:
+    """`<home_dir()>/uv-cache` when `FUSED_RENDER_HOME` is set; `None`
+    otherwise, which is the caller's cue to let uv pick its OWN default
+    cache (`_env_install_worker._build` is the one caller, and the sentinel
+    that survives the trip through argv — see its module docstring).
 
-    uv hardlinks wheels out of its cache into the venv, and can only do that
-    when the two are on one filesystem; anywhere else it falls back to full
-    copies and every project pays the whole size of numpy again.
+    **This used to always be `<home_dir()>/uv-cache`, and per-branch
+    fragmentation was the result — composition, not a decision.** Branch
+    nesting landed first (`a8f50e2f`, 20 Jul: `home_dir()` nests under
+    `branches/<ref>/` so parallel branches don't collide). This function
+    landed later (#409, 7 Aug) BUILT ON `home_dir()`, with exactly one
+    stated reason for the path it chose — cache and venvs must share a
+    filesystem, or uv silently falls back to copying instead of
+    hardlinking. Nobody deciding that ALSO decided a cache should fragment
+    per branch; it fell out of `home_dir()` having quietly become
+    branch-aware by the time this was written on top of it. The measured
+    cost on one machine: three worktrees each held their OWN copy of a
+    multi-gigabyte torch download (15G, 14G, 1.2G under `branches/*/uv-cache`)
+    while `~/.cache/uv` — 68G, and mounted on the SAME filesystem as every
+    one of them — already had it. A ROCm install re-downloaded 3.4GB it did
+    not need to.
+
+    **Deferring to uv's own default gives up the one-filesystem guarantee
+    that made hardlinking work BY CONSTRUCTION, and that trade is
+    deliberate, not a free win.** uv's default is platform-specific (XDG on
+    Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows) and
+    this module does not hardcode any of them — only uv itself gets to
+    decide, correctly, which one applies. A user whose app home and that
+    default cache happen to sit on DIFFERENT filesystems loses hardlinking
+    and pays full copies again from here on, silently. That is accepted
+    because the alternative — a fresh multi-gigabyte redownload per branch
+    or worktree, guaranteed, on every machine — is worse than a possible,
+    machine-dependent loss of a dedup optimisation.
+
+    `FUSED_RENDER_HOME` is preserved as the one thing worth keeping from the
+    old design: the test suite sets it precisely so a build under test can
+    never reach the developer's real, shared cache, and an explicit,
+    isolated `uv-cache` sibling is what keeps that true. `UV_LINK_MODE`
+    stays unset either way — uv already prefers hardlinks and degrades on
+    its own; see `_env_install_worker._build`.
     """
+    if not os.environ.get("FUSED_RENDER_HOME"):
+        return None
     return os.path.join(home_dir(), "uv-cache")
 
 

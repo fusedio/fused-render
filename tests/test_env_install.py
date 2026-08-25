@@ -2000,6 +2000,38 @@ def test_the_worker_is_told_the_venv_directory_rather_than_deriving_it(
 
 
 @requires_fused
+def test_a_none_cache_sends_the_worker_the_empty_string_not_the_word_None(
+    tmp_path, monkeypatch
+):
+    """`projectenv.uv_cache_dir()` answers `None` outside test isolation (no
+    `FUSED_RENDER_HOME`) — argv cannot carry that, so `_spawn` must send the
+    same empty-string sentinel slots 5 and 6 already use, not a literal
+    `"None"` or a crash.
+
+    Stubbed at `projectenv.uv_cache_dir` directly rather than by deleting
+    `FUSED_RENDER_HOME` in this process: that variable ALSO governs
+    `progress_dir(key)` (and everywhere else `home_dir()` is read), and
+    `_spawn` genuinely creates that directory and opens `worker.log` inside
+    it — unsetting the redirect here would point those real writes at this
+    developer's actual `~/.fused-render`, not a testable difference.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    key = envinstall.venv_key_for(proj)
+    monkeypatch.setattr(projectenv, "uv_cache_dir", lambda: None)
+
+    argv = []
+
+    class _Proc:
+        pid = os.getpid()
+
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: (argv.extend(cmd), _Proc())[1])
+    envinstall._spawn(key, proj)
+
+    assert argv[6] == ""
+
+
+@requires_fused
 def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch):
     """`uv sync`, in the project dir, with the venv redirected out of it.
 
@@ -2048,6 +2080,42 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
     assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
     assert seen["env"]["UV_CACHE_DIR"] == cache
     assert not os.path.exists(os.path.join(proj, ".venv"))
+
+
+def test_no_explicit_cache_leaves_UV_CACHE_DIR_unset_and_creates_nothing(
+        tmp_path, monkeypatch):
+    """`None` (the ordinary case now — see `projectenv.uv_cache_dir()`) means
+    "let uv pick its own default", which only works if `UV_CACHE_DIR` is
+    genuinely ABSENT from the environment, not set to an empty string uv
+    would treat as a real, nonsensical path. Per-branch cache fragmentation
+    came from this being unconditional; this pins the fix.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_cache")
+
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, None, "3.12")
+
+    assert "UV_CACHE_DIR" not in seen["env"]
+    assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
 
 
 @requires_fused

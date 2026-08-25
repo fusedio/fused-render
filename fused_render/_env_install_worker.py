@@ -10,6 +10,19 @@ detached child is a bootstrap that broke once already) and so cannot call
 `projectenv`. Re-deriving the venv directory would also be a second derivation
 of a cache key, which is how a loader ends up filling a directory no run reads.
 
+`<uv_cache_dir>` is EMPTY, same idiom, whenever `envinstall._spawn` was handed
+`projectenv.uv_cache_dir() is None` — which is the ordinary case now, not the
+exception: `_build` then runs `uv sync` with no `UV_CACHE_DIR` override at all,
+deferring to uv's OWN default (XDG on Linux, `~/Library/Caches` on macOS,
+`%LOCALAPPDATA%` on Windows) instead of an explicit sibling of the venv store.
+That sibling used to be unconditional and fragmented per branch/worktree as a
+result — see `projectenv.uv_cache_dir()` for the history and the trade this
+accepts (giving up the one-filesystem hardlink guarantee everywhere the two
+happen to already coincide, to stop a guaranteed multi-gigabyte redownload
+everywhere they used to differ). An explicit path still arrives when the
+caller set `FUSED_RENDER_HOME` — the test suite's own isolation, preserved
+exactly.
+
 `<python_executable>` is the base interpreter the environment is built on, and it
 must be the value `envinstall._python_executable()` returned — the backend runs
 the code, so its interpreter and the environment's have to be one choice. argv
@@ -1080,14 +1093,18 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
                               which for a core template would be destroyed by the
                               release-time re-stage and cost a full re-download of
                               numpy/pyproj/imagecodecs on every upgrade.
-      UV_CACHE_DIR            a sibling of the venv store, so cache and target are
-                              on ONE filesystem and uv's hardlinks actually dedupe.
-                              Across filesystems uv silently falls back to full
-                              copies and every project pays for numpy again.
+      UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
+                              only when the caller asked for isolation
+                              (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).
+                              Ordinarily left UNSET, deferring to uv's own default
+                              cache rather than a sibling of the venv store: an
+                              explicit sibling used to be unconditional and
+                              fragmented per branch/worktree as a result — the
+                              trade `uv_cache_dir()` documents and accepts.
 
-    `UV_LINK_MODE` is deliberately NOT set: uv already prefers hardlinks and
-    degrades on its own, and pinning it here would override a user who had a
-    reason to choose otherwise.
+    `UV_LINK_MODE` is deliberately NOT set either way: uv already prefers
+    hardlinks and degrades on its own, and pinning it here would override a
+    user who had a reason to choose otherwise.
 
     It runs in `_sync_root(project_dir, venv_dir)` rather than in `project_dir`
     itself — the same directory in every case a folder can be written to, and a
@@ -1142,10 +1159,24 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None)
     # dependency uv has to BUILD rather than download as a wheel failed inside
     # the packaged macOS app (D266); without the second, uv warns and can target
     # the server's own venv.
-    env = _uv_env(UV_PROJECT_ENVIRONMENT=venv_dir, UV_CACHE_DIR=uv_cache_dir)
+    env = _uv_env(UV_PROJECT_ENVIRONMENT=venv_dir)
+    if uv_cache_dir:
+        # ONLY when the caller asked for an isolated cache
+        # (`envinstall._spawn` passes `projectenv.uv_cache_dir()`, which is
+        # non-None only under `FUSED_RENDER_HOME`). Otherwise `UV_CACHE_DIR`
+        # is left OUT of the environment entirely — not set to an empty
+        # string, which uv would treat as a real, nonsensical path — so uv
+        # resolves its own platform default (XDG on Linux, `~/Library/
+        # Caches` on macOS, `%LOCALAPPDATA%` on Windows) exactly as it would
+        # for any other command a user ran. See `projectenv.uv_cache_dir()`
+        # for why an explicit sibling of the venv store is no longer the
+        # unconditional choice: it made cache-target hardlinking work BY
+        # CONSTRUCTION, and fragmented the cache per branch/worktree as an
+        # unintended side effect of doing so.
+        os.makedirs(uv_cache_dir, exist_ok=True)
+        env["UV_CACHE_DIR"] = uv_cache_dir
 
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
-    os.makedirs(uv_cache_dir, exist_ok=True)
     # After the makedirs above (the mirror is a SIBLING of the venv, so its parent
     # is the one they create) and after the unmarked-venv removal (which must not
     # be able to take the mirror's lock with it).
@@ -1390,10 +1421,12 @@ def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
     <python_executable> <acquire_python>`
 
-    The empty string means None in BOTH optional slots (argv cannot carry it):
-    translated here and nowhere else, so `install` receives the real values. Read as
-    the literal `""` instead, the last slot would have this worker try to download a
-    Python version called nothing on every ordinary install.
+    The empty string means None in ALL THREE optional slots (argv cannot carry
+    it): translated here and nowhere else, so `install` receives the real
+    values. Read as the literal `""` instead, `uv_cache_dir` would hand `_build`
+    a directory named nothing to create and point `UV_CACHE_DIR` at, and the
+    last slot would have this worker try to download a Python version called
+    nothing on every ordinary install.
     """
     _detach()
     if len(args) < 7:
@@ -1401,7 +1434,7 @@ def main(args):
         sys.exit(2)
     (key, progress_dir, project_dir, venv_dir, uv_cache_dir,
      python_executable, acquire_python) = args[:7]
-    install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
+    install(key, progress_dir, project_dir, venv_dir, uv_cache_dir or None,
             python_executable or None, acquire_python=acquire_python or None)
 
 
