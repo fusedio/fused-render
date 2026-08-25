@@ -434,14 +434,9 @@ export function HomeHero({ onCreated }: { onCreated: () => void }) {
           this app's default theme, `data-theme="light"` opts out) shows one. */}
       <img src={logoMarkDark} alt="" aria-hidden="true" className="hidden h-9 w-auto dark:block" />
       <img src={logoMarkLight} alt="" aria-hidden="true" className="block h-9 w-auto dark:hidden" />
-      <div className="flex flex-col gap-2">
-        <h1 className="text-3xl font-semibold tracking-tight text-balance">
-          Build your next local app
-        </h1>
-        <p className="text-sm text-muted-foreground text-balance">
-          Describe it, and a scaffolded folder with a Claude session comes back.
-        </p>
-      </div>
+      <h1 className="text-3xl font-semibold tracking-tight text-balance">
+        Build your next local app
+      </h1>
       <HeroComposer onCreated={onCreated} />
     </header>
   );
