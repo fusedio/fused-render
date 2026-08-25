@@ -107,17 +107,6 @@
   display: none;
 }
 
-/* The Tasks page is a PANE (schedule.css "Full-height page"): its List/Board
-   fill what the toolbar leaves and scroll inside. Under #content that works
-   because the page is the column's only child; here it is a flex child of the
-   tab panel and, left at `flex: 0 1 auto`, sized itself to its content and
-   then SHRANK it — one task rendered as a 38px box with the row scrolled half
-   out of view. Grow it, and every link below (`.schedule-main`, `.tasks-list`)
-   already knows how to take the room. */
-.app-page-tasks > .schedule-page {
-  flex: 1 1 auto;
-}
-
 .app-page-frame {
   flex: 1 1 auto;
   min-height: 0;
