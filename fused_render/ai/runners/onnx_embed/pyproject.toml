@@ -1,0 +1,79 @@
+# The ONNX embedding runner's environment — the CPU build (SPEC §40, PY-16).
+#
+# The cross-platform, and default, backend for embeddings off Apple Silicon.
+# Read this file first: the three accelerated siblings
+# (`onnx_embed_directml/`, `onnx_embed_cuda/`, `onnx_embed_rocm/`) are this
+# manifest with one dependency name changed, and they point back here for the
+# reasoning.
+#
+# **Why this engine exists beside a working torch one.** A dual encoder is one
+# forward pass over a short sequence or one image — milliseconds already on a
+# CPU — so the compute was never the argument. The WHEEL was: the removed
+# `transformers_embed/` installed torch plus transformers, 0.2 GB on the CPU
+# index and up to 5.9 GB on an accelerated one, to run a model whose own weights
+# are 1.5 GB. `onnxruntime` is tens of megabytes and reads the same checkpoint
+# re-exported, at the same numbers — there is a real-weights parity gate
+# (`tests/test_ai_onnx_embed_real_weights.py`) asserting ≥0.999 cosine against
+# the torch runner's vectors, and that evidence is what licensed the removal.
+#
+# **No `[tool.uv.index]` on any of the four folders**, and that is the other
+# half of the saving. Every onnxruntime build ships on PyPI proper — CPU,
+# DirectML, CUDA and ROCm alike — so none of these manifests needs the
+# `explicit = true` mirror dance `transformers_embed*` and `diffusers_image*`
+# both carry, and none of them can accidentally resolve numpy or pillow off a
+# vendor mirror.
+#
+# Five dependencies beyond onnxruntime, and each earns its place:
+#   tokenizers      IS the tokenizer. `Tokenizer.from_file(tokenizer.json)`
+#                   reads the export's own fast-tokenizer file — normalizer,
+#                   vocabulary and post-processor together — which is the whole
+#                   reason this runner needs no transformers.
+#   pillow          opens the image half of a request
+#                   (`embed_common.open_image`) and does the resize
+#                   `runners/onnx_embed.py` performs by hand, since there is no
+#                   image processor here either.
+#   pillow-heif     HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones
+#                   have shot HEIC by default since iOS 11, so without this the
+#                   `paths` half of an embed request works on screenshots and
+#                   fails on the photographs.
+#   huggingface_hub downloads — and `list_repo_files`, which `download()` calls
+#                   before a byte moves so its `allow_patterns` can name exactly
+#                   the fp32 graphs (these exports publish eight quantizations
+#                   of each tower side by side; a bare pull is 11.42 GB).
+#   psutil          answers "how much memory is this costing". Load-bearing
+#                   here, not decorative: this runner supplies no `memory=` to
+#                   `serve()` because onnxruntime publishes no allocator query,
+#                   so `worker_base`'s RSS probe IS the measurement.
+#
+# **Both version lines carry a CEILING**, for the reason
+# `mlx_text/pyproject.toml` states at length: no lockfile is committed beside
+# these manifests and `uv sync` runs bare, so an unbounded line re-resolves from
+# PyPI on every new venv key — which is how a minor bump reaches users' machines
+# with no commit behind it. `onnxruntime` is long past 1.0 with a stable
+# `InferenceSession` API, so the major is the breaking one; `tokenizers` is
+# pre-1.0, where a minor is, and the exports this runner reads pin their
+# tokenizer format anyway.
+#
+# **`requires-python = ">=3.11"`, not the `>=3.10` every other runner folder
+# here declares**, and it is a fact about the wheels rather than a preference:
+# onnxruntime 1.29 publishes `cp311` upwards and nothing older, on every one of
+# the four distributions. Declaring 3.10 would let `uv sync` pick a 3.10
+# interpreter and then fail to find any onnxruntime at all — a resolution error
+# about a version range, where this line makes it an interpreter error naming
+# the real requirement.
+[project]
+name = "fused-render-runner-onnx-embed"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "onnxruntime>=1.29,<2",
+    "tokenizers>=0.23,<0.24",
+    "pillow",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

@@ -1,0 +1,56 @@
+# The ONNX embedding runner's environment — the ROCm variant (SPEC §40, PY-16).
+#
+# Identical to `onnx_embed/pyproject.toml` except for the one thing a hardware
+# variant is allowed to change: which onnxruntime distribution is installed.
+# Read that file first — it carries the reasoning for the dependency list, the
+# ceilings, and why this engine exists at all.
+#
+# AMD cards on Linux. `onnxruntime-rocm` publishes `manylinux` wheels only —
+# there is no ROCm build for macOS or Windows anywhere — so this variant is a
+# Linux one by construction and `registry._rocm` offers it there, on the same
+# `/dev/kfd`-and-supported-gfx gate the torch ROCm rows used.
+#
+# **Not about speed** — see the CUDA sibling's header for the same argument. The
+# registry orders this row last so `auto` never reaches it.
+#
+# **`onnxruntime-rocm` REPLACES `onnxruntime`, it does not accompany it.** Both
+# distributions install the same `onnxruntime` import package, so declaring the
+# pair puts two copies of one module in the venv and which one wins is whatever
+# uv unpacked last. The CPU line is therefore absent rather than joined — and
+# the CPU provider is still available, because the ROCm build registers
+# `CPUExecutionProvider` alongside `ROCMExecutionProvider` (which is what
+# `onnx_embed._placement`'s fallback chain relies on).
+#
+# **No `[tool.uv.index]`, and no `triton-rocm` companion**, which is the whole
+# difference from the `transformers_embed_rocm/` manifest this replaces.
+# `onnxruntime-rocm` lives on PyPI proper and links the ROCm runtime it needs
+# directly, so there is no `download.pytorch.org/whl/rocm7.1` mirror to declare,
+# no `explicit = true` to keep that mirror from answering for numpy and pillow,
+# and no transitive requirement published only on it. That manifest's long
+# `triton-rocm` warning has no analogue here, and its absence is deliberate
+# rather than an omission.
+#
+# The version floor is this distribution's own, not the CPU folder's: the ROCm
+# build releases well behind the mainline one, so `>=1.29` — the CPU folder's
+# floor — would resolve to nothing at all. The ceiling is the same major, for
+# the same reason.
+#
+# Every dependency below is a verbatim copy of the CPU folder's five beyond
+# onnxruntime and must stay one. A version drifting between the four would make
+# "which hardware" also mean "which tokenizer".
+[project]
+name = "fused-render-runner-onnx-embed-rocm"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "onnxruntime-rocm>=1.22,<2",
+    "tokenizers>=0.23,<0.24",
+    "pillow",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

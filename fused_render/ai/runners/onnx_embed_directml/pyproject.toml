@@ -1,0 +1,47 @@
+# The ONNX embedding runner's environment — the DirectML variant
+# (SPEC §40, PY-16).
+#
+# Identical to `onnx_embed/pyproject.toml` except for the one thing a hardware
+# variant is allowed to change: which onnxruntime distribution is installed.
+# Read that file first — it carries the reasoning for the dependency list, the
+# ceilings, and why this engine exists at all.
+#
+# **DirectML is Windows's vendor-neutral GPU path**, and that is why this is the
+# accelerated row Windows gets rather than a second CUDA one. It runs on
+# whatever the machine has — NVIDIA, AMD, Intel Arc, an integrated Iris — through
+# Direct3D 12, so one folder covers every Windows GPU instead of one folder per
+# vendor. `registry._directml` gates the row on Windows plus a GPU the OS
+# reports, for exactly that reason.
+#
+# **`onnxruntime-directml` REPLACES `onnxruntime`, it does not accompany it.**
+# Both distributions install the same `onnxruntime` import package, so declaring
+# the pair puts two copies of one module in the venv and which one wins is
+# whatever uv unpacked last. So the CPU line is absent here rather than joined —
+# and the CPU provider is still available, because the DirectML build registers
+# `CPUExecutionProvider` alongside `DmlExecutionProvider` (which is what
+# `onnx_embed._placement`'s fallback chain relies on).
+#
+# The version floor is this distribution's own, not the CPU folder's: the
+# DirectML build releases behind the mainline one, so `>=1.29` — the CPU
+# folder's floor — would resolve to nothing at all. The ceiling is the same
+# major, for the same reason.
+#
+# Every dependency below is a verbatim copy of the CPU folder's five beyond
+# onnxruntime and must stay one. A version drifting between the four would make
+# "which hardware" also mean "which tokenizer".
+[project]
+name = "fused-render-runner-onnx-embed-directml"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "onnxruntime-directml>=1.24,<2",
+    "tokenizers>=0.23,<0.24",
+    "pillow",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
