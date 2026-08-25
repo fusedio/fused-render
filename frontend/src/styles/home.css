@@ -19,29 +19,14 @@
   padding: 40px 28px 72px;
 }
 
-/* Hero card: bordered panel with a faint accent wash drifting out of the top
-   corner — the page's one decorative moment; everything inside stays on
-   tokens so both themes hold. */
+/* Hero: no card around it any more (the bordered panel and its accent wash are
+   gone); it is spacing only. The side padding is what sets the composer's
+   width — narrower than the rows below on purpose. */
 .home-hero {
   position: relative;
   overflow: hidden;
-  padding: 36px 36px 34px;
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  padding: 36px 64px 34px;
   margin-bottom: 22px;
-}
-
-.home-hero::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    120% 130% at 100% 0%,
-    color-mix(in srgb, var(--accent) 12%, transparent),
-    transparent 55%
-  );
 }
 
 .home-hero > * {
