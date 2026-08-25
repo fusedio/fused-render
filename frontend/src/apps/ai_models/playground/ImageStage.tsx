@@ -327,7 +327,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   }, [prompt, width, height, steps, guidance, seed, modelSteps, editable, attachment]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const { ref: boxRef, grow } = useAutoGrow();
+  const { ref: boxRef } = useAutoGrow(prompt);
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Set on the way in as well as cleared on the way out, the same shape
@@ -665,11 +665,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     setError(null);
     setPreviewLive(false);
     setAttachment(null);
-    const box = boxRef.current;
-    if (box) {
-      box.style.height = "auto";
-      box.focus();
-    }
+    // The height follows the emptied prompt on its own (useAutoGrow).
+    boxRef.current?.focus();
   };
 
   const busy = !!run && !run.done;
@@ -706,10 +703,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           rows={3}
           value={prompt}
           placeholder={base ? "Describe the change…" : "Describe the picture…"}
-          onChange={(e) => {
-            setPrompt(e.target.value);
-            grow();
-          }}
+          onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

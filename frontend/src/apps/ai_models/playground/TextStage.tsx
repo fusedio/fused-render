@@ -223,7 +223,7 @@ export function TextStage({
   }, [prompt, temperature, topP, maxTokens, system]);
 
   const abortRef = useRef<AbortController | null>(null);
-  const { ref: boxRef, grow } = useAutoGrow();
+  const { ref: boxRef } = useAutoGrow(prompt);
   // Set on the way in as well as cleared on the way out, the same shape
   // `ImageStage`'s own flag has: a pick awaits the dialog, and a continuation
   // that lands after an unmount must not write state from a dead component.
@@ -345,11 +345,8 @@ export function TextStage({
     setReply(null);
     setError(null);
     setAttachment(null);
-    const box = boxRef.current;
-    if (box) {
-      box.style.height = "auto";
-      box.focus();
-    }
+    // The height follows the emptied prompt on its own (useAutoGrow).
+    boxRef.current?.focus();
   };
 
   const stop = () => {
@@ -424,10 +421,7 @@ export function TextStage({
           placeholder={
             attachedImage ? "Ask about the attached picture…" : `Ask ${modelLabel} something…`
           }
-          onChange={(e) => {
-            setPrompt(e.target.value);
-            grow();
-          }}
+          onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -495,12 +489,6 @@ export function TextStage({
         </div>
       )}
 
-      {/* Examples first, under the box they fill; hidden once there is a
-          reply to read, which is what that space is then for. */}
-      {!reply && !status && (
-        <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
-      )}
-
       {/* Every knob is behind the cog; the surface above is prompt and Run. */}
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
@@ -556,8 +544,6 @@ export function TextStage({
       {!reply && !status && (
         <StarterCards samples={STARTERS} onPick={(s) => void send(s.prompt)} />
       )}
-
-      {/* Every knob is behind the cog; the surface above is prompt and Run. */}
 
       {status && <p className="pg-status">{status}</p>}
       {error && <p className="pg-error">{error}</p>}
