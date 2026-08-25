@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { formatMtime, formatMtimeFull, formatParams, formatSize, basename, dirname } from "@platform/lib/format";
+import { formatMtime, formatMtimeFull, formatParams, formatSize, basename, dirname, repoName } from "@platform/lib/format";
 
 // 2025-09-24 20:59:57 local time — the seconds are what the assertions are
 // about, so the instant is built from local parts, not a UTC string.
@@ -42,6 +42,21 @@ describe("formatSize", () => {
     expect(formatSize(512)).toBe("512 B");
     expect(formatSize(1536)).toBe("1.5 KB");
     expect(formatSize(null)).toBe("");
+  });
+});
+
+describe("repoName", () => {
+  it("keeps the model half of a repo id and leaves a bare name alone", () => {
+    expect(repoName("black-forest-labs/FLUX.2-klein-4B")).toBe("FLUX.2-klein-4B");
+    expect(repoName("FLUX.1-schnell")).toBe("FLUX.1-schnell");
+  });
+
+  it("never answers with an empty label", () => {
+    // A trailing slash or a lone separator must not shorten to nothing — an
+    // empty `.dl-model` would draw a stray gap where a name should be.
+    expect(repoName("owner/model/")).toBe("model");
+    expect(repoName("/")).toBe("/");
+    expect(repoName("")).toBe("");
   });
 });
 

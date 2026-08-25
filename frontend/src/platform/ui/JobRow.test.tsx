@@ -61,6 +61,19 @@ test("a job with a model draws a dimmed .dl-model suffix after the title", () =>
   expect(model[0].children).toEqual(["FLUX.1-schnell"]);
 });
 
+test("an owner/model repo id draws only the model half, with the full id on hover", () => {
+  // The owner prefix is identical for every row a given model ever draws, so it
+  // consumed the head's scarcest space on the one part that distinguishes
+  // nothing — and `.dl-model` is `flex: 0 0 auto`, so what it took came out of
+  // `.dl-title`, ellipsizing the user's prompt away. Shortened for display
+  // only: the full id stays reachable, since two owners can ship the same name.
+  const root = renderRow({ ...BASE, model: "black-forest-labs/FLUX.2-klein-4B" });
+  const model = findAll(root, "dl-model");
+  expect(model).toHaveLength(1);
+  expect(model[0].children).toEqual(["FLUX.2-klein-4B"]);
+  expect(model[0].props.title).toBe("black-forest-labs/FLUX.2-klein-4B");
+});
+
 test("a job with no model renders no .dl-model element at all — no empty span, no stray gap", () => {
   const root = renderRow({ ...BASE, model: "" });
   expect(findAll(root, "dl-model")).toHaveLength(0);

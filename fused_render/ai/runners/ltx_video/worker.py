@@ -452,7 +452,11 @@ class _StepTicker:
         for done, item in enumerate(items):
             worker_base.report_or_cancel(
                 job=self.job, kind="task", unit="", done=done, total=total,
-                detail="%s — step %d/%d" % (label, done, total))
+                # `label`, not "label — step N/M": the row renders `done`/`total`
+                # itself (see torch_image.py's tick). The label still carries
+                # the one thing the numbers cannot say, which stage is running
+                # — tqdm's own `desc` distinguishes "Denoising (stage 2)".
+                detail=label)
             yield item
 
 
