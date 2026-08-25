@@ -402,10 +402,14 @@
   gap: 8px;
 }
 
-/* A repo id is a path-shaped string with no spaces. .cc-mdcard-name ellipsizes
-   on one line, which is right for a filename and wrong for `org/name`: the org
-   is the half that gets cut. Wrap inside it instead and let the card grow. */
+/* The head now holds the MODEL half of the id only (`RepoCard.modelName`), so
+   the wrapping this had goes with the reason for it: it wrapped because a repo
+   id is `org/name` and one-line ellipsis cut the org, which was the half a
+   reader needed. There is no org here any more — it leads the subtitle below —
+   and long single-token names (`FLUX.2-klein-4B-GGUF`) still break rather than
+   overflow the plate. */
 .am-card-name {
+  min-width: 0;
   color: inherit;
   text-decoration: none;
   white-space: normal;
@@ -423,31 +427,80 @@
   border-radius: 3px;
 }
 
-/* Pushed to the card's right edge, tabular so the figures line up down a
-   column of cards even though each card sizes itself. */
+/* -- the caption line: what it costs, then which repo it is -----------------
+   Directly under the name, cost first. The figure spent an hour in the head
+   beside the name, matching the recommendation cards drawn next to these — but
+   those cards have no second line to put it on, so matching them there bought
+   consistency with a card that had no choice and cost this one the arrangement
+   that actually reads as a caption.
+
+   No `margin-left: auto` on the figure any more either: the (i) claims the
+   head's free space now. Tabular, so a column of cards lines its figures up
+   even though each card sizes itself. */
 .am-card-size {
-  margin-left: auto;
-  padding-left: 8px;
+  flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
 }
 
-/* "Explore" is the local door — the model card view — and it wears .cc-iconbtn
-   like the ✕ beside it, so the card's actions read as one row of controls at
-   the same visual weight rather than a word and some buttons. Still an <a>,
-   because it navigates and middle-click and copy-link have to keep working;
-   this only restores the dimensions and the hover the class expects on a
-   <button>. No `color` override: `.cc-iconbtn` already sets the muted resting
-   colour, and an anchor here previously overrode it to `inherit`, which picked
-   up the card's full-brightness text instead — this Explore icon read heavier
-   than Delete right beside it, though both wear the same class. */
-.am-card-explore {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
+/* No separator between the two: a middot in `--border` at 11px over a card wash
+   is a mark nobody can see ("the dot here is barely visible, let's just remove
+   it"), and the gap already does the work. */
+.am-card-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
 }
+
+/* The id is the half that can be arbitrarily long, so it is the half that
+   shrinks — ellipsised, with the whole string on the line's own hint. Mono,
+   like every other place this page prints a repo address. */
+.am-card-slug {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The curation's seal, at the end of the name. A mark ON the name rather than a
+   control beside it — no box, no plate, no hover wash. Accent, because it is
+   this app's own opinion and accent is what this app says that in; FILLED,
+   because a hairline check at 13px is a smudge and read as one more quiet claim
+   about the disk rather than as an endorsement. */
+.am-card-pick {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: -2px;
+  color: var(--accent);
+  cursor: default;
+}
+
+.am-card-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* The (i), pinned to the head's right corner whatever the name's length —
+   the `margin-left: auto` the size figure used to carry. Exactly one thing in
+   this row may claim the free space, and it is now a control rather than a
+   number. */
+.am-card-info {
+  margin-left: auto;
+}
+
+/* NO `.am-card-explore` RULE (2026-08-24): the local door — this folder's own
+   model card view — is a NAMED link inside the (i) panel ("Know more") rather
+   than a third unlabelled glyph in the actions strip. `.am-card-explore-link`
+   further down is a different control, on the Hub search card, and is
+   untouched. */
 
 /* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
  * chrome beside Explore, widened for a word instead of a glyph.
@@ -522,8 +575,7 @@
    drops further and takes the pointer with it, and `cursor: not-allowed` is
    what makes a hover that changes nothing legible as a refusal rather than as a
    dead page. The `title` on every one of them says why. */
-.am-card .cc-iconbtn:disabled,
-.am-rev .cc-iconbtn:disabled {
+.am-card .cc-iconbtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -535,8 +587,7 @@
    rather than on the shared class: the base rule is wrong on every surface, but
    this page is the one that made it visible, and widening it would restyle
    pages nothing in this change has looked at. */
-.am-card .cc-iconbtn:disabled:hover,
-.am-rev .cc-iconbtn:disabled:hover {
+.am-card .cc-iconbtn:disabled:hover {
   background: none;
   color: var(--fg-muted);
 }
@@ -559,20 +610,16 @@
   min-height: 16px;
 }
 
-/* -- which engine loads it -------------------------------------------------- */
-/* The card's most load-bearing tag: in this app a repo belongs to a BACKEND,
-   not to a capability, and the three formats of Whisper are mutually
-   unloadable. It wears the same outline as .am-card-quant beside it — one
-   vocabulary of small facts — with the ACCENT reserved for the state that
-   answers "can I press Load": an engine that runs here. */
+/* -- the two tags that are STATE ---------------------------------------------
+   The class is still called `am-card-engine` because both of its survivors sit
+   in the slot the engine tag used to occupy and wear its chrome — a small
+   outlined pill, the same vocabulary as the facts that used to sit beside it. */
 .am-card-engine {
   padding: 1px 6px;
   font-size: 11px;
-  /* Muted is the FALLBACK, for an engine family this build has no hue for
-     (engines.engineHue). The accent used to live here, on every card, which was
-     two problems in one declaration: the accent is now spoken for on the same
-     card (the filled Downloaded pill), and one colour for eight backends made
-     the card's most load-bearing tag the one fact colour could not separate. */
+  /* Muted, flatly: the two tags left wearing this base are a stopped download
+     and a component, and both are quiet facts. The per-family hues that used to
+     override it are gone with the tags that carried them. */
   color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -584,60 +631,19 @@
   text-overflow: ellipsis;
 }
 
-/* -- one hue per engine ------------------------------------------------------
-   `--am-eng` is set inline per card from `engines.engineHue`, which maps each
-   engine FAMILY to one of the calendar's categorical hues (--task-c0…c7). The
-   weight is deliberately between the two things it is not: not muted text,
-   because which backend owns a repo is the card's load-bearing fact and the
-   three Whisper formats are mutually unloadable; not a filled pill, because that
-   weight belongs to the two STATE badges (Loaded, Downloaded) and a card with
-   three filled pills on it has no hierarchy left.
+/* NO HUE, AND NO `-family` / `-off` / `-none` TAGS (2026-08-25).
+   Three of the five engine-tag states are gone from the page along with the
+   `--am-eng` hue that separated them: which backend reads a model's weights is
+   IDENTITY, so it is a row in the (i) panel now, on all three kinds of card. A
+   hue exists to make "all the MLX LM ones" findable by sweeping a row — inside
+   a panel opened deliberately, about one model, there is nothing to tell apart.
 
-   So: text at the hue, a border at 40% of it, a 10% wash. Colour is never the
-   only channel — the tag says the engine's name, which is the actual answer;
-   the hue is what makes "all the MLX LM ones" findable by sweeping a row.
-
-   The `var(--am-eng, …)` fallbacks matter: this class is applied whenever the
-   engine is AVAILABLE, including for a family with no hue assigned, and without
-   them that tag would inherit whatever `--am-eng` an ancestor happened to set. */
-.am-card-engine-family {
-  color: var(--am-eng, var(--fg-muted));
-  border-color: color-mix(in srgb, var(--am-eng, var(--border)) 40%, transparent);
-  background: color-mix(in srgb, var(--am-eng, transparent) 10%, transparent);
-}
-
-/* "This is a Mac's model, on a PC" — or a model whose engine runs here fine
-   and is not the one selected. Either way it will not load right now.
-   Deliberately not the same as "nothing reads this": the download was not a
-   mistake, and the hover carries the registry's own reason.
-
-   **The tag reads the same in both states, so this styling is the signal.**
-   It used to say "needs Diffusers"; the word went because on a card the
-   reader is being told a fact, not given an instruction. What carries the
-   state now is the warning hue AND the dashed border — two channels, which is
-   the point: the dash survives greyscale, a monochrome display and every form
-   of colour blindness, so nothing here depends on distinguishing yellow from
-   the accent green beside it. `--warning-soft` is the stylesheet's existing
-   attention token and measures 8.4:1 on the card in dark and 4.9:1 in light,
-   both past AA for text this size.
-
-   **THE BORDER AND THE WASH ARE TINTED TOO, and until 2026-08-24 they were
-   not.** This is the bug Akshil reported as "diffusers and transformer
-   embeddings don't have a tag": they always had one, it just did not look like
-   one. The rule set the ink and the dash and left `border-color` at the base
-   class's `var(--border)` — and a dashed hairline in the border token, at 11px,
-   over the card's own wash, is invisible. `-family` beside it tints its border
-   AND carries a 10% wash, so the LOADABLE tags read as pills while these read as
-   loose orange text, which is exactly backwards: this is the state with
-   something to say. Both channels now come from the same token the ink does, so
-   every tag on the card is a pill, and the DASH goes on being what says which
-   kind of pill. */
-.am-card-engine-off {
-  color: var(--warning-soft);
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--warning-soft) 40%, transparent);
-  background: color-mix(in srgb, var(--warning-soft) 10%, transparent);
-}
+   What survives are the two tags that are STATE rather than identity, below:
+   `partly downloaded` (why the button says Continue downloading) and `part of X`
+   (why there is no Load at all). The reason a Load or a Download is REFUSED
+   survives too, as the amber `Switch engines` link in the actions strip — that
+   was the second job the `-off` tag had been doing, and it is the half a reader
+   can act on. */
 
 /* The reason lives in the title attribute, and a tag nobody can focus is a
    tooltip that only exists for a mouse. The unavailable states take a tab stop
@@ -647,18 +653,6 @@
   outline-offset: 1px;
 }
 
-/* And the honest dead end. Quiet, because it is a fact about the repo rather
-   than a warning to act on — there is nothing to press.
-   Tinted like the two above (2026-08-24) so it is a pill and not floating text,
-   but from `--fg-muted` rather than the warning token: the point of this state
-   is that it is NOT asking for anything. The `opacity` goes — it was doing the
-   quietening on its own, and stacked under a wash it dulled the wash too. */
-.am-card-engine-none {
-  color: var(--fg-muted);
-  border-style: dashed;
-  border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
-  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
-}
 
 /* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
    ends above, because something really is missing; WARNING-coloured rather than
@@ -718,76 +712,99 @@
   margin-right: 10px;
 }
 
-/* -- revision drawer -------------------------------------------------------- */
+/* -- the (i) panel: everything the face gave up (2026-08-24) -----------------
+   A fact sheet — not a menu, not a card. `position: fixed`, placed by
+   `ModelInfo.tsx` from the trigger's rect, and that is the whole reason it can
+   exist: these cards sit in a horizontal carousel, so anything opening INSIDE a
+   card would change that card's height and shove every card to the right of it
+   mid-scroll. The ask was explicit — "it shouldn't change card sizes or
+   layouts, it is a popover".
 
-.am-drawer,
-.am-drawer-note {
-  font-size: 12px;
-}
+   ONE GREY throughout, labels and values alike. The chips this replaced were
+   five different colours (an engine hue, an accent, a warning dash, two mutes)
+   because each was competing to be spotted in a GRID. Nothing in here is being
+   swept past — a reader is looking at one model, having asked — so colour has
+   no work left to do, and five hues on a 200px panel read as five kinds of
+   urgency.
 
-.am-drawer-note {
+   `--bg-popover` and the app's own popover shadow, so it is the same species as
+   every other floating surface in the shell rather than a card that got loose. */
+.am-info-panel {
+  position: fixed;
+  z-index: 60;
+  min-width: 184px;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: 0 8px 24px var(--shadow-md);
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--fg-muted);
 }
 
-/* The facts the card's face gave up: file count, revision count, branch,
-   added date. A middot-separated run rather than a table, because it is the
-   same sentence the footer used to hold — it has just moved somewhere it is
-   read one repo at a time instead of a dozen at once. The separator belongs to
-   the item that follows it, so an absent branch leaves no dangling middot. */
-.am-drawer-facts {
+/* Label left, value right, one line each — a table, because that is what it is:
+   the labels are a fixed vocabulary, so lining the values up down a common edge
+   is what lets someone find "Engine" without reading the rest. */
+.am-info-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px 0;
-  padding: 6px 0 2px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.am-drawer-facts > span + span::before {
-  content: "·";
-  margin: 0 8px;
+.am-info-label {
+  flex: 0 0 auto;
 }
 
-.am-rev {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  border-top: 1px solid var(--border);
-}
-
-.am-rev-main {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+/* The value may be long (a hardware-qualified engine name), so it is the half
+   that shrinks. Brighter than its label — the one contrast inside the panel,
+   separating answers from questions without spending a hue on it. */
+.am-info-value {
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg);
 }
 
-.am-rev-commit {
-  font-weight: 500;
+/* The one thing in here that can be pressed, so the one thing that looks it: a
+   full-width row under a hairline, in accent. It is the Explore glyph that used
+   to sit unlabelled in the actions strip — an icon nobody could name, now a
+   control that says where it goes. */
+.am-info-more {
+  display: block;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  text-decoration: none;
 }
 
-.am-rev-meta,
-.am-rev-size {
-  color: var(--fg-muted);
+.am-info-more:hover,
+.am-info-more:focus-visible {
+  text-decoration: underline;
 }
 
-.am-rev-size {
+/* The download glyph, on all three Download buttons. `flex: 0 0 auto` so the
+   arrow never squeezes when the label is the long one ("Continue downloading"),
+   and a hair of optical lift because the tray's baseline sits below the text's. */
+.am-dl-glyph {
   flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
+  margin-right: 1px;
+  transform: translateY(0.5px);
 }
 
-/* A drawer row's ✕ is smaller than a card's, and — like the card's — always
-   there rather than revealed by hovering the row it belongs to. Same reason:
-   the drawer is a list of revisions to compare, and one visible ✕ chasing the
-   pointer down it says nothing about which of them can be deleted. */
-.am-rev .cc-iconbtn {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-}
+/* NO DRAWER, AND NO REVISION LIST (2026-08-24). The chevron's drawer
+   (`.am-drawer*`) and the per-revision rows inside it (`.am-rev*`) went with
+   their markup. The drawer held a file count, a branch name, an added date and
+   a list of git commits: the added date is a row in the (i) panel now, and the
+   rest were dropped as facts nobody brings a question about to this page —
+   picking a commit off a folder whose only real question is what it costs
+   (Akshil: "does the user need to know this? if not, abstract it away"). See
+   `RepoCard`'s headstone for the whole argument. */
 
 /* -- the tab strip ----------------------------------------------------------
    Cards on every tab are the same .cc-mdcard/.am-card — one model should not
@@ -1118,32 +1135,120 @@
 .am-card-runtime-ready { color: var(--fg); }
 .am-card-runtime-error { color: var(--error); }
 
-/* WHY LOAD IS DISABLED, said on the card instead of in the disabled button's
-   hover (2026-08-24 — see RepoCard for the argument). A sentence, so it wraps
-   and is allowed to: the four refusals run from eight words to about thirty, and
-   ellipsising the long ones would put the answer back behind a hover, which is
-   the thing this line exists to undo.
+/* WHY LOAD IS DISABLED — in the actions strip, beside the button it explains.
+   It was a `<p>` below the strip with a warning rail down its leading edge, and
+   it was allowed to WRAP, on the argument that ellipsising a long refusal would
+   put the answer back behind a hover. On a 300px card that meant three lines of
+   grey prose under two buttons — taller than the model's own name, on the cards
+   that can do the least (Akshil, 2026-08-24: "reduce this message more, and it
+   should be next to load button").
 
-   MUTED, not warning-coloured. The tag above it is already carrying the state in
-   the warning hue and the dash, and a second amber element two lines down would
-   read as a second problem rather than as the first one's explanation. This is
-   the prose under a mark, and prose under a mark is body text.
+   So it takes whatever width the buttons leave and ellipsises into it. Nothing
+   is lost by that: the whole sentence is still on this span's hover AND on the
+   disabled button's accessible name, which is where a screen reader was always
+   going to find it — and the REMEDY, the half that says what to do, is a
+   separate element that never shrinks.
 
-   `--warning-soft` does appear, as a 2px rail on the leading edge: enough to
-   bind the sentence to the tag that raised it without repeating its weight. */
-.am-card-refusal {
-  margin: 8px 0 0;
-  padding-left: 8px;
-  border-left: 2px solid color-mix(in srgb, var(--warning-soft) 55%, transparent);
+   MUTED, and now with no rail: the line sits inside a row of controls, and a
+   coloured edge in that row would read as a fourth control rather than as a
+   caption on the third. */
+/* -- and the shape it takes when there IS something to do (2026-08-25) -------
+   `Switch engines`, in the warning hue, on the amber wash this app uses for a
+   state that wants a decision. It replaced `Set to MLX FLUX` beside a separate
+   `Engines` link: a statement of configuration ("i don't know what it means")
+   followed by a noun, where what a reader wants is the verb.
+
+   Loud on purpose, and it is the one refusal that gets to be: it is also the
+   only one that can be acted on, and everything else in this strip is either a
+   greyed button or grey text. `align-items: center` on the strip is what keeps
+   it optically level with the button beside it — baseline alignment sat a
+   bordered pill and a bordered button on different lines, which is the
+   misalignment in the screenshot. */
+.am-card-fix {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
   font-size: 11px;
-  line-height: 1.45;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--warning);
+  text-decoration: none;
+}
+
+.am-card-fix:hover {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+}
+
+.am-card-fix:focus-visible {
+  outline: 2px solid var(--warning);
+  outline-offset: 2px;
+}
+
+.am-card-why {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* The one thing in this strip that gives up width. Every button beside it is
+     `flex: 0 0 auto`, so the sentence absorbs the whole remainder and shrinks to
+     nothing before a control does. */
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 2px;
+  font-size: 11px;
+  line-height: 1.35;
   color: var(--fg-muted);
 }
 
+.am-card-why-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* …and the two ancestors that have to ALLOW that shrink. A flex item's floor is
+   its content width unless something says otherwise, so `min-width: 0` on the
+   sentence alone is not enough: the strip holding it kept its full intrinsic
+   width and pushed the Load button off the card's right edge — the exact
+   control the sentence exists to explain. Scoped to `.am-card` because
+   `.cc-mdcard-actions` is shared chrome and nothing else that wears it has a
+   sentence inside. */
+.am-card .cc-mdcard-foot,
+.am-card .cc-mdcard-actions {
+  min-width: 0;
+}
+
+.am-card .cc-mdcard-actions {
+  flex: 0 1 auto;
+  align-items: center;
+}
+
+/* The "used 4h ago" beside it gives up its width FIRST. Both are grey text in
+   the same row, and between the two the one that matters on a card whose Load
+   is dead is the reason it is dead — an atime is a fact about the past, and the
+   refusal is about what the reader is trying to do right now. It keeps its own
+   ellipsis rather than being dropped: a card that hid it would change what the
+   footer means depending on a state two lines up. */
+.am-card .cc-mdcard-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* The remedy, where the remedy is a place. Accent because it is the one thing in
-   this block that can be pressed, and underlined on hover rather than at rest so
-   a card at rest grows no second emphasis beside the Try button's outline. */
+   this line that can be pressed, and underlined on hover rather than at rest so
+   a card at rest grows no second emphasis beside the Try button's outline.
+   `flex: 0 0 auto` is load-bearing: splitting the cause from the remedy is only
+   worth anything if the half telling somebody what to DO is never the half that
+   gets cut off. */
 .am-card-refusal-link {
+  flex: 0 0 auto;
   color: var(--accent);
   text-decoration: none;
   white-space: nowrap;
@@ -1241,9 +1346,19 @@
    pair is `.am-card-none` below, mixed the other way, so have/not-have is one
    axis with two ends and a reader sweeping the grid gets it from surface weight
    alone — with the green loaded card sitting outside that axis entirely, which is
-   the point of it being a different colour rather than a further step along. */
+   the point of it being a different colour rather than a further step along.
+
+   BOTH ARE TOKENS NOW, declared once per palette (2026-08-24). They were
+   `color-mix`es — a DIRECTION rather than a colour, chosen so one declaration
+   would serve both themes. It does not: light mode's `--fg-muted` is a warm
+   grey (#61656c), and 14% of it over `--bg-alt` lands on a muddy #dcdde0 plate
+   that reads as disabled rather than as present, so the cards a user HAS looked
+   like the cards they cannot use (Akshil: "light mode colors are messed up,
+   pick new color, the bg of grey"). A mix that is right in one palette and
+   wrong in the other is two colours wearing one declaration — so they are
+   written twice, in tokens.css, where the theme test allows literals. */
 .am-card-have {
-  background: color-mix(in srgb, var(--fg-muted) 14%, var(--bg-alt));
+  background: var(--am-surface-have);
 }
 
 /* …and the far end of that axis: nothing of this model is on this disk. Mixed
@@ -1257,7 +1372,7 @@
    it, which reads as a control that has been refused rather than as a model
    nobody has fetched. */
 .am-card-none {
-  background: color-mix(in srgb, var(--bg) 60%, var(--bg-alt));
+  background: var(--am-surface-none);
 }
 
 /* Resident, and it keeps the green surface it shipped with. The two classes are

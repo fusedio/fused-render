@@ -41,6 +41,19 @@
 
   /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
      dark page but as dirt against a light one, hence the light overrides. */
+  /* -- the ink shadcn's shadow scale is drawn in (styles/tailwind.css) -------
+     Tailwind ships whole box-shadow VALUES (geometry and colour in one token)
+     and this app's own `--shadow-*` are bare colours its rules position
+     themselves. The two vocabularies collide on the same four names, so
+     `tailwind.css` re-declares Tailwind's set on `[data-slot]`; what it must
+     not do is hardcode the colour, which is how the shadcn subtree ended up
+     wearing LIGHT-mode shadows on the dark page. These three alphas are that
+     colour, per palette — deeper here for the same reason `--shadow-md` is
+     0.4 in dark and 0.14 in light: a shadow on a dark ground has to work
+     harder to read as lift. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.2);
+  --shadow-ink: rgba(0, 0, 0, 0.4);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.6);
   --shadow-sm: rgba(0, 0, 0, 0.25);
   --shadow-md: rgba(0, 0, 0, 0.4);
   --shadow-lg: rgba(0, 0, 0, 0.5);
@@ -54,6 +67,15 @@
      translucent wash over its own background, so the flat result is a token. */
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+
+  /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
+     One model, at two ends of one question: this machine HAS it, or it does
+     not. Declared per palette rather than as a `color-mix` against --fg-muted
+     and --bg, because a mix states a DIRECTION and the two themes need
+     different distances along it — the dark values below are the mixes they
+     replace, to the byte; the light ones are not (see the light block). */
+  --am-surface-have: #24262b;
+  --am-surface-none: #17191d;
 
   /* Quiet control chrome — the bars' two bordered controls (the labelled mode
      trigger and .bar-ctl-bordered). These are TOKENS
@@ -278,6 +300,11 @@
   --fg-muted-rgb: 97, 101, 108;
   --warning-rgb: 143, 106, 16;
 
+  /* Tailwind's own published alphas, which are written for a white page — see
+     the dark block for what these are and why they are a token at all. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.05);
+  --shadow-ink: rgba(0, 0, 0, 0.1);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.25);
   --shadow-sm: rgba(0, 0, 0, 0.1);
   --shadow-md: rgba(0, 0, 0, 0.14);
   --shadow-lg: rgba(0, 0, 0, 0.18);
@@ -289,6 +316,17 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  /* The same axis, and the reason it is a token at all. The mix these replace
+     was 14% of --fg-muted over --bg-alt, which on this palette is a warm
+     #dcdde0 — darker and greyer than the page, so a downloaded model read as a
+     DISABLED card rather than a present one, and the axis ran the wrong way
+     against a white page. Here "present" goes the other direction: `have` sits
+     just off the card's own --bg-alt, and `none` recedes to nearly the page
+     white. Both stay lighter than --border (#d8dade), so a card's own outline
+     still reads at either end. */
+  --am-surface-have: #eceef2;
+  --am-surface-none: #fbfbfc;
 
   /* Quiet control chrome (see the dark block). These four are the values the
      component rules carried inline before the group existed, so light mode is

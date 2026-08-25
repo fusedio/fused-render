@@ -274,20 +274,38 @@ export function Modal({
               sees and what the next press will do can never disagree. `is-armed`
               is the vocabulary the New task card's Delete button already uses for
               exactly this "the next press does it" state. */}
-          <button
-            type="button"
-            className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
-            // The label carries the state for a screen reader, which has no
-            // corner to look at. The footer hint is `role="status"` and is
-            // announced too; this is what the button itself answers to when the
-            // user tabs back to it.
-            aria-label={confirmClose ? "Close and discard changes" : "Close"}
-            title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
-            disabled={busy}
-            onClick={attemptClose}
-          >
-            ✕
-          </button>
+          {/* NOT RENDERED WHILE BUSY (2026-08-24). It used to be drawn and
+              `disabled={busy}`, which is this app's usual posture — a control
+              that vanishes teaches nothing, and a disabled one with a reason in
+              its `title` teaches where the door is and why it is shut.
+
+              That argument needs the reason to be REACHABLE, and here it is
+              not: a disabled button takes no pointer events, so its title never
+              appears, and a busy modal is exactly the moment a user reaches for
+              the corner. Akshil, on the mount sign-in: "when mounting we have a
+              X button, i don't think that works". It worked as specified and
+              was indistinguishable from broken.
+
+              Every busy modal that must not be abandoned has a real way out in
+              its own footer (the mount flow's Cancel stands the sign-in down and
+              frees rclone's callback port, which is what closing out from under
+              it would strand). So the corner is empty for those seconds rather
+              than occupied by something inert. */}
+          {!busy && (
+            <button
+              type="button"
+              className={"modal-close deploy-close" + (confirmClose ? " is-armed" : "")}
+              // The label carries the state for a screen reader, which has no
+              // corner to look at. The footer hint is `role="status"` and is
+              // announced too; this is what the button itself answers to when the
+              // user tabs back to it.
+              aria-label={confirmClose ? "Close and discard changes" : "Close"}
+              title={confirmClose ? "Press again to discard" : (closeTitle ?? "Close")}
+              onClick={attemptClose}
+            >
+              ✕
+            </button>
+          )}
         </div>
         <div className="modal-body deploy-body">{children}</div>
         {(footer || confirmClose) && (

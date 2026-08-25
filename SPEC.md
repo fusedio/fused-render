@@ -6785,6 +6785,49 @@ an AI Models page that could say what was on disk but not what was *running*.
   keeps AI-5i intact: a part file is bytes a resume picks up, so a folder holding
   one is never touched. It reads the FOLDER rather than the job's outcome, so the
   call is a no-op after a successful fetch and the next attempt tidies a crash.
+- **AI-7i** **One card, three stages of a model's life, one skeleton** (D485).
+  A cached repo, a recommendation and a Hub search result are the same species of
+  card and the page draws them side by side in one row, so they share an
+  arrangement: the model's NAME (the half of the repo id after the `/`), a
+  verified seal when the curation names it, an `(i)` in the top-right corner —
+  then a caption line of SIZE followed by the whole repo id in mono — then the
+  actions. Nothing separates the figure from the id but the gap.
+  **The face carries only what a reader gets by SWEEPING the grid**: is it here,
+  is it loaded, is it arriving, what does it cost, and — when it cannot be loaded
+  — what to do about that. Everything that is IDENTITY is behind the `(i)`: the
+  engine (hardware-qualified, e.g. "Diffusers (CPU)"), the parameter count, the
+  quantization, the weight format where no engine claimed the repo, and the date
+  it landed. The panel is `position: fixed`, placed from the trigger's rect and
+  flipping rather than clamping at a viewport edge, because these cards sit in a
+  horizontal carousel and anything opening INSIDE one would shove its neighbours
+  mid-scroll. It closes on Esc, on an outside pointerdown, and on any scroll or
+  resize that could move the anchor out from under it. Every fact in it is the
+  same grey: a hue exists to be picked out of a grid, and a panel opened
+  deliberately about one model has nothing to tell apart. The disk card's panel
+  ends in **Know more**, the local model-card view (SPEC §38) — a named control
+  rather than the unlabelled arrow-in-a-box it replaced.
+  **Two tags stay on a face**, because they are state and each explains the
+  button beneath it: `partly downloaded` and `part of <owner>`. The engine tag
+  and its per-family hue are gone from every card, and the hue table with them.
+  **A refused Load or Download says the VERB**, not the configuration: an amber
+  `Switch engines` link in the actions strip, which navigates to the Engines tab,
+  carries the registry's full sentence as an instant hint and repeats it in the
+  disabled button's accessible name. The other refusals — a component, a dataset,
+  a format nothing reads — have no destination that would help, so they stay a
+  muted phrase, and a component says nothing at all, since the `part of X` tag
+  above already did.
+  **The seal marks the MODEL, not the download**: a recommendation wears it by
+  construction, a Hub result wears it when the curation names that id, and a
+  cached repo wears it on the same test — so the page's own opinion does not
+  depend on which surface a model was found through.
+  **Revisions are not a concept this page has** (D485). The chevron, its drawer,
+  the per-revision list and the delete-one-revision dialog are all deleted: a
+  repo holding two commits reads as a bigger number and is removed by the same
+  Delete. `GET /api/ai-models/revisions` and the delete endpoint's per-revision
+  target are untouched and still tested — the removal is of a UI that asked a
+  reader to think in git commits about a folder whose only real question is what
+  it costs.
+
 - **AI-7h** **The card's own surface states the disk facts, and one hue per engine
   states the identity** (D436). **Have and not-have are one NEUTRAL axis with two
   ends** (D461): a complete repo wears a grey wash mixed toward `--fg-muted`, a

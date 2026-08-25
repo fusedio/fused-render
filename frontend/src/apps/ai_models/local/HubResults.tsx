@@ -215,6 +215,7 @@ export function HubResults({
   settled,
   cards,
   runners,
+  curated,
   jobByModel,
   pulling,
   onDownload,
@@ -229,6 +230,10 @@ export function HubResults({
   /** Which engine serves each capability here — the same table the recommended
    *  cards read. */
   runners: ReadonlyMap<string, SectionRunner>;
+  /** Every repo id the curation names, for the seal beside a result's name. The
+   *  page holds it because the page holds the catalog; a search result knows
+   *  only what the Hub said about it. */
+  curated: ReadonlySet<string>;
   jobByModel: Map<string, Job>;
   /** The page's three-way guard: reported, just clicked, or settling. */
   pulling: (id: string) => boolean;
@@ -438,6 +443,7 @@ export function HubResults({
             <HubResultCard
               key={m.id}
               model={m}
+              recommended={curated.has(m.id)}
               runner={runners.get(m.capability) ?? null}
               disk={resultDisk(m.id, cards)}
               authenticated={authenticated}

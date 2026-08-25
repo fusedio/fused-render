@@ -756,13 +756,20 @@ export function loadRefusal(repo: AiModelRepo): string | null {
  */
 export function loadRefusalShort(repo: AiModelRepo): string | null {
   if (loadRefusal(repo) === null) return null;
-  // "Part of X" — the owner is the whole point, and the tag above the button
-  // already says it, so this says the part the tag does not: there is no model.
-  if (repo.component) return `Part of ${repo.component.owner} — not a model on its own.`;
-  if (repo.kind !== "model") return `This is a ${repo.kind}, not a model.`;
+  // SHORTER AGAIN SINCE THE LINE MOVED INTO THE ACTIONS STRIP (2026-08-24).
+  // Sharing a row with the buttons, every word here competes for width with the
+  // control it explains — and what got cut first was the end of the sentence,
+  // which is where the useful noun lives. So the clauses that were already said
+  // elsewhere are gone rather than truncated, and the trailing full stops with
+  // them: this is a label beside a button now, not prose under one.
+  //
+  // "not a model on its own" is said by the `part of X` tag above and by that
+  // tag's own hover, which carries what deleting this component actually costs.
+  if (repo.component) return `Part of ${repo.component.owner}`;
+  if (repo.kind !== "model") return `A ${repo.kind}, not a model`;
   // A partial repo never draws this line (RepoCard gates it), but the function
   // stays total — a short form that lied on one input would be worse than none.
-  if (repo.partial) return "This download did not finish.";
+  if (repo.partial) return "This download did not finish";
   if (!repo.engine) {
     // TWO different facts behind "no engine", and the split mirrors
     // `noEngineReason`'s exactly (bugbot, PR #794). A null capability means
@@ -774,9 +781,9 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
     // length; the flat fallback agrees with the group heading above the card.
     if (repo.capability === null) {
       const cause = firstClause(repo.supportReason ?? "");
-      return cause ? `${capitalise(cause)}.` : "The model type is not supported.";
+      return cause ? capitalise(cause) : "Model type not supported";
     }
-    return "No local engine reads this weight format.";
+    return "No engine reads it";
   }
   if (!repo.engine.available) {
     // THE FIRST CLAUSE ONLY. The registry writes this as "<capability> is set to
@@ -786,11 +793,35 @@ export function loadRefusalShort(repo: AiModelRepo): string | null {
     // ("which does not read this format") is what the engine TAG two lines above
     // already says by being dashed and amber. What is left is the one fact
     // neither of them carries — which engine this capability is pointed at.
-    const cause = firstClause(repo.engine.reason ?? "");
-    if (cause) return `${capitalise(cause)}.`;
-    return `${repo.engine.shortLabel} cannot load here.`;
+    const cause = withoutCapabilityLead(firstClause(repo.engine.reason ?? ""), repo.capability);
+    if (cause) return capitalise(cause);
+    return `${repo.engine.shortLabel} cannot load here`;
   }
   return null;
+}
+
+/** `"Text-to-image is set to MLX FLUX"` → `"set to MLX FLUX"`.
+ *
+ *  The registry opens that sentence by naming the capability, which is right in
+ *  a hover that could be read anywhere and redundant on the card: the card sits
+ *  under a heading that says IMAGE GENERATION, and at strip width those four
+ *  words are what pushes the engine's own name past the ellipsis — leaving
+ *  "Text-to-image is set to …", which is the half a reader already knew.
+ *
+ *  Keyed on `repo.capability`, a FIELD this page holds, rather than on any word
+ *  in the prose — so it strips a restatement of something known and never
+ *  guesses at meaning. A reason that opens some other way is returned untouched,
+ *  which is the whole failure mode: worst case the line is as long as it was.
+ *
+ *  The comparison maps `-` and `_` to spaces WITHOUT collapsing runs, so the
+ *  normalised string stays index-for-index with the original and the slice below
+ *  cannot cut mid-word.
+ */
+function withoutCapabilityLead(cause: string, capability: string | null): string {
+  if (!capability) return cause;
+  const flatten = (s: string) => s.replace(/[-_]/g, " ").toLowerCase();
+  const lead = `${flatten(capability)} is `;
+  return flatten(cause).startsWith(lead) ? cause.slice(lead.length) : cause;
 }
 
 /** The text up to its first joint — comma, em dash or full stop, whichever comes
