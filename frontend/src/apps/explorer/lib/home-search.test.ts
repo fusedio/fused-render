@@ -260,22 +260,59 @@ describe("keyboard rows — without an open row (the pre-section-7 shape)", () =
     expect(stepHighlight(0, m, 1)).toBe(0);
   });
 
-  it("pre-selects the AI row on zero matches, and nothing otherwise", () => {
+  it("pre-selects the top hit with file hits, the AI row with none", () => {
     expect(activeRow(null, rowModel({ fileCount: 0 }), true)).toBe(0); // the AI row is the only content
-    expect(activeRow(null, rowModel({ fileCount: 5 }), true)).toBeNull(); // no highlight to render
+    // Previously null: an unhighlighted list that Enter still committed
+    // against (submitRow's old, separate fallthrough). One rule now — the row
+    // that visually pre-selects is the row Enter commits — so the top hit
+    // pre-selects rather than leaving the list looking unselected.
+    expect(activeRow(null, rowModel({ fileCount: 5 }), true)).toBe(0);
     expect(activeRow(2, rowModel({ fileCount: 5 }), true)).toBe(2);
     // A highlight past the end of a shrinking list clamps to the AI row rather
     // than addressing a row that is no longer on screen.
     expect(activeRow(9, rowModel({ fileCount: 3 }), true)).toBe(3);
   });
 
-  it("does not pre-select the AI row until ranking has settled on zero", () => {
+  it("does not pre-select anything until ranking has settled", () => {
     // "Nothing scored yet" and "zero matches" look identical as a count, and
     // pre-selecting on the first made Enter during the corpus load or the
-    // 120ms debounce spend a model call on a query with instant matches.
+    // 120ms debounce spend a model call on a query with instant matches. The
+    // same gate applies to the top-hit pre-select: the list is never blanked,
+    // so unsettled rows on screen belong to a DIFFERENT (previous) query, and
+    // pre-selecting one of them would be exactly the stale-commit bug
+    // `rankingSettled`'s doc comment describes.
     expect(activeRow(null, rowModel({ fileCount: 0 }), false)).toBeNull();
+    expect(activeRow(null, rowModel({ fileCount: 5 }), false)).toBeNull();
     // An explicit arrow-key choice is the user's, settled or not.
     expect(activeRow(1, rowModel({ fileCount: 0 }), false)).toBe(0);
+  });
+
+  it("activeRow and submitRow agree — Enter commits exactly what is highlighted", () => {
+    const settledHits = rowModel({ fileCount: 5 });
+    expect(activeRow(null, settledHits, true)).toBe(0);
+    expect(submitRow(null, settledHits, true)).toBe(activeRow(null, settledHits, true));
+    // Unsettled: still nothing to highlight and nothing for Enter to commit.
+    expect(activeRow(null, settledHits, false)).toBeNull();
+    expect(submitRow(null, settledHits, false)).toBeNull();
+  });
+
+  it("the first ArrowDown from an implicit pre-select lands on row 1, not row 0 again", () => {
+    // FilesHome steps from the RESOLVED row (`current`, i.e. activeRow's
+    // answer), not the raw highlight state — which is still null here even
+    // though row 0 is already visually selected. Stepping from null would
+    // land back on 0 (stepHighlight's own "enter from either end" rule) and
+    // the first press would look like it did nothing.
+    const m = rowModel({ fileCount: 5 });
+    const current = activeRow(null, m, true);
+    expect(current).toBe(0);
+    expect(stepHighlight(current, m, 1)).toBe(1);
+  });
+
+  it("the first ArrowUp from an implicit pre-select wraps to the last row", () => {
+    const m = rowModel({ fileCount: 5 }); // 5 file rows (0..4) + the AI row (5)
+    const current = activeRow(null, m, true);
+    expect(current).toBe(0);
+    expect(stepHighlight(current, m, -1)).toBe(5); // the AI row
   });
 
   it("isAiRow/isOpenRow agree with the wrap-around walk", () => {

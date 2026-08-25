@@ -775,7 +775,12 @@ export function FilesSearch({
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
               if (!active || showingAi || (!searchable && !showOpenRow)) return;
               e.preventDefault();
-              setHighlight((h) => stepHighlight(h, rowModel, e.key === "ArrowDown" ? 1 : -1));
+              // Step from `current` (the RESOLVED row, `activeRow` above), not
+              // the raw `highlight` state: the top file row can be active with
+              // `highlight` still null (activeRow's implicit pre-select), and
+              // stepping from null would land the first ArrowDown back on row
+              // 0 — the already-visible selection — instead of row 1.
+              setHighlight(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
             } else if (e.key === "Enter") {
               e.preventDefault();
               submit();

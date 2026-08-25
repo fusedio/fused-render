@@ -373,9 +373,16 @@ export function rankingSettled(
 }
 
 /**
- * The row the highlight is ON: the explicit choice, clamped into the list.
+ * The row the highlight is ON — the explicit choice, clamped into the list —
+ * and, with no explicit choice, the row Enter would commit. Those used to be
+ * two different answers: this function pre-selected nothing over file hits,
+ * while `submitRow` (below) still opened the top one on a bare Enter. The
+ * user saw an unhighlighted list and pressed Enter anyway, because Enter is
+ * the obvious gesture in a search box — and got a row they were never shown
+ * as selected. One rule now: the row that visually pre-selects IS the row
+ * Enter commits, always.
  *
- * With no highlight there are two defaults, checked in this order:
+ * With no highlight there are three defaults, checked in this order:
  *
  *  * an open row pre-selects UNCONDITIONALLY — unlike the AI row, resolving an
  *    address costs nothing to arm (it navigates, it does not call a model),
@@ -384,13 +391,20 @@ export function rankingSettled(
  *    It is also, by construction, the only content on screen: an open row
  *    implies zero file rows (the request is skipped entirely once an address
  *    resolves — see FilesHome).
- *  * failing that, the settled zero-hit case: the AI row is then the only
- *    content, so IT pre-selects. Gated on `settled` because it ARMS Enter —
+ *  * failing that, with file hits on screen, the TOP hit pre-selects — gated
+ *    on `settled` for the reason that gate exists everywhere else in this
+ *    file: the list is deliberately never blanked, so rows for the PREVIOUS
+ *    query are on screen while this one is in flight (or its answer failed),
+ *    and "the top hit" then means the top hit for something the user has
+ *    already finished typing over. Type "read", get ten rows, type "readme",
+ *    have that request fail before Enter — `settled` is false, so there is no
+ *    highlight AND Enter does nothing, rather than opening "read"'s best
+ *    match. An explicit highlight still commits regardless — the user
+ *    pointed at a row they can actually see.
+ *  * failing THAT, the settled zero-hit case: the AI row is then the only
+ *    content, so IT pre-selects. Gated on `settled` for the same reason —
  *    offering it while the scan is still running spends a model call on a
  *    query that was about to answer itself.
- *
- * With file hits showing (and no open row), there is no highlight until the
- * user picks one; `submitRow` is what Enter consults instead.
  */
 export function activeRow(
   highlight: number | null,
@@ -399,35 +413,20 @@ export function activeRow(
 ): number | null {
   if (highlight === null) {
     if (m.openRow) return 0;
-    return m.fileCount === 0 && m.aiRow && settled ? totalRows(m) - 1 : null;
+    if (!settled) return null;
+    if (m.fileCount > 0) return 0;
+    return m.aiRow ? totalRows(m) - 1 : null;
   }
   return Math.min(highlight, totalRows(m) - 1);
 }
 
-/**
- * The row Enter commits, which is not always the highlighted one.
- *
- * With hits on screen and no arrow-key choice, Enter opens the TOP hit. It used
- * to resolve to null and do nothing at all — a silent no-op, in the one box in
- * this app where Enter is the obvious gesture. It still never falls through to
- * the AI row that way: reaching a paid action takes either zero settled hits or
- * an explicit highlight. (An open row, if present, is handled by `activeRow`
- * above before this fallthrough is ever reached.)
- *
- * That fallthrough is gated on `settled` for the same reason the AI row is, and
- * the reason arrived with server-side ranking: the list is deliberately never
- * blanked, so rows for the PREVIOUS query are on screen while this one is in
- * flight, and "the top hit" then means the top hit for something the user has
- * already finished typing over. Typing "read", then "readme", then Enter
- * navigated to "read"'s best match. An explicit highlight still commits —
- * the user pointed at a row they can actually see.
- */
+/** The row Enter commits. Now just `activeRow` — see its doc comment — kept
+ * as its own name because "what Enter commits" and "what is highlighted" are
+ * different QUESTIONS even though they now always share one answer. */
 export function submitRow(
   highlight: number | null,
   m: RowModel,
   settled: boolean,
 ): number | null {
-  const row = activeRow(highlight, m, settled);
-  if (row !== null) return row;
-  return settled && m.fileCount > 0 ? (m.openRow ? 1 : 0) : null;
+  return activeRow(highlight, m, settled);
 }
