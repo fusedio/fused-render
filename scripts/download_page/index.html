@@ -187,7 +187,26 @@
     line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
     text-align: left; margin: 0;
   }
-  .hero-video { margin: 0; }
+  .hero-video { margin: 0; position: relative; }
+  .vid-toggle {
+    position: absolute; right: 14px; bottom: 14px;
+    width: 36px; height: 36px; border-radius: 50%;
+    display: grid; place-items: center; padding: 0;
+    background: rgba(18, 18, 17, 0.72);
+    border: 1px solid rgba(243, 242, 237, 0.22);
+    color: var(--ink-2); cursor: pointer;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    opacity: 0; transition: opacity 0.25s var(--ease);
+  }
+  /* Only pops on hover — but stays visible for keyboard focus and while paused. */
+  .hero-video:hover .vid-toggle,
+  .vid-toggle:focus-visible,
+  .vid-toggle.paused { opacity: 1; }
+  .vid-toggle:hover { color: var(--ink); border-color: rgba(243, 242, 237, 0.4); }
+  .vid-toggle svg { width: 14px; height: 14px; }
+  .vid-toggle .ic-play { display: none; }
+  .vid-toggle.paused .ic-play { display: block; }
+  .vid-toggle.paused .ic-pause { display: none; }
   .hero-video video {
     display: block; width: 100%; height: auto;
     border-radius: var(--r); border: 1px solid var(--rule);
@@ -950,6 +969,14 @@
     from { opacity: 0; transform: translateY(12px); }
     to   { opacity: 1; transform: none; }
   }
+  /* Scroll fade-ins: the class pair is only ever attached by JS, and only
+     when html.anim says motion is allowed — resting CSS stays the finished page. */
+  html.anim .fadein {
+    opacity: 0; transform: translateY(16px);
+    transition: opacity 0.65s var(--ease), transform 0.65s var(--ease);
+  }
+  html.anim .fadein.in { opacity: 1; transform: none; }
+
   .bento.animate > * { animation: settle 0.5s var(--ease) backwards; }
   .bento.animate > *:nth-child(2) { animation-delay: 70ms; }
   .bento.animate > *:nth-child(3) { animation-delay: 140ms; }
@@ -1053,8 +1080,14 @@
         <p class="fine">No account needed.<br>Native support for macOS &amp; limited support on Windows &amp; Linux.</p>
       </div>
       <figure class="hero-video">
-        <video src="assets/showcase/hero.mp4" autoplay muted loop playsinline
+        <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
                aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
+        <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
+          <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
+            <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
+        </button>
       </figure>
     </div>
   </section>
@@ -1573,6 +1606,36 @@
     setInterval(function () {
       if (!hovered && !document.hidden && !mq.matches && performance.now() > holdUntil) step(1);
     }, 2500);
+  })();
+
+  // Hero video pause/play (WCAG 2.2.2: auto-motion needs a pause affordance).
+  (function () {
+    var vid = document.getElementById("hero-vid");
+    var btn = document.getElementById("vid-toggle");
+    if (!vid || !btn) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      vid.removeAttribute("autoplay"); vid.pause();
+      btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video");
+    }
+    btn.addEventListener("click", function () {
+      if (vid.paused) { vid.play(); btn.classList.remove("paused"); btn.setAttribute("aria-label", "Pause video"); }
+      else { vid.pause(); btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video"); }
+    });
+  })();
+
+  // Scroll fade-ins: sections drift up as they enter the viewport.
+  // Gated on html.anim; without JS or with reduced motion nothing is hidden.
+  (function () {
+    if (!document.documentElement.classList.contains("anim")) return;
+    if (!("IntersectionObserver" in window)) return;
+    var els = Array.prototype.slice.call(
+      document.querySelectorAll(".wrap > section:not([hidden])"));
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+    els.forEach(function (el) { el.classList.add("fadein"); io.observe(el); });
   })();
 
   // Troubleshooting master-detail: the app's error screens deep-link with
