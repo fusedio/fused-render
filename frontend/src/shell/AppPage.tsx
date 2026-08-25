@@ -93,6 +93,10 @@ export default function AppPage({ slug, config }: { slug: string; config: Config
   };
 
   const folderHref = urlForFsPath(dir);
+  // Folded ONCE for every tilde below: `home` is raw expanduser (backslashed on
+  // Windows) while `dir` and the root are forward-slash, and a prefix test
+  // between the two spellings prints the full path instead of "~/…".
+  const home = config.home.replace(/\\/g, "/");
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 
   return (
@@ -103,7 +107,7 @@ export default function AppPage({ slug, config }: { slug: string; config: Config
           {/* The folder, as a link: the one door from this page into the
               explorer, for when the files are the question. */}
           <a className="app-page-folder" href={folderHref} title={dir}>
-            {tildePath(dir, config.home.replace(/\\/g, "/"))}
+            {tildePath(dir, home)}
           </a>
         </div>
         <div className="app-page-tabs" role="tablist" aria-label="App page">
@@ -127,7 +131,7 @@ export default function AppPage({ slug, config }: { slug: string; config: Config
       {resolved === undefined && <SkeletonLines rows={2} label="Loading app" />}
       {resolved?.kind === "missing" && (
         <ErrorBanner>
-          No app named <strong>{slug}</strong> under {tildePath(localAppsRoot(config.fused_dir), config.home)}.
+          No app named <strong>{slug}</strong> under {tildePath(localAppsRoot(config.fused_dir), home)}.
         </ErrorBanner>
       )}
       {resolved?.kind === "error" && <ErrorBanner>Could not open {slug}: {resolved.message}</ErrorBanner>}

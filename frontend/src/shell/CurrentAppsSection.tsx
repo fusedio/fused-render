@@ -13,7 +13,13 @@ import { archiveTask, getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
-import { appPageUrl, currentApps, slugFromAppPath, type CurrentApp } from "@shell/current-apps-lib";
+import {
+  appPageTab,
+  appPageUrl,
+  currentApps,
+  slugFromAppPath,
+  type CurrentApp,
+} from "@shell/current-apps-lib";
 
 // Read once per mount; the sidebar remounts per navigation, which is cheap
 // enough (Scheduled.tsx reads config the same way). Cached at module level so
@@ -44,7 +50,11 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    if (!active) navigateUrl(href);
+    // `active` is slug-only (the row lights up on either tab); the destination
+    // is the OVERVIEW, so from the Tasks tab the click still goes — it is how
+    // the sidebar gets back to the running app. Only a click that would land
+    // exactly where the page already is stays a no-op.
+    if (!active || appPageTab(location.search) !== "overview") navigateUrl(href);
   };
   const onArchive = async (e: React.MouseEvent) => {
     e.preventDefault();
