@@ -26,11 +26,14 @@ which is what makes `claude plugin marketplace add fusedio/fused-render` work)
 — but the end user almost never has the repo, so the same tree has to be
 reassembled from whatever the install actually shipped.
 
-Source resolution keeps D106's single-source rule, same order as
-``user_skills.py``: the repo-level ``skills/`` + ``.claude-plugin/plugin.json``
-win when resolvable (editable/dev installs — always the current truth), else the
-packaged copies under ``fused_render/skills/`` that ``scripts/hatch_build.py``
-writes at build time. The packaged manifest deliberately sits at
+Which skills go in, and where each comes from, is ``skill_sources.py``'s
+answer (D490) — a scan of ``skills/`` rather than a list this module has to keep
+in step with the other deliveries. It keeps D106's single-source rule, and the
+manifest below follows the same order: the repo-level ``skills/`` +
+``.claude-plugin/plugin.json`` win when resolvable (editable/dev installs —
+always the current truth), else the packaged copies under
+``fused_render/skills/`` that ``scripts/hatch_build.py`` writes at build time.
+The packaged manifest deliberately sits at
 ``fused_render/skills/plugin.json`` — NOT in a packaged ``.claude-plugin/``
 dir — so nothing in the wheel lives under a dot-prefixed path; the dotted dir
 exists only in the assembled output, where we mkdir it ourselves. (A dotted
@@ -51,20 +54,9 @@ import tempfile
 import time
 
 from fused_render.shell.storage import home_dir
+from fused_render.skill_sources import PACKAGED_SKILLS_DIR, skill_sources
 
 logger = logging.getLogger(__name__)
-
-# The skills that go in the plugin — all of them, same set as the user-level sync
-# (a session launched by us has as much use for usage guidance as for authoring
-# guidance). `tests/test_skill_plugin.py` pins this against user_skills.SKILLS
-# and against the real repo dirs, so the two lists cannot drift apart.
-SKILLS = (
-    "fused-render-ai",
-    "fused-render-authoring",
-    "fused-render-custom-templates",
-    "fused-render-index",
-    "fused-render-usage",
-)
 
 # The assembled root's name under home_dir(), and the shape the CLI's plugin
 # loader requires inside it. Named constants because both the templates that
@@ -86,11 +78,11 @@ PLUGIN_DIR_ENV = "FUSED_RENDER_SKILL_PLUGIN_DIR"
 # bookkeeping of ours has no business being in a tree something else parses.
 _STAMP_SUFFIX = ".stamp.json"
 
+# The MANIFEST paths only — the skill source roots live in `skill_sources`,
+# which is where both this module and the user-level sync read them from.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REPO_SKILLS_DIR = os.path.join(_REPO_ROOT, "skills")
 _REPO_MANIFEST = os.path.join(_REPO_ROOT, MANIFEST_DIR, MANIFEST_NAME)
-_PACKAGED_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
-_PACKAGED_MANIFEST = os.path.join(_PACKAGED_SKILLS_DIR, MANIFEST_NAME)
+_PACKAGED_MANIFEST = os.path.join(PACKAGED_SKILLS_DIR, MANIFEST_NAME)
 
 # Used only when neither source ships a manifest — see `_manifest_text`. Keeping
 # a plugin loadable matters more than keeping its metadata complete: without a
@@ -112,21 +104,6 @@ def plugin_dir() -> str:
 
 def _stamp_path() -> str:
     return plugin_dir() + _STAMP_SUFFIX
-
-
-def _skill_sources() -> dict:
-    """``{name: source dir}`` for every skill that has a source at all, repo
-    copy winning over packaged copy per skill (D106). A skill with neither is
-    absent from the mapping rather than faked — a plugin holding two of three
-    skills is still worth loading."""
-    out = {}
-    for name in SKILLS:
-        for root in (_REPO_SKILLS_DIR, _PACKAGED_SKILLS_DIR):
-            src = os.path.join(root, name)
-            if os.path.isdir(src):
-                out[name] = src
-                break
-    return out
 
 
 def _manifest_source() -> str | None:
@@ -649,7 +626,7 @@ def sync_skill_plugin() -> str | None:
     because a stale-but-complete plugin beats no plugin.
     """
     root = plugin_dir()
-    sources = _skill_sources()
+    sources = skill_sources()
     if not sources:
         # Neither the repo nor the package has any skill to ship. Not a
         # scenario we can repair here; leave any previous build alone.

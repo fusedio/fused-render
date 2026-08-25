@@ -290,7 +290,7 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
 ):
     """D185: the app folder itself carries no .claude/; creating an app
     installs the canonical skills at Claude Code's user level instead."""
-    from fused_render import user_skills
+    from fused_render import skill_sources, user_skills
 
     claude_dir = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
@@ -298,7 +298,7 @@ def test_new_app_has_no_dot_claude_and_syncs_user_skills(
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
     assert not (workspace / "local" / "demo" / ".claude").exists()
-    for name in user_skills.SKILLS:
+    for name in skill_sources.skill_names():
         skill = claude_dir / "skills" / name
         assert (skill / "SKILL.md").is_file()
         assert (skill / user_skills._MARKER).is_file()

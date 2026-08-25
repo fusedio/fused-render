@@ -50,12 +50,25 @@ def _write_baked_ref(root: str, ref: str, build_data: dict) -> None:
 # the `artifacts` glob in pyproject — the same not-committed-but-packaged
 # pattern as the Vite shell (D54). Scaffolded folders (apps AND templates)
 # carry no .claude/skills/ of their own any more (D185).
-_ALL_SKILLS = (
-    "fused-render-authoring",
-    "fused-render-custom-templates",
-    "fused-render-index",
-    "fused-render-usage",
-)
+#
+# Deliberately a SCAN, not a list (D490). This hook is the packaged copy's only
+# author, and the packaged copy is the ONLY source either delivery has on a
+# machine with no repo — so a name missing here is a skill that silently does
+# not exist for every wheel and DMG user, which is exactly what happened to
+# `fused-render-ai`. `fused_render/skill_sources.py` is the same scan for the
+# runtime side; it cannot be imported here (a build hook must not import the
+# package it is building) and `tests/test_skill_plugin.py` pins the two against
+# each other on the real repo instead.
+def _canonical_skills(root: str) -> tuple:
+    """Every canonical skill under ``<root>/skills``: a directory with a
+    ``SKILL.md`` in it. The file check is what keeps the flat ``plugin.json``
+    written beside them — and any stray directory — from being taken for a
+    skill."""
+    skills_root = os.path.join(root, "skills")
+    return tuple(sorted(
+        name for name in os.listdir(skills_root)
+        if os.path.isfile(os.path.join(skills_root, name, "SKILL.md"))
+    ))
 
 
 class ShellBuildHook(BuildHookInterface):
@@ -98,9 +111,10 @@ class ShellBuildHook(BuildHookInterface):
         """Copy the canonical skills to fused_render/skills/ — the wheel-install
         source for the user-level skill sync (user_skills.py, D185) and for the
         plugin root assembled under home_dir() (skill_plugin.py, D216). Source is
-        the single repo-level skills/<name>/; the copy is gitignored and shipped
-        via pyproject's `artifacts` glob. Refresh each time so a packaged build
-        always reflects the current skill. Starter kits (app and template) carry
+        every repo-level skills/<name>/ that has a SKILL.md (D490 — discovered,
+        never listed); the copy is gitignored and shipped via pyproject's
+        `artifacts` glob. Refreshed from scratch each time so a packaged build
+        always reflects the current skills. Starter kits (app and template) carry
         no .claude/ any more — scaffolded folders rely on the user-level sync —
         so any stale pre-D185 build copy is deleted rather than shipped (or
         copytree'd into new folders by a dev install).
@@ -117,13 +131,15 @@ class ShellBuildHook(BuildHookInterface):
                 os.path.join(self.root, "fused_render", kit, ".claude"),
                 ignore_errors=True,
             )
+        # Cleared wholesale, not per skill: the tree is a gitignored build
+        # artifact, and since the set of skills is now discovered rather than
+        # listed (D490), a leftover dir from an earlier build would otherwise
+        # keep being shipped — and read back as a real skill by the scan.
         dest_root = os.path.join(self.root, "fused_render", "skills")
-        for name in _ALL_SKILLS:
-            src = os.path.join(self.root, "skills", name)
-            dest = os.path.join(dest_root, name)
-            if os.path.isdir(dest):
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest)
+        shutil.rmtree(dest_root, ignore_errors=True)
+        for name in _canonical_skills(self.root):
+            shutil.copytree(os.path.join(self.root, "skills", name),
+                            os.path.join(dest_root, name))
         os.makedirs(dest_root, exist_ok=True)
         shutil.copyfile(
             os.path.join(self.root, ".claude-plugin", "plugin.json"),

@@ -1341,9 +1341,10 @@ def test_new_template_scaffolds_and_binds(ctx):
     assert (folder / "reader.py").is_file()
     assert (folder / "CLAUDE.md").is_file()
     assert not (folder / ".claude").exists()
-    from fused_render.user_skills import SKILLS, claude_skills_dir
+    from fused_render.skill_sources import skill_names
+    from fused_render.user_skills import claude_skills_dir
 
-    for skill in SKILLS:
+    for skill in skill_names():
         assert os.path.isfile(os.path.join(claude_skills_dir(), skill, "SKILL.md"))
     # Both extensions are brand new keys (no core or user binding yet), so the
     # new template is the whole list — appending onto nothing.
