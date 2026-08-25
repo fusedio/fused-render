@@ -23,13 +23,36 @@ test("an exact name match outranks a longer name containing it", () => {
 
 test("an entry whose own name matches beats one that only inherits an ancestor", () => {
   // scoreEntries matches the whole rel path, so a matching ANCESTOR DIRECTORY
-  // donated its score to every descendant: "render" scored
-  // render/a/b/c/d/e/f/deep-thing.bin at 26 and myrender.ts at 21, and depth is
-  // only reachable on an exact score tie, so the deep file won. The name-match
-  // tier sits above score and settles it.
+  // donates its score to every descendant, and depth is only reachable on an
+  // exact score tie — so raw score alone cannot be trusted to prefer the name
+  // match. The name-match tier sits above score and settles it regardless.
   expect(ranked("render", ["render/a/b/c/d/junk.bin", "myrender.ts"])[0]).toBe(
     "myrender.ts",
   );
+});
+
+test("a deep, scattered ancestor-only match no longer wins on score alone", () => {
+  // The reported bug: a vague query where NOBODY's own name matches (tier 3
+  // for every candidate), so the sort falls through to raw score — where a
+  // long ancestor chain simply offers more +5 segment-start bonuses than a
+  // short one, independent of relevance. Same tier, same longestRun (a
+  // scattered subsequence for both), so this is decided by score/depth alone —
+  // exactly the case DEPTH_PENALTY exists for.
+  const deep =
+    "src/chat/ChatInterface/components/MessageList/components/MessageScrollbackRail/index.ts";
+  const shallow = "cache-config/comp/widget.ts";
+  const hits = ranked("cccm", [deep, shallow]);
+  expect(hits[0]).toBe(shallow);
+});
+
+test("a deep EXACT name match still wins over a shallow fuzzy one", () => {
+  // The penalty must not swamp the +100 exact-name bonus. Tier already
+  // guarantees this (tier 1 sits above tier/score), but it is worth pinning
+  // directly: a name match many segments deep must still beat a shallow
+  // fuzzy-only hit.
+  const deep = "a/b/c/d/e/f/g/h/exact-match.txt";
+  const shallow = "s/fuzzy-only.txt";
+  expect(ranked("exact-match.txt", [shallow, deep])[0]).toBe(deep);
 });
 
 test("a fuzzy name match still beats an ancestor-only match", () => {

@@ -40,6 +40,35 @@ function depthOf(rel: string): number {
   return depth;
 }
 
+// A deep, vague match (a subsequence scattered across a long ancestor chain)
+// used to beat a shallow one on raw `score` alone, because score accumulates
+// over the WHOLE rel: +5 per segment start rewards every path separator a
+// query happens to land near, and a long path simply offers more of them. A
+// 130-char path with 14 separators out-scored a short exact-ish match even
+// though `longestRun`/`tier` were tied, because `depth` (the tie-break for
+// exactly that case) is only reached on an exact score tie — which a scattered
+// match essentially never produces.
+//
+// The fix has to be PER-SEGMENT, because the thing being cancelled (the +5
+// segment-start bonus) is per-segment: a flat penalty or a divide-by-length
+// both mis-shape it (either too weak on very deep paths or too strong on
+// merely-nested ones). DEPTH_PENALTY kept just under the +5 it offsets means a
+// segment that genuinely matched still pays for itself — a real hit is not
+// swamped — while a segment that merely EXISTS on the path stops being free
+// score. SHALLOW_FREE exempts normal project nesting (`src/foo/bar.ts`) from
+// any penalty at all; only past it does depth start to cost anything.
+//
+// Applied in `scoreEntries`/`rank_entries` (the ranking layer), not in
+// `fuzzyMatch`/`fuzzy_match` (the matcher): this must not move a single
+// highlight position or change what counts as a match, only how deep matches
+// are ORDERED against shallow ones. Any change here has to be mirrored into
+// rank.py and the fixture regenerated (index/rank.py's module docstring) — do
+// NOT promote `depth` above `score` in rankCompare instead; that ranks a
+// shallow `~/a.txt` over a perfect deep match on every query and breaks the
+// tier/longestRun invariants above.
+const DEPTH_PENALTY = 4;
+const SHALLOW_FREE = 3;
+
 // How much of the match landed on the entry's OWN name: 1 = the query is a
 // substring of the name, 2 = the name matched only fuzzily, 3 = only ancestor
 // directories matched. Derived from what the matcher already returned plus the
@@ -58,9 +87,13 @@ function nameTier(name: string, nameStart: number, q: string,
 export function rankCompare(a: SearchHit, b: SearchHit): number {
   if (b.longestRun !== a.longestRun) return b.longestRun - a.longestRun;
   // Above `score`, because scoring runs over the whole rel path and a matching
-  // ancestor directory therefore donates its score to every descendant: query
-  // "render" scored render/a/b/c/d/e/f/deep-thing.bin at 26 and myrender.ts at
-  // 21, and `depth` below is only reachable on an exact score tie.
+  // ancestor directory therefore donates its score to every descendant — a
+  // tier-3 (ancestor-only) hit under a long path can still out-score a tier-1
+  // (name) hit under a short one even after DEPTH_PENALTY (above), which only
+  // damps that effect rather than eliminating it. `depth` below is reachable
+  // only on an exact score tie, which is why it alone was never enough to fix
+  // the deep-path-wins-by-construction case; the penalty is what actually
+  // fixes it, ahead of any tie-break.
   //
   // BELOW `longestRun`, which is what already guarantees substring-over-fuzzy:
   // fuzzyMatch's substring branch sets longestRun = q.length (the maximum the
@@ -105,9 +138,11 @@ export function scoreEntries(
     const name = entry.rel.slice(nameStart).toLowerCase();
     if (name === q) score += 100;
     else if (name.startsWith(q)) score += 25;
+    const depth = depthOf(entry.rel);
+    score -= DEPTH_PENALTY * Math.max(0, depth - SHALLOW_FREE);
     hits.push({ entry, positions: m.positions, score, longestRun: m.longestRun,
                 tier: nameTier(name, nameStart, q, m.positions),
-                depth: depthOf(entry.rel) });
+                depth });
   }
   return hits;
 }

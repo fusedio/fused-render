@@ -485,14 +485,40 @@
 }
 
 /* Search results: a flat scannable list (relevance order), not the launcher
-   card grid — icon, name, path, then size/date pushed to the right edge. */
+   card grid — icon, name, path, then size/date pushed to the right edge.
+
+   HOME_RESULT_CAP (home-search.ts) is 20, which does not fit a SHORT
+   viewport on its own — so the list SCROLLS internally rather than pushing
+   the AI row below the fold: `max-height` bounds it, and `.fh-ai-row`'s
+   `position: sticky; bottom: 0` keeps the action in view regardless of how
+   far the file rows scroll underneath it. Without a bound the sticky row
+   would simply sit at the end of a tall list, never actually needing to
+   stick.
+
+   That bound must NOT be a flat pixel value, though — 440px unconditionally
+   was measured against a laptop window and then applied to every window: on
+   a tall one it capped the list at ~13 rows and left the whole lower portion
+   of the page blank rather than using the space that was actually there.
+   `max()` makes 440px a FLOOR (short viewports still get a usable list, and
+   still scroll) while `calc(100dvh - 11rem)` gives a tall viewport the rest
+   of its height instead. `dvh` rather than `vh`: `vh` on a mobile browser
+   includes the area the address bar can retract into, which would size this
+   against space that is not actually available.
+
+   11rem is the measured chrome above the list on the explorer page — page
+   padding + the search bar + the result-note line + a little breathing
+   room before the window edge — checked against the running app at a short
+   (700px) and a tall (1346px) viewport: short still shows the internal
+   scrollbar with the AI row pinned under it, tall shows all 20 rows with no
+   scrollbar at all. Re-measure this if that chrome changes size. */
 .fh-results {
   list-style: none;
   margin: 0;
   padding: 0;
+  max-height: max(440px, calc(100dvh - 11rem));
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
 }
 
 .fh-results li + li {
@@ -571,19 +597,51 @@
 
 /* -- the AI action row -------------------------------------------------------
    The last row in the list is not a file: it costs a model call and a wait, so
-   it reads as an action — accent glyph, accent label, a faint accent wash — and
-   never like the hits above it. On a zero-hit query it is the only row, and
-   FilesHome pre-selects it. */
+   it reads as an action — accent glyph, accent label — and never like the hits
+   above it. On a zero-hit query it is the only row, and FilesHome pre-selects
+   it.
+
+   It used to ALSO carry a faint accent background wash at rest, which is what
+   made it look like a second selected row: a background wash is this app's
+   existing signal for "the keyboard is here" (`.fh-result:hover,
+   .fh-result.is-active` below), and painting a resting row with one made a
+   hovered file row and the untouched AI row read as the same gesture at
+   different tints. The wash is gone; selection now means exactly one thing
+   across the whole list, and this row leans on the glyph/label/rule instead —
+   which does the "this is an action, not a hit" job without competing with
+   selection for the same visual channel.
+
+   Structural separation instead: a rule ABOVE it (border-top) says "the
+   results end here, this is something else", and STICKY positioning
+   (`.fh-results`'s max-height/overflow-y above) keeps it reachable at the
+   bottom of the viewport regardless of how many file rows scroll past above
+   it — the fix for both this row reading as a stray selection and for it
+   sliding below the fold at HOME_RESULT_CAP=20. `background: var(--bg)` here
+   is not a selection tint — it is an opaque backdrop so scrolling rows
+   disappear cleanly UNDER a sticky element instead of showing through it.
+
+   `.fh-ai-row` is on the <li>, NOT the <button> inside it (FilesHome.tsx's
+   `AiActionRow`). `position: sticky` offsets an element within its own
+   containing block, and a <li> that wraps exactly one full-width button has
+   no room of its own for the button to offset within — sticky landed on the
+   button once did nothing at all: the row scrolled out of view under the
+   fold exactly like an ordinary file row, silently reopening the very
+   problem HOME_RESULT_CAP=20 plus this scrolling list exists to fix.
+   `.fh-ai-action`, below, is the button's own class for what genuinely is
+   about the button. */
 .fh-ai-row {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
 }
 
-.fh-ai-row:hover,
-.fh-ai-row.is-active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+.fh-ai-action {
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
-.fh-ai-row .fh-result-name {
+.fh-ai-action .fh-result-name {
   color: var(--accent);
 }
 
@@ -591,16 +649,61 @@
   color: var(--accent);
 }
 
-.fh-ai-row:disabled {
+.fh-ai-action:disabled {
   cursor: default;
 }
 
-.fh-ai-row .fh-result-meta kbd {
+/* -- the "Open" row (section 7) ----------------------------------------------
+   The other action row — a resolving path address, offered at row 0 instead
+   of the last row, and for the opposite reason (ranking would be noise, not
+   ranking coming up empty). Shares `.fh-result`'s column layout (icon, name,
+   PATH — this one really is a path, unlike the AI row's query echo, so it
+   keeps `.fh-result-path`) and gets the same accent name treatment item 6
+   gives the AI row, so both read as "an action" the same way. */
+.fh-open-row .fh-result-name {
+  color: var(--accent);
+}
+
+/* The query echo — its own column, not `.fh-result-path` (the file rows' PATH
+   column): "parquet" is not a filesystem path, and sharing the class made it
+   read as one. Muted and quoted rather than the path's plain-text treatment,
+   so it reads as an ECHO of what was typed. */
+.fh-ai-query {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* The `↵` hint — its own column, not `.fh-result-meta` (the file rows'
+   size/date column): aligning it with the dates above claimed it was more
+   metadata about a hit, when it is the key that runs the action WHEN THE ROW
+   IS SELECTED — with file hits on screen Enter opens the top hit instead, so
+   the badge only renders while `active` (FilesHome.tsx's AiActionRow).
+
+   A fixed width (sized to "Asking…", the widest of the three states this
+   span cycles through — the badge, that text, or nothing while unselected)
+   keeps the row's columns from reflowing as the highlight moves onto or off
+   it; `text-align: right` keeps the badge and the text sharing the same
+   right edge the way the empty state's blank column implicitly does. */
+.fh-ai-hint {
+  flex: none;
+  width: 52px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.fh-ai-hint kbd {
   font: inherit;
   padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg);
+  background: var(--bg-alt);
 }
 
 /* The AI badge on the spec echo above AI results — the results on screen came

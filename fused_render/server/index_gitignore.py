@@ -135,6 +135,14 @@ _inflight: dict = {}
 # against the ~1.5 s a home-sized sweep takes rather than tightly.
 SWEEP_WAIT_MAX_S = 30.0
 
+# How often a waiting caller re-checks its CancelToken (when it has one)
+# instead of blocking the whole SWEEP_WAIT_MAX_S in one call. This is per
+# ABANDONED-REQUEST cost, not per sweep: a rank request that outlives its
+# client used to sit out someone else's sweep for up to 30s of pure dead
+# time; polling this often is what turns that into ~0.25s. Small enough that
+# the added wakeups are noise against a sweep that is itself seconds long.
+_SWEEP_POLL_S = 0.25
+
 # How long a pool may live before it is discarded and git is re-asked about
 # everything.
 #
@@ -196,7 +204,7 @@ class _Verdicts:
 
 
 def filter_corpus(out: dict, index_root: str | None = None,
-                  oracle_rels: list | None = None) -> dict:
+                  oracle_rels: list | None = None, token=None) -> dict:
     """`search_under`'s response with gitignored entries removed.
 
     Only a covered response with entries is touched; `total` is recomputed and
@@ -217,6 +225,11 @@ def filter_corpus(out: dict, index_root: str | None = None,
     which its SQL has already dropped every dot-leading rel, so no `.gitignore`
     could ever be among them, every entry came back undecided and nothing was
     filtered at all. `index/query.py` reads them out of the index instead.
+
+    `token` (index/cancel.CancelToken), when given, is forwarded to
+    `_pooled_verdicts` — it is what lets an abandoned rank request stop
+    waiting for someone ELSE's in-flight sweep (`SWEEP_WAIT_MAX_S`) in ~0.25s
+    instead of riding it out to the full 30.
     """
     root = out.get("root") or ""
     entries = out.get("entries")
@@ -240,7 +253,7 @@ def filter_corpus(out: dict, index_root: str | None = None,
     # today, but nothing here should depend on that) and the decider is
     # per-entry.
     drop = _pooled_verdicts(base, prefix, root, entries, persist=persist,
-                            oracle_rels=oracle_rels)
+                            oracle_rels=oracle_rels, token=token)
     if not drop:
         return {**out, "total": len(entries)}
     kept = [e for i, e in enumerate(entries) if i not in drop]
@@ -260,9 +273,31 @@ def _rel_prefix(base: str, root: str):
     return None
 
 
+def _wait_for_sweep(waiter, token=None) -> None:
+    """Wait for `waiter` to fire, up to `SWEEP_WAIT_MAX_S` total — but in
+    `_SWEEP_POLL_S` slices with a `token.check()` between them when a token is
+    given, rather than blocking the whole ceiling in one call.
+
+    This is the difference between an abandoned rank request riding out up to
+    30s of SOMEONE ELSE'S sweep and returning in ~0.25s once its own client
+    has gone. Scoped separately from the rest of section 1's cancellation
+    work because this module is shared with `api_index_search` (the in-folder
+    corpus route, which passes no token) and the corpus-building path — a
+    wrong change here under-filters gitignored files for those callers too."""
+    deadline = time.monotonic() + SWEEP_WAIT_MAX_S
+    while True:
+        if token is not None:
+            token.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if waiter.wait(timeout=remaining if token is None else min(_SWEEP_POLL_S, remaining)):
+            return
+
+
 def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
                      persist: bool = True,
-                     oracle_rels: list | None = None) -> set:
+                     oracle_rels: list | None = None, token=None) -> set:
     """The INDEXES into `entries` that git calls ignored.
 
     Reads what the pool already decided UNDER THE SAME ORACLE, queries git for
@@ -282,6 +317,11 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
     not hypothetical: the startup warm sweeps on a detached thread for exactly
     the ~2.2 s in which the user's first keystroke arrives, and both used to
     build the same 200k-entry query set and shell out to git for it twice.
+
+    `token`, when given, lets the WAIT for someone else's sweep be abandoned
+    early (`_wait_for_sweep`) — it does not shorten the sweep this call itself
+    performs, which is a bounded git subprocess call, not a loop with anywhere
+    natural to check.
     """
     # Pure string work, no git: which oracle this request would consult for
     # each entry. Computed for the WHOLE corpus every time — a few tens of
@@ -338,9 +378,12 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
         # Someone else is asking git for this very base. Their answers land in
         # the pool we just read, so wait and read it again. The timeout is the
         # floor under a sweeper that somehow never finishes: worst case we do
-        # what the old code always did and sweep concurrently.
+        # what the old code always did and sweep concurrently. Polled in
+        # slices when a token is given (`_wait_for_sweep`) so an abandoned
+        # caller can stop waiting in ~_SWEEP_POLL_S rather than riding this
+        # out to the full ceiling.
         _wait_t0 = time.monotonic()
-        waiter.wait(timeout=SWEEP_WAIT_MAX_S)
+        _wait_for_sweep(waiter, token)
         # DEBUG: this is dead time on the request thread spent waiting for
         # SOMEONE ELSE'S sweep rather than doing any of its own work — worth
         # separating from the sweep's own timing below when a rank request
