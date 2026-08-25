@@ -213,11 +213,18 @@ function PreferencesPopover({
         entry === "separator" ? (
           <div key={"sep" + i} className="context-menu-sep" role="separator" />
         ) : (
-          <div
+          <a
             key={entry.href}
+            href={entry.href}
             role="menuitem"
             className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
-            onClick={() => {
+            onClick={(e) => {
+              // preventDefault + navigateUrl keeps left-click on the SPA's own
+              // history-pushState navigation; the real href is what lets the
+              // browser handle middle-click/ctrl-click "open in new tab" and
+              // right-click "copy link" natively, same as NavItem/rail items
+              // (SidebarFrame.tsx) do for the primary nav rows.
+              e.preventDefault();
               onClose();
               navigateUrl(entry.href);
             }}
@@ -227,7 +234,7 @@ function PreferencesPopover({
             </span>
             <span className="context-menu-label">{entry.label}</span>
             {entry.extra}
-          </div>
+          </a>
         )
       )}
     </div>
