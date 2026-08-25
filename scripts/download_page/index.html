@@ -10,7 +10,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fused Render — run any AI model, build any app, open any file</title>
 <meta name="description" content="A desktop app that previews 100+ kinds of file, runs AI models on your own machine, and lets you build and share small AI-powered apps.">
-<meta name="theme-color" content="#121211">
+<meta name="theme-color" content="#000000">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Fused Render">
 <meta property="og:title" content="Fused Render — run any AI model, build any app, open any file">
@@ -34,7 +34,7 @@
     /* Dark is home: warm near-black ground, tiles one step up, hairlines
        heavy enough to survive the darker field. The accent is the full lime
        because on this ground it reads as ink. */
-    --paper:     #121211;
+    --paper:     #000;
     --tile:      #1a1a18;
     --tile-2:    #151513;
     --ink:       #f3f2ed;
@@ -177,41 +177,49 @@
 
   /* ---------- hero ---------- */
   .hero { padding: clamp(30px, 5vw, 60px) 0 0; }
-  .hero-grid {
-    display: grid; grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
-    gap: clamp(24px, 3.5vw, 52px); align-items: center;
-  }
-  @media (max-width: 860px) { .hero-grid { grid-template-columns: minmax(0, 1fr); } }
   h1 {
     font-size: clamp(2rem, 4.2vw, 4rem);
     line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
     text-align: left; margin: 0;
   }
-  .hero-video { margin: 0; position: relative; }
+  .herobg { display: flex; align-items: center; }
+  .herobg .hero-left { flex: 0 0 36%; order: -1; position: relative; z-index: 1; }
+  .herobg .hero-media { flex: 1; min-width: 0; position: relative; }
+  .herobg .hero-media video {
+    display: block; width: 100%; height: auto;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
+  }
+  @media (max-width: 860px) {
+    .herobg { display: block; }
+    .herobg .hero-media { margin-top: 24px; }
+  }
   .vid-toggle {
     position: absolute; right: 14px; bottom: 14px;
     width: 36px; height: 36px; border-radius: 50%;
     display: grid; place-items: center; padding: 0;
-    background: rgba(18, 18, 17, 0.72);
+    background: rgba(0, 0, 0, 0.72);
     border: 1px solid rgba(243, 242, 237, 0.22);
     color: var(--ink-2); cursor: pointer;
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
     opacity: 0; transition: opacity 0.25s var(--ease);
   }
   /* Only pops on hover — but stays visible for keyboard focus and while paused. */
-  .hero-video:hover .vid-toggle,
+  .hero-media:hover .vid-toggle,
   .vid-toggle:focus-visible,
-  .vid-toggle.paused { opacity: 1; }
+  .vid-toggle.paused:not(.vid-mute) { opacity: 1; }
   .vid-toggle:hover { color: var(--ink); border-color: rgba(243, 242, 237, 0.4); }
   .vid-toggle svg { width: 14px; height: 14px; }
   .vid-toggle .ic-play { display: none; }
   .vid-toggle.paused .ic-play { display: block; }
   .vid-toggle.paused .ic-pause { display: none; }
-  .hero-video video {
-    display: block; width: 100%; height: auto;
-    border-radius: var(--r); border: 1px solid var(--rule);
-    background: var(--tile-2);
-  }
+  /* The mute button sits beside pause; .paused here means "muted". */
+  .vid-mute { right: 58px; }
+  .vid-mute .ic-sound { display: block; }
+  .vid-mute .ic-muted { display: none; }
+  .vid-mute.paused .ic-sound { display: none; }
+  .vid-mute.paused .ic-muted { display: block; }
+  .hero-media:hover .vid-mute { opacity: 1; }
   .points {
     display: grid; grid-template-columns: minmax(0, 1fr);
     gap: var(--s3);
@@ -469,40 +477,42 @@
   }
 
   /* ---------- download ---------- */
-  /* The download banner: the product itself is the background, and the
-     buttons sit inside the picture. */
-  .getcard {
-    position: relative; overflow: hidden;
-    border-radius: 16px; border: 1px solid var(--rule);
-    margin-top: var(--s5);
-    min-height: clamp(360px, 32vw, 470px);
-    display: flex; align-items: flex-end;
-  }
+  /* The download closer: the app inside a Mac window, its bottom fifth
+     dissolving into the page where the download buttons take over. */
   #get { padding-top: var(--s5); border-top: 1px solid var(--rule); }
-  .getbg {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; object-position: top left;
+  .macwrap { position: relative; max-width: 1020px; margin: var(--s5) auto 0; }
+  .mac {
+    border: 1px solid var(--rule-hi); border-bottom: none;
+    border-radius: 16px 16px 0 0;
+    background: var(--tile); overflow: hidden;
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.6);
   }
-  .getveil {
-    position: absolute; inset: 0;
-    background:
-      linear-gradient(0deg, rgba(18, 18, 17, 0.97) 0%, rgba(18, 18, 17, 0.88) 38%, rgba(18, 18, 17, 0.4) 68%, rgba(18, 18, 17, 0.06) 100%),
-      linear-gradient(90deg, rgba(18, 18, 17, 0.6) 0%, rgba(18, 18, 17, 0) 60%);
+  .mac-bar {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    padding: 13px 16px;
+    background: #1c1c1a; border-bottom: 1px solid var(--rule);
+  }
+  .tl { width: 12px; height: 12px; border-radius: 50%; }
+  .tl.r { background: #ff5f57; } .tl.y { background: #febc2e; } .tl.g { background: #28c840; }
+  .mac-title {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font-size: 12.5px; color: var(--ink-3); pointer-events: none;
+  }
+  .mac-shot { display: block; width: 100%; height: auto; }
+  /* The fade that hands the screenshot over to the buttons. */
+  .macwrap::after {
+    content: ""; position: absolute; left: -1px; right: -1px; bottom: 0;
+    height: 62%;
+    background: linear-gradient(0deg, var(--paper) 34%, rgba(0, 0, 0, 0.55) 66%, rgba(0, 0, 0, 0) 100%);
   }
   .getbody {
-    position: relative; width: 100%;
-    padding: clamp(22px, 3vw, 40px);
+    position: relative; z-index: 1; text-align: center;
+    margin-top: clamp(-200px, -14vw, -110px);
   }
   .getbody h2 { max-width: none; }
-  .getbody .deck { margin-top: 6px; }
-  .getcard .os {
-    background: rgba(18, 18, 17, 0.55);
-    border-color: rgba(243, 242, 237, 0.16);
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  }
-  .getcard .os.primary {
-    background: var(--accent-fill); border-color: var(--accent-edge);
-  }
+  .getbody .deck { margin: 8px auto 0; }
+  .getbody .oses { justify-content: center; margin-left: auto; margin-right: auto; }
+  .getbody .os { text-align: left; }
   .oses {
     display: grid; grid-template-columns: minmax(0, 1fr);
     gap: 14px; margin-top: var(--s5); max-width: 780px;
@@ -1070,30 +1080,36 @@
   </header>
 
   <!-- ============ HERO ============ -->
-  <section class="hero">
-    <div class="hero-grid">
-      <div class="hero-left">
-        <h1>Your files,<br>your AI,<br>your apps.</h1>
-        <div class="acts">
-          <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
-        </div>
-        <p class="fine">No account needed.<br>Native support for macOS &amp; limited support on Windows &amp; Linux.</p>
+  <section class="hero herobg">
+    <div class="hero-media">
+      <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
+             aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
+      <button class="vid-toggle vid-mute paused" id="vid-mute" type="button" aria-label="Unmute video">
+        <svg class="ic-muted" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.6 6.2l3 3.6M13.6 6.2l-3 3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <svg class="ic-sound" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.4 5.6a3.4 3.4 0 010 4.8M12.2 4a5.8 5.8 0 010 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
+        <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
+      </button>
+    </div>
+    <div class="hero-left">
+      <h1>Your files,<br>your AI,<br>your apps.</h1>
+      <div class="acts">
+        <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
       </div>
-      <figure class="hero-video">
-        <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
-               aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
-        <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
-          <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-          <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
-        </button>
-      </figure>
+      <p class="fine">No account needed.<br>Native support for macOS<br>limited support on Windows &amp; Linux.</p>
     </div>
   </section>
 
   <!-- ============ §1 · THE EXPLORER ============ -->
-  <section id="under-the-hood">
+  <section id="under-the-hood" hidden>
     <div class="sec-head rule-top">
       <h2>HTML powered by local Python</h2>
       <p class="deck">A web page you see, a Python file that does the work.</p>
@@ -1172,8 +1188,8 @@
       </div>
 
       <div class="w4 illo">
-        <img src="assets/showcase/illo2-models.png" width="398" height="558" loading="lazy" decoding="async"
-             alt="Illustration of the model library: a vending machine of AI models, one picked and dropping out.">
+        <img src="assets/showcase/illo2-models.png" width="864" height="914" loading="lazy" decoding="async"
+             alt="Illustration of the model library: model boxes riding a conveyor from the cloud down into a laptop, the picked one lime.">
         <div class="cap"><b>Models</b><span>Bring any model: text, images, transcription, video.</span></div>
       </div>
 
@@ -1291,7 +1307,7 @@
     </ul>
   </section>
 
-  <section id="apps">
+  <section id="apps" hidden>
     <div class="sec-head rule-top">
       <h2>Use community apps, or build your own.</h2>
       <p class="deck">A chatbot answers questions. A tool does the work.</p>
@@ -1347,24 +1363,29 @@
   <!-- ============ DOWNLOAD ============ -->
 
   <section id="get">
-    <div class="getcard">
-      <img class="getbg" src="assets/showcase/app-home.jpg" width="2880" height="1800"
-           loading="lazy" decoding="async" alt="">
-      <div class="getveil" aria-hidden="true"></div>
-      <div class="getbody">
-        <h2>Free, and it stays on your machine.</h2>
-        <p class="deck">One download. No account, no key, no card.</p>
-        <div class="oses">
-          <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
-          </a>
-          <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
-          </a>
-          <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
-          </a>
+    <div class="macwrap">
+      <div class="mac">
+        <div class="mac-bar" aria-hidden="true">
+          <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+          <span class="mac-title">Fused Render</span>
         </div>
+        <img class="mac-shot" src="assets/showcase/app-home.jpg" width="3420" height="1970"
+             loading="lazy" decoding="async" alt="The Fused Render home screen: apps, AI playground and Claude tasks.">
+      </div>
+    </div>
+    <div class="getbody">
+      <h2>Free, and it stays on your machine.</h2>
+      <p class="deck">One download. No account, no key, no card.</p>
+      <div class="oses">
+        <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
+        </a>
+        <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
+        </a>
+        <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
+        </a>
       </div>
     </div>
     <span class="version" id="version" hidden></span>
@@ -1620,6 +1641,12 @@
     btn.addEventListener("click", function () {
       if (vid.paused) { vid.play(); btn.classList.remove("paused"); btn.setAttribute("aria-label", "Pause video"); }
       else { vid.pause(); btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video"); }
+    });
+    var mute = document.getElementById("vid-mute");
+    if (mute) mute.addEventListener("click", function () {
+      vid.muted = !vid.muted;
+      mute.classList.toggle("paused", vid.muted);
+      mute.setAttribute("aria-label", vid.muted ? "Unmute video" : "Mute video");
     });
   })();
 
