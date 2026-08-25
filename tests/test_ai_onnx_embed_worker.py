@@ -775,3 +775,93 @@ def test_pooler_output_is_deliberately_NOT_a_prose_output():
         assert module._PROSE_OUTPUTS == ("sentence_embedding", "last_hidden_state")
     finally:
         del sys.modules["worker_base"]
+
+
+@pytest.fixture()
+def pure():
+    """The worker module imported by PATH with no session and no fakes.
+
+    Same import-by-path shape as `test_the_pooled_output_name_is_pinned` above,
+    and for the same reason: everything below reads only pure functions over
+    JSON a repo shipped, so a fixture that built graphs would be scaffolding
+    around the thing under test.
+    """
+    import importlib.util as _il
+
+    spec = _il.spec_from_file_location("onnx_embed_pure", WORKER_PATH)
+    module = _il.module_from_spec(spec)
+    base = types.ModuleType("worker_base")
+    base.serve = lambda **kw: None
+    sys.modules["worker_base"] = base
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        del sys.modules["worker_base"]
+
+# -- sequence length: the ceiling clamps, and RoBERTa's +2 offset --------------
+#
+# Fake configs throughout, deliberately: every case here is a claim a repo makes
+# in JSON, and a download would test huggingface's uptime rather than this
+# function. The repo each case is drawn from is named so the numbers are
+# checkable against a real checkpoint.
+
+
+def test_a_length_over_the_ceiling_is_CLAMPED_not_discarded(pure):
+    """`jinaai/jina-embeddings-v3` declares 8194 — an `xlm-roberta`, which
+    `TEXT_EMBED_MODEL_TYPES` admits, so this is reachable and not hypothetical.
+
+    The old test was `value <= _MAX_TEXT_LENGTH`, a filter wearing a clamp's
+    docstring: 8194 failed it, fell through every source and landed on 512,
+    truncating a long-context encoder to a sixteenth of its context with the
+    vectors still coming back unit length.
+    """
+    assert pure._text_length({"max_position_embeddings": 8194}, {}) == 8192
+    assert pure._text_length({}, {"model_max_length": 100_000}) == 8192
+
+
+def test_the_sentinel_is_discarded_so_a_real_claim_still_wins(pure):
+    """The reason the ceiling cannot simply clamp everything. An unstripped
+    `model_max_length` sentinel clamped to 8192 would look like an answer; here
+    the config's own 8192 is the answer and the sentinel is skipped, and where
+    nothing else speaks the floor is."""
+    assert pure._text_length({"max_position_embeddings": 8192},
+                              {"model_max_length": 10 ** 30}) == 8192
+    assert pure._text_length({}, {"model_max_length": 10 ** 30}) == 512
+
+
+def test_roberta_style_plus_two_does_not_reach_the_graph(pure):
+    """**`intfloat/multilingual-e5-large`-shaped: config 514, tokenizer 512.**
+
+    On RoBERTa and XLM-R `max_position_embeddings` is the usable length plus the
+    `padding_idx` offset. Truncating at 514 walks position ids past the embedding
+    table and dies inside the graph with a raw onnxruntime gather error naming
+    nothing actionable, so the min of the two sources is taken rather than the
+    config preferred.
+    """
+    assert pure._text_length({"max_position_embeddings": 514},
+                              {"model_max_length": 512}) == 512
+    # Also in the other order, so this is a min and not a "believe the tokenizer"
+    # rule: a tokenizer shipping the larger number must not raise the ceiling
+    # above what the graph has weights for.
+    assert pure._text_length({"max_position_embeddings": 512},
+                              {"model_max_length": 8192}) == 512
+
+
+def test_siglip2s_short_text_tower_is_still_read_from_text_config(pure):
+    """The dual-encoder path, unchanged and pinned: 64 positions, off
+    `text_config`, where a dual encoder declares it."""
+    assert pure._text_length(
+        {"text_config": {"max_position_embeddings": 64}},
+        {"model_max_length": 64}) == 64
+    # And the vision-side config around it does not leak in.
+    assert pure._text_length(
+        {"text_config": {"max_position_embeddings": 64},
+         "max_position_embeddings": 8192}, {}) == 64
+
+
+def test_junk_claims_fall_through_to_the_floor(pure):
+    """`bool` is an `int` in Python and `True` would otherwise read as a
+    one-token sequence."""
+    for claim in (0, -1, True, False, "512", None, 1.5):
+        assert pure._text_length({"max_position_embeddings": claim}, {}) == 512

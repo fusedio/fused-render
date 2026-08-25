@@ -89,6 +89,11 @@ _TEXT_EMBEDS_FIELD = "text_embeds"
 _MAX_TEXT_LENGTH = 8192
 _DEFAULT_TEXT_LENGTH = 512
 
+#: Above this a length claim is an unstripped exporter sentinel rather than a
+#: claim — discarded so the next source gets a turn, never clamped. Same
+#: threshold and same reasoning as `onnx_embed`'s.
+_SENTINEL_TEXT_LENGTH = 1_000_000
+
 #: The MLX streams every thread in this process works on, keyed by device
 #: name. Exactly `mlx_text/worker.py`'s `_STREAMS`/`_pin_stream` — this worker
 #: is threaded the same way (`worker_base.serve`'s bring-up thread loads, a
@@ -221,12 +226,27 @@ def _text_length(config):
     number SMALLER than the model's maximum is a shorter read; a LARGER one
     indexes past its position embeddings, which is why the ceiling is a clamp
     and not a warning.
+
+    **And now it actually clamps.** The test used to read
+    `0 < value <= _MAX_TEXT_LENGTH`, which is a filter and not a clamp: a config
+    declaring 8194 failed it, fell through to `_DEFAULT_TEXT_LENGTH` and read 512
+    — the exact silent sixteenth-of-the-model truncation the paragraph above
+    describes as the thing this function was written to stop. The sentinel is
+    still discarded rather than clamped, because clamping it would turn a missing
+    answer into a confident wrong one; `_SENTINEL_TEXT_LENGTH` is that line.
+
+    Unlike `onnx_embed`'s copy this does NOT take the min with the tokenizer's
+    `model_max_length`, which is what saves that runner from RoBERTa's
+    usable-length-plus-two offset. It has no need to yet: the offset only appears
+    on RoBERTa/XLM-R, and neither curated MLX row is one. Anything from that
+    family arriving on this list is the signal to bring the min over.
     """
     for value in (config.get("max_position_embeddings"),
                   (config.get("text_config") or {}).get("max_position_embeddings")
                   if isinstance(config.get("text_config"), dict) else None):
-        if isinstance(value, int) and 0 < value <= _MAX_TEXT_LENGTH:
-            return value
+        if (isinstance(value, int) and not isinstance(value, bool)
+                and 0 < value < _SENTINEL_TEXT_LENGTH):
+            return min(value, _MAX_TEXT_LENGTH)
     return _DEFAULT_TEXT_LENGTH
 
 

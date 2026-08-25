@@ -454,36 +454,83 @@ def _pooling_mode(pooling_config):
     return _POOLING_MEAN
 
 
+def _declared_length(value):
+    """One length claim, cleaned: a usable int, or None to try the next source.
+
+    Three outcomes, and the middle one is the fix. A claim ABOVE the ceiling but
+    otherwise plausible is CLAMPED, not discarded — `jinaai/jina-embeddings-v3`
+    declares 8194, and the old `value <= _MAX_TEXT_LENGTH` test dropped it on the
+    floor, fell through every remaining source and landed on
+    `_DEFAULT_TEXT_LENGTH`, truncating a long-context encoder to 512. The
+    ceiling was always meant as a clamp — `mlx_embed`'s copy of this says so in
+    as many words — so it clamps.
+
+    The SENTINEL still has to be discarded rather than clamped, which is why
+    there are two thresholds instead of one. `model_max_length` is
+    `1000000000000000019884624838656` on a checkpoint whose exporter left it in;
+    clamping that to 8192 would look like an answer and be a fabrication, and on
+    a 512-position graph it would run position ids off the end of the table. A
+    value in the millions is not a claim about a transformer, so it is treated
+    as an absent one and the next source gets a turn.
+    """
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    if value >= _SENTINEL_TEXT_LENGTH:
+        return None
+    return min(value, _MAX_TEXT_LENGTH)
+
+
 def _text_length(config, tokenizer_config):
     """How long a sequence the text tower was built for.
 
     Off the CONFIG, never a constant: SigLIP2's text tower is 64 positions and a
     prose encoder's is hundreds or thousands, and a hardcoded number would
     either truncate one or ask the other for positions its graph has no weights
-    for. `max_position_embeddings` under `text_config` is where a dual encoder
-    declares it; `model_max_length` is the tokenizer's own copy, and is read
-    only as a fallback because it carries a `1e30` sentinel on some repos.
+    for.
+
+    **The MINIMUM of what the config and the tokenizer say, not the first of
+    them, and the reason is RoBERTa.** On RoBERTa and XLM-R
+    `max_position_embeddings` is the usable length PLUS TWO — the offset that
+    leaves room for `padding_idx` — so `intfloat/multilingual-e5-large`-shaped
+    repos declare 514 while their `tokenizer_config` correctly says 512.
+    Preferring the config there truncates at 514, walks position ids past the
+    embedding table, and fails deep inside the graph with a raw onnxruntime
+    gather error that names nothing the user can act on. Taking the min of the
+    two sources gets 512 without this function having to know which
+    architectures carry the offset — the tokenizer is the artefact that was
+    saved for USE, so where the two disagree it is the safer of the two to
+    believe.
+
+    Erring SHORT is the whole point: a sequence shorter than the graph allows
+    costs a little context on very long inputs, which is also exactly what
+    `sentence-transformers` itself does when a repo ships `max_seq_length: 512`
+    beside an 8192-position config. A sequence LONGER than the graph allows is
+    not a degradation, it is a crash.
     """
+    candidates = []
     text_config = config.get("text_config")
     if isinstance(text_config, dict):
-        value = text_config.get("max_position_embeddings")
-        if isinstance(value, int) and 0 < value <= _MAX_TEXT_LENGTH:
-            return value
-    value = config.get("max_position_embeddings")
-    if isinstance(value, int) and 0 < value <= _MAX_TEXT_LENGTH:
-        return value
-    value = tokenizer_config.get("model_max_length")
-    if isinstance(value, int) and 0 < value <= _MAX_TEXT_LENGTH:
-        return value
-    return _DEFAULT_TEXT_LENGTH
+        candidates.append(_declared_length(
+            text_config.get("max_position_embeddings")))
+    candidates.append(_declared_length(config.get("max_position_embeddings")))
+    candidates.append(_declared_length(tokenizer_config.get("model_max_length")))
+    usable = [value for value in candidates if value is not None]
+    return min(usable) if usable else _DEFAULT_TEXT_LENGTH
 
 
 #: A sanity ceiling on what a config may claim, and a floor to fall back to.
-#: `model_max_length` is `1000000000000000019884624838656` on a checkpoint whose
-#: exporter left the sentinel in, and padding EVERY sequence to that is not a
-#: slow call, it is an allocation failure.
+#: The ceiling CLAMPS rather than rejects — see `_declared_length`.
 _MAX_TEXT_LENGTH = 8192
 _DEFAULT_TEXT_LENGTH = 512
+
+#: Above this a length claim is not a claim, it is an unstripped sentinel:
+#: `model_max_length` is `1000000000000000019884624838656` on a checkpoint whose
+#: exporter left it in, and padding EVERY sequence to that is not a slow call,
+#: it is an allocation failure. Discarded rather than clamped, because clamping
+#: it would dress a missing answer up as a real one. A million positions is four
+#: orders of magnitude past the longest real encoder, so nothing is caught here
+#: that a checkpoint meant.
+_SENTINEL_TEXT_LENGTH = 1_000_000
 
 
 def load(model_id, path):
