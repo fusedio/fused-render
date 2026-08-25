@@ -544,7 +544,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   menuEntries.push("separator");
   menuEntries.push({
     href: "/preferences#tours",
-    label: "Tours",
+    // "Help", not "Tours": what a stuck reader scans a settings menu for is
+    // help — the walkthroughs are what the row holds, not what it is named.
+    label: "Help",
     icon: TOURS_ICON,
     submenu: TOURS.map((tour) => ({
       href: `/preferences#tour-${tour.id}`,

@@ -32,7 +32,10 @@ export const homeTour: Tour = {
       // The FIRST app card, not the strip: a pointer at the thing to press.
       // Plain Next on purpose — this is a "cards are pressable" aside, and
       // waiting for the click would send the user out of the tour mid-flow.
-      element: "#home-sec-apps .app-pcard",
+      // :not(.home-skel-card): while apps are still loading the strip shows
+      // skeleton placeholders wearing the same card class, and a step pointed
+      // at one spotlights a shimmer instead of an app.
+      element: "#home-sec-apps .app-pcard:not(.home-skel-card)",
       popover: {
         title: "Open an app",
         description: "Click a card to open the app.",

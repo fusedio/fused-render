@@ -32,10 +32,11 @@ export const explorerTour: Tour = {
   // bare test runtime, and only this one code path may fetch.
   startPath: async () => {
     const { getConfig } = await import("@platform/lib/api");
-    const home = (await getConfig()).home;
-    // The /explorer/view/<path> codec, inlined: leading slash dropped, each
-    // segment URL-encoded (router.ts's viewUrlForFsPath does the same).
-    return "/explorer/view/" + home.replace(/^\//, "").split("/").map(encodeURIComponent).join("/");
+    // The router's own codec, not an inlined split-on-"/": config's `home` is
+    // raw os.path.expanduser("~"), backslash-separated on Windows, and
+    // viewUrlForFsPath is where that is already handled.
+    const { viewUrlForFsPath } = await import("@platform/lib/router");
+    return viewUrlForFsPath((await getConfig()).home);
   },
   autoStart: false,
   steps: () => [

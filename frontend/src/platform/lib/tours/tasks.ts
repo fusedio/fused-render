@@ -63,17 +63,22 @@ export const tasksTour: Tour = {
       },
     ],
     // The press above closes the modal and leaves a real task behind, so the
-    // walkthrough continues over the list. Chained rather than folded into the
-    // steps above for the same reason the modal needed a follow-up: the row does
-    // not exist until the click happens.
+    // walkthrough continues over whichever view the page is showing. Chained
+    // rather than folded into the steps above for the same reason the modal
+    // needed a follow-up: the row does not exist until the click happens.
+    //
+    // ONE step per view, not one step: the first tour step points at the view
+    // switcher without pinning List, so the user may be reading Board or
+    // Calendar by now — and those render cards and chips, not `.tasks-row`.
+    // The three are mutually exclusive on screen, so presentSteps keeps exactly
+    // the one that is real and the other two drop out.
     followUp: {
       trigger: ".schedule-save",
       steps: () => [
         {
-          // ROW ONE, not "the new one": the list is sorted by lane and then by
-          // time (tasks-lib.sortByLane), so an Upcoming task already on the page
-          // outranks a task that just started running. The copy is written to be
-          // true of whichever row that is.
+          // List. ROW ONE, not "the new one": rows sort by lane and then time
+          // (tasks-lib.sortByLane), so an Upcoming task already on the page can
+          // outrank the fresh one. The copy is true of whichever row this is.
           element: ".tasks-row",
           popover: {
             title: "Your tasks",
@@ -85,6 +90,26 @@ export const tasksTour: Tour = {
           // step falls back to a plain Next.
           advanceOn: ".tasks-rowlink",
           actionText: "Open it",
+        },
+        {
+          // Board. The card itself is the press (`.schedule-tv-card` is a
+          // <button>), so a sibling selector advances what this one spotlights.
+          element: ".schedule-tv-board .tasks-card-wrap",
+          popover: {
+            title: "Your tasks",
+            description: "Your tasks land on this board. Click a card to watch its output.",
+          },
+          advanceOn: ".schedule-tv-board .schedule-tv-card",
+          actionText: "Open it",
+        },
+        {
+          // Calendar. A chip is small and opening it goes through a popover,
+          // so this step just points at the grid — plain Next, no advanceOn.
+          element: ".schedule-cal",
+          popover: {
+            title: "Your tasks",
+            description: "Your task is on this calendar — click its chip to watch the output.",
+          },
         },
       ],
     },
