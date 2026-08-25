@@ -108,8 +108,11 @@ def test_clip_is_deliberately_not_curated_on_either_engine():
 
 DUAL_ONNX_IDS = {"onnx-community/siglip2-base-patch16-384-ONNX",
                  "onnx-community/siglip2-so400m-patch14-384-ONNX"}
-PROSE_ONNX_IDS = {"nomic-ai/nomic-embed-text-v1.5",
-                  "intfloat/multilingual-e5-small"}
+# ONE curated prose row, and the singleton is load-bearing rather than
+# incidental: `intfloat/multilingual-e5-small` was here and was removed as a
+# scope decision (see `catalog.py`'s own note), and it was the only curated
+# prose model `formats.MLX_EMBED_MODEL_TYPES` admitted.
+PROSE_ONNX_IDS = {"nomic-ai/nomic-embed-text-v1.5"}
 ONNX_IDS = DUAL_ONNX_IDS | PROSE_ONNX_IDS
 
 
@@ -175,14 +178,18 @@ def test_all_MiniLM_is_deliberately_not_curated():
         assert not any("minilm" in repo_id.lower() for repo_id in ids)
 
 
-def test_the_prose_rows_lead_the_onnx_list():
+def test_the_prose_row_leads_the_onnx_list():
     """Position 0 IS the default (`default_for`), so this is the same fact as
     the default test above, asserted structurally — a re-order is what would
-    change it, and a re-order is invisible in a diff of two dicts."""
+    change it, and a re-order is invisible in a diff of two dicts.
+
+    The dual encoders follow it, and that ordering is what the smallest-first
+    rule produces rather than a preference: the prose fetch is 0.55 GB against
+    the base export's 1.54 GB.
+    """
     ids = [entry["id"] for entry in catalog.SUGGESTIONS["onnx-embed"]]
-    assert ids[:2] == ["nomic-ai/nomic-embed-text-v1.5",
-                       "intfloat/multilingual-e5-small"]
-    assert set(ids[2:]) == DUAL_ONNX_IDS
+    assert ids[0] == "nomic-ai/nomic-embed-text-v1.5"
+    assert set(ids[1:]) == DUAL_ONNX_IDS
 
 
 def test_the_onnx_sizes_are_the_FETCHED_set_not_the_whole_snapshot():
@@ -201,11 +208,10 @@ def test_the_onnx_sizes_are_the_FETCHED_set_not_the_whole_snapshot():
     by_id = {entry["id"]: entry for entry in catalog.SUGGESTIONS["onnx-embed"]}
     assert by_id["onnx-community/siglip2-base-patch16-384-ONNX"]["size_gb"] == 1.5
     assert by_id["onnx-community/siglip2-so400m-patch14-384-ONNX"]["size_gb"] == 4.6
-    # The prose rows deviate further: their repos ship a full safetensors copy
-    # AND (for e5) an OpenVINO one beside the quantizations, so the whole
-    # snapshot is four to five times the fetch.
+    # The prose row deviates further: its repo ships a full safetensors copy
+    # beside the eight quantizations, so the whole snapshot is four times the
+    # fetch.
     assert by_id["nomic-ai/nomic-embed-text-v1.5"]["size_gb"] == 0.5
-    assert by_id["intfloat/multilingual-e5-small"]["size_gb"] == 0.5
 
 
 def test_every_id_still_appears_in_exactly_one_list():

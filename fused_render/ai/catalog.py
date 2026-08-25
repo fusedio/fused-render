@@ -791,6 +791,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # model — which would price a Mac's default above the SigLIP2 it replaced.
     # Fixing that is a download-scoping change to `mlx_embed.download` and is
     # deliberately not smuggled in here.
+    #
+    # **And that change is now the ONLY way to close the gap, which was not true
+    # a moment ago.** While `intfloat/multilingual-e5-small` was curated under
+    # `onnx-embed` there was a shortcut available: it is `model_type: bert` (a
+    # `BertModel` with an XLM-R sentencepiece tokenizer), which
+    # `formats.MLX_EMBED_MODEL_TYPES` admits, so the row could have been copied
+    # or aliased into this list and a Mac would have had a curated prose encoder
+    # for the cost of one literal. It was removed (see the `onnx-embed` block's
+    # own note), and the curated prose set is now nomic alone — `nomic_bert`,
+    # which MLX has no module for. So the curated prose set is ONNX-ONLY BY
+    # CONSTRUCTION: there is no existing row left to borrow, and any fix here has
+    # to start by scoping this engine's download. Read that as a cost, not as a
+    # prohibition — but do not go looking for the cheap version, because it is
+    # gone on purpose.
     "mlx-embed": [
         {
             "id": "google/siglip2-base-patch16-384",
@@ -836,16 +850,14 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # is a deliberate exception to this file's own convention.** Everywhere else
     # the figure is the Hub's per-file byte sum for the entire repo, because
     # that is what `download_snapshot` actually pulls — and the CLIP rejection
-    # note below rests on exactly that reading. These two repos break the
-    # assumption behind it: they publish EIGHT quantizations of each tower side
-    # by side, so the whole snapshot is 11.42 GB for the base export and 29.5 GB
-    # for the so400m, none of which this app fetches.
+    # note below rests on exactly that reading. Every repo in this list breaks
+    # the assumption behind it: they publish EIGHT quantizations of each tower
+    # side by side, so the whole snapshot is 11.42 GB for the base export and
+    # 29.5 GB for the so400m, none of which this app fetches.
     # `runners/onnx_embed.py`'s `download()` pins `allow_patterns` to the fp32
     # graphs plus the tokenizer, and the figures below are that set:
     #   nomic:   573,899,776 graph + tokenizer + pooling config = 0.55 GB
     #            (whole repo 2.2 GB — eight quantizations plus a safetensors copy)
-    #   e5:      493,097,472 graph + sentencepiece + tokenizer = 0.49 GB
-    #            (whole repo 2.3 GB — it also ships openvino and a .bin)
     #   base:    390,995,264 vision + 1,184,301,056 text + 34,362,880 tokenizer
     #            + configs = 1.54 GB
     #   so400m:  1,796,589,568 vision + 2,968,151,040 text (0.6 MB of graph plus
@@ -858,7 +870,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # asserts the on-disk total against these numbers on a machine that really
     # downloaded one, which is the only place the pin can be checked.
     #
-    # **THE PROSE ROWS LEAD THIS LIST, and that is the user-visible change on
+    # **THE PROSE ROW LEADS THIS LIST, and that is the user-visible change on
     # this branch.** A bare `fused.ai.embed({texts})` used to load a 64-token
     # caption encoder; it now loads a 2048-token paragraph encoder. That is the
     # point of widening the capability — a SigLIP text tower truncates at 64
@@ -867,13 +879,13 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # who indexed a corpus with the old default has to re-index: the two models'
     # vectors are not comparable, and nothing can detect that they are not.
     #
-    # Smallest first, per the module rule, so the smallest PROSE row is what a
-    # bare `fused.ai.embed()` loads on any machine that resolves to this engine.
-    # The two SigLIP2 exports keep their places below it: 768 dimensions is a
-    # comfortable vector to keep a few thousand of in a page, and the so400m is
-    # the accuracy option at three times the disk and three times the compute
-    # per item, with 1152-dim vectors that are a third more storage for whoever
-    # is keeping them.
+    # Smallest first, per the module rule, which puts the ONE prose row at
+    # position 0 — so it is what a bare `fused.ai.embed()` loads on any machine
+    # that resolves to this engine. The two SigLIP2 exports sit below it: 768
+    # dimensions is a comfortable vector to keep a few thousand of in a page, and
+    # the so400m is the accuracy option at three times the disk and three times
+    # the compute per item, with 1152-dim vectors that are a third more storage
+    # for whoever is keeping them.
     #
     # **A CLIP export is deliberately absent**, and it is the entry a future
     # reader is most likely to try to add — CLIP is the famous one and it is
@@ -912,7 +924,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # **`BAAI/bge-base-en-v1.5` is absent for the same structural reason, and
     # this one IS a deviation from the plan worth naming.** It is a good
     # retrieval encoder with a known scheme, and its fetched fp32 set is 0.44 GB
-    # — SMALLER than either row below. Under the smallest-first rule that makes
+    # — SMALLER than the prose row below. Under the smallest-first rule that makes
     # it position 0 and therefore the default, and it is English-only at 512
     # tokens: a worse default than a 2048-token one for a capability whose whole
     # point is paragraphs, and a narrower one than the multilingual SigLIP2 the
@@ -921,6 +933,27 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # docstring explicitly rejects. It loads fine if a user fetches it
     # themselves, and its scheme is in `TEXT_EMBED_SCHEMES` for exactly that
     # case.
+    #
+    # **`intfloat/multilingual-e5-small` was curated here and was REMOVED — a
+    # scope decision, not a defect.** It is a good encoder: 100 languages in one
+    # space at 384-dim, 512 tokens, a known `e5` scheme, and a 0.49 GB fetch. It
+    # loads fine when fetched by hand, and its scheme stays in
+    # `TEXT_EMBED_SCHEMES` so that a user who does gets prompted correctly. What
+    # went was the RECOMMENDATION: one curated prose encoder is the shortlist
+    # this capability wants, and a second one that is smaller-but-shorter-context
+    # is a comparison put in front of a reader who came to embed a paragraph.
+    #
+    # **It leaves one constraint behind, and it is the reason this note is here
+    # rather than in a commit message.** e5-small is `model_type: bert` (a
+    # `BertModel` with an XLM-R sentencepiece tokenizer), which is in
+    # `formats.MLX_EMBED_MODEL_TYPES`; nomic is `nomic_bert`, which is not. So e5
+    # was the ONLY curated prose model MLX could open, and with it gone the
+    # curated prose set is ONNX-ONLY BY CONSTRUCTION. The Mac prose gap can
+    # therefore no longer be closed by aliasing or copying a row that already
+    # exists — it strictly requires the `mlx_embed.download` scoping change the
+    # `mlx-embed` block above describes. Re-adding an `xlm-roberta` or `bert`
+    # prose row here would reopen that shortcut; that is a decision, not a
+    # cleanup.
     "onnx-embed": [
         {
             "id": "nomic-ai/nomic-embed-text-v1.5",
@@ -936,17 +969,6 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "The default: 2048 tokens of context and 768-dim vectors, "
                     "so a whole paragraph embeds at once — what makes document "
                     "search and RAG possible at all.",
-        },
-        {
-            "id": "intfloat/multilingual-e5-small",
-            "params": "118M",
-            "label": "Multilingual E5 small",
-            "nickname": "E5 small",
-            # onnx/model.onnx 470.27 MB + tokenizer.json 17.08 MB +
-            # sentencepiece.bpe.model 5.07 MB + configs = 0.49 GB.
-            "size_gb": 0.5,
-            "note": "100 languages in one space, at 384-dim — a third of the "
-                    "storage per vector, for 512 tokens rather than 2048.",
         },
         {
             "id": "onnx-community/siglip2-base-patch16-384-ONNX",

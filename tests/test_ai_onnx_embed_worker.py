@@ -498,10 +498,12 @@ def test_no_model_loaded_is_a_plain_runtime_error(worker):
 #
 # The same runner, one session instead of two, no image preprocessing, and a
 # retrieval prefix in front of every text. The fake graph here emits
-# `last_hidden_state` and NOTHING else, which is what all three curated prose
-# exports really do (`nomic-embed-text-v1.5`, `multilingual-e5-small` and
-# `bge-base-en-v1.5`, read out of their own graph protobufs) — so the pooling
-# happens here rather than in the export, and the mask is what makes it correct.
+# `last_hidden_state` and NOTHING else, which is what every prose export this
+# runner has been checked against really does (`nomic-embed-text-v1.5`,
+# `multilingual-e5-small` and `bge-base-en-v1.5`, read out of their own graph
+# protobufs — only the first is curated, and the contract has to hold for any
+# export rather than just the shortlist) — so the pooling happens here rather
+# than in the export, and the mask is what makes it correct.
 
 
 def _prose_session(outputs=("last_hidden_state",)):

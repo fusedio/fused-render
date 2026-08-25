@@ -162,10 +162,12 @@ _POOLED_OUTPUT = "pooler_output"
 #: `sentence_embedding` is a fully-pooled output: a sentence-transformers export
 #: that ran the pooling and normalization modules into the graph, so it IS the
 #: vector and this runner must not pool it again. `last_hidden_state` is
-#: per-token and needs pooling here, which is what all three curated prose
-#: exports actually publish — checked directly against
+#: per-token and needs pooling here, which is what every prose export this
+#: runner has been checked against actually publishes — read directly out of
 #: `nomic-embed-text-v1.5`, `multilingual-e5-small` and `bge-base-en-v1.5`'s own
-#: graph protobufs, none of which emits a pooled output at all.
+#: graph protobufs, none of which emits a pooled output at all. (Only the first
+#: is curated; the other two are loadable by hand, and all three were probed
+#: because the CONTRACT has to hold for any export, not just the shortlist.)
 #:
 #: **`pooler_output` is deliberately NOT in this tuple, and that is the trap
 #: worth naming.** A BERT graph may well publish one, and it is the CLS token
