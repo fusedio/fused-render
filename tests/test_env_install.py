@@ -2082,14 +2082,15 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
     assert not os.path.exists(os.path.join(proj, ".venv"))
 
 
-def test_no_explicit_cache_leaves_UV_CACHE_DIR_unset_and_creates_nothing(
+def test_no_explicit_cache_leaves_an_unset_UV_CACHE_DIR_unset(
         tmp_path, monkeypatch):
     """`None` (the ordinary case now — see `projectenv.uv_cache_dir()`) means
-    "let uv pick its own default", which only works if `UV_CACHE_DIR` is
-    genuinely ABSENT from the environment, not set to an empty string uv
-    would treat as a real, nonsensical path. Per-branch cache fragmentation
-    came from this being unconditional; this pins the fix.
+    "let uv pick its own default" — not set to an empty string uv would
+    treat as a real, nonsensical path, and not stripped from the ambient
+    environment either if one happens to be there (see the sibling test
+    below). This pins the plain case: nothing ambient, nothing added.
     """
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
     proj = _project(tmp_path, deps=["pip"])
     venv_dir = str(tmp_path / "home" / "venvs" / "abc")
     worker = _worker_module("_env_install_worker_no_cache")
@@ -2098,8 +2099,15 @@ def test_no_explicit_cache_leaves_UV_CACHE_DIR_unset_and_creates_nothing(
 
     def _fake_run(cmd, **kw):
         seen["env"] = kw.get("env")
-        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
-        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+        # Derived from `_venv_python`, not re-spelled as `bin/python`: that
+        # function returns `Scripts\python.exe` on Windows, and a literal
+        # POSIX path here is exactly the class of bug `fd50fc88` fixed once
+        # already ("uv sync reported success ... but left no interpreter
+        # at ...python.exe") — a bug in the TEST's assumed venv layout, not
+        # in `_build`.
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
 
         class _P:
             returncode = 0
@@ -2116,6 +2124,53 @@ def test_no_explicit_cache_leaves_UV_CACHE_DIR_unset_and_creates_nothing(
 
     assert "UV_CACHE_DIR" not in seen["env"]
     assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
+
+
+def test_no_explicit_cache_passes_through_an_ambient_UV_CACHE_DIR_unchanged(
+        tmp_path, monkeypatch):
+    """The failure this pins: CI's own `setup-uv` action exports
+    `UV_CACHE_DIR` (observed in CI as
+    `/home/runner/work/_temp/setup-uv-cache`), and `uv_cache_dir()` answering
+    `None` there is not the same fact as `UV_CACHE_DIR` being absent — it
+    means WE have no opinion, and `_uv_env`'s base is a plain copy of
+    `os.environ`, so whatever is already there rides along untouched.
+
+    That is deliberate, not an oversight worth "fixing" by stripping it:
+    the whole point of deferring to uv's own default (see
+    `projectenv.uv_cache_dir()`) is to stop IMPOSING a cache location —
+    and actively deleting an operator's own `UV_CACHE_DIR` would impose a
+    different one ("no cache override", asserted rather than just not
+    contributed) that nobody asked for and that would surprise anyone who
+    set it on purpose. Honouring it is consistent with "defer to uv";
+    uv itself would honour exactly the same variable if invoked by hand.
+    """
+    monkeypatch.setenv("UV_CACHE_DIR", "/home/runner/work/_temp/setup-uv-cache")
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ambient_cache")
+
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, None, "3.12")
+
+    assert seen["env"]["UV_CACHE_DIR"] == "/home/runner/work/_temp/setup-uv-cache"
 
 
 @requires_fused
