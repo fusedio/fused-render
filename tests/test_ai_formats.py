@@ -870,15 +870,129 @@ def test_the_onnx_family_tuple_names_all_four_execution_providers():
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
+# -- embeddings, the prose encoders ---------------------------------------------
+#
+# The capability widened past dual encoders: a text-only encoder (`bert`,
+# `xlm-roberta`, `nomic_bert`, `modernbert`) loads under `embeddings` too. The
+# gate is the same `model_type` field and the same early `return`; what changed is
+# the SET it is matched against, and that the set now has two halves — a repo
+# with a vision tower and a repo without.
+
+
+def _bert_config():
+    return {"model_type": "bert"}
+
+
+def _nomic_config():
+    return {"model_type": "nomic_bert"}
+
+
+def test_a_prose_onnx_export_resolves_to_the_four_onnx_rows():
+    """`BAAI/bge-base-en-v1.5`'s layout: `model_type: bert`, one `onnx/model.onnx`
+    and no vision tower anywhere. This is the whole point of Stage 3 — the same
+    engine, the same branch, a checkpoint that was invisible to it before."""
+    codes = formats.loaders(
+        repo_id="BAAI/bge-base-en-v1.5",
+        names={"config.json", "tokenizer.json", "vocab.txt"}, dirnames={"onnx"},
+        config=_bert_config(), torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_a_prose_SAFETENSORS_snapshot_is_NOT_offered_to_the_text_runner():
+    """**The failure this task could most easily ship**, and it is the one the
+    Parakeet comment in `loaders()` documents: a prose encoder is a directory of
+    safetensors indistinguishable in SHAPE from a chat checkpoint, so without the
+    embed branch's early `return` the text branch below would claim
+    `BAAI/bge-base-en-v1.5` and the page would offer a Load button that opens a
+    768-dim encoder as a chat model — a model that can never generate a token.
+
+    `bert` is in `MLX_EMBED_MODEL_TYPES`, so this one is genuinely loadable by
+    mlx-embeddings and comes back with that row alone.
+    """
+    codes = formats.loaders(
+        repo_id="BAAI/bge-base-en-v1.5", names={"model.safetensors"},
+        dirnames=set(), config=_bert_config(), torch_weights=True)
+    assert "mlx-text" not in codes
+    assert set(codes) == {"mlx-embed"}
+
+
+def test_a_prose_family_MLX_CANNOT_READ_still_claims_nothing_rather_than_chat():
+    """`nomic_bert` is a real prose encoder and mlx-embeddings ships no module
+    for it, so a safetensors snapshot of one is "an embedding model nothing here
+    can load". The early `return` has to hold for that case too — it is the one
+    where `found` is EMPTY, which is exactly when a fallthrough looks harmless.
+    """
+    codes = formats.loaders(
+        repo_id="nomic-ai/nomic-embed-text-v1.5", names={"model.safetensors"},
+        dirnames=set(), config=_nomic_config(), torch_weights=True)
+    assert codes == ()
+
+
+def test_the_same_nomic_checkpoint_loads_from_its_onnx_export():
+    """…and the pair above is not a gap in the capability, just in one engine:
+    the ONNX runner has no per-architecture module list to be missing an entry
+    from. This is why `nomic_bert` is a curated ONNX row and not an MLX one."""
+    codes = formats.loaders(
+        repo_id="nomic-ai/nomic-embed-text-v1.5",
+        names={"config.json", "tokenizer.json"}, dirnames={"onnx"},
+        config=_nomic_config(), torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_the_two_model_type_sets_are_disjoint_and_their_union_is_the_gate():
+    """Two halves because `paths` is gated on one of them (a vision tower exists
+    or it does not), and one union because `loaders()` asks a single question: is
+    this an embedding checkpoint at all."""
+    assert not (formats.DUAL_EMBED_MODEL_TYPES & formats.TEXT_EMBED_MODEL_TYPES)
+    assert formats.EMBED_MODEL_TYPES == (
+        formats.DUAL_EMBED_MODEL_TYPES | formats.TEXT_EMBED_MODEL_TYPES)
+    assert formats.DUAL_EMBED_MODEL_TYPES == {"siglip", "clip"}
+    assert formats.TEXT_EMBED_MODEL_TYPES == {
+        "bert", "xlm-roberta", "nomic_bert", "modernbert"}
+
+
+def test_the_mlx_subset_is_what_mlx_embeddings_actually_ships():
+    """A subset of the gate, never a superset: a family `loaders()` does not
+    recognise as an embedding model can never reach the MLX check, so an entry
+    here that is not in the union above is a line nothing can read.
+
+    The contents are `mlx-embeddings` 0.1.0's own module list, intersected with
+    the gate: `siglip`, `bert`, `modernbert` and `xlm_roberta` are modules it
+    ships; `nomic_bert` and `clip` are not, and both are therefore ONNX-only
+    here. (It also ships `qwen3`, `gemma3_text`, `lfm2` and several ColBERT/VLM
+    ports whose `model_type`s are CHAT architectures — indistinguishable by this
+    field from a generative checkpoint — so admitting them to the gate would
+    route every Qwen3 chat model to the embedding runner. They stay out, which
+    is `is_parakeet_checkpoint`'s lesson about evidence that does not
+    distinguish.)
+    """
+    assert formats.MLX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    assert formats.MLX_EMBED_MODEL_TYPES == {
+        "siglip", "bert", "xlm-roberta", "modernbert"}
+
+
 def test_embed_model_type_is_case_and_whitespace_tolerant():
     assert formats.embed_model_type({"model_type": " SigLIP "}) == "siglip"
     assert formats.embed_model_type({"model_type": "CLIP"}) == "clip"
+
+
+def test_embed_model_type_answers_for_a_prose_family_too():
+    """One function, both halves of the gate — `loaders()` asks it once and then
+    asks which half the answer is in. A second function per half would be two
+    places to forget a family in."""
+    assert formats.embed_model_type({"model_type": "bert"}) == "bert"
+    assert formats.embed_model_type({"model_type": "XLM-RoBERTa"}) == "xlm-roberta"
+    assert formats.embed_model_type({"model_type": "nomic_bert"}) == "nomic_bert"
+    assert formats.embed_model_type({"model_type": "ModernBERT"}) == "modernbert"
 
 
 def test_embed_model_type_rejects_anything_else():
     assert formats.embed_model_type({"model_type": "llama"}) is None
     assert formats.embed_model_type({}) is None
     assert formats.embed_model_type({"model_type": 123}) is None
+    # A chat architecture that mlx-embeddings HAPPENS to have a module for stays
+    # out — see `test_the_mlx_subset_is_what_mlx_embeddings_actually_ships`.
+    assert formats.embed_model_type({"model_type": "qwen3"}) is None
 
 
 def test_the_embed_codes_are_decisive():

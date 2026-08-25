@@ -200,6 +200,13 @@ DIFFUSERS_INDEX = "model_index.json"
 #: checkpoint holding a text tower and a vision tower that project into one
 #: space, which is what `get_text_features` / `get_image_features` are.
 #:
+#: **This set is what makes `paths` legal**, and it is the only reason the
+#: embedding gate has two halves rather than one: a request carrying image paths
+#: needs a vision tower to feed them to, and the families here have one while the
+#: families below do not (`ai_runtime._accepts_paths` answers the same question
+#: off the cached `config.json`, since a fine-tune's `model_type` may be
+#: anything).
+#:
 #: **`siglip` covers SigLIP AND SigLIP2**: `google/siglip2-base-patch16-384`
 #: and `onnx-community/siglip2-base-patch16-384-ONNX` both
 #: declare `"model_type": "siglip"` (checked 2026-08-25, and it is what makes
@@ -210,15 +217,54 @@ DIFFUSERS_INDEX = "model_index.json"
 #: Read off the config rather than the repo id, for `is_parakeet_checkpoint`'s
 #: reason: a fine-tune under somebody's own account is the same format and
 #: deserves the same tag.
-EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
+DUAL_EMBED_MODEL_TYPES = frozenset({"siglip", "clip"})
 
-#: …and the subset MLX reads. Same field, shorter list: mlx-embeddings has a
-#: SigLIP port and no CLIP one, so a CLIP checkpoint in SAFETENSORS is loadable
-#: by nothing here at all — the ONNX runner reads a `clip` export happily, but
-#: it reads the export and not the safetensors. Split rather than shared because
-#: this is exactly what `loaders()` answers: a Mac that resolved to MLX must not
-#: be offered a Load for a checkpoint its engine has no module for.
-MLX_EMBED_MODEL_TYPES = frozenset({"siglip"})
+#: …and the TEXT-ONLY encoders, which the `embeddings` capability also serves:
+#: one tower, no vision half, hundreds or thousands of tokens of context instead
+#: of a caption's 64. These are what make RAG, document search and clustering
+#: possible at all — a SigLIP text tower truncates at 64 tokens, so no chunk size
+#: makes it a paragraph encoder.
+#:
+#: **Four families, and the boundary is "does this `model_type` distinguish an
+#: encoder from a generative model".** `bert`, `xlm-roberta`, `nomic_bert` and
+#: `modernbert` are encoder-only architectures: nothing generative wears those
+#: strings, so the field is real evidence. Deliberately ABSENT are `qwen3`,
+#: `gemma3_text`, `lfm2` and the rest of the decoder-derived embedding ports —
+#: `mlx-embeddings` genuinely ships modules for several of them, but their
+#: `model_type` is the CHAT architecture's, so admitting them here would route
+#: every Qwen3 chat checkpoint on the disk to the embedding runner. That is
+#: `is_parakeet_checkpoint`'s lesson restated: evidence that does not
+#: distinguish is not evidence.
+TEXT_EMBED_MODEL_TYPES = frozenset({"bert", "xlm-roberta", "nomic_bert",
+                                    "modernbert"})
+
+#: The gate `loaders()` actually asks — "is this an embedding checkpoint at all"
+#: — which is one question with one answer, so it is the union. The two halves
+#: above are for the callers that need to know WHICH kind, and there are exactly
+#: two: the `paths` refusal at the route, and this file's own MLX subset.
+EMBED_MODEL_TYPES = DUAL_EMBED_MODEL_TYPES | TEXT_EMBED_MODEL_TYPES
+
+#: …and the subset MLX reads. Same field, shorter list, and it is
+#: `mlx-embeddings` 0.1.0's own module directory intersected with the gate above:
+#: it ships `siglip.py`, `bert.py`, `modernbert.py` and `xlm_roberta.py` (the
+#: loader sanitizes `-` to `_` when it imports by `model_type`, which is why
+#: `xlm-roberta` is spelled with the hyphen the config uses).
+#:
+#: Two families are therefore ONNX-ONLY here. `clip`: mlx-embeddings has no CLIP
+#: port, so a CLIP checkpoint in SAFETENSORS is loadable by nothing at all — the
+#: ONNX runner reads a `clip` export happily, but it reads the export and not the
+#: safetensors. `nomic_bert`: same story, and it is the reason the curated
+#: default is an ONNX row rather than one both engines share.
+#:
+#: A SUBSET of `EMBED_MODEL_TYPES`, never a superset: a family the gate does not
+#: recognise can never reach the MLX check in `loaders()`, so an entry here that
+#: is not in the union above would be a line nothing can read.
+#:
+#: Split rather than shared because this is exactly what `loaders()` answers: a
+#: Mac that resolved to MLX must not be offered a Load for a checkpoint its
+#: engine has no module for.
+MLX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
+                                   "modernbert"})
 
 #: Repo id -> the ONE file this app fetches out of it, and what it is a part of.
 #:
@@ -1046,10 +1092,17 @@ def is_parakeet_checkpoint(config: dict) -> bool:
 
 
 def embed_model_type(config: dict) -> str | None:
-    """The dual-encoder family this config declares, or None.
+    """The embedding family this config declares, or None.
+
+    EITHER half of the gate — a dual encoder (`DUAL_EMBED_MODEL_TYPES`) or a
+    text-only one (`TEXT_EMBED_MODEL_TYPES`). One function for both, because
+    `loaders()` asks a single question ("is this an embedding checkpoint") and
+    only then asks which half the answer is in; a function per half would be two
+    places to forget a family in, and the halves are already two constants.
 
     Lowercased, because `model_type` is written by whoever exported the
-    checkpoint and a `SigLIP` would otherwise read as an unknown family.
+    checkpoint and a `SigLIP` or a `ModernBERT` would otherwise read as an
+    unknown family.
     """
     model_type = config.get("model_type")
     if not isinstance(model_type, str):
@@ -1229,10 +1282,24 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
             found.extend(ONNX_EMBED_RUNNERS)
         # …and NOTHING else, for the `.gguf` branch's reason: an embedding
         # snapshot is a directory of weights like any other, so the text branch
-        # below would claim it and the page would offer to load a dual encoder
-        # as a chat model. Load-bearing for BOTH layouts — an ONNX export ships
-        # `tokenizer.json` and a `config.json` and would fall through just as
-        # readily as a safetensors one.
+        # below would claim it and the page would offer to load an encoder as a
+        # chat model. Load-bearing along two axes now, not one:
+        #
+        # * both LAYOUTS — an ONNX export ships `tokenizer.json` and a
+        #   `config.json` and would fall through just as readily as a
+        #   safetensors one;
+        # * both FAMILIES — and the prose half is the sharper case. A dual
+        #   encoder at least has a vision tower to make it obviously not a chat
+        #   model; `BAAI/bge-base-en-v1.5` is a directory of safetensors with a
+        #   `bert` config, byte-for-byte the shape `mlx-text` reads, and it can
+        #   never generate a token.
+        #
+        # It returns even when `found` is EMPTY, which is the case a fallthrough
+        # looks harmless in: a `nomic_bert` SAFETENSORS snapshot is loadable by
+        # nothing here (mlx-embeddings has no module for it and this is not an
+        # ONNX export), and "an embedding model nothing here can load" is the
+        # correct answer — not "matches nothing here, so fall through to whatever
+        # else recognises the file layout."
         return tuple(found)
     # A directory of safetensors, which since D416 exactly one engine here
     # reads: `mlx-text`. This branch used to fork — an MLX-packed checkpoint
