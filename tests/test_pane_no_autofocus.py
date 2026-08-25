@@ -140,8 +140,16 @@ def test_a_bounced_focus_and_a_scrollintoview_both_ask_for_the_pin():
     # Let through, not blocked: the page's own containers are what the author
     # meant to scroll, and only the part that escaped the frame is undone.
     patch = _fn(RUNTIME, "    Element.prototype.scrollIntoView = function", "\n    };\n")
-    assert "realScrollIntoView.apply(this, arguments)" in patch
+    assert "realScrollIntoView.call(this, opts)" in patch
     assert "pinThumbScroll()" in patch
+    # Forced instant, which is what makes ONE pin provably enough: a smooth
+    # scroll has not moved the embedder when the call returns, it animates over
+    # later rendering updates, and each of those fires a scroll event this
+    # shell records as the reader's own value — so a chasing pin would be
+    # racing the animation to define where the reader was. `instant` and not
+    # `auto`, because `auto` defers to a `scroll-behavior: smooth` up the chain.
+    assert 'opts.behavior = "instant";' in patch
+    assert "requestAnimationFrame" not in patch
     # …and restored with the rest of the suppression on the first real gesture.
     assert "Element.prototype.scrollIntoView = realScrollIntoView;" in runtime
 

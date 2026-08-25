@@ -485,25 +485,36 @@
     // (which cannot be scrolled by the reader anyway) that is harmless. Only
     // the part that escaped the frame is undone, by the side that owns it.
     //
-    // Pinned across the next couple of frames as well as immediately, because
-    // `behavior: "smooth"` means the embedder has not moved yet when this
-    // returns — it animates over the following frames, and a pin that ran only
-    // now would find nothing displaced and let the whole animation through.
-    // Each late pin is still discriminating rather than a blind reset: a scroll
-    // event is dispatched every rendering update, so anything the READER did in
-    // between has already been recorded as the new remembered value.
+    // The behaviour is forced to `instant` first, and that is what makes the
+    // single pin below provably enough. A SMOOTH scroll — asked for by the
+    // caller, or by a `scroll-behavior: smooth` anywhere up the chain, which is
+    // why `auto` is not sufficient — has not moved the embedder at all when this
+    // returns: it animates over later rendering updates, each of which fires a
+    // scroll event that this shell's listener records as the reader's own value,
+    // so a chasing pin would be racing an animation to be the first to define
+    // "where the reader was". Instant makes the displacement synchronous, and a
+    // scroll event is always dispatched strictly later than the offset change
+    // that caused it — so the pin that runs on the next line sees the real
+    // before-value and the real after-value, every time.
+    //
+    // A thumbnail is a picture and is owed no animation. The pane is under
+    // `_nofocus` too, so a preview's BOOT-PATH smooth scroll lands instantly
+    // until the reader's first gesture lifts the suppression — a deliberate
+    // trade, and only until then.
     var realScrollIntoView = Element.prototype.scrollIntoView;
-    Element.prototype.scrollIntoView = function () {
-      var r = realScrollIntoView.apply(this, arguments);
-      pinThumbScroll();
-      try {
-        requestAnimationFrame(function () {
-          pinThumbScroll();
-          requestAnimationFrame(pinThumbScroll);
-        });
-      } catch (e) {
-        /* no rAF: the immediate pin covers an instant scroll, which is the default */
+    Element.prototype.scrollIntoView = function (arg) {
+      // The three argument shapes, kept faithful: `false` aligns to the end,
+      // `true`/nothing to the start, an options object keeps its own alignment.
+      var opts = { block: arg === false ? "end" : "start", inline: "nearest" };
+      if (arg && typeof arg === "object") {
+        opts = {};
+        for (var k in arg) {
+          if (Object.prototype.hasOwnProperty.call(arg, k)) opts[k] = arg[k];
+        }
       }
+      opts.behavior = "instant";
+      var r = realScrollIntoView.call(this, opts);
+      pinThumbScroll();
       return r;
     };
 
