@@ -743,15 +743,45 @@ def test_a_clip_SAFETENSORS_snapshot_resolves_to_nothing_at_all():
     assert codes == ()
 
 
-def test_a_clip_ONNX_export_resolves_to_the_four_onnx_rows():
-    """The other half of the pair above, and the reason that one is not a
-    regression: `onnxruntime` has no per-architecture module list to be missing
-    a `clip` entry from — it runs whatever graph it is handed."""
+def test_a_clip_ONNX_export_resolves_NOWHERE_and_is_not_offered_as_chat():
+    """**`clip` was withdrawn from `ONNX_EMBED_MODEL_TYPES` deliberately.**
+
+    This used to resolve to the four ONNX rows on the argument that
+    `onnxruntime` has no per-architecture module list — true of onnxruntime, and
+    not true of this RUNNER, whose output names and image geometry were verified
+    against SigLIP2 exports and nothing else. A CLIP export publishes PROJECTED
+    `text_embeds`/`image_embeds`, so the `pooler_output` lookup either raises or
+    reads the unprojected state and leaves the towers in different spaces; and
+    `_image_settings` ignores the `crop_size`/`do_center_crop` that CLIP's
+    resize-then-center-crop needs. Both give a confident wrong vector rather than
+    an error, which is the failure this file is least able to detect.
+
+    **`clip` stays in `DUAL_EMBED_MODEL_TYPES` even so, and the second assertion
+    is why.** The gate is what makes `loaders()` return EARLY; drop `clip` from it
+    and a CLIP snapshot falls through to the text branch and gets offered as a
+    chat model — a worse answer than "nothing here loads this". Verified: taking
+    it out of the gate turned this into `('mlx-text',)`.
+    """
     codes = formats.loaders(
         repo_id="onnx-community/clip-vit-base-patch32-ONNX",
         names=_onnx_export_names(), dirnames={"onnx"}, config=_clip_config(),
         torch_weights=False, onnx_weights=True)
-    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+    assert codes == ()
+    assert "mlx-text" not in codes
+
+
+def test_the_two_engine_subsets_are_both_subsets_of_the_gate():
+    """Neither engine may claim a family the gate does not recognise — such an
+    entry is a line nothing can read — and between them they must not silently
+    cover everything, or the gate's early `return` would be the only thing left
+    deciding what loads."""
+    assert formats.MLX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    assert formats.ONNX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    # `clip` is in the gate and in neither engine's set: recognised as an
+    # embedding checkpoint, claimed by nothing. See `ONNX_EMBED_MODEL_TYPES`.
+    unclaimed = formats.EMBED_MODEL_TYPES - (
+        formats.MLX_EMBED_MODEL_TYPES | formats.ONNX_EMBED_MODEL_TYPES)
+    assert unclaimed == {"clip"}
 
 
 def test_an_embed_config_with_no_torch_weights_loads_nowhere():

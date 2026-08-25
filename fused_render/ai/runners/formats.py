@@ -326,6 +326,38 @@ def has_task_head(config: dict) -> bool:
 MLX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
                                    "modernbert"})
 
+#: …and the subset the ONNX runner reads, which is the same idea as
+#: `MLX_EMBED_MODEL_TYPES` and exists for the same sentence: an engine must not
+#: be offered a Load for a family it has not been verified against.
+#:
+#: **`clip` is the one family in the gate and in NEITHER engine's set, and that
+#: is deliberate.** Every constant in `runners/onnx_embed.py` was checked against
+#: SigLIP2 exports and nothing else, and CLIP differs in two ways that each
+#: produce a confident wrong answer rather than an error:
+#:
+#: * a CLIP export publishes PROJECTED `text_embeds` / `image_embeds`, so
+#:   `_output_index(session, "pooler_output", ...)` either raises or reads the
+#:   unprojected pooled state — which leaves the two towers in different spaces,
+#:   and a cosine across them is meaningless while still looking like a number
+#:   between -1 and 1;
+#: * `_image_settings` ignores `crop_size` and `do_center_crop`, and CLIP
+#:   RESIZES THEN CENTER-CROPS where SigLIP resizes outright, so pixels reach the
+#:   vision tower framed differently from training.
+#:
+#: To re-admit it: get a real CLIP export into the loop, confirm which outputs
+#: its graphs actually declare and read the projected pair, and take the
+#: resize-then-crop geometry off `preprocessor_config.json`. Until someone has
+#: run that, this module's own standard applies — constants come off the config,
+#: not off an assumption.
+#:
+#: It stays in `DUAL_EMBED_MODEL_TYPES` all the same, and removing it from there
+#: would be the wrong fix: the gate is what makes `loaders()` return EARLY, and
+#: without that a CLIP snapshot falls through to the text branch and is offered
+#: as a CHAT model — a worse answer than "nothing here loads this", and one an
+#: existing test already pins.
+ONNX_EMBED_MODEL_TYPES = frozenset({"siglip", "bert", "xlm-roberta",
+                                    "nomic_bert", "modernbert"})
+
 #: Prompt scheme -> `(query_prefix, document_prefix)`. Ported from PR #780
 #: (Aman Bagrecha) essentially verbatim, comments included.
 #:
@@ -1556,13 +1588,19 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # those are two separate questions about one repo.
         if torch_weights and family in MLX_EMBED_MODEL_TYPES:
             found.append("mlx-embed")
-        if onnx_weights:
+        if onnx_weights and family in ONNX_EMBED_MODEL_TYPES:
             # All four execution providers, not just the CPU row —
             # `ONNX_EMBED_RUNNERS`' own comment gives the reason, and it is the
             # DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
             # registered but absent here is invisible to the page. `mlx-embed`
             # gets no analogue on this side: MLX has no ONNX reader at all, so an
             # export is invisible to it whatever the family says.
+            #
+            # Gated on `ONNX_EMBED_MODEL_TYPES` exactly as the MLX row above is
+            # gated on its own subset: "onnxruntime runs whatever graph it is
+            # handed" is true of onnxruntime and not of this runner, whose output
+            # names and image geometry were verified against one family. `clip`
+            # is the family that falls through both gates — see that constant.
             found.extend(ONNX_EMBED_RUNNERS)
         # …and NOTHING else, for the `.gguf` branch's reason: an embedding
         # snapshot is a directory of weights like any other, so the text branch
