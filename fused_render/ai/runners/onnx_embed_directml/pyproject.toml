@@ -26,7 +26,7 @@
 # folder's floor — would resolve to nothing at all. The ceiling is the same
 # major, for the same reason.
 #
-# Every dependency below is a verbatim copy of the CPU folder's five beyond
+# Every dependency below is a verbatim copy of the CPU folder's six beyond
 # onnxruntime and must stay one. A version drifting between the four would make
 # "which hardware" also mean "which tokenizer".
 [project]
@@ -35,6 +35,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "onnxruntime-directml>=1.24,<2",
+    "numpy>=1.26,<3",
     "tokenizers>=0.23,<0.24",
     "pillow",
     "pillow-heif>=1.5,<2",

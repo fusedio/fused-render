@@ -35,15 +35,25 @@
 # floor — would resolve to nothing at all. The ceiling is the same major, for
 # the same reason.
 #
-# Every dependency below is a verbatim copy of the CPU folder's five beyond
+# Every dependency below is a verbatim copy of the CPU folder's six beyond
 # onnxruntime and must stay one. A version drifting between the four would make
-# "which hardware" also mean "which tokenizer".
+# "which hardware" also mean "which tokenizer". `numpy` is on this list for a
+# reason specific to THIS folder: `onnxruntime-rocm` publishes no
+# `requires-dist` of its own — dry-resolving it against PyPI returns exactly
+# one package, itself — so nothing rides along transitively here the way
+# `numpy` (among four others) rides in on the mainline `onnxruntime` and
+# `onnxruntime-gpu` wheels. Leaving `numpy` off this manifest is what actually
+# happened before this comment: the venv built and the worker spawned, and it
+# died with `ModuleNotFoundError: No module named 'numpy'` on the first
+# forward pass, because that is the first line in `runners/onnx_embed.py` that
+# touches the array it never declared.
 [project]
 name = "fused-render-runner-onnx-embed-rocm"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "onnxruntime-rocm>=1.22,<2",
+    "numpy>=1.26,<3",
     "tokenizers>=0.23,<0.24",
     "pillow",
     "pillow-heif>=1.5,<2",

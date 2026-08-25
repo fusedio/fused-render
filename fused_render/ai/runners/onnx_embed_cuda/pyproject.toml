@@ -27,7 +27,7 @@
 # is no `download.pytorch.org` mirror to route around and no per-platform
 # source split. That is one of the two savings this whole engine is for.
 #
-# Every dependency below is a verbatim copy of the CPU folder's five beyond
+# Every dependency below is a verbatim copy of the CPU folder's six beyond
 # onnxruntime and must stay one. A version drifting between the four would make
 # "which hardware" also mean "which tokenizer".
 [project]
@@ -36,6 +36,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "onnxruntime-gpu>=1.29,<2",
+    "numpy>=1.26,<3",
     "tokenizers>=0.23,<0.24",
     "pillow",
     "pillow-heif>=1.5,<2",

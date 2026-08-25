@@ -23,7 +23,17 @@
 # both carry, and none of them can accidentally resolve numpy or pillow off a
 # vendor mirror.
 #
-# Five dependencies beyond onnxruntime, and each earns its place:
+# Six dependencies beyond onnxruntime, and each earns its place:
+#   numpy           is the array type every graph's input feed and output read
+#                   is built and read as — `runners/onnx_embed.py` calls
+#                   `array`/`asarray`/`stack`/`transpose`/`maximum`/`sum`/
+#                   `astype` directly, a real import of its own rather than
+#                   onnxruntime's business. It is declared here rather than
+#                   left to arrive transitively because it cannot be assumed
+#                   to: `onnxruntime-rocm` (the ROCm folder's own distribution)
+#                   publishes no dependencies at all, so a name the mainline
+#                   `onnxruntime`/`onnxruntime-gpu` wheels happen to pull is
+#                   not a name this runner may rely on.
 #   tokenizers      IS the tokenizer. `Tokenizer.from_file(tokenizer.json)`
 #                   reads the export's own fast-tokenizer file — normalizer,
 #                   vocabulary and post-processor together — which is the whole
@@ -67,6 +77,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "onnxruntime>=1.29,<2",
+    "numpy>=1.26,<3",
     "tokenizers>=0.23,<0.24",
     "pillow",
     "pillow-heif>=1.5,<2",
