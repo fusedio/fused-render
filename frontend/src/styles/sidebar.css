@@ -528,6 +528,23 @@ button.sidebar-prefs-trigger {
   background: rgba(var(--tint), 0.08);
 }
 
+/* The Tours flyout: the shared .context-submenu chassis (context-menu.css), with
+   one thing changed — it hangs from its parent row's BOTTOM edge, not its top.
+   This is the app's one menu that grows UPWARD out of the sidebar's bottom edge,
+   and its last row sits a few pixels off the floor, so a flyout aligned to that
+   row's top ran its own rows straight off the bottom of the window. Aligning the
+   bottom edges opens it the way the menu it belongs to opens: rightward and up.
+   Rightward always — the sidebar is against the left edge, so there is no side
+   to flip to and no `.left` case to carry. */
+.sidebar-prefs-menu .context-submenu {
+  top: auto;
+  bottom: -5px;
+  transform-origin: left bottom;
+  /* Narrower than the parent: the flyout holds four short titles, and the
+     parent's 180px floor would leave them swimming. */
+  min-width: 150px;
+}
+
 /* There is no `.sidebar-prefs-menu .account-signedin-dot` rule any more
    (2026-08-24). It un-absolute-positioned that dot for the one place it appeared
    in flow — a menu entry rather than an icon corner — and no element in this

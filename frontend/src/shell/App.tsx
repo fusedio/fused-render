@@ -22,7 +22,7 @@ import { useNavEpoch, useDocumentTitle, useRefreshOnReturn } from "@platform/lib
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
-import { maybeAutoStartTour } from "@platform/lib/tour";
+import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
@@ -602,18 +602,22 @@ export default function App({ config }: { config: Config }) {
                         : null
   );
 
-  // First-run onboarding tour: fire after paint so the listing and breadcrumb
-  // are mounted (maybeAutoStartTour no-ops in embed / if already seen). Keyed
-  // on `pathname`, not mount-once: App never remounts, and a first visit now
-  // lands on the chrome-free "/" where there is no #sidebar to point at, so the
-  // attempt has to repeat until a route with the shell chrome comes up. The ref
-  // stops the retries once the tour has run — otherwise a browser that refuses
-  // the "seen" write would restart it on every navigation.
-  const tourPending = useRef(true);
+  // First-run onboarding tours: the registry picks the tour this route is
+  // about, and it fires after paint so the route's own chrome is mounted
+  // (maybeAutoStartTour no-ops in embed / if already seen). Keyed on
+  // `pathname`, not mount-once: App never remounts, and every route change is
+  // both a new tour to consider and a retry for one whose chrome wasn't up yet
+  // (a first visit can land on the chrome-free "/"). The ref is the per-tour
+  // version of the old single `tourPending` — it stops the retries for a tour
+  // that has run, so a browser refusing the "seen" write can't restart it on
+  // every navigation, while leaving the other tours still armed.
+  const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED || !tourPending.current) return;
+    if (IS_EMBED) return;
+    const tour = autoStartTourFor(pathname);
+    if (!tour || firedTours.current.has(tour.id)) return;
     const id = setTimeout(() => {
-      tourPending.current = !maybeAutoStartTour();
+      if (maybeAutoStartTour(tour)) firedTours.current.add(tour.id);
     }, 600);
     return () => clearTimeout(id);
   }, [pathname]);

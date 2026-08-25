@@ -114,16 +114,20 @@ function softNavigate(e: React.MouseEvent, href: string) {
 }
 
 function Section({
+  id,
   title,
   seeAllHref,
   children,
 }: {
+  /** Stable anchor for the welcome tour (platform/lib/tours/home.ts) — the
+      section's own classes are shared by all four strips. */
+  id?: string;
   title: string;
   seeAllHref: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="fh-section home-section">
+    <section id={id} className="fh-section home-section">
       <div className="home-sec-head">
         <h2 className="home-sec-title">
           <a className="home-sec-title-link" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
@@ -462,7 +466,7 @@ export default function Home({ config }: { config: Config }) {
                 than spanning the window. Hidden while a search is live for the
                 same reason the strips are: the search result IS the page then. */}
             <ClaudeHealthStrip />
-            <Section title="Fused Apps" seeAllHref="/apps">
+            <Section id="home-sec-apps" title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
                 <SkeletonRow count={shown} label="Loading apps" variant="app" />
               ) : apps.length ? (
@@ -478,7 +482,11 @@ export default function Home({ config }: { config: Config }) {
               )}
             </Section>
 
-            <Section title="AI Playground" seeAllHref={tabHref("playground", "")}>
+            <Section
+              id="home-sec-playground"
+              title="AI Playground"
+              seeAllHref={tabHref("playground", "")}
+            >
               <div className="home-row">
                 {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
                   <PlaygroundPreviewCard key={group.capability} group={group} />
@@ -486,7 +494,11 @@ export default function Home({ config }: { config: Config }) {
               </div>
             </Section>
 
-            <Section title="Claude Sessions" seeAllHref="/explorer?tab=sessions">
+            <Section
+              id="home-sec-sessions"
+              title="Claude Sessions"
+              seeAllHref="/explorer?tab=sessions"
+            >
               {sessions === null ? (
                 <SkeletonRow count={shown} label="Loading Claude sessions" variant="folder" />
               ) : sessions.length ? (
