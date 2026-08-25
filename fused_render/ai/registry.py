@@ -774,7 +774,6 @@ def _cuda() -> Availability:
     better reporter of a driver that is genuinely too old.
     """
     system = platform.system()
-    machine = platform.machine()
     if system == "Linux":
         # WSL2 FIRST, because it has none of the nodes below and torch.cuda
         # works there anyway (D382). GPU-PV projects the Windows driver into the

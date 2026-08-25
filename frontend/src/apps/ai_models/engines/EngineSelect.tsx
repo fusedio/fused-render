@@ -17,6 +17,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { EngineChoice } from "@platform/lib/api";
 import { choiceReason } from "@apps/ai_models/lib/engines";
+import { capitalise } from "@apps/ai_models/lib/aiModelGroups";
 
 // One flattened row the popup can render uniformly, whether it came from the
 // synthetic "Automatic" entry, the stranded stored code, or a real choice.
@@ -57,7 +58,15 @@ function buildOptions(
     // has one, else no second line at all. Unavailable: the registry's own
     // reason the option cannot be picked — `choiceReason` never returns null
     // for a disabled choice, so a greyed row always explains itself.
-    const description = choice.available ? choice.note : choiceReason(choice);
+    //
+    // `choiceReason` stays LOWERCASE in `registry.py`: the same sentence is
+    // spliced mid-clause elsewhere (`ignoredWarning`'s "X is not used here —
+    // {reason}"), so the registry cannot capitalise it for us. Here it stands
+    // alone as an option's own description line, next to notes and the
+    // stranded-row copy that are already full sentences — so only the reason
+    // needs the fix, and only at render time.
+    const reason = choiceReason(choice);
+    const description = choice.available ? choice.note : (reason && capitalise(reason));
     options.push({
       code: choice.code,
       label: choice.label,
