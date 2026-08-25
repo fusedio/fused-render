@@ -392,7 +392,7 @@ def test_download_pins_the_fp32_graphs_and_nothing_else(worker, monkeypatch):
         "onnx/text_model_int8.onnx", "onnx/vision_model.onnx",
         "onnx/vision_model_q4f16.onnx",
     ]
-    monkeypatch.setattr(worker, "_repo_files", lambda _id: listing)
+    monkeypatch.setattr(worker, "_repo_files", lambda _id: (listing, None))
     seen = {}
     monkeypatch.setattr(worker.worker_base, "download_snapshot",
                         lambda model_id, **kw: seen.update(kw) or "/snap")
@@ -419,7 +419,7 @@ def test_download_fetches_the_external_data_sidecar_when_the_repo_ships_one(
     listing = ["config.json", "tokenizer.json",
                "onnx/text_model.onnx", "onnx/text_model.onnx_data",
                "onnx/vision_model.onnx"]
-    monkeypatch.setattr(worker, "_repo_files", lambda _id: listing)
+    monkeypatch.setattr(worker, "_repo_files", lambda _id: (listing, None))
     seen = {}
     monkeypatch.setattr(worker.worker_base, "download_snapshot",
                         lambda model_id, **kw: seen.update(kw) or "/snap")
@@ -433,7 +433,7 @@ def test_download_fetches_the_external_data_sidecar_when_the_repo_ships_one(
 
 def test_a_repo_that_is_not_an_export_is_refused_by_name(worker, monkeypatch):
     monkeypatch.setattr(worker, "_repo_files",
-                        lambda _id: ["config.json", "model.safetensors"])
+                        lambda _id: (["config.json", "model.safetensors"], None))
     with pytest.raises(RuntimeError, match="google/siglip2-base-patch16-384"):
         worker.download("google/siglip2-base-patch16-384")
 
@@ -714,7 +714,7 @@ def test_download_pins_the_single_fp32_graph_for_a_prose_export(prose,
                "1_Pooling/config.json",
                "onnx/model.onnx", "onnx/model_fp16.onnx", "onnx/model_q4.onnx",
                "onnx/model_quantized.onnx", "model.safetensors"]
-    monkeypatch.setattr(prose, "_repo_files", lambda _id: listing)
+    monkeypatch.setattr(prose, "_repo_files", lambda _id: (listing, None))
     seen = {}
     monkeypatch.setattr(prose.worker_base, "download_snapshot",
                         lambda model_id, **kw: seen.update(kw) or "/snap")
@@ -792,9 +792,15 @@ def pure():
     module = _il.module_from_spec(spec)
     base = types.ModuleType("worker_base")
     base.serve = lambda **kw: None
+    # `_cached_repo_files` reads this. Defaulted to a path that does not exist so
+    # a test which forgets to point it at a fixture sees an EMPTY cache rather
+    # than whatever this machine happens to have downloaded.
+    base.repo_folder = lambda _id, repo_type="model": None
+    base.download_snapshot = lambda model_id, **kw: "/snap"
     sys.modules["worker_base"] = base
     try:
         spec.loader.exec_module(module)
+        module.worker_base = base
         yield module
     finally:
         del sys.modules["worker_base"]
@@ -939,3 +945,100 @@ def test_an_undeclared_pad_token_falls_back_but_is_still_checked(pure):
                            {"pad_token": {"lstrip": False}}) == ("</s>", 2)
     assert pure._pad_token("org/m", FakeVocab({"</s>": 2}),
                            {"pad_token": ""}) == ("</s>", 2)
+
+
+# -- offline: a complete cache must not need the Hub listing ------------------
+#
+# `download_snapshot` opens with a branch that returns an already-complete
+# snapshot with NO metadata call, and this runner's unconditional
+# `list_repo_files` never let execution reach it — so a fully cached model failed
+# to load offline here while `mlx_embed`, which calls `download_snapshot`
+# directly, loaded fine from the identical cache.
+
+
+def _snapshot_with(tmp_path, *names):
+    """An hf-layout cache folder holding one snapshot with `names` in it."""
+    folder = tmp_path / "models--org--m"
+    commit = folder / "snapshots" / "abc123"
+    for name in names:
+        path = commit / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    return folder
+
+
+def test_the_disk_and_the_listing_derive_the_SAME_patterns(pure, tmp_path,
+                                                           monkeypatch):
+    """**The invariant the offline fallback rests on.**
+
+    `_cached_path` accepts a fetch record only when `_scope_key(allow, ignore)`
+    matches, so patterns that merely WORK are not enough — a union of every
+    layout this runner might read would key a different scope, find no record and
+    take the networked path straight back into the failure being fixed. The
+    fallback is only correct if it reproduces the online answer exactly.
+    """
+    for layout in (("onnx/model.onnx",),
+                   ("onnx/text_model.onnx", "onnx/vision_model.onnx"),
+                   ("onnx/model.onnx", "onnx/model.onnx_data")):
+        folder = _snapshot_with(tmp_path / layout[0].replace("/", "_"), *layout)
+        monkeypatch.setattr(pure.worker_base, "repo_folder",
+                            lambda _id, folder=folder: str(folder))
+        from_disk = pure._weight_patterns(pure._cached_repo_files("org/m"))
+        from_listing = pure._weight_patterns(list(layout))
+        assert from_disk == from_listing, layout
+        assert from_disk, layout
+
+
+def test_a_cached_repo_downloads_offline_when_the_listing_fails(pure, tmp_path,
+                                                               monkeypatch):
+    """The regression itself: `list_repo_files` raises, the snapshot is on disk,
+    and `download()` proceeds to `download_snapshot` with the patterns derived
+    from the disk instead of refusing."""
+    folder = _snapshot_with(tmp_path, "onnx/text_model.onnx",
+                            "onnx/vision_model.onnx", "config.json")
+    monkeypatch.setattr(pure.worker_base, "repo_folder",
+                        lambda _id: str(folder))
+    monkeypatch.setattr(pure, "_repo_files",
+                        lambda _id: (None, "could not read org/m's file listing: offline"))
+    calls = []
+    monkeypatch.setattr(pure.worker_base, "download_snapshot",
+                        lambda model_id, **kw: (calls.append((model_id, kw)),
+                                                str(folder))[1])
+    assert pure.download("org/m") == str(folder)
+    assert len(calls) == 1
+    patterns = calls[0][1]["allow_patterns"]
+    assert "onnx/text_model.onnx" in patterns
+    assert "onnx/vision_model.onnx" in patterns
+    # The merged graph a dual export also ships is still not fetched — the
+    # offline path must not quietly widen the download.
+    assert "onnx/model.onnx" not in patterns
+
+
+def test_a_listing_failure_with_NOTHING_cached_still_refuses(pure, tmp_path,
+                                                             monkeypatch):
+    """"No listing" is only survivable because the disk answered. With an empty
+    cache there is genuinely nothing to go on, and the Hub's own error is the
+    honest reply — in its original wording, so an offline diagnosis still reads
+    the same."""
+    monkeypatch.setattr(pure.worker_base, "repo_folder",
+                        lambda _id: str(tmp_path / "nothing-here"))
+    monkeypatch.setattr(pure, "_repo_files",
+                        lambda _id: (None, "could not read org/m's file listing: offline"))
+    with pytest.raises(RuntimeError) as excinfo:
+        pure.download("org/m")
+    assert "could not read org/m's file listing" in str(excinfo.value)
+
+
+def test_a_cached_repo_that_is_not_an_export_is_still_refused(pure, tmp_path,
+                                                             monkeypatch):
+    """The offline path must not skip the refusal either: a safetensors
+    checkpoint on disk has no graph this runner opens, and saying so beats
+    failing later inside a session."""
+    folder = _snapshot_with(tmp_path, "model.safetensors", "config.json")
+    monkeypatch.setattr(pure.worker_base, "repo_folder",
+                        lambda _id: str(folder))
+    monkeypatch.setattr(pure, "_repo_files",
+                        lambda _id: (None, "could not read org/m's file listing: offline"))
+    with pytest.raises(RuntimeError) as excinfo:
+        pure.download("org/m")
+    assert "no ONNX export this runner can open" in str(excinfo.value)

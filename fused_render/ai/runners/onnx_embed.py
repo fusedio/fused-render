@@ -192,22 +192,65 @@ _POOLING_CLS = "cls"
 
 
 def _repo_files(model_id):
-    """`model_id`'s file listing, or a `RuntimeError` naming the repo.
+    """`model_id`'s file listing, or `(None, error_text)` when the Hub cannot be
+    reached.
 
     One cheap listing call before any byte moves, the same trade
     `ltx_video.download` makes and for the same reason: it is what lets
     `download()` build a pattern list naming exactly the files this runner
     opens, and refuse a repo that is not an export at all, before spending a
     user's bandwidth.
+
+    **It no longer RAISES on a listing failure, and that is the fix.** A
+    failure here is not evidence that the download cannot proceed:
+    `download_snapshot`'s first branch exists precisely to return an
+    already-complete snapshot with no metadata call, so a fully cached model
+    used to load offline everywhere except through this runner — while
+    `mlx_embed.download`, which calls `download_snapshot` directly, was fine in
+    the same state. The caller decides what to do with the failure once it has
+    looked at the disk.
     """
     import huggingface_hub
 
     try:
-        return list(huggingface_hub.list_repo_files(model_id))
+        return list(huggingface_hub.list_repo_files(model_id)), None
     except Exception as error:  # noqa: BLE001 - a Hub lookup failure is a fact
                                 # about the id/network, not a bug in this runner
-        raise RuntimeError(
-            f"could not read {model_id}'s file listing: {error}") from error
+        return None, f"could not read {model_id}'s file listing: {error}"
+
+
+def _cached_repo_files(model_id):
+    """The names already in this repo's cached snapshot, relative to it.
+
+    The offline stand-in for the Hub listing, and it has to produce the SAME
+    names for `_weight_patterns` to derive the same patterns from — see
+    `download()` for why identical patterns rather than merely workable ones are
+    the whole point.
+
+    Every snapshot for the repo is unioned rather than one being chosen. In
+    practice there is one; where there are two, `_weight_patterns` only asks
+    whether particular names are present, and a graph present under either
+    commit is a graph this layout has.
+
+    Forward slashes unconditionally, because the patterns are compared against
+    Hub paths and `os.walk` yields `\` on Windows.
+    """
+    folder = worker_base.repo_folder(model_id)
+    if not folder:
+        return []
+    names = []
+    snapshots = os.path.join(folder, "snapshots")
+    try:
+        commits = [entry.path for entry in os.scandir(snapshots) if entry.is_dir()]
+    except OSError:
+        return []
+    for commit in commits:
+        for root, _dirs, files in os.walk(commit):
+            rel = os.path.relpath(root, commit)
+            for name in files:
+                joined = name if rel == "." else os.path.join(rel, name)
+                names.append(joined.replace(os.sep, "/"))
+    return names
 
 
 def _weight_patterns(names):
@@ -250,8 +293,34 @@ def download(model_id):
     GB for the base export and 29.5 GB for the so400m, because these repos
     publish eight quantizations of each tower side by side. The refusal below
     fires before any of that, on the listing alone.
+
+    **When the listing cannot be read, the DISK answers instead.** The listing
+    call used to be unconditional, which quietly made this the one runner that
+    could not load a fully cached model offline: `download_snapshot` opens with a
+    branch that returns a complete snapshot without any metadata call, and this
+    function never let execution reach it. `mlx_embed.download` calls
+    `download_snapshot` directly and was fine in the identical state, which is
+    how the two engines came to disagree about a repo both had on disk.
+
+    The fallback derives the patterns from the cached snapshot's own file names,
+    and it matters that they come out IDENTICAL to the ones a successful listing
+    would produce — not merely adequate. `_cached_path` accepts a fetch record
+    only when `_scope_key(allow, ignore)` matches, so a union of "every layout
+    this runner might read" would key a different scope, find no record, and take
+    the networked path right back into the failure this is fixing.
+
+    Still narrowed in one case, deliberately unfixed here: a machine that can
+    reach our own mirror but not huggingface.co gets the refusal for a repo it has
+    never downloaded, because the mirror's manifest knows the file list and this
+    does not ask it. That is a real hole and a bigger change than this one.
     """
-    names = _repo_files(model_id)
+    names, listing_error = _repo_files(model_id)
+    if names is None:
+        names = _cached_repo_files(model_id)
+        if not names:
+            # Nothing on disk either, so there is genuinely nothing to go on —
+            # the Hub error is the honest answer and keeps its original wording.
+            raise RuntimeError(listing_error)
     weights = _weight_patterns(names)
     if not weights:
         raise RuntimeError(
