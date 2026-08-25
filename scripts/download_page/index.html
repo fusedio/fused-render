@@ -3,14 +3,16 @@
      partitioned hierarchy, dressed in the editorial variant's quiet monochrome
      paper-and-ink aesthetic. Content and hierarchy follow ai.html verbatim.
      Dark is home; light stays reachable via data-theme="light". Zero external requests:
-     system fonts, relative assets/*, same-origin latest.json. -->
+     system fonts, relative assets/*, same-origin /latest.json. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fused Render — run any AI model, build any app, open any file</title>
 <meta name="description" content="A desktop app that previews 100+ kinds of file, runs AI models on your own machine, and lets you build and share small AI-powered apps.">
-<meta name="theme-color" content="#121211">
+<meta name="theme-color" content="#000000">
+<!-- This page is also proxied at www.fused.io/render/; render.fused.io is canonical. -->
+<link rel="canonical" href="https://render.fused.io/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Fused Render">
 <meta property="og:title" content="Fused Render — run any AI model, build any app, open any file">
@@ -18,8 +20,6 @@
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
 <meta name="twitter:card" content="summary_large_image">
-<!-- This page is also proxied at www.fused.io/render/; render.fused.io is canonical. -->
-<link rel="canonical" href="https://render.fused.io/">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
 <script type="application/fused-bundle">
 { "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png", "assets/showcase/*.mp4"] }
@@ -36,7 +36,7 @@
     /* Dark is home: warm near-black ground, tiles one step up, hairlines
        heavy enough to survive the darker field. The accent is the full lime
        because on this ground it reads as ink. */
-    --paper:     #121211;
+    --paper:     #000;
     --tile:      #1a1a18;
     --tile-2:    #151513;
     --ink:       #f3f2ed;
@@ -179,41 +179,49 @@
 
   /* ---------- hero ---------- */
   .hero { padding: clamp(30px, 5vw, 60px) 0 0; }
-  .hero-grid {
-    display: grid; grid-template-columns: minmax(0, 0.62fr) minmax(0, 1.38fr);
-    gap: clamp(24px, 3.5vw, 52px); align-items: center;
-  }
-  @media (max-width: 860px) { .hero-grid { grid-template-columns: minmax(0, 1fr); } }
   h1 {
     font-size: clamp(2rem, 4.2vw, 4rem);
     line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
     text-align: left; margin: 0;
   }
-  .hero-video { margin: 0; position: relative; }
+  .herobg { display: flex; align-items: center; }
+  .herobg .hero-left { flex: 0 0 36%; order: -1; position: relative; z-index: 1; }
+  .herobg .hero-media { flex: 1; min-width: 0; position: relative; }
+  .herobg .hero-media video {
+    display: block; width: 100%; height: auto;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
+  }
+  @media (max-width: 860px) {
+    .herobg { display: block; }
+    .herobg .hero-media { margin-top: 24px; }
+  }
   .vid-toggle {
     position: absolute; right: 14px; bottom: 14px;
     width: 36px; height: 36px; border-radius: 50%;
     display: grid; place-items: center; padding: 0;
-    background: rgba(18, 18, 17, 0.72);
+    background: rgba(0, 0, 0, 0.72);
     border: 1px solid rgba(243, 242, 237, 0.22);
     color: var(--ink-2); cursor: pointer;
     backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
     opacity: 0; transition: opacity 0.25s var(--ease);
   }
   /* Only pops on hover — but stays visible for keyboard focus and while paused. */
-  .hero-video:hover .vid-toggle,
+  .hero-media:hover .vid-toggle,
   .vid-toggle:focus-visible,
-  .vid-toggle.paused { opacity: 1; }
+  .vid-toggle.paused:not(.vid-mute) { opacity: 1; }
   .vid-toggle:hover { color: var(--ink); border-color: rgba(243, 242, 237, 0.4); }
   .vid-toggle svg { width: 14px; height: 14px; }
   .vid-toggle .ic-play { display: none; }
   .vid-toggle.paused .ic-play { display: block; }
   .vid-toggle.paused .ic-pause { display: none; }
-  .hero-video video {
-    display: block; width: 100%; height: auto;
-    border-radius: var(--r); border: 1px solid var(--rule);
-    background: var(--tile-2);
-  }
+  /* The mute button sits beside pause; .paused here means "muted". */
+  .vid-mute { right: 58px; }
+  .vid-mute .ic-sound { display: block; }
+  .vid-mute .ic-muted { display: none; }
+  .vid-mute.paused .ic-sound { display: none; }
+  .vid-mute.paused .ic-muted { display: block; }
+  .hero-media:hover .vid-mute { opacity: 1; }
   .points {
     display: grid; grid-template-columns: minmax(0, 1fr);
     gap: var(--s3);
@@ -471,40 +479,42 @@
   }
 
   /* ---------- download ---------- */
-  /* The download banner: the product itself is the background, and the
-     buttons sit inside the picture. */
-  .getcard {
-    position: relative; overflow: hidden;
-    border-radius: 16px; border: 1px solid var(--rule);
-    margin-top: var(--s5);
-    min-height: clamp(360px, 32vw, 470px);
-    display: flex; align-items: flex-end;
-  }
+  /* The download closer: the app inside a Mac window, its bottom fifth
+     dissolving into the page where the download buttons take over. */
   #get { padding-top: var(--s5); border-top: 1px solid var(--rule); }
-  .getbg {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; object-position: top left;
+  .macwrap { position: relative; max-width: 1020px; margin: var(--s5) auto 0; }
+  .mac {
+    border: 1px solid var(--rule-hi); border-bottom: none;
+    border-radius: 16px 16px 0 0;
+    background: var(--tile); overflow: hidden;
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.6);
   }
-  .getveil {
-    position: absolute; inset: 0;
-    background:
-      linear-gradient(0deg, rgba(18, 18, 17, 0.97) 0%, rgba(18, 18, 17, 0.88) 38%, rgba(18, 18, 17, 0.4) 68%, rgba(18, 18, 17, 0.06) 100%),
-      linear-gradient(90deg, rgba(18, 18, 17, 0.6) 0%, rgba(18, 18, 17, 0) 60%);
+  .mac-bar {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    padding: 13px 16px;
+    background: #1c1c1a; border-bottom: 1px solid var(--rule);
+  }
+  .tl { width: 12px; height: 12px; border-radius: 50%; }
+  .tl.r { background: #ff5f57; } .tl.y { background: #febc2e; } .tl.g { background: #28c840; }
+  .mac-title {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font-size: 12.5px; color: var(--ink-3); pointer-events: none;
+  }
+  .mac-shot { display: block; width: 100%; height: auto; }
+  /* The fade that hands the screenshot over to the buttons. */
+  .macwrap::after {
+    content: ""; position: absolute; left: -1px; right: -1px; bottom: 0;
+    height: 62%;
+    background: linear-gradient(0deg, var(--paper) 34%, rgba(0, 0, 0, 0.55) 66%, rgba(0, 0, 0, 0) 100%);
   }
   .getbody {
-    position: relative; width: 100%;
-    padding: clamp(22px, 3vw, 40px);
+    position: relative; z-index: 1; text-align: center;
+    margin-top: clamp(-200px, -14vw, -110px);
   }
   .getbody h2 { max-width: none; }
-  .getbody .deck { margin-top: 6px; }
-  .getcard .os {
-    background: rgba(18, 18, 17, 0.55);
-    border-color: rgba(243, 242, 237, 0.16);
-    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  }
-  .getcard .os.primary {
-    background: var(--accent-fill); border-color: var(--accent-edge);
-  }
+  .getbody .deck { margin: 8px auto 0; }
+  .getbody .oses { justify-content: center; margin-left: auto; margin-right: auto; }
+  .getbody .os { text-align: left; }
   .oses {
     display: grid; grid-template-columns: minmax(0, 1fr);
     gap: 14px; margin-top: var(--s5); max-width: 780px;
@@ -948,15 +958,6 @@
     color: var(--ink-3); text-decoration: none; padding: 6px 0;
     transition: color 0.2s var(--ease);
   }
-  footer .legal {
-    position: relative;
-    margin-top: var(--s3);
-    padding-top: var(--s3);
-    border-top: 1px solid var(--rule-2);
-    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 0.03em;
-    color: var(--ink-4);
-  }
 
   /* ---------- hovers ---------- */
   @media (hover: hover) {
@@ -1065,9 +1066,6 @@
   <g id="i-github" transform="scale(0.8333)"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></g>
   <g id="i-folder"><path d="M2.6 5.4a1.4 1.4 0 011.4-1.4h3.2l1.6 2h7.2a1.4 1.4 0 011.4 1.4v7.2a1.4 1.4 0 01-1.4 1.4H4a1.4 1.4 0 01-1.4-1.4z"
      fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></g>
-  <g id="i-linkedin" transform="scale(0.8333)"><path fill="currentColor" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></g>
-  <g id="i-x" transform="scale(0.8333)"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></g>
-  <g id="i-discord" transform="scale(0.8333)"><path fill="currentColor" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1568 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></g>
 </defs></svg>
 
 <div class="wrap">
@@ -1084,30 +1082,36 @@
   </header>
 
   <!-- ============ HERO ============ -->
-  <section class="hero">
-    <div class="hero-grid">
-      <div class="hero-left">
-        <h1>Your files,<br>your AI,<br>your apps.</h1>
-        <div class="acts">
-          <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
-        </div>
-        <p class="fine">No account needed.<br>Native support for macOS &amp; limited support on Windows &amp; Linux.</p>
+  <section class="hero herobg">
+    <div class="hero-media">
+      <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
+             aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
+      <button class="vid-toggle vid-mute paused" id="vid-mute" type="button" aria-label="Unmute video">
+        <svg class="ic-muted" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.6 6.2l3 3.6M13.6 6.2l-3 3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <svg class="ic-sound" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.4 5.6a3.4 3.4 0 010 4.8M12.2 4a5.8 5.8 0 010 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
+        <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
+      </button>
+    </div>
+    <div class="hero-left">
+      <h1>Your files,<br>your AI,<br>your apps.</h1>
+      <div class="acts">
+        <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
       </div>
-      <figure class="hero-video">
-        <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
-               aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
-        <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
-          <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
-          <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
-        </button>
-      </figure>
+      <p class="fine">No account needed.<br>Native support for macOS<br>limited support on Windows &amp; Linux.</p>
     </div>
   </section>
 
   <!-- ============ §1 · THE EXPLORER ============ -->
-  <section id="under-the-hood">
+  <section id="under-the-hood" hidden>
     <div class="sec-head rule-top">
       <h2>HTML powered by local Python</h2>
       <p class="deck">A web page you see, a Python file that does the work.</p>
@@ -1186,8 +1190,8 @@
       </div>
 
       <div class="w4 illo">
-        <img src="assets/showcase/illo2-models.png" width="398" height="558" loading="lazy" decoding="async"
-             alt="Illustration of the model library: a vending machine of AI models, one picked and dropping out.">
+        <img src="assets/showcase/illo2-models.png" width="864" height="914" loading="lazy" decoding="async"
+             alt="Illustration of the model library: model boxes riding a conveyor from the cloud down into a laptop, the picked one lime.">
         <div class="cap"><b>Models</b><span>Bring any model: text, images, transcription, video.</span></div>
       </div>
 
@@ -1305,7 +1309,7 @@
     </ul>
   </section>
 
-  <section id="apps">
+  <section id="apps" hidden>
     <div class="sec-head rule-top">
       <h2>Use community apps, or build your own.</h2>
       <p class="deck">A chatbot answers questions. A tool does the work.</p>
@@ -1361,24 +1365,29 @@
   <!-- ============ DOWNLOAD ============ -->
 
   <section id="get">
-    <div class="getcard">
-      <img class="getbg" src="assets/showcase/app-home.jpg" width="2880" height="1800"
-           loading="lazy" decoding="async" alt="">
-      <div class="getveil" aria-hidden="true"></div>
-      <div class="getbody">
-        <h2>Free, and it stays on your machine.</h2>
-        <p class="deck">One download. No account, no key, no card.</p>
-        <div class="oses">
-          <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
-          </a>
-          <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
-          </a>
-          <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
-            <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
-          </a>
+    <div class="macwrap">
+      <div class="mac">
+        <div class="mac-bar" aria-hidden="true">
+          <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+          <span class="mac-title">Fused Render</span>
         </div>
+        <img class="mac-shot" src="assets/showcase/app-home.jpg" width="3420" height="1970"
+             loading="lazy" decoding="async" alt="The Fused Render home screen: apps, AI playground and Claude tasks.">
+      </div>
+    </div>
+    <div class="getbody">
+      <h2>Free, and it stays on your machine.</h2>
+      <p class="deck">One download. No account, no key, no card.</p>
+      <div class="oses">
+        <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>macOS</b><span>Apple silicon</span>
+        </a>
+        <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Windows</b><span>64-bit installer</span>
+        </a>
+        <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-down"/></svg>Linux</b><span>AppImage</span>
+        </a>
       </div>
     </div>
     <span class="version" id="version" hidden></span>
@@ -1505,14 +1514,12 @@
         Fused Render
       </a>
       <nav>
+        <a href="index.html">Download page</a>
         <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+        <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
         <a rel="noopener" href="https://www.fused.io">fused.io</a>
-        <a class="gh" rel="noopener" href="https://www.linkedin.com/company/fusedio/"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg>LinkedIn</a>
-        <a class="gh" rel="noopener" href="https://x.com/fused_io"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg>X</a>
-        <a class="gh" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg>Discord</a>
       </nav>
     </div>
-    <div class="legal">&copy; 2026 Fused Labs, Inc.</div>
   </footer>
 </div>
 
@@ -1558,8 +1565,7 @@
   // The links already work before this resolves, and simply stay pointed at
   // the releases page if it never does.
   // Relative, not root-absolute: the page is also proxied at
-  // www.fused.io/render/ (kgateway HTTPRoute -> this CDN), where a
-  // root-absolute /latest.json would hit the fused.io app instead.
+  // www.fused.io/render/, where /latest.json is not ours.
   fetch("latest.json", { cache: "no-cache" })
     .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
     .then(function (m) {
@@ -1639,6 +1645,12 @@
     btn.addEventListener("click", function () {
       if (vid.paused) { vid.play(); btn.classList.remove("paused"); btn.setAttribute("aria-label", "Pause video"); }
       else { vid.pause(); btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video"); }
+    });
+    var mute = document.getElementById("vid-mute");
+    if (mute) mute.addEventListener("click", function () {
+      vid.muted = !vid.muted;
+      mute.classList.toggle("paused", vid.muted);
+      mute.setAttribute("aria-label", vid.muted ? "Unmute video" : "Mute video");
     });
   })();
 
