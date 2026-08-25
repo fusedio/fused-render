@@ -58,14 +58,14 @@ const S = (paths: ReactNode): ReactNode => (
 // Every AI starter closes on the same facts, because they are what the
 // session cannot guess: the model runs locally (no key, no network), the page
 // reaches it through `fused.ai.*`, the fused-render-ai skill documents that
-// surface, and model ids come from the catalog rather than a hard-coded repo.
+// surface, and model ids are best taken from the catalog.
 // The seed prose for an ATTACHED model is far richer (appSeed.ts) — these
 // briefs are what a user clicks when they picked the idea first and the model
 // second.
 const LOCAL =
   "Use the local AI models on this machine through the page's fused.ai API — " +
   "read the fused-render-ai skill first; no cloud keys, no network. Take model ids " +
-  "from fused.ai.models.catalog(), never hard-code one, and disable the run button " +
+  "from fused.ai.models.catalog() where you can, and disable the run button " +
   "while a call is in flight.";
 
 // The one capability that can be unservable on the machine running the page:
