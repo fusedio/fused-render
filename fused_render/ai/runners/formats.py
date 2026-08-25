@@ -929,11 +929,15 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # A `siglip`/`clip` model_type is decisive too, and it has to be: a
             # dual encoder is a directory of safetensors, so without this the
             # text branch would claim it and a cached SigLIP card would offer to
-            # load a vision-text encoder as a chat model. Both codes appear for
-            # `DIFFUSERS_RUNNERS`' reason — membership is a statement about the
-            # FORMAT, and a config saying `siglip` says the same thing whichever
-            # of the two engines opens it.
-            "mlx-embed", "transformers-embed")
+            # load a vision-text encoder as a chat model. All four codes appear
+            # for `DIFFUSERS_RUNNERS`' reason — membership is a statement about
+            # the FORMAT, and a config saying `siglip` says the same thing
+            # whichever of the four engines opens it. `transformers-embed-cuda`
+            # and `-rocm` are spelled literally rather than via
+            # `TRANSFORMERS_EMBED_RUNNERS` for the same forward-declaration
+            # reason `LLAMACPP_RUNNERS` is spelled literally just above.
+            "mlx-embed", "transformers-embed", "transformers-embed-cuda",
+            "transformers-embed-rocm")
 
 
 def unloadable_quant(config: dict) -> str | None:
@@ -1085,6 +1089,18 @@ DIFFUSERS_RUNNERS = ("diffusers-image", "diffusers-image-cuda",
 #: `llamacpp-text` here is exactly the trap this comment already describes for
 #: the other two families (see `test_every_registered_runner_appears_in_loaders`).
 LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
+#: All three transformers embedding builds — CPU, CUDA and ROCm — for the same
+#: reason as the two tuples above: a `siglip`/`clip` `model_type` is the same
+#: FORMAT whichever wheel's `AutoModel` opens it, and a branch that named only
+#: the CPU row would be exactly the trap
+#: `test_every_registered_runner_appears_in_loaders` exists to catch — a
+#: registered runner with no engine tag, no Load button and no cached repos
+#: offered, on precisely the machines that chose it.
+#: `mlx-embed` stays OUT: it has no hardware variant of its own to enumerate,
+#: and it is appended separately in `loaders()` because it is gated on
+#: `MLX_EMBED_MODEL_TYPES` in a way none of these three are.
+TRANSFORMERS_EMBED_RUNNERS = ("transformers-embed", "transformers-embed-cuda",
+                              "transformers-embed-rocm")
 
 
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
@@ -1167,7 +1183,11 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     if family and torch_weights:
         if family in MLX_EMBED_MODEL_TYPES:
             found.append("mlx-embed")
-        found.append("transformers-embed")
+        # All three torch builds, not just the CPU row —
+        # `TRANSFORMERS_EMBED_RUNNERS`'s own comment gives the reason, and it
+        # is the DIFFUSERS_RUNNERS/LLAMACPP_RUNNERS reason again: a variant
+        # registered but absent here is invisible to the page.
+        found.extend(TRANSFORMERS_EMBED_RUNNERS)
         # …and NOTHING else, for the `.gguf` branch's reason: this snapshot is
         # a directory of safetensors, so the text branch below would claim it
         # and the page would offer to load a dual encoder as a chat model.

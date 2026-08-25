@@ -1,8 +1,8 @@
-"""The CPU/MPS embeddings runner (SPEC §40).
+"""The CUDA embeddings runner (SPEC §40).
 
 Five lines of code and a `pyproject.toml`, and the manifest is the whole of
-it: this folder installs PyPI's `whl/cpu` torch. Its siblings
-`transformers_embed_cuda/` and `transformers_embed_rocm/` declare the same
+it: this folder installs PyPI's default torch, which IS the CUDA build. Its
+siblings `transformers_embed/` and `transformers_embed_rocm/` declare the same
 dependencies at the same versions and differ ONLY in which index torch comes
 from; the runner itself is `runners/torch_embed.py`, shared by all three,
 because which wheel a user installed is a fact about the hardware they picked
@@ -11,15 +11,15 @@ runs.
 
 A folder rather than a flag because `uv sync` runs BARE (`_env_install_worker`)
 with cwd set to the runner folder: everything about an environment has to be
-expressible in the `pyproject.toml` sitting beside it, so three environments mean
-three folders. The supervisor spawns THIS file (`registry.Runner.worker`) on THIS
-folder's venv (`registry.Runner.folder`), which is how the variant a user chose
-becomes the process that runs.
+expressible in the `pyproject.toml` sitting beside it, so three environments
+mean three folders. The supervisor spawns THIS file (`registry.Runner.worker`)
+on THIS folder's venv (`registry.Runner.folder`), which is how the variant a
+user chose becomes the process that runs.
 
 Nothing here may grow a second line of behaviour. A `_placement()` or a dtype
-rule that lived in one of these shells would be a difference between variants
-that no test can see — the drift `runners/preview.py` documents at length, one
-level out.
+rule that lived in one of these three shells would be a difference between
+variants that no test can see — the drift `runners/preview.py` documents at
+length, one level out.
 """
 
 import os

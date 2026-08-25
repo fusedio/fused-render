@@ -1,13 +1,20 @@
-"""The transformers embedding runner's own behaviour — what is true of torch
-and `embed_common` together, not what `embed_common.py`'s own tests already
-cover on their own.
+"""The shared transformers embedding runner's own behaviour — what is true of
+torch and `embed_common` together, not what `embed_common.py`'s own tests
+already cover on their own.
+
+Targets `runners/torch_embed.py` directly, not any of the three folders'
+`worker.py` shells — the same choice `tests/test_ai_diffusers_worker.py` makes
+for `torch_image.py`, and for the identical reason: `transformers_embed/`,
+`transformers_embed_cuda/` and `transformers_embed_rocm/` each hold a
+five-line shell that imports this file, so testing a shell would test three
+copies of the same five lines rather than the runner itself.
 
 Loaded by PATH with `worker_base` primed in `sys.modules`, exactly as
 `tests/test_ai_transformers_worker.py` does: the runner finds its base off
 `sys.path` in an interpreter of its own, so importing it the packaged way
 (`fused_render.ai.runners.…`) would be testing an import that never ships.
 `embed_common` is NOT stubbed — it is stdlib-plus-PIL and both are really
-installed here, so the worker's own `sys.path.insert` reaches the real file,
+installed here, so the runner's own `sys.path.insert` reaches the real file,
 exactly as it does in production.
 
 `torch` IS stubbed: it is not installed in this environment (it lives in the
@@ -28,7 +35,7 @@ from PIL import Image
 
 WORKER_PATH = str(
     Path(__file__).resolve().parents[1]
-    / "fused_render" / "ai" / "runners" / "transformers_embed" / "worker.py"
+    / "fused_render" / "ai" / "runners" / "torch_embed.py"
 )
 
 
@@ -79,16 +86,36 @@ class FakeProcessor:
         return {"pixel_values": FakeTensor(rows=len(images))}
 
 
+class FakeOutput:
+    """What transformers 5 hands back from `get_text_features` /
+    `get_image_features`: a `BaseModelOutputWithPooling`, NOT the vector.
+
+    **The shape is the point of the fake.** An earlier version of this file
+    returned the `FakeFeatures` above directly, which is the transformers 4.x
+    contract, and so the suite went green against a model that could not
+    exhibit the bug the real one had — `worker._pooled` did not exist and
+    `features.to(...)` raised `AttributeError:
+    'BaseModelOutputWithPooling' object has no attribute 'to'` on every real
+    embed call. `last_hidden_state` is carried too, and deliberately given a
+    DIFFERENT rank, so a worker that reached for the wrong field would fail
+    here on shape rather than pass with nonsense.
+    """
+
+    def __init__(self, pooled):
+        self.pooler_output = FakeFeatures(pooled)
+        self.last_hidden_state = FakeFeatures([[row] * 4 for row in pooled])
+
+
 class FakeModel:
     """`get_text_features`/`get_image_features` each return one deterministic
     vector per item, so a test can assert both the COUNT and the SHAPE without
     caring what the numbers mean."""
 
     def get_text_features(self, **_kwargs):
-        return FakeFeatures([[1.0, 2.0, 2.0], [4.0, 0.0, 3.0]][:2])
+        return FakeOutput([[1.0, 2.0, 2.0], [4.0, 0.0, 3.0]][:2])
 
     def get_image_features(self, **_kwargs):
-        return FakeFeatures([[3.0, 4.0]])
+        return FakeOutput([[3.0, 4.0]])
 
 
 @pytest.fixture()

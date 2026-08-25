@@ -1,8 +1,9 @@
-"""The CPU/MPS embeddings runner (SPEC §40).
+"""The ROCm embeddings runner (SPEC §40).
 
 Five lines of code and a `pyproject.toml`, and the manifest is the whole of
-it: this folder installs PyPI's `whl/cpu` torch. Its siblings
-`transformers_embed_cuda/` and `transformers_embed_rocm/` declare the same
+it: this folder installs the ROCm build from
+`download.pytorch.org/whl/rocm7.1`. Its siblings
+`transformers_embed/` and `transformers_embed_cuda/` declare the same
 dependencies at the same versions and differ ONLY in which index torch comes
 from; the runner itself is `runners/torch_embed.py`, shared by all three,
 because which wheel a user installed is a fact about the hardware they picked

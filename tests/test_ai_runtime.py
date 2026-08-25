@@ -1061,6 +1061,9 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image-rocm": "(ROCm)",
     "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
+    "transformers-embed": "(CPU)",
+    "transformers-embed-cuda": "(CUDA)",
+    "transformers-embed-rocm": "(ROCm)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1988,6 +1991,10 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
     assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
     assert catalog.for_runner("diffusers-image-cuda") == catalog.SUGGESTIONS["diffusers-image"]
     assert catalog.for_runner("diffusers-image-rocm") == catalog.SUGGESTIONS["diffusers-image"]
+    assert catalog.for_runner("transformers-embed-cuda") == (
+        catalog.SUGGESTIONS["transformers-embed"])
+    assert catalog.for_runner("transformers-embed-rocm") == (
+        catalog.SUGGESTIONS["transformers-embed"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -2309,6 +2316,31 @@ def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monk
     monkeypatch.setattr(registry.platform, "machine", lambda: "AMD64")
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
+
+
+def test_the_embeddings_capability_orders_mlx_then_cpu_then_cuda_then_rocm(monkeypatch):
+    """Embeddings' four rows, pinned in full — the whole family shares one
+    ordering rule with the image and text families, and it is invisible in a
+    diff of the table.
+
+    MLX takes the Macs (`_apple_silicon`), `transformers-embed` is the
+    cross-platform default and Apple-Silicon fallback, and
+    `transformers-embed-cuda`/`-rocm` are opt-in accelerated siblings of that
+    row — CUDA before ROCm, the same order `diffusers-image-cuda`/`-rocm` use.
+    Both accelerated rows sit LAST so `auto` never reaches either on any
+    platform, exactly as `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    pins for text generation's own accelerated tail.
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
+    assert codes == [
+        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
+        "transformers-embed-rocm",
+    ]
+
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert registry.for_capability(registry.EMBEDDINGS).code == "transformers-embed"
 
 
 def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
@@ -4037,7 +4069,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed", "ltx-video"}
+        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
+        "transformers-embed-rocm", "ltx-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is

@@ -46,17 +46,27 @@ def test_embeddings_is_a_registered_capability():
     assert registry.EMBEDDINGS in registry.capabilities()
 
 
-def test_both_embedding_runners_are_registered():
+def test_four_embedding_runners_are_registered():
+    """Renamed from "...both_embedding_runners...": there are four rows now,
+    not two — `transformers-embed` gained CUDA and ROCm siblings (see
+    `test_the_cuda_and_rocm_embed_variants_are_registered_and_ordered_correctly`
+    below for the decision this reverses)."""
     codes = {r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS}
-    assert codes == {"mlx-embed", "transformers-embed"}
+    assert codes == {"mlx-embed", "transformers-embed", "transformers-embed-cuda",
+                     "transformers-embed-rocm"}
 
 
-def test_mlx_embed_is_registered_before_transformers_embed():
+def test_mlx_embed_is_registered_before_every_torch_embed_row():
     """First-match-wins is the whole mechanism (see `registry.py`'s comment on
     the table): MLX must come first so an Apple Silicon machine resolves there
-    by default, exactly like text generation and image generation."""
+    by default, exactly like text generation and image generation. Widened
+    from asserting the two-row list verbatim (it now has four rows) to the
+    property this test actually cares about: MLX is first, ahead of every
+    torch build.
+    """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
-    assert codes == ["mlx-embed", "transformers-embed"]
+    assert codes[0] == "mlx-embed"
+    assert codes.index("mlx-embed") < codes.index("transformers-embed")
 
 
 def test_mlx_embed_is_gated_to_apple_silicon(monkeypatch):
@@ -89,12 +99,29 @@ def test_windows_resolves_to_transformers_embed(monkeypatch):
     assert resolved is not None and resolved.code == "transformers-embed"
 
 
-def test_no_cuda_or_rocm_embed_variant_exists():
-    """Deliberate (see `registry.py`'s comment on the `transformers-embed`
-    row): a dual encoder is one forward pass, too cheap to justify a second or
-    third wheel the way text and image generation's accelerated rows are."""
-    codes = {r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS}
-    assert not any("cuda" in code or "rocm" in code for code in codes)
+def test_the_cuda_and_rocm_embed_variants_are_registered_and_ordered_correctly():
+    """The decision this test used to pin — no accelerated embed variant,
+    because a dual encoder is "too cheap to justify a second or third wheel"
+    — was DELIBERATELY REVERSED on this branch, not overlooked. The speed
+    argument for the TEXT tower still holds (one short sequence, milliseconds
+    on a CPU), but an image tower run at `embed_common.MAX_ITEMS` (64) items
+    per call is real work a GPU meaningfully speeds up, and a machine that
+    already has a working NVIDIA or fully ROCm-capable AMD card was otherwise
+    stuck running every one of those batches in fp32 on the CPU with no way to
+    opt out. `transformers-embed-cuda`/`-rocm` are that opt-in, gated on the
+    same `_cuda`/`_rocm` probes `diffusers-image-cuda`/`-rocm` use.
+
+    Both sit BELOW `transformers-embed`, CUDA before ROCm — the same order the
+    diffusers image family uses — so `auto` still resolves to the CPU/MPS row
+    on every platform (`test_the_embeddings_capability_orders_mlx_then_cpu_then_cuda_then_rocm`
+    in `test_ai_runtime.py` pins that through platform mocks; this test pins
+    only the static ordering).
+    """
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
+    assert codes == [
+        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
+        "transformers-embed-rocm",
+    ]
 
 
 # The task-vocabulary tests that used to live here (the embeddings dual-encoder
