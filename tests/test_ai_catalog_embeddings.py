@@ -293,3 +293,159 @@ def test_every_embedding_suggestion_is_loadable_by_its_runner():
         for entry in catalog.for_runner(code):
             assert entry["id"]
             assert entry["size_gb"] and entry["size_gb"] > 0
+
+
+# -- the stranded MODEL, and the engine gap (PR #830 regression) ----------------
+#
+# Task 7 removed the `mlx-embed` -> `transformers-embed` alias, which was right
+# — but it made embeddings the FIRST capability where a curated id belongs to one
+# engine and not another. The offer path was never built for that: a partly
+# downloaded `google/siglip2-so400m-patch14-384` on Linux showed no engine, so
+# the Local tab offered a resume and the download died inside `onnx_embed`.
+#
+# The shape is NOT embeddings-specific and the fix is deliberately generic — see
+# `catalog.engine_gap`. `test_every_multi_runner_capability_has_the_same_shape`
+# below is what pins that.
+
+
+def _linux(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+
+
+def _mac(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+
+def test_a_machine_on_onnx_is_not_offered_the_mlx_only_ids(monkeypatch):
+    """**The offer side of the bug.** `for_capability` is what every picker and
+    the catalog payload read, and on Linux it must contain no id whose only
+    curated home is an engine that cannot run here."""
+    _linux(monkeypatch)
+    offered = {entry["id"] for entry in catalog.for_capability(registry.EMBEDDINGS)}
+    assert offered == {e["id"] for e in catalog.SUGGESTIONS["onnx-embed"]}
+    assert not (offered & MLX_IDS)
+    # …and every one of those omitted ids reports a gap, so the omission is a
+    # decision this machine can explain rather than a silence.
+    for repo_id in MLX_IDS:
+        assert catalog.engine_gap(repo_id) is not None, repo_id
+
+
+def test_the_same_ids_are_offered_and_ungapped_on_a_MAC(monkeypatch):
+    """The other half, and the one a Linux-only fix would have broken: on Apple
+    Silicon `mlx-embed` serves, so these ids are exactly what SHOULD be offered
+    and nothing about them is a gap."""
+    _mac(monkeypatch)
+    offered = {entry["id"] for entry in catalog.for_capability(registry.EMBEDDINGS)}
+    assert offered == MLX_IDS
+    for repo_id in MLX_IDS:
+        assert catalog.engine_gap(repo_id) is None, repo_id
+    # The ONNX ids are not a gap on a Mac either: `onnx-embed` is AVAILABLE
+    # there, just not selected, and switching engines is a real remedy — which
+    # is `hub_cache._engine`'s existing "switch it on the Engines tab" sentence
+    # rather than this one.
+    for repo_id in ONNX_IDS:
+        assert catalog.engine_gap(repo_id) is None, repo_id
+
+
+def test_the_gap_names_the_engine_the_reason_and_the_counterpart(monkeypatch):
+    """What the sentence has to contain to be actionable, asserted by part
+    rather than verbatim — the wording may improve, the four facts may not go
+    missing."""
+    _linux(monkeypatch)
+    gap = catalog.engine_gap("google/siglip2-so400m-patch14-384")
+    assert gap is not None
+    reason = gap["reason"]
+    assert "google/siglip2-so400m-patch14-384" in reason      # which model
+    assert "MLX Embeddings" in reason                          # which engine
+    assert "Apple Silicon" in reason                           # why not here
+    assert "onnx-community/siglip2-so400m-patch14-384-ONNX" in reason  # what to do
+    # And it says the snapshot is not being thrown away, because the honest
+    # answer to "then why is it on my disk" is "it still works on a Mac".
+    assert "stays on disk" in reason
+    assert gap["counterpart"] == "onnx-community/siglip2-so400m-patch14-384-ONNX"
+    assert gap["engines"] == ("mlx-embed",)
+    assert gap["serving"] == "onnx-embed"
+
+
+def test_a_gap_with_no_counterpart_still_says_what_serves_here(monkeypatch):
+    """The curated MLX prose row has no ONNX equivalent curated for it, so there
+    is nothing to recommend — and the sentence must not trail off. It names the
+    engine that DOES serve the capability here instead."""
+    _linux(monkeypatch)
+    gap = catalog.engine_gap("mlx-community/nomicai-modernbert-embed-base-bf16")
+    assert gap is not None and gap["counterpart"] is None
+    assert "ONNX Embeddings" in gap["reason"]
+    assert "does not read this model's files" in gap["reason"]
+
+
+def test_an_UNCURATED_id_is_never_a_gap(monkeypatch):
+    """"No information" is not "no", and this is the assertion that keeps the fix
+    from becoming a wall. Nobody here has an opinion about a repo the user found
+    in Discover; `formats.loaders()` and the runner's own format check are the
+    judges for those, exactly as before."""
+    _linux(monkeypatch)
+    assert catalog.runners_offering("someone/found-this-myself") == ()
+    assert catalog.engine_gap("someone/found-this-myself") is None
+
+
+def test_counterpart_for_is_checked_against_the_curation_not_trusted(monkeypatch):
+    """The table proposes and the curation decides: a counterpart pointing at a
+    row nobody curates must not be recommended."""
+    _linux(monkeypatch)
+    assert catalog.counterpart_for("google/siglip2-base-patch16-384", "onnx-embed") == (
+        "onnx-community/siglip2-base-patch16-384-ONNX")
+    # Not curated for the MLX engine, so not offered to it.
+    assert catalog.counterpart_for("google/siglip2-base-patch16-384", "mlx-embed") is None
+    # An id with no table row at all.
+    assert catalog.counterpart_for("someone/whatever", "onnx-embed") is None
+
+
+def test_runners_offering_is_the_narrow_companion_to_all_suggested_ids():
+    """The two exist together and answer opposite questions — the docstrings say
+    so, and this is the assertion behind them. `all_suggested_ids` keeps its
+    cross-runner breadth (the mirror's privacy gate reads it); `runners_offering`
+    is what says WHICH engine, which is what an offer needs."""
+    every = catalog.all_suggested_ids()
+    assert "google/siglip2-so400m-patch14-384" in every
+    assert "nomic-ai/nomic-embed-text-v1.5" in every
+    assert catalog.runners_offering("google/siglip2-so400m-patch14-384") == ("mlx-embed",)
+    assert catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")[0] == "onnx-embed"
+    # Hardware variants report as offering their family's list, the same
+    # resolution `for_runner` does.
+    assert "onnx-embed-cuda" in catalog.runners_offering("nomic-ai/nomic-embed-text-v1.5")
+
+
+def test_every_multi_runner_capability_has_the_same_shape():
+    """**Why the fix is capability-agnostic**, pinned so nobody narrows it to
+    embeddings later.
+
+    Embeddings is where this was HIT — the torch removal orphaned two ids that
+    every platform used to be able to read — but it is not where it is possible.
+    Every capability with two curated runners has ids belonging to only one of
+    them, because the two engines read different formats: `mlx-text`'s
+    `mlx-community/*` against `llamacpp-text`'s GGUF filenames, MLX Whisper's
+    conversions against CTranslate2's, MLX FLUX's against Diffusers'. A
+    half-downloaded `mlx-community` chat model on Linux is the identical hole.
+    """
+    per_capability = {}
+    for code, entries in catalog.SUGGESTIONS.items():
+        runner = registry.by_code(code)
+        if runner is None:
+            continue
+        per_capability.setdefault(runner.capability, {})[code] = {
+            entry["id"] for entry in entries}
+
+    multi = {cap: per for cap, per in per_capability.items() if len(per) > 1}
+    # If this is ever empty the test has stopped testing anything.
+    assert len(multi) >= 3, sorted(per_capability)
+    for cap, per in multi.items():
+        for code, ids in per.items():
+            others = set()
+            for other, other_ids in per.items():
+                if other != code:
+                    others |= other_ids
+            assert ids - others, (
+                f"{cap}/{code} shares every id with its siblings — if that is "
+                f"now true, `engine_gap`'s reason for being generic has changed")

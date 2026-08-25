@@ -374,3 +374,111 @@ def test_no_other_capability_claims_either_field(client):
         for entry in row["models"]:
             assert entry["acceptsPaths"] is False, entry["id"]
             assert entry["promptScheme"] is None, entry["id"]
+
+
+# -- the stranded MODEL: refused, not a traceback (PR #830 regression) ---------
+#
+# A model whose only curated home is an engine that cannot run here reached
+# `onnx_embed.download()` and raised. That RuntimeError is a correct last-resort
+# guard and stays where it is — but by the time it fires a job row has opened, a
+# venv may have been built, and the user is reading a traceback. These pin the
+# earlier, honest refusal.
+#
+# Entry points, all four of which land on the same `catalog.engine_gap` answer:
+# the Local tab's resume (`/api/ai/runtime/download`), a Load
+# (`/api/ai/runtime/load`), and a page or exported app naming the id directly
+# (`fused.ai.embed({model})` -> `/api/ai/embed`).
+
+
+def _linux(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+
+
+MLX_ONLY = "google/siglip2-so400m-patch14-384"
+COUNTERPART = "onnx-community/siglip2-so400m-patch14-384-ONNX"
+
+
+def test_a_model_only_MLX_can_read_is_refused_with_the_engine_named(
+        client, monkeypatch, served):
+    """The embed route. `unavailable` rather than `bad_request`: the request is
+    well formed and the answer is a fact about this machine — the same type this
+    route already uses when nothing serves the capability at all."""
+    _linux(monkeypatch)
+    response = _post(client, {"texts": ["a cat"], "model": MLX_ONLY})
+    assert response.status_code == 409
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"]["type"] == "unavailable"
+    message = body["error"]["message"]
+    assert MLX_ONLY in message
+    assert "MLX Embeddings" in message
+    assert COUNTERPART in message
+    assert served == [], "nothing may reach the worker after a refusal"
+
+
+def test_the_download_route_refuses_the_same_model_the_same_way(client,
+                                                                monkeypatch):
+    """**The one that matters most**, because it is the Local tab's resume and
+    because fetching the files is the operation a format check structurally
+    cannot guard: there is nothing on disk to judge until it has run."""
+    _linux(monkeypatch)
+    started = []
+    monkeypatch.setattr(
+        supervisor, "load",
+        lambda *a, **kw: (started.append(a), {"jobId": "sys:x"})[1])
+    response = client.post("/api/ai/runtime/download",
+                           json={"model": MLX_ONLY, "capability": "embeddings"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    message = response.json()["error"]
+    assert MLX_ONLY in message and COUNTERPART in message
+    assert started == [], "the download must not start"
+
+
+def test_the_load_route_refuses_it_too(client, monkeypatch):
+    _linux(monkeypatch)
+    started = []
+    monkeypatch.setattr(
+        supervisor, "load",
+        lambda *a, **kw: (started.append(a), {"jobId": "sys:x"})[1])
+    response = client.post("/api/ai/runtime/load",
+                           json={"model": MLX_ONLY, "capability": "embeddings"},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "MLX Embeddings" in response.json()["error"]
+    assert started == []
+
+
+def test_the_curated_ONNX_default_is_not_refused(client, monkeypatch, served):
+    """The guard against the fix becoming a wall: the model this machine SHOULD
+    load must sail straight through."""
+    _linux(monkeypatch)
+    response = _post(client, {"texts": ["a cat"],
+                              "model": "nomic-ai/nomic-embed-text-v1.5"})
+    assert response.status_code == 200
+    assert len(served) == 1
+
+
+def test_an_uncurated_model_is_not_refused_either(client, monkeypatch, served):
+    """"No information" is not "no". A repo the user found in Discover has no
+    curated home, so nothing here has an opinion about it and the runner's own
+    format check stays the judge — exactly as before this fix."""
+    _linux(monkeypatch)
+    response = _post(client, {"texts": ["a cat"], "model": "someone/found-this"})
+    assert response.status_code == 200
+    assert len(served) == 1
+
+
+def test_on_a_MAC_the_same_model_is_served_rather_than_refused(client,
+                                                               monkeypatch,
+                                                               served):
+    """**The Mac-path pin.** The refusal is a fact about the machine, not about
+    the model — on Apple Silicon `mlx-embed` serves and this is a perfectly good
+    id. A fix that refused it everywhere would have taken the capability away
+    from the platform it works best on."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    response = _post(client, {"texts": ["a cat"], "model": MLX_ONLY})
+    assert response.status_code == 200
+    assert len(served) == 1

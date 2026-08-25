@@ -8313,10 +8313,22 @@ def _load(client, body):
 
 
 def test_a_load_without_a_capability_reads_the_cached_repos_format(
-        client, hub, dispatched):
+        client, hub, dispatched, monkeypatch):
     """The reported bug. An mflux conversion has no config.json at all, so the
     old default sent it to mlx-lm; its component folders say image generation
-    beyond doubt."""
+    beyond doubt.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id}).status_code == 200
@@ -8546,9 +8558,27 @@ def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
     assert dispatched == []
 
 
-def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
+def test_an_explicit_capability_still_wins_over_the_format(
+        client, hub, dispatched, monkeypatch):
     """Inference governs the OMITTED case only. A caller who names a capability
-    gets it, right or wrong — that is what makes this additive."""
+    gets it, right or wrong — that is what makes this additive.
+
+    Note the ORDER this pins: the explicit capability wins over the FORMAT, not
+    over servability. A model no engine here can serve is refused whatever
+    capability is named for it, because that refusal is about the model rather
+    than about the dispatch — see the platform note below.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id,
@@ -8556,10 +8586,23 @@ def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatch
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
 
 
-def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
+def test_download_infers_the_capability_the_same_way(client, hub, dispatched,
+                                                     monkeypatch):
     """`/download` takes the same default through the same helper, so it had the
     same bug: a Download on the AI Models page fetched an image model into the
-    text runner's idea of what to fetch."""
+    text runner's idea of what to fetch.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     response = client.post("/api/ai/runtime/download", json={"model": repo_id},

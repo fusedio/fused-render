@@ -2363,3 +2363,87 @@ def test_has_vision_tower_is_false_for_a_hostile_repo_id(hub):
     """The same path-segment guard `cached_capability` applies to a request
     body's model id — a repo id is not a place to go looking for `..`."""
     assert ai_models_mod.has_vision_tower("../../etc/passwd") is False
+
+
+# -- the partly downloaded, engine-stranded repo (PR #830 regression) ----------
+
+
+@requires_symlinks
+def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
+        client, hub, monkeypatch):
+    """**`engine` must not be null here, and that was the bug.**
+
+    A download that never finished has no weights, so `formats.loaders()` has
+    nothing to judge and `_engine` used to answer `None` — no engine, no
+    sentence, and so nothing for the Local tab to withhold the resume on. It
+    offered one, and the fetch died inside a runner that cannot read MLX
+    safetensors.
+
+    The CURATION knows what the format check cannot: this id's only curated home
+    is `mlx-embed`, whether or not a byte has landed. So the row now names that
+    engine, marks itself `unservable`, and carries the sentence — and
+    `capability` comes back too, since the curation knows that as well.
+
+    `unservable` rather than leaning on `available: false`: that is ALSO what a
+    merely-unselected engine reports, and resuming one of those is fine.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    # A partial fetch: a blob with our own in-progress suffix and no snapshot
+    # file materialised for it.
+    repo = _repo(hub, "models--google--siglip2-so400m-patch14-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-so400m-patch14-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    assert engine is not None, "a curated id must not report a null engine"
+    assert engine["shortLabel"] == "MLX Embeddings"
+    assert engine["available"] is False
+    assert engine["unservable"] is True
+    assert "onnx-community/siglip2-so400m-patch14-384-ONNX" in engine["reason"]
+
+
+@requires_symlinks
+def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
+    """The Mac path: `mlx-embed` serves there, so nothing is stranded and the
+    resume must stay offered. A fix that flagged this everywhere would have
+    broken the platform the model is FOR."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--google--siglip2-so400m-patch14-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-so400m-patch14-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    # Either no engine claim at all (no format evidence, nothing curated against
+    # it here) or one that does NOT declare itself unservable — never the flag.
+    assert engine is None or not engine.get("unservable")
+
+
+@requires_symlinks
+def test_a_partial_UNCURATED_repo_still_reports_no_engine(client, hub,
+                                                          monkeypatch):
+    """"No information" stays no information. Nobody here has an opinion about a
+    repo the user found themselves, so inventing an engine for it would be
+    claiming something reads a format nothing has looked at — and its resume
+    stays offered, with the runner's own format check as the backstop, exactly as
+    before this fix."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--someone--found-this-myself",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "someone/found-this-myself")
+    assert row["partial"] is True
+    assert row["engine"] is None

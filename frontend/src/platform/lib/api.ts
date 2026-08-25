@@ -2370,6 +2370,17 @@ export interface AiModelRepo {
     familyLabel: string;
     available: boolean;
     reason: string | null;
+    /** **No engine available on this machine can read this repo's files at
+     *  all** — absent on every row where that is not the case, so "not
+     *  present" cannot be misread as "checked and fine".
+     *
+     *  Stronger than `available: false`, which is ALSO what a merely-unselected
+     *  engine reports ("switch it on the Engines tab"). That one still has a
+     *  working remedy here and its download is still worth resuming; this one
+     *  has neither, so the Local tab withholds the resume rather than offering
+     *  an action that ends in a refusal. `reason` carries the sentence,
+     *  including the counterpart id to fetch instead where one is curated. */
+    unservable?: boolean;
   } | null;
   /**
    * Set when this repo is not a model at all but a PART of one — the quantized

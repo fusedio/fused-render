@@ -102,6 +102,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.ai import catalog as _catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import tasks as _tasks
 from fused_render.ai.runners import formats
@@ -1183,9 +1184,11 @@ def _part_progress(sidecar: str) -> int:
     return done
 
 
-def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | None, str | None]:
+def _engine(meta: _RepoMeta, reading: _tasks.Classification,
+            repo_id: str = "") -> tuple[dict | None, str | None]:
     """Which backend would load this repo, and the capability it would load it
-    AS — `(None, capability)` when nothing here reads the format.
+    AS — `(None, capability)` when nothing here reads the format AND the
+    curation has no opinion either.
 
     Two questions, deliberately answered together, because either alone lies.
     The FORMAT says which runners could open it (`meta.loaders`); the REGISTRY
@@ -1206,6 +1209,55 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification) -> tuple[dict | Non
     """
     capability = reading.capability
     if not meta.loaders:
+        # **No FORMAT evidence — which is not the same as no evidence.** Two very
+        # different repos land here: one that is fully downloaded and whose files
+        # no engine reads (the honest `None`, and the answer this field has
+        # always given), and one whose download never FINISHED, where there are
+        # no weights to read yet and so nothing for `formats.loaders()` to judge.
+        #
+        # For the second, the CURATION knows what the format check cannot: a
+        # curated id belongs to a named engine whether or not a byte has landed.
+        # That is what makes this branch answerable at all — and it is the gap
+        # `google/siglip2-so400m-patch14-384` fell into on Linux, where the card
+        # showed no engine, so the resume was offered and the download then died
+        # inside a runner that cannot read MLX safetensors.
+        #
+        # An UNCURATED repo still answers `None`, deliberately: nobody here has
+        # an opinion about a repo the user found themselves, and inventing one
+        # would be claiming an engine reads a format nothing has looked at. Its
+        # resume stays offered and the runner's own format check stays the
+        # backstop — exactly the behaviour every uncurated repo already had.
+        gap = _catalog.engine_gap(repo_id) if repo_id else None
+        if gap is not None:
+            offering = [_ai_registry.by_code(code) for code in gap["engines"]]
+            offering = [runner for runner in offering if runner is not None]
+            if offering:
+                runner = offering[0]
+                return {
+                    "code": runner.code,
+                    "label": runner.label,
+                    "shortLabel": runner.short,
+                    "familyLabel": runner.family,
+                    "available": False,
+                    # `engine_gap`'s sentence, not one composed here — the card
+                    # and the load route must say the same thing, and that is
+                    # the reason that function exists. It is also deliberately
+                    # UNLIKE the "switch it on the Engines tab" sentence below:
+                    # that one is a remedy on THIS machine, this one is "no
+                    # engine here can read this, fetch the other format".
+                    "reason": gap["reason"],
+                    # **The flag the resume gate reads, and it is why
+                    # `available: False` alone is not enough.** That is also
+                    # false for a repo whose engine is merely UNSELECTED ("switch
+                    # it on the Engines tab"), and resuming one of those is
+                    # perfectly fine — the bytes download either way and only the
+                    # LOAD needs a switch. This says something stronger: no
+                    # engine available on this machine can read these files at
+                    # all, so there is nothing a resume could lead to. Absent
+                    # (rather than false) on every other row, so a reader cannot
+                    # mistake "not flagged" for "checked and fine".
+                    "unservable": True,
+                }, gap["capability"]
         return None, capability
     runners = [r for r in _ai_registry.all_runners() if r.code in meta.loaders]
     if capability is None and not reading.ruled_out:
@@ -1463,7 +1515,7 @@ def cached_capability(repo_id: str) -> CacheReading:
     # The page's own join, in the page's own order: the task first, then the
     # decisive formats, which is what `_engine` exists to combine.
     reading = _tasks.classify(meta.task)
-    _row, capability = _engine(meta, reading)
+    _row, capability = _engine(meta, reading, repo_id)
     if (capability is None and meta.loaders
             and reading.support == _tasks.UNKNOWN and not meta.unmapped_arch):
         # Nothing DECISIVE and nothing that told us what this IS, but the
@@ -1757,7 +1809,7 @@ def _repo(cache_dir: str, dirname: str, kind: str) -> dict:
         if kind == "model" and component is None else _tasks.NOTHING
     )
     engine, capability = (
-        _engine(meta, reading) if kind == "model" and component is None
+        _engine(meta, reading, repo_id) if kind == "model" and component is None
         else (None, None)
     )
     return {

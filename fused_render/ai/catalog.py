@@ -1200,13 +1200,180 @@ def default_for(capability: str) -> str | None:
 
 
 def all_suggested_ids() -> set[str]:
-    """Every suggested repo id, for the AI Models page's checkmarks.
+    """Every suggested repo id, across every runner.
 
-    Deliberately EVERY runner's, not just the resolvable one's: the checkmark
-    answers "is this on my disk", and a machine that has an MLX model cached
-    from a previous life should be told so rather than have the row go quiet.
+    **Not the page's checkmarks — that is what this docstring used to say and it
+    was stale enough to be misleading.** The AI Models page ticks a card from
+    `/api/ai/catalog`'s payload (`_catalog_with_downloads` -> `for_capability`),
+    which holds only the RESOLVING runner's list, so the tick is already
+    engine-aware and a Mac-only row does not wear it on Linux. The one live
+    caller is `mirror_id`'s privacy gate.
+
+    Deliberately EVERY runner's all the same, and for that caller's reason: the
+    gate asks "is this a model we ourselves recommend", so that a repo the user
+    found in Discover is never named to our own distribution. Narrowing it to the
+    resolvable runner would silently turn the mirror off for every model on the
+    other engine's list.
+
+    `runners_offering` is the narrow companion for callers that need to know
+    WHICH engine an id belongs to — see its docstring for the difference.
     """
     return {entry["id"] for entries in SUGGESTIONS.values() for entry in entries}
+
+
+def runners_offering(model_id: str) -> tuple[str, ...]:
+    """Every runner code whose curated list names `model_id`, in registry order.
+
+    **The NARROW companion to `all_suggested_ids()`, and the two answer opposite
+    questions on purpose.** That one is deliberately every runner's ids, because
+    it backs the "is this on my disk" checkmark and a Mac model cached from a
+    previous life should still tick. This one says WHICH engine a curated id
+    belongs to, which is what a caller needs before offering to fetch or load it
+    — and the difference between them is exactly the gap
+    `google/siglip2-so400m-patch14-384` fell into.
+
+    Empty for an uncurated repo, which is not the same answer as "no engine
+    reads it": nobody here has an opinion about a repo the user found
+    themselves, and `formats.loaders()` is what judges those. Callers must treat
+    empty as "no information" rather than as a refusal.
+
+    Resolves aliases (`_SHARED_SUGGESTIONS`) the same way `for_runner` does, so a
+    hardware variant reports as offering everything its family's list holds.
+    """
+    codes = []
+    for runner in registry.all_runners():
+        entries = SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(runner.code, runner.code))
+        if entries and any(entry["id"] == model_id for entry in entries):
+            codes.append(runner.code)
+    return tuple(codes)
+
+
+#: The same MODEL, curated for a different engine — id to id.
+#:
+#: **This table exists because the torch removal orphaned exactly these two ids
+#: on every machine that is not a Mac**, and for no more general reason than
+#: that. Both were curated for `transformers-embed`, which every platform could
+#: run; with that engine gone their only curated home is `mlx-embed`, so a Linux
+#: or Windows user who had already downloaded one is holding a snapshot no
+#: engine available to them can read. The ONNX exports below are the same
+#: checkpoints in the format the engine they DO have opens, which is what makes
+#: the refusal a "fetch this instead" rather than a shrug.
+#:
+#: **Written out rather than derived, deliberately.** The mapping is
+#: `google/X` -> `onnx-community/X-ONNX` for both rows, and that is a
+#: coincidence of how one account names its conversions — not a rule. Inferring
+#: it from string munging would invent ids for every other `google/*` repo on
+#: the Hub and confidently recommend downloads that do not exist. Two lines of
+#: data cannot do that.
+#:
+#: Not a migration to run, and nothing is rewritten on disk: the snapshot stays
+#: exactly where it is, still perfectly loadable the moment the user opens the
+#: same cache on a Mac. `counterpart_for` below is what checks that a
+#: counterpart is REALLY curated for the engine being offered it, so this table
+#: cannot outlive the rows it points at.
+COUNTERPART_IDS = {
+    "google/siglip2-base-patch16-384":
+        "onnx-community/siglip2-base-patch16-384-ONNX",
+    "google/siglip2-so400m-patch14-384":
+        "onnx-community/siglip2-so400m-patch14-384-ONNX",
+}
+
+
+def counterpart_for(model_id: str, runner_code: str) -> str | None:
+    """`model_id`'s equivalent in `runner_code`'s own curated list, or None.
+
+    Checked against the list rather than returned from `COUNTERPART_IDS`
+    directly: a table entry pointing at a row somebody later removed would
+    otherwise have this function recommending a download nothing curates. The
+    table proposes; the curation decides.
+    """
+    counterpart = COUNTERPART_IDS.get(model_id)
+    if not counterpart:
+        return None
+    return counterpart if counterpart in {
+        entry["id"] for entry in for_runner(runner_code)} else None
+
+
+def engine_gap(model_id: str) -> dict | None:
+    """Why no engine available here can serve `model_id`, or None when one can.
+
+    **The one place this question is answered, because two surfaces ask it and
+    they must not disagree**: the Local tab's card (which decides whether to
+    offer a resume, and what sentence to print) and the load/download/embed
+    routes (which refuse a request made anyway — a stale URL, a seeded app
+    param, a stored pref). A card that offered an action the route then refused
+    would be the failure this function exists to remove.
+
+    Answers from the CURATION, which is what makes it work on a snapshot whose
+    format cannot be read yet. `formats.loaders()` needs weights on disk, so a
+    PARTIALLY downloaded repo has no format evidence at all and cannot be judged
+    that way — and download is the one operation a format gate structurally
+    cannot guard, since fetching the files is the whole point of it. For a
+    curated id the curation knows the answer before a byte arrives.
+
+    None in three cases, and each is a deliberate "no information" rather than
+    an approval:
+
+    * an UNCURATED id — nobody here has an opinion about a repo the user found
+      themselves, and the runner's own format check is the right judge;
+    * a curated id whose engine IS the one serving its capability here;
+    * a curated id offered by a runner that is available, even if not the one
+      currently selected — that is the Engines tab's business, and
+      `hub_cache._engine` already prints "switch it on the Engines tab" for it.
+
+    The dict carries the engines that DO curate it, whether any of them could
+    run here at all, the counterpart to fetch instead where there is one, and
+    the finished sentence. `registry.unavailable_reason` supplies the
+    "cannot run here" half so this reads in the app's existing vocabulary
+    rather than a parallel phrasing invented here.
+    """
+    codes = runners_offering(model_id)
+    if not codes:
+        return None
+    offering = [registry.by_code(code) for code in codes]
+    offering = [runner for runner in offering if runner is not None]
+    if not offering:
+        return None
+    capability = offering[0].capability
+    serving = registry.for_capability(capability)
+    if serving is not None and any(r.code == serving.code for r in offering):
+        return None
+    # Available-but-not-selected is not a gap: switching engines fixes it, and
+    # that is a sentence the card already knows how to print.
+    if any(runner.available().ok for runner in offering):
+        return None
+
+    names = " or ".join(dict.fromkeys(runner.short for runner in offering))
+    # The registry's own words for why the engine that reads this cannot run,
+    # taken from the first offering runner rather than composed here.
+    why = offering[0].available().reason or registry.unavailable_reason(capability)
+    counterpart = counterpart_for(model_id, serving.code) if serving else None
+
+    # A COLON rather than a dash before `why`: the registry's own reasons
+    # already contain an em-dash ("needs Apple Silicon — MLX runs on Metal
+    # only"), and nesting one inside another reads as a broken sentence.
+    reason = (
+        f"{model_id} is only readable by {names}, which cannot run on this "
+        f"machine: {why}." if why else
+        f"{model_id} is only readable by {names}, which cannot run on this "
+        f"machine.")
+    if counterpart:
+        reason += (
+            f" The same model in the format this machine's engine does read is "
+            f"{counterpart} — fetch that instead. Nothing is deleted: this "
+            f"snapshot stays on disk and still loads on a machine that can run "
+            f"{names}.")
+    elif serving is not None:
+        reason += (
+            f" {serving.short} is what serves {capability} here, and it does "
+            f"not read this model's files.")
+    return {
+        "engines": tuple(runner.code for runner in offering),
+        "capability": capability,
+        "serving": serving.code if serving is not None else None,
+        "counterpart": counterpart,
+        "reason": reason,
+    }
 
 
 def mirror_id(model_id: str) -> str:

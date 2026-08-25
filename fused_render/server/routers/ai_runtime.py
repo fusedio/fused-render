@@ -1044,6 +1044,27 @@ def api_ai_catalog():
             "ramGb": _machine_ram_gb()}
 
 
+def _engine_gap_refusal(model: str):
+    """A 409 when no engine available here can serve `model`, else None.
+
+    **The earlier, honest half of a refusal the runner already makes.** A worker
+    handed a model whose files it cannot read raises — `onnx_embed.download`'s
+    "has no ONNX export this runner can open" is correct and stays exactly where
+    it is — but by then a job row has opened, a venv may have been built and the
+    user is reading a traceback. This says the same thing before any of that,
+    in a sentence naming the engine that DOES read it and the model to fetch
+    instead (`catalog.engine_gap`).
+
+    409 rather than 400, matching the two `supervisor.SupervisorError` handlers
+    around it: the request is well formed and the answer is a fact about this
+    machine, which is what a 409 means everywhere else on this router.
+    """
+    gap = catalog.engine_gap(model)
+    if gap is None:
+        return None
+    return _error(gap["reason"], status=409)
+
+
 @router.post("/api/ai/runtime/load")
 def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
@@ -1053,6 +1074,9 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -1102,6 +1126,13 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    # Checked on a DOWNLOAD too, and this is the one that matters most: fetching
+    # the files is the operation a format gate structurally cannot guard, since
+    # there are no files to judge until it has run. The Local tab's resume is
+    # this exact request.
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -1883,6 +1914,16 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     # into a 500 from inside the worker.
     if source == "texts":
         forwarded["kind"] = kind
+    # The same refusal the load and download routes make, in this route's own
+    # error vocabulary: a page that named a model in `fused.ai.embed({model})`
+    # — or an exported app whose seeded id no longer resolves on the machine
+    # opening it — must get a sentence rather than a traceback out of the worker.
+    # `unavailable` is the type this route already uses for "cannot run here"
+    # (see the no-runner branch above), so it is the type here too.
+    gap = catalog.engine_gap(model)
+    if gap is not None:
+        return _embed_error("unavailable", gap["reason"], status=409)
+
     try:
         result = supervisor.generate_embed(model, forwarded)
     except supervisor.ModelNotReady as e:
