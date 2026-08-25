@@ -924,18 +924,31 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # side by side, so the whole snapshot is 11.42 GB for the base export and
     # 29.5 GB for the so400m, none of which this app fetches.
     # `runners/onnx_embed.py`'s `download()` pins `allow_patterns` to the fp32
-    # graphs plus the tokenizer, and the figures below are that set:
-    #   nomic:   573,899,776 graph + tokenizer + pooling config = 0.55 GB
+    # graphs plus the tokenizer, and the figures below are that set, in DECIMAL
+    # GB (this file's own convention — see the LTX rows, which check out exactly
+    # against `/1e9`), not GiB:
+    #   nomic:   547,310,275 graph + 716,106 tokenizer/pooling config
+    #            = 548,026,381 B = 0.55 GB
     #            (whole repo 2.2 GB — eight quantizations plus a safetensors copy)
-    #   base:    390,995,264 vision + 1,184,301,056 text + 34,362,880 tokenizer
-    #            + configs = 1.54 GB
-    #   so400m:  1,796,589,568 vision + 2,968,151,040 text (0.6 MB of graph plus
-    #            its external-data sidecar) + 34,362,880 tokenizer = 4.58 GB
-    # Measured against the Hub's own per-file byte sums, 2026-08-25. That they
-    # round to the same 1.5/4.6 GB the torch repos did is a coincidence worth
-    # stating rather than relying on: the ONNX export of a tower is a different
-    # file from its safetensors, and a future re-export could move either figure
-    # without moving the other. `tests/test_ai_onnx_embed_real_weights.py`
+    #   base:    372,975,112 vision + 1,129,469,657 text + 34,411,767 tokenizer
+    #            + configs = 1,536,856,536 B = 1.54 GB
+    #   so400m:  1,713,485,119 vision + 2,831,730,610 text (599,026 B of graph
+    #            plus its 2,831,131,584 B external-data sidecar) + 34,412,213
+    #            tokenizer/configs = 4,579,627,942 B = 4.58 GB
+    # Measured against the Hub's own per-file byte sums, 2026-08-25 — and
+    # `size_gb` below is each total rounded to one decimal (0.5/1.5/4.6), the
+    # same rounding every other row in this file gets. An earlier version of
+    # this comment carried a different set of component byte counts for base
+    # and so400m, and neither the "1.54 GB"/"4.58 GB" it stated nor the
+    # `size_gb` it shipped was that set's DECIMAL total — the decimal figure
+    # those bytes actually produce is 1.61/4.80 GB, over the 0.05 tolerance
+    # `test_ai_onnx_embed_real_weights.py` allows, which would have failed the
+    # gate on a fully correct download and blamed `allow_patterns` for it. It
+    # then called the 1.5/4.6 GB agreement with the torch repos' own figures "a
+    # coincidence" — with the numbers corrected, it no longer needs that
+    # excuse, but the underlying caution still holds: the ONNX export of a
+    # tower is a different file from its safetensors, and a future re-export
+    # can move either figure independently. `tests/test_ai_onnx_embed_real_weights.py`
     # asserts the on-disk total against these numbers on a machine that really
     # downloaded one, which is the only place the pin can be checked.
     #
