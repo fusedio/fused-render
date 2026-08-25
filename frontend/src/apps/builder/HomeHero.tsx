@@ -218,7 +218,11 @@ function ComposerPick<T extends string>({
 // The hero's prompt box — the claude.ai / v0 "what do you want to build?"
 // composer. Submitting names the app (haiku via /api/ai), scaffolds it, and
 // lands in the new folder's claude chat exactly like the New-app panel does.
-function HeroComposer({ onCreated }: { onCreated: () => void }) {
+// Exported on its own (without the wordmark) for the sidebar's "Current apps"
+// + button (shell/CurrentAppsSection.tsx, D489), which opens THIS composer in a
+// modal: same naming, same scaffold, same landing in the new app's chat. One
+// create path, three doors.
+export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
   // AI" button (?annot=). null means no model is annotated; the composer

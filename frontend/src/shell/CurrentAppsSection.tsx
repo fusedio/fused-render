@@ -11,6 +11,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { archiveTask, getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { Modal } from "@platform/ui/modal/Modal";
+import { HeroComposer } from "@apps/builder/HomeHero";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
@@ -113,13 +115,41 @@ export default function CurrentAppsSection() {
     (app: CurrentApp) => <CurrentAppRow key={app.dir} app={app} active={app.slug === onSlug} />,
     [onSlug],
   );
-  // Nothing on the desk → no section. Unlike Bookmarks this one is contextual,
-  // and an empty heading above the permanent section is noise.
-  if (apps.length === 0) return null;
+  // The + opens the /apps composer in a modal (D489). The section therefore
+  // ALWAYS renders now — it first hid itself with zero current apps (D487),
+  // but a door to "make one" is exactly what an empty desk wants, and hiding
+  // the heading would hide the door with it. Empty = heading + plus, no rows.
+  const [composing, setComposing] = useState(false);
   return (
     <div className="sidebar-section sidebar-current-apps">
-      <div className="sidebar-heading">Current apps</div>
+      <div className="sidebar-heading current-apps-heading">
+        Current apps
+        <button
+          type="button"
+          className="icon-btn current-apps-add"
+          title="New app"
+          aria-label="New app"
+          onClick={() => setComposing(true)}
+        >
+          +
+        </button>
+      </div>
       {apps.map(render)}
+      {composing && (
+        // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
+        // it names, scaffolds and navigates into the new app's chat itself,
+        // and that navigation remounts the sidebar (App.tsx), which is what
+        // unmounts this modal. `onCreated` closes it for the case where the
+        // composer stays put (no chat run started).
+        <Modal
+          title="New app"
+          onClose={() => setComposing(false)}
+          width={640}
+          dialogClassName="current-apps-compose"
+        >
+          <HeroComposer onCreated={() => setComposing(false)} />
+        </Modal>
+      )}
     </div>
   );
 }
