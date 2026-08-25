@@ -569,14 +569,19 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     `token` (index/cancel.CancelToken), when given, is bound to the duckdb
     connection the moment it exists and checked at every phase boundary in
     `pass_over` — before each `execute`, after the `fetchall`, before
-    `rank_entries`, before the gitignore filter. A `duckdb.InterruptException`
-    from an `execute()` this token caused is re-raised as `Cancelled`; one this
-    token did NOT cause (a real duckdb error, or another caller's timeout on
-    a connection this function does not own — it never shares one) keeps
-    surfacing as itself. `search_ranked` cannot make the abandoned THREAD
-    return on its own (`asyncio.to_thread` has no such power); this is what
-    makes the QUERY inside it return quickly instead, which is what the caller
-    is actually waiting on.
+    `rank_entries`, before the gitignore filter. Binding is to the whole
+    CONNECTION, though, not just `pass_over`'s statement, so a
+    `duckdb.InterruptException` can land in any query run on it —
+    `_coverage_reason`'s and `_ignore_roots`' included, both of which execute
+    on this same connection before `pass_over` ever does. One try/except
+    around the whole bound region (not one per query site) re-raises as
+    `Cancelled` an interrupt this token caused; one it did NOT cause (a real
+    duckdb error, or another caller's timeout on a connection this function
+    does not own — it never shares one) keeps surfacing as itself.
+    `search_ranked` cannot make the abandoned THREAD return on its own
+    (`asyncio.to_thread` has no such power); this is what makes the QUERY
+    inside it return quickly instead, which is what the caller is actually
+    waiting on.
     """
     root = _root_or_bare(
         norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
@@ -683,19 +688,10 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
             if token is not None:
                 token.check()
             t0 = time.monotonic()
-            try:
-                rows = con.execute(
-                    f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
-                    f"WHERE {predicate}{hidden} "
-                    f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
-            except duckdb.InterruptException:
-                # An interrupt with NO token, or one this token did not cause,
-                # is a real error (someone else's timeout, a genuine duckdb
-                # abort) and must keep surfacing as one — only attribute it to
-                # cancellation when this token says it actually happened.
-                if token is not None and token.cancelled:
-                    raise Cancelled() from None
-                raise
+            rows = con.execute(
+                f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
+                f"WHERE {predicate}{hidden} "
+                f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
             if token is not None:
                 token.check()
             # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
@@ -745,5 +741,20 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
         return {**base, "hits": ranked[:limit],
                 "truncated": capped or len(ranked) > limit,
                 "total": len(ranked[:limit]), "escalated": escalated}
+    except duckdb.InterruptException:
+        # `token.bind(con)` above binds the WHOLE connection, not just
+        # pass_over's own SELECT — con.interrupt() can land in any statement
+        # run on it, including `_coverage_reason`'s and `_ignore_roots`'
+        # queries above, both of which run on this same bound connection
+        # before pass_over ever does. Handled once here for the entire bound
+        # region rather than wrapping each query site separately.
+        #
+        # An interrupt with NO token, or one this token did not cause, is a
+        # real error (someone else's timeout, a genuine duckdb abort) and
+        # must keep surfacing as one — only attribute it to cancellation when
+        # this token says it actually happened.
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
     finally:
         con.close()

@@ -628,9 +628,12 @@ def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkey
             self._real = real
 
         def execute(self, sql, *a, **kw):
-            # Only pass_over's own SELECT — search_ranked runs several OTHER
-            # execute() calls first (_coverage_reason, _ignore_roots) that are
-            # not wrapped in the try/except this test is targeting.
+            # Only pass_over's own SELECT. search_ranked runs several OTHER
+            # execute() calls first (_coverage_reason, _ignore_roots) — those
+            # are covered by their own tests below
+            # (test_a_coverage_check_interrupt_*, test_an_ignore_roots_*); this
+            # one is scoped to pass_over's SELECT specifically so a change to
+            # either of the earlier queries cannot accidentally satisfy it.
             if "SELECT rel, size, mtime, is_dir FROM" in sql:
                 # The real cross-thread sequence: `cancel()` flips the flag
                 # AND calls interrupt(), which is what makes THIS raise.
@@ -683,6 +686,78 @@ def test_an_interrupt_with_no_token_is_not_swallowed_as_cancellation(tmp_path, m
                         lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
     with pytest.raises(duckdb_module.InterruptException):
         search_ranked(cfg, "/r", "readme.md")
+
+
+def test_a_coverage_check_interrupt_attributed_to_the_token_becomes_cancelled(
+    tmp_path, monkeypatch
+):
+    """`_coverage_reason` runs its own `execute()` on the SAME bound
+    connection, before `pass_over` ever runs — `token.bind(con)` binds the
+    whole connection, not just pass_over's statement, so `con.interrupt()` can
+    land here too. A normal superseded keystroke landing exactly here must not
+    surface as a raw `duckdb.InterruptException` (a 500, and log noise) any
+    more than one landing in pass_over does."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "FROM " in sql and "WHERE dir = " in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException(
+                    "simulated cross-thread interrupt during coverage check"
+                )
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_an_ignore_roots_interrupt_attributed_to_the_token_becomes_cancelled(
+    tmp_path, monkeypatch
+):
+    """`_ignore_roots` runs on the same bound connection too, and only when a
+    `gitignore_filter` is supplied (search_ranked's caller, server/routers/
+    index.py, always supplies one) — so a client abort landing in the
+    gitignore-root discovery query must also come out as `Cancelled`, not an
+    unhandled `duckdb.InterruptException`."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "/.gitignore" in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException(
+                    "simulated cross-thread interrupt during ignore-roots discovery"
+                )
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token,
+                      gitignore_filter=lambda root, es, oracles: es)
 
 
 def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
