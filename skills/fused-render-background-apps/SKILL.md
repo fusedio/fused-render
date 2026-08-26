@@ -47,6 +47,38 @@ Your `daemon.py` is a plain script, run directly as `[interpreter, daemon.py, --
 
 Everything else — what routes you serve, what state you hold, what background threads you run — is yours. The fixture also serves `POST /count` as a worked example of the request shape `fused.app.call()` actually sends (a JSON body, POST only — the runtime hardcodes the verb).
 
+## Calling the background-apps API about yourself (D505)
+
+Every `fused.app` method sends the caller's own page path as `html`, which
+the server turns into an app folder server-side. Your daemon has no page and
+no `html` path — so before D505 it had no way to ask the server anything
+about itself: not "am I still enabled", not "stop me", not "turn me off".
+
+`engine_host._spawn_env` now exports `FUSED_RENDER_APP_DIR` (the app's own
+folder) into a `kind="background"` child's environment, and
+`templates/shared/background_app.py` is the stdlib-only client that uses it
+— import it exactly like `fused_ai`/`appenv` (same shared dir, same
+sibling-load-by-path pattern, same "never `import fused_render`" rule):
+
+```python
+import background_app
+
+background_app.status()   # {"enabled", "running", "pid", "version", "engine_id"}
+background_app.stop()     # kills THIS process's daemon, stays enabled
+background_app.disable()  # kills it AND un-persists — does not come back
+background_app.restart()  # respawns
+```
+
+Calling `stop()`/`disable()` from inside your own daemon is exactly what a
+tray "Quit"/"Turn off" should do instead of a raw self-`terminate`/`exit` —
+see "When does it come back?" above: an external kill leaves the `Child`
+registered and gets healed back to life by the next proxied call, while
+going through `stop()`/`disable()` pops it out first. Raises
+`background_app.NotUnderEngine` if `FUSED_RENDER_APP_DIR` isn't set (not
+running as an engine-spawned background daemon) and
+`background_app.ServerNotRunning`/`background_app.BackgroundAppError` for
+the same reasons `fused_ai`'s equivalents raise.
+
 ## Driving it from the page: `fused.app`
 
 ```js
@@ -66,6 +98,42 @@ Every method except `call` sends **this page's own path**, never a folder path �
 - `disable()` kills the daemon **and removes it from `background_apps.json`**. Nothing brings it back — not a server restart, not anything — until something calls `enable()` again. This is "turn it off."
 
 If your page conflates the two (e.g. treats `disable()` as just "stop it" and forgets it also un-persists, or calls `stop()` when the user actually asked to uninstall), the daemon either comes back uninvited on the next server launch or refuses to survive a page reload the user expected it to survive.
+
+### When does it come back? All four resurrection paths (D505)
+
+An enabled app that is not running comes back to life through exactly one of
+these — there is no fifth path:
+
+1. **Server start.** `_startup_resurrect_background_apps` (`server/app.py`)
+   walks `enabled_paths()` and brings each one up. Applies regardless of how
+   the daemon died last time.
+2. **A page calling `enable()` or `restart()`.** The documented, deliberate
+   path.
+3. **Heal-on-proxy — the one that surprises people.** If the process was
+   killed EXTERNALLY (a `kill`, a crash, a tray "Quit" that never talks to
+   the server), the `Child` stays registered in `engine_host._children` —
+   nothing ever popped it out. The next proxied call
+   (`fused.app.call(...)`, `/api/engines/<id>/proxy/...`) finds a `Child`
+   that doesn't answer and heals by respawning it (`engine_forward.py`).
+   **`stop()` deliberately does not have this problem**: it pops the child
+   out of `_children` (`engine_host.stop`) before killing it, so a proxied
+   call after `stop()` finds nothing registered, returns 409, and does NOT
+   revive it. A raw external kill skips that pop entirely — it is
+   structurally the WEAKEST way to end a background app's process, weaker
+   than `stop()`, because it leaves the one piece of bookkeeping that
+   prevents an accidental revival intact. Anything that quits a background
+   app from outside the server's own API (a tray menu doing `terminate:`
+   directly, a shell `kill`, a crash) lands here, not on `stop()`'s clean
+   path — see the OpenWhisper tray for the concrete case this bit.
+4. **Nothing else.** No heartbeat, no polling, no periodic sweep — resurrection
+   only ever happens as a *reaction* to one of the three triggers above.
+
+The practical consequence for anything that wants to let a user "quit and
+stay off" from OUTSIDE a page (a tray icon, a CLI, a native menu item): call
+through the server's own `stop`/`disable`, never a raw process kill —
+otherwise you've built path 3 by accident, and the app comes back the moment
+anything pokes it. `templates/shared/background_app.py` (below) is what a
+daemon uses to do that about itself.
 
 ## Enablement is the user's decision, not yours
 

@@ -102,7 +102,8 @@ async def api_background_enable(body: dict = Body(...),
     try:
         child = await asyncio.to_thread(
             engine_host.ensure_background, engine_id, interpreter,
-            manifest.daemon, background_apps.cache_dir_for(engine_id), version)
+            manifest.daemon, background_apps.cache_dir_for(engine_id), version,
+            folder)
     except (engine_host.EngineError, OSError) as e:
         return _error(f"could not start {os.path.basename(folder)}'s "
                       f"background app: {e}", status=502)
@@ -162,7 +163,8 @@ async def api_background_restart(body: dict = Body(...),
             version = background_apps.version_for(folder, interpreter)
             child = await asyncio.to_thread(
                 engine_host.ensure_background, engine_id, interpreter,
-                manifest.daemon, background_apps.cache_dir_for(engine_id), version)
+                manifest.daemon, background_apps.cache_dir_for(engine_id), version,
+                folder)
         else:
             child = await asyncio.to_thread(engine_host.restart, engine_id)
     except (engine_host.EngineError, OSError) as e:

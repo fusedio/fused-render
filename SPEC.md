@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505)
 
 A folder can declare a daemon that outlives any one page: `fused.app` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9767,7 +9767,32 @@ background apps are the third.
   decoration-only posture `useShowcaseSync`'s "cloned" badge already
   established: one fetch, no polling, and a failure just means no badge — the
   listing itself is unchanged.
-- **Sequenced-after, deliberately absent here**: an authoring skill covering
-  the manifest/daemon contract, the OpenWhisper port this feature exists to
-  support, tray controls, macOS start-at-login, and any widget surface for a
-  background app.
+- **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
+  `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
+  `Child.folder`) into a `kind="background"` child's environment only — the
+  one affordance the API above doesn't otherwise offer, since every endpoint
+  keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
+  is the stdlib-only client that reads it: `status()`/`stop()`/`disable()`/`restart()`
+  against the calling daemon's own app, resolving the origin the same ladder
+  `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
+  `NotUnderEngine` when the env var is absent (not running as an
+  engine-spawned background daemon at all).
+- **Resurrection has three triggers, not one, and they are not equally
+  strong.** Server start (the resurrection hook) and a page's
+  `enable()`/`restart()` are the two deliberate ones. The third,
+  undocumented until D505, is heal-on-proxy: `stop()` pops the `Child` out
+  of `engine_host._children` before killing it (`engine_host.stop`), so a
+  proxied call afterward finds nothing registered and returns 409 rather
+  than reviving anything. A process ended any OTHER way — killed externally,
+  crashed, or `terminate:`d by native code that never called the server's
+  API — leaves the `Child` registered, and the next proxied request
+  (`engine_forward.py:216-222`) heals by respawning it. This makes a raw
+  external kill the WEAKEST way to end a background app: weaker than
+  `stop()`, because it skips the one piece of bookkeeping that prevents an
+  accidental revival. Anything that wants "quit and stay off" from outside
+  the server (a tray icon, a CLI) must go through `stop()`/`disable()` (the
+  D505 client, from inside the daemon, is exactly this), not a direct
+  process kill.
+- **Sequenced-after, deliberately absent here**: the OpenWhisper port this
+  feature exists to support, macOS start-at-login, and any widget surface
+  for a background app.

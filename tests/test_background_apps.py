@@ -397,6 +397,92 @@ def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
         background_apps.set_enabled(FIXTURE_APP, False)
 
 
+def test_ensure_background_stores_folder_on_the_child():
+    # D505: `folder` flows through ensure_background onto Child.folder the
+    # same way cache/version already do, so `_spawn_env` can export
+    # FUSED_RENDER_APP_DIR for a daemon to address itself.
+    background_apps.set_enabled(FIXTURE_APP, True)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        assert child.folder == FIXTURE_APP
+    finally:
+        engine_host.stop(engine_id)
+        background_apps.set_enabled(FIXTURE_APP, False)
+
+
+def test_ensure_background_without_folder_defaults_to_empty_string():
+    # The folder param is optional so existing direct callers that don't
+    # care need not pass one.
+    background_apps.set_enabled(FIXTURE_APP, True)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version)
+    try:
+        assert child.folder == ""
+    finally:
+        engine_host.stop(engine_id)
+        background_apps.set_enabled(FIXTURE_APP, False)
+
+
+def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
+    child = engine_host.Child(
+        engine_id="bg_envtest", python=sys.executable, daemon="/tmp/d.py",
+        cache="c", version="v1", kind="background", folder="/tmp/my-bg-app")
+    env = engine_host._spawn_env(child)
+    assert env["FUSED_RENDER_APP_DIR"] == "/tmp/my-bg-app"
+
+
+def test_spawn_env_omits_app_dir_when_folder_is_empty():
+    child = engine_host.Child(
+        engine_id="bg_envtest2", python=sys.executable, daemon="/tmp/d.py",
+        cache="c", version="v1", kind="background", folder="")
+    env = engine_host._spawn_env(child)
+    assert "FUSED_RENDER_APP_DIR" not in env
+
+
+def test_spawn_env_omits_app_dir_for_non_background_kinds():
+    # Only kind="background" children carry a folder at all — a template or
+    # app-worker child spawned with a stray `folder` value (should never
+    # happen in production) still must not leak the var.
+    child = engine_host.Child(
+        engine_id="tmpl_envtest", python=sys.executable, daemon="/tmp/d.py",
+        cache="c", version="v1", kind="template", folder="/tmp/should-not-leak")
+    env = engine_host._spawn_env(child)
+    assert "FUSED_RENDER_APP_DIR" not in env
+
+
+def test_api_enable_passes_folder_through_to_ensure_background(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+
+    calls = []
+    fake_child = engine_host.Child(
+        engine_id="bg_folderfake", python=sys.executable,
+        daemon=str(folder / "daemon.py"), cache="c", version="v1",
+        kind="background", pid=1)
+
+    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
+        calls.append(folder)
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    assert calls == [os.path.abspath(str(folder))]
+
+
 # ------------------------------------------------- router: enable/disable/etc
 
 
@@ -433,7 +519,7 @@ def test_api_enable_persists_and_calls_ensure_background(client, tmp_path, monke
         engine_id="bg_fake", python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background", pid=4242)
 
-    def fake_ensure(engine_id, python, daemon, cache, version):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
         calls.append((engine_id, python, daemon, cache, version))
         return fake_child
 
@@ -537,7 +623,7 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background", pid=9191)
 
-    def fake_ensure(eid, python, daemon, cache, version):
+    def fake_ensure(eid, python, daemon, cache, version, folder=""):
         ensured.append(eid)
         return fake_child
 
@@ -597,7 +683,7 @@ def test_resurrect_enabled_starts_every_app_and_survives_one_raising(tmp_path, m
 
     started = []
 
-    def fake_ensure(engine_id, python, daemon, cache, version):
+    def fake_ensure(engine_id, python, daemon, cache, version, folder=""):
         if "bad" in daemon:
             raise engine_host.EngineError("boom")
         started.append(engine_id)
@@ -660,7 +746,7 @@ def test_resurrect_enabled_stops_a_child_that_finished_spawning_during_shutdown(
         engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
         cache="c", version="v1", kind="background")
 
-    def fake_ensure(eid, python, daemon, cache, version):
+    def fake_ensure(eid, python, daemon, cache, version, folder=""):
         # Simulate shutdown landing WHILE this spawn was still running — by
         # the time it returns (registering the child), the server has
         # already started tearing down.

@@ -99,6 +99,14 @@ class Child:
     #: reap eligibility and other kind-specific behavior can never drift onto a
     #: child by accident when a new kind is added.
     kind: str = "template"
+    #: The declaring folder, `kind="background"` only — `""` for every other
+    #: kind. Threaded through the same way `cache`/`version` already are
+    #: (the caller resolved it from the manifest; re-deriving it from
+    #: `daemon`'s dirname would be wrong whenever the manifest's `daemon`
+    #: names a nested path). `_spawn_env` exports it as `FUSED_RENDER_APP_DIR`
+    #: so a background daemon can address the background-apps API about
+    #: itself without knowing its own page's `html` path.
+    folder: str = ""
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
@@ -300,6 +308,12 @@ def _spawn_env(child: Child) -> dict:
     if child.python != sys.executable:
         for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
             env.pop(name, None)
+    # A background daemon otherwise has no way to learn its own app folder —
+    # the background-apps API keys every endpoint off the page's `html` path
+    # (see routers/background_apps.py), which the daemon never sees. Only
+    # `kind="background"` children carry `folder` at all (see Child.folder).
+    if child.kind == "background" and child.folder:
+        env["FUSED_RENDER_APP_DIR"] = child.folder
     return env
 
 
@@ -523,11 +537,18 @@ def _validate_background(engine_id: str, python: str, daemon: str) -> None:
 
 
 def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
-                      version: str) -> Child:
+                      version: str, folder: str = "") -> Child:
     """A live child for a background app's engine_id, reusing the current one
     when it matches and answers — the same double-checked reuse/spawn dance as
     `ensure`, but for a `kind="background"` child and validated against the
-    enabled store rather than a templates root."""
+    enabled store rather than a templates root.
+
+    `folder` is the manifest's declaring folder (every caller already has it
+    in scope, the same way it already has `cache`/`version`) — stored on the
+    `Child` so `_spawn_env` can export `FUSED_RENDER_APP_DIR` to the daemon.
+    Optional (defaults to `""`, meaning "no self-addressing env var") only so
+    existing direct callers that don't care about it need not pass one; every
+    production call site does."""
     _validate_background(engine_id, python, daemon)
     existing = _children.get(engine_id)
     if (existing is not None and existing.kind == "background"
@@ -543,7 +564,8 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
         if existing is not None:
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=daemon,
-                      cache=cache, version=version, kind="background")
+                      cache=cache, version=version, kind="background",
+                      folder=folder)
         _spawn(child)
         with _lock:
             _children[engine_id] = child

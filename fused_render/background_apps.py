@@ -296,7 +296,7 @@ def resurrect_enabled(shutdown_event=None) -> None:
             engine_id = engine_id_for(folder)
             engine_host.ensure_background(
                 engine_id, interpreter, manifest.daemon,
-                cache_dir_for(engine_id), version)
+                cache_dir_for(engine_id), version, folder)
             if shutdown_event is not None and shutdown_event.is_set():
                 # Shutdown began WHILE this one was spawning — stop_all() may
                 # already have run (and missed it, per the docstring above),
