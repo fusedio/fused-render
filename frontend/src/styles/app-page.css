@@ -74,14 +74,6 @@
   gap: 14px;
   padding: 16px 0 16px;
 }
-
-/* The Files tab is two columns — a tree beside a rendered file — and 1050px
-   leaves the file ~780px, narrower than the explorer would give it. It alone
-   gets a wider cap; the tab strip widens with it since both live in the body. */
-.app-page-body:has(.app-page-files) {
-  width: min(1400px, calc(100% - 48px));
-}
-
 /* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
    under the triggers only need to lose the underline. NOT the colour: this
    rule is unlayered and would beat the trigger's own layered state colours
