@@ -143,15 +143,29 @@ async def api_background_stop(body: dict = Body(...),
 @router.post("/api/apps/background/restart")
 async def api_background_restart(body: dict = Body(...),
                                  x_fused: str | None = Header(default=None)):
+    """Respawn the daemon. When there is no LIVE child to restart — the app
+    was `stop()`ped, or this is the first bring-up after a server start where
+    the resurrection hook hasn't reached it yet — `engine_host.restart` alone
+    would raise "has never been started", an opaque 502 for a caller that
+    just did `fused.app.stop()` then `fused.app.restart()` (the documented
+    stop/restart contract). Falls back to a fresh `ensure_background`
+    bring-up in that case: the folder is enough to recompute the interpreter
+    and version from scratch, same as `enable`."""
     if (guard := _require_fused(x_fused)) is not None:
         return guard
-    folder = _folder_for(body.get("html"))
-    if folder is None:
-        return _error("request body must include 'html'")
+    folder, manifest, interpreter, error = _resolve(body.get("html"))
+    if error is not None:
+        return error
     engine_id = background_apps.engine_id_for(folder)
     try:
-        child = await asyncio.to_thread(engine_host.restart, engine_id)
-    except engine_host.EngineError as e:
+        if engine_host.current(engine_id) is None:
+            version = background_apps.version_for(folder, interpreter)
+            child = await asyncio.to_thread(
+                engine_host.ensure_background, engine_id, interpreter,
+                manifest.daemon, background_apps.cache_dir_for(engine_id), version)
+        else:
+            child = await asyncio.to_thread(engine_host.restart, engine_id)
+    except (engine_host.EngineError, OSError) as e:
         return _error(str(e), status=502)
     return {"ok": True, "pid": child.pid, "version": child.version}
 

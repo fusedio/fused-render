@@ -372,6 +372,41 @@ def test_api_stop_vs_disable_distinguished(client, tmp_path, monkeypatch):
     assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
 
 
+def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path, monkeypatch):
+    # Code-review fix: engine_host.restart() alone raises "has never been
+    # started" once stop() has popped the child from _children, which broke
+    # the documented stop() -> restart() recovery path with an opaque 502.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    background_apps.set_enabled(str(folder), True)
+    engine_id = background_apps.engine_id_for(str(folder))
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    monkeypatch.setattr(engine_host, "current", lambda eid: None)  # stopped: no live child
+
+    def fail_restart(eid, failed=None):
+        raise engine_host.EngineError(f"the {eid} engine has never been started")
+
+    monkeypatch.setattr(engine_host, "restart", fail_restart)
+
+    ensured = []
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version="v1", kind="background", pid=9191)
+
+    def fake_ensure(eid, python, daemon, cache, version):
+        ensured.append(eid)
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    resp = client.post("/api/apps/background/restart", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["pid"] == 9191
+    assert ensured == [engine_id]  # fell back to a fresh bring-up, not engine_host.restart
+
+
 def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
