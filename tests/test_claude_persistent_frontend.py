@@ -1,14 +1,21 @@
 """The composer's half of persistent sessions (template.html): send-immediately
 over `steer` instead of the browser-side queue, and the `submitChat` race this
-work also had to close (see agent.py's `_steer`/`_persistent_ok` and D496).
+work also had to close (see agent.py's `_steer`/`_persistent_ok` and D497).
 
-Structural assertions over the template source, the same approach
-test_claude_composer_block.py and test_claude_schedule_pill.py take for this
-file: what can be pinned cheaply is that the wiring exists and points the
-right way, not a full DOM execution of a 12000-line document.
+Runs the page's REAL `submitChat` and `steerMessage` functions under node,
+over a small stubbed DOM/runtime — the same siting as
+test_claude_stop_run.py's `_run_ending` and test_claude_app_state.py's
+`_node`. A structural (grep-only) test would prove the function names and the
+`"steer"` literal are present in the source, but not that a message actually
+reaches `fused.runPython` with the right run_id, or that `submitChat` picks
+the right destination for a given combination of `activeRun`/
+`activeRunPersistent`/`sending` — which is exactly the class of thing a
+refactor can silently break while every string a grep looks for stays put.
 """
+import json
 import os
-import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -16,66 +23,176 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _TEMPLATE = os.path.join(_ROOT, "fused_render", "templates", "claude", "template.html")
 
 
-@pytest.fixture(scope="module")
-def source() -> str:
+def _html():
     with open(_TEMPLATE, encoding="utf-8") as f:
         return f.read()
 
 
-@pytest.fixture(scope="module")
-def code(source) -> str:
-    without_block = re.sub(r"/\*.*?\*/", "", source, flags=re.S)
-    without_html = re.sub(r"<!--.*?-->", "", without_block, flags=re.S)
-    return re.sub(r"^\s*//.*$", "", without_html, flags=re.M)
+def _need_node():
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own composer decisions")
 
 
-def _fn(code: str, opening: str) -> str:
-    body = code[code.index(opening):]
-    return body[:body.index("\n}")]
+def _extract(html, start_marker, end_marker):
+    start = html.index(start_marker)
+    return html[start:html.index(end_marker, start)]
 
 
-def test_submit_chat_steers_a_persistent_run_instead_of_parking_it(code):
-    submit = _fn(code, "function submitChat()")
-    # The historical shape is still there (the fallback for a one-shot run)...
-    assert "queueMessage(message);" in submit
-    # ...but a persistent run's follow-up goes straight to the CLI.
-    assert "if (activeRunPersistent) steerMessage(message);" in submit
-    assert "else queueMessage(message);" in submit
+def _steer_message_src(html):
+    return _extract(html, "async function steerMessage(text) {",
+                    "\nfunction drainQueue() {")
 
 
-def test_submit_chat_no_longer_silently_drops_a_message_sent_mid_start(code):
-    """The race: `sending` goes true before `activeRun` is assigned (see
-    sendMessage), so a second submit landing in that window used to fall
-    through both guards to a bare `if (sending) return;` with nothing queued
-    and no feedback at all. It must now park the same way the activeRun
-    branch above it does."""
-    submit = _fn(code, "function submitChat()")
-    assert "if (sending) return;" not in submit, \
-        "the silent-drop return is still there"
-    assert submit.count("queueMessage(message);") >= 2, \
-        "the sending-window message is not parked"
-    # Never steered here: there is no run_id yet to steer into.
-    sending_block = submit[submit.index("if (sending) {"):]
-    sending_block = sending_block[:sending_block.index("\n  }")]
-    assert "steerMessage" not in sending_block
+def _submit_chat_src(html):
+    return _extract(html, "function submitChat() {",
+                    '\n// The submit event is the send BUTTON\'s path')
 
 
-def test_steer_message_calls_the_steer_action(code):
-    fn = _fn(code, "async function steerMessage(text)")
-    assert 'action: "steer"' in fn
-    assert "run_id" in fn and "message: text" in fn
-    # A failed/raced steer must not lose the message.
-    assert "queueMessage(text);" in fn
+# ---------------------------------------------------------------- steerMessage
+
+_STEER_HARNESS = """
+%s
+
+class FakeEl {
+  constructor() { this.children = []; }
+  set className(v) {}
+  set textContent(v) {}
+  append(...kids) { this.children.push(...kids); }
+  appendChild(k) { this.children.push(k); }
+  remove() { global.__removed = true; }
+}
+const document = { createElement: () => new FakeEl() };
+const queueEl = new FakeEl();
+function scrollBottom() {}
+const AGENT = "agent.py";
+let activeRun = %s;
+const calls = { runPython: [], queueMessage: [] };
+const fused = {
+  runPython: async (agent, params, opts) => {
+    calls.runPython.push({ agent, params, opts });
+    return %s;
+  },
+};
+function queueMessage(text) { calls.queueMessage.push(text); }
+
+steerMessage(%s).then(() => {
+  console.log(JSON.stringify({ calls, removed: !!global.__removed }));
+});
+"""
 
 
-def test_active_run_persistent_is_read_from_poll_and_reset_with_active_run(code):
-    assert "let activeRunPersistent = false;" in code
-    poll_loop = _fn(code, "async function pollLoop(run_id, gen = logGen)")
-    assert "activeRunPersistent = !!data.persistent;" in poll_loop
-    # Reset alongside activeRun everywhere activeRun is cleared, so a later
-    # one-shot run never inherits an earlier persistent run's "yes".
-    for reset_site in code.split("activeRun = null;")[1:]:
-        # the next few lines after each reset
-        window = reset_site[:200]
-        assert "activeRunPersistent = false;" in window, \
-            "an activeRun = null site left activeRunPersistent stale"
+def _steer(run_id, resolves_to, text="second message"):
+    _need_node()
+    src = _steer_message_src(_html())
+    script = _STEER_HARNESS % (src, json.dumps(run_id), json.dumps(resolves_to),
+                               json.dumps(text))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_steer_message_sends_the_steer_action_with_the_live_run_id():
+    result = _steer("run-42", {"steered": True})
+    calls = result["calls"]["runPython"]
+    assert len(calls) == 1
+    assert calls[0]["agent"] == "agent.py"
+    assert calls[0]["params"] == {"action": "steer", "run_id": "run-42",
+                                  "message": "second message"}
+    # The dashed placeholder is removed once the call resolves either way.
+    assert result["removed"] is True
+    # A successful steer never falls back to the browser queue.
+    assert result["calls"]["queueMessage"] == []
+
+
+def test_a_refused_steer_falls_back_to_the_browser_queue_with_the_same_text():
+    """The run ended, or was never persistent — a race between the click and
+    the call landing. The text must not be lost."""
+    result = _steer("run-42", {"steered": False, "error": "run has ended"})
+    assert result["calls"]["queueMessage"] == ["second message"]
+
+
+# ---------------------------------------------------------------- submitChat
+
+_SUBMIT_HARNESS = """
+%s
+
+const calls = { queueMessage: [], steerMessage: [], sendMessage: [] };
+function queueMessage(t) { calls.queueMessage.push(t); }
+function steerMessage(t) { calls.steerMessage.push(t); }
+function sendMessage(t) { calls.sendMessage.push(t); }
+function schedBlocked() { return %s; }
+function growBox() {}
+function annPending() { return []; }
+const shotAttached = [];
+let activeRun = %s;
+let activeRunPersistent = %s;
+let sending = %s;
+const box = { value: %s };
+
+submitChat();
+console.log(JSON.stringify({ calls, boxValue: box.value }));
+"""
+
+
+def _submit(*, sched_blocked=False, active_run=None, persistent=False,
+           sending=False, box_value="hello"):
+    _need_node()
+    src = _submit_chat_src(_html())
+    script = _SUBMIT_HARNESS % (
+        src, json.dumps(sched_blocked), json.dumps(active_run),
+        json.dumps(persistent), json.dumps(sending), json.dumps(box_value))
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_live_persistent_run_steers_the_typed_message_immediately():
+    result = _submit(active_run="run-1", persistent=True, box_value="  hi there  ")
+    assert result["calls"]["steerMessage"] == ["hi there"]
+    assert result["calls"]["queueMessage"] == []
+    assert result["calls"]["sendMessage"] == []
+    assert result["boxValue"] == "", "the composer must clear on a steer too"
+
+
+def test_a_live_one_shot_run_still_parks_in_the_browser_queue():
+    result = _submit(active_run="run-1", persistent=False, box_value="hi there")
+    assert result["calls"]["queueMessage"] == ["hi there"]
+    assert result["calls"]["steerMessage"] == []
+    assert result["calls"]["sendMessage"] == []
+
+
+def test_a_message_typed_mid_start_is_parked_not_silently_dropped():
+    """The race this work also closed: `sending` goes true before `activeRun`
+    is assigned (sendMessage). A second submit landing in that window used to
+    fall through a bare `if (sending) return;` with nothing queued and the
+    box already blanked by the FIRST submit — i.e. genuinely lost. It must
+    now land in the browser queue exactly like the activeRun branch does."""
+    result = _submit(active_run=None, sending=True, box_value="hi there")
+    assert result["calls"]["queueMessage"] == ["hi there"]
+    assert result["calls"]["steerMessage"] == [], \
+        "there is no run_id yet — this must never steer"
+    assert result["calls"]["sendMessage"] == []
+    assert result["boxValue"] == ""
+
+
+def test_an_ordinary_send_with_nothing_live_goes_straight_to_sendMessage():
+    result = _submit(active_run=None, sending=False, box_value="hi there")
+    assert result["calls"]["sendMessage"] == ["hi there"]
+    assert result["calls"]["queueMessage"] == []
+    assert result["calls"]["steerMessage"] == []
+
+
+def test_a_scheduled_block_beats_every_other_branch():
+    result = _submit(sched_blocked=True, active_run="run-1", persistent=True,
+                     box_value="hi there")
+    assert result["calls"] == {"queueMessage": [], "steerMessage": [], "sendMessage": []}
+    assert result["boxValue"] == "hi there", "nothing should have touched the box"
+
+
+def test_an_empty_box_sends_nothing_on_any_branch():
+    for kwargs in ({"active_run": "run-1", "persistent": True},
+                   {"active_run": "run-1", "persistent": False},
+                   {"sending": True},
+                   {}):
+        result = _submit(box_value="   ", **kwargs)
+        assert result["calls"] == {"queueMessage": [], "steerMessage": [], "sendMessage": []}
