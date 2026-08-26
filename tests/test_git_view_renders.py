@@ -41,7 +41,7 @@ import subprocess
 
 import pytest
 
-from _git_repo import git, git_available
+from _git_repo import git, git_available, with_remote
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(ROOT, "fused_render", "templates", "git", "template.html")
@@ -80,6 +80,38 @@ def clean_repo(root):
     git(root, "commit", "-qm", "first")
     _put(root, "pkg/mod.py", "one\ntwo\n")       # an unstaged change to list
     _put(root, "extra.txt", "untracked\n")       # and an untracked one
+    return root
+
+
+def diverged_repo(root):
+    """A local branch tracking a remote that has ALSO moved: `git pull
+    --ff-only` is refused (finding #2's own trigger — `_pull`'s
+    "not-fast-forward" message), so the toolbar's Rebase button is the one
+    surface that can resolve it from inside this view."""
+    remote = os.path.join(os.path.dirname(root), "diverged-remote.git")
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, "a.txt", "1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    with_remote(root, remote)
+
+    other = os.path.join(os.path.dirname(root), "diverged-other")
+    git(os.path.dirname(root), "clone", "-q", remote, other)
+    _put(other, "b.txt", "2\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "theirs")
+    git(other, "push", "-q", "origin", "HEAD:main")
+
+    _put(root, "c.txt", "3\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "ours")  # local commit origin has never seen
+    # The reader computes ahead/behind off LOCAL remote-tracking refs, not a
+    # live fetch (it is read-only, like every other GET in this view) — so
+    # `origin/main` has to be brought up to date explicitly, the same as a
+    # real user's own "Check for updates" would, or this repo reads as merely
+    # ahead (Send), never as diverged.
+    git(root, "fetch", "-q", "origin")
     return root
 
 
@@ -149,6 +181,19 @@ def test_a_conflicted_repo_paints(reader, tmp_path):
     out = render(reader, conflicted_repo(str(tmp_path / "conflicted")), tmp_path)
     _assert_painted(out, "conflicted repo")
     assert "mod.py" in out["viewText"], out["viewText"]
+
+
+def test_a_diverged_repo_paints_a_rebase_button(reader, tmp_path):
+    """Code review finding #2: `_pull`'s own divergence refusal ("...or use
+    Rebase to replay your commits onto the tracked default branch") pointed
+    at a button this view never actually rendered — `pendingConfirm`'s
+    `op === "rebase"` branch existed, but nothing ever set `?ask=rebase` and
+    nothing ever read its `where: "branch"` confirm bar. This is the toolbar
+    trigger's own paint check, the same shape `test_a_conflicted_repo_paints`
+    is for `resolveButton`."""
+    out = render(reader, diverged_repo(str(tmp_path / "diverged")), tmp_path)
+    _assert_painted(out, "diverged repo")
+    assert "Rebase" in out["viewText"], out["viewText"]
 
 
 def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):
