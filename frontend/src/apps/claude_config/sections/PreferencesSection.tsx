@@ -208,13 +208,18 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                 control={
                   <>
                     {isSet ? (
+                      // A ghost icon button, not a bare word floating mid-row —
+                      // and rendered ONLY once the value actually differs from
+                      // the default, so it never sits beside a control that
+                      // has nothing to reset.
                       <button
                         type="button"
-                        className="cc-reset"
+                        className="cc-iconbtn cc-reset"
                         title="Reset to default"
+                        aria-label={`Reset ${d.label} to default`}
                         onClick={() => patch(d.key, null)}
                       >
-                        reset
+                        <Icon name="undo" />
                       </button>
                     ) : (
                       // Stays for every unset key, toggles included: once a
