@@ -44,7 +44,7 @@ _RUNTIME = os.path.join(
 _FLAG_START = '  var PREVIEW_PARAM = "_preview";'
 _FLAG_END = "  var IS_THUMBNAIL = selfOrAncestorHasFlag(PREVIEW_PARAM);"
 _DAEMON_START = "  let _daemonEngineId = null;"
-_DAEMON_END = "    call: daemonCall,\n  };"
+_DAEMON_END = "    watch: daemonWatch,\n  };"
 
 
 def _slice(source, start_marker, end_marker):

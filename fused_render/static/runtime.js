@@ -31,6 +31,22 @@
  *     (calling status() itself if none is cached yet) — rejects if the app
  *     isn't running. Local-only, like the rest of fused.daemon — not
  *     available on hosted/exported pages (see the file header below).
+ *   fused.daemon.watch(callback) -> unsubscribe()
+ *     Learn that the daemon's state changed WITHOUT the page having caused
+ *     it itself — the case a page's own start()/stop()/restart() calls
+ *     cannot cover: another surface (the OpenWhisper tray's Quit, a second
+ *     tab, the server's own startup resurrection) changed it instead.
+ *     Polls status() only while document.visibilityState is "visible" (a
+ *     hidden tab costs nothing), refreshes immediately on visibilitychange
+ *     (becoming visible) and on window focus — the case that matters most,
+ *     since reaching for the tray implies the page was NOT focused — and
+ *     calls `callback(status)` only when {running, autostart, pid, version}
+ *     differs from the last-seen status (never on an unchanged tick).
+ *     Returns an unsubscribe function. In a preview thumbnail this does one
+ *     status() read and returns a no-op unsubscribe — no timer, no
+ *     listeners (see the preview note on start()/stop() below; watch()
+ *     itself is read-only like status(), so it is not rejected, just kept
+ *     inert).
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
@@ -2463,6 +2479,105 @@
     });
   }
 
+  // Fields that count as "the daemon's state changed" for watch()'s diff.
+  // `running`/`autostart` are the two facts a page's UI actually reflects
+  // (a switch, a checkbox); `pid`/`version` catch a restart that leaves
+  // `running` true throughout (a crash-and-resurrect, or an explicit
+  // restart() from elsewhere) — a page that cached a stale engine call
+  // target wants to know that happened too. `engine_id` is deliberately
+  // excluded: it is a hash of the FOLDER, stable for the page's whole
+  // lifetime, and would never fire on its own.
+  const DAEMON_WATCH_FIELDS = ["running", "autostart", "pid", "version"];
+
+  function _daemonStatusChanged(a, b) {
+    if (!a || !b) return true;
+    for (let i = 0; i < DAEMON_WATCH_FIELDS.length; i++) {
+      const f = DAEMON_WATCH_FIELDS[i];
+      if (a[f] !== b[f]) return true;
+    }
+    return false;
+  }
+
+  function daemonWatch(callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError("fused.daemon.watch: callback must be a function");
+    }
+
+    // Preview guard (D507/D508's rationale, applied to a READ-only method):
+    // watch() is status() underneath, and status() is the one fused.daemon
+    // method a thumbnail may legitimately call — but a live poll loop plus
+    // two page-level listeners have no business running in a sandboxed
+    // preview iframe that gets mounted and unmounted on every hover. Do the
+    // one status() read a thumbnail is allowed, hand it to the caller, and
+    // return an unsubscribe that has nothing to clean up.
+    if (IS_THUMBNAIL) {
+      daemonStatus().then(callback).catch(function () {});
+      return function unsubscribe() {};
+    }
+
+    let last = null;
+    let timer = null;
+
+    function poll() {
+      return daemonStatus().then(function (data) {
+        if (_daemonStatusChanged(last, data)) {
+          last = data;
+          callback(data);
+        } else {
+          last = data;
+        }
+      }).catch(function () {
+        // A failed status() read (offline, server restarting) must not kill
+        // the watch loop or spam the callback with an error it didn't ask
+        // for — skip this tick, the next poll or focus/visibility event
+        // tries again.
+      });
+    }
+
+    // 5s: fast enough that quitting from the tray reads as "immediate" to a
+    // human glancing at a foregrounded tab, slow enough to be free — status()
+    // is a single in-memory dict read plus one Popen.poll() server-side (no
+    // folder walk, no toml parse, see the endpoint's own docstring), and this
+    // only ever runs while the tab is visible in the first place.
+    const POLL_MS = 5000;
+
+    function stopTimer() {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+
+    function startTimerIfVisible() {
+      stopTimer();
+      if (document.visibilityState === "visible") {
+        timer = setInterval(poll, POLL_MS);
+      }
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        poll();
+      }
+      startTimerIfVisible();
+    }
+
+    function onFocus() {
+      poll();
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
+    poll();
+    startTimerIfVisible();
+
+    return function unsubscribe() {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+      stopTimer();
+    };
+  }
+
   const daemon = {
     status: daemonStatus,
     start: daemonStart,
@@ -2470,6 +2585,7 @@
     restart: daemonRestart,
     setAutostart: daemonSetAutostart,
     call: daemonCall,
+    watch: daemonWatch,
   };
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>

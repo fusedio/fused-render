@@ -127,6 +127,12 @@ const res = await fused.daemon.call("/count", { hello: "world" }); // POST, prox
 await fused.daemon.stop();                  // kill it now — does NOT touch autostart
 await fused.daemon.restart();               // respawn — autostart-neutral too
 await fused.daemon.setAutostart(true);      // ONLY thing that persists "bring this back at launch"
+const unsubscribe = fused.daemon.watch((s) => {
+  // s is the same shape status() resolves to. Fires on the initial read and
+  // again whenever running/autostart/pid/version actually changes — NOT on
+  // every poll tick. Call this to reflect state that changed for a reason
+  // outside this page's own control, e.g. the tray's Quit.
+});
 ```
 
 Every method except `call` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to server-side, the same `resolve_py` pattern `/api/run`/`/api/engine` already use, so there's no path-typed API to defend. `call(path, body)` reaches the daemon directly through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` call (fetching one first if none is cached yet) and rejecting client-side if the app isn't known to be running — call `start()` first.
@@ -247,6 +253,7 @@ autostartCheckbox.addEventListener("change", async () => {
 | On load | Allowed | Why |
 |---|---|---|
 | `fused.daemon.status()` | Yes | Read-only; does not spawn, persist, or kill anything. |
+| `fused.daemon.watch(callback)` | Yes — **but does one read and nothing more in a preview thumbnail** | `status()` underneath; never spawns, persists, or kills anything. In a live/hover preview iframe it does a single read and returns a no-op unsubscribe rather than leaving a poll loop or listeners running in a sandbox that gets mounted and unmounted on every hover. |
 | Rendering the result | Yes | Pure display logic. |
 | `fused.daemon.start()` | No — **and refused in a preview thumbnail** | Spawns a daemon — see above. Called inside a card's live/hover iframe, it now rejects instead of spawning. |
 | `fused.daemon.restart()` | No — **and refused in a preview thumbnail** | Same spawn as `start()`; a page render is not a reason to bounce a daemon the user may be mid-use of. Same rejection as `start()` inside a preview. |
@@ -275,6 +282,22 @@ This is a **client-side** guard (`fused_render/static/runtime.js`), not a server
 - **Running** — the daemon is up right now, regardless of what `autostart` says.
 - **Not running, but `autostart: true`** — "will come back" (at the next server launch, or on an explicit `start()`/`restart()`). Don't render this as broken or as an error; it's the ordinary state right after a `stop()` on an app that has autostart on, or after any external kill the heal-on-proxy path hasn't repaired yet.
 - **Not running, `autostart: false`** — the ordinary default for anyone who hasn't opted the app into autostart, whether or not they've ever `start()`ed it. Don't render this as an error, a missing dependency, or a disabled/unavailable feature — it's a valid, common, and often the *most* common state a background app is in (it's the default!). `Sina/OpenWhisper/index.html`'s `mbRender`/`refreshMenubar` (its "Menu bar active…" / "…stopped (starts automatically at next launch)" / "…off — click to turn on" labels, `.on`/`.pending` CSS classes, and a SEPARATE "Start automatically" checkbox in Settings for the autostart fact) is a worked example of rendering both facts — read it for the pattern, not as a finished reference.
+
+### Reflect state that changed for a reason outside this page — `fused.daemon.watch()`
+
+`status()` alone only tells you what's true right now, at the moment you called it. A page that calls `status()` once on load and otherwise only refreshes after its own `start()`/`stop()`/`restart()` calls has a silent blind spot: **the daemon's state can change for reasons that have nothing to do with this page** — the OpenWhisper tray's "Quit" (a native menu item, not a page action) routes through the exact same `POST /api/apps/background/stop` the page's own `stop()` button does, so the server knows the daemon died, but a page that only reflects its own actions never finds out. Its mic icon stayed "on" until the user manually reloaded — a real bug, not a hypothetical one.
+
+`fused.daemon.watch(callback)` closes that gap: it calls `callback(status)` on the initial read and again whenever `{running, autostart, pid, version}` changes, polling `status()` only while the tab is visible and refreshing immediately on `visibilitychange`→visible and window `focus` (the case that matters most — reaching for a tray or another window means this page was *not* focused when the state changed). Use it instead of hand-rolling your own poll loop, and use it as your app's ONE source of truth for `running`/`autostart` rather than tracking a local boolean your own button clicks flip:
+
+```js
+const unsubscribe = fused.daemon.watch((s) => {
+  mbRunning = s.running;
+  mbAutostart = s.autostart;
+  refreshMenubar();  // re-render from the two facts, same as after your own start()/stop()
+});
+```
+
+The general convention this establishes: **an app should render from the server's actual state, not from an assumption that its own actions are the only source of change.** A button's own click handler updating local state directly (rather than waiting for the next `watch()` tick or re-deriving from a fresh `status()`) is fine for the calling page's own immediate feedback — but anything a *different* surface (a tray, another tab, the server's own startup resurrection) can also change should be read back from the server, not assumed static between polls.
 
 ### Give the user a way to turn the app off from inside the app itself
 

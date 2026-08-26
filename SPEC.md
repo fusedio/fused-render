@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514, D515)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9793,9 +9793,15 @@ background apps are the third.
   a second respawn — `engine_host.restart` now takes an optional `version`
   override, defaulting to the existing child's version for every other
   caller, i.e. engine_forward.py's heal-on-proxy, which is unchanged);
-  `GET /running` is the cheap
-  autostart-paths-with-a-live-child-boolean read the `/apps` grid's badge
-  uses (engine_host.current only, no folder walk, no toml reads).
+  `GET /running` is the cheap set of app folders with a live background
+  child RIGHT NOW, for the `/apps` grid's badge (2026-08-26 code review —
+  it used to read `autostart_paths()`, which went stale the moment D511
+  split run state from autostart: `start()` no longer persists anything, so
+  a daemon started without opting into autostart — now the DEFAULT path —
+  had no row there and the badge stayed off for it even while genuinely
+  running). `engine_host.background_running_folders()` enumerates the
+  in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
+  `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,
@@ -9811,7 +9817,19 @@ background apps are the third.
   as `html`; `call(path, body)` reaches the daemon directly, proxied through the
   same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
-  `engine_id` from a cached `status()` call. Local-only, like `fused.ai`,
+  `engine_id` from a cached `status()` call. `watch(callback)` (D515) is the
+  push-shaped wrapper over `status()` a page needs to learn its daemon's
+  state changed for a reason OUTSIDE its own control (another tab, the
+  server's own resurrection, or — the case that motivated it — a native
+  tray's Quit): it calls back on the initial read and again whenever
+  `{running, autostart, pid, version}` differs from the last-seen status,
+  polling only while `document.visibilityState === "visible"` and
+  refreshing immediately on `visibilitychange`→visible and window `focus`,
+  returning an unsubscribe function. In a preview thumbnail it does one
+  `status()` read and returns a no-op unsubscribe — no timer, no listeners
+  — the same posture `status()` itself already has there (the one
+  `fused.daemon` method left ungated by D507/D508, since `watch()` is
+  exactly that method with a diffing wrapper, not a new capability). Local-only, like `fused.ai`,
   `fused.capture` and the rest of the local-only surface named in the file
   header — not available on hosted/exported pages. Named `fused.app` through
   D505; renamed to `fused.daemon` (D506) to resolve a three-way collision on
@@ -9824,7 +9842,12 @@ background apps are the third.
   `AppPreviewCard`'s existing generic `badge` prop, using the same
   decoration-only posture `useShowcaseSync`'s "cloned" badge already
   established: one fetch, no polling, and a failure just means no badge — the
-  listing itself is unchanged.
+  listing itself is unchanged. Matched against `runningPaths.has(app.path)`,
+  and `app.path` (`app_listing.app_dict`) is now REALPATH'd, not just
+  abspath'd (2026-08-26 code review) — matching `engine_id_for`'s identity
+  the same way D509 already fixed the router's own `_folder_for`, so a
+  symlinked app folder's badge no longer silently fails to match its
+  daemon's (realpath-keyed) running folder.
 - **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
   `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
   `Child.folder`) into a `kind="background"` child's environment only — the
