@@ -38,7 +38,7 @@ import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { AppWindow, Clock, Files, type LucideIcon } from "lucide-react";
+import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -99,7 +99,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
   },
   tasks: {
     label: "Tasks",
-    Icon: Clock, // the sidebar's Tasks icon (GlobalSidebar SCHEDULED_ICON), so the two read as one thing
+    Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
     render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
   },
   files: {

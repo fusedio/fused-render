@@ -11,6 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
+import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
@@ -87,13 +88,11 @@ const MOUNTS_ICON = (
   </svg>
 );
 
-// A clock: scheduled messages are the one page about *when* something happens.
-const SCHEDULED_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v5l3.5 2" />
-  </svg>
-);
+// A to-do list (lucide ListTodo, sized like the hand-drawn icons around it):
+// Tasks is the page about work, and the app page's Tasks tab wears the same
+// glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
+// page was "Scheduled".
+const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
 const CANVASES_ICON = (
