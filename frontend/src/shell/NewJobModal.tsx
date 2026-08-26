@@ -2135,6 +2135,19 @@ export default function NewJobModal({
   const [images, setImages] = useState<TaskImage[]>(() =>
     (editing?.images ?? []).map((p, i) => ({ key: i, path: p, dataUrl: null })),
   );
+  // THE REF IS THE AUTHORITY, the state is its mirror for rendering — and that
+  // asymmetry is load-bearing twice (Bugbot, PR #865). Save awaits the uploads
+  // and then has to read the paths they wrote; a `setImages` updater only
+  // reaches `images` on the next RENDER, so a drop-then-immediate-Save read an
+  // empty path and `filter(Boolean)` dropped the picture — losing exactly the
+  // attachment the await existed to save. And the cap has to be answered
+  // BEFORE the upload starts, which a state updater cannot do either.
+  // `applyImages` writes the ref synchronously, then mirrors.
+  const imagesRef = useRef<TaskImage[]>(images);
+  const applyImages = useCallback((fn: (prev: TaskImage[]) => TaskImage[]) => {
+    imagesRef.current = fn(imagesRef.current);
+    setImages(imagesRef.current);
+  }, []);
   // Keys for images attached in THIS session, clear of the edit-seeded 0..n.
   const imageKey = useRef(1000);
   // Every in-flight upload, so Save can await the stragglers instead of
@@ -2142,11 +2155,6 @@ export default function NewJobModal({
   // itself when it settles).
   const uploadsRef = useRef<Set<Promise<void>>>(new Set());
   const fileRef = useRef<HTMLInputElement | null>(null);
-  // submit() awaits the uploads and must then read the PATHS those uploads
-  // wrote into state — but its closure captured `images` at render time, from
-  // before they landed. The ref is the always-current view.
-  const imagesRef = useRef(images);
-  imagesRef.current = images;
   const attachImages = useCallback((files: FileList | File[] | null) => {
     const picked = [...(files ?? [])].filter((f) => f.type.startsWith("image/"));
     if (!picked.length) return;
@@ -2156,19 +2164,20 @@ export default function NewJobModal({
       fr.onload = () => {
         const dataUrl = String(fr.result || "");
         if (!dataUrl.startsWith("data:image/")) return;
-        // The cap is enforced at insert, not at pick: two drops racing each
-        // other must not overshoot it between a length check and a set.
-        setImages((prev) =>
-          prev.length >= IMAGES_MAX ? prev : [...prev, { key, path: "", dataUrl }],
-        );
+        // The cap is answered against the REF, synchronously, and BEFORE the
+        // POST: files that lose the race used to upload anyway, writing orphan
+        // bytes into a directory with no TTL and leaving Save something to
+        // await that no chip would ever show.
+        if (imagesRef.current.length >= IMAGES_MAX) return;
+        applyImages((prev) => [...prev, { key, path: "", dataUrl }]);
         const up: Promise<void> = uploadTaskShot(dataUrl)
           .then(({ path }) =>
-            setImages((prev) => prev.map((i) => (i.key === key ? { ...i, path } : i))),
+            applyImages((prev) => prev.map((i) => (i.key === key ? { ...i, path } : i))),
           )
           .catch((e) => {
             // A failed upload takes its thumbnail with it — a picture on the
             // card that would not reach the task is the lie to avoid.
-            setImages((prev) => prev.filter((i) => i.key !== key));
+            applyImages((prev) => prev.filter((i) => i.key !== key));
             setError((e as Error).message || "image upload failed");
           })
           .finally(() => uploadsRef.current.delete(up));
@@ -2176,7 +2185,7 @@ export default function NewJobModal({
       };
       fr.readAsDataURL(file);
     });
-  }, []);
+  }, [applyImages]);
 
   // The open image, if any — the claude template's #shotview, ported: a chip's
   // 22px thumbnail proves a picture EXISTS, it cannot show what is in it, so
@@ -3135,7 +3144,7 @@ export default function NewJobModal({
                   className="nt-img-x"
                   aria-label="Remove image"
                   onClick={() => {
-                    setImages((prev) => prev.filter((i) => i.key !== img.key));
+                    applyImages((prev) => prev.filter((i) => i.key !== img.key));
                     setViewer((v) => (v?.key === img.key ? null : v));
                   }}
                 >

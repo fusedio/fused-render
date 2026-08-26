@@ -329,10 +329,17 @@ def shots_dir() -> str:
     swept on a 12-hour TTL — an annotation is junk once its turn is over, but a
     scheduled task can fire days after its images were attached, and a repeat
     re-reads them on every run. Branch-aware via ``storage.home_dir()`` like
-    the store itself. Forward-slashed like every path this app hands a page or
-    an agent (the pre-allowed Read rule matches TEXT, so the dir named to the
-    spawn and the paths named in the message must agree in form)."""
-    return os.path.join(storage.home_dir(), "task-shots").replace("\\", "/")
+    the store itself.
+
+    **Resolved, and forward-slashed.** The pre-allowed Read rule matches TEXT,
+    not inodes, so every spelling of this directory in the system has to be the
+    same spelling: `_images` stores `realpath`s on the entry, `_attachments_block`
+    puts those in the prompt, and `_send` pre-allows THIS. Left unresolved, the
+    two disagree wherever a symlink sits on the path — a symlinked home, or
+    macOS' own `/tmp` -> `/private/tmp` — and the headless run is handed paths it
+    is not allowed to open (Bugbot, PR #865)."""
+    return os.path.realpath(
+        os.path.join(storage.home_dir(), "task-shots")).replace("\\", "/")
 
 
 #: Attachment bounds. A cap on COUNT because each image rides every run of a

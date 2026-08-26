@@ -92,15 +92,28 @@ describe("the wiring the payload test cannot see", () => {
     expect(MODAL).toContain("setViewer((v) => (v?.key === img.key ? null : v))");
   });
 
-  it("the cap is enforced at insert, so racing drops cannot overshoot it", () => {
-    expect(MODAL).toContain("prev.length >= IMAGES_MAX ? prev : [...prev, { key, path: \"\", dataUrl }]");
+  it("the cap is answered against the ref BEFORE the upload starts", () => {
+    // A file that loses the cap race must not POST anyway: that writes orphan
+    // bytes into a dir with no TTL and leaves Save an upload to await that no
+    // chip will ever show (Bugbot, PR #865).
+    const at = MODAL.indexOf("if (imagesRef.current.length >= IMAGES_MAX) return;");
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(MODAL.indexOf("uploadTaskShot(dataUrl)"));
   });
 
-  it("Save waits out in-flight uploads, then reads paths through the ref", () => {
-    // The submit closure captured `images` at render time — from BEFORE the
-    // awaited uploads wrote their paths into state. The ref is the fix.
+  it("Save waits out in-flight uploads, then reads paths the ref already holds", () => {
+    // The ref is the AUTHORITY, not a mirror taken at render: a `setImages`
+    // updater only reaches `images` on the next render, so a drop-then-Save
+    // read an empty path and filter(Boolean) dropped the picture.
     expect(MODAL).toContain("await Promise.all([...uploadsRef.current])");
     expect(MODAL).toContain("imagesRef.current.map((i) => i.path).filter(Boolean)");
+    expect(MODAL).toContain("imagesRef.current = fn(imagesRef.current);");
+  });
+
+  it("every mutation goes through applyImages — nothing writes state alone", () => {
+    // One bare setImages remains (applyImages' own mirror); any other would be
+    // a path the ref never learned about.
+    expect(MODAL.split("setImages(").length - 1).toBe(1);
   });
 
   it("an Edit opens on the entry's stored paths, drawn through /api/fs/raw", () => {
@@ -109,7 +122,7 @@ describe("the wiring the payload test cannot see", () => {
   });
 
   it("a failed upload takes its thumbnail with it", () => {
-    expect(MODAL).toContain("setImages((prev) => prev.filter((i) => i.key !== key))");
+    expect(MODAL).toContain("applyImages((prev) => prev.filter((i) => i.key !== key))");
   });
 
   it("attaching arms the dirty guard — an added image must not be lost to a silent ✕", () => {

@@ -226,11 +226,40 @@ def test_a_send_with_images_pre_allows_the_task_shots_dir(tmp_path, monkeypatch)
     assert shot in seen["prompt"]
 
 
+def test_the_pre_allowed_dir_and_the_stored_paths_have_ONE_spelling(tmp_path, monkeypatch):
+    """The Read rule matches TEXT, so both sides must resolve identically.
+
+    A symlink anywhere on the path — a symlinked home, macOS' own
+    /tmp -> /private/tmp — used to leave `shots_dir()` unresolved while
+    `_images` stored realpaths, and the headless run was handed paths its rule
+    did not cover (Bugbot, PR #865).
+    """
+    real = tmp_path / "real-home"
+    real.mkdir()
+    link = tmp_path / "linked-home"
+    os.symlink(str(real), str(link))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(link))
+    assert schedule.shots_dir() == os.path.realpath(schedule.shots_dir())
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    path = client.post("/api/schedule/shot", json={"data": _data_url()},
+                       headers=FUSED).json()["path"]
+    # The upload's own answer, the validator's, and the pre-allowed dir all
+    # agree — which is the whole property.
+    assert path.startswith(schedule.shots_dir())
+    resp = client.post("/api/schedule", headers=FUSED, json={
+        "target": str(tmp_path), "message": "m",
+        "delay_seconds": 3600, "images": [path]})
+    assert resp.status_code == 200, resp.json()
+    assert resp.json()["entry"]["images"] == [path]
+
+
 def test_agent_start_turns_extra_dirs_into_read_rules():
     # A source pin, because _start launches a real process: the helper's
     # request field must land in the run's --allowed-tools as a Read rule,
     # exactly the SHOTS mechanism (agent._read_rule).
     src = open(os.path.join(os.path.dirname(__file__), "..", "fused_render",
-                            "templates", "claude", "agent.py")).read()
+                            "templates", "claude", "agent.py"),
+                encoding="utf-8").read()
     assert "extra_read_dirs: list | None = None" in src
     assert "[_read_rule(d) for d in (extra_read_dirs or [])]" in src
