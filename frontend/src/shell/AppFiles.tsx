@@ -45,12 +45,15 @@ import { iconForEntry } from "@platform/ui/FileIcons";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, FileSearch } from "lucide-react";
+import { cn } from "@platform/lib/utils";
+import { basename, formatSize } from "@platform/lib/format";
 import { modeTitle, templateModeIcon } from "@apps/explorer/ModeSwitcher";
 import {
   ancestorsOf,
   buildTree,
   contentTemplates,
+  fileCount,
   renderSrc,
   safeRel,
   type TreeNode,
@@ -184,77 +187,109 @@ export default function AppFiles({
     setQuery({ _mode: dflt && mode === dflt.mode ? null : mode });
   };
 
-  const renderNodes = (nodes: TreeNode[], depth: number) =>
+  // One tree row. Folders wear their file count, files their size — the two
+  // facts a reader scans a tree for. Nested levels sit inside an indent guide
+  // (the branch `ul`'s left rule, CSS) rather than behind ever-longer padding,
+  // so depth reads as structure instead of whitespace.
+  const renderNodes = (nodes: TreeNode[]) =>
     nodes.map((n) => {
       const isOpen = n.isDir && open.has(n.rel);
+      const selected = !n.isDir && n.rel === rel;
       return (
         <li key={n.rel} role="treeitem" aria-expanded={n.isDir ? isOpen : undefined}>
           <button
             type="button"
-            className={
-              "app-files-row" + (!n.isDir && n.rel === rel ? " is-selected" : "")
-            }
-            style={{ paddingLeft: 8 + depth * 14 }}
+            className={cn("app-files-row", selected && "is-selected")}
             onClick={() => (n.isDir ? toggleDir(n.rel) : pickFile(n.rel))}
+            aria-current={selected ? "true" : undefined}
             title={n.rel}
           >
-            {n.isDir ? (
-              <ChevronRight
-                className={"app-files-chevron" + (isOpen ? " is-open" : "")}
-                aria-hidden
-              />
-            ) : (
-              <span className="app-files-chevron" aria-hidden />
-            )}
+            <span className="app-files-twist" aria-hidden>
+              {n.isDir && <ChevronRight className={cn(isOpen && "is-open")} />}
+            </span>
             <span className="app-files-icon">{iconForEntry(n.name, n.isDir)}</span>
             <span className="app-files-name">{n.name}</span>
+            <span className="app-files-meta">
+              {n.isDir ? fileCount(n) : formatSize(n.size)}
+            </span>
           </button>
           {n.isDir && isOpen && n.children.length > 0 && (
-            <ul role="group">{renderNodes(n.children, depth + 1)}</ul>
+            <ul role="group" className="app-files-branch">
+              {renderNodes(n.children)}
+            </ul>
           )}
         </li>
       );
     });
 
+  const nodes = walk.kind === "ok" ? walk.nodes : [];
+  const total =
+    walk.kind === "ok" ? nodes.reduce((a, n) => a + (n.isDir ? fileCount(n) : 1), 0) : null;
+  const selectedNode = rel ? findNode(nodes, rel) : null;
+  const name = rel ? basename(rel) : "";
+
   return (
     <div className="app-files">
+      {/* The tree column: a quieter plate than the view, one rule between. */}
       <nav className="app-files-tree" aria-label="App files">
-        {walk.kind === "loading" && <SkeletonLines rows={4} label="Listing files" />}
-        {walk.kind === "error" && <ErrorBanner>Could not list files: {walk.message}</ErrorBanner>}
-        {walk.kind === "ok" && walk.nodes.length === 0 && (
-          <p className="app-page-empty">This folder is empty.</p>
-        )}
-        {walk.kind === "ok" && walk.nodes.length > 0 && (
-          <ul role="tree">{renderNodes(walk.nodes, 0)}</ul>
-        )}
-        {walk.kind === "ok" && walk.truncated && (
-          <p className="app-files-caption">
-            Too many files to list them all — <a href={folderHref}>open the folder</a>.
-          </p>
-        )}
+        <div className="app-files-tree-head">
+          <span className="app-files-eyebrow">Files</span>
+          {total !== null && <span className="app-files-meta">{total}</span>}
+        </div>
+        <div className="app-files-tree-body">
+          {walk.kind === "loading" && <SkeletonLines rows={4} label="Listing files" />}
+          {walk.kind === "error" && (
+            <ErrorBanner>Could not list files: {walk.message}</ErrorBanner>
+          )}
+          {walk.kind === "ok" && nodes.length === 0 && (
+            <p className="app-files-caption">Nothing here yet.</p>
+          )}
+          {walk.kind === "ok" && nodes.length > 0 && <ul role="tree">{renderNodes(nodes)}</ul>}
+          {walk.kind === "ok" && walk.truncated && (
+            <p className="app-files-caption">
+              Showing the first {total} files. <a href={folderHref}>Open the folder</a> for the
+              rest.
+            </p>
+          )}
+        </div>
       </nav>
 
       <section className="app-files-view">
         {!file && (
-          <p className="app-page-empty">Pick a file on the left to see it here.</p>
+          <div className="app-files-blank">
+            <FileSearch aria-hidden />
+            <p>Pick a file to see it here.</p>
+          </div>
         )}
         {file && (
           <>
+            {/* The view's header: where the file sits in the folder, how big
+                it is, and which of its templates is drawing it. The switcher
+                is the one control on the row; a switcher of one hides itself. */}
             <header className="app-files-head">
-              <h2 className="app-files-title" title={file}>
-                {rel}
-              </h2>
-              {/* The template switcher: the file's own content modes, in the
-                  registry's order, the active one selected. One entry hides
-                  itself — a choice of one is not a choice. */}
+              <div className="app-files-title">
+                <span className="app-files-icon">{iconForEntry(name, false)}</span>
+                <h2 title={file}>
+                  {ancestorsOf(rel ?? "").map((a) => (
+                    <span key={a} className="app-files-crumb">
+                      {a.slice(a.lastIndexOf("/") + 1)}
+                      <span className="app-files-slash">/</span>
+                    </span>
+                  ))}
+                  {name}
+                </h2>
+                {selectedNode?.size != null && (
+                  <span className="app-files-meta">{formatSize(selectedNode.size)}</span>
+                )}
+              </div>
               {active && visible.length > 1 && (
                 <Tabs value={active.mode} onValueChange={(v) => pickMode(String(v))}>
-                  <TabsList aria-label="Template">
+                  <TabsList aria-label="Template" className="h-7">
                     {visible.map((t) => (
                       <TabsTrigger
                         key={t.mode}
                         value={t.mode}
-                        className="px-2"
+                        className="px-2 text-xs"
                         disabled={!!t.conditional && verdicts === null}
                         title={modeTitle(t.mode)}
                       >
@@ -268,24 +303,39 @@ export default function AppFiles({
                 </Tabs>
               )}
             </header>
-            {stat.kind === "loading" && <SkeletonLines rows={2} label="Loading file" />}
-            {stat.kind === "error" && (
-              <ErrorBanner>Could not open {rel}: {stat.message}</ErrorBanner>
-            )}
-            {stat.kind === "ok" && !active && (
-              <p className="app-page-empty">No template can show this file.</p>
-            )}
-            {stat.kind === "ok" && active && (
-              <iframe
-                key={file + "|" + active.mode}
-                className="app-page-frame"
-                src={renderSrc(file, active)}
-                title={`${rel} — ${modeTitle(active.mode)}`}
-              />
-            )}
+            <div className="app-files-stage">
+              {stat.kind === "loading" && <SkeletonLines rows={2} label="Loading file" />}
+              {stat.kind === "error" && (
+                <ErrorBanner>
+                  Could not open {rel}: {stat.message}
+                </ErrorBanner>
+              )}
+              {stat.kind === "ok" && !active && (
+                <div className="app-files-blank">
+                  <p>No template can show this file.</p>
+                </div>
+              )}
+              {stat.kind === "ok" && active && (
+                <iframe
+                  key={file + "|" + active.mode}
+                  className="app-files-frame"
+                  src={renderSrc(file, active)}
+                  title={`${rel} — ${modeTitle(active.mode)}`}
+                />
+              )}
+            </div>
           </>
         )}
       </section>
     </div>
   );
 }
+
+function findNode(nodes: TreeNode[], rel: string): TreeNode | null {
+  for (const n of nodes) {
+    if (n.rel === rel) return n;
+    if (n.isDir && rel.startsWith(n.rel + "/")) return findNode(n.children, rel);
+  }
+  return null;
+}
+

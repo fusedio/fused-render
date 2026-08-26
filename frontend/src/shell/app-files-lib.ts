@@ -14,7 +14,17 @@ export interface TreeNode {
   name: string;
   rel: string;
   isDir: boolean;
+  /** Bytes for a file; null for a folder (walk convention). */
+  size: number | null;
+  mtime: number | null;
   children: TreeNode[];
+}
+
+/** Files under a node, recursively — the count a folder row wears. */
+export function fileCount(node: TreeNode): number {
+  let n = 0;
+  for (const c of node.children) n += c.isDir ? fileCount(c) : 1;
+  return n;
 }
 
 /** Assemble walk entries (posix `rel`, any order) into a tree — folders first,
@@ -22,14 +32,21 @@ export interface TreeNode {
  *  the walk did not emit (a capped walk can do that) gets an implied folder so
  *  nothing is dropped on the floor. */
 export function buildTree(entries: WalkEntry[]): TreeNode[] {
-  const root: TreeNode = { name: "", rel: "", isDir: true, children: [] };
+  const root: TreeNode = { name: "", rel: "", isDir: true, size: null, mtime: null, children: [] };
   const byRel = new Map<string, TreeNode>([["", root]]);
   const ensureDir = (rel: string): TreeNode => {
     const have = byRel.get(rel);
     if (have) return have;
     const cut = rel.lastIndexOf("/");
     const parent = ensureDir(cut < 0 ? "" : rel.slice(0, cut));
-    const node: TreeNode = { name: rel.slice(cut + 1), rel, isDir: true, children: [] };
+    const node: TreeNode = {
+      name: rel.slice(cut + 1),
+      rel,
+      isDir: true,
+      size: null,
+      mtime: null,
+      children: [],
+    };
     parent.children.push(node);
     byRel.set(rel, node);
     return node;
@@ -41,7 +58,14 @@ export function buildTree(entries: WalkEntry[]): TreeNode[] {
     }
     const cut = e.rel.lastIndexOf("/");
     const parent = ensureDir(cut < 0 ? "" : e.rel.slice(0, cut));
-    parent.children.push({ name: e.rel.slice(cut + 1), rel: e.rel, isDir: false, children: [] });
+    parent.children.push({
+      name: e.rel.slice(cut + 1),
+      rel: e.rel,
+      isDir: false,
+      size: e.size,
+      mtime: e.mtime,
+      children: [],
+    });
   }
   const sort = (nodes: TreeNode[]) => {
     nodes.sort(
