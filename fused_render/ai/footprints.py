@@ -58,8 +58,16 @@ from __future__ import annotations
 import os
 import time
 
-from fused_render.ai import benchmark
 from fused_render.shell import storage
+
+#: `benchmark` is imported lazily, inside the functions that need `machine()`,
+#: rather than at module level: `benchmark.py` imports `supervisor` at its own
+#: module level (for `LOAD_WAIT_TIMEOUT_S`), and `supervisor.py` imports THIS
+#: module (for `refresh_memory`'s write) — a top-level `import benchmark` here
+#: would close that cycle at import time (`supervisor -> footprints ->
+#: benchmark -> supervisor`), which Python reports as a partially-initialized
+#: module rather than resolving. Deferred imports break the cycle without
+#: changing what either module DOES.
 
 #: How many <capability>/<model_id> rows are kept. A row is a few dozen
 #: bytes; the point of the bound is not disk space, it is the same reasoning
@@ -105,6 +113,8 @@ def _same_machine(recorded) -> bool:
     """
     if not isinstance(recorded, dict):
         return False
+    from fused_render.ai import benchmark
+
     current = benchmark.machine()
     return all(recorded.get(key) == current.get(key) for key in _IDENTITY_KEYS)
 
@@ -169,6 +179,8 @@ def record(capability: str, model_id: str, peak_bytes: int) -> None:
         return
     store = _load()
     if store is None:
+        from fused_render.ai import benchmark
+
         # No usable prior file — a fresh one, absent, corrupt, wrong-shaped,
         # or for a DIFFERENT machine (see `_load`/`_same_machine`): every
         # number that might have been in it describes hardware this is not,
@@ -188,4 +200,6 @@ def clear() -> None:
     """Forget every measurement. Separate from `record`, like `bench_store.
     clear`, so wiping the store does not depend on a caller having read a
     complete, current model list first."""
+    from fused_render.ai import benchmark
+
     _write({"machine": benchmark.machine(), "models": {}})

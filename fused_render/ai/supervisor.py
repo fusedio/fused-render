@@ -54,7 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import registry
+from fused_render.ai import footprints, registry
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +234,13 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: The high-water mark of what this model has cost, as the runner
+    #: reported it (SPEC AI-8c, D495) — `worker_base.peak_resident_bytes()`,
+    #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
+    #: on MLX) over its own RSS high-water fallback. `refresh_memory` writes
+    #: this into `footprints.py` on every poll that grows it, which is what
+    #: `fit.py` (AI-16) reads back as the "measured" basis.
+    peak_resident_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
     #: whether the runner's torch was built to use it, and since D381 those
@@ -2312,6 +2319,15 @@ def refresh_memory() -> None:
     Called by the status endpoint rather than by a timer: the number is only
     interesting when someone is looking at it, and a background poll of a
     process mid-generation is a request that waits on a GPU call for no reason.
+
+    **Also writes `peak_resident_bytes` into `footprints.py`** (SPEC AI-16a,
+    D495) — this is the ONE place a load's peak becomes a durable "measured"
+    footprint `fit.py` can read back later. Written here rather than at
+    `_bring_up`'s own "ready" transition because a load's OWN peak can still
+    be climbing after that moment (a first generation is often where a
+    pipeline actually faults in the rest of its weights), and this function
+    already re-polls `/health` on the cadence the rest of the app relies on —
+    a second poll timer just to catch the peak would duplicate this one.
     """
     with _lock:
         current = list(_workers.values())
@@ -2329,6 +2345,10 @@ def refresh_memory() -> None:
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):
             worker.resident_bytes = health["resident_bytes"]
+        if health and isinstance(health.get("peak_resident_bytes"), int):
+            worker.peak_resident_bytes = health["peak_resident_bytes"]
+            footprints.record(worker.capability, worker.model,
+                              health["peak_resident_bytes"])
 
 
 def resident_models() -> set[str]:

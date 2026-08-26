@@ -112,7 +112,7 @@ FAKE_WORKER = textwrap.dedent('''
         json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
     def ready():
         time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
-        STATE.update(state="ready", resident_bytes=1234, loaded_at=time.time())
+        STATE.update(state="ready", resident_bytes=1234, peak_resident_bytes=9999, loaded_at=time.time())
     threading.Thread(target=ready, daemon=True).start()
     srv.serve_forever()
 ''')
@@ -2731,6 +2731,25 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     described = supervisor.describe()
     assert described["loaded"][0]["model"] == "org/small"
     assert described["totalResidentBytes"] == 1234
+
+
+def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
+    """SPEC AI-16a, D495: the ONE writer for the measured-footprint store is
+    `supervisor.refresh_memory`, re-reading `/health` on the same cadence the
+    rest of the app already relies on — this is the wiring `fit.py`'s
+    "measured" basis depends on existing at all."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    from fused_render.ai import footprints
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/small")
+    # `_wait_ready` only waits on the BRING-UP loop's own polling, which sets
+    # `resident_bytes` directly but not the peak — `refresh_memory` (called by
+    # `describe()`, the status endpoint's own path) is the one place that
+    # writes the peak at all, exactly as it is in production.
+    supervisor.refresh_memory()
+    assert worker.peak_resident_bytes == 9999
+    assert footprints.read(registry.TEXT_GENERATION, "org/small") == 9999
 
 
 def test_loading_a_second_text_model_evicts_the_first(fake_runner):
