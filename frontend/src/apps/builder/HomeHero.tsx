@@ -390,7 +390,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
 
   return (
     <div className="home-composer-wrap">
-      <div className={"home-composer" + (busy ? " is-busy" : "")}>
+      <div className={"home-composer" + (phase === "naming" || phase === "creating" ? " is-busy" : "")}>
         {annotation && (
           <div className="home-composer-annots">
             <span className="home-composer-annot" title={annotation.detail}>
