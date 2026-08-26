@@ -274,9 +274,9 @@
    the cap an opt-in class in the first place rather than a property of
    .cc-main itself. Removing the opt-in class is what the owner actually wants
    gone, not a second attempt at picking a bigger number — every row on this
-   page already bounds its own measure where it needs to (.cc-row-meta's 60ch,
-   .cc-lrow-sub's ellipsis), so the column has nothing left to protect against
-   by capping itself too.
+   page already bounds its own measure where it needs to (.cc-row-meta's
+   100ch, .cc-lrow-sub's ellipsis), so the column has nothing left to protect
+   against by capping itself too.
  *
  * Not centred — margin stays 0, matching the sidebar it sits beside rather
  * than floating in the middle of the remaining space. flex-basis 0 (not auto)
@@ -542,21 +542,6 @@
 
 /* -- settings rows --------------------------------------------------------- */
 
-/* Preferences' own measure — ~1000px, left-aligned (not centred, matching
-   .cc-main's own left-aligned rationale above: this page sits beside the
-   sidebar, not floating in the window). Scoped to THIS section's wrapper
-   rather than .cc-main (owner, 2026-08-26): a cap here bounds only
-   Preferences, so it can never again squeeze AI Models' Playground the way
-   the old .cc-main-capped did. Wraps the toolbar row too (summary · Refresh
-   catalog), not just the rows beneath it — otherwise the caption/toolbar
-   stretches full-bleed above a narrower column of rows, which reads as
-   misaligned even though each piece is individually "correct". Below 640px
-   .cc-row itself switches to a stacked column layout (see that block); this
-   cap doesn't need its own breakpoint, it just shrinks with the viewport. */
-.cc-prefs {
-  max-width: 1000px;
-}
-
 .cc-row {
   display: flex;
   align-items: flex-start;
@@ -565,13 +550,30 @@
   border-bottom: 1px solid var(--border);
 }
 
-/* Label + doc, capped so a long documentation string stays a comfortable
-   measure rather than running the row's full width — the control column
-   below is what actually needs the row's remaining space. */
+/* Label + doc. USED TO be capped at 60ch on the theory that a long
+   documentation string should keep a comfortable reading measure and the
+   control column was what actually needed the row's remaining space — true
+   in isolation, but at full page width (the .cc-prefs wrapper that used to
+   bound this row is gone too, owner 2026-08-26: "make it use full width")
+   any fixed ch cap here stops growing before .cc-row-control's
+   right-anchored column (margin-left: auto) does, and that column's
+   auto-margin claims whatever gap is left over — so a cap doesn't just
+   shrink the void, it relocates it, at a width set by the cap rather than
+   by the viewport. Tried 100ch first: still a ~250px void at 1400px, the
+   width in question, because 100ch (~880px in this font) is well short of
+   the ~1050px actually available at that width once the row's own padding
+   and the control column are accounted for. No cap closes it at every
+   width without being unboundedly high, so it comes off entirely — meta now
+   grows to EXACTLY fill the row up to the control's left edge (the whole
+   point of it being the row's only growing flex item), zero void by
+   construction rather than by tuning a number to one width. Readability is
+   less at risk than a bare "no cap" reads: `doc` is refresh_catalog.py's
+   clean_doc output, already cut to one sentence, so there is no long-form
+   prose here to run edge-to-edge on an ultrawide monitor — verified live at
+   1400px and at the 640px stacked breakpoint below. */
 .cc-row-meta {
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 60ch;
   padding-top: 3px;
 }
 
@@ -604,10 +606,11 @@
    inline error, a badge) between meta and control, silently splitting them
    apart instead of just sitting between two already-placed columns. Needed
    once the 900px cap came off .cc-main (owner, 2026-08-26): capped, the row's
-   own width and .cc-row-meta's 60ch cap were close enough that this column
-   landed near the right edge anyway; uncapped, a wide row leaves meta capped
-   at 60ch and this column stranded in the leftover space with no offset in
-   front of it. auto-margin still needs somewhere to draw that leftover FROM
+   own width and .cc-row-meta's cap (60ch then, 100ch now — see that rule's
+   own comment) were close enough that this column landed near the right
+   edge anyway; uncapped, a wide row can still leave meta short of the row's
+   full width and this column stranded in the leftover space with no offset
+   in front of it. auto-margin still needs somewhere to draw that leftover FROM
    — verified against the 640px block below, which switches the row to
    column-flow and this control to width:100%: at that width the control
    already fills the whole cross-axis track, so the auto margin would have

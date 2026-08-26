@@ -176,15 +176,13 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
   }
 
   return (
-    // cc-prefs caps THIS section's own measure (~1000px, owner 2026-08-26) —
-    // not .cc-main, which every other section (including AI Models'
-    // Playground) also stands on; see .cc-main's comment for why that shared
-    // cap was removed instead of resized. Without it, .cc-row-meta's 60ch cap
-    // and .cc-row-control's right-anchor (margin-left: auto) leave a void
-    // between label and control on a wide window — the toolbar row above the
-    // rows is inside the same wrapper so it ends up on the same measure
-    // rather than stretching full-bleed above a narrower column of rows.
-    <div className="cc-prefs">
+    // Full width (owner, 2026-08-26, reversing the ~1000px .cc-prefs cap
+    // from the previous decision): no wrapper needed to bound the measure
+    // any more, so back to a fragment. The void that cap existed to close —
+    // .cc-row-meta's 60ch cap leaving .cc-row-control's right-anchored
+    // (margin-left: auto) column stranded far from its label — is handled
+    // at the row level now instead (see .cc-row-meta's own comment).
+    <>
       {/* Two different acts, deliberately not merged: the icon re-reads
           settings.json (what every other tab's refresh does), while "Refresh
           catalog" re-fetches Anthropic's docs and rewrites the catalog itself.
@@ -314,6 +312,6 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
           })}
         </Group>
       ))}
-    </div>
+    </>
   );
 }
