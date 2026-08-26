@@ -44,6 +44,20 @@ def _clone_with_remote_ahead(tmp_path, name="repo"):
     local = str(tmp_path / name)
     os.makedirs(local)
     git(local, "init", "-q")
+    # A LOCAL (not just `_git_repo.git()`'s own per-invocation env) identity,
+    # persisted to this repo's own .git/config: `git_upstream.rebase_repo`
+    # shells out through its OWN subprocess call, with none of `_git_repo`'s
+    # identity env vars, exactly like a real user's rebase would — and a
+    # real user with local commits to rebase always has identity configured
+    # already (git would have refused to create those commits otherwise).
+    # A CI runner has no such ambient identity (no global config, and the
+    # `runner` user's /etc/passwd GECOS is empty, so even git's own
+    # name-from-hostname fallback fails with "empty ident name"), so
+    # without this, `rebase_repo`'s own commit-creation step fails in CI
+    # in a way that could never happen on a real machine — a test-rig gap,
+    # not a product bug.
+    git(local, "config", "user.name", "Fixture Author")
+    git(local, "config", "user.email", "fixture@example.com")
     write(local, "a.txt", "1\n")
     git(local, "add", "-A")
     git(local, "commit", "-q", "-m", "c1")
@@ -411,6 +425,12 @@ def _rebase_conflict_repo(tmp_path, name="conflict"):
     local = str(tmp_path / name)
     os.makedirs(local)
     git(local, "init", "-q")
+    # See _clone_with_remote_ahead's own comment on this: a conflicting
+    # rebase step halts before it would need identity, but a persisted
+    # local identity here keeps this fixture consistent (and safe against
+    # a future edit that resolves the conflict and finalizes a commit).
+    git(local, "config", "user.name", "Fixture Author")
+    git(local, "config", "user.email", "fixture@example.com")
     write(local, "a.txt", "one\ntwo\nthree\n")
     git(local, "add", "-A")
     git(local, "commit", "-q", "-m", "base")
