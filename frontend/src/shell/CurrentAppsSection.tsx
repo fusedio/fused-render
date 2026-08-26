@@ -1,14 +1,27 @@
-// "Current apps" — the sidebar section above Bookmarks (D487): the workspace
-// apps (<fused_dir>/local/<slug>) that still have a task not filed away, at
-// most five, newest activity first. A row opens the app's PAGE (`/apps/<slug>`,
+// "Current apps" — the sidebar section above Bookmarks (D487): EVERY workspace
+// app (<fused_dir>/local/<slug>) that still has a task not filed away, newest
+// activity first, uncapped. A row opens the app's PAGE (`/apps/<slug>`,
 // shell/AppPage.tsx, D488) — the one door that page has; its cross archives
 // every task under it, which is the one gesture that takes an app off this list.
+//
+// The ORDER is a sequence per app, not the recency it is seeded from
+// (current-apps-lib.ts): a row moves only when the user drags it, so new work in
+// an app already listed does not reshuffle the list under the cursor. The store
+// is the module-level `appOrder` below, hydrated from localStorage at import and
+// written back BY A DRAG AND ONLY BY A DRAG, so an arrangement survives a reload
+// and the next launch without a poll ever having an opinion about it.
 //
 // Fed by the task pulse store (useTasksPulseRows) rather than a poll of its
 // own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
 // reader and a second one is the double-poll that store exists to prevent.
 // `project` rides the compact row for exactly this reader.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { archiveTask, getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -18,8 +31,15 @@ import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   appPageTabFromPath,
   appPageUrl,
+  assignSequences,
+  bySequence,
   currentApps,
+  moveSlug,
+  orderedSlugs,
+  parseSavedOrder,
+  reorderTo,
   slugFromAppPath,
+  type AppOrder,
   type CurrentApp,
 } from "@shell/current-apps-lib";
 
@@ -29,6 +49,77 @@ import {
 // round-trips. `fused_dir`, not `home`: the workspace root honours
 // FUSED_RENDER_DIR, and a root built from home would list nothing under it.
 let knownRoot = "";
+
+export const ORDER_KEY = "fused-render:current-apps-order";
+
+// The displayed order: a module-level Map (it outlives the sidebar's
+// per-navigation remount — pushState routing) hydrated from localStorage at
+// import, so the order is already in hand before the first render and there is
+// no window where recency wins a race against what the user dragged.
+//
+// Every store touch sits inside a try: a blocked or full store costs the saved
+// order, not the section. Reading a JSON array of slugs (top first) rather than
+// the sequence numbers themselves keeps the stored shape the one thing that
+// matters — nothing on disk has to agree with a numbering scheme this module is
+// free to change.
+const appOrder: AppOrder = new Map();
+
+function readSavedOrder(): string[] {
+  try {
+    return parseSavedOrder(localStorage.getItem(ORDER_KEY));
+  } catch {
+    return [];
+  }
+}
+
+// Called from the DROP HANDLER and nowhere else — that placement is the whole
+// cross-tab design, so it is worth stating plainly. A persist effect keyed on
+// the app list looks equivalent and is not: the store hands out a fresh `rows`
+// array every poll, so such an effect fires per tick, and two tabs then take
+// turns saving their own view of a world they briefly disagree about (Bugbot
+// twice, 2026-08-26 — first a second tab clobbering a drag, then an outright
+// write loop). A drag is one user gesture. There is no second writer to race.
+//
+// The equality guard is belt-and-braces on top of that: re-dragging a row back
+// where it was writes nothing.
+function saveOrder(slugs: string[]): void {
+  try {
+    const next = JSON.stringify(slugs);
+    if (localStorage.getItem(ORDER_KEY) === next) return;
+    localStorage.setItem(ORDER_KEY, next);
+  } catch {
+    // A blocked store just means the order lasts as long as the page does.
+  }
+}
+
+/** Take `slugs` as the whole order, replacing what this page held. Empty is NOT
+ *  an order — a missing or cleared key must leave the live order alone rather
+ *  than flattening it. A live slug the incoming list does not mention gets a
+ *  fresh sequence and goes on top, which is correct: the tab that dragged did
+ *  not have that app, so its arrangement has nothing to say about where it
+ *  belongs. Nothing answers back — adopting never writes. */
+function adoptSavedOrder(slugs: string[]): void {
+  if (!slugs.length) return;
+  appOrder.clear();
+  reorderTo(appOrder, slugs);
+}
+
+// Mounted sections, so another tab's drag can repaint this one.
+const orderListeners = new Set<() => void>();
+
+try {
+  adoptSavedOrder(readSavedOrder());
+  // `storage` fires only in OTHER documents, which makes it exactly the
+  // cross-tab channel — the same wiring App.tsx uses to hear the chat's
+  // activity stamp. Without it the two tabs disagree until a reload.
+  window.addEventListener("storage", (e: StorageEvent) => {
+    if (e.key !== ORDER_KEY) return;
+    adoptSavedOrder(parseSavedOrder(e.newValue));
+    for (const listener of orderListeners) listener();
+  });
+} catch {
+  // No store and no window: the order lives and dies with this page.
+}
 
 function useFusedDir(): string {
   const [root, setRoot] = useState(knownRoot);
@@ -45,7 +136,23 @@ function useFusedDir(): string {
   return root;
 }
 
-function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
+interface RowDragProps {
+  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragLeave: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}
+
+function CurrentAppRow({
+  app,
+  active,
+  drag,
+}: {
+  app: CurrentApp;
+  active: boolean;
+  drag: RowDragProps;
+}) {
   const [busy, setBusy] = useState(false);
   const href = appPageUrl(app.slug);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -80,6 +187,8 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
     <div
       className={"bookmark-row current-app-row" + (active ? " active" : "")}
       title={tip}
+      draggable
+      {...drag}
     >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.running ? <span className="sidebar-rail-dot is-running" /> : "▣"}
@@ -111,15 +220,117 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
 export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
   const fusedDir = useFusedDir();
-  const apps = useMemo(() => currentApps(rows, fusedDir), [rows, fusedDir]);
+  // A drop mutates `appOrder`, which React cannot see; this counter is what
+  // turns that mutation into a render. The pulse's own ticks re-run the memo
+  // anyway, so without it a drag would land only on the next poll.
+  const [orderEpoch, setOrderEpoch] = useState(0);
+  const apps = useMemo(() => {
+    const found = currentApps(rows, fusedDir);
+    // Assigning during render is safe because it is idempotent: an app that
+    // already has a sequence keeps it, so a double-invoked render (StrictMode)
+    // or a re-run on the same rows cannot renumber anything.
+    assignSequences(appOrder, found);
+    return bySequence(found, appOrder);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
+  }, [rows, fusedDir, orderEpoch]);
+  // NOTHING is saved here. A new app, an archived one, a pulse landing — all of
+  // those move rows on screen and write nothing to the store; the saved order is
+  // an arrangement the user made, and only they can change it. That is what
+  // keeps two tabs from arguing (see `saveOrder`), and it is also why a list
+  // nobody has dragged simply seeds from recency again on the next reload.
+
+  // Repaint when another tab drags. The adopt already happened at the module
+  // listener; this is only the render half of it.
+  useEffect(() => {
+    const bump = () => setOrderEpoch((n) => n + 1);
+    orderListeners.add(bump);
+    return () => {
+      orderListeners.delete(bump);
+    };
+  }, []);
+
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
   const onSlug = slugFromAppPath(location.pathname);
+
+  // ---- reordering by drag ----------------------------------------------------
+  // A flat list, so the only question a drop asks is "above or below this row",
+  // answered by the row's own midpoint. Deliberately NOT the bookmarks tree's
+  // machinery (BookmarksSection): no folders, no subtree guard, no drop-into.
+  // The zone and fade CLASSES are that section's, though — the rows already
+  // carry `bookmark-row`, so `.dragging` / `.drag-above` / `.drag-below` are
+  // painted by sidebar.css with nothing new added.
+  const draggedRef = useRef<string | null>(null);
+  // Cleared by query rather than by ref: the row that started the drag may
+  // already be detached when the drop lands, and any row still on screen must
+  // not keep wearing a class from a finished gesture.
+  const clearDrag = () => {
+    const marks = ["drag-above", "drag-below", "dragging"];
+    const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
+    document
+      .querySelectorAll(sel)
+      .forEach((el) => el.classList.remove(...marks));
+  };
+  const isBelow = (e: React.DragEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientY > r.top + r.height / 2;
+  };
+  const dragProps = (slug: string): RowDragProps => ({
+    onDragStart: (e) => {
+      draggedRef.current = slug;
+      e.currentTarget.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", slug); // Firefox needs a payload to start
+    },
+    onDragOver: (e) => {
+      const from = draggedRef.current;
+      if (from === null || from === slug) return;
+      e.preventDefault(); // required to allow a drop
+      e.dataTransfer.dropEffect = "move";
+      const after = isBelow(e);
+      e.currentTarget.classList.toggle("drag-above", !after);
+      e.currentTarget.classList.toggle("drag-below", after);
+    },
+    onDragLeave: (e) =>
+      e.currentTarget.classList.remove("drag-above", "drag-below"),
+    onDrop: (e) => {
+      const from = draggedRef.current;
+      // Reset BEFORE the re-render: it detaches the source row, and Chrome
+      // skips dragend on a removed element (the lesson BookmarksSection
+      // records at its own drop handler).
+      draggedRef.current = null;
+      clearDrag();
+      if (from === null || from === slug) return;
+      e.preventDefault();
+      // Moved within the WHOLE store, not the visible run. They are the same
+      // list — the store is pruned to the desk on every assignment — and taking
+      // it from the store is what keeps them the same: renumbering a subset
+      // would leave anything outside it on a stale sequence, free to sort in
+      // above the arrangement the user just made (Bugbot, 2026-08-26, against a
+      // version that did remember non-live slugs).
+      const next = moveSlug(orderedSlugs(appOrder), from, slug, isBelow(e));
+      reorderTo(appOrder, next);
+      saveOrder(next);
+      setOrderEpoch((n) => n + 1);
+    },
+    onDragEnd: () => {
+      // Fires on an Escape-cancelled drag too — the universal cleanup.
+      draggedRef.current = null;
+      clearDrag();
+    },
+  });
+
   const render = useCallback(
     (app: CurrentApp) => (
-      <CurrentAppRow key={app.dir} app={app} active={app.slug === onSlug} />
+      <CurrentAppRow
+        key={app.dir}
+        app={app}
+        active={app.slug === onSlug}
+        drag={dragProps(app.slug)}
+      />
     ),
-    [onSlug],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
+    [onSlug, apps],
   );
   // The + opens the /apps composer in a modal (D489). The section therefore
   // ALWAYS renders now — it first hid itself with zero current apps (D487),
