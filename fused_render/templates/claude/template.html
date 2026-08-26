@@ -11232,6 +11232,11 @@ document.getElementById("back").onclick = () => {
   // detached from everything (Bugbot, PR #653).
   for (const q of queuedMsgs) q.el.remove();
   queuedMsgs.length = 0;
+  // Same reasoning, same siblings-of-#log placement, for a steered message
+  // whose run is being left before it could finish (the run keeps going
+  // server-side; nothing here is asking it to stop).
+  for (const el of pendingSteerEls) el.remove();
+  pendingSteerEls = [];
   // The abandoned turn's sendMessage/resumeRun still holds `sending` until its
   // loop bails (one poll away) — long enough for the landing composer's submit
   // to hit `if (sending) return` and drop the click (Bugbot, PR #653). The
@@ -14115,6 +14120,19 @@ function queueMessage(text) {
   persistQueue();
 }
 
+// Placeholder bubbles for messages `steerMessage` has successfully handed to
+// the CLI but whose reply has not shown up in the transcript yet. Swept by
+// `pollLoop` only once the run TRULY finishes (agent.py's `_poll` now delays
+// `done` until every steered turn has landed — its `expected_turns`) —
+// never removed eagerly by `steerMessage` itself (found in review: the old
+// code did `d.remove()` unconditionally the moment the call resolved, so a
+// SUCCESSFUL steer made the user's own message vanish from the screen with
+// nothing rendered in its place, since D497's cumulative rendering has no
+// separate bubble for a second turn to replace it with — the exact opposite
+// of the goal). Cleared alongside `activeRun`/`activeRunPersistent` in every
+// place those reset, so a placeholder never outlives the run it belongs to.
+let pendingSteerEls = [];
+
 // The persistent-session alternative to queueMessage: instead of PARKING the
 // text here until the live turn ends, hand it straight to the CLI's own
 // stdin (agent.py's `steer`) — this is the actual fix for "usually claude
@@ -14152,7 +14170,6 @@ async function steerMessage(text) {
   } catch (err) {
     error = err.message;
   }
-  d.remove();
   if (!steered) {
     // The run ended, or was never persistent to begin with (a race between
     // the click and this call landing) — fall back to the ordinary browser
@@ -14160,13 +14177,23 @@ async function steerMessage(text) {
     // itself once the current run's loop notices `done` and there is
     // nothing live to steer into any more.
     console.warn("steer failed, queued instead:", error || "(no reason given)");
+    d.remove();
     queueMessage(text);
+    return;
   }
-  // On success there is nothing further to do here: the next poll this
-  // run's own loop (or the standing live-run watch, once this tab's loop has
-  // already ended for the turn that was in flight) makes will start seeing
-  // the CLI's reply the moment it starts — the same path an unprompted
-  // background-task wake already takes (agent.py's `_poll`, D415).
+  // On success the bubble STAYS (found in review — see `pendingSteerEls`'s
+  // own comment for what removing it here used to do): relabelled to say
+  // the message is in claude's hands now, and left for `pollLoop` to sweep
+  // once the run this text was steered into is truly finished. The next
+  // poll THIS run's own loop makes (or the standing live-run watch, once
+  // this tab's loop has already ended for the turn that was in flight) will
+  // start seeing the CLI's reply the moment it starts — the same path an
+  // unprompted background-task wake already takes (agent.py's `_poll`,
+  // D415) — but the placeholder is what keeps the user's OWN words on
+  // screen in the meantime, since D497's cumulative rendering draws no
+  // separate bubble for a second turn.
+  lbl.textContent = "with claude — reply in progress";
+  pendingSteerEls.push(d);
 }
 
 // Fire the next queued message once nothing is live. Called from the tails of
@@ -14206,6 +14233,15 @@ function unqueueAll(entries) {
 // One turn at a time: concurrent turns would share the session_id param and
 // launch parallel claude runs against the same resumed session.
 let sending = false;
+// A NARROWER flag than `sending` (found in review): `sending` is also held
+// by `loadHistory` and `resumeRun`'s probe, neither of which ever calls
+// `drainQueue()` — so a message parked in submitChat's `if (sending)` guard
+// during one of THOSE windows would sit forever, undelivered, until some
+// unrelated later send happened to drain the queue out of order. This is
+// set true/false at the exact same two points as `sending`, but ONLY inside
+// `sendMessage` — the one window (between `sending = true` and `activeRun`
+// being assigned by `pollLoop`) submitChat actually needs to park against.
+let startingRun = false;
 // Which action OWNS `sending`, and which loop owns the running chrome. Both
 // are monotonic seats: a finally that wakes late (its action was abandoned by
 // the back button, or superseded by a re-attach to the same run id) proves it
@@ -14374,6 +14410,14 @@ async function pollLoop(run_id, gen = logGen) {
       activeWorking = null;
       activeSegBody = null;
       setRunningUi(false);
+      // Every steered placeholder still on screen belongs to THIS run, and
+      // this run is now (agent.py's `_poll` only reaches `done` once every
+      // steered turn has landed — see `expected_turns`) truly finished:
+      // whatever those messages asked for is either answered in the
+      // transcript above or the run ended before it could be, and either
+      // way there is nothing left to wait on.
+      for (const el of pendingSteerEls) el.remove();
+      pendingSteerEls = [];
     }
     // When THIS page's turn ended, in the same clock the transcript stat speaks
     // (epoch seconds). The follower compares against it so the rows this run
@@ -14431,6 +14475,7 @@ function setRunningUi(on) {
 async function sendMessage(message) {
   if (sending) return;
   sending = true;
+  startingRun = true;
   const seat = ++sendSeq;
   // Sampled before anything is awaited: a Back landing mid-start outdates this
   // number, and everything below that touches the page (the run param, the
@@ -14449,7 +14494,7 @@ async function sendMessage(message) {
   // shadowing the receipt loop below already had to be warned about once.
   const pics = shotAttached;
   if (pics.length) { shotAttached = []; renderAnn(); }
-  if (!message && !pending.length && !pics.length) { sending = false; return; }
+  if (!message && !pending.length && !pics.length) { sending = false; startingRun = false; return; }
   // Both composer entry points come through here, so the snapshot is taken in
   // exactly one place — at SEND time, which is the moment whose state the user is
   // describing when they type. `appStatePush`, not the raw snapshot: a pushed
@@ -14611,7 +14656,7 @@ async function sendMessage(message) {
     }
     addError(err.message);
   } finally {
-    if (sendSeq === seat) sending = false;
+    if (sendSeq === seat) { sending = false; startingRun = false; }
   }
   scrollBottom();
   focusBox(box);
@@ -15806,7 +15851,15 @@ function submitChat() {
   // Parking it is what the `activeRun` branch above already does once a run
   // id exists; this is the same park for the brief window before one does —
   // never a `steerMessage`, because there is no run_id to steer into yet.
-  if (sending) {
+  //
+  // `startingRun`, NOT the wider `sending` (found in review): `sending` is
+  // ALSO held by `loadHistory` and `resumeRun`'s probe, and neither of those
+  // ever calls `drainQueue()` — a message parked against `sending` during
+  // one of those windows would sit undelivered until some unrelated later
+  // send happened to drain the queue, arriving out of order. `startingRun`
+  // is true ONLY inside `sendMessage`'s own start window, which is the one
+  // case this guard exists for.
+  if (startingRun) {
     const message = box.value.trim();
     if (!message) return;
     box.value = "";

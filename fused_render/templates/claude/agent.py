@@ -73,6 +73,7 @@ Actions:
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -1819,6 +1820,182 @@ def _persistent_ok() -> bool:
     return os.environ.get("FUSED_RENDER_CLAUDE_PERSISTENT") == "1" and os.name != "nt"
 
 
+# How long a FIFO write is allowed to sit waiting for room before giving up.
+# Long enough that a large pasted message can drain into a reader that is
+# merely slow (the CLI mid-tool-call, a loaded machine); short enough that a
+# reader that is NOT going to come back — the child exec'd and died before
+# ever touching its stdin — does not hang the caller forever. `_start` and
+# `_steer` both write through `_fifo_write_all` for this reason.
+_FIFO_WRITE_TIMEOUT = 5.0
+
+# How long `_cancel` waits for an interrupt to actually land (a new `result`
+# row, or the process exiting) before escalating to a kill. Bytes on the wire
+# prove nothing about the CLI having acted on them — a wedged MCP permission
+# wait or a dropped control request leaves the turn running regardless — so
+# this is the difference between a stop button that sometimes just spins.
+_INTERRUPT_CONFIRM_TIMEOUT = 2.0
+
+
+def _fifo_write_all(fd: int, payload: bytes,
+                    timeout: float = _FIFO_WRITE_TIMEOUT) -> bool:
+    """Write every byte of `payload` to `fd` — a FIFO the caller has just
+    opened — or give up and return False rather than hang or half-write.
+
+    Two failure modes this exists to close, both found in review rather than
+    reported from use:
+
+    A single non-blocking `os.write` can return a SHORT COUNT the moment the
+    payload is bigger than the pipe's buffer (16-64KB on Linux/macOS — a
+    pasted log is a realistic trigger), and the old code read any return at
+    all as success. The CLI then received half a JSON line with the NEXT
+    write's bytes concatenated onto the tail of it — a malformed line the
+    stream-json parser has no way to recover from.
+
+    A BLOCKING write to a FIFO nobody is reading — `claude` exec'd and died
+    before ever touching its stdin, so our own fd is the only reader left —
+    never returns at all: `_start`'s spawn used to write the first message
+    from a plain blocking write, which could hang the whole short-lived
+    worker process that called it forever, for exactly the failure this
+    function is bounded against.
+
+    The fd is switched to non-blocking here (the caller does not need to);
+    `select` provides the bound in between short writes.
+    """
+    os.set_blocking(fd, False)
+    view = memoryview(payload)
+    written = 0
+    deadline = time.time() + timeout
+    while written < len(view):
+        try:
+            written += os.write(fd, view[written:])
+        except BlockingIOError:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return False
+            if not select.select([], [fd], [], remaining)[1]:
+                return False  # timed out waiting for room
+        except OSError:
+            return False  # broken pipe, bad fd — the reader is gone
+    return True
+
+
+def _private_append(path: str, line: str) -> None:
+    """Append one line to a run-dir file, creating it `rw-------` if it does
+    not exist — the append-mode sibling of `_private_open`, for a file
+    written incrementally across separate calls rather than once at spawn
+    (`_steer`'s per-message count, `_cancel`'s per-turn stop marker)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(fd, (line + "\n").encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def _count_results(run_dir: str) -> int:
+    """How many `result` rows `out.jsonl` carries so far — the same count
+    `_poll`'s own parse loop keeps as `turn_count`, but cheap enough (no
+    segment/text assembly) to call from `_cancel`'s escalation wait and from
+    `_stopped_last`, neither of which has `_poll`'s loop to read it from."""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return 0
+    count = 0
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("type") == "result":
+            count += 1
+    return count
+
+
+def _steered_count(run_dir: str) -> int:
+    """How many messages `_steer` has successfully delivered into this run —
+    read by `_poll` to know how many MORE `result` rows to expect before a
+    persistent run's `done` can go True. See `_poll`'s `expected_turns`."""
+    try:
+        with open(os.path.join(run_dir, "steered"), encoding="utf-8") as fh:
+            return sum(1 for line in fh if line.strip())
+    except OSError:
+        return 0
+
+
+def _interrupted_indices(run_dir: str) -> set:
+    """Which completed-turn indices (0-based, by `_count_results`/`turn_count`
+    order) were ended by `_cancel`'s interrupt-or-escalated-kill branch on a
+    persistent run, rather than running to their own conclusion.
+
+    A SET, not a sticky whole-run flag, and that distinction is the point
+    (found in review): a persistent run's process survives past the turn
+    `_cancel` stopped, so the OLD `cancelled` marker file — correct for a
+    one-shot run, where a run dir holds exactly one turn — would otherwise
+    mark every LATER turn on the same run dir as stopped too. `_cancel`
+    records the turn it acted on here instead of touching that file, and only
+    a caller asking about THAT specific turn (`_poll`, `_stopped_last`) reads
+    True for it.
+    """
+    try:
+        with open(os.path.join(run_dir, "interrupted_turns"), encoding="utf-8") as fh:
+            return {int(t) for t in fh.read().split() if t.strip().lstrip("-").isdigit()}
+    except OSError:
+        return set()
+
+
+def _kill_process(run_dir: str) -> None:
+    """SIGTERM (POSIX) / taskkill (Windows) the run's whole process tree —
+    the mechanism `_cancel`'s one-shot path has always used, factored out so
+    `_cancel`'s escalation branch and `_poll`'s persistent-run reap (see its
+    own comment) share ONE implementation of "end this process" rather than
+    two copies that can drift. Swallows everything: an unreadable pid, a kill
+    that does not land — the caller has already done what bookkeeping it
+    needs to before reaching here, and none of that should be undone by a
+    kill that merely failed to happen."""
+    try:
+        pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
+    except (OSError, ValueError):
+        return
+    if os.name == "nt":
+        # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
+        # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
+        # the tree instead, collecting claude's own children with it.
+        #
+        # CREATE_NO_WINDOW because taskkill is itself a console program and this
+        # worker has no console to lend it (executor.py spawns us with that same
+        # flag), so without it a cancel flashes exactly the console window
+        # _DETACH just removed from the run. The server's global no-window policy
+        # does NOT cover us: it patches Popen in cli.py's process, and the worker
+        # is a bare `python _child.py`.
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
+        except OSError:
+            pass
+
+
+def _wait_for_turn_end(run_dir: str, before: int,
+                       timeout: float = _INTERRUPT_CONFIRM_TIMEOUT) -> bool:
+    """Block (briefly) until either a NEW `result` row lands past `before`
+    (the interrupt was acted on and the truncated turn actually ended) or the
+    process exits outright. False if neither happens within `timeout` — a
+    wedged turn (blocked in an MCP permission wait, a dropped control
+    request) that `_cancel` must then escalate to a kill rather than report
+    as stopped."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _alive(run_dir) or _count_results(run_dir) > before:
+            return True
+        time.sleep(0.1)
+    return not _alive(run_dir) or _count_results(run_dir) > before
+
+
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
@@ -2036,6 +2213,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
     # way — it is ANDed into the same branch — so this cannot override it.
     spawn_env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
+    proc = None
+    write_ok = True
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -2054,25 +2233,47 @@ def _start(file: str, message: str, session_id: str, model: str,
                                     else (stdin_fh or subprocess.DEVNULL),
                                     env=spawn_env,
                                     **_DETACH)
+            if fifo_fd is not None:
+                # The FIRST message, written directly to our own copy of the
+                # fd — the child already has its own dup by now (Popen's
+                # dup2 happened inside the fork/exec above), so this never
+                # races the child's read of it. Every LATER message goes
+                # through `_steer`, which reopens the FIFO by path exactly
+                # the way this does, because by then this process (a
+                # short-lived worker, see _persistent_ok) is long gone and
+                # has nothing left to write through.
+                #
+                # Deliberately HERE — inside the `with`, right after a
+                # SUCCESSFUL Popen — and not in the `finally` below (found in
+                # review). A `finally` runs on every exit path, including one
+                # where `Popen` itself raised: no child was ever created, so
+                # nobody else could drain this FIFO, and writing here used to
+                # mean a plain blocking write on a large message could hang
+                # this whole short-lived worker forever with nobody left to
+                # read it. `_fifo_write_all` bounds even the success case
+                # against a child that exec'd and died before ever touching
+                # its stdin.
+                write_ok = _fifo_write_all(fifo_fd, (json.dumps({
+                    "type": "user", "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": message}]}}) + "\n"
+                                                     ).encode("utf-8"))
     finally:
         if stdin_fh is not None:
             stdin_fh.close()
         if fifo_fd is not None:
-            # The FIRST message, written directly to our own copy of the fd
-            # before closing it — the child already has its own dup by now
-            # (Popen's dup2 happened inside the fork/exec above), so this
-            # never races the child's read of it. Every LATER message goes
-            # through `_steer`, which reopens the FIFO by path exactly the
-            # way this does, because by then this process (a short-lived
-            # worker, see _persistent_ok) is long gone and has nothing left
-            # to write through.
-            try:
-                os.write(fifo_fd, (json.dumps({"type": "user", "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": message}]}}) + "\n"
-                                   ).encode("utf-8"))
-            finally:
-                os.close(fifo_fd)
+            os.close(fifo_fd)
+    if not write_ok:
+        # The process spawned but never got its first message — a run_id
+        # with nothing behind it would sit in RUNS forever as a phantom
+        # (`_alive` reports it running, `_poll` reports no `result` ever
+        # arriving). Kill it now rather than leaving that for a later reap
+        # to find, and tell the caller so the message can be retried instead
+        # of vanishing into a run nothing will ever answer.
+        with _private_open(os.path.join(run_dir, "pid")) as f:
+            f.write(str(proc.pid))
+        _kill_process(run_dir)
+        return {"error": "claude did not accept the first message"}
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
@@ -2087,9 +2288,13 @@ def _steer(run_id: str, message: str) -> dict:
     Not true mid-turn injection — nothing here claims that, because the CLI
     does not offer it (D497). If the run is mid-turn when this lands, the CLI
     QUEUES the message itself and starts it as its own turn the moment the
-    current one's `result` row lands; `_poll`'s `turn` counter is what lets a
-    page tell "queued, not started yet" from "now running" without this
-    function knowing or caring which one just happened.
+    current one's `result` row lands. A successful delivery is recorded in
+    the run dir's `steered` file (`_steered_count`), which is what lets
+    `_poll` know how many MORE `result` rows to expect before this run's
+    `done` can go True — see `_poll`'s `expected_turns` for why that matters:
+    without it, the page's poll loop would treat the FIRST turn's `result` as
+    the whole run finishing and abandon a message that is still in the CLI's
+    own queue.
 
     Refuses rather than blocking on anything: a run with no FIFO was never
     persistent (or persistence is off entirely, or this is Windows), and a
@@ -2117,14 +2322,19 @@ def _steer(run_id: str, message: str) -> dict:
     except OSError as exc:
         return {"steered": False, "error": str(exc)}
     try:
-        os.write(fd, (json.dumps({"type": "user", "message": {
+        # `_fifo_write_all`, not a single non-blocking write: a pasted log can
+        # be bigger than the pipe's buffer, and one short-count write used to
+        # be read as success while leaving the CLI with half a JSON line and
+        # the NEXT write's bytes concatenated onto its tail (found in review).
+        ok = _fifo_write_all(fd, (json.dumps({"type": "user", "message": {
             "role": "user",
             "content": [{"type": "text", "text": message}]}}) + "\n"
-                     ).encode("utf-8"))
-    except OSError as exc:
-        return {"steered": False, "error": str(exc)}
+                                  ).encode("utf-8"))
     finally:
         os.close(fd)
+    if not ok:
+        return {"steered": False, "error": "the CLI did not accept the message"}
+    _private_append(os.path.join(run_dir, "steered"), str(time.time()))
     return {"steered": True}
 
 
@@ -2902,11 +3112,14 @@ def _poll(run_id: str, file: str = "") -> dict:
     idle = False         # ...and nothing has been said since
     done = False
     turn_count = 0       # how many `result` rows this run has produced so
-                          # far — a persistent run's page-side steer clock:
-                          # the page remembers the count at the moment it
-                          # steered, and watches for it to advance past that
-                          # value to tell a message the CLI is still QUEUING
-                          # (see _steer) from one that has actually started.
+                          # far. NOT a page-side steer clock (an earlier
+                          # version of this comment claimed the page would
+                          # read this to tell "queued" from "started" — it
+                          # never did; found in review). The bookkeeping
+                          # lives HERE instead: combined with `steered_count`
+                          # below it decides `done` itself, so the page's
+                          # existing dumb `if (data.done) break` needs no
+                          # steer-awareness of its own — see `expected_turns`.
     error = ""
     tokens_done = 0      # output tokens of finished messages this turn
     tokens_current = 0   # cumulative usage of the in-flight message
@@ -3012,9 +3225,83 @@ def _poll(run_id: str, file: str = "") -> dict:
     if retry is not None:
         phase = "retrying"
 
-    # Finished: a `result` with nothing after it (the turn ended and no wake has
-    # started another), or a process that is simply gone (D415).
-    done = idle or not alive
+    # The run's own first message and its persistence flag — moved up here
+    # (it used to be read further down) because `done`, below, now needs
+    # `meta["persistent"]` too.
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+        if not isinstance(meta, dict):
+            meta = {}
+    except (OSError, json.JSONDecodeError):
+        meta = {}
+    persistent = bool(meta.get("persistent"))
+
+    # How many turns this run is expected to produce before there is
+    # genuinely nothing left coming: the one it was started with, plus one
+    # for every message `_steer` has successfully delivered into it. Always 1
+    # for a non-persistent run (`_steered_count` reads 0 — `_steer` refuses
+    # anything without a FIFO), so this changes nothing there.
+    expected_turns = 1 + (_steered_count(run_dir) if persistent else 0)
+
+    # Finished: a `result` with nothing after it (the turn ended and no wake
+    # has started another) AND every turn this run was asked to produce has
+    # landed, or a process that is simply gone (D415, extended here).
+    #
+    # The `expected_turns` half is new and exists ONLY for the steer case
+    # (found in review, together with the reap below): without it, a message
+    # steered into a run WHILE its first turn is streaming would see that
+    # first turn's `result` land, `done` go True, and the page's poll loop
+    # abandon the run — activeRun cleared, nobody watching — the instant
+    # before the CLI actually started on the steered message. The steered
+    # turn would still happen (the process is not touched here), just with
+    # nothing left polling to show it, which is indistinguishable from the
+    # message having been silently lost. Requiring `turn_count` to reach
+    # `expected_turns` before `idle` counts keeps the SAME loop watching
+    # straight through: the CLI's brief gap between turns reads as one more
+    # "nothing new yet" poll rather than the end of the run.
+    #
+    # `not alive` is UNCONDITIONAL and always wins on its own: if the process
+    # is actually gone, nothing further is coming regardless of what was
+    # asked of it — a `_steer` racing a process that died in the same instant
+    # (an accepted, tiny window; see `_steer`'s own comment) must not leave
+    # `done` stuck False forever waiting for a turn that will never land.
+    done = (not alive) or (idle and turn_count >= expected_turns)
+
+    # REAP a persistent run's process once its turns are all in (found in
+    # review — the FIFO's O_RDWR trick that keeps this process from ever
+    # seeing stdin EOF (see `_start`) is exactly what stops it from ever
+    # exiting ON ITS OWN, so without this an enabled-by-flag persistent
+    # session leaked one process per chat turn, alive until reboot, AND
+    # risked a SECOND process later `--resume`ing the same session while the
+    # first was still sitting there holding it (both able to write the same
+    # transcript). Reaped here, synchronously, inside the very poll call that
+    # decided `done` — not from the page in a later tick — so there is no
+    # window between "the client learns this run is done" and "a NEW `_start`
+    # for the next message might already be racing this cleanup"; by the
+    # time this response reaches the page, the process is either dead or
+    # dying.
+    #
+    # ACCEPTED COST, decided deliberately rather than left unstated (D497):
+    # this kills a persistent run's process even if it started a BACKGROUND
+    # task that has not finished — the one thing `done`'s `idle` alone cannot
+    # tell apart from "genuinely nothing more is coming" is "a hook will wake
+    # this same process in an hour" (D415's own scenario). A one-shot run
+    # never has this problem because its stdin already reached EOF after its
+    # single message, so IT exits on its own once its real work — background
+    # tasks included — is done; a persistent run's stdin can never reach EOF
+    # by construction (O_RDWR), so ending it at all always requires an
+    # explicit kill, and there is no signal available here to tell "still
+    # thinking" apart from "waiting on a job." Between reaping the process
+    # early (dropping a background task's eventual report) and never reaping
+    # it (the leak this whole fix exists for), the leak is unconditionally
+    # worse — it was the one finding that most looked like the design was
+    # unfinished. Detecting an in-flight background task (a `run_in_background`
+    # Bash call in this turn's own segments) to defer the reap is real,
+    # buildable future work, deliberately NOT attempted here rather than
+    # shipped as an unverified heuristic.
+    if done and persistent and alive:
+        _kill_process(run_dir)
 
     if not saw_result and done:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
@@ -3074,17 +3361,6 @@ def _poll(run_id: str, file: str = "") -> dict:
         app_state = []
     else:
         app_state = _app_state_requests(run_dir)
-
-    # The run's own first message rides back on every poll so a re-attaching
-    # page (mode switch / reload killed the poll loop, subprocess kept going)
-    # can restore the user turn it never saw.
-    try:
-        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as f:
-            meta = json.load(f)
-        if not isinstance(meta, dict):
-            meta = {}
-    except (OSError, json.JSONDecodeError):
-        meta = {}
 
     # First poll that sees the run finished CLEANLY sweeps anything left
     # uncommitted into the app's repo (one-shot via a marker, like the
@@ -3151,19 +3427,33 @@ def _poll(run_id: str, file: str = "") -> dict:
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
-            # WAS THIS RUN'S END ASKED FOR — read off the run rather than
+            # WAS THIS TURN'S END ASKED FOR — read off the run rather than
             # remembered by whoever asked. The page's own stop button sets a
             # variable and can swallow the resulting error itself, but a stop
             # from anywhere else (the tasks queue card's ✕, which goes through
             # schedule.py) left this page reporting the kill as a crash. See
-            # `_cancel`, which writes the marker.
-            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            # `_cancel`.
+            #
+            # Two markers, because a one-shot kill and a persistent interrupt
+            # scope differently (found in review): the sticky `cancelled` file
+            # means "this run dir's end was asked for", which is only ever
+            # true for the ONE turn a one-shot run dir ever holds; a
+            # persistent run's process survives its own stop, so `_cancel`
+            # records THAT TURN's index instead (`_interrupted_indices`), and
+            # this checks it against the turn that just finished
+            # (`turn_count - 1`) rather than the whole run — a later, cleanly
+            # completed turn on the same run dir no longer reads as stopped.
+            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled"))
+            or (turn_count - 1) in _interrupted_indices(run_dir),
             "segments": _segments_from_rows(parsed),
-            # Both new for persistent sessions (see `_persistent_ok`/`_steer`)
-            # and harmless everywhere else: a one-shot run's `meta.json` has
-            # no "persistent" key at all (older runs, or persistence off),
-            # which reads as False, and its `turn_count` never exceeds 1.
-            "persistent": bool(meta.get("persistent")),
+            # `persistent`: whether this run's process can take a `_steer`.
+            # Harmless for a one-shot run — its `meta.json` has no
+            # "persistent" key at all (older runs, or persistence off), which
+            # reads as False. `turn`: how many turns have completed so far;
+            # `_poll` itself is the only consumer of the equivalent
+            # bookkeeping now (`expected_turns`, above) — the page does not
+            # need its own copy of this clock and does not read this field.
+            "persistent": persistent,
             "turn": turn_count}
 
 
@@ -3664,6 +3954,14 @@ def _stopped_last(file: str, session_id: str) -> bool:
     saying it. The evidence lives in the run dir instead (`_cancel`'s marker),
     which is why this reads runs rather than records.
 
+    Two markers, same as `_poll`'s "cancelled" field, and for the same reason
+    (found in review): a persistent run's process survives its own stop, so
+    it can go on to produce MORE, cleanly-finished turns on the same run
+    dir — the sticky `cancelled` file alone would mislabel every one of
+    those as stopped too, well after the actual stop. `_interrupted_indices`
+    names the specific turn `_cancel` acted on; this checks it against the
+    LAST completed turn on the matched run dir, not the run dir as a whole.
+
     NEWEST RUN ONLY, and that is the whole rule. The question a reopened chat
     asks is about the turn at the bottom of it, so a run that was stopped
     yesterday and followed by one that completed says nothing about what is on
@@ -3710,7 +4008,10 @@ def _stopped_last(file: str, session_id: str) -> bool:
             continue
         # The newest run of this conversation — whatever it says, it is the
         # answer, so this returns rather than carrying on down the list.
-        return os.path.exists(os.path.join(run_dir, "cancelled"))
+        if os.path.exists(os.path.join(run_dir, "cancelled")):
+            return True
+        turn_count = _count_results(run_dir)
+        return (turn_count - 1) in _interrupted_indices(run_dir)
     return False
 
 
@@ -3874,30 +4175,100 @@ def _interrupt(fifo_path: str) -> bool:
     the one meant to make something STOP. Returns False on any failure so
     `_cancel` can fall through to the kill path rather than silently no-op a
     stop request.
+
+    Bytes landing on the FIFO prove nothing about the CLI having ACTED on
+    them (found in review) — a wedged MCP permission wait or a dropped
+    control request leaves the turn running regardless of what this function
+    returns. `_cancel` treats True here as "sent", not "stopped", and
+    confirms separately (`_wait_for_turn_end`) before ever reporting success.
     """
     try:
         fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
     except OSError:
         return False
     try:
-        os.write(fd, (json.dumps({
+        ok = _fifo_write_all(fd, (json.dumps({
             "type": "control_request",
             "request_id": "cancel-" + os.urandom(4).hex(),
             "request": {"subtype": "interrupt"}}) + "\n").encode("utf-8"))
-    except OSError:
-        return False
     finally:
         os.close(fd)
-    return True
+    return ok
 
 
 def _cancel(run_id: str) -> dict:
+    """Stop the CURRENT TURN.
+
+    A persistent run's process survives its own turn (see `_persistent_ok`),
+    so "stop" here is scoped to the turn in flight, not the session — the
+    process is INTERRUPTED, confirmed, and only escalated to a kill if the
+    interrupt does not visibly land. A one-shot run (Windows always; POSIX
+    whenever persistence was off for this run) has no live channel to
+    interrupt in the first place, so for it stopping the turn and ending the
+    session are the same act, and the kill below is exactly what this
+    function has always done.
+
+    Escalation, not a single interrupt-and-hope (found in review): a control
+    request landing on the FIFO proves nothing about the CLI acting on it — a
+    turn blocked in an MCP permission wait, or a control request the harness
+    simply drops, leaves the process running with nobody able to stop it a
+    second time (the page's own `stopRun` guards on `stoppedRun === run_id`
+    and refuses to fire twice). `_wait_for_turn_end` gives the interrupt a
+    bounded window to actually end the turn (a new `result` row, or the
+    process exiting) before this falls through to the same SIGTERM the
+    one-shot path always used.
+    """
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
     # so reject anything that could resolve outside the runs dir.
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
-    # WHO ASKED, written down before anything is killed.
+
+    fifo_path = os.path.join(run_dir, "stdin.fifo")
+    if os.path.exists(fifo_path) and _alive(run_dir):
+        # TURN-SCOPED, not the sticky whole-run `cancelled` marker below
+        # (found in review): this run's process survives past whatever turn
+        # is in flight right now, so a marker meaning "the run's end was
+        # asked for" would mislabel every LATER, cleanly-finished turn on the
+        # same run dir as stopped too. `before` — how many turns have already
+        # completed — is this turn's own index; `_interrupted_indices`
+        # (read by `_poll` and `_stopped_last`) is what makes it stick to
+        # only that one. Recorded BEFORE anything is attempted, same reason
+        # the old marker was written first: the intent is true regardless of
+        # how the interrupt or the escalation below goes.
+        before = _count_results(run_dir)
+        try:
+            _private_append(os.path.join(run_dir, "interrupted_turns"), str(before))
+        except OSError:
+            pass  # bookkeeping must never stand between the user and a stop
+        # Answer before acting: an interrupt truncates the turn regardless of
+        # whether a card was mid-answer, and an escalated kill takes the
+        # whole tree (the MCP server included) — either way a parked
+        # approval must not sit there holding things open for the full
+        # timeout.
+        _deny_pending(run_dir, "cancelled")
+        # `timeout=` passed explicitly rather than relying on
+        # `_wait_for_turn_end`'s own default: a default value is bound once,
+        # at function-definition time, so a test (or a future config knob)
+        # that monkeypatches `_INTERRUPT_CONFIRM_TIMEOUT` on the module would
+        # silently have no effect on it — reading the name here, at CALL
+        # time, is what makes the module attribute the actual source of
+        # truth.
+        if _interrupt(fifo_path) and _wait_for_turn_end(
+                run_dir, before, timeout=_INTERRUPT_CONFIRM_TIMEOUT):
+            return {"cancelled": run_id}
+        # Escalate: the interrupt was never confirmed — dropped on the wire,
+        # or accepted but wedged on something that will not yield to it.
+        # Still turn-scoped (not the marker below): from the record above,
+        # this run dir's other turns, if it somehow produced any before
+        # dying, are unaffected.
+        _kill_process(run_dir)
+        return {"cancelled": run_id}
+
+    # One-shot path: unchanged from before this feature existed. The marker
+    # here IS scoped correctly for it — a one-shot run dir holds exactly one
+    # turn, so "the run's end was asked for" and "this turn was stopped" are
+    # the same fact.
     #
     # Killing claude leaves the run dead with no `result` row, which `_poll`
     # reports as an error BY DESIGN — a truncated reply must never read as a
@@ -3918,53 +4289,10 @@ def _cancel(run_id: str) -> dict:
     except OSError:
         pass  # bookkeeping must never stand between the user and a kill
     # Answer before killing: the kill takes the whole tree (the MCP server
-    # included) on both platforms, but if it fails, a parked approval would
-    # otherwise sit there holding the subprocess open for the full timeout.
+    # included), but if it fails, a parked approval would otherwise sit there
+    # holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
-
-    # STOP THE TURN, not necessarily the SESSION. A persistent run (FIFO
-    # present, process still alive) is stopped with the CLI's own
-    # control-protocol interrupt instead of a kill: the marker above is
-    # already written, so every existing reader of it (`_poll`'s "cancelled"
-    # field, `_history`'s `_stopped_last`) keeps reading a truncated turn
-    # exactly the way it always has — nothing downstream needed to change to
-    # keep meaning what it already meant. What's different is that the
-    # process itself lives on, so the user's next message reaches the SAME
-    # session (`_steer`) instead of forcing a brand new one.
-    #
-    # A one-shot run has no live channel to interrupt in the first place —
-    # Windows always (no FIFO ever exists there), and POSIX too whenever
-    # persistence was off for this run — so for it stopping the turn and
-    # ending the session are the same act, and the SIGTERM path below is
-    # exactly what it has always been.
-    fifo_path = os.path.join(run_dir, "stdin.fifo")
-    if os.path.exists(fifo_path) and _alive(run_dir) and _interrupt(fifo_path):
-        return {"cancelled": run_id}
-
-    try:
-        pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
-    except (OSError, ValueError):
-        return {"cancelled": run_id}
-    if os.name == "nt":
-        # os.killpg doesn't exist on Windows, and CTRL_BREAK only reaches a
-        # shared console — a DETACHED_PROCESS run has none. taskkill /T walks
-        # the tree instead, collecting claude's own children with it.
-        #
-        # CREATE_NO_WINDOW because taskkill is itself a console program and this
-        # worker has no console to lend it (executor.py spawns us with that same
-        # flag), so without it a cancel flashes exactly the console window
-        # _DETACH just removed from the run. The server's global no-window policy
-        # does NOT cover us: it patches Popen in cli.py's process, and the worker
-        # is a bare `python _child.py`.
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False,
-                       creationflags=subprocess.CREATE_NO_WINDOW)
-    else:
-        try:
-            os.killpg(pid, signal.SIGTERM)  # start_new_session=True -> pid is pgid
-        except OSError:
-            pass
+    _kill_process(run_dir)
     return {"cancelled": run_id}
 
 

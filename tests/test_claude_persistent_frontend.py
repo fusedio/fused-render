@@ -9,7 +9,7 @@ test_claude_stop_run.py's `_run_ending` and test_claude_app_state.py's
 `"steer"` literal are present in the source, but not that a message actually
 reaches `fused.runPython` with the right run_id, or that `submitChat` picks
 the right destination for a given combination of `activeRun`/
-`activeRunPersistent`/`sending` — which is exactly the class of thing a
+`activeRunPersistent`/`startingRun` — which is exactly the class of thing a
 refactor can silently break while every string a grep looks for stays put.
 """
 import json
@@ -54,9 +54,10 @@ _STEER_HARNESS = """
 %s
 
 class FakeEl {
-  constructor() { this.children = []; }
+  constructor() { this.children = []; this.text = null; }
   set className(v) {}
-  set textContent(v) {}
+  set textContent(v) { this.text = v; }
+  get textContent() { return this.text; }
   append(...kids) { this.children.push(...kids); }
   appendChild(k) { this.children.push(k); }
   remove() { global.__removed = true; }
@@ -66,6 +67,7 @@ const queueEl = new FakeEl();
 function scrollBottom() {}
 const AGENT = "agent.py";
 let activeRun = %s;
+let pendingSteerEls = [];
 const calls = { runPython: [], queueMessage: [] };
 const fused = {
   runPython: async (agent, params, opts) => {
@@ -76,7 +78,10 @@ const fused = {
 function queueMessage(text) { calls.queueMessage.push(text); }
 
 steerMessage(%s).then(() => {
-  console.log(JSON.stringify({ calls, removed: !!global.__removed }));
+  console.log(JSON.stringify({
+    calls, removed: !!global.__removed,
+    pending: pendingSteerEls.length,
+  }));
 });
 """
 
@@ -98,10 +103,20 @@ def test_steer_message_sends_the_steer_action_with_the_live_run_id():
     assert calls[0]["agent"] == "agent.py"
     assert calls[0]["params"] == {"action": "steer", "run_id": "run-42",
                                   "message": "second message"}
-    # The dashed placeholder is removed once the call resolves either way.
-    assert result["removed"] is True
     # A successful steer never falls back to the browser queue.
     assert result["calls"]["queueMessage"] == []
+
+
+def test_a_successful_steer_keeps_the_users_message_on_screen():
+    """The regression this closes (found in review): the old code removed
+    the dashed bubble the instant the call resolved, with nothing rendered
+    in its place (D497's cumulative rendering has no separate bubble for a
+    second turn) — so a SUCCESSFUL steer made the user's own words vanish.
+    The bubble must stay, tracked in `pendingSteerEls`, until `pollLoop`
+    sweeps it once the run truly finishes."""
+    result = _steer("run-42", {"steered": True})
+    assert result["removed"] is False, "the placeholder must not disappear on success"
+    assert result["pending"] == 1, "steerMessage must register it for pollLoop to sweep"
 
 
 def test_a_refused_steer_falls_back_to_the_browser_queue_with_the_same_text():
@@ -109,6 +124,10 @@ def test_a_refused_steer_falls_back_to_the_browser_queue_with_the_same_text():
     the call landing. The text must not be lost."""
     result = _steer("run-42", {"steered": False, "error": "run has ended"})
     assert result["calls"]["queueMessage"] == ["second message"]
+    # Unlike a success, a refused steer removes its own placeholder
+    # immediately — the ordinary queue bubble (queueMessage) takes over.
+    assert result["removed"] is True
+    assert result["pending"] == 0
 
 
 # ---------------------------------------------------------------- submitChat
@@ -126,7 +145,7 @@ function annPending() { return []; }
 const shotAttached = [];
 let activeRun = %s;
 let activeRunPersistent = %s;
-let sending = %s;
+let startingRun = %s;
 const box = { value: %s };
 
 submitChat();
@@ -135,12 +154,12 @@ console.log(JSON.stringify({ calls, boxValue: box.value }));
 
 
 def _submit(*, sched_blocked=False, active_run=None, persistent=False,
-           sending=False, box_value="hello"):
+           starting_run=False, box_value="hello"):
     _need_node()
     src = _submit_chat_src(_html())
     script = _SUBMIT_HARNESS % (
         src, json.dumps(sched_blocked), json.dumps(active_run),
-        json.dumps(persistent), json.dumps(sending), json.dumps(box_value))
+        json.dumps(persistent), json.dumps(starting_run), json.dumps(box_value))
     out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
@@ -162,12 +181,17 @@ def test_a_live_one_shot_run_still_parks_in_the_browser_queue():
 
 
 def test_a_message_typed_mid_start_is_parked_not_silently_dropped():
-    """The race this work also closed: `sending` goes true before `activeRun`
-    is assigned (sendMessage). A second submit landing in that window used to
-    fall through a bare `if (sending) return;` with nothing queued and the
-    box already blanked by the FIRST submit — i.e. genuinely lost. It must
-    now land in the browser queue exactly like the activeRun branch does."""
-    result = _submit(active_run=None, sending=True, box_value="hi there")
+    """The race this work also closed: `sending` (and, now, the narrower
+    `startingRun`) goes true before `activeRun` is assigned (sendMessage).
+    A second submit landing in that window used to fall through a bare
+    `if (sending) return;` with nothing queued and the box already blanked
+    by the FIRST submit — i.e. genuinely lost. It must now land in the
+    browser queue exactly like the activeRun branch does. `startingRun`,
+    not `sending`, because `sending` is ALSO held by loadHistory/resumeRun's
+    probe, which never drains the queue — parking against it there would
+    strand the message (found in review); this test only exercises the one
+    window `startingRun` is scoped to."""
+    result = _submit(active_run=None, starting_run=True, box_value="hi there")
     assert result["calls"]["queueMessage"] == ["hi there"]
     assert result["calls"]["steerMessage"] == [], \
         "there is no run_id yet — this must never steer"
@@ -176,7 +200,7 @@ def test_a_message_typed_mid_start_is_parked_not_silently_dropped():
 
 
 def test_an_ordinary_send_with_nothing_live_goes_straight_to_sendMessage():
-    result = _submit(active_run=None, sending=False, box_value="hi there")
+    result = _submit(active_run=None, starting_run=False, box_value="hi there")
     assert result["calls"]["sendMessage"] == ["hi there"]
     assert result["calls"]["queueMessage"] == []
     assert result["calls"]["steerMessage"] == []
@@ -192,7 +216,7 @@ def test_a_scheduled_block_beats_every_other_branch():
 def test_an_empty_box_sends_nothing_on_any_branch():
     for kwargs in ({"active_run": "run-1", "persistent": True},
                    {"active_run": "run-1", "persistent": False},
-                   {"sending": True},
+                   {"starting_run": True},
                    {}):
         result = _submit(box_value="   ", **kwargs)
         assert result["calls"] == {"queueMessage": [], "steerMessage": [], "sendMessage": []}

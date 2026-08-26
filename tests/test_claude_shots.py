@@ -2262,8 +2262,8 @@ def test_the_shot_belongs_to_exactly_one_message(html):
         "nothing may await before the pictures are taken off the composer"
     # a picture alone is a sendable message: there is no rule that a screenshot
     # needs words to go with it
-    assert "if (!message && !pending.length && !pics.length) { sending = false; return; }" \
-        in send
+    assert ("if (!message && !pending.length && !pics.length) "
+           "{ sending = false; startingRun = false; return; }") in send
     assert html.count(
         "if (!message && !annPending().length && !shotAttached.length) return;") == 2, \
         "and both composers' submit guards agree"
