@@ -105,13 +105,17 @@ const ASPECT_CHIPS = [
 
 // The locked axis, snapped to the nearest multiple of 16 and kept on the rail.
 // Reproduces every preset pair from its own width (480 → 272 for 16:9), so the
-// same function decides which chip a saved size lights.
+// same functions decide which chip a saved size lights. A pair is a shape's if
+// EITHER side derives the other: a height edit writes `widthFor(h)`, whose
+// own `heightFor` can land one step off after rounding, and a link saved then
+// must reload with the lock it was showing.
 const snap16 = (n: number) =>
   Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], Math.round(n / 16) * 16));
 const heightFor = (width: number, a: Aspect) => snap16((width * a.rh) / a.rw);
 const widthFor = (height: number, a: Aspect) => snap16((height * a.rw) / a.rh);
 const aspectOf = (width: number, height: number) =>
-  ASPECTS.find((a) => heightFor(width, a) === height)?.value ?? CUSTOM;
+  ASPECTS.find((a) => heightFor(width, a) === height || widthFor(height, a) === width)?.value ??
+  CUSTOM;
 
 // Eight authored examples — two pages of four (D465). Every one names a
 // subject AND a way of rendering it (medium, light, lens, texture), because

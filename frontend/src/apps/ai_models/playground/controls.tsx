@@ -219,7 +219,13 @@ export function RailSlider({
       setDraft(String(value));
       return;
     }
-    const clamped = Math.min(max, Math.max(min, next));
+    // Onto the rail's grid, then inside its bounds — a typed 500 on a step of
+    // 16 becomes 496, the same number the slider could have produced, so a
+    // value derived from it (the image stage's other side) stays on-grid too.
+    // The rounding keeps 0.1 steps from committing 0.30000000000000004.
+    const decimals = (String(step).split(".")[1] ?? "").length;
+    const stepped = Number((Math.round((next - min) / step) * step + min).toFixed(decimals));
+    const clamped = Math.min(max, Math.max(min, stepped));
     setDraft(String(clamped));
     if (clamped !== value) onChange(clamped);
   };
