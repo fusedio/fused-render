@@ -9,8 +9,10 @@
 // sidebars glued together. So the sections are a horizontal TAB STRIP across
 // the top, and the horizontal budget the nav was eating goes to the content:
 //
-//   ┌ cc-tabbar ────────────────────────────────────────────────┐
-//   │ Preferences Plugins Marketplaces …          [🕘 History •] │
+//   ┌ cc-header ───────────────────────────────────────────── 49px ┐
+//   │ Claude config                          [● Clean / N uncommitted]│
+//   ├ cc-tabbar ──────────────────────────────────────────────────┤
+//   │ Preferences  Plugins  Marketplaces  …                       │
 //   ├ cc-body ───────────────────────────┬──────────────────────┤
 //   │ caption (the file this tab edits)  │  preview pane        │
 //   │ section content                    │  (MD Files only)     │
@@ -23,12 +25,15 @@
 //   * the git epoch lives here, because every section can dirty the repo and
 //     they all report back through one `onChanged`.
 //
-// History is deliberately NOT one of the tabs. It is a persistent button at the
-// strip's right edge, because it is the only page whose state matters while you
-// are looking at some other one: it carries the dirty dot that tells you the
-// config has uncommitted drift, and it is where you commit that drift. Profiles
-// lives on it too — a profile is a git branch over the same repo, so it belongs
-// with the history rather than beside Preferences.
+// History is deliberately NOT one of the tabs. It is the git chip in the
+// header band, because it is the only page whose state matters while you are
+// looking at some other one: the chip carries the dirty state that tells you
+// the config has uncommitted drift (a tab-strip button used to carry that as
+// a dot, and its own edge-pinned position was what clipped the strip's last
+// tab label at a narrow width — the header has no such neighbour to collide
+// with), and it is where you commit that drift. Profiles lives on it too — a
+// profile is a git branch over the same repo, so it belongs with the history
+// rather than beside Preferences.
 //
 // The CLAUDE.md explorer ("MD Files", `?cctab=claudemd`) is a section here.
 // It briefly had a page of its own; it is back because the sidebar's CLAUDE
@@ -184,7 +189,7 @@ export default function ClaudeConfig() {
           global state, not a section, so it belongs in the header rather than
           fighting the tabs for room. */}
       <div className="cc-header">
-        <span className="cc-header-title">Claude Config</span>
+        <span className="cc-header-title">Claude config</span>
         <button
           type="button"
           aria-current={active === HISTORY.id ? "page" : undefined}
