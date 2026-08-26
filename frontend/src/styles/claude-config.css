@@ -374,15 +374,29 @@
 
 @media (max-width: 640px) {
   /* Below ~640px the summary's own line is claimed every time, so the
-     controls get the row to themselves and can use its full width. */
+     controls get the row to themselves and can use its full width — UNLESS
+     the only control is the solo refresh icon (Memory, Skills: no filter, no
+     segmented switch). That icon easily shares the summary's line, and
+     forcing it onto its own left a dead row under e.g. "10 skill(s)" —
+     .cc-toolbar-controls-solo (set in bits.tsx's SectionToolbar whenever
+     there are no `children`) opts a toolbar out of the split. */
   .cc-summary {
     flex-basis: 100%;
+  }
+
+  .cc-toolbar:has(.cc-toolbar-controls-solo) .cc-summary {
+    flex-basis: auto;
   }
 
   .cc-toolbar-controls {
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
+  }
+
+  .cc-toolbar-controls-solo {
+    width: auto;
+    margin-left: auto;
   }
 
   /* The filter input is the one control that needs real width to be useful;
@@ -446,6 +460,30 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 6px;
+}
+
+/* Clear used to be a red outlined .btn, always visible, repeated on every one
+   of a machine's project groups — the single most destructive action on this
+   page ended up its loudest and most repeated element. It is a plain
+   .cc-iconbtn now (danger-tinted on hover, same as every other destructive
+   icon action in this app) and fades in the same way .cc-lrow-actions'
+   icons do — quiet at rest, reachable by keyboard via :focus-within, visible
+   outright with no hover to reveal it from. Reveal-in-Finder stays visible:
+   it is informational, not destructive, so there's nothing to hide it FOR. */
+.cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.cc-memgroup-head:hover .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger,
+.cc-memgroup-head:focus-within .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+  opacity: 1;
+}
+
+@media (hover: none), (max-width: 640px) {
+  .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+    opacity: 1;
+  }
 }
 
 /* A filesystem path is not a category name: it keeps its own casing and wraps. */
@@ -781,11 +819,32 @@
 
 .cc-index-item.cc-index-all .cc-index-filter {
   width: 100%;
+  /* A bit more than the other rows' own 8px: "All" has nothing beside the
+     count (no lock, no actions) to visually buffer it from the pill's
+     rounded edge, so the count read as cramped against the border at that
+     same 8px. */
+  padding-right: 12px;
 }
 
 .cc-index-filter:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* A read-only marketplace's marker — see Icon's "lock" case for why this
+   replaced a Pill. Fixed-size and always visible (a fact, not an action), so
+   it can never be the thing that overflows the rail's 180px the way the pill
+   did. */
+.cc-index-lock {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  color: var(--fg-muted);
+}
+
+.cc-index-lock .cc-icon {
+  width: 12px;
+  height: 12px;
 }
 
 /* Share/remove, per marketplace. Same fade-on-hover rule as .cc-lrow-actions —
@@ -956,17 +1015,47 @@
   color: var(--fg-muted);
 }
 
-/* Skills: the description IS the row's payload, and a skill's description is
-   routinely a full sentence — ellipsizing it mid-clause defeated the reason
-   this tab is worth scanning. This is the one row that gets to break out of
-   the app's one-line-at-rest rule: it wraps instead of truncating, and
-   .cc-lrow-line's own align-items:center still centers the row's other cells
-   against whatever height that wrap grows into. */
-.cc-lrow-sub-wrap {
-  overflow: visible;
+/* Skills' and Memory's descriptions: real payload, not a muted aside, so
+   ellipsizing them mid-clause defeated the reason those tabs are worth
+   scanning. Wraps up to 2 lines rather than truncating to 1 — clamped, not
+   unbounded, because an unclamped wrap let one long description run a row to
+   ~4x the height of its neighbours (a live-page defect: it turned a dense
+   list into a ragged one). The two tabs share this class on purpose so they
+   read as one system rather than disagreeing about how much a row shows. */
+.cc-lrow-sub-clamp2 {
+  overflow: hidden;
   text-overflow: clip;
   white-space: normal;
   line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Skills only: without a reserved width, the name shrink-wrapped to its own
+   text and the description that follows it started at whatever x that left
+   off at — ten different left edges for ten rows, unscannable. A fixed
+   column gives every row's description the SAME starting x. Top-aligned
+   (overriding .cc-lrow-line's and .cc-lrow-body's own center) because the
+   description can now be two lines and a centered name looked adrift beside
+   it. Scoped under this wrapper rather than touching the shared .cc-lrow-*
+   rules every other tab's rows also use. */
+.cc-skills-list .cc-lrow-line,
+.cc-skills-list .cc-lrow-body {
+  align-items: flex-start;
+}
+
+.cc-skills-list .cc-lrow-name {
+  flex: 0 0 168px;
+  width: 168px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-top: 1px;
+}
+
+.cc-skills-list .cc-lrow-meta {
+  padding-top: 1px;
 }
 
 .cc-lrow-meta {
@@ -1510,7 +1599,10 @@
 
   /* A row gives up its secondary text before it gives up its actions: the
      actions are the reason the row is there, and the secondary text is the one
-     part that has somewhere else to be (the expanded panel, or its title=). */
+     part that has somewhere else to be (the expanded panel, or its title=).
+     Skills is the deliberate exception — its description IS the payload, so
+     .cc-skills-list overrides this back on below (and drops the source meta
+     instead, which is the low-value, repetitive field at this width). */
   .cc-lrow-sub {
     display: none;
   }
@@ -1520,6 +1612,22 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .cc-skills-list .cc-lrow-sub {
+    display: -webkit-box;
+  }
+
+  .cc-skills-list .cc-lrow-meta {
+    display: none;
+  }
+
+  /* The fixed 168px name column is a desktop-width affordance — Skills' own
+     description-over-source swap above already fixes the narrow layout, and
+     168px of a ~340px content column left almost nothing for the name. */
+  .cc-skills-list .cc-lrow-name {
+    flex: 0 1 auto;
+    width: auto;
   }
 
   /* The marketplace filter column would leave the list ~120px at this width.
@@ -1535,11 +1643,15 @@
     align-items: stretch;
   }
 
+  /* Used to reflow into a horizontal wrap here (flex-direction: row,
+     flex-wrap: wrap): at this width that packed each marketplace as
+     `name count [icon][icon]` with no separation between one item and the
+     next, so two adjacent rows' icons read as one ambiguous run. Stacking
+     instead — the rail keeps its normal one-row-per-marketplace shape, just
+     spanning the full content width instead of a fixed 180px. */
   .cc-index {
     flex: 0 0 auto;
-    width: auto;
-    flex-direction: row;
-    flex-wrap: wrap;
+    width: 100%;
     position: static;
   }
 }

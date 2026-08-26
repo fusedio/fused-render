@@ -246,9 +246,14 @@ export function SectionToolbar({
           .cc-toolbar-controls in claude-config.css. That is what stops the
           toolbar wrapping into a ragged stack at a narrow width: the summary
           drops to its own line first, and the controls keep their single row
-          for as long as there is room for any of them. */}
+          for as long as there is room for any of them. `-solo` (no children,
+          just the refresh icon — Memory, Skills) is the one exception: at a
+          narrow width the base rule still forces the summary onto its own
+          full line even though a single icon button had room to share it,
+          which read as a dead row under "10 skill(s)". The modifier lets the
+          narrow media query recognize that case and keep them together. */}
       {(children || onRefresh) && (
-        <div className="cc-toolbar-controls">
+        <div className={"cc-toolbar-controls" + (children ? "" : " cc-toolbar-controls-solo")}>
           {children}
           {onRefresh && (
             <button
@@ -656,7 +661,8 @@ export function Icon({
     | "chevron"
     | "plus"
     | "undo"
-    | "info";
+    | "info"
+    | "lock";
 }) {
   const paths: Record<string, ReactNode> = {
     // The Preferences unset-value hint (title= carries the actual text —
@@ -666,6 +672,16 @@ export function Icon({
         <circle cx="12" cy="12" r="9" />
         <line x1="12" y1="11" x2="12" y2="16" />
         <line x1="12" y1="8" x2="12.01" y2="8" />
+      </>
+    ),
+    // A read-only marketplace, in the Plugins rail — a muted fact, not a
+    // warning, so it is a quiet glyph rather than a coloured pill (round 2:
+    // the pill overflowed the rail's fixed width and was tinted --warning,
+    // a hue this app reserves for uncommitted git state).
+    lock: (
+      <>
+        <rect x="5" y="11" width="14" height="9" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
       </>
     ),
     // The Preferences "reset to default" ghost icon button — a corner-arrow

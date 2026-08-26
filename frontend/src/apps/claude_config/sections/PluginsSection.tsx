@@ -414,10 +414,21 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                   <span className="cc-index-name">{m.name}</span>
                   <span className="cc-count">{n}</span>
                 </button>
-                {/* A read-only pill states a fact about the row and stays
+                {/* A read-only marker states a fact about the row and stays
                     visible outright — it is not an action, so it does not
-                    follow the hover-fade rule the icon buttons beside it do. */}
-                {!m.editable && <Pill tone="ro">read-only</Pill>}
+                    follow the hover-fade rule the icon buttons beside it do.
+                    A lock glyph rather than the "read-only" Pill this used to
+                    be: the pill's text wrapped inside the rail's fixed
+                    180px width and spilled over the plugin list beside it,
+                    and it was tinted --warning, a hue this app reserves for
+                    uncommitted git drift — a read-only marketplace is
+                    neither dirty nor a warning, just a fact, so it is now a
+                    fixed-size muted icon that can never overflow. */}
+                {!m.editable && (
+                  <span className="cc-index-lock" title="Read-only marketplace" aria-label="Read-only marketplace">
+                    <Icon name="lock" />
+                  </span>
+                )}
                 <div className="cc-index-actions">
                   {m.shareCommand && (
                     <button
