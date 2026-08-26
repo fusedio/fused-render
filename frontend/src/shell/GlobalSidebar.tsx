@@ -11,6 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
+import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
@@ -28,6 +29,7 @@ import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
+import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -86,13 +88,11 @@ const MOUNTS_ICON = (
   </svg>
 );
 
-// A clock: scheduled messages are the one page about *when* something happens.
-const SCHEDULED_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v5l3.5 2" />
-  </svg>
-);
+// A to-do list (lucide ListTodo, sized like the hand-drawn icons around it):
+// Tasks is the page about work, and the app page's Tasks tab wears the same
+// glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
+// page was "Scheduled".
+const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
 const CANVASES_ICON = (
@@ -360,6 +360,8 @@ const AI_MODELS_HOME = tabHref("playground", "");
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
+  // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
+  useSidebarArrowNav();
 
   // No builtin-mount gate any more: the entries they guarded (Inbox, App
   // Basics) are gone from the sidebar — the learn content ships as a community
@@ -682,8 +684,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             }
           />
         </div>
-        {/* Current apps (D487): the workspace apps with unfiled tasks, above the
-            permanent Bookmarks tree. Renders nothing when there are none. */}
+        {/* Projects (D487, "Current apps" until 2026-08-26): the apps on the
+            desk, above the permanent Bookmarks tree. Collapsible; always ends
+            in a "+ New app" row. */}
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
