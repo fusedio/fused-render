@@ -25,7 +25,9 @@ import { useEffect, useMemo, useState, type MouseEvent } from "react";
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
+import { AppWindow, ListTodo } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
@@ -36,9 +38,12 @@ import {
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
 
-const TABS: { id: AppPageTab; label: string }[] = [
-  { id: "overview", label: "Overview" },
-  { id: "tasks", label: "Tasks" },
+// The tab strip's rows: shadcn Tabs (line variant) with a lucide icon each, in
+// the page's gutter frame under the header — the header names the app and the
+// folder, and nothing else (owner's redesign, 2026-08-26).
+const TABS: { id: AppPageTab; label: string; Icon: typeof AppWindow }[] = [
+  { id: "overview", label: "Overview", Icon: AppWindow },
+  { id: "tasks", label: "Tasks", Icon: ListTodo },
 ];
 
 // What the folder turned out to be. `undefined` = still asking.
@@ -47,8 +52,17 @@ type Resolved =
   | { kind: "error"; message: string }
   | { kind: "app"; entry: string | null };
 
-export default function AppPage({ slug, config }: { slug: string; config: Config }) {
-  const dir = useMemo(() => localAppsRoot(config.fused_dir) + slug, [config.fused_dir, slug]);
+export default function AppPage({
+  slug,
+  config,
+}: {
+  slug: string;
+  config: Config;
+}) {
+  const dir = useMemo(
+    () => localAppsRoot(config.fused_dir) + slug,
+    [config.fused_dir, slug],
+  );
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
   // The tab is the URL's (`?tab=`), re-read on every URL event so back/forward
   // between the two tabs lands on the right one.
@@ -89,7 +103,8 @@ export default function AppPage({ slug, config }: { slug: string; config: Config
   const pickTab = (e: MouseEvent<HTMLAnchorElement>, next: AppPageTab) => {
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    if (next !== tab) navigateUrl(location.pathname + withAppPageTab(location.search, next));
+    if (next !== tab)
+      navigateUrl(location.pathname + withAppPageTab(location.search, next));
   };
 
   const folderHref = urlForFsPath(dir);
@@ -110,61 +125,87 @@ export default function AppPage({ slug, config }: { slug: string; config: Config
             {tildePath(dir, home)}
           </a>
         </div>
-        <div className="app-page-tabs" role="tablist" aria-label="App page">
-          {TABS.map((t) => (
-            // Real anchors: a tab is an address, so middle-click and copy-link
-            // reach it (same shape as the AI Models strip, D420).
-            <a
-              key={t.id}
-              role="tab"
-              aria-selected={tab === t.id}
-              className={"app-page-tab" + (tab === t.id ? " active" : "")}
-              href={location.pathname + withAppPageTab(location.search, t.id)}
-              onClick={(e) => pickTab(e, t.id)}
-            >
-              {t.label}
-            </a>
-          ))}
-        </div>
       </header>
 
-      {resolved === undefined && <SkeletonLines rows={2} label="Loading app" />}
-      {resolved?.kind === "missing" && (
-        <ErrorBanner>
-          No app named <strong>{slug}</strong> under {tildePath(localAppsRoot(config.fused_dir), home)}.
-        </ErrorBanner>
-      )}
-      {resolved?.kind === "error" && <ErrorBanner>Could not open {slug}: {resolved.message}</ErrorBanner>}
-
-      {resolved?.kind === "app" && (
-        <>
-          {/* Overview stays MOUNTED behind the Tasks tab (hidden, not gone) so
-              the running app keeps its state across a tab switch. */}
-          <section
-            className={"app-page-overview" + (tab === "overview" ? "" : " is-hidden")}
-            role="tabpanel"
-            aria-hidden={tab !== "overview"}
+      <div className="app-page-body">
+        {/* Controlled by the URL and ONLY the URL: no onValueChange, so a
+            ctrl/middle-click on a trigger opens the address elsewhere without
+            also switching this page. Real anchors under the triggers (base-ui's
+            `render`), same reason as before — a tab is an address (D420). */}
+        <Tabs value={tab} className="app-page-tabs flex-none">
+          <TabsList
+            variant="line"
+            aria-label="App page"
+            className="h-auto w-full justify-start rounded-none border-b border-border p-0 pb-1"
           >
-            {entry ? (
-              <iframe
-                className="app-page-frame"
-                src={`/render?path=${encodeURIComponent(entry)}`}
-                title={`App: ${slug}`}
-              />
-            ) : (
-              <p className="app-page-empty">
-                This folder has no entry page yet.{" "}
-                <a href={folderHref}>Open the folder</a> to see what is there.
-              </p>
-            )}
-          </section>
-          {tab === "tasks" && (
-            <section className="app-page-tasks" role="tabpanel">
-              <Scheduled scope={{ project: dir }} />
+            {TABS.map((t) => (
+              <TabsTrigger
+                key={t.id}
+                value={t.id}
+                className="flex-none px-2 py-1.5"
+                render={
+                  <a
+                    href={
+                      location.pathname + withAppPageTab(location.search, t.id)
+                    }
+                    onClick={(e) => pickTab(e, t.id)}
+                  />
+                }
+              >
+                <t.Icon data-icon="inline-start" />
+                {t.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
+
+        {resolved === undefined && (
+          <SkeletonLines rows={2} label="Loading app" />
+        )}
+        {resolved?.kind === "missing" && (
+          <ErrorBanner>
+            No app named <strong>{slug}</strong> under{" "}
+            {tildePath(localAppsRoot(config.fused_dir), home)}.
+          </ErrorBanner>
+        )}
+        {resolved?.kind === "error" && (
+          <ErrorBanner>
+            Could not open {slug}: {resolved.message}
+          </ErrorBanner>
+        )}
+
+        {resolved?.kind === "app" && (
+          <>
+            {/* Overview stays MOUNTED behind the Tasks tab (hidden, not gone) so
+              the running app keeps its state across a tab switch. */}
+            <section
+              className={
+                "app-page-overview" + (tab === "overview" ? "" : " is-hidden")
+              }
+              role="tabpanel"
+              aria-hidden={tab !== "overview"}
+            >
+              {entry ? (
+                <iframe
+                  className="app-page-frame"
+                  src={`/render?path=${encodeURIComponent(entry)}`}
+                  title={`App: ${slug}`}
+                />
+              ) : (
+                <p className="app-page-empty">
+                  This folder has no entry page yet.{" "}
+                  <a href={folderHref}>Open the folder</a> to see what is there.
+                </p>
+              )}
             </section>
-          )}
-        </>
-      )}
+            {tab === "tasks" && (
+              <section className="app-page-tasks" role="tabpanel">
+                <Scheduled scope={{ project: dir }} />
+              </section>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
