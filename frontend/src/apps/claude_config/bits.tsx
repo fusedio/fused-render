@@ -29,6 +29,7 @@ import {
 } from "react";
 import { pushToast } from "@platform/lib/toast";
 import { EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
 import type { ChangePreview } from "./api";
@@ -119,6 +120,40 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="cc-card">{children}</div>;
 }
 
+// One bordered card per list, rows inside it separated by hairlines rather
+// than free-floating on the page background — see claude-config.css's .cc-list
+// for the defect this fixes (a row's content stopping well short of the page's
+// full-bleed width, with a hairline running under the void it left).
+export function List({ children }: { children: ReactNode }) {
+  return <div className="cc-list">{children}</div>;
+}
+
+// A list's loading state, in the same card shape it will resolve into —
+// shadcn's own Skeleton primitive rather than the app-wide shimmer-bar
+// pattern (SkeletonLines), so a list's "loading" and "loaded" states share one
+// silhouette instead of a generic bar block that vanishes into a differently
+// shaped card once the rows land.
+export function ListSkeleton({
+  rows = SKELETON_ROWS,
+  label = "Loading",
+}: {
+  rows?: number;
+  label?: string;
+}) {
+  return (
+    <div className="cc-list" role="status" aria-busy="true" aria-label={label}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div className="cc-lrow" key={i}>
+          <div className="cc-lrow-line">
+            <Skeleton className="h-3 w-28 shrink-0 rounded-full" />
+            <Skeleton className="h-3 w-full max-w-64 rounded-full" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function CardTitle({ children, mono }: { children: ReactNode; mono?: boolean }) {
   return <div className={"cc-card-title" + (mono ? " cc-mono" : "")}>{children}</div>;
 }
@@ -200,20 +235,31 @@ export function SectionToolbar({
 }) {
   return (
     <div className="cc-toolbar">
-      <span className="cc-summary">{summary}</span>
-      {children}
-      {onRefresh && (
-        <button
-          type="button"
-          className="cc-iconbtn"
-          title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
-          aria-label={refreshLabel}
-          aria-busy={refreshBusy || undefined}
-          disabled={refreshBusy}
-          onClick={onRefresh}
-        >
-          <Icon name="refresh" />
-        </button>
+      <span className="cc-summary" title={typeof summary === "string" ? summary : undefined}>
+        {summary}
+      </span>
+      {/* Every control after the summary travels as ONE flex item — see
+          .cc-toolbar-controls in claude-config.css. That is what stops the
+          toolbar wrapping into a ragged stack at a narrow width: the summary
+          drops to its own line first, and the controls keep their single row
+          for as long as there is room for any of them. */}
+      {(children || onRefresh) && (
+        <div className="cc-toolbar-controls">
+          {children}
+          {onRefresh && (
+            <button
+              type="button"
+              className="cc-iconbtn"
+              title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
+              aria-label={refreshLabel}
+              aria-busy={refreshBusy || undefined}
+              disabled={refreshBusy}
+              onClick={onRefresh}
+            >
+              <Icon name="refresh" />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -326,7 +372,10 @@ export function ListRow({
   return (
     <div className={"cc-lrow" + (open ? " open" : "")}>
       <div className="cc-lrow-line">
-        {lead}
+        {/* A fixed-width slot rather than the control's own natural width —
+            it keeps a lead control (Toggle3) from becoming the loudest thing
+            on the line just because it happens to be the widest. */}
+        {lead != null && <span className="cc-lrow-lead">{lead}</span>}
         {details ? (
           <button
             type="button"
@@ -640,9 +689,28 @@ export function fileToB64(file: File): Promise<string> {
 export function Icon({
   name,
 }: {
-  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy" | "chevron" | "plus";
+  name:
+    | "edit"
+    | "eye"
+    | "folder"
+    | "trash"
+    | "refresh"
+    | "clock"
+    | "copy"
+    | "chevron"
+    | "plus"
+    | "undo";
 }) {
   const paths: Record<string, ReactNode> = {
+    // The Preferences "reset to default" ghost icon button — a corner-arrow
+    // undo, deliberately not the refresh icon's rotation glyph, so the two
+    // don't read as the same action.
+    undo: (
+      <>
+        <polyline points="9 14 4 9 9 4" />
+        <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+      </>
+    ),
     // Points down at rest; .cc-lrow.open rotates it (CSS, so no second glyph).
     chevron: <polyline points="6 9 12 15 18 9" />,
     plus: (
