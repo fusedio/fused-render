@@ -77,13 +77,41 @@ IMAGE_GENERATION = "text-to-image"
 #: `pipeline_tag` on a Whisper repo and the capability a card asks to load are
 #: one string rather than three that have to be kept in step.
 SPEECH_TO_TEXT = "automatic-speech-recognition"
-#: Vectors, not words: one dual-encoder model that turns a piece of text OR an
-#: image into a point in the same space, so a page can compare them. The plain
-#: English name rather than the Hub's `feature-extraction`, unlike
-#: `SPEECH_TO_TEXT` above — the tag a SigLIP repo actually carries is
-#: `zero-shot-image-classification`, which describes one thing you can DO with
-#: those vectors and not what the runner returns, so borrowing it would have
-#: named the capability after a use case it does not implement.
+#: Vectors, not words: one model that turns a piece of text — or, where the
+#: checkpoint has a vision tower, an image — into a point in one space, so a page
+#: can compare them.
+#:
+#: **TWO MODEL SHAPES under one capability, which no other row here has.** A
+#: DUAL ENCODER (SigLIP, CLIP) projects text and pictures into the same space and
+#: answers `paths`; a PROSE ENCODER (BERT-family, 512 to 8192 tokens) answers
+#: text alone and is what makes RAG, document search and clustering possible —
+#: impossible on a dual encoder at any chunk size, since a SigLIP text tower
+#: truncates at 64 tokens. `formats.DUAL_EMBED_MODEL_TYPES` and
+#: `formats.TEXT_EMBED_MODEL_TYPES` are the two halves, and both engines here
+#: serve both.
+#:
+#: **So `paths` and `kind` are PER-MODEL rather than per-capability**, and that
+#: is the design consequence: the route refuses `paths` for a model with no
+#: vision tower and `kind` for a model with no retrieval convention, each with a
+#: 400 naming the model — the shape `_accepts_image` already uses for text
+#: generation. A capability-level answer would have to be the union (offer
+#: everything, fail inside a worker) or the intersection (offer neither, and the
+#: image half of this capability disappears).
+#:
+#: **This capability was split until this branch, and the split is what got
+#: reversed.** A separate `embed-text` capability meant two resident slots on a
+#: machine that has budget for one, two catalogs, two bridge calls and two sets
+#: of docs, to serve one question — "turn this into a vector" — whose answer
+#: differs only in whether the checkpoint has a second tower.
+#:
+#: **It is also the one capability reached by MANY Hub tags**
+#: (`ai/tasks.py`): `zero-shot-image-classification` for a dual encoder,
+#: `feature-extraction` and `sentence-similarity` for a prose one. The plain
+#: English name rather than any of them, unlike `SPEECH_TO_TEXT` above, and for
+#: two reasons that both still hold: `zero-shot-image-classification` describes
+#: one thing you can DO with these vectors rather than what the runner returns,
+#: and no single tag covers both shapes. A future `reranking` capability sits
+#: beside this one without renaming it.
 EMBEDDINGS = "embeddings"
 #: The Hub's own tag, like `IMAGE_GENERATION` and `SPEECH_TO_TEXT` are — a
 #: diffusers text-to-video pipeline's `_class_name` folds onto "video
@@ -181,23 +209,26 @@ class Runner:
     #:
     #: It exists because for several rows the honest answer is "this may be a
     #: great deal slower, or larger, than you expect, and here is why" — the
-    #: accelerated Diffusers rows' download, `mflux-image`'s memory ceiling,
-    #: `llamacpp-text`'s wheel provenance. Empty for a runner with nothing
-    #: surprising to say.
+    #: accelerated Diffusers rows' download, `mflux-image`'s memory ceiling.
+    #: Empty for a runner with nothing surprising to say.
     #:
-    #: **ONE LINE, and that is a hard constraint rather than a house style**: it
-    #: renders in the gap between one engine picker and the next, so anything
-    #: that wraps twice is something nobody finishes. Every row's own `note`
-    #: comment refers back to this sentence rather than restating it.
+    #: **ONE OR TWO SHORT SENTENCES, fixed shape: what it does and where it
+    #: runs, then the one cost or caveat worth a reader's attention.** No
+    #: em-dash asides, no parenthetical hedges, no cross-references to another
+    #: row, no packaging or provenance trivia — the reasoning behind a fact
+    #: belongs in this comment, not in the sentence the reader sees. Every
+    #: row's own `note` comment refers back to this one rather than restating
+    #: it.
     #:
     #: **It renders under that engine's row on the AI Models page's Engines
-    #: tab** (D315), beneath the select, and only for the runner actually
-    #: serving the capability. It spent a while over the Discover tab's
-    #: capability sections instead, which was wrong twice: only some runners
-    #: have a note, so those sections were blotchy and the sentences read as
-    #: noise; and the `mflux-image` one is a CAUTION about a choice — the thing
-    #: that tells a 16GB Mac to go back to Diffusers — which belongs beside the
-    #: control that makes that switch, not over a grid of downloads.
+    #: tab** (D315), beneath the engine picker, and only for the runner
+    #: actually serving the capability. It spent a while over the Discover
+    #: tab's capability sections instead, which was wrong twice: only some
+    #: runners have a note, so those sections were blotchy and the sentences
+    #: read as noise; and the `mflux-image` one is a CAUTION about a choice —
+    #: the thing that tells a 16GB Mac to go back to Diffusers — which belongs
+    #: beside the control that makes that switch, not over a grid of
+    #: downloads.
     note: str = ""
     #: Extra Hub `filter=` tags a search must carry when THIS is the runner
     #: actually serving the capability — empty for every runner whose format
@@ -286,7 +317,7 @@ def _apple_silicon() -> Availability:
         return Availability(True)
     return Availability(
         False,
-        f"needs Apple Silicon — MLX runs on Metal only (this is {system.lower()}/{machine})",
+        f"needs Apple Silicon (this is {system.lower()}/{machine})",
     )
 
 
@@ -301,29 +332,55 @@ def _always() -> Availability:
     return Availability(True)
 
 
-def _torch_platform() -> Availability:
-    """`transformers-embed`'s supported production platforms.
+def _onnx_platform() -> Availability:
+    """`onnx-embed`'s supported platforms — a HARD exclusion, meaning "there is
+    no wheel to install", the same kind of claim `_llamacpp_platform` makes.
 
-    This is the probe the withdrawn `transformers-text` family used (D416),
-    kept alive because the embed runner installs the same torch from the same
-    `whl/cpu` index — the withdrawal was about maintaining three TEXT rows
-    llama.cpp had obsoleted, not about torch ceasing to run anywhere. MLX is
-    preferred on Apple Silicon by registry order, but torch's MPS path is a
-    working fallback when the MLX runner is unavailable. Intel macOS is not a
-    distribution target, and availability drives the catalog and Load button,
-    so it must not be advertised merely because torch happens to publish a
-    wheel there.
+    Narrower by ARCHITECTURE than the withdrawn torch gate this replaces
+    (Windows or Linux on ANY machine, plus Apple Silicon), and deliberately so:
+    PyPI's `onnxruntime` 1.29 publishes `macosx_14_0_arm64`,
+    `manylinux_2_28_{x86_64,aarch64}`, `win_amd64` and `win_arm64` — read off
+    the release's own wheel list rather than assumed — and nothing else. There
+    is no macOS x86_64 build and no Linux riscv64 one, so both are excluded
+    because `uv sync` has NOTHING to install, an immediate total failure the
+    moment a machine reaches this row.
+
+    Checked by architecture per OS for `_llamacpp_platform`'s reason exactly:
+    `machine()` spells one architecture differently per OS (`"AMD64"` on
+    Windows, `"x86_64"` on Linux, `"arm64"` on Darwin), so each branch checks
+    its own OS's spelling rather than one shared tuple that would silently stop
+    matching the moment a branch used the wrong OS's name for it.
+
+    Note this row is WIDER than `_llamacpp_platform` on Windows — onnxruntime
+    publishes `win_arm64` and the llama.cpp index does not — so a Windows ARM64
+    machine with no local text engine still gets local embeddings.
     """
     system = platform.system()
     machine = platform.machine()
-    if (
-        system in ("Windows", "Linux")
-        or (system == "Darwin" and machine == "arm64")
-    ):
+    if system == "Linux" and machine in ("x86_64", "aarch64"):
         return Availability(True)
+    if system == "Windows" and machine in ("AMD64", "ARM64"):
+        return Availability(True)
+    if system == "Darwin" and machine == "arm64":
+        return Availability(True)
+    if system == "Darwin":
+        return Availability(
+            False,
+            f"needs Apple Silicon (this is {system.lower()}/{machine})",
+        )
+    if system == "Linux":
+        return Availability(
+            False,
+            f"needs x86_64 or aarch64 (no {machine} wheel for Linux)",
+        )
+    if system == "Windows":
+        return Availability(
+            False,
+            f"needs an x86_64 or ARM64 machine (no {machine} wheel for Windows)",
+        )
     return Availability(
         False,
-        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+        f"needs Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
     )
 
 
@@ -375,25 +432,21 @@ def _llamacpp_platform() -> Availability:
     if system == "Darwin":
         return Availability(
             False,
-            "needs Apple Silicon — the llama.cpp wheel index publishes no "
-            f"macOS x86_64 build (this is {system.lower()}/{machine})",
+            "needs Apple Silicon (no macOS x86_64 build)",
         )
     if system == "Windows":
         return Availability(
             False,
-            "needs an x86_64 machine — the llama.cpp wheel index publishes "
-            f"win_amd64 only, no win_arm64 (this is {system.lower()}/{machine})",
+            "needs an x86_64 machine (win_amd64 only, no win_arm64)",
         )
     if system == "Linux":
         return Availability(
             False,
-            "needs x86_64, aarch64, or riscv64 — the llama.cpp wheel index "
-            f"publishes no {machine} build for Linux (this is "
-            f"{system.lower()}/{machine})",
+            f"needs x86_64, aarch64, or riscv64 (no {machine} build for Linux)",
         )
     return Availability(
         False,
-        f"requires Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
+        f"needs Windows, Linux, or Apple Silicon macOS (this is {system.lower()}/{machine})",
     )
 
 
@@ -628,27 +681,25 @@ def _rocm() -> Availability:
     if system != "Linux":
         return Availability(
             False,
-            "needs Linux — the ROCm PyTorch wheels are published for Linux "
-            f"only (this is {system.lower()}/{machine})",
+            f"needs Linux (this is {system.lower()}/{machine})",
         )
     if not os.path.exists(KFD_DEVICE):
         if _amd_gpu_present():
             return Availability(
                 False,
-                "needs the amdgpu kernel driver — an AMD GPU is here but "
-                f"{KFD_DEVICE} is missing, so ROCm cannot see it (load the "
-                "driver with `modprobe amdgpu`, or reboot after a driver update)",
+                f"needs the amdgpu kernel driver ({KFD_DEVICE} is missing; "
+                "load it with `modprobe amdgpu`, or reboot after a driver "
+                "update)",
             )
         return Availability(
             False,
-            "needs an AMD GPU — this machine has none that the kernel reports "
-            f"(this is {system.lower()}/{machine})",
+            f"needs an AMD GPU (this is {system.lower()}/{machine})",
         )
     if not os.access(KFD_DEVICE, os.R_OK | os.W_OK):
         return Availability(
             False,
-            f"needs permission to use the GPU — {KFD_DEVICE} is not readable "
-            "and writable by you (add your user to the group that owns it, "
+            f"needs permission to use the GPU ({KFD_DEVICE} is not readable "
+            "and writable by you; add your user to the group that owns it, "
             "usually `render`, then log out and back in)",
         )
     # HIP opens `/dev/kfd` AND the card's own render node, and the two failures
@@ -662,38 +713,37 @@ def _rocm() -> Availability:
     if not render_nodes:
         return Availability(
             False,
-            f"needs the AMD GPU's render node — no {DRI_DIR}/renderD* device "
-            "belongs to an AMD card here, which is what a container started "
-            "without `--device /dev/dri` looks like",
+            f"needs the AMD GPU's render node (no {DRI_DIR}/renderD* device "
+            "belongs to an AMD card here; a container started without "
+            "`--device /dev/dri` looks like this)",
         )
     if not any(os.access(path, os.R_OK | os.W_OK) for path in render_nodes):
         return Availability(
             False,
-            f"needs permission to use the GPU — {render_nodes[0]} is the AMD "
-            "card's render node and is not readable and writable by you (add "
+            f"needs permission to use the GPU ({render_nodes[0]} is the AMD "
+            "card's render node and is not readable and writable by you; add "
             "your user to the `render` group, then log out and back in)",
         )
     targets = _kfd_gfx_targets()
     if targets is None:
         return Availability(
             False,
-            f"needs the amdgpu driver's topology — {KFD_NODES_DIR} could not be "
-            "read, so the GPU cannot be identified",
+            f"needs the amdgpu driver's topology ({KFD_NODES_DIR} could not "
+            "be read, so the GPU cannot be identified)",
         )
     if not targets:
         return Availability(
             False,
-            "needs an AMD GPU the kernel can see — the amdgpu driver reports "
-            "CPU nodes only, which is what a container started without "
-            "`--device /dev/kfd --device /dev/dri` looks like",
+            "needs an AMD GPU the kernel can see (the amdgpu driver reports "
+            "CPU nodes only; a container started without `--device /dev/kfd "
+            "--device /dev/dri` looks like this)",
         )
     if not any(target in ROCM_TARGETS for target in targets):
         found = ", ".join(sorted(set(targets)))
         return Availability(
             False,
-            f"needs a supported AMD GPU — {found} is not supported by the ROCm "
-            "build this runner installs (a wheel built for another target "
-            "downloads six gigabytes and then fails inside HIP)",
+            f"needs a supported AMD GPU ({found} is not supported by the "
+            "ROCm build this runner installs)",
         )
     return Availability(True)
 
@@ -724,7 +774,6 @@ def _cuda() -> Availability:
     better reporter of a driver that is genuinely too old.
     """
     system = platform.system()
-    machine = platform.machine()
     if system == "Linux":
         # WSL2 FIRST, because it has none of the nodes below and torch.cuda
         # works there anyway (D382). GPU-PV projects the Windows driver into the
@@ -738,17 +787,16 @@ def _cuda() -> Availability:
         if not os.path.exists(NVIDIA_CONTROL_DEVICE) or not gpus:
             return Availability(
                 False,
-                "needs an NVIDIA GPU with its driver loaded — there is no "
-                f"{NVIDIA_CONTROL_DEVICE} or /dev/nvidia0 on this machine "
-                f"(this is {system.lower()}/{machine})",
+                f"needs an NVIDIA GPU (no {NVIDIA_CONTROL_DEVICE} or "
+                "/dev/nvidia0 on this machine)",
             )
         unusable = [path for path in [NVIDIA_CONTROL_DEVICE, *sorted(gpus)]
                     if not os.access(path, os.R_OK | os.W_OK)]
         if unusable:
             return Availability(
                 False,
-                f"needs permission to use the GPU — {unusable[0]} is not "
-                "readable and writable by you (this is usually a container "
+                f"needs permission to use the GPU ({unusable[0]} is not "
+                "readable and writable by you; this is usually a container "
                 "missing `--gpus all`, or a device-permission rule)",
             )
         # …and unified memory, checked for PERMISSION and never for EXISTENCE
@@ -764,8 +812,8 @@ def _cuda() -> Availability:
                 NVIDIA_UVM_DEVICE, os.R_OK | os.W_OK):
             return Availability(
                 False,
-                f"needs permission to use the GPU — {NVIDIA_UVM_DEVICE} is not "
-                "readable and writable by you (this is usually a container "
+                f"needs permission to use the GPU ({NVIDIA_UVM_DEVICE} is not "
+                "readable and writable by you; this is usually a container "
                 "missing `--gpus all`, or a device-permission rule)",
             )
         return Availability(True)
@@ -773,15 +821,13 @@ def _cuda() -> Availability:
         if not os.path.isfile(NVCUDA_DLL):
             return Availability(
                 False,
-                "needs an NVIDIA GPU with its driver installed — the driver's "
-                f"CUDA library is not at {NVCUDA_DLL} (this is "
-                f"{system.lower()}/{machine})",
+                f"needs an NVIDIA GPU with its driver installed (the CUDA "
+                f"library is not at {NVCUDA_DLL})",
             )
         return Availability(True)
     return Availability(
         False,
-        "needs an NVIDIA GPU — CUDA is published for Windows and Linux only "
-        f"(this is {system.lower()}/{machine})",
+        "needs an NVIDIA GPU (published for Windows and Linux only)",
     )
 
 
@@ -883,9 +929,9 @@ def _vulkan() -> Availability:
         if not any(os.path.exists(path) for path in VULKAN_LOADER_PATHS):
             return Availability(
                 False,
-                "needs the Vulkan loader — no libvulkan.so.1 was found at any "
-                "of this distribution's usual library paths (install your "
-                "distribution's `vulkan-loader`/`libvulkan1` package)",
+                "needs the Vulkan loader (no libvulkan.so.1 found on this "
+                "distribution's usual library paths; install "
+                "`vulkan-loader`/`libvulkan1`)",
             )
         if not any(
             os.path.isdir(d) and glob.glob(os.path.join(d, "*.json"))
@@ -893,27 +939,72 @@ def _vulkan() -> Availability:
         ):
             return Availability(
                 False,
-                "needs a Vulkan GPU driver — the loader is installed but no "
+                "needs a Vulkan GPU driver (the loader is installed but no "
                 "driver ICD is registered under /etc/vulkan/icd.d or "
-                "/usr/share/vulkan/icd.d (install your GPU vendor's Vulkan "
-                "driver package, e.g. `mesa-vulkan-drivers` or the NVIDIA "
-                "driver's Vulkan component)",
+                "/usr/share/vulkan/icd.d; install your GPU vendor's Vulkan "
+                "driver, e.g. `mesa-vulkan-drivers`)",
             )
         return Availability(True)
     if system == "Windows" and machine == "AMD64":
         if not os.path.isfile(VULKAN_DLL):
             return Availability(
                 False,
-                "needs a GPU with its Vulkan driver installed — the loader "
-                f"library is not at {VULKAN_DLL} (install your GPU vendor's "
-                "driver, which carries its own Vulkan support)",
+                f"needs a GPU with its Vulkan driver installed (the loader "
+                f"library is not at {VULKAN_DLL})",
             )
         return Availability(True)
     return Availability(
         False,
-        "needs a Windows or Linux x86_64 machine — the llama.cpp Vulkan wheel "
-        f"index publishes manylinux2014_x86_64 and win_amd64 only (this is "
-        f"{system.lower()}/{machine})",
+        "needs a Windows or Linux x86_64 machine (the llama.cpp Vulkan wheel "
+        "publishes manylinux2014_x86_64 and win_amd64 only)",
+    )
+
+
+def _directml() -> Availability:
+    """`onnx-embed-directml`'s platform — Windows on x86_64, and that is all.
+
+    **The simplest probe in this section, and that is the right answer rather
+    than an omission.** `_vulkan` beside it is long because a Vulkan wheel
+    supplies neither the loader nor the driver ICD, so `import llama_cpp` HARD
+    FAILS on a machine missing either — there is a real, catastrophic failure to
+    gate against. DirectML has no equivalent: `onnxruntime-directml` links
+    against `DirectML.dll` and `d3d12.dll`, both of which ship with Windows
+    itself from Windows 10 1903 onwards, and DirectML runs on ANY Direct3D 12
+    adapter — a discrete NVIDIA or AMD card, Intel Arc, or the integrated GPU
+    every desktop Windows machine has. There is no "no driver installed" state
+    to detect and nothing to `dlopen`-check.
+
+    **So "plus a present GPU" is not modelled as a second probe.** Enumerating
+    D3D12 adapters needs a `ctypes` call into `dxgi.dll` — a system binary
+    question SPEC.md's rule keeps out of a per-page-render path — and every
+    answer it could give on a machine that reaches this row is "yes". A probe
+    that always answers yes is a probe whose failure mode is entirely its own
+    bugs. The row is also OPT-IN from the Engines tab and sits below the CPU row,
+    so `auto` never reaches it: nobody lands here without choosing to.
+
+    `win_amd64` only, from the distribution's own wheel list (checked against
+    `onnxruntime-directml` 1.24.4, which publishes `cp311`-`cp314` for
+    `win_amd64` and no other tag) — so a Windows ARM64 machine is refused here
+    even though plain `onnxruntime` serves it.
+
+    Not cached, for `_rocm`'s reasons: the platform cannot change under a
+    running app, but every other probe in this section declines caching and an
+    `lru_cache` on one of them would make test ORDER significant against the
+    monkeypatch style these tests use.
+    """
+    system = platform.system()
+    machine = platform.machine()
+    if system == "Windows" and machine == "AMD64":
+        return Availability(True)
+    if system == "Windows":
+        return Availability(
+            False,
+            "needs an x86_64 machine (onnxruntime-directml publishes "
+            "win_amd64 only, no win_arm64)",
+        )
+    return Availability(
+        False,
+        f"needs Windows (this is {system.lower()}/{machine})",
     )
 
 
@@ -970,6 +1061,14 @@ _RUNNERS: tuple[Runner, ...] = (
         label="MLX LM (Apple Silicon)",
         short_label="MLX LM",
         family_label="MLX LM",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). The
+        # download fact is `mlx_text/pyproject.toml`'s own: every model in
+        # this app's MLX text catalog is a unified vision-language checkpoint,
+        # and `download()` pulls the whole repo with no allow/ignore
+        # patterns — mlx-vlm reads only the language tower for a text-only
+        # chat, but the vision one comes down anyway.
+        note="Generates text on the GPU. Downloads the full checkpoint, "
+             "including vision weights it doesn't use.",
         _available=_apple_silicon,
     ),
     # GGUF via llama.cpp (SPEC AI-11, AI-2a, D411) — and since D416 the ONLY
@@ -1021,31 +1120,18 @@ _RUNNERS: tuple[Runner, ...] = (
         label="llama.cpp (CPU)",
         short_label="llama.cpp (CPU)",
         family_label="llama.cpp",
-        # ONE LINE, per `note`'s own rule. Leads with the reason to pick it
-        # (current-generation Qwen at a fraction of the bf16 download) and folds
-        # the packaging caveat into the same sentence, since that is the fact
-        # this row's `_available` cannot express — `_llamacpp_platform` answers
-        # "does the wheel exist for this platform", not "was THIS release's
-        # wheel intact when it was built".
-        #
-        # **"opt-in" came OUT of this sentence at D416 and the wording had to
-        # change with it.** This row is now what Windows and Linux resolve to
-        # with no preference set, so a note calling itself opt-in described the
-        # engine the reader is already using — the same class of
-        # self-contradiction D382 fixed when a CPU-speed claim sat above a card
-        # reporting device `mps`. The wheel provenance stayed, because that fact
-        # did not change and is the one thing a reader cannot discover from the
-        # page; it now reads as a statement rather than as a warning attached to
-        # a choice nobody made.
+        # ONE OR TWO SENTENCES, fixed shape: what it does and where it runs,
+        # then the one cost or caveat worth a reader's attention — no packaging
+        # trivia, no cross-references, no reasoning about why the sentence
+        # reads the way it does (that argument lives in this comment instead).
         #
         # **It names the Apple Silicon GPU, because this row USES it** — the
         # same correction D382 made. `llama_text.load()` reports device "gpu"
         # when the Metal backend takes the layers, so a note that mentioned
         # only the download would have had the Engines tab implying a CPU engine
         # while the loaded card beside it said `gpu`.
-        note="Runs current Qwen GGUF quantizations on the CPU or Apple "
-             "Silicon's GPU at a fraction of the unquantized download — "
-             "wheels come from the maintainer's index, not PyPI.",
+        note="Runs GGUF models on the CPU, or Apple Silicon's GPU. Small "
+             "download.",
         _available=_llamacpp_platform,
         # A text-generation search result this engine cannot resolve at all
         # (a plain safetensors repo) is not actionable here — see
@@ -1078,9 +1164,8 @@ _RUNNERS: tuple[Runner, ...] = (
         label="llama.cpp (Vulkan)",
         short_label="llama.cpp (Vulkan)",
         family_label="llama.cpp",
-        note="Much quicker on an NVIDIA or AMD GPU under Windows or Linux, "
-             "for a much larger download — see llama.cpp (CPU) for the "
-             "CPU and Apple Silicon build.",
+        note="Runs GGUF models on NVIDIA and AMD GPUs. Much faster than the "
+             "CPU build; much larger download.",
         _available=_vulkan,
         hub_filter_tags=("gguf",),
     ),
@@ -1108,13 +1193,13 @@ _RUNNERS: tuple[Runner, ...] = (
         label="MLX FLUX (Apple Silicon)",
         short_label="MLX FLUX",
         family_label="MLX FLUX",
-        # ONE LINE, per `note`'s own rule. It describes the
-        # DEFAULT rather than an opt-in, so the memory caveat leads: the reader
-        # it exists for is someone on a small Mac deciding whether to switch
-        # AWAY, not someone deciding whether to try it — and since D315 the line
-        # is rendered directly under the control that does the switching.
-        note="Reserves much more memory than Diffusers and is untested below "
-             "32GB, but loads far quicker from a smaller download.",
+        # ONE OR TWO SENTENCES, fixed shape (see `llamacpp-text`'s comment
+        # above). The memory caveat is the load-bearing fact: the reader it
+        # exists for is someone on a small Mac deciding whether to switch AWAY,
+        # and since D315 the line is rendered directly under the control that
+        # does the switching.
+        note="Loads fast from a small download. Uses more memory than "
+             "Diffusers; untested below 32 GB.",
         _available=_apple_silicon,
     ),
     Runner(
@@ -1127,16 +1212,12 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Diffusers (CPU)",
         short_label="Diffusers (CPU)",
         family_label="Diffusers",
-        # This row had no note while it was the only torch image engine and
-        # there was nothing to distinguish it from. Now there is, and the thing
-        # worth saying is the one that decides the choice: CPU diffusion is
-        # minutes per image, not seconds — SAID OF THE CPU rather than of the
-        # row, because `torch_image._place()` moves the pipeline to `mps` on a
-        # Mac (D382), and a flat "minutes per image" contradicted the `mps` the
-        # loaded card reports on the very machine this row exists to catch when
-        # MLX FLUX is unavailable.
-        note="Renders on Apple Silicon's GPU, or on the CPU anywhere else at "
-             "minutes per image rather than seconds.",
+        # SAID OF THE CPU rather than of the row, because `torch_image._place()`
+        # moves the pipeline to `mps` on a Mac (D382), and a flat "minutes per
+        # image" contradicted the `mps` the loaded card reports on the very
+        # machine this row exists to catch when MLX FLUX is unavailable.
+        note="Renders on Apple Silicon's GPU, or on the CPU elsewhere. "
+             "Minutes per image on CPU.",
         _available=_always,
     ),
     # The accelerated image variants, below the CPU row for the reason the text
@@ -1148,7 +1229,8 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Diffusers (CUDA)",
         short_label="Diffusers (CUDA)",
         family_label="Diffusers",
-        note="Seconds per image on an NVIDIA GPU, for a much larger download.",
+        note="Renders in seconds per image on an NVIDIA GPU. Much larger "
+             "download.",
         _available=_cuda,
     ),
     # THE SHARED RING, and why the ROCm image row warns about the desktop.
@@ -1187,8 +1269,8 @@ _RUNNERS: tuple[Runner, ...] = (
         short_label="Diffusers (ROCm)",
         family_label="Diffusers",
         # The desktop clause is not padding — see THE SHARED RING above for the
-        # kernel log that proved it. One line, so "much larger" pays for it.
-        note="Seconds per image on a supported AMD GPU under Linux — larger "
+        # kernel log that proved it.
+        note="Renders in seconds per image on an AMD GPU under Linux. Larger "
              "download; a long render can stall the desktop.",
         _available=_rocm,
     ),
@@ -1203,8 +1285,8 @@ _RUNNERS: tuple[Runner, ...] = (
         label="MLX Whisper (Apple Silicon)",
         short_label="MLX Whisper",
         family_label="MLX Whisper",
-        note="Transcribes on the GPU. Several times quicker than the CPU path "
-             "on the same Mac.",
+        note="Transcribes on the GPU. Several times faster than the CPU "
+             "path.",
         _available=_apple_silicon,
     ),
     # D319 briefly added a third row here, Parakeet-TDT (`parakeet-mlx`),
@@ -1227,22 +1309,39 @@ _RUNNERS: tuple[Runner, ...] = (
         # rather than used. The MLX row above is the sequel that argument
         # always allowed for — it takes the Macs and leaves everything else
         # here, and no user loses a capability to it.
+        #
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). Both
+        # facts are `_placement()`'s own (faster_whisper/worker.py): CUDA when
+        # `ctranslate2.get_cuda_device_count()` finds one, CPU otherwise —
+        # CTranslate2 has no Metal backend, so this is what an Apple Silicon
+        # machine gets whenever the MLX row above it is unavailable — and
+        # that CPU path is still, in the module's own words, "several times
+        # faster than real time".
+        note="Transcribes on an NVIDIA GPU when available, otherwise the "
+             "CPU. Several times faster than real time.",
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
-    # the Macs and the torch row below it keeps every other platform — plus the
+    # the Macs and the ONNX row below it keeps every other platform — plus the
     # Macs whenever the MLX folder is not built yet or its package cannot run.
     #
     # **The two runners share an embedding SPACE, which no other pair here
-    # does.** mlx-embeddings reads the same `google/siglip2-*` safetensors
-    # transformers reads, through its own port of the same architecture, and the
-    # cosine similarities the two produce for the same texts and images agree to
-    # about three decimals (measured on `siglip2-base-patch16-384`). So a page
-    # that embedded a folder of images on one engine and searches it from the
-    # other gets sensible answers, which is a promise the whisper and text pairs
-    # explicitly cannot make about their weights. It is not a promise this app
-    # relies on anywhere — vectors are the caller's to store, and a switch is
-    # still a switch — but it is why the engine choice here is genuinely free.
+    # does.** They read DIFFERENT FILES out of the same models — mlx-embeddings
+    # opens `mlx-community` safetensors through its own port of the
+    # architecture, `onnx-embed` opens an `onnx-community` graph export — and
+    # the cosine similarities the two produce for the same texts and images
+    # still agree to about three decimals (measured on
+    # `siglip2-base-patch16-384`). So a page that embedded a folder of images on
+    # one engine and searches it from the other gets sensible answers, which is a
+    # promise the whisper and text pairs explicitly cannot make about their
+    # weights. It is not a promise this app relies on anywhere — vectors are the
+    # caller's to store, and a switch is still a switch — but it is why the
+    # engine choice here is genuinely free.
+    #
+    # **The two engines' CATALOG lists are separate, and that follows from the
+    # files rather than from the vectors** (`catalog.py`'s keying rule): a Mac
+    # cannot open an ONNX export and this engine cannot open MLX safetensors, so
+    # the shared space does not make the downloads interchangeable.
     Runner(
         code="mlx-embed",
         capability=EMBEDDINGS,
@@ -1252,80 +1351,92 @@ _RUNNERS: tuple[Runner, ...] = (
         # The format claim with the hardware taken out: these weights are the
         # safetensors mlx-embeddings' own SigLIP port opens.
         family_label="MLX Embeddings",
-        # ONE LINE, per the naming note above the table. It describes the
-        # DEFAULT on a Mac, so what it leads with is what the reader gets.
-        note="Embeds on the GPU, in the same vector space the Transformers "
-             "engine produces.",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
+        # describes the DEFAULT on a Mac, so what it leads with is what the
+        # reader gets.
+        note="Embeds on the GPU. Same vector space as the ONNX engine.",
         _available=_apple_silicon,
     ),
-    Runner(
-        code="transformers-embed",
-        capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed"),
-        # "(CPU)" now that `transformers-embed-cuda`/`-rocm` sit below it, for
-        # the same reason `llamacpp-text` carries it once
-        # `llamacpp-text-vulkan` existed: the qualifier names the BUILD —
-        # PyPI's `whl/cpu` wheel, which also happens to run on Apple Silicon's
-        # GPU through MPS — never a prediction about the device, and a family
-        # with a sibling needs it on every row or two engines print the same
-        # name.
-        label="Transformers Embeddings (CPU)",
-        short_label="Transformers Embeddings (CPU)",
-        family_label="Transformers Embeddings",
-        # "the CPU build" rather than "runs on the CPU on any machine": with
-        # accelerated siblings now registered, this row is one build among
-        # three rather than the only way to run this engine, and the note has
-        # to say which one this is rather than describe the family.
-        note="The CPU build — quick on any machine, or Apple Silicon's GPU, "
-             "since one item is a single forward pass.",
-        _available=_torch_platform,
-    ),
-    # The CUDA and ROCm siblings, and neither contradicts the CPU row's own
-    # case for having no accelerated variant: a dual encoder is one forward
-    # pass over a short sequence or one image, milliseconds already on a CPU,
-    # so neither row buys meaningful speed. What they buy is DEVICE — a
-    # machine with a working NVIDIA or fully ROCm-capable AMD card runs
-    # `transformers-embed` in fp32 on the CPU by default, because that row
-    # pins PyPI's `whl/cpu` torch on every platform (see its own comment).
-    # These rows are for whoever would rather their card do it, opted into
-    # from the Engines tab exactly like `diffusers-image-cuda`/`-rocm` above —
-    # nobody is moved here who did not ask, because the speed argument
-    # genuinely is a wash.
+    # **ONNX Runtime — the cross-platform embedding engine, and the
+    # Apple-Silicon fallback behind `mlx-embed`.** There were three
+    # `transformers-embed*` rows here until this branch, running the identical
+    # checkpoints through torch; they went because a dual encoder is one forward
+    # pass over a short sequence or one image, so the compute was never the
+    # argument — the WHEEL was. Those rows installed 0.2 GB on the CPU index and
+    # up to 5.9 GB on an accelerated one to run a model whose own weights are
+    # 1.5 GB, where `onnxruntime` is tens of megabytes reading the same
+    # checkpoint re-exported. `tests/test_ai_onnx_embed_real_weights.py` is what
+    # licensed the swap: it asserts ≥0.999 cosine between the two engines'
+    # vectors on real weights, both towers.
     #
-    # Both below `transformers-embed`, CUDA before ROCm — the same order the
-    # image family uses — and per the naming note over this table and
-    # `test_AUTO_STAYS_ON_THE_UNACCELERATED_ROW_EVEN_WITH_AN_ACCELERATOR`,
-    # `auto` must keep resolving to the CPU/MPS row on every platform.
+    # Same four-row shape the torch family had: an unaccelerated build first —
+    # what every `auto` machine off Apple Silicon resolves to — then the
+    # accelerated ones, opt-in from the Engines tab and gated on the device
+    # actually being there. DirectML leads those three because it is the only
+    # one Windows can take, and unlike the CUDA/ROCm pair it is vendor-neutral,
+    # so ONE row covers every Windows GPU rather than a folder per vendor.
     Runner(
-        code="transformers-embed-cuda",
+        code="onnx-embed",
         capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_cuda"),
-        label="Transformers Embeddings (CUDA)",
-        short_label="Transformers Embeddings (CUDA)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and, like the ROCm row below, no
-        # desktop-stall warning: that hazard is a denoise holding the GPU for
-        # minutes, and an embed call is one forward pass at
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed"),
+        # "(CPU)" on every row of a family with siblings, the discipline
+        # `llamacpp-text` sets: the qualifier names the BUILD — PyPI's plain
+        # `onnxruntime`, which has no GPU provider compiled in — never a
+        # prediction about the device, and a family missing it on one row prints
+        # two engines under one name.
+        label="ONNX Embeddings (CPU)",
+        short_label="ONNX Embeddings (CPU)",
+        # The format claim with the hardware taken out: these weights are the
+        # `onnx/` graphs an `InferenceSession` opens, whichever provider does it.
+        family_label="ONNX Embeddings",
+        # ONE OR TWO SENTENCES (see `llamacpp-text`'s comment above). It
+        # describes the DEFAULT off a Mac, so what it leads with is what most
+        # readers get: a workload that is already fast, on an engine that is a
+        # small download.
+        note="Embeds on any machine's CPU. Tens of megabytes rather than "
+             "gigabytes.",
+        _available=_onnx_platform,
+    ),
+    Runner(
+        code="onnx-embed-directml",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_directml"),
+        label="ONNX Embeddings (DirectML)",
+        short_label="ONNX Embeddings (DirectML)",
+        family_label="ONNX Embeddings",
+        # It names the vendor-neutrality because that is the fact that
+        # distinguishes this row from the CUDA one on a Windows machine with an
+        # NVIDIA card — both would work, and this one needs no `nvidia-*`
+        # wheels. No desktop-stall warning: that hazard is a denoise holding the
+        # GPU for minutes, and an embed call is one forward pass at
         # `embed_common.MAX_ITEMS` items, over in under a second.
-        note="Embeds on an NVIDIA GPU — a larger download for a workload "
-             "that is already fast on the CPU.",
+        note="Embeds on any Windows GPU through Direct3D 12. No vendor "
+             "runtime to install.",
+        _available=_directml,
+    ),
+    Runner(
+        code="onnx-embed-cuda",
+        capability=EMBEDDINGS,
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_cuda"),
+        label="ONNX Embeddings (CUDA)",
+        short_label="ONNX Embeddings (CUDA)",
+        family_label="ONNX Embeddings",
+        # Same `_cuda` probe the torch and diffusers CUDA rows use, unchanged:
+        # "does this machine have a usable NVIDIA GPU" does not become a
+        # different question because the wheel opening the model is onnxruntime.
+        note="Embeds on an NVIDIA GPU. Larger download for a workload "
+             "already fast on the CPU.",
         _available=_cuda,
     ),
     Runner(
-        code="transformers-embed-rocm",
+        code="onnx-embed-rocm",
         capability=EMBEDDINGS,
-        folder=os.path.join(RUNNERS_DIR, "transformers_embed_rocm"),
-        label="Transformers Embeddings (ROCm)",
-        short_label="Transformers Embeddings (ROCm)",
-        family_label="Transformers Embeddings",
-        # One line, hardware-neutral about which MODELS this loads (that is
-        # `family_label`'s job) — and unlike the image ROCm row's note, no
-        # desktop-stall warning: that hazard comes from holding the GPU for
-        # minutes during a denoise, and an embed call is one forward pass at
-        # `embed_common.MAX_ITEMS` items, over in under a second.
-        note="Embeds on a supported AMD GPU under Linux — a larger download "
-             "for a workload that is already fast on the CPU.",
+        folder=os.path.join(RUNNERS_DIR, "onnx_embed_rocm"),
+        label="ONNX Embeddings (ROCm)",
+        short_label="ONNX Embeddings (ROCm)",
+        family_label="ONNX Embeddings",
+        note="Embeds on an AMD GPU under Linux. Larger download for a "
+             "workload already fast on the CPU.",
         _available=_rocm,
     ),
     # Video generation, the fifth capability and the first with no
@@ -1360,8 +1471,8 @@ _RUNNERS: tuple[Runner, ...] = (
         label="LTX-2.3 (Apple Silicon)",
         short_label="LTX-2.3",
         family_label="LTX-2.3",
-        note="Text-to-video with audio, distilled to 8 steps. Needs 16 GB+ "
-             "of RAM.",
+        note="Generates text-to-video with audio, distilled to 8 steps. "
+             "Needs 16 GB+ of RAM.",
         _available=_apple_silicon,
     ),
 )
@@ -1715,12 +1826,51 @@ def _choice(runner: Runner) -> dict:
         "label": runner.label,
         "note": runner.note or None,
         "available": status.ok,
-        # The registry's own words ("needs Apple Silicon — MLX runs on Metal
-        # only (this is windows/amd64)"), so the disabled radio explains itself
-        # with the same sentence the rest of the app uses. The page must not
-        # write its own copy of this, because the page cannot know it.
+        # The registry's own words ("needs Apple Silicon (this is
+        # windows/amd64)"), so the disabled row explains itself with the same
+        # sentence the rest of the app uses. The page must not write its own
+        # copy of this, because the page cannot know it.
         "reason": status.reason or None,
     }
+
+
+def _stranded_label(capability: str, requested: str) -> str | None:
+    """The display name for a STORED selection that matches none of
+    `capability`'s own choices — or None when there is no name to give.
+
+    Exists so the Engines tab never has to derive a name from registry PROSE.
+    It used to reach for `choices.find(c => c.code === selected)?.label`, which
+    is exactly what fails here BY DEFINITION (a stranded code is the one that
+    matches no choice) and left the frontend falling back to the raw stored
+    code — "mlx-whisper" rather than "MLX Whisper" — even when the code names a
+    real, registered runner. That raw fallback then broke `ignoredWarning`'s
+    de-duplication for the wrong-capability shape specifically: `resolve()`
+    writes `f"{runner.short} does not do {capability}"` (`"MLX Whisper does not
+    do text-generation"`), and a frontend name of `"mlx-whisper"` does not
+    occur inside a sentence that says `"MLX Whisper"` — so the page printed the
+    name twice, in two different spellings, on the one line whose entire job is
+    saying a preference did not take.
+
+    `.short`, not `.label`: that is the exact string `resolve()` already wrote
+    into the reason, and the two must be the SAME string for `ignoredWarning`'s
+    `reason.includes(name)` check to find it — a full qualified label
+    ("MLX Whisper (Apple Silicon)") would not occur inside a reason that only
+    ever names the short one.
+
+    Two cases return None, and the caller (`strandedSelection` on the frontend,
+    mirrored here) cannot always tell them apart from the payload alone: `auto`
+    is never stranded, and a WITHDRAWN code (`by_code` finds nothing — D416's
+    `transformers-text*`) has no runner to ask a label of. Both leave the
+    Engines tab to fall back to the bare stored code, which is the whole reason
+    that fallback exists.
+    """
+    if requested == AUTO:
+        return None
+    if any(runner.code == requested for runner in _RUNNERS
+           if runner.capability == capability):
+        return None  # Not stranded: a real choice already carries this label.
+    runner = by_code(requested)
+    return runner.short if runner is not None else None
 
 
 def describe_engines() -> list[dict]:
@@ -1758,6 +1908,10 @@ def describe_engines() -> list[dict]:
                 # UI is expected to show it — a control whose value does nothing,
                 # with nothing saying why, is the failure this field exists for.
                 "ignoredReason": resolution.ignored_reason or None,
+                # See `_stranded_label`. Null whenever `selected` is not
+                # stranded at all (it names `auto` or a real choice) AND
+                # whenever it is stranded but withdrawn (no runner to name).
+                "strandedLabel": _stranded_label(capability, resolution.requested),
                 "choices": [
                     _choice(runner)
                     for runner in _RUNNERS

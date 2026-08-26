@@ -15,20 +15,44 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { IS_EMBED, IS_PREVIEW, fsPathFromLocation, isPanelPath, navHintIsDir } from "@platform/lib/router";
+import {
+  IS_EMBED,
+  IS_PREVIEW,
+  fsPathFromLocation,
+  isPanelPath,
+  navHintIsDir,
+} from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
-import { statPath, getMounts, reconnectMount, type Config, type Mount, type StatResult } from "@platform/lib/api";
-import { useNavEpoch, useDocumentTitle, useRefreshOnReturn } from "@platform/lib/hooks";
+import {
+  statPath,
+  getMounts,
+  reconnectMount,
+  type Config,
+  type Mount,
+  type StatResult,
+} from "@platform/lib/api";
+import {
+  useNavEpoch,
+  useDocumentTitle,
+  useRefreshOnReturn,
+} from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
 import { useScheduleEvents } from "@platform/lib/scheduleEvents";
 import { basename } from "@platform/lib/format";
-import { maybeAutoStartTour } from "@platform/lib/tour";
+import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
+import {
+  appPageUrl,
+  DEFAULT_APP_PAGE_TAB,
+  isBareAppPath,
+  slugFromAppPath,
+} from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -43,7 +67,11 @@ import Tabs from "@apps/explorer/Tabs";
 import FilesHome from "@apps/explorer/FilesHome";
 import Home from "@shell/Home";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
-import { AI_MODELS_PREFIX, DEFAULT_TAB, isAiModelsPath } from "@apps/ai_models/routes";
+import {
+  AI_MODELS_PREFIX,
+  DEFAULT_TAB,
+  isAiModelsPath,
+} from "@apps/ai_models/routes";
 
 // Route-gated surfaces, lazy-loaded: none of these render on the front door
 // (the explorer route above stays eager), only once a route nobody may ever
@@ -54,8 +82,11 @@ import { AI_MODELS_PREFIX, DEFAULT_TAB, isAiModelsPath } from "@apps/ai_models/r
 const Preferences = lazy(() => import("@shell/Preferences"));
 const Templates = lazy(() => import("@shell/templates/Templates"));
 const Mounts = lazy(() => import("@shell/Mounts"));
-const AiModels = lazy(() => import("@apps/ai_models").then((m) => ({ default: m.AiModels })));
+const AiModels = lazy(() =>
+  import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
+);
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const AppPage = lazy(() => import("@shell/AppPage"));
 const Apps = lazy(() => import("@apps/builder/Apps"));
 const ClaudeConfig = lazy(() =>
   import("@apps/claude_config").then((m) => ({ default: m.ClaudeConfig })),
@@ -78,7 +109,11 @@ type StatState =
 // `reloadKey` re-runs the stat without a navigation — used to recover after a
 // disconnected mount is reconnected in place (StatErrorView), where fsPath and
 // epoch are both unchanged.
-function useStat(fsPath: string | null, epoch: number, reloadKey: number): StatState {
+function useStat(
+  fsPath: string | null,
+  epoch: number,
+  reloadKey: number,
+): StatState {
   const [state, setState] = useState<StatState>({ status: "loading" });
   useEffect(() => {
     if (!fsPath) {
@@ -89,7 +124,8 @@ function useStat(fsPath: string | null, epoch: number, reloadKey: number): StatS
     setState({ status: "loading" });
     statPath(fsPath).then(
       (stat) => alive && setState({ status: "ok", stat }),
-      (err: Error) => alive && setState({ status: "error", message: err.message })
+      (err: Error) =>
+        alive && setState({ status: "error", message: err.message }),
     );
     return () => {
       alive = false;
@@ -125,11 +161,14 @@ function StatErrorView({
         if (!alive) return;
         // Longest matching mountpoint wins (nested mounts).
         const hit = r.mounts
-          .filter((m) => fsPath === m.mountpoint || fsPath.startsWith(m.mountpoint + "/"))
+          .filter(
+            (m) =>
+              fsPath === m.mountpoint || fsPath.startsWith(m.mountpoint + "/"),
+          )
           .sort((a, b) => b.mountpoint.length - a.mountpoint.length)[0];
         setMount(hit ?? null);
       },
-      () => alive && setMount(null)
+      () => alive && setMount(null),
     );
     return () => {
       alive = false;
@@ -161,8 +200,9 @@ function StatErrorView({
     return (
       <div className="status-message error">
         <p>
-          <strong>{mount.name}</strong> {wedged ? "isn’t responding" : "is disconnected"} — this
-          file is on a mount that isn’t currently available.
+          <strong>{mount.name}</strong>{" "}
+          {wedged ? "isn’t responding" : "is disconnected"} — this file is on a
+          mount that isn’t currently available.
         </p>
         <button type="button" disabled={busy} onClick={reconnect}>
           {busy ? "Reconnecting…" : wedged ? "Reconnect" : "Mount"}
@@ -188,7 +228,15 @@ function StatErrorView({
 // (api.prefetchListDir) when stat resolves and the preview remounts the
 // listing. Without a directory hint we can't safely show a listing (a file's
 // list would 404), so only the header + a neutral loading body paint.
-function LoadingScaffold({ fsPath, isDir, headerless }: { fsPath: string; isDir: boolean; headerless?: boolean }) {
+function LoadingScaffold({
+  fsPath,
+  isDir,
+  headerless,
+}: {
+  fsPath: string;
+  isDir: boolean;
+  headerless?: boolean;
+}) {
   return (
     <>
       {/* Mirror the loaded Header exactly (Preview.tsx `Header`): the name in a
@@ -300,7 +348,9 @@ function StatView({
   if (stat.status === "loading") {
     // Not a blank screen: paint the scaffold immediately (Fix #1). A directory
     // nav also starts its listing fetch now, parallel with stat (Fix #2).
-    content = <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} headerless />;
+    content = (
+      <LoadingScaffold fsPath={fsPath} isDir={navIsDir === true} headerless />
+    );
   } else if (stat.status === "error") {
     content = (
       <StatErrorView
@@ -353,7 +403,11 @@ function StatView({
         {/* BreadcrumbBar owns the `#breadcrumb` box itself: over a folder it
             portals the whole bar down into the listing's left column, so it
             can't be a wrapper rendered here (Breadcrumb.tsx). */}
-        <BreadcrumbBar fsPath={fsPath} home={home} renderedTitle={renderedTitle} />
+        <BreadcrumbBar
+          fsPath={fsPath}
+          home={home}
+          renderedTitle={renderedTitle}
+        />
         <div id="content">{content}</div>
       </div>
       <PreviewSideSlot />
@@ -374,7 +428,9 @@ function ClaudeConfigView() {
             <ClaudeConfig />
           </Suspense>
         ) : (
-          <div className="preview-resolving">No Claude Code configuration found (~/.claude).</div>
+          <div className="preview-resolving">
+            No Claude Code configuration found (~/.claude).
+          </div>
         )}
       </div>
     </div>
@@ -408,6 +464,15 @@ export default function App({ config }: { config: Config }) {
     const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // The third producer: an APP that just created a task (the Home hero's
+  // new-app composer). It sits below shell and cannot reach pokeTasks, so it
+  // announces on the window (platform/lib/tasksChanged.ts) and this is where
+  // the announcement becomes the poke.
+  useEffect(() => {
+    window.addEventListener(TASKS_CHANGED_EVENT, pokeTasks);
+    return () => window.removeEventListener(TASKS_CHANGED_EVENT, pokeTasks);
   }, []);
 
   // Keep <html data-theme> in step with the appearance preference for the
@@ -490,7 +555,13 @@ export default function App({ config }: { config: Config }) {
       // Escape inside a text field belongs to that field (the listing's search
       // box clears the query, the crumb path editor discards the edit).
       const el = document.activeElement as HTMLElement | null;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      )
+        return;
       if (!getClipboard()) return;
       e.preventDefault(); // signals "handled" to Listing's selection branch
       setClipboard(null);
@@ -518,7 +589,21 @@ export default function App({ config }: { config: Config }) {
   // QUERY is carried: `/ai-models?model=…` is how a link selects a model, and
   // dropping it here would land the playground on its fallback pick.
   if (location.pathname === AI_MODELS_PREFIX) {
-    history.replaceState(null, "", AI_MODELS_PREFIX + "/" + DEFAULT_TAB + location.search);
+    history.replaceState(
+      null,
+      "",
+      AI_MODELS_PREFIX + "/" + DEFAULT_TAB + location.search,
+    );
+  }
+  // The app page names its tabs in the path the same way; bare `/apps/<slug>`
+  // redirects to the default tab so every tab has exactly one address.
+  if (isBareAppPath(location.pathname)) {
+    history.replaceState(
+      null,
+      "",
+      appPageUrl(slugFromAppPath(location.pathname)!, DEFAULT_APP_PAGE_TAB) +
+        location.search,
+    );
   }
 
   const pathname = location.pathname;
@@ -526,7 +611,8 @@ export default function App({ config }: { config: Config }) {
   // Listing asks the SAME question of its host document (IS_PANEL_PANE), and one
   // route must not be spelled in two places.
   const isPanel = isPanelPath(pathname);
-  const isTabs = pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
+  const isTabs =
+    pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
   const isPrefs = pathname === "/preferences";
   const isTemplates = pathname === "/templates";
   // PROTOTYPE: mounts page (see shell/Mounts.tsx).
@@ -551,22 +637,47 @@ export default function App({ config }: { config: Config }) {
   // constrained to the CLI's own canvas-name alphabet, so the match below is
   // also the validation.
   const isCanvases = pathname === "/canvases";
-  const canvasWorkspaceName = /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
+  const canvasWorkspaceName =
+    /^\/canvases\/([A-Za-z0-9_]+)$/.exec(pathname)?.[1] ?? null;
   const isBookmark = pathname === "/explorer/view/_bookmark";
   // `/apps/<tag>/<name>` used to resolve HERE, to the app folder under the
   // workspace (a pure fused_dir codec) or — for the virtual "linked" tag, whose
   // folders live anywhere on disk — through GET /api/apps/linked-path, one async
   // hop the route had to hold a blank frame for. Both are gone with the route:
   // an app folder is an ordinary fs path, which /explorer/view/<path> already
-  // carries with no lookup at all. Anything under /apps that isn't the hub falls
-  // through to the "Unrecognized URL" branch below, deliberately unredirected.
+  // carries with no lookup at all. That two-level shape still falls through to
+  // the "Unrecognized URL" branch below, deliberately unredirected.
+  //
+  // ONE level under the hub is the app PAGE (D488, shell/AppPage.tsx):
+  // `/apps/<slug>` is <fused_dir>/local/<slug> as a place — the app running in
+  // an Overview tab, its tasks in a Tasks tab, one sub-path each
+  // (`/apps/<slug>/tasks`). Asked through the lib's own codec, which is also
+  // the validation (no `..`, no separator in the slug, at most one tab
+  // segment). A stale `/apps/<tag>/<name>` builder link lands here on the
+  // default tab.
+  const appPageSlug = slugFromAppPath(pathname);
   const isSentinel =
-    isPanel || isTabs || isPrefs || isTemplates || isMounts || isTasks || isAiModels || isApps || isExplorerHome || isHome || isClaudeConfig || isCanvases || canvasWorkspaceName !== null || isBookmark;
+    isPanel ||
+    isTabs ||
+    isPrefs ||
+    isTemplates ||
+    isMounts ||
+    isTasks ||
+    isAiModels ||
+    isApps ||
+    appPageSlug !== null ||
+    isExplorerHome ||
+    isHome ||
+    isClaudeConfig ||
+    isCanvases ||
+    canvasWorkspaceName !== null ||
+    isBookmark;
   const fsPath = isSentinel ? null : fsPathFromLocation();
   // Browsing to a `.bookmark` file in the explorer opens it like a Finder
   // double-click (SB-9): same component as the `_bookmark` sentinel, fed the
   // fs path directly — never StatView (the file describes a view, it isn't one).
-  const bookmarkFile = fsPath && fsPath.toLowerCase().endsWith(".bookmark") ? fsPath : null;
+  const bookmarkFile =
+    fsPath && fsPath.toLowerCase().endsWith(".bookmark") ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -581,40 +692,55 @@ export default function App({ config }: { config: Config }) {
               ? "Mounts"
               : isTasks
                 ? "Tasks"
-              : isAiModels
-                ? "AI Models"
-                : isApps
-                ? "Apps"
-                : isHome
-                  ? "Home"
-                : isExplorerHome
-                  ? "File Explorer"
-                  : isClaudeConfig
-                    ? "Claude Config"
-                      : isCanvases
-                      ? "Workbench Canvases"
-                      : canvasWorkspaceName
-                      ? `Canvas: ${canvasWorkspaceName}`
-                      : isBookmark || bookmarkFile
-                      ? "Bookmark"
-                      : fsPath
-                        ? undefined
-                        : null
+                : isAiModels
+                  ? "AI Models"
+                  : isApps
+                    ? "Apps"
+                    : appPageSlug
+                      ? appPageSlug
+                      : isHome
+                        ? "Home"
+                        : isExplorerHome
+                          ? "File Explorer"
+                          : isClaudeConfig
+                            ? "Claude Config"
+                            : isCanvases
+                              ? "Workbench Canvases"
+                              : canvasWorkspaceName
+                                ? `Canvas: ${canvasWorkspaceName}`
+                                : isBookmark || bookmarkFile
+                                  ? "Bookmark"
+                                  : fsPath
+                                    ? undefined
+                                    : null,
   );
 
-  // First-run onboarding tour: fire after paint so the listing and breadcrumb
-  // are mounted (maybeAutoStartTour no-ops in embed / if already seen). Keyed
-  // on `pathname`, not mount-once: App never remounts, and a first visit now
-  // lands on the chrome-free "/" where there is no #sidebar to point at, so the
-  // attempt has to repeat until a route with the shell chrome comes up. The ref
-  // stops the retries once the tour has run — otherwise a browser that refuses
-  // the "seen" write would restart it on every navigation.
-  const tourPending = useRef(true);
+  // First-run onboarding tours: the registry picks the tour this route is
+  // about, and it fires after paint so the route's own chrome is mounted
+  // (maybeAutoStartTour no-ops in embed / if already seen). Keyed on
+  // `pathname`, not mount-once: App never remounts, and every route change is
+  // both a new tour to consider and a retry for one whose chrome wasn't up yet
+  // (a first visit can land on the chrome-free "/"). The ref is the per-tour
+  // version of the old single `tourPending` — it stops the retries for a tour
+  // that has run, so a browser refusing the "seen" write can't restart it on
+  // every navigation, while leaving the other tours still armed.
+  const firedTours = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (IS_EMBED || !tourPending.current) return;
-    const id = setTimeout(() => {
-      tourPending.current = !maybeAutoStartTour();
-    }, 600);
+    if (IS_EMBED) return;
+    const tour = autoStartTourFor(pathname);
+    if (!tour || firedTours.current.has(tour.id)) return;
+    // Retries IN PLACE, not only on the next route change: a tour can be held
+    // back by content still loading (maybeAutoStartTour returns false while
+    // home's apps strip is skeletons), and the user may just sit on the page.
+    // Bounded so a browser refusing the "seen" write, or a page whose content
+    // never settles, doesn't poll forever.
+    let tries = 10;
+    let id: ReturnType<typeof setTimeout>;
+    const attempt = () => {
+      if (maybeAutoStartTour(tour)) firedTours.current.add(tour.id);
+      else if (--tries > 0) id = setTimeout(attempt, 600);
+    };
+    id = setTimeout(attempt, 600);
     return () => clearTimeout(id);
   }, [pathname]);
 
@@ -708,7 +834,10 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
-          <CanvasWorkspace key={canvasWorkspaceName} name={canvasWorkspaceName} />
+          <CanvasWorkspace
+            key={canvasWorkspaceName}
+            name={canvasWorkspaceName}
+          />
         </Suspense>
       </div>
     );
@@ -752,6 +881,19 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (appPageSlug !== null) {
+    // The app page (D488): the app live in an Overview frame, its tasks in a
+    // Tasks tab. Keyed on the SLUG, not the epoch (the CanvasWorkspace
+    // exception): the tab is a path segment, so switching it is a navigation,
+    // and a remount would reload the running app to change tabs. A different slug
+    // still mounts fresh.
+    main = (
+      <div id="content">
+        <Suspense fallback={<RouteFallback />}>
+          <AppPage key={appPageSlug} slug={appPageSlug} config={config} />
+        </Suspense>
+      </div>
+    );
   } else if (isHome) {
     // The front door: search hero + Fused Apps / Claude Sessions / Recent
     // files strips (shell/Home.tsx).
@@ -791,14 +933,21 @@ export default function App({ config }: { config: Config }) {
       <>
         <div id="breadcrumb" />
         <div id="content" key={epoch}>
-          <div className="status-message error">Unrecognized URL: {pathname}</div>
+          <div className="status-message error">
+            Unrecognized URL: {pathname}
+          </div>
         </div>
       </>
     );
   } else {
     // Windows expanduser returns backslashes; fsPath is always forward-slash.
     main = (
-      <StatView key={epoch + ":" + fsPath} fsPath={fsPath} epoch={epoch} home={config.home.replace(/\\/g, "/")} />
+      <StatView
+        key={epoch + ":" + fsPath}
+        fsPath={fsPath}
+        epoch={epoch}
+        home={config.home.replace(/\\/g, "/")}
+      />
     );
   }
 
@@ -817,7 +966,9 @@ export default function App({ config }: { config: Config }) {
           card's queue slot), handed in from here rather than imported there
           because it speaks explorerUrl, which lives in this layer. */}
       <NotificationHost activity={<QueueDock />} />
-      {shortcutsOpen && <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {shortcutsOpen && (
+        <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
+      )}
     </div>
   );
 }

@@ -34,6 +34,7 @@ the app.
 from __future__ import annotations
 
 import functools
+import json
 import os
 import secrets
 import struct
@@ -57,7 +58,8 @@ from fused_render.server.common import _error, _require_fused
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models, has_vision_tower, is_downloaded,
+    CachedModel, cached_capability, cached_models, embed_family, has_vision_tower,
+    is_downloaded,
 )
 
 router = APIRouter()
@@ -133,6 +135,28 @@ _TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
 # exactly as `aiTranscribe` does, so a caller passing `base` directly is
 # passing an option that does not exist from where it is standing.
 _IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
+#: `/api/ai/embed`'s caller-facing option names (SPEC §40, PY-19).
+#:
+#: **Declared for the DRIFT GUARD rather than for a rejection.** Unlike the four
+#: sets above, `api_ai_embed` does not call `_reject_unknown` — its shape is
+#: `embed_common.request_kind`'s, checked in the worker's own venv too, and the
+#: route deliberately validates through that one function so the two cannot
+#: disagree. What this set exists for is `tests/test_fused_ai_client.py`'s pin
+#: against `templates/shared/fused_ai.py`'s `_EMBED_WIRE_KEYS`: the Python
+#: client mirrors this endpoint's surface and a parameter added on one side and
+#: not the other is a silent no-op, which is exactly what D413 x3 caught for
+#: `image` and `transcribe`.
+#:
+#: `kind` is the newest member and the reason the set was written down at all:
+#: it is refused per MODEL (a dual encoder has no retrieval convention), so a
+#: client that could not send it would leave every retrieval model embedding
+#: queries as documents with nothing to show it.
+_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind"})
+#: `base` is bridge-injected — `aiEmbed` adds it from the page's own `?path=` so
+#: a relative `paths` entry resolves beside the calling page (RH-1) — so the
+#: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
+#: `_TRANSCRIBE_SERVER_OPTIONS` documents.
+_EMBED_SERVER_OPTIONS = _EMBED_OPTIONS | {"base"}
 
 
 def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
@@ -831,6 +855,15 @@ def _catalog_with_downloads() -> list[dict]:
             # a picker filtering on absence would offer it anyway.
             entry["acceptsImage"] = _accepts_image(
                 row["capability"], row["runner"], entry["id"])
+            # The embeddings pair (SPEC §40): whether this entry may be handed
+            # image PATHS, and which retrieval prompt scheme its texts get.
+            # Computed per entry on BOTH halves for `acceptsImage`'s reason — a
+            # cached prose encoder is as unable to read an image as a curated
+            # one, and a picker filtering on absence would offer it anyway.
+            entry["acceptsPaths"] = _accepts_paths(row["capability"],
+                                                   entry["id"])
+            entry["promptScheme"] = _prompt_scheme(row["capability"],
+                                                   entry["id"])
     return rows
 
 
@@ -944,6 +977,61 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
     return False
 
 
+def _accepts_paths(capability: str, model_id: str) -> bool:
+    """Can `model_id` be handed image PATHS to embed (SPEC §40)?
+
+    `_accepts_image`'s sibling for the embeddings capability, and it keeps that
+    function's two rules: **computed, never curated, and False rather than
+    True-by-vacancy.** A dual encoder (SigLIP, CLIP) has a vision tower and a
+    joint space, so a photo and a sentence are comparable; a prose encoder has
+    one tower and handing it pixel values embeds nothing.
+
+    Fails CLOSED — `hub_cache.embed_family` is three-valued and only `"dual"`
+    answers True, so a model with no snapshot on disk yet reports False and the
+    Playground draws no image mode for it. An affordance whose request then 400s
+    is exactly the failure this field exists to prevent, and that is the same
+    trade `_accepts_image` makes for the TEXT_GENERATION half.
+
+    The ROUTE deliberately does NOT mirror this reading — see
+    `hub_cache.embed_family`'s own docstring for the asymmetry and why it is the
+    safe direction: the route refuses only on positive evidence of a text
+    encoder, so a `paths` call on a cold dual encoder still answers
+    `model_loading` and starts the download rather than being refused for a
+    config file that is not there yet.
+
+    False for every capability but embeddings, for `_accepts_image`'s reason:
+    treating "no evidence against" as evidence would have every text and speech
+    entry in the payload claiming it takes a photo.
+    """
+    if capability != registry.EMBEDDINGS:
+        return False
+    return embed_family(model_id) == "dual"
+
+
+def _prompt_scheme(capability: str, model_id: str) -> str | None:
+    """Which retrieval prompt scheme `model_id` wants, or None where the
+    question does not apply (SPEC §40).
+
+    `formats.text_embed_scheme`'s answer, published so the Playground can draw
+    a query/document toggle only for a model the route will actually accept
+    `kind` for — and so a reader can SEE which convention was applied, since a
+    prefix is invisible in the vectors that come back.
+
+    **`"none"` comes back as None on the wire**, not as the string. `"none"` is
+    a real scheme internally (embed verbatim, both sides) but on the wire it
+    means "this model has no convention, so `kind` is a parameter with nothing
+    to do" — and a frontend testing `promptScheme` for truthiness must get the
+    same answer as the route's own refusal, which is keyed on exactly this.
+
+    None for every capability but embeddings: a chat model has prompts too, and
+    they are nothing to do with this table.
+    """
+    if capability != registry.EMBEDDINGS:
+        return None
+    scheme = formats.text_embed_scheme(model_id)
+    return scheme if scheme != "none" else None
+
+
 @router.get("/api/ai/catalog")
 def api_ai_catalog():
     """Suggested models per capability, plus what is on this disk.
@@ -957,6 +1045,27 @@ def api_ai_catalog():
             "ramGb": _machine_ram_gb()}
 
 
+def _engine_gap_refusal(model: str):
+    """A 409 when no engine available here can serve `model`, else None.
+
+    **The earlier, honest half of a refusal the runner already makes.** A worker
+    handed a model whose files it cannot read raises — `onnx_embed.download`'s
+    "has no ONNX export this runner can open" is correct and stays exactly where
+    it is — but by then a job row has opened, a venv may have been built and the
+    user is reading a traceback. This says the same thing before any of that,
+    in a sentence naming the engine that DOES read it and the model to fetch
+    instead (`catalog.engine_gap`).
+
+    409 rather than 400, matching the two `supervisor.SupervisorError` handlers
+    around it: the request is well formed and the answer is a fact about this
+    machine, which is what a 409 means everywhere else on this router.
+    """
+    gap = catalog.engine_gap(model)
+    if gap is None:
+        return None
+    return _error(gap["reason"], status=409)
+
+
 @router.post("/api/ai/runtime/load")
 def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
@@ -966,6 +1075,9 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -1015,6 +1127,13 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    # Checked on a DOWNLOAD too, and this is the one that matters most: fetching
+    # the files is the operation a format gate structurally cannot guard, since
+    # there are no files to judge until it has run. The Local tab's resume is
+    # this exact request.
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -1708,16 +1827,36 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
 
+    # Checked first, same as `api_ai_image`/`api_ai_transcribe` — see
+    # `_reject_unknown`. `request_kind` below only ever READS `body.get("kind")`,
+    # so a misspelled key (`kimd`) is invisible to it and `kind` silently
+    # defaults to `DEFAULT_KIND` rather than raising — exactly the failure
+    # this endpoint's own `kind` argues hardest about. The envelope check has
+    # to catch the typo before `request_kind` gets a chance to default it away.
+    #
+    # `_reject_unknown` returns the OTHER three endpoints' bare `{"error": ...}`
+    # shape, not this endpoint's `{ok, error: {type, message}}` one, so its
+    # message is unwrapped and re-wrapped through `_embed_error` rather than
+    # returned as-is.
+    rejection = _reject_unknown(body, _EMBED_SERVER_OPTIONS, "/api/ai/embed")
+    if rejection is not None:
+        message = json.loads(bytes(rejection.body))["error"]
+        return _embed_error("bad_request", message, status=400)
+
     # Same rule `generate()` enforces inside each worker's own venv
     # (`embed_common.request_kind`) — refused HERE too, before a model is even
     # resolved, so a malformed request costs nothing rather than a 409 that
     # implies the fix is to wait.
     try:
-        kind, items = embed_common.request_kind(body)
+        # The retrieval `kind` is validated here and forwarded RESOLVED in the
+        # body below, so the route's reading is the one that counts — the worker
+        # validates the same field again through the same function, exactly as
+        # it does the batch ceiling.
+        source, items, kind = embed_common.request_kind(body)
     except ValueError as e:
         return _embed_error("bad_request", str(e), status=400)
 
-    if kind == "paths":
+    if source == "paths":
         # Page-relative, exactly the rule `/api/ai/transcribe`'s `path` follows
         # (RH-1): the worker is a separate process with its own cwd, so an
         # unresolved relative path would mean "beside wherever the server was
@@ -1749,8 +1888,61 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
             or "no embedding model is configured",
             status=409)
 
+    # **Two per-model refusals, in this order** (SPEC §40) — `paths` then
+    # `kind`, mirroring `api_ai_image`'s ENGINE-then-MODEL ordering so the
+    # picker's affordances and this route cannot come to disagree about which
+    # request is legal. Both fire AFTER the model is resolved, because both are
+    # facts about the model rather than about the request, and neither can be
+    # asked before `default_for` has answered.
+    #
+    # Refused rather than IGNORED, which is the whole point: a `paths` request a
+    # text encoder accepted would embed noise, and a `kind` a dual encoder
+    # accepted would be a parameter with no effect — and neither failure is
+    # detectable downstream, since both return unit-length vectors of the right
+    # dimension.
+    if source == "paths" and embed_family(model) == "text":
+        # `== "text"`, POSITIVE evidence, not `not _accepts_paths(...)` — see
+        # `hub_cache.embed_family`'s docstring. A cold dual encoder has no
+        # config on disk to read, and it must still fall through to the
+        # `model_loading` reply below and start its download rather than being
+        # refused for a file that is not there yet.
+        return _embed_error(
+            "bad_request",
+            f"{model} is a text encoder — it has no vision tower, so 'paths' "
+            f"is not something it can read. Pass 'texts' instead, or name a "
+            f"dual encoder (a SigLIP or CLIP model) to embed images.",
+            status=400)
+    if "kind" in body and body.get("kind") is not None:
+        scheme = formats.text_embed_scheme(model)
+        if scheme == "none":
+            return _embed_error(
+                "bad_request",
+                f"{model} has no retrieval prompt convention, so 'kind' would "
+                f"change nothing about the vectors it returns — leave it out. "
+                f"It applies to a retrieval encoder that instructs a question "
+                f"and a passage differently; this model embeds both the same "
+                f"way.",
+                status=400)
+
+    forwarded = {source: items}
+    # `kind` on a `texts` request only, and only as the RESOLVED value: the
+    # worker refuses `kind` beside `paths` outright (a prompt scheme has nothing
+    # to prefix on an image), so sending it there would turn a legal request
+    # into a 500 from inside the worker.
+    if source == "texts":
+        forwarded["kind"] = kind
+    # The same refusal the load and download routes make, in this route's own
+    # error vocabulary: a page that named a model in `fused.ai.embed({model})`
+    # — or an exported app whose seeded id no longer resolves on the machine
+    # opening it — must get a sentence rather than a traceback out of the worker.
+    # `unavailable` is the type this route already uses for "cannot run here"
+    # (see the no-runner branch above), so it is the type here too.
+    gap = catalog.engine_gap(model)
+    if gap is not None:
+        return _embed_error("unavailable", gap["reason"], status=409)
+
     try:
-        result = supervisor.generate_embed(model, {kind: items})
+        result = supervisor.generate_embed(model, forwarded)
     except supervisor.ModelNotReady as e:
         # NOT a failure (see `_ai_failed`'s own comment on the same fork in
         # `server/ai.py`): the load already started, and its job id is what

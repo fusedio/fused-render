@@ -4263,7 +4263,8 @@ describe("every caption on a row is an INSTANT hint", () => {
     // resolver stops at it instead of walking up. That survived two rewrites of
     // the mechanism underneath.
     expect(ROW).toContain("data-hint={tildePath(taskFile_, home)}");
-    expect(ROW).toContain("data-hint={tildePath(task.project, home)}");
+    // The folder glyph's own hint left with the glyph (2026-08-25) — the folder
+    // chip still captions the path through IdentityChip's `title` prop.
     expect(ROW).toContain('data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}');
     expect(ROW).toContain("data-hint={when.title}");
     // The stretched link stays silent so the row's own title is the one copy of
@@ -6166,7 +6167,10 @@ describe("the tasks toolbar", () => {
     // (2026-08-20), which is a no-op for List and Board and drops the dead
     // Archive facet only when the calendar is the active view. See the
     // "the calendar's Archive facet" describe block below for the semantics.
-    expect(PAGE).toContain("filterTasks(tasks, filtersForView(filters, view))");
+    // `inScope` since D488: the app page mounts this page narrowed to one folder,
+    // and the scope is applied BEFORE these filters (`tasks` unscoped = what
+    // publishTasks hands the sidebar).
+    expect(PAGE).toContain("filterTasks(inScope, filtersForView(filters, view))");
     expect(PAGE).toContain("<TaskBoard tasks={shown}");
   });
 
@@ -7080,17 +7084,14 @@ describe("the file mark after a task's title", () => {
     expect(VIEWS).toContain("{ICON_FILE}");
   });
 
-  it("falls back to a FOLDER glyph in the same slot, never both", () => {
-    // Akshil, 2026-08-24: the folder icon came off the folder chip (where it
-    // restated the one thing that chip cannot be mistaken about) and landed
-    // here, on the tasks that have no file mark — "if there is a file icon
-    // already there then we don't add folder icon, if file icon not present then
-    // we add a folder icon". A ternary, not two guards, because the two are
-    // answers to the SAME question (what is this task about) and a row wearing
-    // both would be claiming both.
+  it("renders nothing on a folder task — the file mark has no fallback", () => {
+    // Akshil, 2026-08-25: "drop the folder icon, keep the file icon as is". The
+    // folder glyph briefly filled this slot on file-less tasks (2026-08-24's
+    // one-mark-either-way rule), but folder-scoped is the common case and the
+    // mark restated what the folder chip at the row's far end already says — so
+    // the slot is back to file-or-nothing.
     expect(VIEWS).toContain("{taskFile_ ? (");
-    expect(VIEWS).toContain("{ICON_FOLDER}");
-    expect(VIEWS).toContain("data-hint={tildePath(task.project, home)}");
+    expect(VIEWS).not.toContain('aria-label={`This task is about the folder ');
     // The glyph really is gone from inside the chip: its body is the name alone.
     expect(VIEWS).toContain('const body = <span className="schedule-tv-id-name">{name}</span>;');
   });

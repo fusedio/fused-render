@@ -8,6 +8,7 @@ from fused_render.installed import installed_version
 from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.shell import fda as shell_fda
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
 from fused_render.shell.storage import home_dir as shell_home_dir
@@ -107,6 +108,10 @@ def api_config(
 
     if (update_manager := mac_update.manager()) is not None:
         config["update"] = update_manager.status()
+    # Full Disk Access nudge state (shell/fda.py) — present only on the
+    # packaged mac app when the probe is conclusive; absent = render nothing.
+    if (fda := shell_fda.snapshot()) is not None:
+        config["fda"] = fda
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

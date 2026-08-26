@@ -815,6 +815,10 @@ def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch):
         assert row["effective"] == "llamacpp-text"
         assert row["ignoredReason"]
         assert stale not in {c["code"] for c in row["choices"]}
+        # WITHDRAWN, not merely stranded: `by_code(stale)` is None, so there is
+        # no label to give — `strandedLabel` stays null and the Engines tab
+        # falls back to the bare code (`EngineSelect`'s stranded option).
+        assert row["strandedLabel"] is None, stale
 
 
 def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
@@ -826,6 +830,30 @@ def test_a_preference_for_the_WRONG_capabilitys_runner_is_ignored(monkeypatch):
     assert resolution.runner is not None
     assert resolution.runner.capability == registry.TEXT_GENERATION
     assert "does not do" in resolution.ignored_reason
+
+
+def test_a_stranded_wrong_capability_preference_carries_its_own_display_name(
+        monkeypatch):
+    """The OTHER half of the code review's finding: a stranded code that IS
+    registered (just for a different capability) has a real label to give,
+    unlike a withdrawn one — and the label `describe_engines` sends has to be
+    the SAME name `resolve()` already put in `ignoredReason` (`runner.short`,
+    D416's "MLX Whisper does not do text-generation" shape), or the Engines
+    tab's substring dedup (`ignoredWarning`) can't recognise its own reason and
+    prints the name twice: "faster-whisper is not used here — Faster Whisper
+    does not do text-generation."
+
+    `describe_engines` is the only place that can compute this: it has
+    `by_code`, which the frontend payload does not, and the frontend must not
+    paraphrase a registry sentence to extract a name from it.
+    """
+    _prefer(monkeypatch, registry.TEXT_GENERATION, "faster-whisper")
+    row = next(r for r in registry.describe_engines()
+               if r["capability"] == registry.TEXT_GENERATION)
+    assert row["selected"] == "faster-whisper"
+    assert "faster-whisper" not in {c["code"] for c in row["choices"]}
+    assert row["strandedLabel"] == registry.by_code("faster-whisper").short
+    assert row["strandedLabel"] in row["ignoredReason"]
 
 
 def test_a_broken_preferences_file_costs_the_preference_and_nothing_else(
@@ -1061,9 +1089,10 @@ _QUALIFIED_SHORT_NAMES = {
     "diffusers-image-rocm": "(ROCm)",
     "llamacpp-text": "(CPU)",
     "llamacpp-text-vulkan": "(Vulkan)",
-    "transformers-embed": "(CPU)",
-    "transformers-embed-cuda": "(CUDA)",
-    "transformers-embed-rocm": "(ROCm)",
+    "onnx-embed": "(CPU)",
+    "onnx-embed-directml": "(DirectML)",
+    "onnx-embed-cuda": "(CUDA)",
+    "onnx-embed-rocm": "(ROCm)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1071,7 +1100,11 @@ _QUALIFIED_SHORT_NAMES = {
 #: The vocabulary is closed on purpose: it is what
 #: `test_no_engine_name_advertises_the_format_its_sibling_also_reads` matches a
 #: name against, and what Task B's family test forbids in a family name.
-_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)")
+#: `(DirectML)` joined the vocabulary with the ONNX embedding family: it names a
+#: BUILD (`onnxruntime-directml`) exactly as `(Vulkan)` does, and it is the
+#: Windows GPU path — vendor-neutral, so one row covers NVIDIA, AMD and Intel
+#: there rather than a folder per vendor.
+_HARDWARE_QUALIFIERS = ("(CPU)", "(CUDA)", "(ROCm)", "(Vulkan)", "(DirectML)")
 
 
 def test_the_picker_keeps_the_platform_qualifier_and_everything_else_drops_it():
@@ -1916,24 +1949,22 @@ def test_the_cpu_rows_name_the_apple_silicon_GPU_they_run_on(monkeypatch):
     never about torch. `llamacpp-text` took its place in the list, which is the
     check that matters: it is now the row a Mac with no MLX falls back to.
     """
-    for code, cap in (("llamacpp-text", 170), ("diffusers-image", 110)):
+    for code, cap in (("llamacpp-text", 90), ("diffusers-image", 100)):
         runner = registry.by_code(code)
         assert runner.label == runner.short_label
         assert "(CPU)" in runner.label
         note = runner.note
         assert "Apple Silicon" in note, (code, note)
-        # ONE LINE is the constraint the field documents, so the Mac clause has
-        # to be paid for rather than appended. The caps differ because
-        # `llamacpp-text`'s sentence carries a second irreducible fact no other
-        # row has to state — that its wheels come from the maintainer's index
-        # rather than PyPI — and since D416 made this the default engine on two
-        # platforms, that provenance is the one thing a reader cannot discover
-        # from anywhere else on the page.
+        # ONE OR TWO SHORT SENTENCES is the constraint the field documents.
+        # The caps track the current notes (68 and 82 chars) with roughly 20
+        # chars of headroom each — generous enough that a small rewording
+        # doesn't trip the test, tight enough to still catch a note that
+        # grows back into a paragraph.
         assert len(note) <= cap, (code, len(note), note)
 
 
 def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
-    """The ROCm note names the desktop risk, and stays one line while doing it.
+    """The ROCm note names the desktop risk within its two-sentence budget.
 
     Observed rather than theorised (D383): a sustained submission on an RX 9060
     XT (gfx1200) starved `gfx_0.0.0` until the driver reset the ring, and the
@@ -1943,12 +1974,14 @@ def test_the_rocm_image_row_warns_that_a_render_can_stall_the_desktop():
     promised the speed and said nothing about what paying for it can cost.
 
     Pinned because it is the kind of clause a later tidy-up deletes as hedging.
-    The length assertion is the same one-line budget the CPU rows are held to —
-    the warning had to be paid for out of the sentence, not appended to it.
+    130 gives the current 109-char note real headroom (the CPU rows' caps
+    above are the same idea, ~20 chars over their own notes) rather than the
+    old 110 cap, which left this note ONE character of room — not a budget,
+    a trip wire.
     """
     runner = registry.by_code("diffusers-image-rocm")
     assert "desktop" in runner.note, runner.note
-    assert len(runner.note) <= 110, (len(runner.note), runner.note)
+    assert len(runner.note) <= 130, (len(runner.note), runner.note)
 
 
 def test_every_test_this_module_cites_by_name_exists(monkeypatch):
@@ -1991,10 +2024,10 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
     assert catalog.for_runner("llamacpp-text-vulkan") == catalog.SUGGESTIONS["llamacpp-text"]
     assert catalog.for_runner("diffusers-image-cuda") == catalog.SUGGESTIONS["diffusers-image"]
     assert catalog.for_runner("diffusers-image-rocm") == catalog.SUGGESTIONS["diffusers-image"]
-    assert catalog.for_runner("transformers-embed-cuda") == (
-        catalog.SUGGESTIONS["transformers-embed"])
-    assert catalog.for_runner("transformers-embed-rocm") == (
-        catalog.SUGGESTIONS["transformers-embed"])
+    assert catalog.for_runner("onnx-embed-cuda") == (
+        catalog.SUGGESTIONS["onnx-embed"])
+    assert catalog.for_runner("onnx-embed-rocm") == (
+        catalog.SUGGESTIONS["onnx-embed"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -2318,29 +2351,35 @@ def test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text(monk
     assert registry.for_capability(registry.TEXT_GENERATION).code == "llamacpp-text"
 
 
-def test_the_embeddings_capability_orders_mlx_then_cpu_then_cuda_then_rocm(monkeypatch):
-    """Embeddings' four rows, pinned in full — the whole family shares one
-    ordering rule with the image and text families, and it is invisible in a
-    diff of the table.
+def test_the_embeddings_capability_orders_mlx_then_onnx_then_the_accelerated_rows(monkeypatch):
+    """Embeddings' five rows, pinned in full — the whole family shares one
+    ordering rule with the image and text families, and it is invisible in a diff
+    of the table.
 
-    MLX takes the Macs (`_apple_silicon`), `transformers-embed` is the
-    cross-platform default and Apple-Silicon fallback, and
-    `transformers-embed-cuda`/`-rocm` are opt-in accelerated siblings of that
-    row — CUDA before ROCm, the same order `diffusers-image-cuda`/`-rocm` use.
-    Both accelerated rows sit LAST so `auto` never reaches either on any
-    platform, exactly as `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
+    MLX takes the Macs (`_apple_silicon`), `onnx-embed` is the cross-platform
+    default and the Apple-Silicon fallback, and `onnx-embed-directml`/`-cuda`/
+    `-rocm` are opt-in accelerated siblings of that row — DirectML first because
+    it is the only one Windows can take, then CUDA before ROCm, the same order
+    `diffusers-image-cuda`/`-rocm` use. All three accelerated rows sit LAST so
+    `auto` never reaches any of them on any platform, exactly as
+    `test_llamacpp_text_vulkan_is_registered_immediately_below_llamacpp_text`
     pins for text generation's own accelerated tail.
+
+    There were three `transformers-embed*` rows between MLX and these until the
+    parity gate (`tests/test_ai_onnx_embed_real_weights.py`) showed both engines
+    produce the same vectors; they went with the torch wheel they existed to
+    install, and nothing moved to close the gap.
     """
     codes = [r.code for r in registry.all_runners() if r.capability == registry.EMBEDDINGS]
     assert codes == [
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-        "transformers-embed-rocm",
+        "mlx-embed",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm",
     ]
 
     monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
-    assert registry.for_capability(registry.EMBEDDINGS).code == "transformers-embed"
+    assert registry.for_capability(registry.EMBEDDINGS).code == "onnx-embed"
 
 
 def test_llamacpp_text_vulkans_platform_gate_matches_its_published_wheel_tags(monkeypatch, tmp_path):
@@ -3421,6 +3460,110 @@ def test_the_venv_wait_polls_the_key_the_installer_reports(monkeypatch, tmp_path
     assert len(rounds) == 2
 
 
+def test_a_venv_build_reports_more_than_a_stage_word(monkeypatch, tmp_path):
+    """The bug this whole feature shipped to fix: `_ensure_venv` used to read
+    only `record["stage"]` (the coarse "installing") and threw away the
+    `activity`/`bytes_done`/`bytes_total` `_env_install_worker._UvProgress`
+    computes from uv's own stderr — so a ROCm torch install sat on "Preparing
+    Transformers Embeddings (ROCm) — installing…" with no bytes, no elapsed
+    time the user could see move, for however many minutes the download took.
+
+    This is the test that would have failed before those keys were read: the
+    row's detail must carry uv's compact phrase, and the job's `done`/`total`/
+    `unit` must be set from the same record so `ModelProgress` draws a real
+    bar instead of a dot.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="ROCm")
+    ticks = [
+        {"done": False, "stage": "install", "activity": None,
+         "bytes_done": None, "bytes_total": None},
+        {"done": False, "stage": "install",
+         "activity": "downloading torch (2m14s)",
+         "bytes_done": 1_200_000_000, "bytes_total": 3_600_000_000},
+        {"done": True, "error": None, "stage": "done"},
+    ]
+
+    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    job = "sys:ai-model:m"
+    jobs.upsert({"id": job, "title": "m", "kind": "download", "state": "running",
+                 "owner": "server"}, server=True)
+
+    seen_bytes_row = []
+    real_report = supervisor._report
+
+    def _watch(job_id, **fields):
+        real_report(job_id, **fields)
+        if fields.get("total"):
+            seen_bytes_row.append(dict(fields))
+
+    monkeypatch.setattr(supervisor, "_report", _watch)
+
+    assert supervisor._ensure_venv(runner, worker, job) == "/venv/bin/python"
+
+    assert seen_bytes_row, "the byte-carrying tick never reached the job row"
+    reported = seen_bytes_row[0]
+    assert reported["done"] == 1_200_000_000
+    assert reported["total"] == 3_600_000_000
+    assert reported["unit"] == "bytes"
+    assert "downloading torch" in reported["detail"]
+    assert "Preparing ROCm" in reported["detail"]
+    assert "GB" not in reported["detail"] and "MB" not in reported["detail"]
+
+
+def test_a_finished_venv_build_clears_its_own_byte_counters(monkeypatch, tmp_path):
+    """Review issue #3: the install loop breaks on `record.get("done")`
+    BEFORE reporting anything, so without an explicit reset the job row keeps
+    whatever `done`/`total`/`unit="bytes"` its last "still downloading" tick
+    left behind. `_bring_up` then reports "Starting the model process…" with
+    no reset of its own, which would draw a full "3.4 GB / 3.4 GB" bar under
+    that sentence until the runner's first weight tick overwrote it — a
+    finished download that still looks like it is running.
+    """
+    from fused_render import envinstall
+
+    folder = tmp_path / "runner"
+    folder.mkdir()
+    runner = registry.Runner(code="r", capability=registry.TEXT_GENERATION,
+                             folder=str(folder), label="ROCm")
+    ticks = [
+        {"done": False, "stage": "install",
+         "activity": "downloading torch (2m14s)",
+         "bytes_done": 3_400_000_000, "bytes_total": 3_400_000_000},
+        {"done": True, "error": None, "stage": "done"},
+    ]
+
+    monkeypatch.setattr(envinstall, "start", lambda d: {"key": "venv-key", "claimed": True})
+    monkeypatch.setattr(envinstall, "progress", lambda key: ticks.pop(0) if ticks else ticks[-1])
+    monkeypatch.setattr(envinstall, "is_installed", lambda d: not ticks)
+    monkeypatch.setattr(envinstall, "venv_python_for", lambda d: "/venv/bin/python")
+    monkeypatch.setattr(envinstall, "venv_key_for", lambda d: "venv-key")
+
+    worker = supervisor.Worker(model="m", capability=registry.TEXT_GENERATION,
+                               runner_code="r", token="t")
+    job = "sys:ai-model:m"
+    jobs.upsert({"id": job, "title": "m", "kind": "download", "state": "running",
+                 "owner": "server"}, server=True)
+
+    assert supervisor._ensure_venv(runner, worker, job) == "/venv/bin/python"
+
+    row = _row_now(job)
+    assert row["done"] is None, row
+    assert row["total"] is None, row
+    assert row["unit"] == "", row
+
+
 def test_the_cross_pressed_during_the_download_stops_the_load(fake_runner, monkeypatch):
     """The ✕ has to reach the phase that actually takes the time.
 
@@ -4069,8 +4212,9 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "diffusers-image", "diffusers-image-cuda",
         "diffusers-image-rocm", "mflux-image",
         "faster-whisper", "mlx-whisper",
-        "mlx-embed", "transformers-embed", "transformers-embed-cuda",
-        "transformers-embed-rocm", "ltx-video"}
+        "mlx-embed",
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
+        "onnx-embed-rocm", "ltx-video"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -8197,10 +8341,22 @@ def _load(client, body):
 
 
 def test_a_load_without_a_capability_reads_the_cached_repos_format(
-        client, hub, dispatched):
+        client, hub, dispatched, monkeypatch):
     """The reported bug. An mflux conversion has no config.json at all, so the
     old default sent it to mlx-lm; its component folders say image generation
-    beyond doubt."""
+    beyond doubt.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id}).status_code == 200
@@ -8430,9 +8586,27 @@ def test_a_cached_gguf_repo_with_a_non_text_architecture_is_still_refused(
     assert dispatched == []
 
 
-def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatched):
+def test_an_explicit_capability_still_wins_over_the_format(
+        client, hub, dispatched, monkeypatch):
     """Inference governs the OMITTED case only. A caller who names a capability
-    gets it, right or wrong — that is what makes this additive."""
+    gets it, right or wrong — that is what makes this additive.
+
+    Note the ORDER this pins: the explicit capability wins over the FORMAT, not
+    over servability. A model no engine here can serve is refused whatever
+    capability is named for it, because that refusal is about the model rather
+    than about the dispatch — see the platform note below.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     assert _load(client, {"model": repo_id,
@@ -8440,10 +8614,23 @@ def test_an_explicit_capability_still_wins_over_the_format(client, hub, dispatch
     assert dispatched[0]["capability"] == registry.TEXT_GENERATION
 
 
-def test_download_infers_the_capability_the_same_way(client, hub, dispatched):
+def test_download_infers_the_capability_the_same_way(client, hub, dispatched,
+                                                     monkeypatch):
     """`/download` takes the same default through the same helper, so it had the
     same bug: a Download on the AI Models page fetched an image model into the
-    text runner's idea of what to fetch."""
+    text runner's idea of what to fetch.
+
+    **Platform PINNED to Apple Silicon, and that is not decoration.** An mflux
+    conversion is an Apple-Silicon artefact: off that platform `mflux-image` is
+    the only runner that curates or reads it, so nothing can serve it and the
+    route now refuses the request outright with the engine named
+    (`catalog.engine_gap`). What this test is about is capability INFERENCE, so
+    it pins the machine where the model is real rather than asserting inference
+    through a servability refusal. Unpinned it also answered differently on a Mac
+    dev box than on Linux CI, which it should never have done.
+    """
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
     repo_id = next(iter(formats.MFLUX_VARIANTS))
     _cached_repo(hub, repo_id, dirs=formats.MFLUX_COMPONENTS)
     response = client.post("/api/ai/runtime/download", json={"model": repo_id},

@@ -1406,22 +1406,26 @@ def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     """None is the honest answer, and the page turns it into "no Load button" —
     rather than a button that is offered and always fails.
 
-    `sentence-similarity` (task label "sentence embeddings"), NOT the module's
-    own `modules.json` detection this test used before the embedding runners
-    shipped: that path sets `meta.task` to the bare string "embeddings", which
-    is now the label the embedding runners serve (`registry.EMBEDDINGS`) — a
-    sentence-transformers pooling checkpoint genuinely IS an embedding model by
-    that name, so it now reports `capability: "embeddings", engine: None`, the
-    same honest trap `openai/whisper-large-v3` reports (a real task, a format
-    nothing here reads) rather than "not classified at all". `NO_RUNNER_YET`
-    keeps "sentence embeddings" itself unclassified (see `registry.py`'s own
-    comment on the embeddings block: a sentence-transformers checkpoint has no
-    `get_text_features`/`get_image_features` for these runners to call), so
-    that label is what still answers `None` here.
+    **`image-feature-extraction`, and the tag had to change twice.** This test
+    first used the module's own `modules.json` detection, which sets `meta.task`
+    to the bare string "embeddings" — a label the embedding runners now serve, so
+    that stopped being an unserved task. It then used `sentence-similarity`,
+    which was unserved for as long as the capability meant DUAL ENCODERS only.
+    SPEC §40's widening claimed that one too: both engines load a prose encoder
+    now, so a sentence-transformers checkpoint is genuinely loadable and
+    reporting `None` for it would be the lie this test exists to prevent, in
+    reverse.
+
+    `image-feature-extraction` is the neighbour that did NOT move, and it is
+    unserved for a structural reason rather than a scheduling one: it wears an
+    IMAGE-ONLY encoder (DINOv2/v3), which has no text tower at all — the dual
+    load path wants both towers and the prose path wants a tokenizer, so neither
+    can open one. That makes it a stable choice here rather than the next tag to
+    be claimed.
     """
     embed = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: sentence-similarity\n---\n")
-    assert _repo_row(client, "org/st")["task"] == "sentence embeddings"
+    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: image-feature-extraction\n---\n")
+    assert _repo_row(client, "org/st")["task"] == "image embeddings"
     assert _repo_row(client, "org/st")["capability"] is None
 
 
@@ -2359,3 +2363,87 @@ def test_has_vision_tower_is_false_for_a_hostile_repo_id(hub):
     """The same path-segment guard `cached_capability` applies to a request
     body's model id — a repo id is not a place to go looking for `..`."""
     assert ai_models_mod.has_vision_tower("../../etc/passwd") is False
+
+
+# -- the partly downloaded, engine-stranded repo (PR #830 regression) ----------
+
+
+@requires_symlinks
+def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
+        client, hub, monkeypatch):
+    """**`engine` must not be null here, and that was the bug.**
+
+    A download that never finished has no weights, so `formats.loaders()` has
+    nothing to judge and `_engine` used to answer `None` — no engine, no
+    sentence, and so nothing for the Local tab to withhold the resume on. It
+    offered one, and the fetch died inside a runner that cannot read MLX
+    safetensors.
+
+    The CURATION knows what the format check cannot: this id's only curated home
+    is `mlx-embed`, whether or not a byte has landed. So the row now names that
+    engine, marks itself `unservable`, and carries the sentence — and
+    `capability` comes back too, since the curation knows that as well.
+
+    `unservable` rather than leaning on `available: false`: that is ALSO what a
+    merely-unselected engine reports, and resuming one of those is fine.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    # A partial fetch: a blob with our own in-progress suffix and no snapshot
+    # file materialised for it.
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    assert engine is not None, "a curated id must not report a null engine"
+    assert engine["shortLabel"] == "MLX Embeddings"
+    assert engine["available"] is False
+    assert engine["unservable"] is True
+    assert "onnx-community/siglip2-base-patch16-384-ONNX" in engine["reason"]
+
+
+@requires_symlinks
+def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
+    """The Mac path: `mlx-embed` serves there, so nothing is stranded and the
+    resume must stay offered. A fix that flagged this everywhere would have
+    broken the platform the model is FOR."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    # Either no engine claim at all (no format evidence, nothing curated against
+    # it here) or one that does NOT declare itself unservable — never the flag.
+    assert engine is None or not engine.get("unservable")
+
+
+@requires_symlinks
+def test_a_partial_UNCURATED_repo_still_reports_no_engine(client, hub,
+                                                          monkeypatch):
+    """"No information" stays no information. Nobody here has an opinion about a
+    repo the user found themselves, so inventing an engine for it would be
+    claiming something reads a format nothing has looked at — and its resume
+    stays offered, with the runner's own format check as the backstop, exactly as
+    before this fix."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--someone--found-this-myself",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "someone/found-this-myself")
+    assert row["partial"] is True
+    assert row["engine"] is None

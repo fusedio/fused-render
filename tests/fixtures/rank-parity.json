@@ -254,6 +254,18 @@
       "mtime": 1
     },
     {
+      "rel": "src/chat/ChatInterface/components/MessageList/components/MessageScrollbackRail/index.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
+      "rel": "cache-config/comp/widget.ts",
+      "is_dir": false,
+      "size": 10,
+      "mtime": 1
+    },
+    {
       "rel": "docs",
       "is_dir": true,
       "size": null,
@@ -398,7 +410,8 @@
     "frontend/.",
     "alpha",
     "FILE.TXT",
-    "downloadstage"
+    "downloadstage",
+    "cccm"
   ],
   "expected": {
     "readme": [
@@ -426,6 +439,7 @@
       "docs/architecture/index.md",
       "index/specs/index-store.md",
       "fused_render/server/routers/index.py",
+      "src/chat/ChatInterface/components/MessageList/components/MessageScrollbackRail/index.ts",
       "tests/test_index_api.py",
       "index/specs",
       "index/store.py",
@@ -492,7 +506,8 @@
       "c/f/g",
       "config.yaml",
       "a/b/config.yaml",
-      "c/f/g/notes.txt"
+      "c/f/g/notes.txt",
+      "cache-config/comp/widget.ts"
     ],
     "fr/fe": [],
     "search": [
@@ -530,6 +545,10 @@
     "downloadstage": [
       "DownloadStage",
       "DownloadStage/notes.txt"
+    ],
+    "cccm": [
+      "cache-config/comp/widget.ts",
+      "src/chat/ChatInterface/components/MessageList/components/MessageScrollbackRail/index.ts"
     ]
   }
 }

@@ -35,6 +35,13 @@ export interface Config {
   // packaged mac app started the update manager; absent on dev servers and
   // the Windows/Linux packages (those update through their supervisor).
   update?: UpdateStatus;
+  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
+  // on the packaged mac app when the probe is conclusive. FdaCard renders
+  // off this; absent means render nothing and stop watching. `relevant`
+  // flips when this session first reads under a TCC-protected folder — the
+  // moment the Allow prompts start, which is the only moment the card is
+  // worth showing.
+  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -166,6 +173,16 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Full Disk Access nudge (fused_render/shell/fda.py) ----------------------
+// Both are packaged-mac-only mutations: X-Fused via postJson, 404 elsewhere.
+export function openFdaSettings(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/fda/settings", {});
+}
+
+export function dismissFdaNudge(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
+}
+
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
 //
 // The proactive counterpart to the TroubleCard's reactive classification: these
@@ -218,9 +235,12 @@ export interface UpdateStatus {
   // dmg: the app downloads and swaps its own bundle; none: not updatable.
   method: string;
   latest_version: string | null;
-  // Bytes downloaded so far (dmg method only) — the manifest carries no total
-  // size, so the UI shows MB downloaded rather than a percentage.
+  // Bytes downloaded so far (dmg method only).
   progress: number | null;
+  // Total bytes to download, from the download response's Content-Length —
+  // the manifest itself carries no size field. Null when the CDN omits that
+  // header, in which case the UI falls back to showing MB downloaded.
+  progress_total: number | null;
   error: string | null;
   // Set when the user must run the update themselves (brew-managed installs,
   // state "available") — shown with a copy button.
@@ -831,6 +851,18 @@ export interface CapabilityEngine {
   // it is (including "auto", which is honoured by definition). A control whose
   // value does nothing, with nothing saying why, is what this field prevents.
   ignoredReason: string | null;
+  /** The display name for `selected` when it matches none of `choices` — the
+   *  STRANDED case (`lib/engines.ts`'s `strandedSelection`) — else null.
+   *
+   *  Computed server-side (`registry.py`'s `_stranded_label`) because only the
+   *  registry can tell a WITHDRAWN code (no runner left to name — null) from
+   *  one that is merely registered for a different capability (a real label).
+   *  It is the runner's SHORT label, the exact string `resolve()` already
+   *  wrote into `ignoredReason` for that shape ("MLX Whisper does not do
+   *  text-generation") — so `ignoredWarning`'s substring de-duplication can
+   *  find its own name inside the reason instead of comparing it against the
+   *  raw stored code, which never matches. */
+  strandedLabel: string | null;
   choices: EngineChoice[];
 }
 
@@ -840,10 +872,10 @@ export interface EngineChoice {
   /** What using this backend is LIKE, when there is something worth saying. */
   note: string | null;
   available: boolean;
-  /** Why not — "needs Apple Silicon — MLX runs on Metal only (this is
-   *  windows/amd64)". The page renders this beside a disabled control rather
-   *  than writing its own copy, which it could not: this is a fact about the
-   *  machine and the backend, and only the server knows it. */
+  /** Why not — "needs Apple Silicon (this is windows/amd64)". The page
+   *  renders this beside a disabled control rather than writing its own copy,
+   *  which it could not: this is a fact about the machine and the backend,
+   *  and only the server knows it. */
   reason: string | null;
 }
 
@@ -1868,21 +1900,23 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   );
 }
 
-// Scaffold a new app folder and (optionally) kick off a Claude session seeded
-// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
-// thrown HttpError's message for inline display.
+// Scaffold a new app folder and (optionally) create ONE task on its index.html
+// carrying `prompt`, due now — the New task form's own path, so the app's
+// Tasks tab lists it and the scheduler spawns the session. 409 = name
+// collision, 400 = bad name — both surface via the thrown HttpError's message
+// for inline display.
 export interface NewAppResult {
   path: string;
   entry_html: string;
-  // Whether a Claude session was actually kicked off for the prompt.
-  session_started: boolean;
-  // The live run, for attaching to the session that was just started; null
-  // when no prompt was given or the spawn failed.
-  run_id: string | null;
-  // Why the session did not start (claude CLI missing, spawn failure). The
-  // app itself was created either way — surface this so a prompt that went
-  // nowhere isn't silent. Null when it started, or when there was no prompt.
-  session_error: string | null;
+  // The scheduled entry carrying the prompt (the shape GET /api/schedule
+  // lists); null when no prompt was given or the task could not be stored.
+  // Whether the session then started is the entry's own story, read where
+  // every task's is — this call does not wait for the spawn.
+  task: ScheduledMessage | null;
+  // Why the task was not created. The app itself was created either way —
+  // surface this so a prompt that went nowhere isn't silent. Null when it was
+  // created, or when there was no prompt.
+  task_error: string | null;
 }
 
 // `model`/`effort` are the hero composer's pickers — short model names
@@ -2100,7 +2134,9 @@ export interface Task {
 // descriptions, and message previews. Keep this structural subset compatible
 // with Task so the Tasks page can still publish its full rows into the shared
 // pulse store while every other route polls the compact endpoint.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active">;
+// `project` is here for the sidebar's Current apps section (D487), which groups
+// live tasks by the workspace app they belong to off this same poll.
+export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
 
 export function getTasks(): Promise<{ tasks: Task[] }> {
   return getJson<{ tasks: Task[] }>("/api/tasks");
@@ -2370,6 +2406,17 @@ export interface AiModelRepo {
     familyLabel: string;
     available: boolean;
     reason: string | null;
+    /** **No engine available on this machine can read this repo's files at
+     *  all** — absent on every row where that is not the case, so "not
+     *  present" cannot be misread as "checked and fine".
+     *
+     *  Stronger than `available: false`, which is ALSO what a merely-unselected
+     *  engine reports ("switch it on the Engines tab"). That one still has a
+     *  working remedy here and its download is still worth resuming; this one
+     *  has neither, so the Local tab withholds the resume rather than offering
+     *  an action that ends in a refusal. `reason` carries the sentence,
+     *  including the counterpart id to fetch instead where one is curated. */
+    unservable?: boolean;
   } | null;
   /**
    * Set when this repo is not a model at all but a PART of one — the quantized
@@ -2771,6 +2818,26 @@ export interface AiCatalogModel {
    *  route would 400. False on every non-image capability, and optional on
    *  the wire only because an older server does not send it. */
   acceptsImage?: boolean;
+  /** Can this model be handed image PATHS to embed (SPEC §40)? The embeddings
+   *  half of `acceptsImage`: a dual encoder (SigLIP, CLIP) has a vision tower
+   *  and a joint space, so a photo and a sentence are comparable; a prose
+   *  encoder has one tower and handing it pixels embeds nothing. The server's
+   *  own answer, computed from the cached checkpoint's `model_type` — false on
+   *  every non-embeddings capability, and false for a model not on this disk
+   *  yet, because an affordance whose request then 400s is worse than a missing
+   *  one. Optional on the wire only because an older server does not send it. */
+  acceptsPaths?: boolean;
+  /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
+   *  `"nomic"`, … — or **null when it has none**, which is the case for every
+   *  dual encoder and for any repo whose convention the server does not
+   *  recognise.
+   *
+   *  Null is the signal, not a missing field: a retrieval encoder instructs a
+   *  question and a passage differently (`kind: "query" | "document"`), and a
+   *  model with no convention refuses `kind` at the route because it would
+   *  change nothing about the vectors. So a control drawn off the truthiness of
+   *  this field and the route's own refusal are keyed on the same fact. */
+  promptScheme?: string | null;
 }
 
 export interface AiCatalogCapability {
@@ -3431,6 +3498,10 @@ export interface ScheduleEvent {
   // the user hunting, and the first words of what they asked for identify it.
   message: string;
   detail: string;
+  // The entry was RUN, not scheduled — a New task with its when-row untouched,
+  // or a new app's scaffolding task. Absent on an older server: read as false,
+  // which is the "scheduled" wording that was the only one before.
+  immediate?: boolean;
   ts: number;
 }
 

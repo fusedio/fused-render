@@ -960,7 +960,7 @@ def test_a_stale_but_untouched_row_is_not_dropped_by_the_sweep(bench, monkeypatc
 
 
 def test_embeddings_row_is_not_cancellable(bench, monkeypatch):
-    """Neither embedding runner (`mlx_embed`, `transformers_embed`) checks
+    """Neither embedding runner (`mlx_embed`, `onnx_embed`) checks
     `worker_base.CANCEL` — a single blocking `model.encode()` call has no
     callback to check it from — so a ✕ on an embeddings row would be silently
     ignored, the call would finish normally, and the run would be recorded

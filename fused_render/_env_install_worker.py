@@ -10,6 +10,25 @@ detached child is a bootstrap that broke once already) and so cannot call
 `projectenv`. Re-deriving the venv directory would also be a second derivation
 of a cache key, which is how a loader ends up filling a directory no run reads.
 
+`<uv_cache_dir>` is EMPTY, same idiom, whenever `envinstall._spawn` was handed
+`projectenv.uv_cache_dir() is None` — which is the ordinary case now, not the
+exception: `_build` then runs `uv sync` with no `UV_CACHE_DIR` override at all,
+deferring to uv's OWN default (XDG on Linux, `~/.cache/uv` on macOS too —
+NOT `~/Library/Caches`, `%LOCALAPPDATA%` on Windows) instead of an explicit
+sibling of the venv store — and to whatever `UV_CACHE_DIR` is already
+AMBIENT in this process's own environment, if one is: `_uv_env`'s base is a
+plain copy of `os.environ`, so a value set by the shell, or by CI's own
+`setup-uv` action, rides along untouched rather than being stripped, which
+would be imposing a different cache choice of our own. That explicit
+sibling used to be unconditional and fragmented per branch/worktree as a
+result — see `projectenv.uv_cache_dir()` for the history and the trade this
+accepts (giving up the one-filesystem hardlink guarantee everywhere the two
+happen to already coincide, to stop a guaranteed multi-gigabyte redownload
+everywhere they used to differ). An explicit path still arrives when the
+caller set `FUSED_RENDER_HOME` — not only the test suite's own isolation,
+but also the packaged Linux/Windows desktop app, which sets it
+unconditionally for every launch (`supervisor.paths.DesktopPaths`, D131).
+
 `<python_executable>` is the base interpreter the environment is built on, and it
 must be the value `envinstall._python_executable()` returned — the backend runs
 the code, so its interpreter and the environment's have to be one choice. argv
@@ -57,14 +76,27 @@ install is a visible flow instead of a 30-second timeout inside /api/run.
 Stdlib only: no `fused_render` import, and (since the switch to `uv sync`) no
 `fused` import either. It runs on whatever `sys.executable` the server used.
 """
+import collections
 import hashlib
 import json
 import os
+import re
+import select
 import shutil
+import struct
 import subprocess
 import sys
 import threading
 import time
+
+try:
+    import fcntl  # POSIX only; Windows raises ImportError, handled below.
+    import pty
+    import termios
+except ImportError:  # pragma: no cover - exercised on Windows CI, not here
+    fcntl = None
+    pty = None
+    termios = None
 
 # Stages and their percentages, kept in step with fused_render/envinstall.py's
 # STAGES/STAGE_PCT. Duplicated rather than imported because this file must stay
@@ -75,12 +107,18 @@ _PYTHON_PCT = 5
 _CREATE_PCT = 10
 _INSTALL_PCT = 25
 
-# How often the install stage re-writes its record while uv runs (D213). The whole
-# download happens inside ONE `ensure_requirements_venv` call behind
-# `capture_output=True`, so nothing about its internals is observable from here;
-# what this buys is proof of LIFE. The client polls every 500ms, so ~2s is well
-# under the rate at which a repaint could look stale, and it is four orders of
-# magnitude cheaper than the download it reports on.
+# How often the install stage re-writes its record while uv runs (D213).
+#
+# This USED to be proof of LIFE and nothing more: the whole download ran
+# inside one `subprocess.run(capture_output=True)`, so nothing about uv's
+# internals was observable from here, and the beat's only job was to keep
+# `ts` moving so a client polling every 500ms could tell "still going" from
+# "wedged". That premise is gone — `_build` now streams uv's own stderr
+# through a `_UvProgress` (see below), so by the time this fires there is
+# usually real byte-level news to report, not just a keepalive. The interval
+# itself is unchanged: ~2s is still well under the rate at which a repaint
+# could look stale, and it is still four orders of magnitude cheaper than the
+# download it is reporting on — a live signal does not mean an instant one.
 _HEARTBEAT_S = 2
 
 # How long the terminal write waits for the heartbeat to stop. Generous relative to
@@ -162,7 +200,8 @@ def _uv_env(**overrides):
     return env
 
 
-def _write(progress_dir, stage, pct, detail="", done=False, error=None):
+def _write(progress_dir, stage, pct, detail="", done=False, error=None,
+           activity=None, bytes_done=None, bytes_total=None):
     # Unique temp name, not a shared `progress.json.tmp`: the server writes this
     # same file (envinstall._write) and two writers racing on one temp means the
     # first os.replace consumes the second's file, whose replace then fails.
@@ -171,11 +210,22 @@ def _write(progress_dir, stage, pct, detail="", done=False, error=None):
     # unique when the heartbeat arrived: two writers now live in THIS process, and
     # a shared temp name between them is the same race with the same outcome — a
     # crashed installer whose venv was actually built fine.
+    #
+    # `activity`/`bytes_done`/`bytes_total` are ADDITIVE: every existing key keeps
+    # its current meaning and format (`fused_render/engine.py` and
+    # `runtime.js`'s `paintInstall` read this same record for the non-AI
+    # "Preparing my-app" path, and `tests/test_server_env_install.py` asserts on
+    # those strings), and every writer that has nothing to say about bytes — the
+    # `python`/`create`/`done`/`error` stages, and `install` before uv has
+    # printed its first `Downloading` line — leaves them `None`, which is
+    # indistinguishable from the record this function wrote before they existed.
     path = os.path.join(progress_dir, "progress.json")
     tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump({"stage": stage, "pct": pct, "detail": detail, "done": done,
-                   "error": error, "pid": os.getpid(), "ts": time.time()}, f)
+                   "error": error, "pid": os.getpid(), "ts": time.time(),
+                   "activity": activity, "bytes_done": bytes_done,
+                   "bytes_total": bytes_total}, f)
     os.replace(tmp, path)
 
 
@@ -184,6 +234,848 @@ def _elapsed(seconds):
     total = int(seconds)
     minutes, secs = divmod(total, 60)
     return "%dm%02ds" % (minutes, secs) if minutes else "%ds" % secs
+
+
+# --------------------------------------------------------------------------
+# uv's own progress, parsed rather than invented.
+#
+# `_build` used to run `uv sync` behind `subprocess.run(capture_output=True)`
+# and treat the whole call as one opaque, unobservable pause — see the old
+# text of the comment above `_HEARTBEAT_S`. That premise turned out to be
+# wrong: pointed at a non-tty PIPE, uv writes plain-text progress to STDERR,
+# line-buffered, in real time. A probe against this exact concern —
+# `subprocess.Popen([..], stderr=PIPE)` on a small (~34MB) package, with a
+# wall-clock timestamp printed per line as it was READ — showed the
+# `Downloading` line at t=0.6s and the two `Downloaded` confirmations arriving
+# at t=7s and t=11s, not bunched at process exit. uv does not block-buffer to
+# a pipe, so streaming instead of capturing is safe:
+#
+#   Using CPython 3.13.13
+#   Creating virtual environment at: .venv
+#   Resolved 3 packages in 1.01s
+#   Downloading numpy (15.9MiB)
+#   Downloading scipy (33.7MiB)
+#    Downloaded numpy
+#    Downloaded scipy
+#   Prepared 2 packages in 13.55s
+#   Installed 2 packages in 6ms
+#
+# uv's default concurrency is 50, so for a runner venv with dozens of
+# dependencies essentially every `Downloading` line — and so every SIZE —
+# appears within seconds of the sync starting, well before the one huge wheel
+# (torch, for the ROCm/CUDA runners) finishes.
+_DOWNLOADING_RE = re.compile(r"^Downloading (\S+) \(([\d.]+)\s*(B|KiB|MiB|GiB)\)$")
+_DOWNLOADED_RE = re.compile(r"^\s*Downloaded (\S+)$")
+_PREPARED_RE = re.compile(r"^Prepared \d+ packages? ")
+_INSTALLED_RE = re.compile(r"^Installed \d+ packages? ")
+
+#: uv reports binary units; multiplying by these gives bytes.
+_UNIT_BYTES = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
+
+
+class _UvProgress:
+    """Tracks one `uv sync`'s stderr, line by line, into numbers a heartbeat
+    tick can report without inventing anything uv did not say.
+
+    **Locked, because two threads genuinely touch this concurrently**:
+    `_build`'s thread calls `feed()` as it reads uv's stderr, and the
+    heartbeat thread calls `snapshot()` on its own timer. An earlier version
+    of this class argued that was safe WITHOUT a lock because `feed` "only
+    ever adds" to `_sizes`/`_downloaded` — that argument is wrong, not just
+    incomplete: CPython raises `RuntimeError` for a mutation racing an
+    iteration of the SAME container, and `snapshot` iterates both
+    (`sum(self._sizes.values())`, the `for name in self._downloaded` sum, and
+    the `self._sizes.items()` comprehension while picking the biggest pending
+    package) — confirmed empirically (`RuntimeError('Set changed size during
+    iteration')` within a second of a real install). That exception escaped
+    the heartbeat thread, which killed it permanently: `progress.json` (`ts`
+    included) then froze for the rest of a multi-GB install — the exact
+    "stuck installer" symptom this feature exists to remove, reached by a new
+    path. `fused_render.envinstall._remember_ending` documents the same
+    hazard for `_ENDINGS`: a dict `pop`/iterate pair is not atomic just
+    because each single dict operation is. The fix is the same house pattern
+    — one lock across every read AND write, including copies (`list(...)`/
+    `frozenset(...)` still iterate the source, so the copy has to happen
+    UNDER the lock too, not instead of it).
+
+    **The announced total is a LOWER BOUND that can only grow**, never shrink
+    or get corrected downward: uv prints `Downloading` lines as it starts
+    each fetch, not all at once, so a later line can raise the total after an
+    earlier tick already reported one. That is the same argument
+    `with_heartbeat`'s docstring makes against inventing a percentage — an
+    honest number that occasionally jumps up beats a smooth one that is lying
+    — and it is safe here specifically because `bytes_done` is a sum over the
+    same dict `bytes_total` is: a size cannot be counted as done before it is
+    counted as announced, so done can never exceed total (still asserted
+    below, defensively, rather than trusted).
+
+    Package-level only — measuring the in-flight bytes of a single large
+    download (the ROCm torch wheel is one ~3.4GB step here) was investigated
+    and dropped; see the module the feature shipped from for why (uv's cache
+    directory grows by UNPACKED size, several times the compressed download,
+    with no single file to stat as "bytes so far"). A package mid-download
+    therefore contributes nothing to `bytes_done` until it is confirmed
+    landed — the difference this class makes is at the AGGREGATE level, where
+    a 40-package venv's small packages landing one by one is now visible
+    progress instead of the single flat "installing…" it used to be.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sizes = {}          # package name -> announced bytes
+        self._downloaded = set()  # names uv has confirmed landed
+        #: package name -> bytes transferred so far, for a name NOT yet in
+        #: `_downloaded`. Populated only under a pty (`feed_pty_progress`) —
+        #: a pipe never gives us anything between "announced" and "landed"
+        #: for one package, which is the whole reason the pty exists: a
+        #: single dominant wheel (torch) has nothing else to report progress
+        #: FROM. Cleared for a name the moment it is marked downloaded, so
+        #: `snapshot` never double-counts a package as both in-flight and
+        #: confirmed.
+        self._inflight = {}
+        #: The set of names a pty's LAST redraw frame mentioned, or None
+        #: before the first one — see `feed_pty_frame`. `None` is a real
+        #: third state, not just "empty": an empty frozenset means "the
+        #: block just went blank", which IS diffed against the previous
+        #: frame (everyone in it just finished); `None` means there is no
+        #: previous frame to diff against yet.
+        self._last_pty_frame_names = None
+        #: resolving -> downloading -> preparing -> installing -> installed.
+        #: Stays "resolving" forever for a sync where every wheel is already
+        #: cached (no `Downloading` line ever prints), which is exactly the
+        #: case `snapshot` below answers with "nothing new to say". NOT
+        #: monotonic across `resolving`/`downloading`/`preparing`: a
+        #: `Downloading` line seen while `preparing` moves back to
+        #: `downloading` (see `feed`) — only `installing`/`installed`, reached
+        #: from uv's own `Prepared`/`Installed` lines, are one-way.
+        self.phase = "resolving"
+
+    def _mark_downloaded_locked(self, name):
+        """*name* has fully landed. Caller holds `self._lock`.
+
+        One place for the two routes that can decide this: a plain
+        ` Downloaded <name>` line (piped mode) and a pty progress row whose
+        own `done` has reached its own `total` (tty mode — uv prints no
+        separate confirmation there at all, so reaching the announced total
+        IS the confirmation). Both must apply the SAME "did everything
+        announced just land" phase check, or the two modes would disagree
+        about when `preparing` starts for no reason a user could see.
+        """
+        self._downloaded.add(name)
+        self._inflight.pop(name, None)
+        if self.phase == "downloading" and self._sizes and \
+                set(self._sizes) <= self._downloaded:
+            # Every size uv has ANNOUNCED so far has also been confirmed
+            # landed. uv may still announce MORE later — `feed`/
+            # `feed_pty_progress` are what un-latch this — but nothing is in
+            # flight right now: uv is between the last confirmation and the
+            # `Prepared` line, i.e. unpacking/linking, which for torch is the
+            # slow part this phase exists to name rather than let read as
+            # 100%.
+            self.phase = "preparing"
+
+    def feed(self, line):
+        """One line of uv's stderr. Never raises: an unrecognised line (a
+        warning, a future uv version's new wording) is simply not progress,
+        not a reason to lose the ones already parsed.
+
+        This is the PIPED-mode parser (`Downloading <name> (<size>)` /
+        ` Downloaded <name>`), and it stays exactly as it was: `_build`
+        still feeds it the plain lines it always has, in EITHER mode — a pty
+        session prints no such lines at all (confirmed empirically: uv never
+        writes "Downloading"/"Downloaded" once it believes stdout is a
+        terminal, it only draws the live multi-package bar `feed_pty_progress`
+        parses instead), so on a pty these two branches are simply dormant.
+        `Resolved`/`Prepared`/`Installed` are NOT dormant either way — uv
+        prints those the same in both modes, confirmed against the same
+        probe — which is why this method keeps being the one thing every
+        caller feeds complete lines through.
+        """
+        m = _DOWNLOADING_RE.match(line)
+        if m:
+            name, value, unit = m.groups()
+            with self._lock:
+                self._sizes[name] = float(value) * _UNIT_BYTES[unit]
+                if self.phase in ("resolving", "preparing"):
+                    # `preparing` too, not just `resolving`: uv's concurrency
+                    # cap (50) means a `Downloading` line can arrive AFTER a
+                    # moment where everything announced so far had already
+                    # landed (which is what latched `preparing` in the first
+                    # place — see below). Without this, a late-announced
+                    # torch sitting behind 50 smaller packages would freeze
+                    # the phase at `preparing` — a full bar, reporting
+                    # "preparing packages" — for the entire multi-GB torch
+                    # download that follows it.
+                    self.phase = "downloading"
+            return
+        m = _DOWNLOADED_RE.match(line)
+        if m:
+            with self._lock:
+                self._mark_downloaded_locked(m.group(1))
+            return
+        if _PREPARED_RE.match(line):
+            with self._lock:
+                # A backstop for pty mode: uv does not print this line while
+                # anything is still downloading, so whatever is STILL
+                # unconfirmed at this point must have finished — but the
+                # per-frame route (`feed_pty_frame`) cannot see it, because
+                # the final display clear (every remaining row vanishing at
+                # once, right before this exact line) carries no
+                # distinguishing text for that method to recognise as one
+                # more frame. A no-op in piped mode, where `_DOWNLOADED_RE`
+                # already confirmed everything before this line could ever
+                # print.
+                for name in list(self._sizes):
+                    if name not in self._downloaded:
+                        self._downloaded.add(name)
+                        self._inflight.pop(name, None)
+                self.phase = "installing"
+            return
+        if _INSTALLED_RE.match(line):
+            with self._lock:
+                self.phase = "installed"
+
+    def feed_pty_frame(self, names_in_frame):
+        """The set of package names a pty's LATEST redraw frame mentioned.
+
+        uv stops redrawing a package's row the INSTANT it lands — it prints
+        no separate confirmation under a tty the way a pipe's `Downloaded`
+        line does (see `feed`'s docstring) — so a name that WAS in the
+        previous frame and is gone from this one, while still short of its
+        own announced total, USUALLY has finished by elimination. Confirmed
+        against a real, multi-package capture: names drop out of the
+        display ONE AT A TIME as each completes, not all together — except
+        at the very final clear, which drops everyone remaining at once
+        with no marker text of its own; `feed`'s `_PREPARED_RE` branch is
+        the backstop for exactly that gap.
+
+        **"Usually", not "always" — a vanished name can also mean DISPLACED,
+        not finished.** `pty.openpty()` sets no winsize, so uv falls back to
+        an 80x24 terminal and renders at most ~23 rows while downloading up
+        to 50 wheels concurrently; a package still downloading simply
+        scrolls out of the visible frame, and reading that as completion is
+        indistinguishable from a real completion at THIS layer alone.
+        Measured on a real 149-package capture: 44 names vanished from a
+        frame while their last reading was under 90% of their own announced
+        total (several at 0 B), and 4 of those reappeared in a LATER frame
+        still downloading — 153.2 MB was credited as transferred that had
+        not been, and the run reported 147.3 of 152.5 MB nowhere near done.
+        `_run_uv_via_pty` now sets a tall winsize specifically so this
+        should not happen in practice (uv never has a reason to clamp), but
+        this method does not TRUST that — it is the second, independent
+        layer: a vanished name is confirmed only when its last known
+        in-flight reading was at or near its own total already
+        (`_PTY_NEAR_TOTAL_FRACTION`). One that vanished well short of it is
+        left exactly as it was — neither confirmed nor discarded, so its
+        last-known bytes keep counting toward `done` (honest, if slightly
+        stale) until it either reappears with fresh progress or the
+        `Prepared` backstop confirms it. The damage of confirming wrongly
+        would otherwise be PERMANENT: `feed_pty_progress` early-returns for
+        any name already in `_downloaded`, so a displaced package's real
+        bytes could never be counted again, and `_mark_downloaded_locked`
+        would latch `phase = "preparing"` with `done == total` while
+        gigabytes were still arriving — precisely the "stuck at 100%" lie
+        this whole feature exists to remove, reached by a different route.
+
+        Without this method at all, `_downloaded` gains almost no members
+        under a pty: `feed_pty_progress`'s OWN route to
+        `_mark_downloaded_locked` (a `done >= total` reading) fires on very
+        little in practice, because uv's LAST redraw of a row measures short
+        of the total even for a genuinely finished one — a real capture's
+        numpy install: 15.55 of 15.94 MiB on its last observed row.
+        """
+        with self._lock:
+            frame = frozenset(names_in_frame)
+            if self._last_pty_frame_names is not None:
+                vanished = self._last_pty_frame_names - frame - self._downloaded
+                for name in vanished:
+                    total = self._sizes.get(name, 0.0)
+                    last_seen = self._inflight.get(name, 0.0)
+                    if total > 0 and last_seen >= total * _PTY_NEAR_TOTAL_FRACTION:
+                        self._mark_downloaded_locked(name)
+                    # else: DISPLACED, not finished (see the docstring) — its
+                    # `_inflight` reading is left exactly as it was, so
+                    # `snapshot` keeps counting it honestly without lying
+                    # that it landed.
+            self._last_pty_frame_names = frame
+
+    def feed_pty_progress(self, name, done_bytes, total_bytes):
+        """One reading of *name*'s live in-flight bytes, off a PTY.
+
+        Only a terminal gets this from uv at all — pointed at a pipe, uv
+        suppresses per-package in-flight bytes entirely and only ever
+        confirms a package once it is fully landed (`feed`, above). Under a
+        pty it instead redraws a multi-line bar continuously, e.g.:
+
+            numpy                ------------------------------  6.31 MiB/15.94 MiB
+
+        parsed by `_PTY_PROGRESS_RE` in the reader that calls this (never a
+        plain `Downloading`/`Downloaded` line — confirmed empirically, see
+        `feed`'s docstring). This is what makes ONE dominant wheel (the
+        ROCm/CUDA torch install this feature shipped to fix) show movement
+        at all: package-level alone has nothing to report from until the
+        whole multi-gigabyte file lands.
+
+        `bytes_total` stays authoritative the same way an announced
+        `Downloading` size is: `max()`'d in, never lowered, because uv's own
+        number for a package's size does not change mid-download.
+        """
+        with self._lock:
+            if name in self._downloaded:
+                return  # already confirmed; a stale/replayed row must not un-confirm it
+            self._sizes[name] = max(self._sizes.get(name, 0.0), total_bytes)
+            if self.phase in ("resolving", "preparing"):
+                # Same reasoning as the `Downloading`-line branch in `feed` —
+                # and done FIRST, before the completed-on-first-report check
+                # below: a package that is already fully landed the very
+                # first time it is reported (a small file, or two `select()`
+                # ticks apart) must still pass through `downloading` on its
+                # way to `preparing`, or `_mark_downloaded_locked`'s own
+                # "did everything just land" check — which requires
+                # `phase == "downloading"` — would never fire, and the phase
+                # would stay `resolving` forever.
+                self.phase = "downloading"
+            if self._sizes[name] > 0 and done_bytes >= self._sizes[name]:
+                # The pty gives no separate "Downloaded" confirmation the way
+                # a pipe does (see `feed`'s docstring) — reaching the
+                # announced total off this row IS the confirmation.
+                self._mark_downloaded_locked(name)
+                return
+            self._inflight[name] = max(self._inflight.get(name, 0.0), done_bytes)
+
+    def snapshot(self, elapsed):
+        """`(activity, bytes_done, bytes_total)` right now.
+
+        `activity` is None before the first `Downloading` line/pty progress
+        row and after the final `Installed` line — the two states in which
+        this has nothing to add over the stage word already being reported,
+        which is the contract `_ensure_venv` (fused_render/ai/supervisor.py)
+        relies on to fall back cleanly. It is also None whenever nothing has
+        actually been ANNOUNCED yet even though a later phase was reached —
+        a fully-cached sync prints `Prepared`/`Installed` with no
+        `Downloading` line at all, and `(word, 0, 0)` would render as a bare
+        "0" in the frontend's byte column (`jobAmount`,
+        `frontend/src/platform/lib/jobs.ts`) instead of nothing. `0` is a
+        real, meaningful download size; "never announced" is not the same
+        fact and must not be spelled the same way.
+
+        **The phrase never carries the byte magnitudes — only what the
+        numbers cannot express: which package, and elapsed time.**
+        `activity` has exactly one consumer, `supervisor._ensure_venv`, and
+        that same call site ALSO sets `done`/`total`/`unit="bytes"` on the
+        job row from this same tuple's other two members — so whenever the
+        phrase is shown, the row is already rendering the numbers
+        (`jobAmount` + `dl-pct`, `frontend/src/platform/lib/jobs.ts`). A
+        phrase reading `"downloading torch — 259.2 MB of 5.8 GB"` printed a
+        SECOND pair right next to the row's own `0.25 / 5.76 GB` — the same
+        "one number pair, two renderers, one row" defect already fixed once
+        for the Denoising caption (`torch_image.py`) — and the two did not
+        even agree: `jobAmount` scales both sides by the larger value, while
+        the phrase's own formatting scaled each side independently (the
+        helper that did that, `_format_bytes`, was removed with this fix —
+        its only caller), so one instant produced two different-looking
+        numbers for a user not even trying to compare them.
+        """
+        with self._lock:
+            phase = self.phase
+            if phase in ("resolving", "installed"):
+                return None, None, None
+            # Copies taken UNDER the lock: iterating a `list`/`set`/`dict`
+            # COPY after releasing the lock is still safe even if `feed`/
+            # `feed_pty_progress` mutate the originals concurrently, but the
+            # copy itself must happen while the lock is held, or the copy
+            # operation is the very iteration racing a mutation this lock
+            # exists to prevent.
+            sizes = dict(self._sizes)
+            downloaded = frozenset(self._downloaded)
+            inflight = dict(self._inflight)
+        total = sum(sizes.values())
+        if total == 0:
+            # Nothing has been ANNOUNCED at all — see the docstring above.
+            return None, None, None
+        # Confirmed bytes PLUS whatever a pty says is in flight for the rest
+        # — `inflight` is empty in piped mode (nothing ever populates it
+        # there), so this is exactly the old `done` sum on a pipe and a
+        # finer one on a pty.
+        done = sum(sizes[name] for name in downloaded if name in sizes)
+        done += sum(inflight.get(name, 0.0) for name in sizes if name not in downloaded)
+        done = min(done, total)  # see the class docstring: belt, not suspenders
+        if phase == "downloading":
+            pending = [(name, size) for name, size in sizes.items()
+                      if name not in downloaded]
+            # Named for the biggest package still in flight — concurrency is
+            # 50, so several may be downloading at once, and the biggest is
+            # the one most likely to be why the bar is not moving. No bytes
+            # here — see the docstring above for why the row's own numbers
+            # are the only place they may appear.
+            biggest = max(pending, key=lambda kv: kv[1])[0] if pending else None
+            phrase = ("downloading %s (%s)" % (biggest, elapsed) if biggest
+                      else "downloading (%s)" % elapsed)
+            return phrase, done, total
+        # preparing / installing: every announced byte has already landed
+        # (done == total by construction), but uv is not finished — it is
+        # unpacking wheels and linking them into the venv, which the wording
+        # says explicitly rather than letting the bar read as stuck at 100%.
+        word = "preparing" if phase == "preparing" else "installing"
+        return "%s packages (%s)" % (word, elapsed), total, total
+
+
+#: Bound on how much of uv's stderr is kept for a failure message: the LAST
+#: this many lines, dropping older ones as new ones arrive. `_build`'s error
+#: text must stay verbatim (SPEC PY-18 — a resolver error naming a missing
+#: wheel is the actual answer a user needs), but "verbatim" cannot mean
+#: "unbounded": a pathological or merely chatty uv run must not turn a
+#: multi-GB install into a multi-GB progress reporter. 400 lines comfortably
+#: covers every failure transcript this codebase has seen from uv (a
+#: resolver conflict is a handful of lines; even a noisy dependency-graph
+#: dump does not run to hundreds), while capping memory at a small, fixed
+#: multiple of a typical line's length.
+_STDERR_RING_LINES = 400
+
+
+# --------------------------------------------------------------------------
+# In-flight bytes inside ONE package, off a pty (Item 3 of the streaming
+# feature, dropped once and revived here for a reason worth stating).
+#
+# Package-level progress (above) still leaves a venv dominated by one huge
+# wheel — the ROCm/CUDA torch install this whole feature shipped to fix —
+# reporting nothing for however long that single file takes, because there
+# is no SECOND package landing to move the aggregate. Measuring uv's own
+# cache-directory growth for that was investigated once already and
+# dropped: it tracks UNPACKED size, several times the compressed transfer,
+# with no single file to stat as "bytes so far" (see `_UvProgress`'s
+# docstring for that finding, still true and still why this is not built on
+# the cache directory).
+#
+# What changed is where to look instead. uv only prints per-package IN-FLIGHT
+# bytes when it believes stdout is a terminal — pointed at a pipe it never
+# announces anything between "Downloading" and "Downloaded" for one file, but
+# under a pty (confirmed empirically: `pty.openpty()` + a real `uv sync`,
+# transcript captured with per-chunk timestamps) it redraws a live multi-line
+# bar, ANSI escapes and all, e.g. — after stripping the escapes:
+#
+#   Preparing packages... (0/2)  numpy   ------------------------------  6.31 MiB/15.94 MiB
+#                                 scipy   ------------------------------  6.14 MiB/33.68 MiB
+#
+# — refreshed every few milliseconds while the download runs, which is
+# exactly the missing signal. uv prints NO "Downloading"/"Downloaded" lines
+# at all once it is on a tty (also confirmed empirically) — the live bar
+# replaces them, it does not supplement them — so `_PtyProgressReader` below
+# feeds the SAME `_UvProgress` through a second entry point
+# (`feed_pty_progress`) rather than a parallel one, and the plain-line parser
+# (`feed`) stays exactly as built: it is what still catches
+# `Resolved`/`Prepared`/`Installed`, which uv prints identically either way.
+#
+# **The separator between a redraw and a PERMANENT line is a CR, not an
+# LF.** A real capture, replayed byte-for-byte, is instructive here: 31,631
+# bytes for a two-package sync carried 277 carriage returns and only 7
+# newlines. uv's actual shape is one CR-separated frame after another,
+# with a permanent line reached by one more CR before the LF that finally
+# ends it. `_PtyProgressReader` therefore splits on the CHARACTER CLASS
+# (either separator), not on LF alone — the bug that shipped first split
+# only on LF, so the reconstructed "line" was the entire multi-KB redraw
+# history glued to whatever permanent text followed it, which none of the
+# anchored regexes below ever matched: `phase` stuck at `downloading`
+# forever, confirmed by replaying the capture.
+#
+# POSIX only, and optional even there. `pty` does not exist on Windows —
+# guarded at import time above — and pty SETUP (not the sync itself) can fail
+# on a POSIX box with no `/dev/ptmx` available (a locked-down container,
+# some CI sandboxes). Either way this must never be the reason an install
+# fails: `_PtyUnavailable` is raised only for a failure BEFORE `uv sync` is
+# spawned, so `_build` can fall back to the ORIGINAL, already-tested pipe
+# path with no risk of running uv twice.
+class _PtyUnavailable(Exception):
+    """A pty could not be set up for this sync. Raised only before the uv
+    child is spawned — see the module comment above `_PtyUnavailable`."""
+
+
+#: Strips ANSI CSI sequences (`ESC [ ... letter`) — cursor movement
+#: (`\x1b[1A`), line-clear (`\x1b[2K`) and colour (`\x1b[36m`) are all this
+#: shape in uv's own output; confirmed against a real transcript rather than
+#: assumed. uv is not observed to use any other escape family (OSC, DCS), so
+#: this is scoped to what was actually seen, not to "ANSI in general".
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+#: uv's own frame/line separator, RAW BYTES, before any decoding: a bare
+#: carriage return between live redraws, CR-then-LF before a permanent one
+#: (see the module comment above `_PtyUnavailable`). Splitting BYTES, not
+#: decoded text — see `_PtyProgressReader.feed_bytes` for why decoding has
+#: to happen AFTER this split, not before it. Splitting on the CHARACTER
+#: CLASS, not on the two bytes as one token, because consecutive redraws
+#: are CR-only with no LF at all — treating CRLF as one inseparable unit
+#: would still glue every redraw frame onto the permanent line that finally
+#: follows it, which is the exact bug this replaced.
+_PTY_LINE_SPLIT_RE = re.compile(rb"[\r\n]")
+
+#: One package's live progress row, after `_ANSI_RE` has stripped the escapes
+#: around it: `<name>` padded with spaces, a dash-filled bar of variable
+#: width, then `<done> <unit>/<total> <unit>` — WITH a space between the
+#: number and unit here (unlike the piped `Downloading name (15.9MiB)` form,
+#: which has none; both are handled, `_DOWNLOADING_RE`'s pattern tolerates
+#: either). `{5,}` on the bar run is deliberately loose (dashes, spaces, or a
+#: fill character a future uv version might use) rather than pinned to
+#: exactly what was observed, since the bar's APPEARANCE is not the signal —
+#: the trailing numbers are.
+_PTY_PROGRESS_RE = re.compile(
+    r"(\S+)[ \t]+[-#\s]{5,}([\d.]+)\s*(B|KiB|MiB|GiB)/([\d.]+)\s*(B|KiB|MiB|GiB)")
+
+#: Text markers of a live-redraw fragment that carries no per-package row of
+#: its own (yet) — the "Preparing packages... (n/m)" header before any row
+#: has appeared, the "Resolving dependencies..." spinner that precedes it,
+#: and "Installing wheels..." — the header of the DIFFERENT bar uv draws
+#: while linking (see `_PTY_INSTALL_ROW_RE` below for its per-package row).
+#: A fragment matching any of these — OR `_PTY_PROGRESS_RE`, OR
+#: `_PTY_SPINNER_RE`, OR `_PTY_INSTALL_ROW_RE` — is chrome: kept OUT of the
+#: ring `_build` raises on failure with (SPEC PY-18), because it is not uv's
+#: diagnosis, it is the redraw ahead of it. A REAL capture of a resolver
+#: failure measured a 1,303-character spinner/redraw prefix ahead of the
+#: actual "No solution found" text — exactly what this exists to strip
+#: before that text ever reaches a `RuntimeError`.
+_PTY_CHROME_MARKERS = ("Preparing packages...", "Resolving dependencies...",
+                       "Installing wheels...")
+
+#: A live-redraw fragment starts with one of uv's spinner glyphs (the
+#: Braille Patterns Unicode block) in every capture taken so far — the
+#: resolving spinner, the per-package "name==version" resolver status, and
+#: the DOWNLOAD bar all begin this way, while every PERMANENT line
+#: (`Resolved`/`Prepared`/`Installed`, uv's own error text) does not. Used
+#: as an independent chrome signal alongside the others — belt and
+#: suspenders, because a locale or terminal this was not captured against
+#: could plausibly pick a different (ASCII) spinner character set, and a
+#: false NEGATIVE here (a chrome fragment let through to the ring) is only
+#: noise, while a false POSITIVE (real diagnosis text mistaken for chrome)
+#: is silent data loss — so nothing is excluded from the ring on this
+#: signal alone unless the others also miss it, biasing toward keeping
+#: unrecognised text rather than discarding it.
+_PTY_SPINNER_RE = re.compile("^[⠀-⣿]")
+
+#: The INSTALL-phase bar's per-package row — a different shape than the
+#: download bar entirely, block glyphs and a `[n/m]` counter rather than a
+#: spinner and a byte-size row: `'░░░░░░░░░░░░░░░░░░░░ [7/30]
+#: markdown-it-py==4.2.0'`, observed verbatim in a real capture. Missed by
+#: every OTHER chrome signal (`_PTY_PROGRESS_RE` needs a byte-size row that
+#: this shape does not have; it has no spinner glyph; "Installing wheels..."
+#: is its header, not its per-row text) — measured letting 24 of 55 "genuine"
+#: ring lines through from a link phase that took 5ms, which for the
+#: multi-GB torch case (a minutes-long link, hundreds of these rows, against
+#: `_STDERR_RING_LINES` = 400) is exactly the flooding the classifier exists
+#: to prevent, on the failures a real Permission/disk-space error would
+#: raise from that phase.
+_PTY_INSTALL_ROW_RE = re.compile(r"^[░█\s]*\[\d+/\d+\]")
+
+#: Bound on the RAW BYTES kept between reads while looking for a split
+#: point. Now that a split point is a CR OR an LF (see
+#: `_PTY_LINE_SPLIT_RE`), the carry is ordinarily short — just the
+#: still-arriving tail of the CURRENT frame — but the cap stays as a
+#: defensive bound against a pathological stretch of output with no
+#: separator at all for an extended run. Only the tail matters if it is
+#: ever hit: a value already extracted is in the tracker via its
+#: max()-based aggregation (`_UvProgress.feed_pty_progress`), and a row cut
+#: off at the cut point reappears whole on the very next frame,
+#: milliseconds later. Never actually reached against a real capture (the
+#: largest single frame measured was 1,920 characters, uv's own 80x24
+#: fallback-terminal-size ceiling before `_run_uv_via_pty` started setting
+#: a real winsize).
+_PTY_CARRY_MAX = 8192
+
+#: How close to its own announced total a package's LAST-SEEN in-flight
+#: reading has to be before a name vanishing from the live display is
+#: trusted as "finished" (`_UvProgress.feed_pty_frame`). Exists because a
+#: displaced-not-finished row looks IDENTICAL to a finished one from here —
+#: both simply stop appearing — and `_run_uv_via_pty` now sets a tall
+#: winsize specifically so uv never has to clamp the bar and displace a row
+#: (see that function), but this is the second layer that still catches a
+#: displacement if that assumption ever breaks (a future uv raising its
+#: concurrency past what the winsize covers, a platform that ignores
+#: `TIOCSWINSZ`). Measured on a real 149-package capture: every GENUINELY
+#: finished row's last reading was at least this close to its total; the 44
+#: WRONGLY-vanished ones (some clamped out at 0 B) were all under 90%.
+_PTY_NEAR_TOTAL_FRACTION = 0.90
+
+
+class _PtyProgressReader:
+    """Feeds one `_UvProgress` from a pty's raw output: split on a CR OR an
+    LF into uv's own frames/lines (see the module comment for why the CR
+    matters), THEN decoded and ANSI-stripped, each one scanned for
+    `_PTY_PROGRESS_RE`'s in-flight byte rows and handed to the ORIGINAL
+    line-based parser (`feed`).
+
+    **The split happens on RAW BYTES, before decoding or ANSI-stripping —
+    not the other way around.** An earlier version decoded and stripped
+    PER READ, then joined the result with the text carry: `text =
+    _ANSI_RE.sub("", raw.decode(...)); buf = self._carry + text`. Both a
+    UTF-8 multi-byte character and an ANSI escape sequence can straddle a
+    `read()` boundary — a pty's kernel buffer is only ~4KiB, so a read
+    truncates there whenever uv outruns the reader — and decoding/stripping
+    before the halves are ever rejoined leaves the torn piece unfixable: a
+    replayed real failure capture at 4KiB reads left 11 bare ESC bytes
+    sitting in decoded text that `_ANSI_RE` could no longer recognise as an
+    escape (its other half was in the PREVIOUS read, already stripped), and
+    one of those leaked straight into the ring as `'\\x1b[1B'` between a
+    permanent line and uv's own diagnosis. Splitting on the raw bytes first
+    is safe because neither a CR nor an LF byte value can occur INSIDE a
+    valid ANSI CSI sequence or a UTF-8 continuation byte (both are
+    restricted byte ranges that exclude 0x0D/0x0A) — so accumulating raw
+    bytes until a real separator appears, and decoding only once a
+    complete, separator-delimited fragment exists, cannot tear either one.
+
+    Only GENUINE, permanent lines are returned for the caller's ring buffer
+    (SPEC PY-18's verbatim-error contract) — a live-redraw fragment (a
+    download-bar frame, an install-bar frame, either spinner) is chrome,
+    identified inline below, and must never reach it: a bounded ring
+    flooded with near-duplicate redraws is how a real resolver failure's
+    own diagnosis gets pushed out by
+    `_STDERR_RING_LINES`, or arrives mid-way through a single multi-KB
+    "line" that is mostly bar frames — both measured against real captures
+    before this fix.
+    """
+
+    def __init__(self, tracker):
+        self._tracker = tracker
+        self._carry = b""
+
+    def feed_bytes(self, raw):
+        """One read()'s worth of raw pty bytes. Returns the complete,
+        GENUINE (non-chrome) lines found, for the caller to append to its
+        ring."""
+        buf = self._carry + raw
+        *complete, self._carry = _PTY_LINE_SPLIT_RE.split(buf)
+        lines = []
+        for frag_bytes in complete:
+            if not frag_bytes:
+                continue
+            # Decoded and ANSI-stripped ONLY now that `frag_bytes` is known
+            # complete (bounded by two real separators) — see the class
+            # docstring for why this order is the fix.
+            frag = _ANSI_RE.sub("", frag_bytes.decode("utf-8", errors="replace"))
+            if not frag:
+                continue
+            matches = list(_PTY_PROGRESS_RE.finditer(frag))
+            names_here = set()
+            for m in matches:
+                name, done_v, done_u, total_v, total_u = m.groups()
+                names_here.add(name)
+                self._tracker.feed_pty_progress(
+                    name,
+                    float(done_v) * _UNIT_BYTES[done_u],
+                    float(total_v) * _UNIT_BYTES[total_u],
+                )
+            is_chrome = bool(matches) or bool(_PTY_SPINNER_RE.match(frag)) or \
+                bool(_PTY_INSTALL_ROW_RE.match(frag)) or \
+                any(marker in frag for marker in _PTY_CHROME_MARKERS)
+            if is_chrome:
+                # Part of the live "Preparing packages..." block — tell the
+                # tracker what it showed, so a name that VANISHES between
+                # this frame and the next (uv stops redrawing a row the
+                # instant it lands; it confirms nothing under a tty the way
+                # a pipe's `Downloaded` line does) is recognised as finished.
+                # See `_UvProgress.feed_pty_frame`.
+                self._tracker.feed_pty_frame(names_here)
+            self._tracker.feed(frag)
+            if not is_chrome:
+                lines.append(frag)
+        if len(self._carry) > _PTY_CARRY_MAX:
+            # See the constant's own comment: only the tail can still become
+            # a real line, and a stale prefix has already been mined for
+            # whatever progress rows it held. Truncating raw bytes can cut a
+            # multi-byte UTF-8 character at the boundary; `errors="replace"`
+            # above turns that into one U+FFFD, not a crash.
+            self._carry = self._carry[-_PTY_CARRY_MAX:]
+        return lines
+
+
+def _run_uv_piped(cmd, cwd, env, tracker):
+    """`uv sync` behind an ordinary pipe: the ORIGINAL streaming path (before
+    the pty), kept byte-for-byte as the fallback every platform still gets
+    when a pty is unavailable or unsupported (Windows, always; a POSIX
+    sandbox with no `/dev/ptmx`). Returns `(returncode, ring)`.
+
+    `stdout=DEVNULL, stderr=PIPE`: uv's own progress text goes to STDERR
+    (confirmed by probe), so stdout has nothing this needs and piping it too
+    would only be a second buffer to drain. Streamed line by line rather
+    than read all at once so a heartbeat elsewhere can see `tracker`'s state
+    WHILE uv is still running.
+
+    `with Popen(...)` PLUS an explicit `kill()` on any exception — the same
+    two-part discipline `subprocess.run` itself uses internally (its source
+    is `with Popen(...) as process: try: ... except: process.kill(); raise`).
+    The `with` alone is not enough: `Popen.__exit__` only closes the pipes
+    and calls `wait()`, it does NOT kill.
+    """
+    ring = collections.deque(maxlen=_STDERR_RING_LINES)
+    # close_fds=False for posix_spawn rather than fork()+exec — the same
+    # discipline every other spawn in this codebase follows; see
+    # `_acquire_python` above.
+    with subprocess.Popen(cmd, cwd=cwd, env=env,
+                          stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                          text=True, bufsize=1, close_fds=False,
+                          encoding="utf-8", errors="replace",
+                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0) as proc:
+        try:
+            for line in proc.stderr:
+                line = line.rstrip("\n")
+                ring.append(line)
+                tracker.feed(line)
+        except BaseException:
+            proc.kill()
+            raise
+    return proc.returncode, ring
+
+
+#: Rows/columns set on the pty before uv is spawned — tall enough that uv
+#: never has to clamp its live bar and displace a row out of view. See
+#: `_UvProgress.feed_pty_frame`'s docstring for what happens when it does:
+#: a real 149-package capture measured 44 names wrongly confirmed
+#: "downloaded" because they had simply scrolled off screen while still
+#: transferring. `pty.openpty()` sets NO winsize at all, which is why uv
+#: fell back to its own 80x24 default in every capture taken before this
+#: fix — every single frame measured exactly 1920 = 24*80 characters — while
+#: downloading up to 50 wheels concurrently. 200 rows is comfortably above
+#: that concurrency ceiling, with margin for a future uv raising it further;
+#: the width matters less (a name plus its byte row fits well inside 80
+#: columns) but costs nothing to widen too, since a virtual terminal size
+#: is two integers, not a real allocation.
+_PTY_WINSIZE_ROWS = 200
+_PTY_WINSIZE_COLS = 200
+
+
+def _set_pty_winsize(fd):
+    """Best-effort: tell the pty at *fd* it is `_PTY_WINSIZE_ROWS` x
+    `_PTY_WINSIZE_COLS` — see those constants for why. Never raises: a
+    `TIOCSWINSZ` failure (an exotic platform, a non-tty fd) is not worth
+    failing an install over. This is the FIRST layer against uv clamping
+    its bar; `_UvProgress.feed_pty_frame`'s near-total-fraction check is
+    the second, and stays in place regardless of whether this one works —
+    belt and suspenders, the same discipline `_PTY_SPINNER_RE`'s own
+    comment argues for.
+    """
+    try:
+        winsize = struct.pack("HHHH", _PTY_WINSIZE_ROWS, _PTY_WINSIZE_COLS, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
+
+
+def _run_uv_via_pty(cmd, cwd, env, tracker):
+    """`uv sync` under a pty, so it prints the live in-flight bytes it
+    suppresses for a pipe (see the module comment above `_PtyUnavailable`).
+    Returns `(returncode, ring)` — same shape as `_run_uv_piped`, so `_build`
+    treats the two identically once either has returned.
+
+    Raises `_PtyUnavailable` only for a SETUP failure before `uv sync` is
+    spawned (`pty.openpty()` itself failing — no `/dev/ptmx`, an exhausted
+    pty allocation), which is what makes falling back to `_run_uv_piped`
+    always safe: the child never started, so there is no risk of running uv
+    twice. Once the child IS running, any exception here is genuine (kill,
+    WAIT — matching `_run_uv_piped`'s own discipline, since `kill()` alone
+    leaves the reap to nobody while `install()` writes the error record —
+    then re-raise). It does NOT fall back, because a second `uv sync`
+    racing the first one's still-live process would be worse than the
+    original failure.
+
+    `stdin=subprocess.DEVNULL`, not the slave fd: uv's bar keys off
+    stdout/stderr, so stdin being a real terminal buys this feature nothing.
+    What it WOULD cost: anything in the sync that reads stdin (a prompt uv
+    decides to show, a subprocess of its own) blocks forever, because
+    nothing on our side ever writes to the master — and neither this loop's
+    `poll()` nor `proc.wait()` below carries a deadline that would notice.
+    `DEVNULL` makes such a read fail immediately, exactly as it did before
+    this feature (a plain pipe with `stdin=DEVNULL`) — a behaviour change
+    here would be a regression nothing about the pty NEEDS.
+
+    `close_fds=False`, matching every other spawn in this file (see
+    `_acquire_python`): the child inherits an extra, unused copy of
+    `master_fd` as a result, which is harmless — it is closed the moment the
+    child exits — and consistency here is worth more than trimming one
+    inherited descriptor `close_fds=True` would also cost the posix_spawn
+    path on a system without `POSIX_SPAWN_CLOSEFROM`.
+
+    `select.poll()`, not `select.select()`: `select()` raises `ValueError`
+    for a watched fd at or above `FD_SETSIZE` (1024) — reachable here, since
+    this worker inherits whatever fds the server process already had open
+    (progress files, sockets) and a pty adds two more on top. `poll()` has
+    no such ceiling. This is not a defensive nicety: the ORIGINAL version of
+    this loop treated that `ValueError` (and any `OSError`) as "stop
+    watching" and broke out silently, still WAITING TO BE FIXED at the time
+    of writing — `master_fd` closes underneath a live `uv sync`, its next
+    write fails EIO, it dies, and `_build` raises "Failed to build the
+    environment for <proj>:\n" with an EMPTY ring: a failure with no
+    diagnosis at all, the worst possible outcome for PY-18.
+    """
+    try:
+        master_fd, slave_fd = pty.openpty()
+    except OSError as e:
+        raise _PtyUnavailable(str(e)) from e
+    # BEFORE the spawn, so uv's own startup terminal-size query already
+    # sees it — see `_set_pty_winsize`/`_PTY_WINSIZE_ROWS`.
+    _set_pty_winsize(slave_fd)
+    try:
+        proc = subprocess.Popen(cmd, cwd=cwd, env=env,
+                                stdin=subprocess.DEVNULL,
+                                stdout=slave_fd, stderr=slave_fd,
+                                close_fds=False)
+    except BaseException:
+        os.close(master_fd)
+        os.close(slave_fd)
+        raise
+    # Only the CHILD needs the slave end from here — holding our own copy
+    # open would stop us ever seeing EOF on `master_fd`, because a pty only
+    # signals "the other side is gone" once EVERY reference to the slave is
+    # closed, ours included.
+    os.close(slave_fd)
+    reader = _PtyProgressReader(tracker)
+    ring = collections.deque(maxlen=_STDERR_RING_LINES)
+    poller = select.poll()
+    poller.register(master_fd, select.POLLIN)
+
+    def _drain_once():
+        """One NON-BLOCKING read, if anything is ready right now — used to
+        pick up whatever uv wrote in the same instant it exited, which a
+        bare `break` on `proc.poll()` would otherwise drop on the floor."""
+        if not poller.poll(0):
+            return b""
+        try:
+            return os.read(master_fd, 65536)
+        except OSError:
+            return b""
+
+    try:
+        while True:
+            events = poller.poll(500)  # milliseconds
+            if events:
+                try:
+                    chunk = os.read(master_fd, 65536)
+                except OSError:
+                    # EIO is how a pty master reports "every copy of the
+                    # slave end is closed" on Linux — the ordinary, expected
+                    # end of output, not a real error.
+                    chunk = b""
+                if chunk:
+                    for line in reader.feed_bytes(chunk):
+                        ring.append(line)
+                    continue
+                break  # empty read or EIO: nothing more will ever arrive
+            if proc.poll() is not None:
+                # The child exited between two polls with nothing flagged
+                # ready — the ordinary path once uv is done. One more drain
+                # first (see `_drain_once`): uv can write its last line and
+                # exit in the same instant this poll's own 500ms timed out,
+                # and breaking immediately would lose exactly that.
+                chunk = _drain_once()
+                if chunk:
+                    for line in reader.feed_bytes(chunk):
+                        ring.append(line)
+                break
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        os.close(master_fd)
+    proc.wait()
+    return proc.returncode, ring
+
 
 
 def _acquire_python(version):
@@ -488,8 +1380,15 @@ def _sync_root(project_dir, venv_dir):
     return mirror
 
 
-def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
+def _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker=None):
     """`uv sync` the project into `venv_dir`; returns that venv's interpreter.
+
+    `tracker` is a `_UvProgress` that every line of uv's stderr is fed into as
+    it streams, for a heartbeat elsewhere to read concurrently — `install()`
+    is the only real caller and always passes one. It defaults to a
+    throwaway instance rather than being required so every existing direct
+    caller of `_build` (this module's own tests, mainly) keeps working
+    unchanged; nothing reads a tracker nobody handed in.
 
     An UNMARKED but existing venv directory is removed first. That is the D212
     repair, and it has to be a removal rather than a reconcile: the failure it
@@ -506,14 +1405,18 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
                               which for a core template would be destroyed by the
                               release-time re-stage and cost a full re-download of
                               numpy/pyproj/imagecodecs on every upgrade.
-      UV_CACHE_DIR            a sibling of the venv store, so cache and target are
-                              on ONE filesystem and uv's hardlinks actually dedupe.
-                              Across filesystems uv silently falls back to full
-                              copies and every project pays for numpy again.
+      UV_CACHE_DIR            set ONLY when `uv_cache_dir` is not None — which is
+                              only when the caller asked for isolation
+                              (`FUSED_RENDER_HOME`; see `projectenv.uv_cache_dir()`).
+                              Ordinarily left UNSET, deferring to uv's own default
+                              cache rather than a sibling of the venv store: an
+                              explicit sibling used to be unconditional and
+                              fragmented per branch/worktree as a result — the
+                              trade `uv_cache_dir()` documents and accepts.
 
-    `UV_LINK_MODE` is deliberately NOT set: uv already prefers hardlinks and
-    degrades on its own, and pinning it here would override a user who had a
-    reason to choose otherwise.
+    `UV_LINK_MODE` is deliberately NOT set either way: uv already prefers
+    hardlinks and degrades on its own, and pinning it here would override a
+    user who had a reason to choose otherwise.
 
     It runs in `_sync_root(project_dir, venv_dir)` rather than in `project_dir`
     itself — the same directory in every case a folder can be written to, and a
@@ -568,27 +1471,66 @@ def _build(project_dir, venv_dir, uv_cache_dir, python_executable):
     # dependency uv has to BUILD rather than download as a wheel failed inside
     # the packaged macOS app (D266); without the second, uv warns and can target
     # the server's own venv.
-    env = _uv_env(UV_PROJECT_ENVIRONMENT=venv_dir, UV_CACHE_DIR=uv_cache_dir)
+    env = _uv_env(UV_PROJECT_ENVIRONMENT=venv_dir)
+    if uv_cache_dir:
+        # ONLY when the caller asked for an isolated cache
+        # (`envinstall._spawn` passes `projectenv.uv_cache_dir()`, which is
+        # non-None only under `FUSED_RENDER_HOME`). Otherwise `UV_CACHE_DIR`
+        # is left OUT of `env` entirely — not set to an empty string, which
+        # uv would treat as a real, nonsensical path — so uv resolves
+        # whatever it would for any other command a user ran: an AMBIENT
+        # `UV_CACHE_DIR` already in this process's environment (`_uv_env`'s
+        # base is a plain `dict(os.environ)` copy, so it is never stripped —
+        # CI's own `setup-uv` action exports one), or failing that its own
+        # platform default (XDG on Linux, `~/.cache/uv` on macOS too,
+        # `%LOCALAPPDATA%` on Windows). See `projectenv.uv_cache_dir()` for
+        # why an explicit sibling of the venv store is no longer the
+        # unconditional choice: it made cache-target hardlinking work BY
+        # CONSTRUCTION, and fragmented the cache per branch/worktree as an
+        # unintended side effect of doing so.
+        os.makedirs(uv_cache_dir, exist_ok=True)
+        env["UV_CACHE_DIR"] = uv_cache_dir
 
     os.makedirs(os.path.dirname(venv_dir), exist_ok=True)
-    os.makedirs(uv_cache_dir, exist_ok=True)
     # After the makedirs above (the mirror is a SIBLING of the venv, so its parent
     # is the one they create) and after the unmarked-venv removal (which must not
     # be able to take the mirror's lock with it).
     sync_root = _sync_root(project_dir, venv_dir)
-    # close_fds=False for posix_spawn rather than fork()+exec — the same discipline
-    # every other spawn in this codebase follows; see `_acquire_python` above.
-    proc = subprocess.run(cmd, cwd=sync_root, env=env,
-                          capture_output=True, text=True, close_fds=False,
-                          encoding="utf-8", errors="replace",
-                          creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-    if proc.returncode != 0:
+    if tracker is None:
+        tracker = _UvProgress()  # nobody is watching; feed it anyway for one code path
+
+    # Pty first, pipe as the fallback — POSIX only, and only when the pty
+    # module actually loaded (it does not exist on Windows) and its SETUP
+    # succeeds (see `_run_uv_via_pty`'s docstring for what "setup" means and
+    # why a failure there, and only there, is safe to fall back from). Every
+    # other platform/failure keeps running exactly the path this feature
+    # shipped with — `_run_uv_piped` is that same code, unchanged, just
+    # pulled into its own function so this call site could pick either.
+    if pty is not None and os.name != "nt":
+        try:
+            returncode, ring = _run_uv_via_pty(cmd, sync_root, env, tracker)
+        except _PtyUnavailable:
+            returncode, ring = _run_uv_piped(cmd, sync_root, env, tracker)
+    else:
+        returncode, ring = _run_uv_piped(cmd, sync_root, env, tracker)
+
+    if returncode != 0:
         # Verbatim: uv's own text names the real problem (no wheel for this
         # platform, a bad pin, no network, a lock that no longer matches the
-        # manifest), and that is the answer the user needs.
+        # manifest), and that is the answer the user needs. The ring holds the
+        # TAIL of stderr rather than all of it (see `_STDERR_RING_LINES`),
+        # which is the part that matters for a failure — uv prints its
+        # diagnosis right before exiting, not at the top of a long resolve.
+        # Under a pty, `_PtyProgressReader` splits on a CR OR an LF (uv's
+        # own frame/line separator — see the module comment above
+        # `_PtyUnavailable`) and filters out whatever is chrome (a bar
+        # frame, the resolving spinner) before a fragment ever reaches this
+        # ring, so a resolver failure's own text — confirmed against a real
+        # one — reaches here exactly as readable as it always was, merged
+        # stdout+stderr or not.
         raise RuntimeError(
             "Failed to build the environment for %s:\n%s"
-            % (project_dir, (proc.stderr or proc.stdout).strip())
+            % (project_dir, "\n".join(ring).strip())
         )
 
     venv_python = _venv_python(venv_dir)
@@ -641,11 +1583,13 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
     write_lock = threading.Lock()
     finished = []
 
-    def write(stage, pct, detail="", done=False, error=None):
+    def write(stage, pct, detail="", done=False, error=None,
+              activity=None, bytes_done=None, bytes_total=None):
         with write_lock:
             if finished:
                 return  # a terminal record is already on disk; nothing may follow it
-            _write(progress_dir, stage, pct, detail, done, error)
+            _write(progress_dir, stage, pct, detail, done, error,
+                   activity=activity, bytes_done=bytes_done, bytes_total=bytes_total)
             # Latched only once the record is actually ON DISK. Latching before the
             # write would make a FAILED terminal write shut the file anyway, and the
             # `except` path's error record — the one carrying the reason — would
@@ -656,18 +1600,30 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
             if done:
                 finished.append(True)
 
-    def with_heartbeat(stage, pct, detail, work):
+    def with_heartbeat(stage, pct, detail, work, progress=None):
         """Run `work()` while `stage` beats liveness onto the wire; returns its result.
 
         `pct` STAYS put for the whole step and the stage never changes: neither long
-        step in here has a computable percentage — upstream captures uv's output for
-        the packages, and `_acquire_python` captures it for the interpreter — and a
-        bar creeping upward on invented numbers is worse than an honest one that does
-        not move, because the number is the thing a waiting user trusts most. What
-        the beat refreshes is the elapsed time and `ts`, which is the only evidence
-        of liveness that reaches the wire. The client renders these stages as
-        indeterminate bars (runtime.js), so "alive but unquantified" is expressible
-        without lying.
+        step in here has a computable PERCENTAGE — `_acquire_python` still captures
+        its output wholesale, so the interpreter download stays exactly as
+        indeterminate as before — and a bar creeping upward on an invented
+        percentage is worse than an honest one that does not move, because the
+        number is the thing a waiting user trusts most. What the beat used to
+        refresh was only the elapsed time and `ts`, the sole evidence of liveness
+        on the wire. The client still renders `pct`/`stage` as an indeterminate
+        bar either way (runtime.js) — this is about what rides ALONGSIDE that bar,
+        not about replacing it.
+
+        `progress`, when given, is a `_UvProgress` some OTHER thread (`_build`,
+        streaming uv's stderr) is concurrently feeding lines into. Each beat reads
+        its `.snapshot(elapsed)` and reports whatever it has — `None`s before the
+        first `Downloading` line, same as if `progress` had never been passed at
+        all, which is the fallback `_ensure_venv` (supervisor.py) relies on. Left
+        as the default `None` for `_acquire_python`'s heartbeat: interpreter
+        downloads run through `subprocess.run(capture_output=True)` still (there
+        is exactly one file involved, so package-level progress does not apply),
+        and passing no tracker there is how that call keeps reporting precisely
+        what it always has.
 
         One helper for both steps rather than two copies of the thread: the beat's
         correctness is subtle (the daemon flag, the `finally`, the interaction with
@@ -683,7 +1639,12 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
             # beat that fires during teardown is exactly what the latch above exists
             # to absorb.
             while not stop.wait(_HEARTBEAT_S):
-                write(stage, pct, "%s (%s)" % (detail, _elapsed(time.time() - started)))
+                elapsed = _elapsed(time.time() - started)
+                activity = bytes_done = bytes_total = None
+                if progress is not None:
+                    activity, bytes_done, bytes_total = progress.snapshot(elapsed)
+                write(stage, pct, "%s (%s)" % (detail, elapsed),
+                      activity=activity, bytes_done=bytes_done, bytes_total=bytes_total)
 
         # Daemon: a heartbeat wedged in a write must never keep this process alive
         # after its record says done, or `_pid_alive` reads the installer as still
@@ -717,19 +1678,24 @@ def install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
             write("done", 100, "downloaded Python %s" % acquire_python, done=True)
             return
 
-        # `create` and `install` are reported as one call because that is the
-        # truth: `uv sync` does both behind capture_output=True, so the
-        # transition between them is not observable from out here. The two stages
-        # exist so the UI can say "preparing" before the long wait, not to imply
-        # progress inside it.
+        # `create` and `install` are reported as one call because `uv sync` does
+        # both in one invocation and the two stages exist so the UI can say
+        # "preparing" before the long wait, not to imply progress inside it —
+        # that much is unchanged. What HAS changed is that "install" is no
+        # longer a single unobservable pause: `_UvProgress` (fed by `_build`,
+        # below, as it streams uv's stderr) is what turns the beats during this
+        # stage from a bare elapsed-time keepalive into real bytes and a real
+        # phrase, whenever uv has printed anything to report.
         write("create", _CREATE_PCT, f"preparing the environment for {summary}")
         # `python_executable` is the server's own `_python_executable()`, handed
         # over rather than re-decided: the backend runs the code, so a different
         # interpreter here builds an environment the run cannot use.
+        tracker = _UvProgress()
         venv_python = with_heartbeat(
             "install", _INSTALL_PCT,
             f"resolving and installing the dependencies of {summary}",
-            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable),
+            lambda: _build(project_dir, venv_dir, uv_cache_dir, python_executable, tracker),
+            progress=tracker,
         )
         write("done", 100, f"installed into {os.path.dirname(os.path.dirname(venv_python))}",
               done=True)
@@ -773,10 +1739,12 @@ def main(args):
     """`<key> <progress_dir> <project_dir> <venv_dir> <uv_cache_dir>
     <python_executable> <acquire_python>`
 
-    The empty string means None in BOTH optional slots (argv cannot carry it):
-    translated here and nowhere else, so `install` receives the real values. Read as
-    the literal `""` instead, the last slot would have this worker try to download a
-    Python version called nothing on every ordinary install.
+    The empty string means None in ALL THREE optional slots (argv cannot carry
+    it): translated here and nowhere else, so `install` receives the real
+    values. Read as the literal `""` instead, `uv_cache_dir` would hand `_build`
+    a directory named nothing to create and point `UV_CACHE_DIR` at, and the
+    last slot would have this worker try to download a Python version called
+    nothing on every ordinary install.
     """
     _detach()
     if len(args) < 7:
@@ -784,7 +1752,7 @@ def main(args):
         sys.exit(2)
     (key, progress_dir, project_dir, venv_dir, uv_cache_dir,
      python_executable, acquire_python) = args[:7]
-    install(key, progress_dir, project_dir, venv_dir, uv_cache_dir,
+    install(key, progress_dir, project_dir, venv_dir, uv_cache_dir or None,
             python_executable or None, acquire_python=acquire_python or None)
 
 

@@ -21,6 +21,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
+from fused_render.shell import fda as shell_fda
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -81,6 +82,11 @@ router = APIRouter()
 
 @router.get("/api/fs/stat")
 def api_fs_stat(path: str):
+    # The moment this app reads under a TCC-protected folder is the moment
+    # macOS starts prompting — which is when (and only when) the Full Disk
+    # Access nudge becomes worth showing (shell/fda.py). First line bails,
+    # so the steady-state cost is one bool read.
+    shell_fda.note_touch(path)
     # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
     # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
     # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
@@ -145,6 +151,9 @@ def api_fs_conditions(path: str):
 
 @router.get("/api/fs/list")
 def api_fs_list(path: str, cursor: str | None = None):
+    # See api_fs_stat: browsing into a protected folder is what makes the
+    # FDA nudge relevant.
+    shell_fda.note_touch(path)
     # A mount-backed listing must never issue kernel filesystem I/O: both
     # os.path.isdir and os.scandir below are kernel READDIR/GETATTR calls,
     # and on a flat remote prefix with millions of keys rclone's VFS must

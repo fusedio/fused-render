@@ -39,11 +39,11 @@ becomes `return`.
 **The request envelope is closed (D413) and this module does not re-check
 it.** An option the server does not recognise comes back as a 400 from the
 server itself — keeping a third copy of the whitelist here (beside
-`runtime.js`'s and the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`)
-is exactly how the three would drift. The `_IMAGE_WIRE_KEYS`/
-`_TRANSCRIBE_WIRE_KEYS` sets below exist ONLY so a test can pin them against
-the server's own constants — they name what this module forwards, not a
-gate it enforces.
+`runtime.js`'s and the server's own `_IMAGE_OPTIONS`/`_TRANSCRIBE_OPTIONS`/
+`_EMBED_OPTIONS`) is exactly how the three would drift. The
+`_IMAGE_WIRE_KEYS`/`_TRANSCRIBE_WIRE_KEYS`/`_EMBED_WIRE_KEYS` sets below
+exist ONLY so a test can pin them against the server's own constants — they
+name what this module forwards, not a gate it enforces.
 """
 from __future__ import annotations
 
@@ -111,6 +111,13 @@ _IMAGE_WIRE_KEYS = frozenset(
 _TRANSCRIBE_WIRE_KEYS = frozenset(
     {"path", "model", "language", "task", "initialPrompt", "vad", "diarize",
      "speakers", "words"})
+#: …and `/api/ai/embed`'s, pinned against `_EMBED_OPTIONS` the same way.
+#: `kind` is the member worth naming: it is refused per MODEL rather than
+#: per endpoint (a dual encoder has no retrieval convention), so a client
+#: that could not send it would leave every retrieval model embedding
+#: queries as documents — unit-length vectors of the right dimension, and
+#: worse, with nothing a caller could measure to say so.
+_EMBED_WIRE_KEYS = frozenset({"texts", "paths", "model", "kind"})
 
 
 class ServerNotRunning(Exception):
@@ -601,10 +608,33 @@ def image(prompt: str, model: str | None = None, width: int | None = None,
 
 
 def embed(texts: list | None = None, paths: list | None = None,
-          model: str | None = None, timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
+          model: str | None = None, kind: str | None = None,
+          timeout: float = _DEFAULT_TIMEOUT_S) -> dict:
     """`POST /api/ai/embed`. Not job-backed (`/api/ai/embed`'s own docstring:
     one forward pass over a short batch, over before a progress row would
-    ever draw) — the reply IS the result, exactly one of `texts`/`paths`."""
+    ever draw) — the reply IS the result, exactly one of `texts`/`paths`.
+
+    **`paths` and `kind` are refused PER MODEL, not per endpoint** (SPEC §40),
+    and both refusals are the server's own `bad_request` naming the model:
+
+    * `paths` needs a vision tower. A dual encoder (SigLIP, CLIP) has one and
+      embeds pictures into the same space as its text, so a phrase can rank
+      photographs; a prose encoder has one tower and refuses.
+    * `kind` — `"query"` or `"document"` — needs a retrieval convention. A
+      retrieval encoder instructs a question differently from a passage, and
+      passing the wrong side is measurably worse than passing neither; a dual
+      encoder has no such convention and refuses the field rather than
+      accepting a parameter that would change nothing.
+
+    Omitted means `"document"`, which is the internally-consistent default:
+    every text in a corpus carries the same prefix, which is the symmetric
+    behaviour every one of these models supports. Embed a corpus as documents
+    once and each search as a query to get the asymmetric pair's full benefit.
+
+    `kind` is passed through only when given, for the same reason `model` is:
+    the server treats an absent key as "I did not say", and sending an explicit
+    default would turn a legal call on a dual encoder into a 400.
+    """
     if (texts is None) == (paths is None):
         raise AiError("bad_request", "pass exactly one of 'texts' or 'paths'")
     if paths is not None:
@@ -613,6 +643,8 @@ def embed(texts: list | None = None, paths: list | None = None,
         body = {"texts": list(texts)}
     if model is not None:
         body["model"] = model
+    if kind is not None:
+        body["kind"] = kind
     payload = _post_json("/api/ai/embed", body, timeout=timeout)
     if not payload.get("ok"):
         raise _error_from_payload(200, payload)

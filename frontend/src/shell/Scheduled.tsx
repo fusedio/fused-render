@@ -83,6 +83,17 @@ import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
 import { viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
+import { isUnderDir } from "./current-apps-lib";
+
+/** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
+ *  narrowed to one folder: every task whose project is `project` or sits inside
+ *  it. The scope is applied before the toolbar filters, so those still work
+ *  within it; nothing else about the page changes — same views, same modal,
+ *  same poll. The unscoped `/tasks` route passes nothing. */
+export interface TasksScope {
+  /** The app folder, canonical forward-slash — the value `Task.project` carries. */
+  project: string;
+}
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
@@ -99,6 +110,11 @@ const POLL_MS = 20000;
 // bare `/tasks`, which is how the page is opened from the sidebar. Both are
 // kept in step, so switching the view in one tab still greets the next visit
 // the same way.
+//
+// Shared with the app page's Tasks tab (AppPage.tsx, D488), which mounts this
+// same component scoped to one folder: picking Board there is remembered here
+// too. One page, one memory — a per-app key would make the same control forget
+// on every other app.
 const VIEW_KEY = "fused-render:scheduled-view";
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
@@ -108,7 +124,7 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
 
-export default function Scheduled() {
+export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
   // same rows (shell/tasksPulse) and would otherwise run a timer of its own
   // alongside this one — two calls to /api/tasks for one answer, at two
@@ -314,15 +330,22 @@ export default function Scheduled() {
   // Every folder that has a task, for the project filter. Derived from the
   // tasks themselves rather than from a separate call: the set of projects IS
   // "the folders these tasks are in", and any other source could disagree.
-  const projects = useMemo(() => projectOptions(tasks), [tasks]);
+  // The app page's scope, applied FIRST: `tasks` above stays the whole machine
+  // (it is what publishTasks hands the sidebar), and everything the page shows
+  // or offers to filter is derived from this narrowed set instead.
+  const inScope = useMemo(
+    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
+    [tasks, scope],
+  );
+  const projects = useMemo(() => projectOptions(inScope), [inScope]);
   // The Archive facet does not apply on the Calendar (see
   // tasks-lib.filtersForView): a hidden selection must never silently filter
   // that view's grid to nothing, so the query it runs drops "archived" from
   // the status list while the STORED `filters` — and therefore the popover's
   // tick and the badge on List/Board — stay exactly as the user left them.
   const shown = useMemo(
-    () => filterTasks(tasks, filtersForView(filters, view)),
-    [tasks, filters, view],
+    () => filterTasks(inScope, filtersForView(filters, view)),
+    [inScope, filters, view],
   );
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
@@ -371,9 +394,13 @@ export default function Scheduled() {
           what it is by shape, and the line under it was buying nothing but
           vertical space the views wanted. The app-must-be-running caveat lives
           where a person meets its consequence — the Queued strip. */}
-      <header className="schedule-header">
-        <h1>Tasks</h1>
-      </header>
+      {/* Scoped, the app page's own header names the app and the tab already
+          says "Tasks"; a second heading would be the page saying its name twice. */}
+      {!scope && (
+        <header className="schedule-header">
+          <h1>Tasks</h1>
+        </header>
+      )}
 
       {loadError && <ErrorBanner>Failed to load tasks: {loadError}</ErrorBanner>}
       {!state && !loadError && <SkeletonLines rows={2} label="Loading tasks" />}
@@ -395,8 +422,14 @@ export default function Scheduled() {
                 would be recognition traded for guessing (design-principles §4)
                 — and the marks are lucide's, at the same 14px every other glyph
                 on this page uses (ScheduleCalendar's `icon`). */}
-            <div className="schedule-form-seg" role="radiogroup" aria-label="View">
+            {/* `schedule-view-seg` and the per-button `data-view` are the Tasks
+                tour's anchors (platform/lib/tours/tasks.ts): three other
+                controls in the app wear `.schedule-form-seg` (the calendar's
+                range, the modal's Ends), so the shared class cannot name this
+                one. Styling still hangs off `.schedule-form-seg`. */}
+            <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
               <button type="button"
+                      data-view="list"
                       className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
@@ -404,6 +437,7 @@ export default function Scheduled() {
                 List
               </button>
               <button type="button"
+                      data-view="board"
                       className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
@@ -411,6 +445,7 @@ export default function Scheduled() {
                 Board
               </button>
               <button type="button"
+                      data-view="calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
@@ -513,8 +548,10 @@ export default function Scheduled() {
               // twenty seconds, not about correctness.
               onReload={reload}
               emptyLabel={
-                tasks.length === 0
-                  ? "No tasks yet. Everything Claude runs for you shows up here."
+                inScope.length === 0
+                  ? scope
+                    ? "No tasks for this app yet."
+                    : "No tasks yet. Everything Claude runs for you shows up here."
                   : "Nothing matches these filters."
               }
             />
@@ -542,7 +579,10 @@ export default function Scheduled() {
           // `openSeq` above.
           key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
-          initialTarget={newTarget}
+          // Scoped, a new task is a task FOR THIS APP: the folder is prefilled
+          // so the modal opens ready to type. A deep link's own target still
+          // wins — it named a folder on purpose.
+          initialTarget={newTarget ?? scope?.project ?? null}
           initialMessage={newMessage}
           chatSessionId={newSession}
           chatBack={newBack}

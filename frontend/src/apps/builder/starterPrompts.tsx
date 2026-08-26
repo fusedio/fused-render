@@ -594,6 +594,26 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
   },
 
   // -- Embeddings ------------------------------------------------------------
+  //
+  // **`kind` appears in exactly ONE of these five briefs, and that is the whole
+  // of the judgement here.** The default embeddings model is a RETRIEVAL encoder
+  // (SPEC §40): it was trained with a question marked differently from a
+  // passage, and using one side for both costs real recall — silently, since the
+  // vectors still come back unit length and comparable. So an ASYMMETRIC app —
+  // one that indexes a corpus and then searches it with something that is not
+  // itself a corpus entry — has to pass `kind`, and "Semantic search" is the
+  // only one of these that is shaped that way.
+  //
+  // The other three text briefs are SYMMETRIC by construction: "Related notes"
+  // compares notes to notes, "Bookmark clusters" clusters bookmarks against each
+  // other, "Duplicate finder" scores pairs of the same kind of thing. There both
+  // sides ARE the same kind, so the uniform default (`"document"`) is correct and
+  // splitting them would be the bug rather than the fix. Do not add `kind` to
+  // them for symmetry with the one above.
+  //
+  // "Photo search" needs neither: it names a multimodal model from `catalog()`,
+  // and a dual encoder has no retrieval convention at all — the route refuses
+  // `kind` on one.
   {
     label: "Semantic search",
     capability: "embeddings",
@@ -607,9 +627,12 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "A meaning-based file search. Header: a Pick folder button, an Index button with " +
       "progress, and a search box. Indexing walks the folder's .md and .txt files, splits " +
       "each into ~500-character chunks on paragraph boundaries, embeds them with " +
-      "fused.ai.embed({texts}), and writes index.json (file, offset, text, vector, mtime) " +
-      "beside the app so a rescan re-embeds only changed files. Search embeds the query " +
-      "with the same model, ranks chunks by cosine similarity in JS, and lists the top 20 " +
+      "fused.ai.embed({texts, kind: \"document\"}), and writes index.json (file, offset, " +
+      "text, vector, mtime) beside the app so a rescan re-embeds only changed files. " +
+      "Search embeds the query with the same model and kind: \"query\" — the default " +
+      "model is a retrieval encoder that instructs a question differently from a passage, " +
+      "and using one side for both quietly costs recall — then ranks chunks by cosine " +
+      "similarity in JS, and lists the top 20 " +
       "with score, file path, and a snippet with the query terms highlighted; clicking a " +
       "result opens the file. " +
       LOCAL,

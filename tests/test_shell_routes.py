@@ -84,6 +84,24 @@ def test_the_shell_actually_declares_routes():
     assert "/ai-models/playground" in routes
 
 
+def test_the_app_page_survives_a_refresh(client):
+    """`/apps/<slug>/<tab>` (D488) is a PARAMETERISED route — App.tsx matches it
+    through `slugFromAppPath`, not a `pathname ===` literal — so the scrape above
+    cannot see it, the same blind spot the canvases workspace has. Requested by
+    hand: both tabs, and the bare slug the client rewrites to the default tab.
+    Three levels stays a 404: the page has no third."""
+    for path in (
+        "/apps/some-app",
+        "/apps/some-app/overview",
+        "/apps/some-app/tasks",
+        "/apps/some-app/files",
+    ):
+        res = client.get(path)
+        assert res.status_code == 200, (path, res.status_code)
+        assert res.headers["content-type"].startswith("text/html")
+    assert client.get("/apps/some-app/tasks/deeper").status_code == 404
+
+
 @pytest.mark.parametrize("path", shell_routes())
 def test_every_shell_route_survives_a_refresh(client, path):
     res = client.get(path)

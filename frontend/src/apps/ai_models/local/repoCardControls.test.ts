@@ -170,7 +170,9 @@ describe("why Load is dead, said on the card", () => {
 
 describe("the two tags left on a face are pills", () => {
   // Akshil reported the original as "diffusers and transformer embeddings don't
-  // have a tag". They always had one; it did not look like one. `-off` set the
+  // have a tag" (that engine is gone too — the Transformers embedding rows were
+  // withdrawn for ONNX Runtime ones, which render through these same classes).
+  // They always had one; it did not look like one. `-off` set the
   // ink and the dash and left `border-color` at the base class's
   // `var(--border)`, and a dashed hairline in the border token at 11px over the
   // card's wash is invisible.

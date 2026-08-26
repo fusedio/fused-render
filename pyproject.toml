@@ -372,11 +372,19 @@ fused-render-open = "fused_render.winopen:main"
 # Run the suite in parallel by default (needs pytest-xdist, in the dev extra).
 # -n auto spawns one worker per CPU; the suite is xdist-safe (see the dev-extra
 # comment, including its one machine-global exception, which self-serialises
-# rather than needing a scheduling flag here — addopts stays a plain `-n auto`
-# and no test needs --dist loadgroup).
+# rather than needing a scheduling flag here) and no test needs --dist loadgroup.
+# `-m "not integration"` deselects tests marked `integration` by default — a
+# test that reaches a real external tool (uv, a real network fetch) rather
+# than a fake is non-deterministic on both sides (offline, a warm cache, a
+# slow CI runner) and asserts an EXTERNAL tool's behaviour rather than this
+# repo's, neither of which belongs in the default run. Opt in explicitly:
+# `pytest -m integration`.
 # To debug a single test serially, override: `pytest -n0 -x path::test`.
 [tool.pytest.ini_options]
-addopts = "-n auto"
+addopts = "-n auto -m \"not integration\""
+markers = [
+    "integration: hits a real external tool/service rather than a fake (opt-in only: `pytest -m integration`).",
+]
 
 [tool.coverage.run]
 source = ["fused_render"]

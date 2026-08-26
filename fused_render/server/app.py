@@ -28,7 +28,6 @@ from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
-from fused_render.user_skills import sync_user_skills
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -335,16 +334,23 @@ def create_app(start_dir: str) -> FastAPI:
 
         engine.warm_unless_forced_builtin()
 
-    # User-level skill sync (D185): install/refresh the canonical fused-render
-    # skills in Claude Code's skills dir. Since D216 this is for sessions
-    # fused-render did NOT launch — the user's own `claude` in their app folder
-    # — because the ones it does launch are handed the plugin root instead
-    # (export_app_env above). A startup event (not create_app body) on purpose
-    # — tests build the app without running lifespan, so they never write
-    # outside the redirected dirs.
+    # The published `fusedio/fused-render` plugin, installed or refreshed in
+    # the user's own Claude config (user_plugin.py, D492) — for sessions
+    # fused-render did NOT launch, the user's own `claude` in a terminal or
+    # their app folder, which `--plugin-dir` cannot reach. The ones we do launch
+    # are handed the local plugin root instead (export_app_env above) and owe
+    # nothing to this.
+    #
+    # `start()` and not the sync itself: it spawns `claude` and clones over the
+    # network, so it belongs on a daemon thread and emphatically not on the
+    # pre-bind path (D228). A startup event rather than the create_app body for
+    # the usual reason — tests build apps without running lifespan, so they
+    # never reach the user's real config.
     @app.on_event("startup")
-    async def _startup_sync_user_skills():
-        sync_user_skills()
+    async def _startup_sync_user_plugin():
+        from fused_render import user_plugin
+
+        user_plugin.start()
 
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
@@ -493,6 +499,11 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import prefetch as shell_prefetch
 
     app.include_router(shell_mounts.router)
+    # Full Disk Access nudge (shell/fda.py): open the Settings pane + persist
+    # "Not now". The state itself rides /api/config's `fda` field.
+    from fused_render.shell import fda as shell_fda
+
+    app.include_router(shell_fda.router)
     shell_mounts.startup()
     # Background mount-health monitor (shell/mounts.py): polls every mount on a
     # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect

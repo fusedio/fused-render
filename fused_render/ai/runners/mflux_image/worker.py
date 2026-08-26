@@ -557,7 +557,10 @@ class _StepReporter:
         # and same unit as the diffusers runner's — two engines, one row.
         worker_base.report_or_cancel(
             job=job, kind="task", unit="", done=done, total=steps,
-            detail="Denoising — step %d/%d%s" % (done, steps, _eta(remaining)))
+            # No step count in the detail — `done`/`total` above are the same
+            # numbers and the row draws them itself; see torch_image.py's
+            # matching tick for why repeating them read as a bug.
+            detail="Denoising%s" % _eta(remaining))
         if worker_base.CANCEL.is_set():
             # Straight out of `generate_image()`: mflux's loop catches only
             # `KeyboardInterrupt`, so this is not swallowed and turned into a
@@ -628,7 +631,7 @@ def generate(body):
     # ordering rule the reporter documents: a frame needs two latents, so
     # nothing exists to write until the second step.
     worker_base.report(job=job, state="running", kind="task", unit="",
-                       done=0, total=steps, detail="Denoising — step 0/%d" % steps)
+                       done=0, total=steps, detail="Denoising")
     # The sink wraps the SAVE as well as the render: its exit is the lifecycle,
     # and a clean one means the real PNG has landed and the preview is now
     # duplicate bytes. A cancel or a failure discards it too (`preview.Sink`).

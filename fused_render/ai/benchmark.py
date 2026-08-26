@@ -368,7 +368,7 @@ def _bench_job_title(model: str) -> str:
 #: `llama_text.py` (llamacpp-text/-vulkan) and `mlx_text/worker.py` check it
 #: between tokens, `torch_image.py` checks it in its per-step callback, and
 #: `faster_whisper`/`mlx_whisper` check it in their segment loop. The embedding
-#: runners (`mlx_embed`, `transformers_embed`) make ONE blocking
+#: runners (`mlx_embed`, `onnx_embed`) make ONE blocking
 #: `model.encode()` call with no callback to check anything from — a cancel
 #: request against one would sit unread until the call returns on its own,
 #: complete normally, and get recorded as `ok:true` for a run somebody tried to
@@ -425,8 +425,9 @@ class _MeasurementRow:
     **The image and speech paths need no `set_detail` call for their WORKER'S
     progress**, because `supervisor.generate_image` already accepts a `job` id
     and the WORKER reports its own straight onto it (`torch_image.py`'s
-    `on_step_end` posts "Denoising — step N/steps" to exactly this mechanism
-    for every other queued render) — `_measure_image` hands this row's own
+    `on_step_end` posts "Denoising" plus its `done`/`total` step pair to
+    exactly this mechanism for every other queued render) — `_measure_image`
+    hands this row's own
     `job` to that call instead of a disposable one, and the real step count
     arrives on the row for free. Speech does NOT do this — see
     `_measure_transcript`'s own comment for why handing this row's job to
@@ -719,8 +720,9 @@ def _measure_image(model: str, workload: Workload, *, timed: bool,
 
     **No `set_detail` call here, and that is deliberate.** `generate_image`
     already takes a `job` id and the WORKER reports its own step progress
-    straight onto it (`torch_image.py`'s `on_step_end`, "Denoising — step
-    N/steps") — the exact channel a Playground render already uses. Handing it
+    straight onto it (`torch_image.py`'s `on_step_end`, "Denoising" with a
+    `done`/`total` step pair the row renders itself) — the exact channel a
+    Playground render already uses. Handing it
     THIS row's own job, when there is one, means that real per-step detail
     lands on the row with no invented number in between; the warm-up pass gets
     a disposable job instead (see `run`), same as before this row existed.

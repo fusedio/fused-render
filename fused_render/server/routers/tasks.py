@@ -1557,7 +1557,11 @@ def api_tasks():
     return {"tasks": rows}
 
 
-_PULSE_FIELDS = ("key", "status", "unread", "last_active")
+# `project` rides along for the sidebar's Current apps section (D487): which
+# workspace app a task belongs to is a listing fact, and the alternative — a
+# second GET /api/tasks poll from the sidebar — is the double-poll the pulse
+# store exists to prevent.
+_PULSE_FIELDS = ("key", "status", "unread", "last_active", "project")
 
 
 @router.get("/api/tasks/pulse")

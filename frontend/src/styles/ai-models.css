@@ -31,12 +31,11 @@
   --am-engine-col-gap: 12px;
 }
 
-/* The one sentence above the cards: what "Automatic" means. */
-.am-engines-note {
-  margin: 0 0 2px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
+/* NO INTRO PARAGRAPH ANY MORE. What "Automatic" means used to be the tab's one
+   sentence above the cards (`.am-engines-note`); it is now the Automatic
+   option's own description inside each control's popup
+   (`EngineSelect.tsx`'s `buildOptions`), read at the moment it answers a
+   question instead of skimmed past above three closed controls. */
 
 /* Capability, control, reality — one line, and a real GRID rather than three
    rows that each size themselves.
@@ -70,17 +69,148 @@
 }
 
 /* .field-control carries the app's canonical select skin (styles/fields.css) —
-   its own chevron, its own metrics — which is what makes this control look
-   like every other select in the app instead of like the platform's. What is
-   left here is only how it behaves in this row. */
-/* `width: 100%` fills the grid's control column, which is what makes all three
-   selects the same width no matter which option is showing — a select left to
-   size itself grows to "MLX Whisper (Apple Silicon) — needs Apple Silicon…"
-   the moment somebody picks it, and the column would move under the user's
-   cursor. */
+   its own border/height/radius — which is what makes `EngineSelect`'s trigger
+   look like every other field in the app instead of like the platform's
+   default button. `.am-engine-select` used to be the native <select> itself;
+   it is now the trigger BUTTON inside `EngineSelect`'s root, and it keeps this
+   class for the same skin. What is left here is only how it behaves in this
+   row. */
+/* `width: 100%` on both the root and the trigger fills the grid's control
+   column, which is what makes all three controls the same width no matter
+   which option is showing — a control left to size itself grows to fit
+   "MLX Whisper (Apple Silicon)" the moment somebody picks it, and the column
+   would move under the user's cursor. The root wraps the trigger AND the
+   popup it opens (`position: relative` anchors nothing here — the popup is
+   `position: fixed`, placed by `EngineSelect` itself against the trigger's own
+   rect — but the root still has to fill the grid column for the trigger
+   inside it to have something to fill). */
+.am-engine-select-root {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
 .am-engine-select {
   width: 100%;
   min-width: 0;
+}
+
+/* The trigger shows one line of text — the current choice's label, nothing
+   else — so it needs none of the wrapping the popup's options do, and left-
+   aligns like every other field control rather than centering a button's
+   default text. */
+.am-engine-trigger {
+  /* `.field-control` only sets the 32px height on `input`/`select` elements
+     (fields.css) — the trigger is a <button>, so that one metric has to be
+     replicated here to match the row's other two controls. Same chevron SVG
+     `select.field-control` draws, so the trigger reads as a select rather
+     than as a button that happens to be the same height. */
+  height: 32px;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+
+/* `.disabled`, not `:disabled` — the trigger is never actually the native
+   disabled attribute (see EngineSelect.tsx's own comment on `aria-disabled`):
+   a disabled button drops out of the tab order and can't hold focus, which is
+   exactly what broke refocusing it after a pick kicks off the PUT that sets
+   this. */
+.am-engine-trigger.disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.am-engine-trigger-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The popup IS a `.context-menu` (context-menu.css) — `EngineSelect.tsx`
+   renders both classes on the same element — rather than a second copy of
+   that surface's background/border/radius/shadow: this app has exactly one
+   "small floating panel over a control" language, and re-declaring its
+   tokens here is how two of them drift apart the next time one changes.
+   `.context-menu`'s own `min-width: 220px` never actually applies — the
+   inline `min-width` `EngineSelect` sets from the trigger's own rect wins
+   over ANY class rule for the same property regardless of value — so nothing
+   here needs to override it. What IS specific to this popup: capped at
+   ~420px so a long registry sentence wraps across several lines rather than
+   making the popup as wide as the page, and a max-height with its own
+   scrollbar so a capability with many engines doesn't run off the viewport. */
+.am-engine-popup {
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.am-engine-popup:focus {
+  outline: none;
+}
+
+/* One row per option: a fixed check-mark gutter (so labels stay aligned
+   whichever row is selected), then up to two lines of text. `align-items:
+   flex-start` because the description line makes disabled rows taller than
+   one line, and centering would float a one-line row's check off its label's
+   baseline. */
+.am-engine-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.am-engine-option.disabled {
+  cursor: default;
+}
+
+.am-engine-option.active {
+  background: rgba(var(--tint), 0.08);
+}
+
+.am-engine-option-check {
+  flex: 0 0 14px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--accent);
+}
+
+.am-engine-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.am-engine-option-label {
+  font-size: 13px;
+  color: var(--fg);
+  white-space: normal;
+}
+
+/* Dimmed via the app's muted foreground rather than `opacity` on the whole
+   row: `opacity` would also wash out the description line under it, and a
+   registry sentence explaining why the row can't be picked is the one line on
+   a disabled option that most needs to still be legible. */
+.am-engine-option.disabled .am-engine-option-label {
+  color: var(--fg-muted);
+}
+
+.am-engine-option-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: normal;
 }
 
 /* What is actually serving the capability. Muted, because the control beside
@@ -90,15 +220,27 @@
   color: var(--fg-muted);
 }
 
-/* The second lines a card sometimes grows: why a stored choice is not in
-   force, and what a switch just did. Under the row rather than in it — both
-   are sentences about an event, not part of the control. */
+/* The second lines a card sometimes grows: what the engine in force is like,
+   and what a switch just did. Under the row rather than in it — both are
+   sentences about an event, not part of the control. Capped at 60ch so a long
+   one wraps at a readable measure instead of running the card's full width. */
 .am-engine-note {
   /* Starts where the select does, so it reads as a line about the control
      rather than about the capability naming the row. */
   margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
+  max-width: 60ch;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+/* The one line on a card that reports a PROBLEM — a stored preference this
+   machine is silently not honouring — rather than describing normal state.
+   A MODIFIER on `.am-engine-note` (same element, both classes) rather than a
+   second rule re-declaring its metrics: only the colour differs, `--warning`
+   instead of the muted grey every other line here uses, so it is the one
+   thing on the card that reads as needing attention. */
+.am-engine-note.warning {
+  color: var(--warning);
 }
 
 @media (max-width: 620px) {

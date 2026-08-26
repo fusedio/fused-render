@@ -65,6 +65,23 @@ export function basename(fsPath: string): string {
   return parts.length ? parts[parts.length - 1] : "/";
 }
 
+/** The half of a Hugging Face repo id that names the MODEL: `FLUX.2-klein-4B`
+ *  out of `black-forest-labs/FLUX.2-klein-4B`.
+ *
+ *  Deliberately not `basename()` above, even though both split on "/" — that
+ *  one is about filesystem paths and answers `"/"` for a root, which is not a
+ *  meaningful model name. An id with no owner prefix (a local alias, a bare
+ *  name) passes through untouched, and so does a trailing slash rather than
+ *  becoming an empty label.
+ *
+ *  The owner is dropped for DISPLAY only, never from the value: two models with
+ *  the same name under different owners are indistinguishable once shortened,
+ *  so every call site keeps the full id in a `title` attribute. */
+export function repoName(modelId: string): string {
+  const parts = modelId.split("/").filter((s) => s.length > 0);
+  return parts.length ? parts[parts.length - 1] : modelId;
+}
+
 export function dirname(fsPath: string): string {
   const idx = fsPath.replace(/\/+$/, "").lastIndexOf("/");
   if (idx <= 0) return idx === 0 ? "/" : "";

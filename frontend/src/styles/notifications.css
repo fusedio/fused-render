@@ -688,6 +688,34 @@
   color: var(--warning-strong);
 }
 
+/* Full Disk Access nudge (FdaCard.tsx): an invitation, not an outage — plain
+   neutral tones on the same plate, no accent, no red. */
+.server-status-fda {
+  border-color: var(--border);
+  font-size: 13px;
+  padding: 12px 14px;
+}
+
+.server-status-fda .server-status-title {
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.server-status-fda-go {
+  margin-right: 8px;
+}
+
+/* The offer state's how-to, an ordered list inside the card body. */
+.fda-steps {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.fda-steps li {
+  margin: 1px 0;
+}
+
 .tab-add {
   flex: 0 0 auto;
   background: none;

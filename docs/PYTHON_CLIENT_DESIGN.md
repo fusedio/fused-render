@@ -44,7 +44,7 @@ for chunk in ai.stream("write a haiku"):      # NDJSON {"type":"chunk","text"} f
 
 ai.transcribe(path="/tmp/rec.webm", model="mlx-community/whisper-turbo")
 ai.image(prompt="a cat", width=512)
-ai.embed(texts=["a", "b"])
+ai.embed(texts=["a", "b"], kind="document")   # kind: retrieval models only
 ai.models.list() / .catalog() / .load(id) / .download(id) / .unload(id)
 ai.cancel("text-generation")
 ```

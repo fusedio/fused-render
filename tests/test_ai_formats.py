@@ -110,12 +110,18 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y",
         names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"},
         dirnames=set(), config={}, torch_weights=True))
-    # `mlx-embed`/`transformers-embed` short-circuit too (see `loaders()`'s own
+    # The embedding branch short-circuits too (see `loaders()`'s own
     # comment on the branch), so — like the MLX whisper and Parakeet cases
     # above — a code reachable only from below it would otherwise look absent.
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
         config={"model_type": "siglip"}, torch_weights=True))
+    # Both weight layouts, because the branch appends the two engine families
+    # independently: a call with only `torch_weights` would leave the four
+    # `onnx-embed*` rows looking absent, which is exactly what this test is for.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(), dirnames={"onnx"},
+        config={"model_type": "siglip"}, torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -343,7 +349,7 @@ def test_DECISIVE_follows_the_FORMAT_and_not_the_hardware():
     assert set(formats.DIFFUSERS_RUNNERS) <= set(formats.DECISIVE)
     assert not _TEXT & set(formats.DECISIVE)
     assert set(formats.LLAMACPP_RUNNERS) <= set(formats.DECISIVE)
-    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
+    assert set(formats.ONNX_EMBED_RUNNERS) <= set(formats.DECISIVE)
 
 
 def test_mflux_needs_the_variant_table_as_well_as_the_layout():
@@ -710,33 +716,77 @@ def _clip_config():
     return {"model_type": "clip"}
 
 
-def test_a_siglip_snapshot_resolves_to_mlx_and_every_torch_embedding_runner():
-    """Renamed from "...resolves_to_both_embedding_runners": since the
-    accelerated torch rows landed there are FOUR engines that read a SigLIP
-    checkpoint, not two — `TRANSFORMERS_EMBED_RUNNERS` is `transformers-embed` plus its
-    CUDA and ROCm siblings, all three genuinely readable regardless of which
-    wheel happens to be installed on this machine, exactly the
-    `DIFFUSERS_RUNNERS` argument applied to embeddings."""
+def test_a_siglip_SAFETENSORS_snapshot_resolves_to_mlx_and_nothing_else():
+    """Since the torch embedding family went, exactly ONE engine here reads a
+    SigLIP checkpoint in safetensors: mlx-embeddings, through its own SigLIP
+    port. `onnx-embed` reads the same MODEL and a different FILE — an
+    `onnx-community` graph export — so it correctly does not claim this
+    snapshot."""
     codes = formats.loaders(
         repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
         dirnames=set(), config=_siglip_config(), torch_weights=True)
-    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert set(codes) == {"mlx-embed"}
 
 
-def test_a_clip_snapshot_resolves_to_the_torch_embedding_runners_only():
+def test_a_clip_SAFETENSORS_snapshot_resolves_to_nothing_at_all():
     """mlx-embeddings 0.1.x has a `siglip` module and no `clip` one
-    (`MLX_EMBED_MODEL_TYPES`) — the one difference between the two families
-    this app treats identically everywhere else. All three torch builds still
-    apply, for `TRANSFORMERS_EMBED_RUNNERS`'s own reason."""
+    (`MLX_EMBED_MODEL_TYPES`) — and the torch runner that used to be the answer
+    for a CLIP checkpoint is gone. So a `clip` config with safetensors beside it
+    is now "a dual encoder nothing here can load", which is the honest answer:
+    the ONNX runner opens a CLIP EXPORT (see the test below) and not this file.
+
+    It still must not fall through to `mlx-text` and be offered as a chat model,
+    which is what the embed branch's early `return` is for."""
     codes = formats.loaders(
         repo_id="openai/clip-vit-base-patch32", names={"model.safetensors"},
         dirnames=set(), config=_clip_config(), torch_weights=True)
-    assert codes == formats.TRANSFORMERS_EMBED_RUNNERS
+    assert codes == ()
+
+
+def test_a_clip_ONNX_export_resolves_NOWHERE_and_is_not_offered_as_chat():
+    """**`clip` was withdrawn from `ONNX_EMBED_MODEL_TYPES` deliberately.**
+
+    This used to resolve to the four ONNX rows on the argument that
+    `onnxruntime` has no per-architecture module list — true of onnxruntime, and
+    not true of this RUNNER, whose output names and image geometry were verified
+    against SigLIP2 exports and nothing else. A CLIP export publishes PROJECTED
+    `text_embeds`/`image_embeds`, so the `pooler_output` lookup either raises or
+    reads the unprojected state and leaves the towers in different spaces; and
+    `_image_settings` ignores the `crop_size`/`do_center_crop` that CLIP's
+    resize-then-center-crop needs. Both give a confident wrong vector rather than
+    an error, which is the failure this file is least able to detect.
+
+    **`clip` stays in `DUAL_EMBED_MODEL_TYPES` even so, and the second assertion
+    is why.** The gate is what makes `loaders()` return EARLY; drop `clip` from it
+    and a CLIP snapshot falls through to the text branch and gets offered as a
+    chat model — a worse answer than "nothing here loads this". Verified: taking
+    it out of the gate turned this into `('mlx-text',)`.
+    """
+    codes = formats.loaders(
+        repo_id="onnx-community/clip-vit-base-patch32-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_clip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert codes == ()
+    assert "mlx-text" not in codes
+
+
+def test_the_two_engine_subsets_are_both_subsets_of_the_gate():
+    """Neither engine may claim a family the gate does not recognise — such an
+    entry is a line nothing can read — and between them they must not silently
+    cover everything, or the gate's early `return` would be the only thing left
+    deciding what loads."""
+    assert formats.MLX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    assert formats.ONNX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    # `clip` is in the gate and in neither engine's set: recognised as an
+    # embedding checkpoint, claimed by nothing. See `ONNX_EMBED_MODEL_TYPES`.
+    unclaimed = formats.EMBED_MODEL_TYPES - (
+        formats.MLX_EMBED_MODEL_TYPES | formats.ONNX_EMBED_MODEL_TYPES)
+    assert unclaimed == {"clip"}
 
 
 def test_an_embed_config_with_no_torch_weights_loads_nowhere():
     """A `model_type: siglip` config with nothing but a README is not a
-    loadable snapshot — `torch_weights` is what tells the two apart, the same
+    loadable snapshot — the weight flags are what tell the two apart, the same
     guard the text branch at the bottom of `loaders()` has."""
     codes = formats.loaders(
         repo_id="x/y", names=set(), dirnames=set(),
@@ -757,7 +807,198 @@ def test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners():
     # is the one runner left that reads a bare directory of safetensors, so a
     # family tuple would have nothing to hold together.
     assert "mlx-text" not in codes
-    assert set(codes) == {"mlx-embed"} | set(formats.TRANSFORMERS_EMBED_RUNNERS)
+    assert set(codes) == {"mlx-embed"}
+
+
+# -- embeddings, the ONNX exports -----------------------------------------------
+#
+# `onnx-community/siglip2-*-ONNX` is the SAME checkpoint re-exported: the config
+# still says `model_type: siglip`, and the weights are `onnx/{text,vision}_model
+# .onnx` rather than `model.safetensors`. So the family gate is unchanged and the
+# WEIGHTS half is what tells the two engines apart — which is why `loaders()`
+# takes two independent weight facts rather than one.
+
+
+def _onnx_export_names():
+    """A real `onnx-community/siglip2-base-patch16-384-ONNX` top-level listing.
+
+    The `.onnx` files are NOT here: they live under `onnx/`, which is why
+    `hub_cache._has_onnx_weights` walks the tree and this fixture's evidence
+    reaches `loaders()` as the `onnx_weights` flag instead of a filename.
+    """
+    return {"config.json", "preprocessor_config.json", "tokenizer.json",
+            "tokenizer.model", "tokenizer_config.json", "special_tokens_map.json",
+            "quantize_config.json", "README.md"}
+
+
+def test_an_onnx_dual_encoder_export_resolves_to_the_four_onnx_rows_only():
+    """The ONNX engine's whole reason for existing, at the format layer.
+
+    `onnx_weights=True` and `torch_weights=False` is exactly what an
+    `onnx-community` export looks like on disk, and neither torch nor
+    mlx-embeddings can open a `.onnx` file — so the torch family and `mlx-embed`
+    must be absent, not merely outranked.
+    """
+    codes = formats.loaders(
+        repo_id="onnx-community/siglip2-base-patch16-384-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_siglip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_an_onnx_export_is_not_offered_to_the_text_runner():
+    """`mlx-text` reads a directory of safetensors and an ONNX export is not one
+    — but the early `return` in the embed branch is what makes that true, and it
+    is the same guard `test_a_siglip_snapshot_is_NOT_offered_to_the_text_runners`
+    pins for the torch layout. Without it a cached ONNX SigLIP2 export would be
+    offered as a chat model on every machine."""
+    codes = formats.loaders(
+        repo_id="onnx-community/siglip2-so400m-patch14-384-ONNX",
+        names=_onnx_export_names(), dirnames={"onnx"}, config=_siglip_config(),
+        torch_weights=False, onnx_weights=True)
+    assert "mlx-text" not in codes
+
+
+def test_a_safetensors_siglip_snapshot_claims_no_onnx_row():
+    """The no-regression half: a `model.safetensors` SigLIP snapshot carries no
+    `.onnx` anywhere, so the ONNX rows must not appear on it merely because the
+    branch knows about them."""
+    codes = formats.loaders(
+        repo_id="google/siglip2-base-patch16-384", names={"model.safetensors"},
+        dirnames=set(), config=_siglip_config(), torch_weights=True,
+        onnx_weights=False)
+    assert set(codes) == {"mlx-embed"}
+    assert not set(codes) & set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_a_repo_carrying_both_layouts_matches_both_families():
+    """`onnx-community` sometimes re-uploads the safetensors beside the export,
+    and both engines really can read such a repo — so the two weight flags are
+    independent rather than a fork, which is why they are two parameters."""
+    codes = formats.loaders(
+        repo_id="x/y", names={"model.safetensors"}, dirnames={"onnx"},
+        config=_siglip_config(), torch_weights=True, onnx_weights=True)
+    assert set(codes) == {"mlx-embed"} | set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_an_embed_config_with_neither_weight_layout_loads_nowhere():
+    """`test_an_embed_config_with_no_torch_weights_loads_nowhere`'s sibling, and
+    the reason that test's name had to narrow: with two weight facts, "no torch
+    weights" no longer means "nothing to load"."""
+    codes = formats.loaders(
+        repo_id="x/y", names=set(), dirnames=set(), config=_siglip_config(),
+        torch_weights=False, onnx_weights=False)
+    assert codes == ()
+
+
+def test_the_onnx_family_tuple_names_all_four_execution_providers():
+    """`TRANSFORMERS_EMBED_RUNNERS`' own argument, restated for this family: a
+    variant registered but missing from `loaders()` has no engine tag, no Load
+    button and no cached repos offered, on precisely the machines that chose it.
+    """
+    assert formats.ONNX_EMBED_RUNNERS == (
+        "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda", "onnx-embed-rocm")
+
+
+# -- embeddings, the prose encoders ---------------------------------------------
+#
+# The capability widened past dual encoders: a text-only encoder (`bert`,
+# `xlm-roberta`, `nomic_bert`, `modernbert`) loads under `embeddings` too. The
+# gate is the same `model_type` field and the same early `return`; what changed is
+# the SET it is matched against, and that the set now has two halves — a repo
+# with a vision tower and a repo without.
+
+
+def _bert_config():
+    return {"model_type": "bert"}
+
+
+def _nomic_config():
+    return {"model_type": "nomic_bert"}
+
+
+def test_a_prose_onnx_export_resolves_to_the_four_onnx_rows():
+    """`BAAI/bge-base-en-v1.5`'s layout: `model_type: bert`, one `onnx/model.onnx`
+    and no vision tower anywhere. This is the whole point of Stage 3 — the same
+    engine, the same branch, a checkpoint that was invisible to it before."""
+    codes = formats.loaders(
+        repo_id="BAAI/bge-base-en-v1.5",
+        names={"config.json", "tokenizer.json", "vocab.txt"}, dirnames={"onnx"},
+        config=_bert_config(), torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_a_prose_SAFETENSORS_snapshot_is_NOT_offered_to_the_text_runner():
+    """**The failure this task could most easily ship**, and it is the one the
+    Parakeet comment in `loaders()` documents: a prose encoder is a directory of
+    safetensors indistinguishable in SHAPE from a chat checkpoint, so without the
+    embed branch's early `return` the text branch below would claim
+    `BAAI/bge-base-en-v1.5` and the page would offer a Load button that opens a
+    768-dim encoder as a chat model — a model that can never generate a token.
+
+    `bert` is in `MLX_EMBED_MODEL_TYPES`, so this one is genuinely loadable by
+    mlx-embeddings and comes back with that row alone.
+    """
+    codes = formats.loaders(
+        repo_id="BAAI/bge-base-en-v1.5", names={"model.safetensors"},
+        dirnames=set(), config=_bert_config(), torch_weights=True)
+    assert "mlx-text" not in codes
+    assert set(codes) == {"mlx-embed"}
+
+
+def test_a_prose_family_MLX_CANNOT_READ_still_claims_nothing_rather_than_chat():
+    """`nomic_bert` is a real prose encoder and mlx-embeddings ships no module
+    for it, so a safetensors snapshot of one is "an embedding model nothing here
+    can load". The early `return` has to hold for that case too — it is the one
+    where `found` is EMPTY, which is exactly when a fallthrough looks harmless.
+    """
+    codes = formats.loaders(
+        repo_id="nomic-ai/nomic-embed-text-v1.5", names={"model.safetensors"},
+        dirnames=set(), config=_nomic_config(), torch_weights=True)
+    assert codes == ()
+
+
+def test_the_same_nomic_checkpoint_loads_from_its_onnx_export():
+    """…and the pair above is not a gap in the capability, just in one engine:
+    the ONNX runner has no per-architecture module list to be missing an entry
+    from. This is why `nomic_bert` is a curated ONNX row and not an MLX one."""
+    codes = formats.loaders(
+        repo_id="nomic-ai/nomic-embed-text-v1.5",
+        names={"config.json", "tokenizer.json"}, dirnames={"onnx"},
+        config=_nomic_config(), torch_weights=False, onnx_weights=True)
+    assert set(codes) == set(formats.ONNX_EMBED_RUNNERS)
+
+
+def test_the_two_model_type_sets_are_disjoint_and_their_union_is_the_gate():
+    """Two halves because `paths` is gated on one of them (a vision tower exists
+    or it does not), and one union because `loaders()` asks a single question: is
+    this an embedding checkpoint at all."""
+    assert not (formats.DUAL_EMBED_MODEL_TYPES & formats.TEXT_EMBED_MODEL_TYPES)
+    assert formats.EMBED_MODEL_TYPES == (
+        formats.DUAL_EMBED_MODEL_TYPES | formats.TEXT_EMBED_MODEL_TYPES)
+    assert formats.DUAL_EMBED_MODEL_TYPES == {"siglip", "clip"}
+    assert formats.TEXT_EMBED_MODEL_TYPES == {
+        "bert", "xlm-roberta", "nomic_bert", "modernbert"}
+
+
+def test_the_mlx_subset_is_what_mlx_embeddings_actually_ships():
+    """A subset of the gate, never a superset: a family `loaders()` does not
+    recognise as an embedding model can never reach the MLX check, so an entry
+    here that is not in the union above is a line nothing can read.
+
+    The contents are `mlx-embeddings` 0.1.0's own module list, intersected with
+    the gate: `siglip`, `bert`, `modernbert` and `xlm_roberta` are modules it
+    ships; `nomic_bert` and `clip` are not, and both are therefore ONNX-only
+    here. (It also ships `qwen3`, `gemma3_text`, `lfm2` and several ColBERT/VLM
+    ports whose `model_type`s are CHAT architectures — indistinguishable by this
+    field from a generative checkpoint — so admitting them to the gate would
+    route every Qwen3 chat model to the embedding runner. They stay out, which
+    is `is_parakeet_checkpoint`'s lesson about evidence that does not
+    distinguish.)
+    """
+    assert formats.MLX_EMBED_MODEL_TYPES <= formats.EMBED_MODEL_TYPES
+    assert formats.MLX_EMBED_MODEL_TYPES == {
+        "siglip", "bert", "xlm-roberta", "modernbert"}
 
 
 def test_embed_model_type_is_case_and_whitespace_tolerant():
@@ -765,17 +1006,232 @@ def test_embed_model_type_is_case_and_whitespace_tolerant():
     assert formats.embed_model_type({"model_type": "CLIP"}) == "clip"
 
 
+def test_embed_model_type_answers_for_a_prose_family_too():
+    """One function, both halves of the gate — `loaders()` asks it once and then
+    asks which half the answer is in. A second function per half would be two
+    places to forget a family in."""
+    assert formats.embed_model_type({"model_type": "bert"}) == "bert"
+    assert formats.embed_model_type({"model_type": "XLM-RoBERTa"}) == "xlm-roberta"
+    assert formats.embed_model_type({"model_type": "nomic_bert"}) == "nomic_bert"
+    assert formats.embed_model_type({"model_type": "ModernBERT"}) == "modernbert"
+
+
 def test_embed_model_type_rejects_anything_else():
     assert formats.embed_model_type({"model_type": "llama"}) is None
     assert formats.embed_model_type({}) is None
     assert formats.embed_model_type({"model_type": 123}) is None
+    # A chat architecture that mlx-embeddings HAPPENS to have a module for stays
+    # out — see `test_the_mlx_subset_is_what_mlx_embeddings_actually_ships`.
+    assert formats.embed_model_type({"model_type": "qwen3"}) is None
 
 
 def test_the_embed_codes_are_decisive():
-    """A directory of safetensors says nothing about the modality on its own
+    """A directory of weights says nothing about the modality on its own
     (`DECISIVE`'s own comment) — a `siglip`/`clip` config is what settles it,
     exactly like a Parakeet NeMo target or an MLX whisper weights file. Every
-    torch build is decisive, not just the CPU row, for `DIFFUSERS_RUNNERS`'s
+    ONNX build is decisive, not just the CPU row, for `DIFFUSERS_RUNNERS`'s
     own reason applied here."""
     assert "mlx-embed" in formats.DECISIVE
-    assert set(formats.TRANSFORMERS_EMBED_RUNNERS) <= set(formats.DECISIVE)
+    assert set(formats.ONNX_EMBED_RUNNERS) <= set(formats.DECISIVE)
+
+
+# -- the ONNX export LAYOUT, one answer for the page and the runner -----------
+#
+# `_has_onnx_weights` used to accept any `.onnx` anywhere while `onnx_embed`
+# required particular names in `onnx/`. Every gap between the two was a Load
+# button on the AI Models page that could only fail once the download had run —
+# the same defect as the engine-gap bug: an offer resting on weaker evidence
+# than the thing being offered needs.
+
+
+def test_a_prose_export_is_the_single_onnx_model_graph():
+    assert formats.onnx_export_graphs(
+        ["config.json", "tokenizer.json", "onnx/model.onnx"]
+    ) == ("onnx/model.onnx",)
+
+
+def test_a_dual_export_is_both_towers_and_never_the_merged_graph():
+    """A dual export ships `onnx/model.onnx` TOO — a merged graph this app never
+    opens, and a third full copy of both towers if it were fetched. The dual
+    branch is asked first for exactly that reason."""
+    assert formats.onnx_export_graphs(
+        ["onnx/model.onnx", "onnx/text_model.onnx", "onnx/vision_model.onnx"]
+    ) == ("onnx/text_model.onnx", "onnx/vision_model.onnx")
+
+
+def test_a_root_level_model_onnx_is_not_an_export_this_app_reads():
+    """**A perfectly normal `optimum` export, and the page used to offer a Load
+    for it.** The runner opens `onnx/model.onnx`; a graph at the snapshot root is
+    not that path, and the download would have succeeded and the session then
+    failed."""
+    assert formats.onnx_export_graphs(["config.json", "model.onnx"]) == ()
+
+
+def test_a_quantized_only_repo_is_not_an_export_this_app_reads():
+    """The runner opens the fp32 graphs by name. A repo publishing only
+    quantizations has an `.onnx` in `onnx/` and nothing this app can load."""
+    assert formats.onnx_export_graphs(
+        ["onnx/model_q4.onnx", "onnx/model_fp16.onnx", "onnx/model_quantized.onnx"]
+    ) == ()
+
+
+def test_a_dual_export_missing_its_vision_tower_is_not_loadable():
+    """Half a dual encoder is not a prose encoder: `onnx/text_model.onnx` alone
+    would open, and then `generate()` could reach an image path with no session
+    behind it. Refused rather than downgraded."""
+    assert formats.onnx_export_graphs(["onnx/text_model.onnx"]) == ()
+
+
+def test_the_sidecar_alone_is_not_weights():
+    """`.onnx_data` holds tensors for a graph over the 2 GB protobuf limit. With
+    no graph beside it there is nothing to open — and note it does not end in
+    `.onnx`, so the old suffix test missed this one correctly and everything
+    above it incorrectly."""
+    assert formats.onnx_export_graphs(["onnx/model.onnx_data"]) == ()
+
+
+# -- task heads: an encoder plus a head is not an embedding model -------------
+#
+# Gating on `model_type` alone is not enough, because that field is the
+# architecture FAMILY and says nothing about what was fine-tuned onto it. And
+# because `loaders()` returns EARLY on an embedding match, a wrong admission here
+# is not a missing tag — the repo never reaches another runner, so the page shows
+# four Load buttons and no correct one, and the runner hands back pooled vectors
+# from a head-less encoder that nothing downstream can identify as meaningless.
+
+
+def test_a_reranker_is_not_an_embedding_model():
+    """`BAAI/bge-reranker-base`: an `xlm-roberta`, admitted by
+    `TEXT_EMBED_MODEL_TYPES`, and a CROSS-encoder — it scores a PAIR of texts
+    and has no single-text vector to give."""
+    assert formats.embed_model_type({
+        "model_type": "xlm-roberta",
+        "architectures": ["XLMRobertaForSequenceClassification"],
+    }) is None
+
+
+def test_a_token_classifier_is_not_an_embedding_model():
+    """`dslim/bert-base-NER`: a `bert`, and its pooled output is a by-product
+    nothing trained."""
+    assert formats.embed_model_type({
+        "model_type": "bert",
+        "architectures": ["BertForTokenClassification"],
+    }) is None
+
+
+def test_the_base_encoders_those_were_built_FROM_still_pass():
+    """The guard against the fix becoming a wall — these are the models the gate
+    exists to admit, and they differ from the two above only in the head."""
+    for model_type, architecture in (
+            ("bert", "BertModel"),
+            ("xlm-roberta", "XLMRobertaModel"),
+            ("modernbert", "ModernBertModel"),
+            ("nomic_bert", "NomicBertModel"),
+    ):
+        assert formats.embed_model_type({
+            "model_type": model_type, "architectures": [architecture],
+        }) == model_type
+
+
+def test_ForMaskedLM_is_still_an_embedding_model():
+    """**The exclusion that would have done real damage.** `ForMaskedLM` is the
+    pretraining objective an ordinary base encoder ships with; the head is
+    discarded when the encoder is used for embeddings, and rejecting it would
+    turn away a large share of the legitimate models here."""
+    for architecture in ("BertForMaskedLM", "ModernBertForMaskedLM",
+                         "XLMRobertaForMaskedLM"):
+        assert formats.embed_model_type({
+            "model_type": "bert", "architectures": [architecture],
+        }) == "bert"
+
+
+def test_a_missing_architectures_field_is_not_evidence_of_a_head():
+    """Deliberately asymmetric: the cost of missing a head is one repo offered to
+    the embedding runner, and the cost of GUESSING one is refusing a legitimate
+    encoder. Plenty of ordinary exports omit the field."""
+    assert formats.embed_model_type({"model_type": "bert"}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": []}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": None}) == "bert"
+    assert formats.embed_model_type(
+        {"model_type": "bert", "architectures": "BertModel"}) == "bert"
+
+
+def test_ANY_declared_head_disqualifies_the_checkpoint():
+    """`architectures` is a list because a checkpoint can declare several, and a
+    repo naming a classification head at all is one whose vectors nothing should
+    be built on."""
+    assert formats.embed_model_type({
+        "model_type": "bert",
+        "architectures": ["BertModel", "BertForSequenceClassification"],
+    }) is None
+
+
+def test_a_dual_encoder_with_a_head_is_excluded_too():
+    """The gate is one question for both halves, so the head check has to cover
+    the dual families as well as the prose ones."""
+    assert formats.embed_model_type({
+        "model_type": next(iter(formats.DUAL_EMBED_MODEL_TYPES)),
+        "architectures": ["SiglipForImageClassification"],
+    }) is None
+
+
+def test_the_reranker_reaches_no_embedding_runner_through_loaders():
+    """The end-to-end consequence, and the reason this matters more than a tag:
+    `loaders()` returns early on an embedding match, so the wrong admission also
+    denied the repo every other runner."""
+    reranker = formats.loaders(
+        repo_id="BAAI/bge-reranker-base", names=set(), dirnames={"onnx"},
+        config={"model_type": "xlm-roberta",
+                "architectures": ["XLMRobertaForSequenceClassification"]},
+        torch_weights=True, onnx_weights=True)
+    assert "onnx-embed" not in reranker
+    assert "mlx-embed" not in reranker
+
+    ner = formats.loaders(
+        repo_id="dslim/bert-base-NER", names=set(), dirnames=set(),
+        config={"model_type": "bert",
+                "architectures": ["BertForTokenClassification"]},
+        torch_weights=True)
+    assert "mlx-embed" not in ner
+
+
+# -- nomic's ModernBERT embed line, both spellings ----------------------------
+
+
+def test_the_UPSTREAM_modernbert_embed_repo_gets_nomics_prefixes():
+    """`nomic-ai/modernbert-embed-base` matched NEITHER the curated table nor any
+    hint: `modernbert-embed-base` contains no `nomic-embed` substring, so the
+    scheme resolved to `"none"` and every query embedded unprefixed — unit-length
+    vectors, no error, silently worse recall. The same silent loss the curated
+    `mlx-community` row exists to prevent, one repo over."""
+    assert formats.text_embed_scheme("nomic-ai/modernbert-embed-base") == "nomic"
+
+
+def test_one_hint_covers_every_spelling_of_that_line():
+    """Why a hint rather than a second curated row: the account is spelled
+    `nomic-ai` upstream and `nomicai-` in the conversion, and quantized builds
+    keep arriving. Enumerating them is a list to fall behind."""
+    for repo_id in ("nomic-ai/modernbert-embed-base",
+                    "mlx-community/nomicai-modernbert-embed-base-bf16",
+                    "mlx-community/nomicai-modernbert-embed-base-4bit",
+                    "someone/modernbert-embed-base-onnx"):
+        assert formats.text_embed_scheme(repo_id) == "nomic", repo_id
+
+
+def test_the_hint_does_not_swallow_plain_modernbert():
+    """**The reason it is `modernbert-embed` and not `modernbert`.** The bare
+    architecture is worn by plenty of repos that do not take nomic's prefixes,
+    and prefixing those would be the same class of error in the other
+    direction."""
+    assert formats.text_embed_scheme("answerdotai/ModernBERT-base") == "none"
+    assert formats.text_embed_scheme("answerdotai/ModernBERT-large") == "none"
+
+
+def test_the_curated_row_survives_the_hint():
+    """The curation rule is that every curated id appears in
+    `TEXT_EMBED_SCHEMES` EXPLICITLY — a hint that happens to match it does not
+    discharge that, so the row must still be there."""
+    assert ("mlx-community/nomicai-modernbert-embed-base-bf16"
+            in formats.TEXT_EMBED_SCHEMES)

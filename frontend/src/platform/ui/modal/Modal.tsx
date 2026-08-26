@@ -58,6 +58,12 @@ export interface ModalProps {
   dialogClassName?: string;
   // Tooltip for the ✕ button (e.g. "the action keeps running" for a busy={false} modal).
   closeTitle?: string;
+  // Drop the `deploy-body` form vocabulary from the body — its descendant
+  // `button`/`p` rules (fields.css) out-specify a component's own classes and
+  // would re-skin a surface that arrives already designed. For hosting a
+  // component lifted verbatim from a page (the /apps composer in the sidebar's
+  // New app modal, D489); every FORM modal keeps the default.
+  plainBody?: boolean;
 }
 
 export function Modal({
@@ -71,6 +77,7 @@ export function Modal({
   dirty = false,
   dialogClassName,
   closeTitle,
+  plainBody = false,
 }: ModalProps) {
   const titleId = useId();
   // Exit animation. Callers render this as `{open && <Modal …/>}`, so the modal
@@ -307,7 +314,7 @@ export function Modal({
             </button>
           )}
         </div>
-        <div className="modal-body deploy-body">{children}</div>
+        <div className={"modal-body " + (plainBody ? "modal-body-plain" : "deploy-body")}>{children}</div>
         {(footer || confirmClose) && (
           <div className="modal-footer">
             {confirmClose && (

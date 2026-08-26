@@ -3551,15 +3551,34 @@
     });
   }
 
-  // fused.ai.embed({texts|paths, model}) -> Promise<{vectors, dim, model}>
+  // fused.ai.embed({texts|paths, model, kind}) -> Promise<{vectors, dim, model}>
   //
-  // Text OR an image into one vector space, locally — a dual encoder, not a
-  // chat model, so there is nothing to stream and nothing to watch a job for:
-  // a batch of at most 64 short items is one forward pass, over before a
-  // progress row would have drawn. The reply IS the result, the way
-  // `fused.ai`'s non-streaming reply is — this is that same shape's sibling,
-  // not `aiImage`/`aiTranscribe`'s (no `jobId` in the resolved object, because
-  // there is no file and no run outliving this call).
+  // Text — or, on a model with a vision tower, an image — into one vector
+  // space, locally. Not a chat model, so there is nothing to stream and nothing
+  // to watch a job for: a batch of at most 64 short items is one forward pass,
+  // over before a progress row would have drawn. The reply IS the result, the
+  // way `fused.ai`'s non-streaming reply is — this is that same shape's
+  // sibling, not `aiImage`/`aiTranscribe`'s (no `jobId` in the resolved object,
+  // because there is no file and no run outliving this call).
+  //
+  // **TWO OF THE THREE OPTIONS ARE REFUSED PER MODEL, not per endpoint** (SPEC
+  // §40), and both refusals are a 400 naming the model:
+  //
+  // * `paths` needs a VISION TOWER. A dual encoder (SigLIP, CLIP) has one and
+  //   embeds pictures into the same space as its text, which is what lets a
+  //   typed phrase rank photographs; a prose encoder has one tower and refuses.
+  // * `kind` — `"query"` or `"document"` — needs a RETRIEVAL CONVENTION. Such a
+  //   model instructs a question differently from a passage, and it is not a
+  //   nicety: passing the wrong side is measurably worse than passing neither.
+  //   A dual encoder has no convention and refuses the field rather than
+  //   accepting a parameter that would change nothing about the vectors.
+  //
+  // Leaving `kind` out means `"document"` — the internally consistent default,
+  // where corpus and query alike carry one prefix, which is the symmetric
+  // behaviour every one of these models supports. Embed a corpus once as
+  // documents and each search as a query to get the asymmetric pair's benefit.
+  // `fused.ai.models.catalog()` reports `acceptsPaths` and `promptScheme` per
+  // model, so a page can ask before it sends rather than after a 400.
   //
   // Vectors are UNIT-NORMALIZED, so a cosine similarity between two of them is
   // a plain dot product — `a[i]*b[i]` summed, no separate magnitude to divide
@@ -3597,6 +3616,15 @@
     if (hasTexts) body.texts = opts.texts;
     if (hasPaths) body.paths = opts.paths;
     if (opts.model !== undefined) body.model = opts.model;
+    // Forwarded only when the caller set it, exactly like `model` above: the
+    // server reads an absent key as "I did not say" and applies its own
+    // default, while an explicit value on a model with no retrieval convention
+    // is a 400. Sending a default from here would turn every legal dual-encoder
+    // call into a refused one. Not validated here either — `"queries"` is the
+    // server's 400 to raise, per D413's closed-envelope rule; the exactly-one-of
+    // check above is the exception, and it exists because that one is knowable
+    // without a round trip.
+    if (opts.kind !== undefined) body.kind = opts.kind;
     // Page-relative paths resolve beside THIS page, exactly like
     // `aiTranscribe`'s `path` and for the same reason (RH-1): "beside wherever
     // the server was launched from" is a trap for a relative path a page

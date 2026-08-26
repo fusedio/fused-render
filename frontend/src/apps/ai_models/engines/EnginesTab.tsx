@@ -36,9 +36,9 @@ import { getPrefs, putAiIdleUnloadMinutes, putEngineForCapability } from "@platf
 import type { CapabilityEngine, Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import EngineSelect from "@apps/ai_models/engines/EngineSelect";
 import {
   capabilityLabel,
-  choiceReason,
   engineNote,
   ignoredWarning,
   parseAiIdleMinutes,
@@ -47,28 +47,33 @@ import {
   switchOutcome,
 } from "@apps/ai_models/lib/engines";
 
-// One capability's engine: a <select> holding Automatic and every backend.
+// One capability's engine: a listbox (`EngineSelect`) holding Automatic and
+// every backend.
 //
 // A dropdown rather than a radio list, so that a machine with three engines for
 // one capability is one line high instead of four — and so this reads like
 // every other choice-of-several in this app's settings, which are all selects.
 //
-// **The reason an unavailable engine cannot be picked is folded into its own
-// option label**, which is the whole difficulty a dropdown has here and the
-// reason this was radios first. A greyed-out radio carries its explanation
-// beside it permanently; a disabled <option> is invisible until the menu is
-// opened, and its `title` is not reliably shown at all. So the sentence — the
-// registry's own, which the page cannot synthesise — goes in the text: "MLX
-// Whisper (Apple Silicon) — needs Apple Silicon (this is windows/amd64)".
-// State that would otherwise need a line of prose beside the control goes into
-// the option labels, so the control still explains itself when it is read.
+// **This used to be a native `<select>`, and the reason it is not any more is
+// entirely about what an `<option>` can render.** The reason an unavailable
+// engine cannot be picked used to be folded into its own option's plain-text
+// label — "MLX Whisper (Apple Silicon) — needs Apple Silicon (this is
+// windows/amd64)" — because a disabled `<option>` has nowhere else to say
+// anything and its `title` is not reliably shown at all. A registry sentence
+// is not always that short ("Diffusers (CUDA) — needs an NVIDIA GPU with its
+// driver loaded — there is no /dev/nvidiactl or /dev/nvidia0 on this machine
+// (this is linux/x86_64)"), and a native menu neither wraps nor styles that
+// text — it just clips it. `EngineSelect` is a listbox built for exactly this:
+// each option is up to two lines, a label and a muted wrapped description, so
+// the reason reads as a sentence instead of a truncated run-on.
 //
 // Unavailable engines stay in the menu, disabled. Hidden, a Windows user would
 // have no way to learn that the MLX path exists and why it is not for them —
-// and a stored preference for one is what the select still SHOWS as its value,
-// because "your choice, and why it is not in force" is exactly what the muted
-// lines underneath go on to explain. It is the same rule the cards on the Local
-// tab now follow for their own controls: disabled and explained, never absent.
+// and a stored preference for one is what the control still SHOWS as its
+// value (the trigger's own label), because "your choice, and why it is not in
+// force" is exactly what the muted lines underneath go on to explain. It is
+// the same rule the cards on the Local tab follow for their own controls:
+// disabled and explained, never absent.
 function CapabilityEngineRow({
   row,
   auto,
@@ -88,6 +93,7 @@ function CapabilityEngineRow({
   const note = engineNote(row);
   const stranded = strandedSelection(row, auto);
   const label = capabilityLabel(row.capability);
+  const serving = servingLine(row, auto);
 
   const choose = async (code: string) => {
     if (busy || code === row.selected) return;
@@ -121,63 +127,45 @@ function CapabilityEngineRow({
           to be three stacked blocks, which is what made "Engine" a visible
           label at all: a select on its own line has to say what it is for.
           Beside the capability's own name it does not, and the repeated word
-          down a column of three was the loudest thing on the tab. The name
-          IS the label, so it is a <label> and the select has no other. */}
+          down a column of three was the loudest thing on the tab. The name IS
+          the label — but a <label htmlFor> pointing at the trigger is NOT how
+          that gets said to a screen reader: `for`/`htmlFor` makes the label
+          the control's WHOLE accessible name (HTML-AAM ranks it above the
+          button's own content), so a reader heard "Speech to text, button"
+          and never which engine was actually selected. A plain <span> with an
+          id, and `EngineSelect` builds its own `aria-labelledby` from it
+          (see that component's comment) that names BOTH the capability and
+          the current value. This also stops a click on the label from
+          forwarding to the button while the popup is open (a `<label>`'s
+          default behaviour, and the second half of the same bug: mousedown
+          closed the popup as an outside click, and the forwarded click then
+          reopened it). */}
       <div className="am-engine-row">
-        <label className="am-engine-cap" htmlFor={`engine-${row.capability}`}>
+        <span id={`engine-${row.capability}-label`} className="am-engine-cap">
           {label}
-        </label>
-        <select
-          id={`engine-${row.capability}`}
-          className="field-control am-engine-select"
-          value={row.selected}
+        </span>
+        {/* The stranded stored code (`strandedSelection`) and each real
+            choice's disabled-reason (`choiceReason`) are both rendered INSIDE
+            the popup by `EngineSelect` itself — see its own comment for why a
+            listbox can say what a native `<select>` could not. */}
+        <EngineSelect
+          labelId={`engine-${row.capability}-label`}
+          auto={auto}
+          selected={row.selected}
+          choices={row.choices}
+          stranded={stranded}
+          strandedLabel={row.strandedLabel}
           disabled={busy}
-          onChange={(e) => choose(e.target.value)}
-        >
-          {/* First, and the only option with no engine behind it. */}
-          <option value={auto}>Automatic</option>
-          {/* A stored engine that is not one of this capability's options,
-              shown so the control is not BLANK: a <select> whose value matches
-              no option renders empty, not as its first row. Disabled, because it
-              cannot be re-picked — and above the real choices rather than among
-              them, since it is the current value and not an alternative.
-
-              The copy says only what `strandedSelection` can establish. It read
-              "no longer available in this version", which is a claim about a
-              WITHDRAWN engine and is false for the other value that lands here:
-              a registered engine belonging to a different capability
-              (`{"text-generation": "mlx-whisper"}` in a hand-edited prefs.json)
-              is neither withdrawn nor unavailable, and the page cannot tell the
-              two apart from this payload. WHICH of the two it is comes from
-              `ignoredReason`, printed verbatim by `ignoredWarning` on the line
-              below — so the pair still says everything, with each half saying
-              only what it knows. */}
-          {stranded && (
-            <option value={stranded} disabled>
-              {stranded} — not one of this capability's engines
-            </option>
-          )}
-          {row.choices.map((choice) => {
-            // Null for an engine that CAN be picked, which is the whole of what
-            // this adds to a label: what a backend is LIKE ("transcribes on the
-            // GPU") is the line under the row, where it can be read without
-            // opening the menu. What is left is the registry's sentence about
-            // why a greyed-out option is greyed out, and in a menu the only
-            // place it can be read is here.
-            const reason = choiceReason(choice);
-            return (
-              <option key={choice.code} value={choice.code} disabled={busy || !choice.available}>
-                {choice.label}
-                {reason ? ` — ${reason}` : ""}
-              </option>
-            );
-          })}
-        </select>
+          onChange={choose}
+        />
         {/* What is ACTUALLY serving this capability, beside the control rather
-            than under it: the select shows the choice, this reports reality,
+            than under it: the trigger shows the choice, this reports reality,
             and they are allowed to differ — which only reads as a pair when
-            they are on one line. */}
-        <span className="am-engine-serving">{servingLine(row)}</span>
+            they are on one line. Null (via `servingLine`) exactly when they
+            cannot differ in a way worth saying: a concrete, honoured selection
+            that already IS what is serving, which the trigger's own label
+            already names. */}
+        {serving && <span className="am-engine-serving">{serving}</span>}
       </div>
       {/* What running on the engine in force is LIKE — the memory ceiling on
           MLX FLUX, MLX Whisper's GPU speed. It sat over the Discover tab's
@@ -188,12 +176,16 @@ function CapabilityEngineRow({
           Diffusers, and it was two tabs away from the control that does it.
           Here it sits under the select it is about.
 
-          MUTED, in the same line as the warning below it rather than in
-          `--warning` orange: none of these reports a problem, they describe
-          what a backend is like, and an orange paragraph under a control the
-          user has not touched reads as an error they caused. */}
+          MUTED: this is not a report of a problem, it describes what a
+          backend is like. */}
       {note && <div className="am-engine-note">{note}</div>}
-      {warning && <div className="am-engine-note">{warning}</div>}
+      {/* The one line on this card that IS reporting a problem — a stored
+          preference this machine is not honouring — so it carries the
+          `.warning` modifier and the app's `--warning` colour rather than the
+          muted grey every other line here uses. Everything else on the card
+          describes normal state; this one says a choice silently didn't
+          take. */}
+      {warning && <div className="am-engine-note warning">{warning}</div>}
       {/* The consequence, in four words at most. It stays because an unload is
           a real thing that just happened to the user's machine and nothing else
           on screen would report it — but the paragraph explaining WHY the model
@@ -290,7 +282,7 @@ function AiIdleWindowCard({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pre
             : `Unloads an idle model after ${idle.effective_minutes} min.`}
         </span>
       </div>
-      <p className="am-engine-note">Minutes a resident model may sit unused before it is unloaded automatically. 0 = never.</p>
+      <p className="am-engine-note">Minutes before an unused model is unloaded. 0 = never.</p>
       {locked && (
         <p className="am-engine-note">
           Locked by <code>FUSED_RENDER_AI_IDLE_MINUTES={idle.forced_by}</code> for this process;
@@ -330,16 +322,17 @@ export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
       {!prefs && !error && <SkeletonLines rows={3} label="Loading engines" />}
       {prefs && (
         <>
-          {/* ONE line, and no heading. The page's own head already says "AI
-              Models" over "Which backend runs each kind of local model", so an
-              <h2> reading "Inference engines" above a paragraph reading "Which
-              backend runs local models" was the tab restating its own chrome
-              twice before saying anything. What cannot be inferred from three
-              labelled selects is what the first option in each of them means,
-              and that is all this says. */}
-          <p className="am-engines-note">
-            <b>Automatic</b> picks the best engine this machine can run.
-          </p>
+          {/* No heading and no intro paragraph. The page's own head already
+              says "AI Models" over "Which backend runs each kind of local
+              model", so an <h2> reading "Inference engines" above a
+              paragraph reading "Which backend runs local models" was the tab
+              restating its own chrome twice before saying anything. What
+              cannot be inferred from three controls is what their first
+              option means — that sentence used to live here as the tab's one
+              paragraph, and now lives on the Automatic option itself
+              (`EngineSelect`'s `buildOptions`), where it is read at the
+              moment it answers a question rather than skimmed past above
+              three closed controls. */}
           {prefs.engines.capabilities.map((row) => (
             <CapabilityEngineRow
               key={row.capability}
