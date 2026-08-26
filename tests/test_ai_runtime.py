@@ -5307,11 +5307,16 @@ def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
     would pass equally well against the N-reads-per-row bug this pins — the
     assertion has to be a COUNT, not just a correct answer.
 
-    `speed.estimate_tok_s` is stubbed out here: SPEC AI-21 wired IT to call
-    `hw_detect.cached_hardware()` too (its own, separate, still-unthreaded
-    read, one per `text-generation` entry) — a real, pre-existing cost of
-    its own, but a DIFFERENT one than this test exists to pin, and left in
-    would inflate the count for a reason this test is not about."""
+    `speed.estimate_tok_s` is NOT stubbed here — SPEC AI-21 wired it to call
+    `hw_detect.cached_hardware()` too (its own, separate call path, one per
+    `text-generation` entry), which used to inflate this test's count for a
+    reason it was not about, and was stubbed out for that reason. Code
+    review caught that as half a fix: `speed.estimate_tok_s` now takes the
+    identical `hardware=` parameter `fit.verdict` does and is handed the
+    SAME per-request reading below, so this test now asserts the real,
+    end-to-end count across BOTH call paths — the assertion that actually
+    proves the fix, rather than one that would pass equally well against
+    `speed.py`'s own copy of the bug."""
     calls = []
     real_cached_hardware = fit.hw_detect.cached_hardware
 
@@ -5320,7 +5325,6 @@ def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
         return real_cached_hardware()
 
     monkeypatch.setattr(fit.hw_detect, "cached_hardware", _counting_cached_hardware)
-    monkeypatch.setattr(speed, "estimate_tok_s", lambda *a, **k: None)
     monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
         {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
         {"id": "org/two", "label": "Two", "size_gb": 8.0, "note": ""},
@@ -5329,6 +5333,7 @@ def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
     row = _fit_text_row(client)
     assert len(row["models"]) >= 3
     assert all(m["fit"] is not None for m in row["models"])
+    assert all(m["speedEstimate"] is not None for m in row["models"])
     assert len(calls) == 1, f"expected exactly one hw_detect read, got {len(calls)}"
 
 

@@ -896,10 +896,15 @@ def _catalog_with_downloads() -> list[dict]:
             # speech row would be actively misleading, not merely
             # unavailable. Reads `hw_detect.cached_hardware()` only (by way
             # of `speed.py`), the same verdict-path-safe boundary `fit.
-            # verdict` above already keeps.
+            # verdict` above already keeps — and, like `fit.verdict` above,
+            # is handed the SAME per-request `hardware` reading rather than
+            # doing its own (code review: `speed.estimate_tok_s` had the
+            # identical N-reads-per-row bug `fit.verdict` was already fixed
+            # for, on a call path that got missed the first time round).
             entry["speedEstimate"] = (
                 speed.estimate_tok_s(entry.get("size_gb"), params=entry.get("params"),
-                                     quantization=entry.get("quantization"))
+                                     quantization=entry.get("quantization"),
+                                     hardware=hardware)
                 if row["capability"] == registry.TEXT_GENERATION else None)
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo

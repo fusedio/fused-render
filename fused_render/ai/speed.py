@@ -48,7 +48,12 @@ up directly; this is a documented, known gap, not an oversight.
 own docstring: "the ONLY function `fit.py` and `benchmark.py` may call").
 This module is a third reader of that same cache, never a second prober; a
 subprocess spawn on a route the AI Models picker polls is exactly what
-`hw_detect`'s split exists to prevent.
+`hw_detect`'s split exists to prevent. `estimate_tok_s`'s own `hardware=`
+parameter (mirroring `fit.verdict`'s identical `_NOT_GIVEN`-sentinel shape)
+is what lets a caller answering MANY catalog entries in one request read
+that cache ONCE and thread it through every call — see that function's own
+docstring for why this is per-request threading, never a process-wide
+`functools.lru_cache`.
 
 **Local calibration** (SPEC item 11): `median(measured_tok_s /
 uncalibrated_estimate_tok_s)` over this machine's own `bench_store.py`
@@ -79,12 +84,29 @@ import os
 import platform
 import statistics
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from fused_render.ai import bench_store, catalog, fit, hw_detect, registry
 from fused_render.shell import storage
 
 VERSION = 1
+
+#: What "the caller did not pass a hardware reading" looks like — the exact
+#: sentinel shape `fit.verdict`'s own `hardware=` parameter uses (code
+#: review: `fit._select_pool` used to call `hw_detect.cached_hardware()`
+#: itself on every `verdict()` call, a fresh `storage.read_json` open and
+#: JSON parse per catalog ROW; `estimate_tok_s` had the IDENTICAL bug on a
+#: different call path and was left unfixed because this is a different
+#: module). Distinct from `None`, because `hw_detect.cached_hardware()`
+#: legitimately returns `None` (no probe has ever run, or the cache file is
+#: corrupt) and that answer has to be usable AS a reading ("no hardware
+#: known") rather than read as "go look it up yourself". `Any`-typed for the
+#: identical pyright reason `fit._NOT_GIVEN`'s own comment gives: the
+#: parameter below is annotated `HardwareInfo | None` (its real contract
+#: once past the `is _NOT_GIVEN` check), and an inferred-`object` default
+#: would otherwise widen that annotation in a way pyright cannot narrow back
+#: down from the `is` check alone.
+_NOT_GIVEN: Any = object()
 
 #: SPEC item 9's own multiplier — a bandwidth-bound decode loop does not
 #: sustain the theoretical peak of the memory bus (contention with the
@@ -163,7 +185,8 @@ def _uncalibrated(weight_gb: float, hardware: hw_detect.HardwareInfo | None,
 
 
 def estimate_tok_s(size_gb: float | None = None, *, params: float | str | None = None,
-                   quantization: str | None = None) -> dict | None:
+                   quantization: str | None = None,
+                   hardware: hw_detect.HardwareInfo | None = _NOT_GIVEN) -> dict | None:
     """`{tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
     calibrated, calibrationFactor}`, or `None` when even the weight size is
     unknown — mirrors `fit.verdict`'s own "`None` when nothing is known"
@@ -189,14 +212,35 @@ def estimate_tok_s(size_gb: float | None = None, *, params: float | str | None =
     `fit.verdict` itself takes, fed straight to `fit.weight_bytes` — a
     caller with a catalog entry in hand passes it exactly the way it
     already does for `fit.verdict`.
+
+    `hardware` — a caller's own `hw_detect.cached_hardware()` reading —
+    exists for the exact reason, and in the exact shape, `fit.verdict`'s own
+    `hardware=` parameter does (code review): this function used to call
+    `hw_detect.cached_hardware()` itself, a `storage.read_json` open plus a
+    JSON parse EVERY call, and `ai_runtime.describe_catalog` calls this once
+    per `text-generation` catalog entry on a route the model picker polls —
+    the identical cost `fit.verdict` was already fixed for, on a different
+    call path that got missed the first time because `speed.py` is a
+    separate module. Left unpassed (the default), this reads
+    `hw_detect.cached_hardware()` itself — correct for a one-off lookup, and
+    what every test and single-estimate caller still gets; passed
+    explicitly, a caller answering MANY entries in one request reads the
+    cache once and threads the SAME reading through every `estimate_tok_s`
+    call, each one at most as fresh as that one read — `footprint_store`'s
+    and `fit.verdict`'s own `hardware=` shape, not a new convention for the
+    same idea. Deliberately NOT a process-wide `functools.lru_cache`:
+    `hw_detect.start_hardware_refresh()` rewrites `ai_hardware.json` on a
+    6-hour tick (an eGPU plugged in mid-session), and a permanently memoized
+    reading would never see that — per-request threading is what lets a
+    LATER request still pick up a change a cache would have hidden.
     """
     weight = fit.weight_bytes(size_gb, params, quantization)
     if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight <= 0:
         return None
     weight_gb = weight / fit.GB_BYTES
-    hardware = hw_detect.cached_hardware()
+    resolved_hardware = hw_detect.cached_hardware() if hardware is _NOT_GIVEN else hardware
     is_apple = fit.is_apple_silicon()
-    base, method, bandwidth, backend = _uncalibrated(weight_gb, hardware, is_apple)
+    base, method, bandwidth, backend = _uncalibrated(weight_gb, resolved_hardware, is_apple)
     factor = stored_calibration_factor()
     tokens_per_second = base * factor if factor is not None else base
     return {
