@@ -34,8 +34,15 @@ fails.** Network failure "degrades silently to no metadata" per spec, but that
 rule is about a REPO WE HAVE NEVER SEEN — for one we have a two-week-old
 reading of, going back to nothing on a transient DNS hiccup would regress a
 page that used to answer into one that renders blank, which is worse than
-serving a slightly-stale-but-still-correct answer. Only a repo with NO cached
-entry and a failed first fetch reads as None.
+serving a slightly-stale-but-still-correct answer. Only a repo with NO
+prior SUCCESSFUL reading and a failed fetch reads as None.
+
+**A failed fetch with nothing to fall back on is cached too, as a NEGATIVE
+entry, under a much shorter `NEGATIVE_TTL_SECONDS`.** GGUF repos routinely
+have no `config.json` at all; without this, `get()` re-issued the HTTP GET
+for such a repo on every single call — a route this feeds is polled, so
+that meant hammering the Hub, forever, for a repo that will never answer
+differently. See `NEGATIVE_TTL_SECONDS`'s own docstring.
 
 **Never raises into a route.** Every network or parse failure — DNS, timeout,
 a non-200, a truncated or non-JSON body, a repo id `urllib.parse.quote` cannot
@@ -62,6 +69,26 @@ _CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
 #: 13 days — see the module docstring for why this specific figure, not a
 #: shorter or longer one.
 TTL_SECONDS = 13 * 24 * 60 * 60
+
+#: How long a NEGATIVE result — `_fetch_raw` could not turn `repo_id` into
+#: bytes, for ANY reason, and there was no prior successful reading to fall
+#: back on — is trusted before the next call retries (code review, finding
+#: C). Far shorter than `TTL_SECONDS`, and deliberately ONE ttl for every
+#: failure reason rather than trying to tell "this repo genuinely has no
+#: `config.json`" (a GGUF repo — durable, could stand a longer TTL) apart
+#: from "the network is down right now" (transient, wants a short one):
+#: distinguishing those would need `_fetch_raw` to surface the HTTP status
+#: rather than collapsing every failure to `None`, a bigger seam change for
+#: a distinction the caller does not need — either way, `get()` today has
+#: nothing better to do than wait and retry.
+#:
+#: **Why this exists at all**: before it did, a fetch that came back empty
+#: wrote NOTHING to the store, so a repo with no `config.json` (GGUF repos
+#: routinely have none) was re-fetched on every single call — a polled
+#: catalog route reached the Hub, `_TIMEOUT_S` seconds at a time, on every
+#: poll, forever; offline, that made a request stall for up to
+#: `_TIMEOUT_S` seconds per repo it asked about in one page load.
+NEGATIVE_TTL_SECONDS = 60 * 60
 
 #: A `config.json` is a few KB. Anything wildly larger than this is not one —
 #: refusing to read past it is the same defence `mirror.py`'s
@@ -131,15 +158,29 @@ def _write(store: dict) -> None:
     storage.write_json(_path(), {"version": VERSION, "repos": store["repos"]})
 
 
+def _fetched_at(entry) -> float:
+    """`entry["fetchedAt"]` as a `float`, or `0.0` (the oldest possible
+    reading, i.e. "stale") for anything that is not one — a non-dict row, a
+    missing key, or a HAND-EDITED/truncated write that leaves a string or
+    `None` where a timestamp belongs (code review, finding D). A bare
+    `entry.get("fetchedAt", 0)` let a corrupt value reach `time.time() -
+    ...` and raise `TypeError` straight out of `get()`, which this module's
+    own docstring promises never happens — `isinstance` here is the guard
+    every other field in this store already gets. Booleans are excluded
+    explicitly: `isinstance(True, int)` is `True` in Python, and a stray
+    `"fetchedAt": true` must not be read as `1`."""
+    if not isinstance(entry, dict):
+        return 0.0
+    value = entry.get("fetchedAt")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
 def _bounded(repos: dict) -> dict:
     if len(repos) <= MAX_REPOS:
         return repos
-
-    def _fetched_at(kv):
-        value = kv[1]
-        return value.get("fetchedAt", 0) if isinstance(value, dict) else 0
-
-    ordered = sorted(repos.items(), key=_fetched_at)
+    ordered = sorted(repos.items(), key=lambda kv: _fetched_at(kv[1]))
     return dict(ordered[len(ordered) - MAX_REPOS:])
 
 
@@ -200,13 +241,31 @@ def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
 
     `force=True` bypasses the TTL (not the cache-on-failure fallback) — for a
     future "re-check this model" action; nothing in this build calls it yet.
+
+    **A failed fetch is cached too, as a NEGATIVE entry** (code review,
+    finding C) — `{"meta": None, "fetchedAt": ..., "negative": True}` — under
+    `NEGATIVE_TTL_SECONDS` rather than `TTL_SECONDS`. Before this, a failed
+    fetch wrote nothing at all, so a repo whose `config.json` genuinely does
+    not exist (every GGUF repo) was re-fetched on EVERY call — see
+    `NEGATIVE_TTL_SECONDS`'s own docstring for the route-level cost that had.
+    A negative entry is distinguishable from "never asked" by its mere
+    presence in `store["repos"]` (`get()`'s own return value is `None`
+    either way, by design — a caller does not need to tell the two apart,
+    only this module's internal TTL logic does).
+
+    **A negative NEVER overwrites a prior SUCCESSFUL reading.** If `entry`
+    already holds real `meta` (not itself a negative), a failed refetch
+    falls back to serving that stale-but-real reading, exactly as before —
+    the module docstring's rule that a transient failure must not regress an
+    already-answered repo to blank. Only a repo with no positive reading to
+    fall back on (never asked, or already negative) gets a negative written.
     """
     store = _load()
     entry = store["repos"].get(repo_id)
-    fresh = (isinstance(entry, dict) and not force
-              and time.time() - entry.get("fetchedAt", 0) < TTL_SECONDS)
-    if fresh:
-        return entry.get("meta")
+    if isinstance(entry, dict) and not force:
+        ttl = NEGATIVE_TTL_SECONDS if entry.get("negative") else TTL_SECONDS
+        if time.time() - _fetched_at(entry) < ttl:
+            return entry.get("meta")
 
     try:
         raw = _fetch_raw(repo_id)
@@ -215,25 +274,33 @@ def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
         # None, must still degrade silently — this route must never 500 off
         # a network failure, regardless of which layer the failure surfaces at.
         raw = None
-    if raw is None:
-        # Fetch failed (or was never attempted because this repo id cannot be
-        # encoded into a URL) — fall back to a stale-but-real prior reading
-        # rather than manufacturing "no metadata" out of a transient failure.
-        # See the module docstring.
-        return entry.get("meta") if isinstance(entry, dict) else None
 
-    try:
-        config = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return entry.get("meta") if isinstance(entry, dict) else None
-    if not isinstance(config, dict):
-        return entry.get("meta") if isinstance(entry, dict) else None
+    config = None
+    if raw is not None:
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            parsed = None
+        config = parsed if isinstance(parsed, dict) else None
 
-    meta = _harvest(config)
-    store["repos"][repo_id] = {"meta": meta, "fetchedAt": time.time()}
+    if config is not None:
+        meta = _harvest(config)
+        store["repos"][repo_id] = {"meta": meta, "fetchedAt": time.time()}
+        store["repos"] = _bounded(store["repos"])
+        _write(store)
+        return meta
+
+    # The fetch failed, or the body was not a JSON object.
+    if isinstance(entry, dict) and not entry.get("negative"):
+        # A prior SUCCESSFUL reading exists — serve it (module docstring's
+        # stale-cache-fallback rule) rather than clobbering real data with a
+        # negative over what may be a transient blip.
+        return entry.get("meta")
+
+    store["repos"][repo_id] = {"meta": None, "fetchedAt": time.time(), "negative": True}
     store["repos"] = _bounded(store["repos"])
     _write(store)
-    return meta
+    return None
 
 
 def clear() -> None:
