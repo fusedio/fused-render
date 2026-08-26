@@ -256,9 +256,33 @@ describe("CurrentAppsSection's half of the saved order", () => {
     // A synchronous read at module scope is the whole reason localStorage was
     // chosen over a server pref: the order is in hand before the first render,
     // so recency never wins a race against what the user dragged.
-    const hydrate = SECTION.indexOf("reorderTo(appOrder, readSavedOrder())");
+    const hydrate = SECTION.indexOf("adoptSavedOrder(readSavedOrder())");
     expect(hydrate).toBeGreaterThan(-1);
     expect(hydrate).toBeLessThan(SECTION.indexOf("export default function"));
+  });
+
+  it("writes only a CHANGED order", () => {
+    // Bugbot, 2026-08-26: the persist effect runs on every pulse, because the
+    // store hands out a fresh `rows` array each poll. An unconditional write
+    // there let a second tab re-save its own pre-drag order over this tab's
+    // drag on its next tick — and it is also what would make the cross-tab
+    // adopt below ping-pong between two tabs forever.
+    expect(SECTION).toContain("if (localStorage.getItem(ORDER_KEY) === next) return;");
+  });
+
+  it("adopts another tab's order instead of fighting it", () => {
+    // `storage` fires only in OTHER documents, which is exactly the cross-tab
+    // channel (the wiring App.tsx uses for the chat's activity stamp).
+    expect(SECTION).toContain('window.addEventListener("storage"');
+    expect(SECTION).toContain("adoptSavedOrder(parseSavedOrder(e.newValue))");
+    // An absent or cleared key is not an order: adopting it must not flatten
+    // the live one.
+    expect(SECTION).toContain("if (!slugs.length) return;");
+    // And the adopt REPLACES rather than merges — a stale slug left behind with
+    // a higher sequence than anything incoming would outrank the whole list.
+    const adopt = SECTION.indexOf("function adoptSavedOrder");
+    const end = SECTION.indexOf("}", SECTION.indexOf("reorderTo", adopt));
+    expect(SECTION.slice(adopt, end)).toContain("appOrder.clear()");
   });
 
   it("never saves an empty list over the order it is about to show", () => {

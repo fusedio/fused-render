@@ -66,15 +66,50 @@ function readSavedOrder(): string[] {
   }
 }
 
+// Write only a CHANGED order. The effect that calls this runs on every pulse
+// (the store hands out a fresh `rows` array each poll, so the memo rebuilds),
+// and an unconditional write there is what made a second tab dangerous: it
+// would re-save its own pre-drag order over the one this tab just dragged, on
+// its next tick (Bugbot, 2026-08-26). With the guard, a tab that has adopted
+// the new order writes nothing, which is also what stops the adopt below from
+// ping-ponging between two tabs forever.
 function saveOrder(slugs: string[]): void {
   try {
-    localStorage.setItem(ORDER_KEY, JSON.stringify(slugs));
+    const next = JSON.stringify(slugs);
+    if (localStorage.getItem(ORDER_KEY) === next) return;
+    localStorage.setItem(ORDER_KEY, next);
   } catch {
     // A blocked store just means the order lasts as long as the page does.
   }
 }
 
-reorderTo(appOrder, readSavedOrder());
+/** Take `slugs` as the whole order, replacing what this page held. Empty is
+ *  NOT an order — a missing or cleared key must leave the live order alone
+ *  rather than flattening it. A live app the incoming list does not mention
+ *  ends up with no sequence and is therefore treated as new (top) on the next
+ *  assignment; in practice both tabs read the same pulse, so the lists agree. */
+function adoptSavedOrder(slugs: string[]): void {
+  if (!slugs.length) return;
+  appOrder.clear();
+  reorderTo(appOrder, slugs);
+}
+
+// Mounted sections, so another tab's drag can repaint this one.
+const orderListeners = new Set<() => void>();
+
+try {
+  adoptSavedOrder(readSavedOrder());
+  // `storage` fires only in OTHER documents, which makes it exactly the
+  // cross-tab channel — the same wiring App.tsx uses to hear the chat's
+  // activity stamp. Without it the two tabs disagree until a reload.
+  window.addEventListener("storage", (e: StorageEvent) => {
+    if (e.key !== ORDER_KEY) return;
+    adoptSavedOrder(parseSavedOrder(e.newValue));
+    for (const listener of orderListeners) listener();
+  });
+} catch {
+  // No store and no window: the order lives and dies with this page.
+}
 
 function useFusedDir(): string {
   const [root, setRoot] = useState(knownRoot);
@@ -190,10 +225,21 @@ export default function CurrentAppsSection() {
   // Write the order back after it settles — a drag, a new app, or an app that
   // left. Guarded on a non-empty list for the same reason the prune is: the
   // first render (and any moment the pulse has not loaded) has no apps, and
-  // saving that would erase the order it is about to display.
+  // saving that would erase the order it is about to display. `saveOrder`
+  // itself skips an unchanged order, so running this every pulse costs a read.
   useEffect(() => {
     if (apps.length) saveOrder(orderedSlugs(appOrder));
   }, [apps]);
+
+  // Repaint when another tab drags. The adopt already happened at the module
+  // listener; this is only the render half of it.
+  useEffect(() => {
+    const bump = () => setOrderEpoch((n) => n + 1);
+    orderListeners.add(bump);
+    return () => {
+      orderListeners.delete(bump);
+    };
+  }, []);
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
