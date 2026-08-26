@@ -289,6 +289,80 @@ class Cancelled(Exception):
     """
 
 
+class InsufficientDiskSpace(Exception):
+    """Raised BEFORE a download starts, by `_ensure_disk_space`, when the
+    target volume's free space is already known to be less than the total
+    this fetch is about to write.
+
+    Distinct from a bare `OSError` so `describe_failure`'s chain-walk prints
+    THIS message at the top rather than whatever library call happened to be
+    running when a mid-download `ENOSPC` finally surfaced — the whole point
+    of checking early is a sentence that names the actual shortfall, not a
+    syscall a user cannot act on.
+    """
+
+
+# ---------------------------------------------------------- SPEC AI-26 (D529)
+def _ensure_disk_space(total_bytes, folder):
+    """Raise `InsufficientDiskSpace` when `folder`'s volume is already known
+    to have less free space than `total_bytes` — the fix for "no disk-space
+    precheck anywhere" (SPEC AI-26): a download that will not fit used to
+    fail as a mid-transfer `OSError: [Errno 28] No space left on device`,
+    after however many gigabytes it managed to write and with an error that
+    names a syscall rather than the gap.
+
+    `total_bytes=None` (a listing failure already degraded the progress bar
+    to a guess, or a caller that never learned a total at all) is silently
+    skipped — checking against an unknown total would mean either refusing
+    every such download outright or checking against a size that IS a guess,
+    and the existing `_fallback` degradation for a failed listing already
+    treats "no total" as "proceed anyway, the bar just cannot be precise".
+    This function makes the identical call for the SAME reason: an unknown
+    figure is not evidence of a shortfall.
+
+    Checked against the NEAREST EXISTING ancestor of `folder`, because the
+    folder itself is usually the thing this download is ABOUT to create —
+    `os.statvfs` (what `shutil.disk_usage` calls) needs a path that already
+    exists, and a repo's cache folder is created lazily by the first byte
+    written into it.
+
+    `shutil.disk_usage` itself failing (an unmounted volume, a path
+    `statvfs` cannot reach) degrades to "proceed" rather than blocking a
+    download over a filesystem question this function cannot actually
+    answer — the same "cannot verify, so do not refuse" rule `_fallback`'s
+    own callers already apply to a failed Hub listing.
+    """
+    if not total_bytes:
+        return
+    path = folder
+    while path and not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+    if not path:
+        return
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return
+    if usage.free >= total_bytes:
+        return
+    need_gb = total_bytes / GB_BYTES
+    free_gb = usage.free / GB_BYTES
+    short_gb = need_gb - free_gb
+    raise InsufficientDiskSpace(
+        f"Not enough disk space: this download needs {need_gb:.1f} GB, "
+        f"only {free_gb:.1f} GB is free — {short_gb:.1f} GB short.")
+
+
+#: `shutil.disk_usage`/`_ensure_disk_space`'s own unit — a decimal gigabyte,
+#: matching every other byte->GB reading in this app (`fit.py`'s own
+#: `GB_BYTES`, restated here rather than imported: this module is
+#: stdlib-only and `fit.py` is not, see the module docstring).
+GB_BYTES = 1e9
+
+
 # ------------------------------------------------------- reporting to the app
 
 
@@ -3404,6 +3478,12 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
 
+    # Fail BEFORE a byte moves, when the listing gave us a real total (SPEC
+    # AI-26) — deliberately after the listing (so this never runs for a
+    # cached/mirrored fast-path return above) and before either fetch path
+    # below opens a connection.
+    _ensure_disk_space(total, repo_folder(model_id))
+
     def hub(revision=None):
         from huggingface_hub import snapshot_download
 
@@ -3683,6 +3763,10 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(repo_id, error)
+
+    # See `download_snapshot`'s identical call (SPEC AI-26) — after the
+    # listing, before either fetch path below.
+    _ensure_disk_space(total, repo_folder(repo_id))
 
     def hub():
         from huggingface_hub import hf_hub_download

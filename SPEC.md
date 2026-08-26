@@ -8921,6 +8921,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   skipped rather than discarding the rest of an otherwise-valid file. Not
   machine-scoped: a hand-curated model list is a statement about what the
   user wants offered, not a fact about the machine that wrote it.
+- **AI-26** **`worker_base._ensure_disk_space(total_bytes, folder)` fails a
+  download BEFORE it starts when the target volume's free space is already
+  known to be less than the listing's own total** (D529). Wired into
+  `download_snapshot` and `download_file`, right after each function's
+  existing repo listing (which already computes the total the progress bar
+  uses) and before either one opens a connection. Checked against the
+  nearest EXISTING ancestor of the cache folder, since the folder itself is
+  usually created lazily by the first byte written. `total_bytes=None` (a
+  listing failure already degraded the bar to a guess) and a
+  `shutil.disk_usage` probe failure both skip the check silently rather than
+  blocking a download over a figure this function cannot verify -- the same
+  "cannot confirm, so proceed" rule the surrounding fallback logic already
+  applies to a failed Hub listing. Raises `InsufficientDiskSpace`, a
+  distinct exception so `describe_failure`'s chain-walk prints the shortfall
+  in GB at the top rather than whatever call happened to be running when a
+  mid-download `ENOSPC` used to surface.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
