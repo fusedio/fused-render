@@ -55,6 +55,7 @@ import {
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
+import { takePendingClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -1092,6 +1093,22 @@ function TemplatePreview({
   useEffect(() => {
     claudeSeedRef.current = null;
   }, [fsPath]);
+
+  // The other side of a "Fix with Claude" staged from OUTSIDE this surface
+  // entirely — a repo-updates row in the activity card (shell/
+  // RepoUpdatesDock.tsx), which stages `{path, prompt}`
+  // (lib/pending-claude-ask.ts) and navigates here rather than calling
+  // `window._fusedClaudeAsk` the way the git companion's OWN button does,
+  // because that export only exists once a surface for this exact path is
+  // already mounted — the whole reason this file's copy of the pull exists.
+  // Gated on `claudeAskRoute` (not merely mounted) for the same reason the
+  // installer above is: nothing may be handed to a surface whose Claude
+  // entry cannot actually show it yet.
+  useEffect(() => {
+    if (!claudeAskRoute) return;
+    const prompt = takePendingClaudeAsk(fsPath);
+    if (prompt) claudeAskActionRef.current(prompt);
+  }, [fsPath, claudeAskRoute]);
 
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a

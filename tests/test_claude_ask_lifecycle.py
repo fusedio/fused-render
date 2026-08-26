@@ -98,6 +98,22 @@ def test_both_hosts_use_the_shared_readiness_check(preview, listing):
         assert "claudeEntryReady" in src, label
 
 
+def test_both_hosts_install_the_cross_navigation_pull(preview, listing):
+    """A "Fix with Claude" staged from OUTSIDE the target surface entirely —
+    a repo-updates row in the activity card, mounted nowhere near Preview or
+    Listing (SPEC §36) — cannot call `window._fusedClaudeAsk`: that export
+    only exists once a surface for the target path is already mounted. So it
+    stages `{path, prompt}` in a separate store (lib/pending-claude-ask.ts)
+    and navigates; both hosts must pick it up on their own, independently —
+    a folder opened one way must not silently drop a prompt the other way
+    would have shown (Preview.tsx's own "Lockstep" note)."""
+    for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
+        assert '"@apps/explorer/lib/pending-claude-ask"' in src, label
+        assert "takePendingClaudeAsk" in src, label
+        assert "takePendingClaudeAsk(fsPath)" in src, label
+        assert "claudeAskActionRef.current(prompt)" in src, label
+
+
 def test_the_shared_take_primitive_reads_and_clears_in_one_step():
     src = _read("lib", "claude-ask.ts")
     fn = src[src.index("export function takeClaudeAsk("):]

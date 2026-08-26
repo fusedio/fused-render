@@ -82,6 +82,7 @@ import {
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
+import { takePendingClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -1019,6 +1020,23 @@ export default function Listing({
   useEffect(() => {
     claudeSeedRef.current = null;
   }, [fsPath]);
+
+  // The other side of a "Fix with Claude" staged from OUTSIDE this pane
+  // entirely — a repo-updates row in the activity card (shell/
+  // RepoUpdatesDock.tsx), which stages `{path, prompt}`
+  // (lib/pending-claude-ask.ts) and navigates here rather than calling
+  // `window._fusedClaudeAsk` the way the git companion's OWN button does,
+  // for the same reason Preview.tsx's copy of this hook gives: that export
+  // only exists once a surface for this exact path is already mounted.
+  // Gated on `claudeReady`, not merely mounted — Preview.tsx installs its own
+  // copy of this same pull for the file sidebar; both must fire independently
+  // (the "Lockstep" this pair is, per its own module comment) or a folder
+  // opened one way silently drops the prompt the other way would have shown.
+  useEffect(() => {
+    if (!claudeReady) return;
+    const prompt = takePendingClaudeAsk(fsPath);
+    if (prompt) claudeAskActionRef.current(prompt);
+  }, [fsPath, claudeReady]);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   repoActionLabel,
+  repoFixPrompt,
   repoName,
   repoRows,
   repoStatusText,
@@ -97,5 +98,30 @@ describe("repoActionLabel", () => {
   it("labels each action", () => {
     expect(repoActionLabel("update")).toBe("Update");
     expect(repoActionLabel("rebase")).toBe("Rebase");
+  });
+});
+
+describe("repoFixPrompt", () => {
+  it("carries the error, the branch, ahead/behind and the repo root", () => {
+    const [row] = repoRows([
+      status({ root: "/a/widget", branch: "main", default_branch: "main", behind: 3 }),
+    ]);
+    const prompt = repoFixPrompt(row, "not possible to fast-forward");
+    expect(prompt).toContain("not possible to fast-forward");
+    expect(prompt).toContain("branch main");
+    expect(prompt).toContain("tracking origin/main");
+    expect(prompt).toContain("3 behind");
+    expect(prompt).toContain("/a/widget");
+  });
+
+  it("names a detached HEAD instead of a branch", () => {
+    const [row] = repoRows([status({ branch: null })]);
+    expect(repoFixPrompt(row, "err")).toContain("branch (detached)");
+  });
+
+  it("reports the working tree as dirty only for a dirty refusal", () => {
+    const [row] = repoRows([status()]);
+    expect(repoFixPrompt(row, "err", "dirty")).toContain("working tree dirty");
+    expect(repoFixPrompt(row, "err", "git-failed")).toContain("working tree clean");
   });
 });

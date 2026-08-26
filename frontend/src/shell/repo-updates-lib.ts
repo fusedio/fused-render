@@ -75,3 +75,28 @@ export function repoStatusText(row: RepoRow): string {
 export function repoActionLabel(action: RepoAction): string {
   return action === "update" ? "Update" : "Rebase";
 }
+
+/**
+ * The "Fix with Claude" prompt for a refused update/rebase — the same
+ * material `templates/git/template.html`'s `askClaudeOnError` assembles for
+ * the git companion's own button (template.html:2580-2605): the error, the
+ * branch, ahead/behind, the dirty flag, and the repo root as the working
+ * directory to fix it in. Built here rather than in the component so it is
+ * testable without a DOM, same as everything else in this file.
+ */
+export function repoFixPrompt(row: RepoRow, message: string, reason?: string): string {
+  const repo = row.repo;
+  const parts = [`A git operation failed in a GUI. The error was:\n${message}`];
+  const branch = repo.branch || "(detached)";
+  const dirty = reason === "dirty" ? "dirty" : "clean";
+  parts.push(
+    `Repository state: branch ${branch}, tracking origin/${repo.default_branch}, ` +
+      `0 ahead / ${repo.behind} behind, working tree ${dirty}.`
+  );
+  parts.push(`This repository/working directory is ${repo.root}.`);
+  parts.push(
+    "Explain what the error means, then fix it: run whatever is needed to " +
+      "get this repository out of the failure and back to a good state."
+  );
+  return parts.join("\n\n");
+}

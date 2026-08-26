@@ -23,10 +23,13 @@
 // the STAGED-PROMPT store this row writes into is explorer/lib territory,
 // which only shell-side code reaches.
 import { useCallback, useEffect, useRef, useState } from "react";
+import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
+import { navigate } from "@platform/lib/router";
 import type { RepoUpdatesSlot } from "@platform/ui/DownloadManager";
 import {
   repoActionLabel,
+  repoFixPrompt,
   repoRows,
   repoStatusText,
   type RepoAction,
@@ -80,27 +83,32 @@ function RepoRowView({
   onDone: (result: MutationResult) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<MutationResult | null>(null);
   const action: RepoAction = row.primaryAction;
 
   const run = async () => {
     if (busy) return;
     setBusy(true);
-    setError(null);
+    setFailure(null);
     try {
       const result = await postJson<MutationResult>("/api/git-upstream", {
         action,
         root: row.repo.root,
       });
-      if (!result.ok) {
-        setError(result.message || "That could not be completed.");
-      }
+      if (!result.ok) setFailure(result);
       onDone(result);
     } catch {
-      setError("That could not be completed — check your connection and retry.");
+      setFailure({ ok: false, message: "check your connection and retry" });
     } finally {
       setBusy(false);
     }
+  };
+
+  const fixWithClaude = () => {
+    if (!failure) return;
+    const prompt = repoFixPrompt(row, failure.message || "unknown error", failure.reason);
+    stageClaudeAsk(row.repo.root, prompt);
+    navigate(row.repo.root, { isDir: true });
   };
 
   return (
@@ -113,7 +121,19 @@ function RepoRowView({
           {busy ? "Working…" : repoActionLabel(action)}
         </button>
       </div>
-      <div className="q-status">{error || repoStatusText(row)}</div>
+      <div className="q-status">{failure ? failure.message : repoStatusText(row)}</div>
+      {/* Refusal, not error text alone — the same failure-toast rule the git
+          companion's own rows follow: a refusal is spoken AND offers a way
+          out, never just swallowed. This surface has no chat of its own
+          (unlike the git companion), so the way out is navigating to the
+          repo and staging the ask for whatever Claude-capable surface mounts
+          there (pending-claude-ask.ts) rather than calling
+          `window._fusedClaudeAsk` directly. */}
+      {failure && (
+        <button type="button" className="q-all" onClick={fixWithClaude}>
+          Fix with Claude
+        </button>
+      )}
     </div>
   );
 }
