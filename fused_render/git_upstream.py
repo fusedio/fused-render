@@ -190,20 +190,30 @@ def _fetch_one_ref(root, ref):
     return _ok(_run(root, "fetch", "--", "origin", ref, timeout=TIMEOUT_S))
 
 
-def _behind_count(root, default_branch):
-    """How many commits `origin/<default_branch>` has that HEAD does not —
-    the `--left-right --count` reference is `templates/git/log.py:770-777`;
-    here only one side is wanted, so a plain two-dot `--count` suffices."""
-    result = _run(root, "rev-list", "--count", f"HEAD..origin/{default_branch}")
+def _ahead_behind_counts(root, default_branch):
+    """`(ahead, behind)` — how many commits HEAD has that
+    `origin/<default_branch>` does not, and vice versa. `--left-right
+    --count` on the three-dot range prints "<ahead>\t<behind>" in one call
+    — the reference is `templates/git/log.py:770-777`, whose own comment
+    explains the three dots: two would give one combined total and lose the
+    direction. Both sides are wanted here (not just `behind`, the original
+    narrower call this replaced): `ahead` is what the "Fix with Claude"
+    prompt (repo-updates-lib.ts's `repoFixPrompt`) needs to describe a
+    rebase refusal honestly — the rebase path exists BECAUSE the branch has
+    local commits behind couldn't tell it about."""
+    result = _run(root, "rev-list", "--left-right", "--count",
+                  f"HEAD...origin/{default_branch}")
     if not _ok(result):
-        return None
-    out = _out(result)
-    return int(out) if out.isdigit() else None
+        return None, None
+    parts = _out(result).split()
+    if len(parts) != 2 or not all(p.isdigit() for p in parts):
+        return None, None
+    return int(parts[0]), int(parts[1])
 
 
 def check_repo(root):
     """One upstream check for `root`: fetch the default branch, count how far
-    behind it HEAD is. Returns a result dict, or None when the remote
+    ahead/behind it HEAD is. Returns a result dict, or None when the remote
     couldn't be reached / resolved — silence is deliberate (module
     docstring)."""
     default_branch = _default_branch(root)
@@ -211,7 +221,7 @@ def check_repo(root):
         return None
     if not _fetch_one_ref(root, default_branch):
         return None
-    behind = _behind_count(root, default_branch)
+    ahead, behind = _ahead_behind_counts(root, default_branch)
     if behind is None:
         return None
     branch = _current_branch(root)
@@ -220,6 +230,7 @@ def check_repo(root):
         "branch": branch,
         "default_branch": default_branch,
         "on_default": branch is not None and branch == default_branch,
+        "ahead": ahead or 0,
         "behind": behind,
         "checked_at": time.time(),
     }
@@ -254,26 +265,84 @@ def _refuse(reason, message):
     return {"ok": False, "reason": reason, "message": message}
 
 
-def _is_clean(root):
-    result = _run(root, "status", "--porcelain")
+def _is_clean(root, *, include_untracked=True):
+    """Whether `root`'s working tree is clean enough to mutate.
+
+    `include_untracked` is NOT one bound tightened for its own sake: an
+    `--ff-only` pull only ever touches TRACKED refs and the index, so a
+    `.venv/`, build output, or a scratch file sitting untracked in the tree
+    can never conflict with it — `update_repo` passes `include_untracked=
+    False` so a repo that would otherwise never be able to update from this
+    card (an ordinary repo with an ordinary gitignored build dir) isn't
+    refused over files the pull will never touch. `rebase_repo` keeps the
+    stricter, untracked-inclusive check (the default here): a rebase
+    replays commits by checking out each one in turn, and an untracked file
+    that happens to collide with a path one of THOSE commits touches is a
+    real, if rarer, way to lose it — worth refusing up front rather than
+    discovering mid-rebase.
+    """
+    args = ["status", "--porcelain"]
+    if not include_untracked:
+        args.append("--untracked-files=no")
+    result = _run(root, *args)
     if not _ok(result):
         return False  # unknown status — never mutate a repo we cannot read
     return not _out(result)
 
 
-def _mutation_preflight(root):
+def _operation_in_flight(root):
+    """Which multi-step git operation `root` is already mid-way through, if
+    any. Mirrors `templates/git/log.py`'s `_operation_in_flight` (that
+    module's own twin of this) — `rebase-merge`/`rebase-apply` are checked
+    FIRST because a conflicted rebase step also writes `MERGE_HEAD`, and
+    asking about single refs first would misreport the step's PARENT
+    operation as a plain merge. Every name log.py's version reports is kept
+    here, not just `rebase` (the only one this module's own mutations can
+    leave behind): a merge/cherry-pick/revert started some OTHER way — a
+    terminal, the git companion — must still be named accurately by this
+    preflight rather than folding into the generic "dirty" refusal."""
+    gitdir = os.path.join(root, ".git")
+    if not os.path.isdir(gitdir):
+        return None
+    for sub in ("rebase-merge", "rebase-apply"):
+        if os.path.isdir(os.path.join(gitdir, sub)):
+            return "rebase"
+    for marker, name in (("MERGE_HEAD", "merge"),
+                         ("CHERRY_PICK_HEAD", "cherry-pick"),
+                         ("REVERT_HEAD", "revert")):
+        if os.path.exists(os.path.join(gitdir, marker)):
+            return name
+    return None
+
+
+def _mutation_preflight(root, *, include_untracked=True):
     """Every check both mutations need before touching anything: the repo
     still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
-    `ops.py:_refuse_mounts` exists to prevent), has a clean working tree, an
-    attached branch, and a resolvable `origin` with a default branch. Returns
-    `(branch, default_branch, refusal)` — exactly one of the first two or the
-    third is None."""
+    `ops.py:_refuse_mounts` exists to prevent), isn't already mid an
+    operation `rebase_repo` (or a terminal) left in flight, has a clean
+    working tree, an attached branch, and a resolvable `origin` with a
+    default branch. Returns `(branch, default_branch, refusal)` — exactly
+    one of the first two or the third is None."""
     if not os.path.isdir(root):
         return None, None, _refuse("missing", f"{root} no longer exists.")
     if shell_mounts.is_mount_backed(root):
         return None, None, _refuse(
             "mount", "Git operations are not available on remote mounts.")
-    if not _is_clean(root):
+    operation = _operation_in_flight(root)
+    if operation is not None:
+        # Checked BEFORE the dirty check on purpose: a mid-rebase tree
+        # normally has unmerged paths of its own, which `_is_clean` would
+        # otherwise report as ordinary "uncommitted changes" — the wrong
+        # diagnosis (this isn't an edit to commit or discard) and the wrong
+        # instruction (there is no tree state the dirty refusal's own
+        # wording can be resolved into; the only way out is finishing or
+        # aborting the operation already in progress).
+        return None, None, _refuse(
+            "in-progress",
+            f"This repository is already in the middle of a {operation} — "
+            "resolve it (the git panel's conflict view, or a terminal) "
+            "before trying again.")
+    if not _is_clean(root, include_untracked=include_untracked):
         return None, None, _refuse(
             "dirty", "This repository has uncommitted changes — commit, "
             "stash, or discard them first.")
@@ -299,6 +368,23 @@ def _record(result):
             _state[result["root"]] = result
 
 
+def _refresh_after_mutation(root):
+    """Re-check `root` right after a successful `update`/`rebase`, so its
+    row clears (or updates) without waiting out CHECK_TTL_S. Unlike the
+    throttled background path (`_background_check`), a re-check that fails
+    here must NOT leave the pre-mutation entry standing — a stale `behind >
+    0` with an Update button, after the mutation that button ran already
+    succeeded — so a failed re-check drops the entry outright rather than
+    trusting a second git call the mutation's own success never depended
+    on."""
+    result = check_repo(root)
+    if result is not None:
+        _record(result)
+        return
+    with _state_lock:
+        _state.pop(root, None)
+
+
 def update_repo(root):
     """--ff-only pull of `origin/<default>` — the card's primary action, on
     the default branch. Refuses on a dirty tree, a detached HEAD, a missing
@@ -306,14 +392,15 @@ def update_repo(root):
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
-    branch, default_branch, refusal = _mutation_preflight(root)
+    branch, default_branch, refusal = _mutation_preflight(
+        root, include_untracked=False)
     if refusal is not None:
         return refusal
     result = _run(root, "pull", "--ff-only", "--", "origin", default_branch,
                   timeout=TIMEOUT_S)
     if not _ok(result):
         return _refuse("git-failed", _brief(result) or "git pull failed.")
-    _record(check_repo(root))
+    _refresh_after_mutation(root)
     return {"ok": True, "op": "update", "root": root,
             "message": f"Updated to origin/{default_branch}."}
 
@@ -329,7 +416,8 @@ def rebase_repo(root):
     `_rebase` — this function's twin — documents in full), so the way back
     in is the git panel (or Fix with Claude, scoped to this repo), never a
     silent discard of the rebase the button just started."""
-    branch, default_branch, refusal = _mutation_preflight(root)
+    branch, default_branch, refusal = _mutation_preflight(
+        root, include_untracked=True)
     if refusal is not None:
         return refusal
     fetch = _run(root, "fetch", "--", "origin", default_branch, timeout=TIMEOUT_S)
@@ -342,7 +430,7 @@ def rebase_repo(root):
             "git-failed",
             _brief(result) or "git rebase failed — resolve the conflict in "
             "the git panel.")
-    _record(check_repo(root))
+    _refresh_after_mutation(root)
     return {"ok": True, "op": "rebase", "root": root,
             "message": f"Rebased onto origin/{default_branch}."}
 
@@ -370,13 +458,29 @@ def _due(root, now):
         return True
 
 
-def _run_check(root):
-    """The check itself, off the request thread. Never raises: a render must
-    not fail, or slow down, because a git housekeeping check did."""
+def _background_check(path):
+    """Everything a note_app_opened dispatch does, entirely off the request
+    thread: resolve `path` to a repo root (a `git rev-parse` subprocess),
+    decide whether that root is due, and run the check if so. Never raises:
+    a render must not fail, or slow down, because a git housekeeping check
+    did. Releases the process-wide check slot exactly once, on every exit
+    path — `note_app_opened` acquires it before dispatching this, and this
+    is the only place it is released.
+
+    Splitting `repo_root` resolution OUT of `note_app_opened` and into here
+    is what makes the module docstring's "the check always returns
+    immediately; the real work runs off the request thread" true: resolving
+    a path to a repo root is itself a git subprocess (plus a mount-guard
+    check), and running it synchronously in `note_app_opened` — as an
+    earlier version of this function did — meant EVERY non-preview
+    `/render` of an app paid that spawn on the request thread, whether or
+    not the app was even in a git repo."""
     try:
-        _record(check_repo(root))
+        root = repo_root(path)
+        if root is not None and _due(root, time.time()):
+            _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
-        logger.exception("git-upstream check failed for %s", root)
+        logger.exception("git-upstream check failed for %s", path)
     finally:
         _check_slot.release()
 
@@ -386,25 +490,40 @@ def note_app_opened(path, *, _runner=None):
     off the request path, best-effort — see the module docstring for the
     trigger, the throttle, and the silence-on-failure rules.
 
-    `_runner` is a test seam: given a callable, it receives the zero-arg
-    check function instead of a background thread being started for it, so a
-    test can run the check synchronously and inspect `known_repos()`
-    immediately. Production callers never pass it.
+    Does NO synchronous git work of its own: the process-wide check slot is
+    acquired here (a plain, non-blocking `Lock.acquire` — never a
+    subprocess), and everything that touches git — resolving `path` to a
+    repo root, deciding whether it is due, fetching if so — happens in
+    `_background_check`, dispatched below. Acquiring the slot BEFORE that
+    resolution, rather than after (an earlier version of this function did
+    it the other way around), is also what fixes the throttle's own
+    cross-repo bug: stamping `_checked[root]` only ever happens once the
+    slot is already held, so a repo B opened while repo A's check is still
+    running is never marked "just checked" by a dispatch that the busy slot
+    is about to refuse — it gets a real check on the next open instead of
+    silently waiting out the rest of CHECK_TTL_S for nothing.
 
-    Returns whether a check was started — for tests; real callers ignore it,
-    matching `index.note_folder_opened`'s own return convention.
+    `_runner` is a test seam: given a callable, it receives the zero-arg
+    background-check function instead of a background thread being started
+    for it, so a test can run the check synchronously and inspect
+    `known_repos()` immediately. Production callers never pass it.
+
+    Returns whether a background attempt was DISPATCHED — for tests; real
+    callers ignore it. Matches `index.note_folder_opened`'s own return
+    convention exactly: that function also returns True as soon as its
+    thread starts, before its own equivalent of `repo_root`/`_due`
+    (`enclosing_root`/`_freshness_due`) has run at all, off-thread, inside
+    the dispatched call. True here means "a check may run"; it does not
+    mean `path` is confirmed to be in a repo, or that this root is due —
+    both are resolved off the request thread, by design, and are not
+    knowable synchronously any more.
     """
-    root = repo_root(path)
-    if root is None:
-        return False
-    if not _due(root, time.time()):
-        return False
     if not _check_slot.acquire(blocking=False):
         return False
     runner = _runner or (lambda fn: threading.Thread(
         target=fn, daemon=True, name="git-upstream-check").start())
     try:
-        runner(lambda: _run_check(root))
+        runner(lambda: _background_check(path))
     except RuntimeError:  # interpreter shutting down
         _check_slot.release()
         return False
