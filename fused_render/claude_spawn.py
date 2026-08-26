@@ -118,12 +118,14 @@ spec.loader.exec_module(mod)
 print(json.dumps(mod._start(req["file"], req["message"], req["session_id"],
                             req.get("model", ""), req.get("effort", ""),
                             permission_mode=req["permission_mode"],
-                            message_via_stdin=True)))
+                            message_via_stdin=True,
+                            extra_read_dirs=req.get("extra_read_dirs") or None)))
 """
 
 
 def spawn_helper(target: str, prompt: str, permission_mode: str,
-                 session_id: str = "", model: str = "", effort: str = "") -> dict:
+                 session_id: str = "", model: str = "", effort: str = "",
+                 extra_read_dirs: list[str] | None = None) -> dict:
     """Run `agent._start` in the fork-safe helper; return its result dict.
 
     close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
@@ -148,7 +150,11 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         input=json.dumps(
             {"agent": agent_path(), "file": target, "message": prompt,
              "session_id": session_id, "permission_mode": permission_mode,
-             "model": model, "effort": effort}),
+             "model": model, "effort": effort,
+             # Extra dirs whose Read the run pre-allows (agent._start): the
+             # scheduler passes its task-shots dir so an attached image never
+             # raises a permission card in a headless run nobody is watching.
+             "extra_read_dirs": list(extra_read_dirs or [])}),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=60, close_fds=False,
     )

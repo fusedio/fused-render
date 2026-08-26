@@ -79,7 +79,7 @@ def spawned(monkeypatch):
     body is the right seam)."""
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kw):
         calls.append({"target": target, "message": prompt,
                       "session_id": session_id})
         return {"run_id": f"r-{len(calls)}"}

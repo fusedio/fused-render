@@ -322,6 +322,60 @@ def store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
 
 
+def shots_dir() -> str:
+    """Where task-attached images live: ``~/.fused-render/task-shots``.
+
+    NOT the claude template's own ``shots`` dir, which is tempdir-rooted and
+    swept on a 12-hour TTL — an annotation is junk once its turn is over, but a
+    scheduled task can fire days after its images were attached, and a repeat
+    re-reads them on every run. Branch-aware via ``storage.home_dir()`` like
+    the store itself.
+
+    **Resolved, and forward-slashed.** The pre-allowed Read rule matches TEXT,
+    not inodes, so every spelling of this directory in the system has to be the
+    same spelling: `_images` stores `realpath`s on the entry, `_attachments_block`
+    puts those in the prompt, and `_send` pre-allows THIS. Left unresolved, the
+    two disagree wherever a symlink sits on the path — a symlinked home, or
+    macOS' own `/tmp` -> `/private/tmp` — and the headless run is handed paths it
+    is not allowed to open (Bugbot, PR #865)."""
+    return os.path.realpath(
+        os.path.join(storage.home_dir(), "task-shots")).replace("\\", "/")
+
+
+#: Attachment bounds. A cap on COUNT because each image rides every run of a
+#: repeat into the model's context; the byte cap lives on the upload endpoint,
+#: which is the only writer.
+IMAGES_MAX = 4
+
+
+def _images(value) -> list[str]:
+    """Validate a request's ``images`` into stored task-shot paths.
+
+    Only paths under ``shots_dir()`` are accepted — the upload endpoint is the
+    only thing that writes there, so this is what keeps the field from being a
+    way to point a scheduled prompt at an arbitrary file on disk. Realpath
+    membership, not string prefix on the raw value, so a symlink under the dir
+    cannot smuggle a target out of it."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("images: expected a list of attachment paths")
+    if len(value) > IMAGES_MAX:
+        raise ValueError(f"images: at most {IMAGES_MAX} images per task")
+    root = os.path.realpath(shots_dir())
+    out: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("images: expected a list of attachment paths")
+        real = os.path.realpath(os.path.expanduser(item.strip()))
+        if not real.startswith(root + os.sep):
+            raise ValueError("images: not a task attachment path")
+        if not os.path.isfile(real):
+            raise ValueError("images: attachment no longer exists")
+        out.append(real.replace("\\", "/"))
+    return out
+
+
 def max_late_seconds() -> int | None:
     """The catch-up bound in seconds, or **None for no bound** — which is the
     default, and what makes a missed one-off queue rather than expire.
@@ -612,7 +666,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
            new_task_each_run=None, session_learned=None,
-           immediate=None, create_target: bool = False,
+           immediate=None, images=None,
+           create_target: bool = False,
            model: str = "", effort: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
@@ -691,6 +746,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
         raise ValueError("message: cannot be empty")
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target: required")
+    images = _images(images)
     target = os.path.abspath(os.path.expanduser(target))
     # The new folder is only CHECKED here; it is made at the very bottom, right
     # before the entry is stored. Everything between this point and there can
@@ -799,6 +855,10 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # unvalidated, exactly as it does for every other field here.
         "title": _text(title),
         "description": _text(description),
+        # Task-shot paths, already validated into shots_dir() residents by
+        # `_images` above. Stored on the entry (and copied onto every
+        # occurrence) so the send path and an edit both read them off the row.
+        "images": images,
         # Threading, not scheduling: whether each run of a REPEAT opens its own
         # session. Stored on one-shots too (as False) so every entry has the
         # same shape and the form reads it back the same way — a one-shot has
@@ -1309,6 +1369,22 @@ def _outgoing(entry: dict) -> str:
             "</live-app-state>\n\n") + message
 
 
+def _attachments_block(entry: dict) -> str:
+    """The message tail naming a task's attached images, or "".
+
+    Paths, not pixels: the spawned run pre-allows Read of ``shots_dir()``
+    (``_send`` passes it as an extra read dir), so the model opens the files
+    itself — the same shape the claude template uses for annotation crops, and
+    the reason a repeat can re-read its images on every run without the store
+    carrying megabytes of base64."""
+    images = [str(p) for p in (entry.get("images") or [])
+              if isinstance(p, str) and p.strip()]
+    if not images:
+        return ""
+    return ("\n\nAttached images (read them with the Read tool):\n"
+            + "\n".join(images))
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
 
@@ -1317,11 +1393,19 @@ def _send(entry: dict) -> None:
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
     try:
+        # The extra Read pre-allowance is passed only when this run actually
+        # HAS attachments — not as `None` on every other send. Two reasons, and
+        # the second is the load-bearing one: a directory rule on a run with
+        # nothing to read there is standing permission for no reason, and every
+        # send without images keeps the exact call shape it has always had.
+        attachments = {"extra_read_dirs": [shots_dir()]} if entry.get("images") else {}
         res = claude_spawn.spawn_helper(
-            entry["target"], _outgoing(entry), entry.get("permission_mode")
+            entry["target"], _outgoing(entry) + _attachments_block(entry),
+            entry.get("permission_mode")
             or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
             model=str(entry.get("model") or ""),
-            effort=str(entry.get("effort") or ""))
+            effort=str(entry.get("effort") or ""),
+            **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
         return
@@ -2063,6 +2147,9 @@ def _materialize(now: datetime) -> None:
                 # to the template for the label.
                 "title": _text(entry.get("title")),
                 "description": _text(entry.get("description")),
+                # The attachments travel with every run for the same reason the
+                # words above do: an occurrence IS that template's run.
+                "images": list(entry.get("images") or []),
                 # Carried so an occurrence reads the same shape as any other
                 # entry. It is the TEMPLATE's answer that decided the session id
                 # above; copying it keeps the record of which way that went.

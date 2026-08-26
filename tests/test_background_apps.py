@@ -174,7 +174,7 @@ def test_version_for_changes_with_interpreter_path(tmp_path):
 
 
 def test_version_for_changes_with_interpreter_mtime_at_the_same_path(tmp_path):
-    # Code-review fix (D499 revised): the exact upgrade-rot case this digest
+    # Code-review fix (D514 revised): the exact upgrade-rot case this digest
     # exists for is the packaged interpreter rewritten IN PLACE at the same
     # path — same path, same version string, different bytes/mtime. A
     # path-only component (realpath'd or not) cannot see that; the

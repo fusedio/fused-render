@@ -257,11 +257,19 @@
   flex: 1 1 0%;
   width: 100%;
   min-width: 0;
-  max-width: 900px;
   box-sizing: border-box;
   overflow-x: hidden;
   overflow-y: auto;
   padding: 24px 28px 40px;
+}
+
+/* The cap is Claude Config's, NOT .cc-main's: that class is the shared chassis
+   the AI Models page stands on too (AiModelsPage.tsx), and a 900px cap there
+   squeezed the Playground into a column with the page background showing all
+   around it (owner, 2026-08-26). So the cap is an opt-in class ClaudeConfig.tsx
+   puts on its own <main>. */
+.cc-main-capped {
+  max-width: 900px;
 }
 
 /* The list-bearing tabs (see WIDE_SECTIONS in ClaudeConfig.tsx) get more room

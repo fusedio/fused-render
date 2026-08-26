@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9706,7 +9706,7 @@ background apps are the third.
   — same shape as the warm-worker's `app_engine_id`, a distinct prefix so the
   two can never collide. `version_for(folder, interpreter)` digests the
   manifest's own bytes, the daemon file's mtime/size, and the interpreter
-  path (D499) — any of the three changing retires the running child rather
+  path (D514) — any of the three changing retires the running child rather
   than reusing it.
 - **Run state and autostart are independent (D511).** Whether the daemon is
   alive right now (`engine_host`'s own live-child bookkeeping) and whether

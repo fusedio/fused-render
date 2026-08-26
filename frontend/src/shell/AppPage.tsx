@@ -1,6 +1,7 @@
-// The app page — `/apps/<slug>` (D488): one workspace app, <fused_dir>/local/<slug>,
-// as a place rather than as a folder. Three tabs, one path each
-// (`/apps/<slug>/overview`, `/tasks`, `/files` — current-apps-lib):
+// The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
+// folder — a workspace app under any shelf, or a linked app anywhere on disk —
+// as a place rather than as a folder. Three tabs, named by the `_tab` query
+// param (absent = overview; `?_tab=tasks`, `?_tab=files` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -22,7 +23,7 @@
 // side. The folder is one caption-click away for the operations (rename, move,
 // new file) this page deliberately does not offer.
 //
-// Mounted per SLUG, not per nav epoch (App.tsx): the Overview frame holds live
+// Mounted per FOLDER, not per nav epoch (App.tsx): the Overview frame holds live
 // app state, and a tab switch — a navigation, since the tab is in the path —
 // must not reload it. The frame stays mounted behind the Tasks tab for the
 // same reason (display:none, not unmount).
@@ -35,17 +36,18 @@ import {
 } from "react";
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
+import { basename } from "@platform/lib/format";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
   APP_PAGE_TABS,
-  appPageTabFromPath,
+  appPageTabFromSearch,
   appPageUrl,
-  localAppsRoot,
   type AppPageTab,
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
@@ -97,7 +99,7 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
   },
   tasks: {
     label: "Tasks",
-    Icon: ListTodo,
+    Icon: ListTodo, // the sidebar's Tasks icon too (GlobalSidebar SCHEDULED_ICON)
     render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
   },
   files: {
@@ -118,21 +120,19 @@ type Resolved =
   | { kind: "app"; entry: string | null };
 
 export default function AppPage({
-  slug,
+  dir,
   config,
 }: {
-  slug: string;
+  /** The app folder, canonical forward-slash (current-apps-lib appPathFromPath). */
+  dir: string;
   config: Config;
 }) {
-  const dir = useMemo(
-    () => localAppsRoot(config.fused_dir) + slug,
-    [config.fused_dir, slug],
-  );
+  const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
-  // The tab is the path's last segment, re-read on every URL event so
+  // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   useUrlVersion();
-  const tab = appPageTabFromPath(location.pathname);
+  const tab = appPageTabFromSearch(location.search);
 
   useEffect(() => {
     let live = true;
@@ -165,12 +165,48 @@ export default function AppPage({
     };
   }, [dir]);
 
+  // Left/Right step the tabs (owner, 2026-08-26), the sibling of the sidebar's
+  // Up/Down over its rows (sidebarArrowNav.ts): together the two axes make the
+  // app page steerable from the keyboard alone. Same ownership rule as there —
+  // only when nothing in particular is focused (<body>) or focus is in the
+  // sidebar, so a focused control, a text field, or the base-ui tab list's own
+  // arrow handling keeps its keys. Ends stop, no wrap.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.isComposing || e.defaultPrevented) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (isOverlayOpen()) return;
+      const el = document.activeElement as HTMLElement | null;
+      // A text field keeps its caret keys — the sidebar holds one mid-rename
+      // (BookmarksSection's RenameInput), so "in the sidebar" is not enough.
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      )
+        return;
+      const onBody =
+        !el || el === document.body || el === document.documentElement;
+      const inSidebar = !!el && !!document.getElementById("sidebar")?.contains(el);
+      if (!onBody && !inSidebar) return;
+      const cur = appPageTabFromSearch(location.search);
+      const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
+      e.preventDefault();
+      if (i < 0 || i >= APP_PAGE_TABS.length) return;
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [dir]);
+
   const pickTab = (e: MouseEvent<HTMLAnchorElement>, next: AppPageTab) => {
     if (opensElsewhere(e)) return;
     e.preventDefault();
     // The query rides along: it is the tab's own (`?view=` on Tasks), and a
     // switch away and back should find it as it was.
-    if (next !== tab) navigateUrl(appPageUrl(slug, next) + location.search);
+    if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
   };
 
   const folderHref = urlForFsPath(dir);
@@ -217,7 +253,7 @@ export default function AppPage({
                   nativeButton={false}
                   render={
                     <a
-                      href={appPageUrl(slug, id) + location.search}
+                      href={appPageUrl(dir, id, location.search)}
                       onClick={(e) => pickTab(e, id)}
                     />
                   }
@@ -235,8 +271,7 @@ export default function AppPage({
         )}
         {resolved?.kind === "missing" && (
           <ErrorBanner>
-            No app named <strong>{slug}</strong> under{" "}
-            {tildePath(localAppsRoot(config.fused_dir), home)}.
+            No folder at <strong>{tildePath(dir, home)}</strong>.
           </ErrorBanner>
         )}
         {resolved?.kind === "error" && (

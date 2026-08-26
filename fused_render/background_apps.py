@@ -131,7 +131,7 @@ def version_for(folder: str, interpreter: str) -> str:
     OpenWhisper upgrade-rot class — a stale venv reused against a new
     interpreter).
 
-    D499 revised (2026-08-26 code review): the interpreter component used to
+    D514 revised (2026-08-26 code review): the interpreter component used to
     be `os.path.realpath(interpreter)` alone, which broke two ways. First, a
     realpath DESTROYS venv identity rather than naming it: a venv's `bin/
     python` is a symlink to its base CPython, so realpath collapses every
@@ -141,7 +141,7 @@ def version_for(folder: str, interpreter: str) -> str:
     symlinks to the same file; macOS/Windows runners happened not to alias
     the two paths the test used, so it passed everywhere else). Second, a
     path alone — realpath'd or not — cannot see the exact upgrade-rot case
-    D499 exists for: the packaged app's own interpreter gets rewritten IN
+    D514 exists for: the packaged app's own interpreter gets rewritten IN
     PLACE at the same path on upgrade (confirmed against a real install: same
     path, same `--version` string, different bytes, mtime moved). So the
     interpreter now gets the identical treatment the daemon file already gets
