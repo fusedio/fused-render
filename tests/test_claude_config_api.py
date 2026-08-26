@@ -745,6 +745,26 @@ def test_plugins_contents_reads_every_component_kind_off_disk(
     }]
 
 
+def test_plugins_contents_folds_a_block_scalar_description(client, claude_dir, tmp_path):
+    # The frontmatter parser used to read only the key's OWN line, which is most
+    # of YAML's ways of writing a string and not all of them: context-mode's
+    # eight skills all write `description: |` and put the text below, so every
+    # one of them displayed as a bare pipe. Folded to one line, because both
+    # callers put this in a one-line slot.
+    root = _plugin_tree(tmp_path, "blocky", {"name": "blocky"})
+    _write(root / "skills" / "wordy" / "SKILL.md",
+           "---\nname: wordy\ndescription: |\n  First line.\n  Second line.\nother: x\n---\nbody\n")
+    _write(root / "skills" / "folded" / "SKILL.md",
+           "---\nname: folded\ndescription: >-\n  Folded.\n---\n")
+    _installed(claude_dir, "blocky@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="blocky@acme").json()
+    assert [(s["name"], s["description"]) for s in body["skills"]] == [
+        ("folded", "Folded."),
+        ("wordy", "First line. Second line."),
+    ]
+
+
 def test_plugins_contents_honours_the_manifest_s_relocated_paths(
     client, claude_dir, tmp_path
 ):
