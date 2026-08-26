@@ -775,8 +775,10 @@
 
 /* A row is a DIV now, not a button — round 2 gave each marketplace its own
    share/remove icon actions beside the name+count filter, and a button cannot
-   nest buttons. "All" has no actions, so it stays the filter button alone
-   (.cc-index-all below skips the flex-item split). */
+   nest buttons. "All" (.cc-index-all below) is the SAME shape even though it
+   has no actions of its own: it used to be the outer button itself, which
+   gave it browser-default button chrome no other row had (a border, centred
+   text) and read as a stray control. */
 .cc-index-item {
   display: flex;
   align-items: center;
@@ -813,22 +815,19 @@
   cursor: pointer;
 }
 
-.cc-index-item.cc-index-all {
-  padding: 0;
-}
-
-.cc-index-item.cc-index-all .cc-index-filter {
-  width: 100%;
-  /* A bit more than the other rows' own 8px: "All" has nothing beside the
-     count (no lock, no actions) to visually buffer it from the pill's
-     rounded edge, so the count read as cramped against the border at that
-     same 8px. */
-  padding-right: 12px;
-}
-
 .cc-index-filter:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* The only thing that sets "All" apart from the marketplace rows below it — a
+   hairline, nothing else. Selected state, height, padding and alignment are
+   now identical to theirs (both render through the same .cc-index-item +
+   .cc-index-filter shape). */
+.cc-index-item.cc-index-all {
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
 
 /* A read-only marketplace's marker — see Icon's "lock" case for why this

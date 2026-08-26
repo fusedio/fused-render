@@ -388,15 +388,25 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             <span>Marketplaces</span>
             <span className="cc-count">{mktData?.marketplaces.length ?? "…"}</span>
           </div>
-          <button
-            type="button"
+          {/* Structurally the SAME shape as every marketplace row below it —
+              a plain div wrapping the .cc-index-filter button — not a
+              standalone <button>. It used to BE the outer button, which is
+              what gave it browser-default button chrome (a border, centered
+              text) no other row in this rail has; it read as a stray control
+              from another component. */}
+          <div
             className={"cc-index-item cc-index-all" + (marketplace === ALL ? " active" : "")}
-            aria-pressed={marketplace === ALL}
-            onClick={() => filterTo(ALL)}
           >
-            <span className="cc-index-name">All</span>
-            <span className="cc-count">{shown.length}</span>
-          </button>
+            <button
+              type="button"
+              className="cc-index-filter"
+              aria-pressed={marketplace === ALL}
+              onClick={() => filterTo(ALL)}
+            >
+              <span className="cc-index-name">All</span>
+              <span className="cc-count">{shown.length}</span>
+            </button>
+          </div>
           {(mktData?.marketplaces ?? []).map((m) => {
             const n = index.find((x) => x.name === m.name)?.n ?? 0;
             return (
