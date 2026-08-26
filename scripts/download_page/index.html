@@ -1972,7 +1972,31 @@
       if (Math.abs(target - cur) < 0.0005) cur = target;
       render(cur);
       requestAnimationFrame(tick);
-    })();
+  
+    // "Get the app" should land on the button, not the zoom's first frame:
+    // send #get arrivals to the revealed end of the closer.
+    function landAtButton(e) {
+      if (e) e.preventDefault();
+      var top = scroller.getBoundingClientRect().top + scrollY;
+      scrollTo({ top: top + (scroller.offsetHeight - innerHeight) * 0.995, behavior: "smooth" });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('a[href="#get"]'), function (a) {
+      a.addEventListener("click", landAtButton);
+    });
+    if (location.hash === "#get") setTimeout(function () { landAtButton(); }, 60);
+  })();
+
+    // "Get the app" should land on the button, not the zoom's first frame:
+    // send #get arrivals to the revealed end of the closer.
+    function landAtButton(e) {
+      if (e) e.preventDefault();
+      var top = scroller.getBoundingClientRect().top + scrollY;
+      scrollTo({ top: top + (scroller.offsetHeight - innerHeight) * 0.995, behavior: "smooth" });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('a[href="#get"]'), function (a) {
+      a.addEventListener("click", landAtButton);
+    });
+    if (location.hash === "#get") setTimeout(function () { landAtButton(); }, 60);
   })();
 
   // Scroll-reactive marquee: the format band drifts on its own and leans
