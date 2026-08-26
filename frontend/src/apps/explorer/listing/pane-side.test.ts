@@ -7,6 +7,7 @@ import {
   PANE_SIDE_OFF,
   activePaneSide,
   paneKey,
+  paneReopenedByUrl,
   paneSideIconEntry,
   paneSideList,
   paneSideMenu,
@@ -98,6 +99,24 @@ describe("parsePaneSide with the session's hidden flag", () => {
     expect(parsePaneSide("git", true)).toEqual({ open: true, mode: "git" });
     expect(parsePaneSide(PANE_SIDE_OFF, true)).toEqual({ open: false, mode: null });
     expect(parsePaneSide(PANE_SIDE_OFF, false)).toEqual({ open: false, mode: null });
+  });
+});
+
+// The folder half of `preview-side.test.ts`'s `sideReopenedByUrl` suite — the
+// D495 correction that a deep link opening the pane over a stale hidden flag
+// must clear that flag too, or the next silent-URL hop shuts the pane again.
+describe("paneReopenedByUrl", () => {
+  test("yes only when the flag was set but the resolved state opened", () => {
+    expect(paneReopenedByUrl(true, { open: true, mode: "git" })).toBe(true);
+    expect(paneReopenedByUrl(true, { open: true, mode: null })).toBe(true);
+  });
+
+  test("no when the flag was never set", () => {
+    expect(paneReopenedByUrl(false, { open: true, mode: null })).toBe(false);
+  });
+
+  test("no when the flag closed the state too", () => {
+    expect(paneReopenedByUrl(true, { open: false, mode: null })).toBe(false);
   });
 });
 

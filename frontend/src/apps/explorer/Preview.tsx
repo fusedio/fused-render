@@ -64,6 +64,7 @@ import {
   writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
+  sideReopenedByUrl,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
@@ -850,6 +851,46 @@ function TemplatePreview({
   const [sideReq, setSideReq] = useState<SideRequest>(() =>
     parseSide(location.search, getSideHidden())
   );
+  // Whether the CURRENT `sideReq` is closed ONLY because the session's hidden
+  // flag (`lib/side-hidden-store.ts`) closed a URL that was itself silent about
+  // `_side` — as opposed to an explicit `_side=off`, which needs none of this
+  // (see the reconcile effect below). Tracked separately from `sideReq` itself
+  // because the reconcile effect must not write this particular closed state
+  // into the URL: the flag is documented memory-only (no storage, cleared by a
+  // refresh), and a `_side=off` written on its behalf would defeat both halves
+  // of that promise — a refresh no longer reopens the panel because the URL,
+  // not just the module variable, now says shut, and a link copied from the
+  // address bar for this file carries a close nobody clicked (exactly what
+  // `platform/lib/session-params.ts` strips `_side` to prevent for recents).
+  // `parseSide(location.search)` here (hidden defaulted false) is what the URL
+  // ALONE would have resolved to; it differs from `sideReq.open` only in this
+  // one case, since an explicit `_side` — off or a mode — resolves the same way
+  // whether or not the flag is set (lib/preview-side's `unchosenOrHidden` is
+  // only ever reached where the URL said nothing). `setSide` below always
+  // clears this, since any explicit open/close from here on is real, URL-worthy
+  // state, not a flag's inference.
+  const [sideFromHiddenFlag, setSideFromHiddenFlag] = useState<boolean>(
+    () => parseSide(location.search).open && !sideReq.open
+  );
+  // D495's two rules — "an explicit `_side` always wins" and "reopening on
+  // either surface clears the flag" — collide exactly here: a deep link that
+  // OPENS the sidebar (`?_side=claude`) wins over the flag per the first rule
+  // (`parseSide`'s explicit branches never even look at `hidden`), but nothing
+  // was clearing the flag for it, so the flag stayed "shut" even though the
+  // panel the user is looking at right now is open. The very next hop to a
+  // silent URL then closed it again — the opposite of what "wins" should mean
+  // for state that outlives this one paint. Resolved as: a deep link that
+  // OPENS is the same observable outcome as clicking reopen, so it clears the
+  // flag too (see the corrected D495 entry in DECISIONS.md). The pure rule is
+  // `sideReopenedByUrl` (lib/preview-side.ts); this is only a MOUNT-TIME
+  // reconciliation of it — `setSide` is what keeps the flag current for every
+  // click from here on.
+  useEffect(() => {
+    if (sideReopenedByUrl(getSideHidden(), sideReq)) setSideHidden(false);
+    // Mount only, deliberately: this reconciles the flag against what the URL
+    // asked for when this file OPENED, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Same request/paint distinction as `mode` above, and here it is RESOLVED rather
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
@@ -925,6 +966,10 @@ function TemplatePreview({
   // the folder pane's later mounts too, same store either surface writes.
   const setSide = (next: string | null) => {
     setSideHidden(next === null);
+    // A user click is always real, URL-worthy state now, whichever way it
+    // went — the flag-only closed state `sideFromHiddenFlag` guards against
+    // does not survive a click either way.
+    setSideFromHiddenFlag(false);
     // Written textually (`writeQueryParam`) so a click on the sidebar cannot
     // re-encode a template's own params on its way past them — LSN-2's verbatim
     // rule, and this runs on the first close of every auto-opened sidebar.
@@ -1111,7 +1156,13 @@ function TemplatePreview({
     const search = reconcileSideSearch(location.search, {
       splitCapable,
       offered: split.offered,
-      open: sideReq.open,
+      // NOT `sideReq.open` when the hidden flag alone is what closed it —
+      // `sideFromHiddenFlag`'s own comment has the full argument. Passing
+      // `true` here with `activeSide` genuinely null (the panel IS shut for
+      // rendering) lands in `reconcileSideSearch`'s own "no verdict yet, leave
+      // `_side` alone" branch, which is exactly the outcome wanted: the URL
+      // stays exactly as silent as it already was.
+      open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
       defaultSide: split.defaultSide,
     });
@@ -1119,7 +1170,15 @@ function TemplatePreview({
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
-  }, [splitCapable, split.offered, split.defaultSide, sideReq.open, activeSide, sideKeys]);
+  }, [
+    splitCapable,
+    split.offered,
+    split.defaultSide,
+    sideReq.open,
+    sideFromHiddenFlag,
+    activeSide,
+    sideKeys,
+  ]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's

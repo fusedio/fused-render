@@ -72,6 +72,7 @@ import { usePreviewPane } from "@apps/explorer/listing/pane";
 import {
   activePaneSide,
   paneKey,
+  paneReopenedByUrl,
   paneSideList,
   paneSideParam,
   parsePaneSide,
@@ -307,6 +308,21 @@ export default function Listing({
       getSideHidden()
     )
   );
+  // The folder half of the same D495 reconciliation Preview.tsx does for the
+  // file view — the pure rule is `paneReopenedByUrl` (listing/pane-side.ts).
+  // `paneEnabled` guards it the same way `setSide` below is guarded: a
+  // snapshot or panel pane never reads the real `_side` param in the first
+  // place (see the `parsePaneSide` call above), so it can never hit the
+  // explicit branch and has nothing to reconcile.
+  useEffect(() => {
+    if (paneEnabled && paneReopenedByUrl(getSideHidden(), sideState)) {
+      setSideHidden(false);
+    }
+    // Mount only: reconciles the flag against what the URL asked for when
+    // this folder opened, not on every render — `setSide` keeps it current
+    // from here on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Both companions' entries come from the OPEN FOLDER, resolved through the
   // ordinary stat + condition machinery (lib/dir-mode — which caches per
   // directory, so this is one probe for the folder rather than one per selection).

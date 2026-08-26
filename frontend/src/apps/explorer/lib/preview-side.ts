@@ -383,6 +383,26 @@ export function resolveSide(req: SideRequest, split: SideSplit): string | null {
   return split.defaultSide;
 }
 
+// D495's TWO RULES COLLIDE HERE, and this is the resolution. "An explicit
+// `_side` always wins over the session's hidden flag" (`unchosenOrHidden` is
+// only ever reached where the URL said nothing) and "reopening on either
+// surface clears the flag" both hold in isolation, but neither one says what
+// happens to the FLAG when a deep link is the thing that opened the sidebar —
+// which left it possible for a closed session's flag to survive an open
+// sidebar on screen, only to shut it again on the very next silent-URL hop.
+//
+// The call: a deep link that OPENS is the same observable outcome as the user
+// clicking reopen, so it clears the flag exactly as `setSide` does.
+// `hidden` is the flag's value from BEFORE this mount (`getSideHidden()`,
+// read by the caller); the answer is yes only when the flag was set yet the
+// already-RESOLVED request nonetheless opened — which, per `unchosenOrHidden`
+// above, can only happen when an explicit `_side` (or legacy `_mode`) won
+// over it. A mount where the flag was already false, or where it closed the
+// request too, has nothing to reconcile.
+export function sideReopenedByUrl(hidden: boolean, req: SideRequest): boolean {
+  return hidden && req.open;
+}
+
 // SET OR DELETE ONE PARAM, TEXTUALLY, LEAVING EVERY OTHER BYTE ALONE. `null`
 // deletes; a value is appended (a replaced key therefore moves to the end, which
 // is the only difference from URLSearchParams.set and is not something any reader

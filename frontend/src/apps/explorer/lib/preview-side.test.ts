@@ -6,6 +6,7 @@ import {
   resolveSide,
   sideParam,
   sideToggleTarget,
+  sideReopenedByUrl,
   reconcileSideSearch,
   writeQueryParam,
   SIDE_OFF,
@@ -372,6 +373,32 @@ describe("parseSide with the session's hidden flag", () => {
   });
 });
 
+// THE D495 CORRECTION: a deep link that OPENS the sidebar over a stale hidden
+// flag is the same observable outcome as the user clicking reopen, so it must
+// clear the flag too — otherwise the very next silent-URL hop shuts the
+// sidebar again despite the user having just seen it open. `parseSide`'s own
+// tests above prove the deep link WINS for this one paint; these prove the
+// flag itself gets cleared for every paint after it.
+describe("sideReopenedByUrl", () => {
+  it("says yes only when the flag was set but the resolved request opened", () => {
+    // The exact shape an explicit `_side`/`_mode` deep link produces while the
+    // flag is still set (parseSide("?_side=git", true) above).
+    expect(sideReopenedByUrl(true, { open: true, mode: "git" })).toBe(true);
+    expect(sideReopenedByUrl(true, { open: true, mode: null })).toBe(true);
+  });
+
+  it("says no when the flag was never set", () => {
+    // Nothing to reconcile — the ordinary open case with no flag involved.
+    expect(sideReopenedByUrl(false, { open: true, mode: null })).toBe(false);
+  });
+
+  it("says no when the flag closed the request too", () => {
+    // The silent-URL-plus-flag case parseSide("", true) resolves to — the
+    // panel really is shut, and there is nothing to clear.
+    expect(sideReopenedByUrl(true, { open: false, mode: null })).toBe(false);
+  });
+});
+
 // THE FILE'S OWN GATE, and the second flash `defaultSide` has to dodge. An own
 // conditional companion counts as SETTLED for the split's existence — that
 // asymmetry with the borrowed entry is deliberate and argued in the module header —
@@ -691,6 +718,20 @@ describe("reconcileSideSearch", () => {
       null
     );
     expect(reconcileSideSearch("", o({ open: false, defaultSide: "claude" }))).toBe("_side=off");
+  });
+
+  it("leaves a silent URL silent when only the session's hidden flag closed it", () => {
+    // Preview.tsx's composition for this case (`sideFromHiddenFlag`): the URL
+    // itself was silent about `_side`, so `open` is passed as `true` even
+    // though `activeSide` is genuinely null because the panel IS shut for
+    // rendering (lib/side-hidden-store.ts closed it). That is indistinguishable
+    // from "nothing settled yet" to this function, and lands in the exact same
+    // "leave `_side` alone" branch the pending-placeholder case above does —
+    // which is the point: a memory-only flag must never get written into the
+    // URL. Writing `_side=off` here would break the flag's own refresh escape
+    // hatch (the URL, not just the module variable, would then say shut) and
+    // leak into any link copied from the address bar for this file.
+    expect(reconcileSideSearch("", o({ open: true, activeSide: null }))).toBe(null);
   });
 
   it("leaves `_side` ALONE while nothing is settled yet", () => {

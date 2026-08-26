@@ -391,6 +391,19 @@ export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null)
   return offered[0] ?? PANE_SIDE_FALLBACK;
 }
 
+// The folder half of `lib/preview-side.ts`'s `sideReopenedByUrl` — same D495
+// correction, same reasoning: a `?_side=<companion>` deep link that OPENS the
+// pane wins over the session's hidden flag (`parsePaneSide`'s explicit branch
+// never consults `hidden`), and that observable "the pane is open" has to
+// clear the flag too, or the very next silent-URL hop shuts it again. `hidden`
+// is the flag's value from BEFORE this mount; the answer is yes only when the
+// flag was set yet the already-RESOLVED state nonetheless opened — which, per
+// `unchosenOrHidden` above, can only happen when an explicit `_side` won over
+// it.
+export function paneReopenedByUrl(hidden: boolean, state: PaneSideState): boolean {
+  return hidden && state.open;
+}
+
 // WHAT THE PANE IS ABOUT, as a React key. Every mode's subject is the OPEN
 // FOLDER now (D460), so the key is just the mode and the folder — nothing
 // about the selection enters into it, and switching rows never remounts any
