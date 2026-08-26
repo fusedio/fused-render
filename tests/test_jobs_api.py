@@ -84,6 +84,33 @@ def test_first_report_creates_a_row_and_later_ones_update_it(client):
     assert row["stalled"] is False
 
 
+def test_total_scope_defaults_to_phase_and_a_download_plan_can_claim_the_whole(client):
+    """SPEC AI-5n/D496: a bare download report never claims to be the whole
+    download — `total_scope` defaults to "phase", the honest reading of a
+    plain `download_snapshot` call that only ever knows its own repo. A
+    reporter that DOES know the whole shape (`download_plan`) says so
+    explicitly, and that claim survives a later tick that omits it — same
+    "only present keys apply" rule every other field on this row gets."""
+    report(client, id="a", title="LTX-2.3 int4", kind="download", unit="bytes",
+           total=19_100_000_000, done=0)
+    row = listing(client)[0]
+    assert row["total_scope"] == "phase"
+
+    report(client, id="a", total_scope="download", total=27_170_000_000)
+    row = listing(client)[0]
+    assert row["total_scope"] == "download"
+
+    # A later tick that says nothing about scope must not silently revert it.
+    report(client, id="a", done=6_000_000_000)
+    row = listing(client)[0]
+    assert row["total_scope"] == "download"
+
+
+def test_total_scope_rejects_anything_outside_the_closed_set(client):
+    res = report(client, id="a", title="x", total_scope="whole-repo")
+    assert res.status_code == 400
+
+
 def test_model_is_its_own_field_separate_from_title_and_detail(client):
     """The model must reach the client as its OWN value, not folded into
     `title` or `detail` — the UI dims it as a distinct element on the title

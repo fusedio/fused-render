@@ -1187,6 +1187,121 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
 # present and the 7.75GB root bundle beside it was not something a substring
 # check could see.
 
+# -- a multi-repo download is priced as ONE (SPEC AI-5n, D496) ------------------
+
+
+def test_download_plan_sums_every_phases_total_and_claims_the_whole(base, monkeypatch):
+    """`ltx-video` fetches two repos as two sequential `download_snapshot`
+    calls; the bar has to be priced at their SUM, not at whichever phase
+    happened to be running, and has to say so (`total_scope`) so
+    `modelSize.ts` can let it win outright over the catalog's constant."""
+    totals = {"weights/repo": 19_100_000_000, "gemma/repo": 8_070_000_000}
+    folders = {"weights/repo": "/w", "gemma/repo": "/g"}
+    done = {"/w": 19_100_000_000, "/g": 8_070_000_000}  # both phases complete
+    snapshots = {"weights/repo": "/snap/w", "gemma/repo": "/snap/g"}
+    ticks = []
+
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": folders[model_id])
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: done[folder])
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None:
+                        snapshots[model_id])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    result = base.download_plan([
+        ("weights/repo", ["*.safetensors"], None),
+        ("gemma/repo", None, None),
+    ])
+
+    assert result == ["/snap/w", "/snap/g"]
+    final = ticks[-1]
+    assert final["total"] == 19_100_000_000 + 8_070_000_000
+    assert final["done"] == 19_100_000_000 + 8_070_000_000
+    assert final["total_scope"] == "download"
+    assert final["kind"] == "download" and final["unit"] == "bytes"
+    # Every tick this function sent claims the whole download, not just the
+    # ticks that happened to land after every phase completed.
+    assert all(t["total_scope"] == "download" for t in ticks)
+
+
+def test_download_plan_costs_the_whole_total_when_one_phase_is_indeterminate(base, monkeypatch):
+    """A phase whose size the Hub cannot answer must not be silently dropped
+    from the sum — that would price the bar at a fraction of the download and
+    then jump the moment the indeterminate phase's bytes start landing, which
+    is AI-5b's original defect rebuilt one level up."""
+    totals = {"a/known": 10_000_000_000, "b/unknown": None}
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("a/known", None, None), ("b/unknown", None, None)])
+
+    assert all(t["total"] is None for t in ticks)
+
+
+def test_download_plan_names_the_CURRENT_phase_in_detail(base, monkeypatch):
+    """"Fetching weights… (2 of 2)" — not just a moving number, a reader has to
+    be able to tell WHICH repo is downloading right now."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+
+    details_during_second_phase = []
+
+    def fake_download_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+        if model_id == "second":
+            # A real ticker beat may or may not have landed yet by the time
+            # this phase starts; sleep past `_PLAN_TICK_S` so at least one has.
+            time.sleep(base._PLAN_TICK_S * 2)
+        return model_id
+
+    def spy_report(job=None, **fields):
+        if "detail" in fields:
+            details_during_second_phase.append(fields["detail"])
+
+    monkeypatch.setattr(base, "download_snapshot", fake_download_snapshot)
+    monkeypatch.setattr(base, "report", spy_report)
+
+    base.download_plan([("first", None, None), ("second", None, None)])
+
+    assert any("(2 of 2)" in d for d in details_during_second_phase)
+
+
+def test_download_plan_of_one_phase_still_claims_the_whole_download(base, monkeypatch):
+    """A single-repo runner that adopts `download_plan` gets `total_scope`
+    correct without any special-casing — one phase is trivially the whole
+    download, and the detail carries no "(1 of 1)" clutter nobody asked for."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 4_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 4_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert ticks[-1]["total_scope"] == "download"
+    assert all("of 1" not in t.get("detail", "") for t in ticks)
+
+
+def test_download_plan_of_no_phases_is_a_no_op(base, monkeypatch):
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: pytest.fail("nothing to report"))
+    assert base.download_plan([]) == []
+
+
 # -- the cached path does not touch the network ---------------------------------
 #
 # Measured on this machine for `mlx-community/whisper-tiny.en-8bit`, fully

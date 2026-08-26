@@ -222,6 +222,14 @@ def download(model_id):
     function refuse a repo with no distilled transformer — or build a
     patterns list that names exactly one real file per group — before
     spending any of a user's bandwidth on files nobody is going to open.
+
+    **`worker_base.download_plan`, not two bare `download_snapshot` calls**
+    (SPEC AI-5n, D496). Two sequential calls each report their OWN repo's
+    total, so the bar read 19.1 GB for the weights and then jumped straight to
+    "complete" having never shown the 8.07 GB the Gemma-3 text encoder was
+    always going to cost too — 30% short of the catalog's own `size_gb`, which
+    counts both repos as AI-11a requires. `download_plan` prices the two
+    phases as the one download the button actually started.
     """
     import huggingface_hub
 
@@ -252,8 +260,10 @@ def download(model_id):
 
         patterns.append(f"{pathlib.Path(upscaler_name).stem}_config.json")
 
-    fetched = worker_base.download_snapshot(model_id, allow_patterns=patterns)
-    worker_base.download_snapshot(_GEMMA_MODEL_ID)
+    fetched, _gemma = worker_base.download_plan([
+        (model_id, patterns, None),
+        (_GEMMA_MODEL_ID, None, None),
+    ])
     return fetched
 
 

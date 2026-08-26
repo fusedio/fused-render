@@ -52,6 +52,14 @@ STATES = (RUNNING,) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
+# Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D496).
+# "phase" is the default a bare `download_snapshot` reporter has always sent
+# without knowing it — a single repo's own total, which for a single-repo
+# runner already is the whole download and needed no migration. "download" is
+# an explicit claim only `worker_base.download_plan` (or an equivalent
+# reporter) is entitled to make.
+TOTAL_SCOPES = ("download", "phase")
+
 # How long a finished job stays on screen ONCE SOMEONE HAS READ IT — the
 # retention clock starts at first READ (`Job.first_read_at`), not at
 # completion. The corner is meant to answer "is my work done", not to be read
@@ -214,6 +222,17 @@ class Job:
     state: str = RUNNING
     done: float | None = None
     total: float | None = None
+    # Whether `total` prices the WHOLE download or only the phase currently in
+    # flight (SPEC AI-5n, D496). "download" — a reporter used `download_plan`
+    # (or a runner with only ever one repo, where a phase total already is the
+    # whole download) and the figure is complete; "phase" — a bare
+    # `download_snapshot` call, which only ever knows its own repo. Read by
+    # `modelSize.ts`: a "download" total may WIN outright over the catalog's
+    # hand-written constant, where a "phase" total may only ever raise it
+    # (never-understate), because a phase total being SMALLER than the
+    # constant is exactly what a multi-repo download in progress looks like,
+    # not evidence the constant is wrong.
+    total_scope: str = "phase"
     unit: str = ""
     message: str = ""
     # The .html that raised it, from the X-Fused-Page header. Attribution only
@@ -383,6 +402,9 @@ def upsert(body: dict, *, page: str = "", now: float | None = None,
             job.done = _number(body.get("done"), "done")
         if "total" in body:
             job.total = _number(body.get("total"), "total")
+        if "total_scope" in body:
+            job.total_scope = _one_of(body.get("total_scope"), TOTAL_SCOPES,
+                                     "total_scope", job.total_scope)
         if "cancellable" in body:
             job.cancellable = bool(body.get("cancellable"))
         if page:

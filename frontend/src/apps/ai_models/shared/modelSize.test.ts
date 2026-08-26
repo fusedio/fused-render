@@ -33,6 +33,7 @@ function job(extra: Partial<Job> = {}): Job {
     state: "running",
     done: 1_000,
     total: BIGGER_TOTAL,
+    total_scope: "phase",
     unit: "bytes",
     message: "",
     page: "",
@@ -131,6 +132,34 @@ describe("modelSizeLabel", () => {
     expect(modelSizeLabel(null, job({ total: SMALLER_TOTAL }))).toBe(
       formatSize(SMALLER_TOTAL),
     );
+  });
+});
+
+describe("a \"download\"-scoped total (SPEC AI-5n, D496)", () => {
+  it("wins outright over a catalog constant that is stale HIGH", () => {
+    // The never-understate rule alone could never fix this: a live total
+    // SMALLER than the constant used to always lose. `total_scope: "download"`
+    // is `worker_base.download_plan`'s claim that this total is the WHOLE
+    // download, summed before a byte moved — never a fraction the way a bare
+    // phase total can be — so it wins even here.
+    expect(
+      modelSizeLabel(CATALOG_GB, job({ total: SMALLER_TOTAL, total_scope: "download" })),
+    ).toBe(formatSize(SMALLER_TOTAL));
+  });
+
+  it("still loses to the phase rule when the row never claims the whole download", () => {
+    // The default every reporter has always sent, unmigrated — same figure,
+    // same job, but "phase" keeps the never-understate behaviour exactly as
+    // it worked before `total_scope` existed.
+    expect(
+      modelSizeLabel(CATALOG_GB, job({ total: SMALLER_TOTAL, total_scope: "phase" })),
+    ).toBe(formatSize(catalogSizeBytes(CATALOG_GB) as number));
+  });
+
+  it("is not approximate — a whole download total is not a hedge", () => {
+    expect(
+      modelSizeHint(CATALOG_GB, job({ total: SMALLER_TOTAL, total_scope: "download" }))?.approx,
+    ).toBe(false);
   });
 });
 

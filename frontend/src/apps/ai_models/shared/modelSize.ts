@@ -26,16 +26,28 @@
 // cell in decimal GB beside a progress row in binary GB, which is the same
 // "two numbers, one download" defect this module exists to remove.
 //
-// **A row's total is one PHASE, not the whole download.** A single download can
-// be several sequential fetches with a scoped total each — `torch_image.py`'s
-// GGUF recipe pulls an allow-listed snapshot and then a quantized transformer
-// out of a second repo — so the row's total can be a fraction of what the
-// download will really cost, twice over. Hence the rule below is not "the live
-// total wins": it is that **the number shown never understates**. A live total
-// LARGER than the advertised figure is a stale constant and the row is right; a
-// live total SMALLER is either a phase of a multi-part download or a
-// conservative constant, and in both cases quoting it would promise a download
-// cheaper than it is.
+// **A row's total is one PHASE, not necessarily the whole download.** A single
+// download can be several sequential fetches with a scoped total each —
+// `torch_image.py`'s GGUF recipe pulls an allow-listed snapshot and then a
+// quantized transformer out of a second repo — so a bare phase total can be a
+// fraction of what the download will really cost. So for a PHASE total the
+// rule is not "the live total wins": it is that **the number shown never
+// understates**. A live total LARGER than the advertised figure is a stale
+// constant and the row is right; a live total SMALLER is either a phase of a
+// multi-part download or a conservative constant, and in both cases quoting
+// it would promise a download cheaper than it is.
+//
+// **`total_scope` (SPEC AI-5n, D496) says whether a row's total is the WHOLE
+// download**, and when it is, the never-understate hedge is unnecessary and
+// actively wrong: `worker_base.download_plan` sums every phase of a
+// multi-repo download into one grand total BEFORE a byte moves, so that
+// total is never a fraction the way a bare phase total can be. A live
+// "download"-scoped total therefore WINS OUTRIGHT — including over a
+// catalog constant that happens to be stale HIGH, which the never-understate
+// rule could never correct (it only ever raises what it shows). A "phase"
+// total — the shape every reporter has always sent, before this — keeps the
+// never-understate rule exactly as it always worked, so a single-repo runner
+// is correct without migrating anything.
 //
 // Here rather than in a component for the reason `hubSize.ts` gives: there is
 // no DOM harness in this repo by design, so the part with a rule in it lives in
@@ -70,14 +82,18 @@ export function liveModelTotal(job: Job | undefined): number | null {
 }
 
 /** The bytes to show for this model and whether they came from the live row.
- *  The one place the rule lives; see the header for why it is "never
- *  understate" rather than "live wins". */
+ *  The one place the rule lives; see the header for why a "download"-scoped
+ *  total wins outright while a "phase"-scoped one only ever raises what is
+ *  shown (never-understate). */
 function shown(
   sizeGb: number | null | undefined,
   job?: Job,
 ): { bytes: number; live: boolean } | null {
   const advertised = catalogSizeBytes(sizeGb);
   const live = liveModelTotal(job);
+  if (live !== null && job?.total_scope === "download") {
+    return { bytes: live, live: true };
+  }
   if (live !== null && (advertised === null || live > advertised)) {
     return { bytes: live, live: true };
   }

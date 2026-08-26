@@ -34,6 +34,15 @@ export interface Job {
   // null means "no number to show": an indeterminate bar, not zero progress.
   done: number | null;
   total: number | null;
+  // Whether `total` prices the WHOLE download or only the phase currently in
+  // flight (SPEC AI-5n, D496). "phase" — the default every plain reporter has
+  // always sent without knowing it, correct as-is for a single-repo download.
+  // "download" — an explicit claim only a multi-phase reporter
+  // (`worker_base.download_plan`) is entitled to make. `shared/modelSize.ts`
+  // is the one place this decides anything: a "download" total may win
+  // outright over the catalog's constant; a "phase" total may only ever
+  // raise it (never-understate).
+  total_scope: "download" | "phase";
   unit: string; // "bytes" | "s" | "" — decides how done/total are formatted
   message: string; // the error text, when state is "error"
   page: string; // the .html that raised it (attribution)

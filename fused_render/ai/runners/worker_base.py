@@ -835,16 +835,23 @@ def _repo_files(model_id, include=None, allow=None, ignore=None,
     return getattr(info, "sha", None), files
 
 
-def repo_total_bytes(model_id, include=None, ignore=None):
+def repo_total_bytes(model_id, include=None, allow=None, ignore=None):
     """The size of what will ACTUALLY be fetched, from the Hub, or None.
 
     Without it the bar has no total and shows as indeterminate — which is
     honest, and much better than a wrong total. Summing the whole repo when only
     part of it is being fetched is how a 2.6GB pull came to read as a fraction
     of 30GB and then jump to "complete" against a figure it never downloaded.
+
+    `allow` gained a name here (it was `include`/`ignore` only) for
+    `download_plan` (SPEC AI-5n): a phase scoped with `allow_patterns` has to
+    be priced against the same scope its `download_snapshot` call fetches, the
+    same reason `download_snapshot` itself threads `allow_patterns` into
+    `_repo_files` rather than pricing the whole repo.
     """
     try:
-        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore)[1])
+        return _total_bytes(
+            _repo_files(model_id, include=include, allow=allow, ignore=ignore)[1])
     except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
         return None
 
@@ -3377,6 +3384,111 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     _record_fetch(repo_folder(model_id), _commit_of(fell_back), names, fell_back,
                   allow=allow_patterns, ignore=ignore_patterns)
     return fell_back
+
+
+#: How often `download_plan`'s own ticker corrects the row back to the GRAND
+#: total. Deliberately shorter than `fetch_with_progress`'s own one-second
+#: cadence (see `download_plan`'s docstring for why two tickers exist at all):
+#: a tighter interval here means the window where a viewer can catch a phase's
+#: OWN, smaller total on screen is well under a second rather than up to one.
+_PLAN_TICK_S = 0.3
+
+
+def download_plan(phases):
+    """Fetch several repos as ONE download, priced at their SUM (SPEC AI-5n,
+    D496). Returns each phase's own `download_snapshot` result, in order.
+
+    `phases` is an ordered list of `(model_id, allow_patterns, ignore_patterns)`
+    — every repo one logical "Download" button touches. `ltx-video` fetches
+    the LTX weights and then `mlx-community/gemma-3-12b-it-4bit` as two
+    sequential `download_snapshot` calls; reporting only the first repo's
+    total is AI-5b's original defect rebuilt one level up — true of a phase,
+    silent about the download the button actually started.
+
+    **The grand total is summed ONCE, before a byte moves**, from
+    `repo_total_bytes` per phase — the SAME call `download_snapshot` makes for
+    its own scoped total, so a phase that only fetches part of a repo is
+    priced against exactly what it fetches, in the sum as much as on its own.
+    **A phase whose size the Hub cannot answer costs the WHOLE total**, not
+    just its own: `total` is `None` the moment any phase's is, rather than
+    summing the KNOWN phases and pretending the rest cost nothing — that is
+    AI-5b's defect rebuilt a second way, a bar priced at a fraction that jumps
+    the instant the indeterminate phase's bytes start landing. Indeterminate is
+    honest; partial is not.
+
+    **Each phase still runs through `download_snapshot`, unmodified.** AI-5l's
+    mirror branch, AI-5i's segmented fetch and the already-complete fast path
+    all still apply per phase exactly as they do for a bare call — this
+    function COMPOSES them, it does not reimplement any of them.
+
+    **A second reporting layer rides alongside each phase's own, and the two
+    are not coordinated.** `download_snapshot` has no way to know it is one of
+    several phases, so it goes on reporting its OWN phase-scoped total on its
+    OWN cadence (`fetch_with_progress`'s one-second tick) — reused code, not
+    duplicated here. A background ticker corrects the row back to the GRAND
+    total on a TIGHTER cadence (`_PLAN_TICK_S`) for the life of the whole
+    plan, naming the phase in `detail` ("Fetching weights… (2 of 2)") and
+    marking `total_scope="download"` so `modelSize.ts` knows this total may
+    win outright rather than only ever raise the catalog's constant. Because
+    the two tickers are independent, a viewer CAN catch a tick that briefly
+    shows one phase's own smaller total before the next correction lands —
+    reporting has always been best-effort here (see `report`'s own
+    docstring), and the alternative is threading a "stay quiet" flag through
+    `download_snapshot`'s three fetch paths (mirror, segmented, hub fallback)
+    to suppress its own ticks, which is exactly the duplication this function
+    exists to avoid. `_PLAN_TICK_S` keeps that window well under a second.
+    """
+    resolved = list(phases)
+    if not resolved:
+        return []
+
+    per_phase_totals = [repo_total_bytes(model_id, allow=allow, ignore=ignore)
+                        for model_id, allow, ignore in resolved]
+    total = None if any(t is None for t in per_phase_totals) else sum(per_phase_totals)
+    folders = [repo_folder(model_id) for model_id, _allow, _ignore in resolved]
+    count = len(resolved)
+
+    def grand_done():
+        """`bytes_on_disk` summed across every phase's folder, or None the
+        moment any one of them cannot answer — the same all-or-nothing rule
+        `total` follows above, so `done` and `total` never disagree about
+        which phases they cover."""
+        parts = [bytes_on_disk(folder) for folder in folders]
+        return None if any(part is None for part in parts) else sum(parts)
+
+    current_phase = [1]
+
+    def _tick(**fields):
+        report(state="running", kind="download", unit="bytes",
+              total_scope="download", total=total, **fields)
+
+    _plan_stop = threading.Event()
+
+    def beat():
+        while not _plan_stop.wait(_PLAN_TICK_S):
+            n = current_phase[0]
+            detail = (f"Fetching weights… ({n} of {count})" if count > 1
+                      else "Fetching weights…")
+            _tick(detail=detail, done=_capped(grand_done(), total))
+
+    ticker = threading.Thread(target=beat, name="download-plan", daemon=True)
+    ticker.start()
+    try:
+        results = []
+        for index, (model_id, allow, ignore) in enumerate(resolved, start=1):
+            current_phase[0] = index
+            results.append(download_snapshot(model_id, allow_patterns=allow,
+                                             ignore_patterns=ignore))
+        return results
+    finally:
+        _plan_stop.set()
+        ticker.join(timeout=2.0)
+        # Land on the grand total, `fetch_with_progress`'s own closing tick's
+        # reasoning applied one level up: every phase folder's snapshot
+        # symlinks are not counted, so a finished plan measures slightly under
+        # its own total and a bar stuck short of 100% reads as a download that
+        # gave up.
+        _tick(detail="Fetching weights…", done=total if total is not None else grand_done())
 
 
 def download_file(repo_id, filename, detail=None, job=None, row=None):
