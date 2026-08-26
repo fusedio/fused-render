@@ -28,7 +28,7 @@ Both destinations are **local-only** — there is no hosted path — so an expor
 - An AI call rejects and you need to know whose fault it is.
 - A `.py` data file, or a process outside the browser entirely, wants the same AI calls — see "Calling from Python".
 
-For `runPython`, params, or file IO → **`fused-render-authoring`**. For opening/running the app → **`fused-render-usage`**.
+For `runPython`, params, or file IO → **`fused-render-authoring`**. For opening/running the app → **`fused-render-usage`**. For a folder that needs its own long-running daemon (outliving a page, surviving the warm worker's 15-minute idle-retire) rather than a per-call AI request → **`fused-render-background-apps`**.
 
 ## Text: `fused.ai(prompt, opts?)`
 
