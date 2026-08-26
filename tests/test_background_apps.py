@@ -1216,3 +1216,46 @@ def test_background_apps_has_no_bare_tomllib_import():
         "background_apps.py's tomllib fallback pattern (projectenv.py's "
         "shape) appears to have been removed"
     )
+
+
+# ------------------------------------------------------- GET .../running
+
+
+def test_running_reports_a_started_app_that_never_opted_into_autostart(
+        client, tmp_path, monkeypatch):
+    # Code review (2026-08-26): D511 split run state from autostart, and
+    # `/api/apps/background/running` kept reading `autostart_paths()` — the
+    # WRONG store now that `start()` no longer persists anything. A daemon
+    # started without ever calling `autostart` (the new DEFAULT path) had no
+    # row there, so the /apps grid's running badge silently stayed off for
+    # it even while it was genuinely alive.
+    folder = _bg_folder(tmp_path, name="never_autostarted")
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version="v1", kind="background", pid=999, folder=str(folder))
+    monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
+    monkeypatch.setattr(engine_host, "current",
+                        lambda eid: fake_child if eid == engine_id else None)
+    monkeypatch.setattr(engine_host, "_children", {engine_id: fake_child})
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+
+    # Confirm autostart really is untouched (start() must not silently opt in).
+    assert not background_apps.autostart_paths()
+
+    running = client.get("/api/apps/background/running").json()["running"]
+    assert running.get(os.path.realpath(str(folder))) is True, (
+        f"started-but-not-autostart app missing from /running: {running!r}"
+    )
+
+
+def test_running_omits_a_folder_with_no_live_child(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path, name="never_started")
+    monkeypatch.setattr(engine_host, "_children", {})
+    running = client.get("/api/apps/background/running").json()["running"]
+    assert os.path.realpath(str(folder)) not in running

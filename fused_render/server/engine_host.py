@@ -599,6 +599,22 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
         return child
 
 
+def background_running_folders() -> set[str]:
+    """The declaring folders of every currently-live `kind="background"`
+    child — the actual run-state source for the `/apps` grid's running badge
+    (2026-08-26 code review: the badge used to be keyed off
+    `background_apps.autostart_paths()`, which went stale the moment D511
+    split run state from autostart, since `start()` no longer persists
+    anything and a running-but-not-autostart daemon has no other row to
+    appear in). `_children`/`folder`/`_alive` are all already in memory, so
+    this is a snapshot over a dict plus a `Popen.poll()` per background
+    child — no folder walk, no toml read, cheap enough to call once per grid
+    render exactly like the endpoint's docstring promises."""
+    with _lock:
+        children = [c for c in _children.values() if c.kind == "background"]
+    return {c.folder for c in children if c.folder and _alive(c)}
+
+
 #: Set once the first bring-up starts the (daemon) idle sweeper thread.
 _reaper_started = threading.Event()
 

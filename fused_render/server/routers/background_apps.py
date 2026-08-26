@@ -212,14 +212,17 @@ async def api_background_restart(body: dict = Body(...),
 
 @router.get("/api/apps/background/running")
 async def api_background_running():
-    """The autostart-opted-in paths with a live-child boolean each — for the
-    /apps grid's running badge (Task 5). Reads only `engine_host.current`; no
-    folder walk, no toml reads, so it's cheap enough to call once per grid
-    render."""
-    paths = await asyncio.to_thread(background_apps.autostart_paths)
-    out = {}
-    for path in paths:
-        engine_id = background_apps.engine_id_for(path)
-        child = engine_host.current(engine_id)
-        out[path] = child is not None and engine_host._alive(child)
-    return {"running": out}
+    """The set of app folders with a live background child RIGHT NOW — for
+    the /apps grid's running badge (Task 5).
+
+    Enumerated from `engine_host`'s own in-memory children (2026-08-26 code
+    review), not `background_apps.autostart_paths()`: after D511 split run
+    state from autostart, `start()` no longer persists anything, so a daemon
+    started without opting into autostart — now the DEFAULT path — had no
+    row in the autostart store and the grid's badge stayed off for it even
+    while it was genuinely running. `engine_host.background_running_folders`
+    is a dict comprehension plus a `Popen.poll()` per background child; no
+    folder walk, no toml reads, so this stays cheap enough to call once per
+    grid render exactly as before."""
+    folders = await asyncio.to_thread(engine_host.background_running_folders)
+    return {"running": {folder: True for folder in folders}}
