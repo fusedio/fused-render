@@ -145,8 +145,14 @@ export function ListSkeleton({
       {Array.from({ length: rows }, (_, i) => (
         <div className="cc-lrow" key={i}>
           <div className="cc-lrow-line">
-            <Skeleton className="h-3 w-28 shrink-0 rounded-full" />
-            <Skeleton className="h-3 w-full max-w-64 rounded-full" />
+            {/* Skeleton's own default fill is shadcn's bg-muted — the
+                Tailwind grayscale palette, not this app's tokens. In light
+                theme that resolves within ~1% contrast of .cc-list's own
+                --bg-alt, so every list's loading state was an empty bordered
+                card. --border is what every hairline in this app already
+                uses for "visible against --bg-alt in both themes". */}
+            <Skeleton className="h-3 w-28 shrink-0 rounded-full bg-[var(--border)]" />
+            <Skeleton className="h-3 w-full max-w-64 rounded-full bg-[var(--border)]" />
           </div>
         </div>
       ))}
