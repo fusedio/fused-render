@@ -680,19 +680,31 @@
   top: 70px;
 }
 
+/* The header above the rail — same eyebrow weight as .cc-group-title, but
+   inline with a count on the right rather than standing alone above a group of
+   settings rows. */
+.cc-index-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* A row is a DIV now, not a button — round 2 gave each marketplace its own
+   share/remove icon actions beside the name+count filter, and a button cannot
+   nest buttons. "All" has no actions, so it stays the filter button alone
+   (.cc-index-all below skips the flex-item split). */
 .cc-index-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  padding: 4px 8px;
-  border: none;
+  gap: 2px;
   border-radius: 6px;
-  background: none;
   color: var(--fg-muted);
-  cursor: pointer;
 }
 
 .cc-index-item:hover {
@@ -706,9 +718,60 @@
   font-weight: 600;
 }
 
-.cc-index-item:focus-visible {
+.cc-index-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.cc-index-item.cc-index-all {
+  padding: 0;
+}
+
+.cc-index-item.cc-index-all .cc-index-filter {
+  width: 100%;
+}
+
+.cc-index-filter:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+}
+
+/* Share/remove, per marketplace. Same fade-on-hover rule as .cc-lrow-actions —
+   quiet at rest, reachable by keyboard, visible outright on touch/narrow. */
+.cc-index-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+}
+
+.cc-index-actions > .cc-iconbtn {
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.cc-index-item:hover .cc-index-actions > .cc-iconbtn,
+.cc-index-item:focus-within .cc-index-actions > .cc-iconbtn {
+  opacity: 1;
+}
+
+@media (hover: none), (max-width: 640px) {
+  .cc-index-actions > .cc-iconbtn {
+    opacity: 1;
+  }
 }
 
 /* The count is pushed to the right edge; the name is what gives way. */

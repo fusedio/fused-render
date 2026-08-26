@@ -12,7 +12,7 @@
 //   ┌ cc-header ───────────────────────────────────────────── 49px ┐
 //   │ Claude config                          [● Clean / N uncommitted]│
 //   ├ cc-tabbar ──────────────────────────────────────────────────┤
-//   │ Preferences  Plugins  Marketplaces  …                       │
+//   │ Preferences  Plugins  MD Files  …                            │
 //   ├ cc-body ───────────────────────────┬──────────────────────┤
 //   │ caption (the file this tab edits)  │  preview pane        │
 //   │ section content                    │  (MD Files only)     │
@@ -54,7 +54,6 @@ import { navigateUrl } from "@platform/lib/router";
 import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
 import ClaudeMdSection from "./sections/ClaudeMdSection";
 import HistorySection from "./sections/HistorySection";
-import MarketplacesSection from "./sections/MarketplacesSection";
 import McpSection from "./sections/McpSection";
 import MemorySection from "./sections/MemorySection";
 import PluginsSection from "./sections/PluginsSection";
@@ -67,8 +66,11 @@ import StatuslineSection from "./sections/StatuslineSection";
 // settings UI over someone's dotfiles owes them.
 const TABS = [
   { id: "preferences", label: "Preferences", file: "settings.json" },
-  { id: "plugins", label: "Plugins", file: "settings.json → enabledPlugins" },
-  { id: "marketplaces", label: "Marketplaces", file: "settings.json → extraKnownMarketplaces" },
+  {
+    id: "plugins",
+    label: "Plugins",
+    file: "settings.json → enabledPlugins + extraKnownMarketplaces",
+  },
   {
     id: "claudemd",
     label: "MD Files",
@@ -165,13 +167,16 @@ export default function ClaudeConfig() {
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
   // `?cctab=profiles` was a tab of its own until Profiles became a block of the
-  // History page. An old bookmark should land where its content went, not on
-  // the default tab.
+  // History page, and `?cctab=marketplaces` until Marketplaces folded into the
+  // Plugins rail. Either old bookmark should land where its content went, not
+  // on the default tab.
   const active: SectionId = raw === "profiles"
     ? HISTORY.id
-    : isSectionId(raw)
-      ? raw
-      : "preferences";
+    : raw === "marketplaces"
+      ? "plugins"
+      : isSectionId(raw)
+        ? raw
+        : "preferences";
   const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
@@ -190,8 +195,6 @@ export default function ClaudeConfig() {
         return <PreferencesSection onChanged={onChanged} />;
       case "plugins":
         return <PluginsSection onChanged={onChanged} />;
-      case "marketplaces":
-        return <MarketplacesSection onChanged={onChanged} />;
       case "claudemd":
         return (
           <ClaudeMdSection onChanged={onChanged} preview={preview} onPreview={setPreview} />

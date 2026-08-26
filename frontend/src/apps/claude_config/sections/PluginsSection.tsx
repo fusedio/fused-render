@@ -9,9 +9,14 @@
 // description is the thing you are deciding on and must not be ellipsized into
 // nothing; Installed's don't, because `plugins list` has no description to show.
 //
-// The marketplace column beside the list is a FILTER, not a nav: a plain list
-// of rows with counts, no panel background, nothing that could read as a third
-// sidebar next to the shell's own. It filters whichever list is showing.
+// The marketplace column beside the list is BOTH the filter AND the
+// marketplaces surface (round 2 folded the standalone Marketplaces tab in
+// here — it was never worth a tab of its own, just the source list behind
+// this one). Each row still filters whichever list is showing on click; the
+// (+) at the foot opens the same add form the old tab had, and each editable
+// marketplace gets its own share/remove icon actions. It stays plain — no
+// panel background, no border — so it reads as a filter, not a third sidebar
+// next to the shell's own.
 //
 // The Installed toggle is optimistic: the flip shows immediately and is rolled
 // back if the write fails, because the write is a git commit in the config repo
@@ -19,12 +24,16 @@
 // deliberately no reload after a successful toggle — the only thing that
 // changed is the flag we already painted, and a refetch here would fight the
 // optimistic value.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
-import type { AvailablePlugin, AvailablePlugins, Plugin } from "../api";
+import type { AvailablePlugin, AvailablePlugins, MarketplaceKind, Plugin } from "../api";
 import {
+  Card,
+  CardActions,
+  CardTitle,
+  DisclosureButton,
   Empty,
   Icon,
   List,
@@ -116,9 +125,20 @@ function Pager({
 export default function PluginsSection({ onChanged }: SectionProps) {
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
+  const loadMkt = useCallback(() => cc.marketplaces.list(), []);
+  const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
   const [tab, setTab] = useState<Tab>("installed");
   const [query, setQuery] = useState("");
   const [marketplace, setMarketplace] = useState(ALL);
+  // The rail's own add-a-marketplace disclosure — the same form the standalone
+  // Marketplaces tab used to open with, now folded under a (+) at the foot of
+  // the rail instead of a tab of its own.
+  const [mktName, setMktName] = useState("");
+  const [mktKind, setMktKind] = useState<MarketplaceKind>("github");
+  const [mktValue, setMktValue] = useState("");
+  const [mktBusy, setMktBusy] = useState(false);
+  const [addingMkt, setAddingMkt] = useState(false);
+  const mktFormId = useId();
   // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
   // URL-held page would be reset by the very navigation meant to preserve it —
   // and it would re-read every marketplace catalog on the way. Same reasoning
@@ -236,6 +256,53 @@ export default function PluginsSection({ onChanged }: SectionProps) {
     else toastErr("Copy failed");
   };
 
+  const addMarketplace = async () => {
+    const n = mktName.trim();
+    const v = mktValue.trim();
+    if (!n || !v) {
+      toastErr("name and value required");
+      return;
+    }
+    setMktBusy(true);
+    try {
+      const res = await cc.marketplaces.add(n, mktKind, v);
+      if (!res.ok) {
+        toastErr(res.error || "Add failed");
+        return;
+      }
+      toastOk("Added");
+      setMktName("");
+      setMktValue("");
+      setAddingMkt(false);
+      onChanged();
+      reloadMkt();
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setMktBusy(false);
+    }
+  };
+
+  const removeMarketplace = async (mktName: string) => {
+    try {
+      const res = await cc.marketplaces.remove(mktName);
+      if (!res.ok) {
+        toastErr(res.error || "Remove failed");
+        return;
+      }
+      toastOk("Removed");
+      // Removing a marketplace can orphan the current filter — and its plugins
+      // left both lists, so the two reads that depend on it both refetch.
+      if (marketplace === mktName) filterTo(ALL);
+      onChanged();
+      reloadMkt();
+      reload();
+      if (avail) loadAvail();
+    } catch (e) {
+      toastErr((e as Error).message);
+    }
+  };
+
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />;
 
@@ -316,29 +383,117 @@ export default function PluginsSection({ onChanged }: SectionProps) {
         </div>
       </SectionToolbar>
       <div className="cc-split">
-        <nav className="cc-index" aria-label="Filter by marketplace">
+        <nav className="cc-index" aria-label="Marketplaces">
+          <div className="cc-index-header">
+            <span>Marketplaces</span>
+            <span className="cc-count">{mktData?.marketplaces.length ?? "…"}</span>
+          </div>
           <button
             type="button"
-            className={"cc-index-item" + (marketplace === ALL ? " active" : "")}
+            className={"cc-index-item cc-index-all" + (marketplace === ALL ? " active" : "")}
             aria-pressed={marketplace === ALL}
             onClick={() => filterTo(ALL)}
           >
             <span className="cc-index-name">All</span>
             <span className="cc-count">{shown.length}</span>
           </button>
-          {index.map((m) => (
-            <button
-              key={m.name}
-              type="button"
-              className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
-              aria-pressed={marketplace === m.name}
-              title={m.name}
-              onClick={() => filterTo(m.name)}
-            >
-              <span className="cc-index-name">{m.name}</span>
-              <span className="cc-count">{m.n}</span>
-            </button>
-          ))}
+          {(mktData?.marketplaces ?? []).map((m) => {
+            const n = index.find((x) => x.name === m.name)?.n ?? 0;
+            return (
+              <div
+                key={m.name}
+                className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
+              >
+                <button
+                  type="button"
+                  className="cc-index-filter"
+                  aria-pressed={marketplace === m.name}
+                  title={m.name}
+                  onClick={() => filterTo(m.name)}
+                >
+                  <span className="cc-index-name">{m.name}</span>
+                  <span className="cc-count">{n}</span>
+                </button>
+                {/* A read-only pill states a fact about the row and stays
+                    visible outright — it is not an action, so it does not
+                    follow the hover-fade rule the icon buttons beside it do. */}
+                {!m.editable && <Pill tone="ro">read-only</Pill>}
+                <div className="cc-index-actions">
+                  {m.shareCommand && (
+                    <button
+                      type="button"
+                      className="cc-iconbtn"
+                      title={`Copy install command — ${m.shareCommand}`}
+                      aria-label={`Copy the install command for ${m.name}`}
+                      onClick={() => share(m.shareCommand as string)}
+                    >
+                      <Icon name="copy" />
+                    </button>
+                  )}
+                  {m.editable && (
+                    <button
+                      type="button"
+                      className="cc-iconbtn cc-iconbtn-danger"
+                      title="Remove marketplace"
+                      aria-label={`Remove marketplace ${m.name}`}
+                      onClick={() => removeMarketplace(m.name)}
+                    >
+                      <Icon name="trash" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <DisclosureButton
+            open={addingMkt}
+            controls={mktFormId}
+            label="Add marketplace"
+            onToggle={() => setAddingMkt((v) => !v)}
+          />
+          {addingMkt && (
+            <div id={mktFormId}>
+              <Card>
+                <CardTitle>Add a marketplace</CardTitle>
+                <CardActions>
+                  <input
+                    className="field-control"
+                    aria-label="Marketplace name"
+                    placeholder="name"
+                    value={mktName}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktName(e.target.value)}
+                  />
+                  <select
+                    className="field-control"
+                    aria-label="Marketplace kind"
+                    value={mktKind}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktKind(e.target.value as MarketplaceKind)}
+                  >
+                    <option value="github">github (owner/repo)</option>
+                    <option value="git">git url</option>
+                  </select>
+                  <input
+                    className="field-control cc-grow"
+                    aria-label="Marketplace source"
+                    placeholder="owner/repo or url"
+                    value={mktValue}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktValue(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={mktBusy}
+                    onClick={addMarketplace}
+                  >
+                    Add
+                  </button>
+                </CardActions>
+              </Card>
+            </div>
+          )}
         </nav>
         <div className="cc-rows">
           {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
