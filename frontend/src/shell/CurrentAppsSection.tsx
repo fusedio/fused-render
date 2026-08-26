@@ -4,11 +4,17 @@
 // shell/AppPage.tsx, D488) — the one door that page has; its cross archives
 // every task under it, which is the one gesture that takes an app off this list.
 //
+// The ORDER is a sequence per app, not the recency it is seeded from
+// (current-apps-lib.ts): a row moves only when the user drags it, so new work in
+// an app already listed does not reshuffle the list under the cursor. The store
+// is the module-level `appOrder` below — in memory only, on the owner's
+// instruction, so a reload seeds from recency once and holds from there.
+//
 // Fed by the task pulse store (useTasksPulseRows) rather than a poll of its
 // own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
 // reader and a second one is the double-poll that store exists to prevent.
 // `project` rides the compact row for exactly this reader.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { archiveTask, getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -18,8 +24,13 @@ import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   appPageTab,
   appPageUrl,
+  assignSequences,
+  bySequence,
   currentApps,
+  moveSlug,
+  reorderTo,
   slugFromAppPath,
+  type AppOrder,
   type CurrentApp,
 } from "@shell/current-apps-lib";
 
@@ -29,6 +40,13 @@ import {
 // round-trips. `fused_dir`, not `home`: the workspace root honours
 // FUSED_RENDER_DIR, and a root built from home would list nothing under it.
 let knownRoot = "";
+
+// The displayed order, kept for exactly as long as the page lives: the owner
+// asked for "in memory only", and module scope IS that lifetime — it outlives
+// the sidebar's per-navigation remount (pushState routing) and dies with a
+// reload, which is the "resets to recency once on reload" half of the ask.
+// Nothing persists it, so there is nothing to migrate or invalidate.
+const appOrder: AppOrder = new Map();
 
 function useFusedDir(): string {
   const [root, setRoot] = useState(knownRoot);
@@ -45,7 +63,23 @@ function useFusedDir(): string {
   return root;
 }
 
-function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
+interface RowDragProps {
+  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragLeave: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}
+
+function CurrentAppRow({
+  app,
+  active,
+  drag,
+}: {
+  app: CurrentApp;
+  active: boolean;
+  drag: RowDragProps;
+}) {
   const [busy, setBusy] = useState(false);
   const href = appPageUrl(app.slug);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
@@ -76,7 +110,12 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
   const n = app.taskKeys.length;
   const tip = `${app.dir} — ${n} ${n === 1 ? "task" : "tasks"}${app.running ? ", running" : ""}`;
   return (
-    <div className={"bookmark-row current-app-row" + (active ? " active" : "")} title={tip}>
+    <div
+      className={"bookmark-row current-app-row" + (active ? " active" : "")}
+      title={tip}
+      draggable
+      {...drag}
+    >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.running ? <span className="sidebar-rail-dot is-running" /> : "▣"}
       </span>
@@ -107,13 +146,91 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
 export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
   const fusedDir = useFusedDir();
-  const apps = useMemo(() => currentApps(rows, fusedDir), [rows, fusedDir]);
+  // A drop mutates `appOrder`, which React cannot see; this counter is what
+  // turns that mutation into a render. The pulse's own ticks re-run the memo
+  // anyway, so without it a drag would land only on the next poll.
+  const [orderEpoch, setOrderEpoch] = useState(0);
+  const apps = useMemo(() => {
+    const found = currentApps(rows, fusedDir);
+    // Assigning during render is safe because it is idempotent: an app that
+    // already has a sequence keeps it, so a double-invoked render (StrictMode)
+    // or a re-run on the same rows cannot renumber anything.
+    assignSequences(appOrder, found);
+    return bySequence(found, appOrder);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
+  }, [rows, fusedDir, orderEpoch]);
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
   const onSlug = slugFromAppPath(location.pathname);
+
+  // ---- reordering by drag ----------------------------------------------------
+  // A flat list, so the only question a drop asks is "above or below this row",
+  // answered by the row's own midpoint. Deliberately NOT the bookmarks tree's
+  // machinery (BookmarksSection): no folders, no subtree guard, no drop-into.
+  // The zone and fade CLASSES are that section's, though — the rows already
+  // carry `bookmark-row`, so `.dragging` / `.drag-above` / `.drag-below` are
+  // painted by sidebar.css with nothing new added.
+  const draggedRef = useRef<string | null>(null);
+  // Cleared by query rather than by ref: the row that started the drag may
+  // already be detached when the drop lands, and any row still on screen must
+  // not keep wearing a class from a finished gesture.
+  const clearDrag = () => {
+    const marks = ["drag-above", "drag-below", "dragging"];
+    const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
+    document.querySelectorAll(sel).forEach((el) => el.classList.remove(...marks));
+  };
+  const isBelow = (e: React.DragEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return e.clientY > r.top + r.height / 2;
+  };
+  const dragProps = (slug: string): RowDragProps => ({
+    onDragStart: (e) => {
+      draggedRef.current = slug;
+      e.currentTarget.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", slug); // Firefox needs a payload to start
+    },
+    onDragOver: (e) => {
+      const from = draggedRef.current;
+      if (from === null || from === slug) return;
+      e.preventDefault(); // required to allow a drop
+      e.dataTransfer.dropEffect = "move";
+      const after = isBelow(e);
+      e.currentTarget.classList.toggle("drag-above", !after);
+      e.currentTarget.classList.toggle("drag-below", after);
+    },
+    onDragLeave: (e) => e.currentTarget.classList.remove("drag-above", "drag-below"),
+    onDrop: (e) => {
+      const from = draggedRef.current;
+      // Reset BEFORE the re-render: it detaches the source row, and Chrome
+      // skips dragend on a removed element (the lesson BookmarksSection
+      // records at its own drop handler).
+      draggedRef.current = null;
+      clearDrag();
+      if (from === null || from === slug) return;
+      e.preventDefault();
+      const order = apps.map((a) => a.slug);
+      reorderTo(appOrder, moveSlug(order, from, slug, isBelow(e)));
+      setOrderEpoch((n) => n + 1);
+    },
+    onDragEnd: () => {
+      // Fires on an Escape-cancelled drag too — the universal cleanup.
+      draggedRef.current = null;
+      clearDrag();
+    },
+  });
+
   const render = useCallback(
-    (app: CurrentApp) => <CurrentAppRow key={app.dir} app={app} active={app.slug === onSlug} />,
-    [onSlug],
+    (app: CurrentApp) => (
+      <CurrentAppRow
+        key={app.dir}
+        app={app}
+        active={app.slug === onSlug}
+        drag={dragProps(app.slug)}
+      />
+    ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
+    [onSlug, apps],
   );
   // The + opens the /apps composer in a modal (D489). The section therefore
   // ALWAYS renders now — it first hid itself with zero current apps (D487),
