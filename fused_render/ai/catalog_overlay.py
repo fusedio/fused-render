@@ -13,13 +13,38 @@ AI Models page down — a curated catalog with a typo'd `models.json` sitting
 beside it must still render the built-in list, the same way a broken
 `templates/registry.json` still lets a file open with its built-in binding.
 
-**The merge rule** (SPEC item 15's own words): an overlay entry whose `id`
-matches a built-in row's `id` REPLACES it in place (same position in the
-list — `catalog.py`'s lists are ordered smallest-first, and overriding a
-row's `size_gb` should not also silently reorder the page); an entry whose
-`id` names nothing built-in APPENDS. Both are keyed by RUNNER CODE, the same
-grain `catalog.SUGGESTIONS` itself uses, so `{"llamacpp-text": [...]}` in
-`models.json` only ever touches that one curated list.
+**The merge rule** (SPEC item 15's own words, sharpened by code review
+finding 4): an overlay entry whose `id` matches a built-in row's `id` is
+SHALLOW-MERGED over it, field by field, at the SAME POSITION in the list
+(`catalog.py`'s lists are ordered smallest-first, and overriding a row's
+`size_gb` should not also silently reorder the page); an entry whose `id`
+names nothing built-in APPENDS as-is. Both are keyed by RUNNER CODE, the
+same grain `catalog.SUGGESTIONS` itself uses, so `{"llamacpp-text": [...]}`
+in `models.json` only ever touches that one curated list.
+
+**Shallow-merged, not replaced wholesale — this was the module's own bug
+until code review finding 4.** The docstring's motivating example
+(overriding a row's `size_gb`) is exactly what a wholesale replace breaks:
+`{"id": "a/b", "size_gb": 9.0}` used to REPLACE the built-in row entirely,
+silently dropping `label`/`note`/`params`/`quantization`/`recommended` —
+and `params`/`quantization` specifically feed `fit.verdict`/`speed.
+estimate_tok_s`, so a user overriding a download size for accuracy was
+rewarded with a WORSE fit/speed estimate (params-less, quant-less) than
+the row they started from. A field named in the overlay entry still wins
+outright; only fields the overlay entry omits fall through to the
+built-in row's own value.
+
+**Field REMOVAL is not supported, and that is deliberate scope, not an
+oversight.** A user who wants a built-in field gone entirely (rather than
+overridden) has no way to express that in this merge — `null` in JSON
+already means Python `None`, a real value some fields legitimately hold
+(a row's own `note` can be absent), so treating it as a delete sentinel
+would be ambiguous rather than a clean convention, and nothing in this
+build's scope needs it: every curated field is either safe to leave at
+its built-in value or worth overriding with a real replacement, never
+worth erasing outright. If a future need for it materializes, the honest
+fix is a dedicated marker (e.g. a reserved sentinel string, not bare
+`null`), not a silent overload of an existing JSON value.
 
 **Not machine-scoped, unlike `footprints.py`.** A user's hand-curated model
 row is a statement about what THEY want offered, not a fact about the
@@ -58,8 +83,11 @@ def _load() -> dict:
 def apply(runner_code: str, builtin: list[dict]) -> list[dict]:
     """`builtin` (a `catalog.SUGGESTIONS[...]`-shaped list, already resolved
     for `runner_code`'s hardware-variant alias) with the overlay merged in:
-    an overlay row whose `id` matches a built-in row's REPLACES it at the
-    same position; a new `id` is appended, in the overlay file's own order.
+    an overlay row whose `id` matches a built-in row's SHALLOW-MERGES over
+    it, field by field, at the same position (a field the overlay entry
+    omits keeps the built-in row's own value — see the module docstring's
+    "code review finding 4" note for why this is not a wholesale replace);
+    a new `id` is appended, in the overlay file's own order.
 
     Returns a NEW list — `builtin` itself is never mutated, matching
     `catalog.for_runner`'s existing "callers get a copy, not the curation"
@@ -83,7 +111,11 @@ def apply(runner_code: str, builtin: list[dict]) -> list[dict]:
         if not isinstance(model_id, str) or not model_id:
             continue
         if model_id in index_by_id:
-            result[index_by_id[model_id]] = dict(entry)
+            # SHALLOW MERGE, not a replace: every field the overlay entry
+            # names wins outright, and every field it omits falls through
+            # to the built-in row's own value (code review finding 4).
+            i = index_by_id[model_id]
+            result[i] = {**result[i], **entry}
         else:
             index_by_id[model_id] = len(result)
             result.append(dict(entry))

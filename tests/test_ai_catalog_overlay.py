@@ -45,6 +45,28 @@ def test_a_matching_id_overrides_the_built_in_row(monkeypatch):
     assert [r["id"] for r in result] == ["a/b", "c/d"]
 
 
+def test_a_matching_id_shallow_merges_rather_than_replacing_wholesale(monkeypatch):
+    """Code review finding 4: an overlay row overriding ONE field (the
+    docstring's own motivating example, `size_gb`) must not drop every
+    other field the built-in row carried — `label`/`note`/`params`/
+    `quantization`/`recommended` feed `fit.verdict`/`speed.estimate_tok_s`,
+    and losing `params`/`quantization` silently degrades the very estimate
+    the override was meant to improve."""
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0, "label": "A/B", "params": "7B",
+               "quantization": "Q4_K_M", "note": "a note", "recommended": True}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert result[0] == {"id": "a/b", "size_gb": 9.0, "label": "A/B", "params": "7B",
+                         "quantization": "Q4_K_M", "note": "a note", "recommended": True}
+
+
+def test_an_overlay_row_can_still_override_every_field_it_names(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0, "label": "New label"}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0, "label": "Old label", "note": "kept"}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert result[0] == {"id": "a/b", "size_gb": 9.0, "label": "New label", "note": "kept"}
+
+
 def test_a_new_id_appends(monkeypatch):
     _write(monkeypatch, {"llamacpp-text": [{"id": "new/model", "size_gb": 3.0}]})
     builtin = [{"id": "a/b", "size_gb": 1.0}]
