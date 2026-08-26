@@ -3,7 +3,7 @@
 // new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState } from "react";
-import { aiComplete, createApp, type DefaultModel, type SessionEffort } from "@platform/lib/api";
+import { aiComplete, createApp, getHomeApps, type DefaultModel, type SessionEffort } from "@platform/lib/api";
 import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
@@ -11,85 +11,106 @@ import { useAutoGrow } from "@platform/lib/autoGrow";
 import { startersFor } from "./starterPrompts";
 import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
-import { Select, TextArea } from "@platform/ui/field/fields";
+import { Select, TextArea, TextInput } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
-// URL of an app folder's claude chat, attached to a specific live run.
-// `_mode` is the shell's template selector; `run` is a plain view param the
-// claude template reads through fused.params (its boot resumes that
-// run, so a session started server-side is picked up exactly like one the
-// page started itself). Folder-scoped on purpose: the server starts the
-// scaffolding session via the claude agent on the app FOLDER, so the
-// re-attach must land in the same template — same runs dir.
-// (There is only one chat template now, so "which
-// chat" is no longer a question at all; the `_mode` still has to be spelled out
-// because the folder's default mode is the app itself, not the chat.)
-// An ORDINARY explorer URL for the folder. It used to be the builder route
-// (/apps/<tag>/<name>, rebuilt from the folder's last two path segments); that
-// namespace is gone, and urlForFsPath takes the whole abspath the server
-// returned — including its Windows-backslash normalization, which the old
-// segment split had to do by hand or silently take the drive-rooted path as one
-// segment.
-// `model`/`effort` ride along when the composer's pickers were used, so
-// the chat's own pills open showing what the scaffolding turn actually ran with
-// and the NEXT turn keeps it. Omitted when empty: the template reads these
-// through fused.params, and an empty param would beat its own detection of what
-// this project is really being worked in.
-export function claudeChatUrl(
-  appDir: string,
+// The new app's page with the Claude pane open on the scaffolding turn: the
+// file's ordinary explorer URL, `_side=claude` for the pane (the same hop a
+// task row makes, schedule-lib.explorerUrl), and `run` so the pane's boot
+// re-attaches to the live run instead of showing its landing page — with no
+// session id yet there is nothing else it could adopt. `model`/`effort` ride
+// along when the composer's pickers were used, so the pane's own pills open
+// showing what the turn actually ran with and the NEXT turn keeps it; omitted
+// when empty, since an empty param would beat the template's own detection.
+export function appLandingUrl(
+  entryHtml: string,
   runId: string,
   model: DefaultModel = "",
   effort: SessionEffort = "",
 ): string {
-  const params = new URLSearchParams({ _mode: "claude", run: runId });
+  const params = new URLSearchParams({ _side: "claude", run: runId });
   if (model) params.set("model", model);
   if (effort) params.set("effort", effort);
-  return urlForFsPath(appDir.replace(/\/+$/, ""), "?" + params.toString());
+  return urlForFsPath(entryHtml, "?" + params.toString());
 }
 
 // -- Prompt-first creation (the hero composer) --------------------------------
 
-// Kebab-case whatever the model (or, as a fallback, the user's own prompt)
-// gave us into a safe app folder name: lowercase, [a-z0-9-] only, at most
-// five words. Never returns something _app_name_error would reject.
+// Kebab-case whatever the model gave us into a safe app folder name:
+// lowercase, [a-z0-9-] only, at most five words. Returns "" when nothing
+// usable survives.
 function kebabName(text: string): string {
-  return (
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .split("-")
-      .filter(Boolean)
-      .slice(0, 5)
-      .join("-")
-      .slice(0, 48) || "my-app"
-  );
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .split("-")
+    .filter(Boolean)
+    .slice(0, 5)
+    .join("-")
+    .slice(0, 48);
 }
+
+// What a user-typed app name must look like: lowercase kebab-case, letters and
+// digits only, no leading/trailing/double hyphens. The server's
+// _app_name_error (routers/apps.py) is looser and stays authoritative; this is
+// the composer holding its own names to the standard the model is asked for.
+const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// The refusal token. Asked for explicitly so a request that is not an app
+// description gets a deterministic answer the code can act on (ask the user)
+// instead of an invented brand — Haiku, given nothing concrete, will happily
+// produce "flux-name-bot" and that passes every syntactic check.
+const NAME_NONE = "none";
 
 const NAME_SYSTEM_PROMPT =
   "You name software projects. Given a description of an app, reply with a " +
   "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
-  "letters and digits only. Reply with ONLY the name — no quotes, no prose.";
+  "letters and digits only. Use only words that appear in the description or " +
+  "plainly describe what the app does — never invented brand words. If the " +
+  "text is not a description of an app to build, reply with exactly: " +
+  NAME_NONE + ". Reply with ONLY the name — no quotes, no prose.";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
-// (haiku, the server default — cheap and fast), fall back to slugging the
-// prompt's own words when the relay is unavailable or answers garbage.
-async function suggestAppName(prompt: string): Promise<string> {
+// (haiku, the server default — cheap and fast). null when the relay is down or
+// answers garbage — the caller then ASKS the user for a name. It used to slug
+// the prompt's own words instead, which produced folders like
+// "make-me-a-tool-that" and nobody could tell that naming had failed at all.
+async function suggestAppName(prompt: string): Promise<string | null> {
   try {
     const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) => t.trim());
     // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
     // prose instead (common even with "no prose" in the ask), `text` won't be
     // pure lowercase-and-hyphens. Taking the first token then would name the
-    // folder after whatever word led the prose (e.g. "sure") instead of
-    // falling through to the actual prompt slug below.
-    if (/^[a-z0-9]+(-[a-z0-9]+)*$/.test(text)) {
+    // folder after whatever word led the prose (e.g. "sure").
+    if (text.toLowerCase().replace(/[.\s]+$/, "") === NAME_NONE) return null;
+    if (KEBAB_RE.test(text)) {
       const name = kebabName(text);
-      if (name !== "my-app") return name;
+      if (name) return name;
     }
   } catch {
-    // relay down / claude missing: the slug fallback below still works
+    // relay down / claude missing — fall through to null
   }
-  return kebabName(prompt);
+  return null;
+}
+
+// The prefill offered when naming failed: "my-app-<n>", n one past the highest
+// my-app-N already on the home row. Cosmetic only — createAppUnderFreeName
+// suffixes on a 409 anyway — so a failed lookup just yields my-app-1. Never
+// getApps(): that is the recursive workspace walk (see Apps.tsx).
+async function genericAppName(): Promise<string> {
+  let n = 1;
+  try {
+    const { apps } = await getHomeApps(50);
+    for (const a of apps) {
+      const m = /^my-app(?:-(\d+))?$/.exec(a.name);
+      if (m) n = Math.max(n, (m[1] ? Number(m[1]) : 1) + 1);
+    }
+  } catch {
+    // no list, no number
+  }
+  return `my-app-${n}`;
 }
 
 // Create the app under a collision-proof name: on 409 retry with -2, -3, …
@@ -231,7 +252,11 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // Empty = "let the chat decide", the default; see MODEL_CHOICES.
   const [model, setModel] = useState<DefaultModel>("");
   const [effort, setEffort] = useState<SessionEffort>("");
-  const [phase, setPhase] = useState<"idle" | "naming" | "creating">("idle");
+  const [phase, setPhase] = useState<"idle" | "naming" | "askName" | "creating">("idle");
+  // The name the user is typing while phase === "askName" — only reached when
+  // haiku could not name the app; see suggestAppName.
+  const [nameDraft, setNameDraft] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
   // Claude would not start for an app that WAS created — see the submit path.
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -288,51 +313,100 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // slice — modulo would keep it in range but land somewhere arbitrary.
   useEffect(() => setSampleOffset(0), [annotation?.capability]);
 
-  const submit = async () => {
-    if (!canSubmit) return;
+  // The chip's detail is instructions for the CLAUDE SESSION, not something
+  // the user typed — spliced in ahead of what they wrote so it reads as
+  // "here's the model, here's the app I want" without the user ever
+  // seeing or editing the model prose.
+  const fullPrompt = () => {
     const trimmed = prompt.trim();
-    // The chip's detail is instructions for the CLAUDE SESSION, not something
-    // the user typed — spliced in ahead of what they wrote so it reads as
-    // "here's the model, here's the app I want" without the user ever
-    // seeing or editing the model prose.
-    const full = annotation ? `${annotation.detail}\n\nThe app I want: ${trimmed}` : trimmed;
+    return annotation ? `${annotation.detail}\n\nThe app I want: ${trimmed}` : trimmed;
+  };
+
+  // Second half of a create: the app has a name, scaffold it and land in its
+  // chat. Shared by the automatic path (haiku named it) and the ask path (the
+  // user did), so both end up in exactly the same place. `back` is where a
+  // failure returns to: the ask row keeps the name the user typed (a retry
+  // from idle would re-run naming and overwrite it with a fresh my-app-N),
+  // the automatic path goes back to the prompt.
+  const createNamed = async (name: string, back: "idle" | "askName") => {
     setError(null);
     setSessionError(null);
-    setPhase("naming");
+    setPhase("creating");
     try {
-      const name = await suggestAppName(trimmed);
-      if (!alive.current) return;
-      setPhase("creating");
-      const res = await createAppUnderFreeName(name, full, model, effort);
+      const res = await createAppUnderFreeName(name, fullPrompt(), model, effort);
       // The folder exists from here on, so the Recent grid is stale — refresh it
-      // now, since the session-error branch below stays on this page.
+      // now, since the task-error branch below stays on this page.
       onCreated();
-      // Same landing logic as NewAppPanel: a session error must not read as
-      // success, and a live run means the claude chat is the right landing.
-      if (res.session_error) {
+      // And the prompt is a task now: the sidebar's Current apps section reads
+      // the shared tasks store, which otherwise learns of the new row on its
+      // next slow poll (up to 30s idle). One announcement, forwarded by App.tsx
+      // to pokeTasks, and the app is in the sidebar before the page turns.
+      if (res.task) announceTasksChanged();
+      // A task error must not read as success: the FOLDER exists, only the
+      // task failed. Kept as its own state so the card can say that plainly
+      // and still show the error verbatim.
+      if (res.task_error) {
         if (alive.current) {
-          // The FOLDER exists; only the session failed. Kept as its own state
-          // so the card can say that plainly and still show the spawn error
-          // verbatim — folding the two into one string made the error
-          // unclassifiable (and unsearchable) by prefixing it.
-          setSessionError(res.session_error);
+          setSessionError(res.task_error);
           setPhase("idle");
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id, model, effort), { isDir: true });
-      else navigate(res.entry_html, { isDir: false });
+      // Land on the app's page with Claude building it in the side pane. The
+      // prompt is a task on this file now; the server ran it and waited for
+      // the run id, so the pane can attach. A task whose send failed (or is
+      // still spawning past the server's wait) lands on the bare page — the
+      // row in the app's Tasks tab tells the rest.
+      if (res.task?.run_id) {
+        navigateUrl(appLandingUrl(res.entry_html, res.task.run_id, model, effort), { isDir: false });
+      } else {
+        navigate(res.entry_html, { isDir: false });
+      }
     } catch (e) {
       if (alive.current) {
         setError((e as Error).message);
-        setPhase("idle");
+        setPhase(back);
+        // The row remounts on the way back; put the caret where it was so
+        // Escape / a corrected name work without a click first.
+        if (back === "askName") requestAnimationFrame(() => nameRef.current?.select());
       }
     }
   };
 
+  // First half: name the app. Haiku names it and creation follows at once;
+  // when it cannot, the composer says so and asks for a name instead of
+  // quietly shipping a slug of the prompt.
+  const submit = async () => {
+    if (!canSubmit) return;
+    setError(null);
+    setSessionError(null);
+    setPhase("naming");
+    const name = await suggestAppName(prompt.trim());
+    if (!alive.current) return;
+    if (name) {
+      await createNamed(name, "idle");
+      return;
+    }
+    const generic = await genericAppName();
+    if (!alive.current) return;
+    setNameDraft(generic);
+    setPhase("askName");
+    requestAnimationFrame(() => nameRef.current?.select());
+  };
+
+  const nameOk = KEBAB_RE.test(nameDraft);
+  const confirmName = () => {
+    if (phase !== "askName" || !nameOk) return;
+    void createNamed(nameDraft, "askName");
+  };
+  const cancelName = () => {
+    setPhase("idle");
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
   return (
     <div className="home-composer-wrap">
-      <div className={"home-composer" + (busy ? " is-busy" : "")}>
+      <div className={"home-composer" + (phase === "naming" || phase === "creating" ? " is-busy" : "")}>
         {annotation && (
           <div className="home-composer-annots">
             <span className="home-composer-annot" title={annotation.detail}>
@@ -376,6 +450,47 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
               stay mounted while a create is in flight — disabled, like the
               starter chips — and the phase text takes the space beside them
               rather than replacing them, so nothing moves when it appears. */}
+          {/* Naming failed — say so and ask, rather than shipping a slug of the
+              prompt. The row replaces the pickers while it is up: the name is
+              the one decision left before the create, and model/effort are
+              already chosen. Enter confirms, Escape backs out to the prompt. */}
+          {phase === "askName" ? (
+            <div className="home-composer-name" role="group" aria-label="Name your app">
+              <span className="home-composer-name-why">
+                Couldn't name it automatically — pick a name:
+              </span>
+              <TextInput
+                ref={nameRef}
+                className="home-composer-name-input"
+                aria-label="App name"
+                aria-invalid={!nameOk}
+                value={nameDraft}
+                spellCheck={false}
+                autoComplete="off"
+                // Space types a hyphen: the field wants kebab-case, so the key
+                // a user reaches for between words produces the separator the
+                // name needs. Done on the value (not keydown) so a pasted
+                // "My App" lands as "my-app" too.
+                onChange={(e) => setNameDraft(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    confirmName();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelName();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="home-composer-name-cancel"
+                onClick={cancelName}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
           <div className="home-composer-picks">
             <ComposerPick
               glyph="model"
@@ -398,13 +513,16 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
               {phase === "creating" && "Creating the app…"}
             </span>
           </div>
+          )}
+          {/* In askName the send button confirms the name — same spot, same
+              arrow, so the gesture that started the create finishes it. */}
           <button
             type="button"
             className="home-composer-send"
-            aria-label="Build it"
-            title="Build it"
-            disabled={!canSubmit}
-            onClick={submit}
+            aria-label={phase === "askName" ? "Create with this name" : "Build it"}
+            title={phase === "askName" ? "Create with this name" : "Build it"}
+            disabled={phase === "askName" ? !nameOk : !canSubmit}
+            onClick={phase === "askName" ? confirmName : submit}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M12 19V5M5 12l7-7 7 7" />
@@ -452,13 +570,13 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
           prefixed string could not do. */}
       {sessionError && (
         <TroubleCard
-          what="starting a Claude session to build a new app"
+          what="creating the task that builds a new app"
           error={sessionError}
           facts={{ page: location.pathname + location.search }}
           onRetry={() => setSessionError(null)}
         >
           <span className="deploy-muted">
-            The app folder was created — only the session failed.
+            The app folder was created — only the task failed.
           </span>
         </TroubleCard>
       )}

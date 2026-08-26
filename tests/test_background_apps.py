@@ -168,7 +168,7 @@ def test_version_for_changes_with_interpreter_path(tmp_path):
 
 
 def test_version_for_changes_with_interpreter_mtime_at_the_same_path(tmp_path):
-    # Code-review fix (D495 revised): the exact upgrade-rot case this digest
+    # Code-review fix (D499 revised): the exact upgrade-rot case this digest
     # exists for is the packaged interpreter rewritten IN PLACE at the same
     # path — same path, same version string, different bytes/mtime. A
     # path-only component (realpath'd or not) cannot see that; the
@@ -222,7 +222,7 @@ def test_version_for_raises_on_missing_daemon_file(tmp_path):
 
 
 # --------------------------------------------------- interpreter resolution
-# D499 (2026-08-26 code review): interpreter_for must NOT walk past the app's
+# D503 (2026-08-26 code review): interpreter_for must NOT walk past the app's
 # own folder looking for an ancestor project the way projectenv.project_env_for
 # does for a plain .py script — the app folder IS the project boundary.
 

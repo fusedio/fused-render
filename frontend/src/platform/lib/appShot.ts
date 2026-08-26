@@ -42,8 +42,7 @@
 // nothing — the stage is mounted and settled against a stream already running,
 // and the frame we photograph is the one on screen at grab time.
 import { downloadAppFile } from "./api";
-import { withNoFocus } from "./frame-focus";
-import { withPreviewFlag } from "./router";
+import { thumbUrl } from "./thumb-frame";
 
 // The slice of AppInfo the export path reads — structural, so the preview
 // header (which has a folder + entry page but no listing row) can call
@@ -71,7 +70,7 @@ const MAX_SHOT_WIDTH = 1600;
 const MIN_CROP_CSS_PX = { width: 120, height: 75 };
 
 function shotUrl(entryHtml: string): string {
-  return withNoFocus(withPreviewFlag(`/render?path=${encodeURIComponent(entryHtml)}`));
+  return thumbUrl(`/render?path=${encodeURIComponent(entryHtml)}`);
 }
 
 // The one export entry every card surface calls (the hover chip and the

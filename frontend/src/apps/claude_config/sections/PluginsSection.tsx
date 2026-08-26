@@ -9,9 +9,14 @@
 // description is the thing you are deciding on and must not be ellipsized into
 // nothing; Installed's don't, because `plugins list` has no description to show.
 //
-// The marketplace column beside the list is a FILTER, not a nav: a plain list
-// of rows with counts, no panel background, nothing that could read as a third
-// sidebar next to the shell's own. It filters whichever list is showing.
+// The marketplace column beside the list is BOTH the filter AND the
+// marketplaces surface (round 2 folded the standalone Marketplaces tab in
+// here — it was never worth a tab of its own, just the source list behind
+// this one). Each row still filters whichever list is showing on click; the
+// (+) at the foot opens the same add form the old tab had, and each editable
+// marketplace gets its own share/remove icon actions. It stays plain — no
+// panel background, no border — so it reads as a filter, not a third sidebar
+// next to the shell's own.
 //
 // The Installed toggle is optimistic: the flip shows immediately and is rolled
 // back if the write fails, because the write is a git commit in the config repo
@@ -19,16 +24,21 @@
 // deliberately no reload after a successful toggle — the only thing that
 // changed is the flag we already painted, and a refetch here would fight the
 // optimistic value.
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
-import type { AvailablePlugin, AvailablePlugins, Plugin } from "../api";
+import type { AvailablePlugin, AvailablePlugins, MarketplaceKind, Plugin } from "../api";
 import {
+  Card,
+  CardActions,
+  CardTitle,
+  DisclosureButton,
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -115,9 +125,20 @@ function Pager({
 export default function PluginsSection({ onChanged }: SectionProps) {
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
+  const loadMkt = useCallback(() => cc.marketplaces.list(), []);
+  const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
   const [tab, setTab] = useState<Tab>("installed");
   const [query, setQuery] = useState("");
   const [marketplace, setMarketplace] = useState(ALL);
+  // The rail's own add-a-marketplace disclosure — the same form the standalone
+  // Marketplaces tab used to open with, now folded under a (+) at the foot of
+  // the rail instead of a tab of its own.
+  const [mktName, setMktName] = useState("");
+  const [mktKind, setMktKind] = useState<MarketplaceKind>("github");
+  const [mktValue, setMktValue] = useState("");
+  const [mktBusy, setMktBusy] = useState(false);
+  const [addingMkt, setAddingMkt] = useState(false);
+  const mktFormId = useId();
   // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
   // URL-held page would be reset by the very navigation meant to preserve it —
   // and it would re-read every marketplace catalog on the way. Same reasoning
@@ -235,8 +256,55 @@ export default function PluginsSection({ onChanged }: SectionProps) {
     else toastErr("Copy failed");
   };
 
+  const addMarketplace = async () => {
+    const n = mktName.trim();
+    const v = mktValue.trim();
+    if (!n || !v) {
+      toastErr("name and value required");
+      return;
+    }
+    setMktBusy(true);
+    try {
+      const res = await cc.marketplaces.add(n, mktKind, v);
+      if (!res.ok) {
+        toastErr(res.error || "Add failed");
+        return;
+      }
+      toastOk("Added");
+      setMktName("");
+      setMktValue("");
+      setAddingMkt(false);
+      onChanged();
+      reloadMkt();
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setMktBusy(false);
+    }
+  };
+
+  const removeMarketplace = async (mktName: string) => {
+    try {
+      const res = await cc.marketplaces.remove(mktName);
+      if (!res.ok) {
+        toastErr(res.error || "Remove failed");
+        return;
+      }
+      toastOk("Removed");
+      // Removing a marketplace can orphan the current filter — and its plugins
+      // left both lists, so the two reads that depend on it both refetch.
+      if (marketplace === mktName) filterTo(ALL);
+      onChanged();
+      reloadMkt();
+      reload();
+      if (avail) loadAvail();
+    } catch (e) {
+      toastErr((e as Error).message);
+    }
+  };
+
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading plugins" />;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />;
 
   const installed = data.plugins.filter((p) => matches(query, p.name, p.id));
   // Discover is only the plugins you do NOT have: what you already installed is
@@ -315,29 +383,138 @@ export default function PluginsSection({ onChanged }: SectionProps) {
         </div>
       </SectionToolbar>
       <div className="cc-split">
-        <nav className="cc-index" aria-label="Filter by marketplace">
-          <button
-            type="button"
-            className={"cc-index-item" + (marketplace === ALL ? " active" : "")}
-            aria-pressed={marketplace === ALL}
-            onClick={() => filterTo(ALL)}
+        <nav className="cc-index" aria-label="Marketplaces">
+          <div className="cc-index-header">
+            <span>Marketplaces</span>
+            <span className="cc-count">{mktData?.marketplaces.length ?? "…"}</span>
+          </div>
+          {/* Structurally the SAME shape as every marketplace row below it —
+              a plain div wrapping the .cc-index-filter button — not a
+              standalone <button>. It used to BE the outer button, which is
+              what gave it browser-default button chrome (a border, centered
+              text) no other row in this rail has; it read as a stray control
+              from another component. */}
+          <div
+            className={"cc-index-item cc-index-all" + (marketplace === ALL ? " active" : "")}
           >
-            <span className="cc-index-name">All</span>
-            <span className="cc-count">{shown.length}</span>
-          </button>
-          {index.map((m) => (
             <button
-              key={m.name}
               type="button"
-              className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
-              aria-pressed={marketplace === m.name}
-              title={m.name}
-              onClick={() => filterTo(m.name)}
+              className="cc-index-filter"
+              aria-pressed={marketplace === ALL}
+              onClick={() => filterTo(ALL)}
             >
-              <span className="cc-index-name">{m.name}</span>
-              <span className="cc-count">{m.n}</span>
+              <span className="cc-index-name">All</span>
+              <span className="cc-count">{shown.length}</span>
             </button>
-          ))}
+          </div>
+          {(mktData?.marketplaces ?? []).map((m) => {
+            const n = index.find((x) => x.name === m.name)?.n ?? 0;
+            return (
+              <div
+                key={m.name}
+                className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
+              >
+                <button
+                  type="button"
+                  className="cc-index-filter"
+                  aria-pressed={marketplace === m.name}
+                  title={m.name}
+                  onClick={() => filterTo(m.name)}
+                >
+                  <span className="cc-index-name">{m.name}</span>
+                  <span className="cc-count">{n}</span>
+                </button>
+                {/* A read-only marker states a fact about the row and stays
+                    visible outright — it is not an action, so it does not
+                    follow the hover-fade rule the icon buttons beside it do.
+                    A lock glyph rather than the "read-only" Pill this used to
+                    be: the pill's text wrapped inside the rail's fixed
+                    180px width and spilled over the plugin list beside it,
+                    and it was tinted --warning, a hue this app reserves for
+                    uncommitted git drift — a read-only marketplace is
+                    neither dirty nor a warning, just a fact, so it is now a
+                    fixed-size muted icon that can never overflow. */}
+                {!m.editable && (
+                  <span className="cc-index-lock" title="Read-only marketplace" aria-label="Read-only marketplace">
+                    <Icon name="lock" />
+                  </span>
+                )}
+                <div className="cc-index-actions">
+                  {m.shareCommand && (
+                    <button
+                      type="button"
+                      className="cc-iconbtn"
+                      title={`Copy install command — ${m.shareCommand}`}
+                      aria-label={`Copy the install command for ${m.name}`}
+                      onClick={() => share(m.shareCommand as string)}
+                    >
+                      <Icon name="copy" />
+                    </button>
+                  )}
+                  {m.editable && (
+                    <button
+                      type="button"
+                      className="cc-iconbtn cc-iconbtn-danger"
+                      title="Remove marketplace"
+                      aria-label={`Remove marketplace ${m.name}`}
+                      onClick={() => removeMarketplace(m.name)}
+                    >
+                      <Icon name="trash" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          <DisclosureButton
+            open={addingMkt}
+            controls={mktFormId}
+            label="Add marketplace"
+            onToggle={() => setAddingMkt((v) => !v)}
+          />
+          {addingMkt && (
+            <div id={mktFormId}>
+              <Card>
+                <CardTitle>Add a marketplace</CardTitle>
+                <CardActions>
+                  <input
+                    className="field-control"
+                    aria-label="Marketplace name"
+                    placeholder="name"
+                    value={mktName}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktName(e.target.value)}
+                  />
+                  <select
+                    className="field-control"
+                    aria-label="Marketplace kind"
+                    value={mktKind}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktKind(e.target.value as MarketplaceKind)}
+                  >
+                    <option value="github">github (owner/repo)</option>
+                    <option value="git">git url</option>
+                  </select>
+                  <input
+                    className="field-control cc-grow"
+                    aria-label="Marketplace source"
+                    placeholder="owner/repo or url"
+                    value={mktValue}
+                    disabled={mktBusy}
+                    onChange={(e) => setMktValue(e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    disabled={mktBusy}
+                    onClick={addMarketplace}
+                  >
+                    Add
+                  </button>
+                </CardActions>
+              </Card>
+            </div>
+          )}
         </nav>
         <div className="cc-rows">
           {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
@@ -350,117 +527,124 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             </div>
           )}
           {tab === "discover" && !avail && !availError && (
-            <SkeletonLines rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
+            <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
           )}
-          {tab === "installed" &&
-            rowsInstalled.map((p) => {
-              const enabled = flipped[p.id] ?? p.enabled;
-              return (
-                // No chevron here: `plugins list` reads settings.json and
-                // installed_plugins.json, neither of which carries a
-                // description — everything this row knows is already on the
-                // line. The catalog blurb lives on Discover, which is where it
-                // is fetched from.
-                <ListRow
-                  key={p.id}
-                  lead={
-                    <Toggle3
-                      label={`Enable ${p.name}`}
-                      value={enabled}
-                      onChange={(next) => toggle(p, next)}
-                    />
-                  }
-                  name={p.name}
-                  pills={!p.installed ? <Pill>not installed</Pill> : null}
-                  secondary={p.id}
-                  secondaryTitle={p.id}
-                  secondaryMono
-                  meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
-                  actions={
-                    <>
-                      {p.installed && (
+          {tab === "installed" && rowsInstalled.length > 0 && (
+            <List>
+              {rowsInstalled.map((p) => {
+                const enabled = flipped[p.id] ?? p.enabled;
+                return (
+                  // No chevron here: `plugins list` reads settings.json and
+                  // installed_plugins.json, neither of which carries a
+                  // description — everything this row knows is already on the
+                  // line. The catalog blurb lives on Discover, which is where
+                  // it is fetched from.
+                  <ListRow
+                    key={p.id}
+                    lead={
+                      <Toggle3
+                        label={`Enable ${p.name}`}
+                        value={enabled}
+                        onChange={(next) => toggle(p, next)}
+                      />
+                    }
+                    name={p.name}
+                    pills={!p.installed ? <Pill>not installed</Pill> : null}
+                    secondary={p.id}
+                    secondaryTitle={p.id}
+                    secondaryMono
+                    meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
+                    actions={
+                      <>
+                        {p.installed && (
+                          <button
+                            type="button"
+                            className="cc-iconbtn"
+                            disabled={busy === p.id}
+                            title={busy === p.id ? "Updating…" : "Update this plugin"}
+                            aria-label={`Update ${p.name}`}
+                            onClick={() => update(p)}
+                          >
+                            <Icon name="refresh" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="cc-iconbtn"
-                          disabled={busy === p.id}
-                          title={busy === p.id ? "Updating…" : "Update this plugin"}
-                          aria-label={`Update ${p.name}`}
-                          onClick={() => update(p)}
+                          title={`Copy install command — ${p.shareCommand}`}
+                          aria-label={`Copy the install command for ${p.name}`}
+                          onClick={() => share(p.shareCommand)}
                         >
-                          <Icon name="refresh" />
+                          <Icon name="copy" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
-                        title={`Copy install command — ${p.shareCommand}`}
-                        aria-label={`Copy the install command for ${p.name}`}
-                        onClick={() => share(p.shareCommand)}
-                      >
-                        <Icon name="copy" />
-                      </button>
+                      </>
+                    }
+                  />
+                );
+              })}
+            </List>
+          )}
+          {tab === "discover" && pagedDiscover.length > 0 && (
+            <List>
+              {pagedDiscover.map((p) => (
+                <ListRow
+                  key={p.id}
+                  name={p.name}
+                  secondary={p.description}
+                  secondaryTitle={p.description}
+                  // Deciding whether to install something is exactly when the
+                  // marketing copy matters, and a catalog description runs to
+                  // a paragraph — so the row shows as much as fits and the
+                  // panel shows all of it, with who wrote it and what it is
+                  // filed under.
+                  details={
+                    p.description || p.author || p.category || p.keywords.length ? (
+                      <>
+                        {p.description && <p>{p.description}</p>}
+                        <dl className="cc-lrow-dl">
+                          {p.author && (
+                            <>
+                              <dt className="cc-lrow-dt">Author</dt>
+                              <dd className="cc-lrow-dd">{p.author}</dd>
+                            </>
+                          )}
+                          {p.category && (
+                            <>
+                              <dt className="cc-lrow-dt">Category</dt>
+                              <dd className="cc-lrow-dd">{p.category}</dd>
+                            </>
+                          )}
+                          {p.keywords.length > 0 && (
+                            <>
+                              <dt className="cc-lrow-dt">Keywords</dt>
+                              <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
+                            </>
+                          )}
+                        </dl>
+                      </>
+                    ) : null
+                  }
+                  meta={
+                    <>
+                      {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
+                      <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
                     </>
                   }
+                  actions={
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy === p.id}
+                      title={`claude plugin install ${p.id}`}
+                      onClick={() => install(p)}
+                    >
+                      {busy === p.id ? "Installing…" : "Install"}
+                    </button>
+                  }
                 />
-              );
-            })}
-          {tab === "discover" &&
-            pagedDiscover.map((p) => (
-              <ListRow
-                key={p.id}
-                name={p.name}
-                secondary={p.description}
-                secondaryTitle={p.description}
-                // Deciding whether to install something is exactly when the
-                // marketing copy matters, and a catalog description runs to a
-                // paragraph — so the row shows as much as fits and the panel
-                // shows all of it, with who wrote it and what it is filed under.
-                details={
-                  p.description || p.author || p.category || p.keywords.length ? (
-                    <>
-                      {p.description && <p>{p.description}</p>}
-                      <dl className="cc-lrow-dl">
-                        {p.author && (
-                          <>
-                            <dt className="cc-lrow-dt">Author</dt>
-                            <dd className="cc-lrow-dd">{p.author}</dd>
-                          </>
-                        )}
-                        {p.category && (
-                          <>
-                            <dt className="cc-lrow-dt">Category</dt>
-                            <dd className="cc-lrow-dd">{p.category}</dd>
-                          </>
-                        )}
-                        {p.keywords.length > 0 && (
-                          <>
-                            <dt className="cc-lrow-dt">Keywords</dt>
-                            <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
-                          </>
-                        )}
-                      </dl>
-                    </>
-                  ) : null
-                }
-                meta={
-                  <>
-                    {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
-                    <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
-                  </>
-                }
-                actions={
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={busy === p.id}
-                    title={`claude plugin install ${p.id}`}
-                    onClick={() => install(p)}
-                  >
-                    {busy === p.id ? "Installing…" : "Install"}
-                  </button>
-                }
-              />
-            ))}
+              ))}
+            </List>
+          )}
           {tab === "discover" && (
             <Pager
               page={safePage}

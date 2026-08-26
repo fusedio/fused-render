@@ -122,7 +122,7 @@ def version_for(folder: str, interpreter: str) -> str:
     OpenWhisper upgrade-rot class — a stale venv reused against a new
     interpreter).
 
-    D495 revised (2026-08-26 code review): the interpreter component used to
+    D499 revised (2026-08-26 code review): the interpreter component used to
     be `os.path.realpath(interpreter)` alone, which broke two ways. First, a
     realpath DESTROYS venv identity rather than naming it: a venv's `bin/
     python` is a symlink to its base CPython, so realpath collapses every
@@ -132,7 +132,7 @@ def version_for(folder: str, interpreter: str) -> str:
     symlinks to the same file; macOS/Windows runners happened not to alias
     the two paths the test used, so it passed everywhere else). Second, a
     path alone — realpath'd or not — cannot see the exact upgrade-rot case
-    D495 exists for: the packaged app's own interpreter gets rewritten IN
+    D499 exists for: the packaged app's own interpreter gets rewritten IN
     PLACE at the same path on upgrade (confirmed against a real install: same
     path, same `--version` string, different bytes, mtime moved). So the
     interpreter now gets the identical treatment the daemon file already gets
@@ -222,7 +222,7 @@ def interpreter_for(folder: str) -> str:
 
     Deliberately does NOT reuse `projectenv.project_env_for`/`project_root_for`
     the way the warm `/api/engine` worker does (routers/app_engine.py) — a
-    decision, not an oversight (D499, 2026-08-26 code review). Those walk
+    decision, not an oversight (D503, 2026-08-26 code review). Those walk
     UPWARD from a `.py` FILE to find the enclosing project, which is correct
     there: a script has no boundary of its own, so the nearest ancestor
     `pyproject.toml` IS its project. A background app's FOLDER is already the

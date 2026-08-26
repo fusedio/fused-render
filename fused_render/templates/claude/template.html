@@ -4125,23 +4125,18 @@ const chatEl = document.getElementById("chat");
 const sessionEl = document.getElementById("session");
 const homebox = document.getElementById("homebox");
 
-// Focus a composer — unless this page is a PREVIEW IN THE EXPLORER'S PANE.
+// Focus a composer. Nothing to gate: a page the shell mounts as a preview or a
+// thumbnail has its `focus()` dropped for it until the reader touches the page
+// (runtime.js, from `_nofocus=1` on this frame's URL), so a boot-path focus in
+// here cannot take the keyboard away from the shell's listing whether it knows
+// about that or not. This function used to ask a `window.__fusedNoAutofocus`
+// flag first and was its only reader in the whole repo — one mechanism that
+// covers every template beats two that have to agree.
 //
-// The pane is a same-origin iframe, so an input that focuses itself here takes
-// document focus away from the shell, and the listing's arrow keys stand down
-// the moment focus leaves it: previewing a file stopped the user browsing file
-// to file from the keyboard. `window.__fusedNoAutofocus` is the shell's signal
-// (runtime.js, from `_nofocus=1` on this frame's URL) and it goes false the
-// instant the reader touches this page — so clicking into the pane, or opening
-// this chat full-screen, focuses exactly as it always did. A standalone page
-// never sees the flag at all.
-//
-// Every composer focus goes through this, not only the boot ones: after the
-// first gesture it is a plain .focus(), so there is nothing to gain from
-// keeping two spellings and one obvious way for the next boot-path focus to
-// re-break the pane.
+// Kept as a function rather than inlined at the eight call sites because the
+// composer to focus is chosen differently at each of them, and one spelling is
+// what makes "where does this page take focus" a single grep.
 function focusBox(el) {
-  if (window.__fusedNoAutofocus) return;
   el.focus();
 }
 

@@ -222,6 +222,14 @@ def download(model_id):
     function refuse a repo with no distilled transformer — or build a
     patterns list that names exactly one real file per group — before
     spending any of a user's bandwidth on files nobody is going to open.
+
+    **`worker_base.download_plan`, not two bare `download_snapshot` calls**
+    (SPEC AI-5n, D498). Two sequential calls each report their OWN repo's
+    total, so the bar read 19.1 GB for the weights and then jumped straight to
+    "complete" having never shown the 8.07 GB the Gemma-3 text encoder was
+    always going to cost too — 30% short of the catalog's own `size_gb`, which
+    counts both repos as AI-11a requires. `download_plan` prices the two
+    phases as the one download the button actually started.
     """
     import huggingface_hub
 
@@ -252,8 +260,10 @@ def download(model_id):
 
         patterns.append(f"{pathlib.Path(upscaler_name).stem}_config.json")
 
-    fetched = worker_base.download_snapshot(model_id, allow_patterns=patterns)
-    worker_base.download_snapshot(_GEMMA_MODEL_ID)
+    fetched, _gemma = worker_base.download_plan([
+        (model_id, patterns, None),
+        (_GEMMA_MODEL_ID, None, None),
+    ])
     return fetched
 
 
@@ -367,6 +377,34 @@ def memory():
 
     for probe in (getattr(mx, "get_active_memory", None),
                   getattr(getattr(mx, "metal", None), "get_active_memory", None)):
+        if probe is None:
+            continue
+        value = probe()
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def peak_memory():
+    """The HIGH-WATER mark of what MLX has allocated over this process's whole
+    life, in bytes — SPEC AI-8c, D497. Where `memory()` above answers "right
+    now", this answers "at its worst", which is the number `fit` (AI-16) needs
+    and `memory()` cannot supply: `DistilledPipeline(low_memory=True)` frees
+    the transformer and the Gemma text encoder BETWEEN stages, so the resident
+    figure at any moment `/health` happens to be polled is one stage's worth,
+    never a bound on the whole render.
+
+    `mx.get_peak_memory()` is maintained by MLX's own allocator across the
+    process's whole life — not a sample this process has to keep taking, the
+    allocator already knows. Probed through the same defensive getattr PAIR
+    `memory()` above uses for the active-memory reading: the spelling moved
+    from `mlx.core.metal` into `mlx.core` and the old one is deprecated, so a
+    version skew costs the better answer rather than raising inside `/health`.
+    """
+    import mlx.core as mx
+
+    for probe in (getattr(mx, "get_peak_memory", None),
+                  getattr(getattr(mx, "metal", None), "get_peak_memory", None)):
         if probe is None:
             continue
         value = probe()
@@ -530,4 +568,4 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory)

@@ -361,6 +361,27 @@ def test_health_reports_the_state_the_supervisor_polls_for(base):
         server.shutdown()
 
 
+def test_health_reports_peak_resident_bytes_only_once_ready(base):
+    """SPEC AI-8c: `peak_resident_bytes` rides beside `resident_bytes`, and
+    only once the model can answer — the same rule `resident_bytes` already
+    follows, for the same reason: a loading model has nothing settled to
+    report a high-water mark OF."""
+    base.TOKEN = "secret"
+    base.set_state(state="loading")
+    server = _serve(base, lambda body: {})
+    try:
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" not in health
+
+        base.set_state(state="ready")
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" in health
+    finally:
+        server.shutdown()
+
+
 def test_generating_before_the_model_is_ready_is_a_409(base):
     """`ready` is the ONLY state that means the model can answer. A worker that
     served a request while still loading would answer with an empty model."""
@@ -658,6 +679,102 @@ def test_report_or_cancel_raises_on_a_requested_cancel(base, monkeypatch):
 
     monkeypatch.setattr(base, "report", lambda job=None, **f: {"cancel_requested": False})
     assert base.report_or_cancel(job="sys:ai-image:x") == {"cancel_requested": False}
+
+
+# -- a runner's own PEAK-memory probe (SPEC AI-8c, D497) -------------------------
+
+
+def test_peak_resident_bytes_is_none_before_anything_has_been_measured(base):
+    assert base.peak_resident_bytes() is None
+
+
+def test_peak_resident_bytes_takes_the_LARGER_of_probe_and_rss_high_water(base):
+    """MLX's `mx.get_peak_memory()` is a TRUE peak of the ALLOCATOR only — it
+    does not count the interpreter/framework baseline `resident_bytes`
+    corrects for (379 MB for a 6GB model). So this is `max`, the same
+    correction `resident_bytes` already makes between `own` and `rss`, not
+    the probe winning outright: a probe smaller than the RSS high-water mark
+    must not UNDERSTATE what the process actually occupied — code review
+    caught a version of this function that returned the probe alone and would
+    have let a `measured` footprint (AI-16a) badge understate a real load."""
+    base._measure_peak = lambda: 9_000_000_000
+    base._rss_peak = 1_000_000_000
+    assert base.peak_resident_bytes() == 9_000_000_000  # probe is larger here
+
+    base._measure_peak = lambda: 2_000_000_000
+    base._rss_peak = 12_000_000_000
+    assert base.peak_resident_bytes() == 12_000_000_000  # RSS is larger here
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_the_probe_answers_nothing(base):
+    """A probe that raises, or a wheel shipping neither `get_peak_memory`
+    spelling (`_measure_peak` returning None): the RSS high-water mark is what
+    is left, never an invented estimate."""
+    base._measure_peak = lambda: None
+    base._rss_peak = 3_000_000_000
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+    def boom():
+        raise RuntimeError("mlx not built with metal")
+
+    base._measure_peak = boom
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_no_probe_was_supplied(base):
+    """`faster_whisper` and every torch-on-CPU runner never call
+    `serve(peak_memory=...)` at all — `_measure_peak` stays `None`, and the
+    RSS high-water mark is the only answer there ever is."""
+    assert base._measure_peak is None
+    base._rss_peak = 2_000_000_000
+    assert base.peak_resident_bytes() == 2_000_000_000
+
+
+def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base, monkeypatch):
+    """`resident_bytes()` is called on every `/health` poll — this is what
+    turns that sparse sampling into a MONOTONE bound, at the cost of one
+    module-level integer kept by the worker rather than by the supervisor."""
+    import types
+
+    readings = iter([1_000, 5_000, 2_000])  # a real dip: RSS can shrink, GC runs
+
+    class _FakeProcess:
+        def memory_info(self):
+            return types.SimpleNamespace(rss=next(readings))
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=lambda pid: _FakeProcess()))
+
+    assert base.resident_bytes() == 1_000
+    assert base._rss_peak == 1_000
+    assert base.resident_bytes() == 5_000
+    assert base._rss_peak == 5_000
+    # The THIRD reading is a real dip — resident_bytes() itself still reports
+    # it honestly (it is not the peak function) — but the high-water mark it
+    # is feeding must not go backwards with it.
+    assert base.resident_bytes() == 2_000
+    assert base._rss_peak == 5_000
+
+
+def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path):
+    """`serve(peak_memory=...)` has to actually reach `peak_resident_bytes()`,
+    not just be accepted and dropped — the same wiring `memory=` already gets
+    for `_measure`. `serve_forever` never returns on a real server, so this
+    stubs `build_server` to hand back a server that never actually blocks —
+    the assignment under test happens before that call either way."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, peak_memory=lambda: 7,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._measure_peak is not None and base._measure_peak() == 7
 
 
 # -- download progress, measured from the disk (AI-5b) --------------------------
@@ -1106,6 +1223,29 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
         )
 
 
+def test_every_MLX_runner_supplies_a_true_peak_probe():
+    """SPEC AI-8c, D497: the MLX runners get a true peak "for free" —
+    `mx.get_peak_memory()` is maintained by the allocator across the whole
+    process life, so every runner that already has an active-memory probe
+    gets a peak one beside it. A `peak_memory=` nobody passes leaves `fit`
+    (AI-16) with only the weaker RSS-high-water fallback for a model whose
+    peak is otherwise measurable directly."""
+    from fused_render.ai import registry
+
+    for code in ("mlx-text", "mflux-image", "mlx-whisper", "mlx-embed", "ltx-video"):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = _runner_source(runner)
+        assert "def peak_memory(" in source, f"{code} has no peak_memory probe"
+        assert "get_peak_memory" in source, (
+            f"{code}'s peak_memory does not read mx.get_peak_memory"
+        )
+        assert "peak_memory=peak_memory" in source, (
+            f"{code} does not pass its peak probe to serve(), so /health "
+            "reports no peak_resident_bytes at all"
+        )
+
+
 # -- the total is scoped to what is actually fetched ----------------------------
 
 
@@ -1180,12 +1320,280 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
     assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
 
 
+def test_fetch_with_progress_declares_its_own_total_scope_every_tick(base, monkeypatch):
+    """Code review on AI-5n/D498: `total_scope` is STICKY on the job row
+    (`jobs.py` only updates it when a tick's body carries the field) —
+    written once by whichever tick last mentioned it. `download_plan` wraps a
+    multi-phase download with its OWN ticker beating `total_scope="download"`
+    on `_PLAN_TICK_S`, while each PHASE runs through this function's own
+    one-second ticks, reporting that phase's own (smaller) total. If this
+    function's ticks left `total_scope` unset, one of them landing right
+    after a `download_plan` beat would leave the row saying
+    `total_scope="download"` with a PHASE total sitting under it — exactly
+    the 19.1GB-shown-for-a-28.5GB-download defect `modelSize.ts` was built to
+    avoid. So every tick this function sends must say `total_scope="phase"`
+    explicitly, regardless of what a caller a level up last claimed."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.fetch_with_progress("u/x", lambda: "/f", total=2_600_000_000)
+
+    assert ticks, "expected at least the initial and closing ticks"
+    assert all(t.get("total_scope") == "phase" for t in ticks), ticks
+
+
 # The image recipe's own patterns moved to tests/test_ai_diffusers_worker.py,
 # where they are asserted against a frozen listing of the real repo instead of
 # by grepping the source for a pattern string. That grep was the reason a recipe
 # whose deny-list saved nothing still passed: the string it looked for was
 # present and the 7.75GB root bundle beside it was not something a substring
 # check could see.
+
+# -- a multi-repo download is priced as ONE (SPEC AI-5n, D498) ------------------
+
+
+def test_download_plan_sums_every_phases_total_and_claims_the_whole(base, monkeypatch):
+    """`ltx-video` fetches two repos as two sequential `download_snapshot`
+    calls; the bar has to be priced at their SUM, not at whichever phase
+    happened to be running, and has to say so (`total_scope`) so
+    `modelSize.ts` can let it win outright over the catalog's constant."""
+    totals = {"weights/repo": 19_100_000_000, "gemma/repo": 8_070_000_000}
+    folders = {"weights/repo": "/w", "gemma/repo": "/g"}
+    done = {"/w": 19_100_000_000, "/g": 8_070_000_000}  # both phases complete
+    snapshots = {"weights/repo": "/snap/w", "gemma/repo": "/snap/g"}
+    ticks = []
+
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": folders[model_id])
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: done[folder])
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None:
+                        snapshots[model_id])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    result = base.download_plan([
+        ("weights/repo", ["*.safetensors"], None),
+        ("gemma/repo", None, None),
+    ])
+
+    assert result == ["/snap/w", "/snap/g"]
+    final = ticks[-1]
+    assert final["total"] == 19_100_000_000 + 8_070_000_000
+    assert final["done"] == 19_100_000_000 + 8_070_000_000
+    assert final["total_scope"] == "download"
+    assert final["kind"] == "download" and final["unit"] == "bytes"
+    # Every tick this function sent claims the whole download, not just the
+    # ticks that happened to land after every phase completed.
+    assert all(t["total_scope"] == "download" for t in ticks)
+
+
+def test_download_plan_costs_the_whole_total_when_one_phase_is_indeterminate(base, monkeypatch):
+    """A phase whose size the Hub cannot answer must not be silently dropped
+    from the sum — that would price the bar at a fraction of the download and
+    then jump the moment the indeterminate phase's bytes start landing, which
+    is AI-5b's original defect rebuilt one level up."""
+    totals = {"a/known": 10_000_000_000, "b/unknown": None}
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("a/known", None, None), ("b/unknown", None, None)])
+
+    assert all(t["total"] is None for t in ticks)
+
+
+def test_download_plan_names_the_CURRENT_phase_in_detail(base, monkeypatch):
+    """"Fetching weights… (2 of 2)" — not just a moving number, a reader has to
+    be able to tell WHICH repo is downloading right now."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+
+    details_during_second_phase = []
+
+    def fake_download_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+        if model_id == "second":
+            # A real ticker beat may or may not have landed yet by the time
+            # this phase starts; sleep past `_PLAN_TICK_S` so at least one has.
+            time.sleep(base._PLAN_TICK_S * 2)
+        return model_id
+
+    def spy_report(job=None, **fields):
+        if "detail" in fields:
+            details_during_second_phase.append(fields["detail"])
+
+    monkeypatch.setattr(base, "download_snapshot", fake_download_snapshot)
+    monkeypatch.setattr(base, "report", spy_report)
+
+    base.download_plan([("first", None, None), ("second", None, None)])
+
+    assert any("(2 of 2)" in d for d in details_during_second_phase)
+
+
+def test_download_plan_of_one_phase_still_claims_the_whole_download(base, monkeypatch):
+    """A single-repo runner that adopts `download_plan` gets `total_scope`
+    correct without any special-casing — one phase is trivially the whole
+    download, and the detail carries no "(1 of 1)" clutter nobody asked for."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 4_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 4_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert ticks[-1]["total_scope"] == "download"
+    assert all("of 1" not in t.get("detail", "") for t in ticks)
+
+
+def test_download_plan_of_no_phases_is_a_no_op(base, monkeypatch):
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: pytest.fail("nothing to report"))
+    assert base.download_plan([]) == []
+
+
+def test_download_plan_prices_an_already_cached_phase_with_NO_network(base, monkeypatch):
+    """Code review: pricing every phase up front via a bare `repo_total_bytes`
+    call meant an LTX bring-up with `mlx-community/gemma-3-12b-it-4bit`
+    already cached contacted the Hub anyway, purely to price a phase that
+    needed no network at all — silently defeating `download_snapshot`'s own
+    "no metadata call" fast path (AI-5l) one level up."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/w"
+                        if model_id == "weights/repo" else "/g")
+    monkeypatch.setattr(base, "bytes_on_disk",
+                        lambda folder: 19_100_000_000 if folder == "/w" else 8_070_000_000)
+    # "gemma/repo" is already fully cached; "weights/repo" is not.
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None:
+                        "/g/snapshots/c0ffee" if model_id == "gemma/repo" else None)
+    priced_over_network = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced_over_network.append(model_id) or 19_100_000_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("weights/repo", None, None), ("gemma/repo", None, None)])
+
+    # Only the NOT-already-cached phase paid for a listing.
+    assert priced_over_network == ["weights/repo"]
+
+
+def test_download_plan_prices_every_uncached_phase_over_the_network(base, monkeypatch):
+    """The inverse: nothing here should ever price the WRONG phase, or skip a
+    phase that genuinely needs the network to answer."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    priced = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced.append(model_id) or 1_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("a", None, None), ("b", None, None)])
+
+    assert priced == ["a", "b"]
+
+
+def test_download_plans_ticker_join_uses_the_job_timeout_bound(base, monkeypatch):
+    """Code review: `ticker.join(timeout=2.0)` was SHORTER than
+    `JOB_TIMEOUT_S` (3.0) — the socket timeout a beat's own `report` POST can
+    still be waiting on — so a beat that entered its POST just before the
+    plan finished could still be in flight when the join gave up, and land
+    AFTER the function returned. `heartbeat()` already guards this with
+    `JOB_TIMEOUT_S + 1.0`; this asserts `download_plan` joins on the same
+    bound rather than its own shorter one."""
+    import threading
+
+    joins = []
+    real_join = threading.Thread.join
+
+    def spy_join(self, timeout=None):
+        if self.name == "download-plan":
+            joins.append(timeout)
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", spy_join)
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert joins == [base.JOB_TIMEOUT_S + 1.0]
+
+
+def test_a_failed_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    """Code review: the closing tick used to run in a `finally`, so a phase
+    that raised (a network failure) was followed by a tick claiming
+    `done=<the grand total>` — a finished-download shape for a download that
+    did not finish."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def boom(model_id, allow_patterns=None, ignore_patterns=None):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(base, "download_snapshot", boom)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks), (
+        "a failed phase must not be followed by a tick landing on the total")
+
+
+def test_a_cancelled_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def cancelled(model_id, allow_patterns=None, ignore_patterns=None):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "download_snapshot", cancelled)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(base.Cancelled):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks)
+
 
 # -- the cached path does not touch the network ---------------------------------
 #

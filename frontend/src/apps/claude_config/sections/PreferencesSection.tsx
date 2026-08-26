@@ -208,21 +208,46 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                 control={
                   <>
                     {isSet ? (
+                      // A ghost icon button, not a bare word floating mid-row —
+                      // and rendered ONLY once the value actually differs from
+                      // the default, so it never sits beside a control that
+                      // has nothing to reset.
                       <button
                         type="button"
-                        className="cc-reset"
+                        className="cc-iconbtn cc-reset"
                         title="Reset to default"
+                        aria-label={`Reset ${d.label} to default`}
                         onClick={() => patch(d.key, null)}
                       >
-                        reset
+                        <Icon name="undo" />
                       </button>
                     ) : (
-                      // Stays for every unset key, toggles included: once a
-                      // toggle can sit at Claude's default position, THIS is
-                      // what distinguishes an inherited value from a chosen
-                      // one in words rather than in styling alone.
-                      <span className="cc-unset">
-                        {d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                      // Column 1's other state: a quiet hint rather than
+                      // inline text, so the fact ("Claude default", or the
+                      // documented default value — unbounded in length) can't
+                      // ellipsize into something that reads as a truncated
+                      // VALUE. Carried as a tooltip instead; the same fact is
+                      // also stated by the control itself (a toggle sits at
+                      // its default position, a select/scalar shows it as its
+                      // own placeholder/option text), so this is a redundant
+                      // second channel, not the only one.
+                      <span
+                        className="cc-row-hint"
+                        title={d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                        // A select already restates this as its own selected
+                        // option text and a scalar as its own placeholder, so
+                        // the hint is a redundant second channel there and can
+                        // stay decorative. A toggle has NO such text — its
+                        // "inherited" state is a dashed border and nothing
+                        // else — so for that control the fact belongs to
+                        // screen readers and keyboard users too, not only to
+                        // a mouse hovering the tooltip.
+                        aria-hidden={d.control === "toggle" ? undefined : true}
+                      >
+                        <Icon name="info" />
+                        {d.control === "toggle" && (
+                          <span className="sr-only">{toggleUnsetLabel(d)}</span>
+                        )}
                       </span>
                     )}
                     {d.control === "toggle" && (

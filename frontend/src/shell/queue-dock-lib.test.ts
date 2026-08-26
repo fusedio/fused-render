@@ -52,6 +52,7 @@ const job = (over: Partial<Job> = {}): Job =>
     state: "running",
     done: null,
     total: null,
+    total_scope: "phase",
     unit: "",
     message: "",
     page: "",

@@ -10,7 +10,7 @@ const LABEL_MAX = 60;
 
 export function eventLabel(e: ScheduleEvent): string {
   const first = (e.message || "").trim().split("\n")[0];
-  if (!first) return "Scheduled message";
+  if (!first) return e.immediate ? "Task" : "Scheduled message";
   return first.length > LABEL_MAX ? `${first.slice(0, LABEL_MAX - 1)}…` : first;
 }
 
@@ -27,12 +27,21 @@ export interface ScheduleToast {
 
 export function toastForEvent(e: ScheduleEvent): ScheduleToast {
   const label = eventLabel(e);
+  // An IMMEDIATE entry is a task the user ran (a New task with the when-row
+  // untouched, a new app's scaffolding turn), not one they scheduled — so the
+  // noun is "task" and the verb is about finishing, not about a schedule
+  // having been honoured. Everything else about the toast is the same.
+  const noun = e.immediate ? "Task" : "Scheduled message";
   if (e.kind === "done") {
-    return { msg: `Scheduled message ran: ${label}`, tone: "info", needsAttention: false };
+    return {
+      msg: e.immediate ? `Task finished: ${label}` : `Scheduled message ran: ${label}`,
+      tone: "info",
+      needsAttention: false,
+    };
   }
   // `missed` is not an app failure — nothing went wrong, the app just wasn't
   // running inside the catch-up window — but the user asked for something that
   // did not happen, so it is not an info either.
   const verb = e.kind === "missed" ? "was missed" : "failed";
-  return { msg: `Scheduled message ${verb}: ${label}`, tone: "error", needsAttention: true };
+  return { msg: `${noun} ${verb}: ${label}`, tone: "error", needsAttention: true };
 }

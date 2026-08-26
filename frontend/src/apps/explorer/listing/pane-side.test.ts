@@ -7,6 +7,7 @@ import {
   PANE_SIDE_OFF,
   activePaneSide,
   paneKey,
+  paneReopenedByUrl,
   paneSideIconEntry,
   paneSideList,
   paneSideMenu,
@@ -75,6 +76,47 @@ describe("parsePaneSide", () => {
     expect(parsePaneSide("notes")).toEqual({ open: true, mode: null });
     expect(parsePaneSide("graph")).toEqual({ open: true, mode: null });
     expect(parsePaneSide("")).toEqual({ open: true, mode: null });
+  });
+});
+
+// THE SESSION'S HIDDEN FLAG (`lib/side-hidden-store.ts`), the folder half of the
+// same rule `preview-side.test.ts` pins for the file view. `hidden` is a plain
+// parameter, not a store import — Listing.tsx is what reads the store.
+describe("parsePaneSide with the session's hidden flag", () => {
+  test("defaults to false, so every call above still opens", () => {
+    expect(parsePaneSide(null)).toEqual({ open: true, mode: null });
+  });
+
+  test("keeps a silent `_side` shut when the flag is set", () => {
+    expect(parsePaneSide(null, true)).toEqual({ open: false, mode: null });
+    // An unknown value is silent too — it already fell back to "no choice"
+    // above, so it falls the rest of the way to "shut" under the flag.
+    expect(parsePaneSide("notes", true)).toEqual({ open: false, mode: null });
+    expect(parsePaneSide("", true)).toEqual({ open: false, mode: null });
+  });
+
+  test("lets an explicit `_side` win over the flag, either direction", () => {
+    expect(parsePaneSide("git", true)).toEqual({ open: true, mode: "git" });
+    expect(parsePaneSide(PANE_SIDE_OFF, true)).toEqual({ open: false, mode: null });
+    expect(parsePaneSide(PANE_SIDE_OFF, false)).toEqual({ open: false, mode: null });
+  });
+});
+
+// The folder half of `preview-side.test.ts`'s `sideReopenedByUrl` suite — the
+// D495 correction that a deep link opening the pane over a stale hidden flag
+// must clear that flag too, or the next silent-URL hop shuts the pane again.
+describe("paneReopenedByUrl", () => {
+  test("yes only when the flag was set but the resolved state opened", () => {
+    expect(paneReopenedByUrl(true, { open: true, mode: "git" })).toBe(true);
+    expect(paneReopenedByUrl(true, { open: true, mode: null })).toBe(true);
+  });
+
+  test("no when the flag was never set", () => {
+    expect(paneReopenedByUrl(false, { open: true, mode: null })).toBe(false);
+  });
+
+  test("no when the flag closed the state too", () => {
+    expect(paneReopenedByUrl(true, { open: false, mode: null })).toBe(false);
   });
 });
 

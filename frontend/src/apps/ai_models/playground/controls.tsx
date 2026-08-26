@@ -181,7 +181,13 @@ export function CopyButton({ text, label }: { text: string; label: string }) {
 
 /** One continuous parameter: label row (name, live value, reset), slider,
  *  hint. The number is editable — research note: sliders alone hide the range
- *  and playgrounds pair them with a numeric input. */
+ *  and playgrounds pair them with a numeric input.
+ *
+ *  The input holds a DRAFT string and commits on blur or Enter. Clamping on
+ *  every keystroke made the box untypeable: "1" on the way to "1024" was
+ *  clamped to the 256 floor before the next digit landed, and clearing the box
+ *  read as 0. A caller that derives one value from another (the image stage's
+ *  ratio lock) also wants one commit per edit, not one per digit. */
 export function RailSlider({
   label,
   hint,
@@ -202,6 +208,27 @@ export function RailSlider({
   onChange: (value: number) => void;
 }) {
   const moved = value !== fallback;
+  const [draft, setDraft] = useState(String(value));
+  // A chip, a slider drag or a reset changed the value from outside the box.
+  useEffect(() => {
+    setDraft(String(value));
+  }, [value]);
+  const commit = () => {
+    const next = Number(draft);
+    if (draft.trim() === "" || !Number.isFinite(next)) {
+      setDraft(String(value));
+      return;
+    }
+    // Onto the rail's grid, then inside its bounds — a typed 500 on a step of
+    // 16 becomes 496, the same number the slider could have produced, so a
+    // value derived from it (the image stage's other side) stays on-grid too.
+    // The rounding keeps 0.1 steps from committing 0.30000000000000004.
+    const decimals = (String(step).split(".")[1] ?? "").length;
+    const stepped = Number((Math.round((next - min) / step) * step + min).toFixed(decimals));
+    const clamped = Math.min(max, Math.max(min, stepped));
+    setDraft(String(clamped));
+    if (clamped !== value) onChange(clamped);
+  };
   return (
     <Field className="gap-1.5">
       <div className="flex w-full items-center gap-2">
@@ -217,10 +244,14 @@ export function RailSlider({
           min={min}
           max={max}
           step={step}
-          value={value}
-          onChange={(e) => {
-            const next = Number(e.target.value);
-            if (Number.isFinite(next)) onChange(Math.min(max, Math.max(min, next)));
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            }
           }}
         />
       </div>

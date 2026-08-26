@@ -214,6 +214,14 @@ export const marketplaces = {
 
 // -- memory -------------------------------------------------------------------
 
+// A memory FILE within a project — round 2's unit for this tab. `description`
+// is the file's own YAML frontmatter `description:` value; null when the
+// file has none, or it didn't parse (never guessed at from content).
+export interface MemoryFile {
+  name: string;
+  description: string | null;
+}
+
 export interface MemoryProject {
   // The projects/ directory name — a munged cwd. Still the IDENTIFIER every
   // other memory action is keyed on (the server path-guards on it), which is
@@ -224,7 +232,7 @@ export interface MemoryProject {
   // The munge is lossy, so a null here means "we refuse to guess", not "none".
   path: string | null;
   pathConfirmed: boolean;
-  files: string[];
+  files: MemoryFile[];
   changes: FileDelta[];
 }
 
@@ -235,32 +243,6 @@ export const memory = {
     callModule<OkResult & { committed?: string | null }>("memory", { action: "commit", project }),
   clear: (project: string) =>
     callModule<OkResult & { committed?: string | null }>("memory", { action: "clear", project }),
-};
-
-// -- claude_md ----------------------------------------------------------------
-
-export interface ClaudeMdFile {
-  path: string;
-  dir: string;
-  name: string;
-  size: number;
-  // Epoch SECONDS (os.stat st_mtime), not milliseconds.
-  mtime: number;
-  empty: boolean;
-  scope: "global" | "project" | "disk";
-  // First few lines of the file (char-capped server-side) for the card preview.
-  snippet: string;
-}
-
-export const claudeMd = {
-  list: () => callModule<{ files: ClaudeMdFile[]; engine: string }>("claude_md", { action: "list" }),
-  open: (path: string) => callModule<OkResult>("claude_md", { action: "open", path }),
-  remove: (path: string) =>
-    callModule<OkResult & { committed?: string | null }>("claude_md", { action: "delete", path }),
-  // Fold a just-saved edit into the config repo's history; a no-op for files
-  // outside ~/.claude (committed: null).
-  commit: (path: string) =>
-    callModule<OkResult & { committed?: string | null }>("claude_md", { action: "commit", path }),
 };
 
 // -- skills -------------------------------------------------------------------

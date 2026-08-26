@@ -348,7 +348,7 @@ def project_root_for(path: str) -> str | None:
 
         # A folder at or below the app dir, on the path up from `start`, may
         # declare its own environment — a project nested inside the app's
-        # folder (SPEC D499's background-app case: the app dir itself is
+        # folder (SPEC D503's background-app case: the app dir itself is
         # capped at exactly two levels under fused_dir(), but a real project
         # can live deeper). When one does, it is the real boundary, not the
         # app dir. Several qualifying folders on the way up follow the same

@@ -1908,21 +1908,23 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   );
 }
 
-// Scaffold a new app folder and (optionally) kick off a Claude session seeded
-// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
-// thrown HttpError's message for inline display.
+// Scaffold a new app folder and (optionally) create ONE task on its index.html
+// carrying `prompt`, due now — the New task form's own path, so the app's
+// Tasks tab lists it and the scheduler spawns the session. 409 = name
+// collision, 400 = bad name — both surface via the thrown HttpError's message
+// for inline display.
 export interface NewAppResult {
   path: string;
   entry_html: string;
-  // Whether a Claude session was actually kicked off for the prompt.
-  session_started: boolean;
-  // The live run, for attaching to the session that was just started; null
-  // when no prompt was given or the spawn failed.
-  run_id: string | null;
-  // Why the session did not start (claude CLI missing, spawn failure). The
-  // app itself was created either way — surface this so a prompt that went
-  // nowhere isn't silent. Null when it started, or when there was no prompt.
-  session_error: string | null;
+  // The scheduled entry carrying the prompt (the shape GET /api/schedule
+  // lists); null when no prompt was given or the task could not be stored.
+  // Whether the session then started is the entry's own story, read where
+  // every task's is — this call does not wait for the spawn.
+  task: ScheduledMessage | null;
+  // Why the task was not created. The app itself was created either way —
+  // surface this so a prompt that went nowhere isn't silent. Null when it was
+  // created, or when there was no prompt.
+  task_error: string | null;
 }
 
 // `model`/`effort` are the hero composer's pickers — short model names
@@ -2734,6 +2736,27 @@ export function getAiRuntime(): Promise<AiRuntime> {
   return getJson<AiRuntime>("/api/ai/runtime");
 }
 
+/** Will this model sit comfortably on THIS machine — the server's judgement,
+ *  widened from a bare verdict string to an object (SPEC AI-16, AI-16c, D497)
+ *  so the page can tell a MEASURED answer apart from a guess. `basis`:
+ *
+ *  - "measured" — this model actually RAN here, and `footprintBytes` is what
+ *    it cost at its peak (`fused_render/ai/footprints.py`). Worded on the
+ *    page as a FACT ("Ran here, tight (28 GB)"), never as a hedge.
+ *  - "declared" — a curator's optional `resident_gb` estimate.
+ *  - "download" — nothing better is known; `footprintBytes` is the download's
+ *    own `size_gb`, exactly what `fit` meant before this shape existed.
+ *
+ *  `footprintBytes` is the figure the verdict was judged against, in bytes —
+ *  not necessarily `size_gb` scaled, since a "measured" or "declared" figure
+ *  can differ from the download entirely (LTX-2.3's `low_memory=True` peak is
+ *  one stage of a two-repo download). */
+export interface AiFitVerdict {
+  verdict: "easy" | "tight" | "no";
+  basis: "measured" | "declared" | "download";
+  footprintBytes: number;
+}
+
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
  *  the server's catalog is the curation, and what is on this disk is the cache
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
@@ -2776,14 +2799,21 @@ export interface AiCatalogModel {
    *  cached entries and on models nobody has measured; the consumer keeps the
    *  server's default then. */
   defaults?: { steps?: number } | null;
-  /** Will this model sit comfortably on THIS machine — the server's judgement
-   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
-   *  when either half is unknown. A judgement, not a measurement; the page
-   *  words it as one. */
-  fit?: "easy" | "tight" | "no" | null;
+  /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
+   *  Null when nothing is known at all (no size, no measurement, no curator
+   *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
+   *  follows. */
+  fit?: AiFitVerdict | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
+  /** A curator's optional estimate of this model's RESIDENT footprint in GB —
+   *  additive, in the shape `recommended`/`acceptsImage` already established
+   *  (SPEC AI-11i/AI-11j): a curator MAY answer, and absence falls through
+   *  `fit`'s ladder to `size_gb` rather than meaning anything. Never present
+   *  on a cached entry — nobody has curated a repo the user found themselves,
+   *  same reason `note` is null there. */
+  resident_gb?: number | null;
   /** Why you would or would not pick this one. Null on a CACHED entry: nobody
    *  wrote a note for a repo the user found themselves, and null says so where
    *  prose generated from a repo id would claim otherwise. */
@@ -3504,6 +3534,10 @@ export interface ScheduleEvent {
   // the user hunting, and the first words of what they asked for identify it.
   message: string;
   detail: string;
+  // The entry was RUN, not scheduled — a New task with its when-row untouched,
+  // or a new app's scaffolding task. Absent on an older server: read as false,
+  // which is the "scheduled" wording that was the only one before.
+  immediate?: boolean;
   ts: number;
 }
 
