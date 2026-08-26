@@ -178,13 +178,41 @@ export default function ClaudeConfig() {
 
   return (
     <div className="cc-root">
+      {/* Header band: the page name, and the one thing this page always states
+          — the git chip. It replaces the old tab strip's History button, which
+          is what fixed the tab strip clipping its last label: History is repo-
+          global state, not a section, so it belongs in the header rather than
+          fighting the tabs for room. */}
+      <div className="cc-header">
+        <span className="cc-header-title">Claude Config</span>
+        <button
+          type="button"
+          aria-current={active === HISTORY.id ? "page" : undefined}
+          className={
+            "cc-gitchip" +
+            (status?.dirty ? " dirty" : "") +
+            (active === HISTORY.id ? " active" : "")
+          }
+          title={
+            status?.dirty
+              ? `${status.files.length} uncommitted change(s) — review and commit them in History`
+              : "Commits, profiles and uncommitted changes"
+          }
+          onClick={() => setActive(HISTORY.id)}
+        >
+          <span className="cc-gitchip-dot" aria-hidden="true" />
+          {status?.dirty ? `${status.files.length} uncommitted` : "Clean"}
+          <Icon name="clock" />
+        </button>
+      </div>
       <div className="cc-tabbar">
         {/* The tablist holds the TABS and nothing else — History is not one of
-            them, so it sits outside as a plain button with aria-current. A
-            tablist whose children aren't all tabs mis-announces the set's size
-            and position ("tab 9 of 9" for a thing that isn't a tab). Keeping it
-            out also means the strip can scroll sideways while History stays
-            pinned at the edge, which is the behaviour it wants anyway. */}
+            them, so it sits in the header instead. A tablist whose children
+            aren't all tabs mis-announces the set's size and position ("tab 9 of
+            9" for a thing that isn't a tab), and previously the strip's own
+            edge-pinned History button was what clipped the last tab's label
+            under it at a narrow width. The strip now scrolls sideways under a
+            fade mask with nothing else sharing its row to collide with. */}
         <div className="cc-tablist" role="tablist" aria-label="Claude config sections">
           {TABS.map((s) => (
             <button
@@ -199,24 +227,6 @@ export default function ClaudeConfig() {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          aria-current={active === HISTORY.id ? "page" : undefined}
-          className={"cc-tab cc-tab-history" + (active === HISTORY.id ? " active" : "")}
-          title={
-            status?.dirty
-              ? `${status.files.length} uncommitted change(s) — review and commit them here`
-              : "Commits, profiles and uncommitted changes"
-          }
-          onClick={() => setActive(HISTORY.id)}
-        >
-          <Icon name="clock" />
-          {HISTORY.label}
-          {/* The badge that used to sit at the nav's bottom edge, reduced to its
-              signal: on any tab you still learn the repo has drifted, and the
-              page that does something about it is one click away. */}
-          {status?.dirty && <span className="cc-tab-dot" aria-label="uncommitted changes" />}
-        </button>
       </div>
       <div className="cc-body">
         <main className="cc-main">
