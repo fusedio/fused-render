@@ -179,6 +179,7 @@
 
   /* ---------- hero ---------- */
   .hero { padding: clamp(30px, 5vw, 60px) 0 0; }
+  html.anim .hero { padding-top: 0; }
   h1 {
     font-size: clamp(2rem, 4.2vw, 4rem);
     line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
@@ -191,8 +192,11 @@
      lifts away; then the section releases and scrolls off normally. */
   @media (min-width: 861px) {
     html.anim .hero-scroll { height: 175vh; }
+    /* The stage hugs its content: a 100vh pin left dead bands above and
+       below the 16:9 video once it expanded. */
     html.anim .hero-stage {
-      position: sticky; top: 0; height: 100vh;
+      position: sticky; top: 0;
+      padding: clamp(16px, 3vh, 40px) 0;
     }
     html.anim .hero-left { will-change: transform, opacity; }
     html.anim .hero-media { will-change: transform; }
