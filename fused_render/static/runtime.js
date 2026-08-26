@@ -7,6 +7,27 @@
  *     stale slider scrubs with no author effort. opts.key regroups the channel;
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
+ *   fused.app.status() / enable() / disable() / stop() / restart() -> Promise
+ *     Control surface for a FOLDER's declared background daemon
+ *     (server/routers/background_apps.py), not this page's own script — a
+ *     folder opts in with a `[tool.fused-render.app]` manifest in its
+ *     `pyproject.toml` naming a `daemon` file. Every method sends this page's
+ *     own path so the server resolves which app folder it belongs to; none
+ *     take a folder path. `status()` resolves {enabled, running, pid,
+ *     version, engine_id}. `enable()` persists the app as "keep this
+ *     running" and starts it (409 if its project venv isn't built yet — open
+ *     the page once, or `fused.runPython`, to install it first). `stop()`
+ *     kills the running daemon WITHOUT disabling it, so the server's startup
+ *     resurrection hook (or a later enable()/restart()) brings it back;
+ *     `disable()` kills it AND turns it off, so it stays down across
+ *     restarts too. `restart()` respawns the currently-enabled daemon.
+ *   fused.app.call(path, body?) -> Promise<any>
+ *     Reach the running daemon directly, proxied through the same
+ *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
+ *     already rides. Resolves the engine_id from a cached status() first
+ *     (calling status() itself if none is cached yet) — rejects if the app
+ *     was never enabled. Local-only, like the rest of fused.app — not
+ *     available on hosted/exported pages (see the file header below).
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
@@ -2141,6 +2162,108 @@
       forget: () => engineForget(pyPath),
     };
   }
+
+  // ---- background apps (fused.app, server/routers/background_apps.py) ------
+  // fused.app is the browser control surface for a FOLDER's declared
+  // long-running daemon, not this page's own script — every method sends the
+  // page's own path as `html` (same derivation as fused.engine above), and the
+  // server resolves which app folder that page belongs to, exactly like
+  // resolve_py does for runPython/fused.engine. `call` is the one that reaches
+  // the daemon itself: it proxies through the SAME stable-origin
+  // /api/engines/<id>/proxy path a template daemon's traffic already rides
+  // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
+  // call cached — a page never computes that id itself.
+  //
+  // `stop` and `disable` are deliberately different: `stop` kills the running
+  // daemon but leaves it enabled, so the server's startup hook (or a later
+  // `enable`/`restart`) brings it back; `disable` kills it AND turns it off,
+  // so it stays down across restarts too.
+  let _appEngineId = null;
+
+  function _appPost(path) {
+    return fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify({ html: ownQuery("path") }),
+    }).then((res) =>
+      res.json().then((data) => {
+        if (data && data.engine_id) _appEngineId = data.engine_id;
+        if (!res.ok) {
+          const err = new Error((data && data.error) || `${path} failed`);
+          throw err;
+        }
+        return data;
+      })
+    );
+  }
+
+  function appStatus() {
+    const html = encodeURIComponent(ownQuery("path") || "");
+    return fetch(`/api/apps/background/status?html=${html}`).then((res) =>
+      res.json().then((data) => {
+        if (data && data.engine_id) _appEngineId = data.engine_id;
+        if (!res.ok) {
+          const err = new Error((data && data.error) || "app status failed");
+          throw err;
+        }
+        return data;
+      })
+    );
+  }
+
+  function appEnable() {
+    return _appPost("/api/apps/background/enable");
+  }
+
+  function appDisable() {
+    return _appPost("/api/apps/background/disable");
+  }
+
+  function appStop() {
+    return _appPost("/api/apps/background/stop");
+  }
+
+  function appRestart() {
+    return _appPost("/api/apps/background/restart");
+  }
+
+  function appCall(path, body) {
+    const doCall = () =>
+      fetch(`/api/engines/${_appEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
+        method: "POST",
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+        body: JSON.stringify(body || {}),
+      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
+
+    // The engine_id is a hash of the folder, not something a page computes
+    // itself — status() populates it the first time call() is used before an
+    // explicit status()/enable().
+    const ready = _appEngineId ? Promise.resolve() : appStatus();
+    return ready.then(() => {
+      if (!_appEngineId) {
+        return Promise.reject(
+          new Error("fused.app.call: no running background app for this page " +
+                    "(call enable() first)")
+        );
+      }
+      return doCall().then(({ data, httpOk }) => {
+        if (!httpOk) {
+          const err = new Error((data && data.error) || "fused.app.call failed");
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  const app = {
+    status: appStatus,
+    enable: appEnable,
+    disable: appDisable,
+    stop: appStop,
+    restart: appRestart,
+    call: appCall,
+  };
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
   // src, "open raw" links, etc. A RELATIVE path is resolved page-relative
@@ -4401,6 +4524,7 @@
     env: "local",
     runPython,
     engine,
+    app,
     rawUrl,
     stat,
     readFile,
