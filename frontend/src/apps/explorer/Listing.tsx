@@ -72,12 +72,14 @@ import { usePreviewPane } from "@apps/explorer/listing/pane";
 import {
   activePaneSide,
   paneKey,
+  paneReopenedByUrl,
   paneSideList,
   paneSideParam,
   parsePaneSide,
   type PaneSideChoice,
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
+import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
@@ -301,8 +303,26 @@ export default function Listing({
   // not; and because the reopening half of the affordance has to render while
   // the pane does not exist at all (see the search row below).
   const [sideState, setSideState] = useState<PaneSideState>(() =>
-    parsePaneSide(paneEnabled ? new URLSearchParams(location.search).get("_side") : null)
+    parsePaneSide(
+      paneEnabled ? new URLSearchParams(location.search).get("_side") : null,
+      getSideHidden()
+    )
   );
+  // The folder half of the same D495 reconciliation Preview.tsx does for the
+  // file view — the pure rule is `paneReopenedByUrl` (listing/pane-side.ts).
+  // `paneEnabled` guards it the same way `setSide` below is guarded: a
+  // snapshot or panel pane never reads the real `_side` param in the first
+  // place (see the `parsePaneSide` call above), so it can never hit the
+  // explicit branch and has nothing to reconcile.
+  useEffect(() => {
+    if (paneEnabled && paneReopenedByUrl(getSideHidden(), sideState)) {
+      setSideHidden(false);
+    }
+    // Mount only: reconciles the flag against what the URL asked for when
+    // this folder opened, not on every render — `setSide` keeps it current
+    // from here on.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Both companions' entries come from the OPEN FOLDER, resolved through the
   // ordinary stat + condition machinery (lib/dir-mode — which caches per
   // directory, so this is one probe for the folder rather than one per selection).
@@ -350,9 +370,15 @@ export default function Listing({
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
   // shell handed a column by something else (`paneEnabled` above), and neither
   // owns the address bar it happens to be inside of.
+  //
+  // Same gate on the session's hidden flag (`lib/side-hidden-store.ts`): a
+  // snapshot or panel pane is not the addressable folder view either, so a close
+  // inside one must not shut every OTHER open folder/file's sidebar for the rest
+  // of the session.
   const setSide = (next: PaneSideState) => {
     setSideState(next);
     if (!paneEnabled) return;
+    setSideHidden(!next.open);
     const params = new URLSearchParams(location.search);
     const v = paneSideParam(next);
     if (v === null) params.delete("_side");

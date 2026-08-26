@@ -99,6 +99,15 @@ export interface PaneSideState {
 // all land here.
 const OPEN_UNCHOSEN: PaneSideState = { open: true, mode: null };
 
+// The folder-view half of `lib/preview-side.ts`'s `unchosenOrHidden` — same
+// rule, same store (`lib/side-hidden-store.ts`), same reason it is a function
+// and not a constant: only a SILENT `_side` may fall to the session's hidden
+// flag, never an explicit one (`off`, a named companion, or the garbage/legacy
+// values that already resolve to "no choice" below).
+function unchosenOrHidden(hidden: boolean): PaneSideState {
+  return hidden ? { open: false, mode: null } : OPEN_UNCHOSEN;
+}
+
 function isPaneSideChoice(v: string): v is PaneSideChoice {
   return (PANE_SIDE_COMPANIONS as readonly string[]).includes(v);
 }
@@ -142,10 +151,15 @@ function isPaneSideChoice(v: string): v is PaneSideChoice {
 // values now** — it names a state the pane can only fall into, so a hand-typed or
 // carried-in one is refused here rather than resolving to the fallback and pinning
 // the pane to a hint.
-export function parsePaneSide(raw: string | null): PaneSideState {
-  if (raw === null) return OPEN_UNCHOSEN;
+// `hidden` defaults false so every existing call keeps behaving exactly as
+// before; Listing.tsx's mount passes `getSideHidden()` from
+// `lib/side-hidden-store.ts` explicitly.
+export function parsePaneSide(raw: string | null, hidden = false): PaneSideState {
+  if (raw === null) return unchosenOrHidden(hidden);
   if (raw === PANE_SIDE_OFF) return { open: false, mode: null };
-  return raw !== "" && isPaneSideChoice(raw) ? { open: true, mode: raw } : OPEN_UNCHOSEN;
+  return raw !== "" && isPaneSideChoice(raw)
+    ? { open: true, mode: raw }
+    : unchosenOrHidden(hidden);
 }
 
 // What to write back — null means DELETE the param.
@@ -375,6 +389,19 @@ export function paneSideIconEntry(
 export function activePaneSide(offered: PaneSide[], want: PaneSideChoice | null): PaneSide {
   if (want !== null && offered.includes(want)) return want;
   return offered[0] ?? PANE_SIDE_FALLBACK;
+}
+
+// The folder half of `lib/preview-side.ts`'s `sideReopenedByUrl` — same D495
+// correction, same reasoning: a `?_side=<companion>` deep link that OPENS the
+// pane wins over the session's hidden flag (`parsePaneSide`'s explicit branch
+// never consults `hidden`), and that observable "the pane is open" has to
+// clear the flag too, or the very next silent-URL hop shuts it again. `hidden`
+// is the flag's value from BEFORE this mount; the answer is yes only when the
+// flag was set yet the already-RESOLVED state nonetheless opened — which, per
+// `unchosenOrHidden` above, can only happen when an explicit `_side` won over
+// it.
+export function paneReopenedByUrl(hidden: boolean, state: PaneSideState): boolean {
+  return hidden && state.open;
 }
 
 // WHAT THE PANE IS ABOUT, as a React key. Every mode's subject is the OPEN

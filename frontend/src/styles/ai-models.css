@@ -397,15 +397,44 @@
   padding-bottom: 6px;
 }
 
-/* The same bar the Kanban board's lanes wear (schedule.css, its "one decision
+/* Same family as the Kanban board's lanes (schedule.css, its "one decision
    about one kind of furniture" block) — copied rather than joined to that
    selector list only because this bar is HORIZONTAL: `height` here is `width`
-   there, and one axis-mixed rule would be wrong in both files. The recipe is
-   the point: transparent track, a padding-box thumb whose 3px transparent
-   border is the breathing room, quiet at rest and only firmer under the
-   pointer. */
+   there, and one axis-mixed rule would be wrong in both files.
+
+   `::-webkit-scrollbar-*` ONLY, deliberately not paired with the standard
+   `scrollbar-width`/`scrollbar-color` properties this rule briefly carried:
+   this app never renders in a Firefox-family engine at all — the desktop
+   shell is a native macOS WKWebView (`fused_render/menubar_pin.py` imports
+   `WKWebView` straight from the `WebKit` framework) — so the parity those
+   properties would buy is parity with a browser that never runs this page.
+   What they DO cost is real: per spec, a UA that supports the standard
+   properties at all is expected to let a non-`auto` value on either one
+   suppress its `::-webkit-scrollbar-*` rendering for that element, which is
+   exactly the fate schedule.css's own header warns a `::-webkit-scrollbar`
+   rule exists to dodge — the whole reason schedule.css reaches for this
+   pseudo-element in the first place is that STYLING it is what opts a lane
+   out of macOS's overlay scrollbars (a bare `scrollbar-gutter: stable` gets a
+   zero gutter from an overlay bar by spec). Carrying both mechanisms risked
+   quietly losing that opt-out — and with it the `padding-bottom: 6px` above,
+   reserved for a bar that would no longer draw in its own space — the moment
+   either engine's `scrollbar-width` support caught up. One mechanism, so
+   there is nothing left to go stale.
+
+   Quieter than the Kanban recipe on purpose: this row already SAYS it
+   scrolls with its own prev/next arrows (rendered whenever there is overflow
+   in that direction, not hover-gated — see Carousel.tsx), so the
+   scrollbar's only job left is the drag handle, not the announcement. It
+   stays fully transparent at rest and only draws a thin thumb on
+   hover/focus, which also keeps macOS "always show scrollbars" from turning
+   it into a permanent dark stripe under every row — that setting still
+   paints track+thumb at rest, but a transparent thumb paints nothing.
+   `scrollbar-width: none` (or its `::-webkit-scrollbar { display: none }`
+   equivalent) was ruled out for the same reason a standard-property mix was:
+   it would remove the drag handle for anyone without a trackpad or scroll
+   wheel, on the one engine that renders this page. */
 .am-carousel::-webkit-scrollbar {
-  height: 10px;
+  height: 6px;
 }
 
 .am-carousel::-webkit-scrollbar-track {
@@ -413,14 +442,21 @@
 }
 
 .am-carousel::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--fg-muted) 26%, transparent);
+  background: transparent;
   background-clip: padding-box;
-  border: 3px solid transparent;
+  border: 2px solid transparent;
   border-radius: 999px;
 }
 
+.am-carousel:hover::-webkit-scrollbar-thumb,
+.am-carousel:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
 .am-carousel::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--fg-muted) 48%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 55%, transparent);
   background-clip: padding-box;
 }
 
