@@ -45,9 +45,9 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import {
   appPageUrl,
+  appPathFromPath,
   DEFAULT_APP_PAGE_TAB,
   isBareAppPath,
-  slugFromAppPath,
 } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
@@ -596,13 +596,13 @@ export default function App({ config }: { config: Config }) {
       AI_MODELS_PREFIX + "/" + DEFAULT_TAB + location.search,
     );
   }
-  // The app page names its tabs in the path the same way; bare `/apps/<slug>`
+  // The app page names its tabs in the path the same way; bare `/apps/<folder>`
   // redirects to the default tab so every tab has exactly one address.
   if (isBareAppPath(location.pathname)) {
     history.replaceState(
       null,
       "",
-      appPageUrl(slugFromAppPath(location.pathname)!, DEFAULT_APP_PAGE_TAB) +
+      appPageUrl(appPathFromPath(location.pathname)!, DEFAULT_APP_PAGE_TAB) +
         location.search,
     );
   }
@@ -649,14 +649,15 @@ export default function App({ config }: { config: Config }) {
   // carries with no lookup at all. That two-level shape still falls through to
   // the "Unrecognized URL" branch below, deliberately unredirected.
   //
-  // ONE level under the hub is the app PAGE (D488, shell/AppPage.tsx):
-  // `/apps/<slug>` is <fused_dir>/local/<slug> as a place — the app running in
-  // an Overview tab, its tasks in a Tasks tab, one sub-path each
-  // (`/apps/<slug>/tasks`). Asked through the lib's own codec, which is also
-  // the validation (no `..`, no separator in the slug, at most one tab
-  // segment). A stale `/apps/<tag>/<name>` builder link lands here on the
-  // default tab.
-  const appPageSlug = slugFromAppPath(pathname);
+  // Everything under the hub is the app PAGE (D488, shell/AppPage.tsx):
+  // `/apps/<folder path>/<tab>` is one app folder — anywhere on disk the
+  // Current apps desk can name — as a place: the app running in an Overview
+  // tab, its tasks in a Tasks tab, its files in a Files tab, one sub-path each.
+  // Asked through the lib's own codec, which is also the validation (no `.`
+  // or `..` segment, a rooted folder). A stale `/apps/<tag>/<name>` builder
+  // link decodes as a folder that is not there and lands on the page's
+  // "missing" banner.
+  const appPagePath = appPathFromPath(pathname);
   const isSentinel =
     isPanel ||
     isTabs ||
@@ -666,7 +667,7 @@ export default function App({ config }: { config: Config }) {
     isTasks ||
     isAiModels ||
     isApps ||
-    appPageSlug !== null ||
+    appPagePath !== null ||
     isExplorerHome ||
     isHome ||
     isClaudeConfig ||
@@ -697,8 +698,8 @@ export default function App({ config }: { config: Config }) {
                   ? "AI Models"
                   : isApps
                     ? "Apps"
-                    : appPageSlug
-                      ? appPageSlug
+                    : appPagePath
+                      ? basename(appPagePath)
                       : isHome
                         ? "Home"
                         : isExplorerHome
@@ -882,7 +883,7 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (appPageSlug !== null) {
+  } else if (appPagePath !== null) {
     // The app page (D488): the app live in an Overview frame, its tasks in a
     // Tasks tab. Keyed on the SLUG, not the epoch (the CanvasWorkspace
     // exception): the tab is a path segment, so switching it is a navigation,
@@ -891,7 +892,7 @@ export default function App({ config }: { config: Config }) {
     main = (
       <div id="content">
         <Suspense fallback={<RouteFallback />}>
-          <AppPage key={appPageSlug} slug={appPageSlug} config={config} />
+          <AppPage key={appPagePath} dir={appPagePath} config={config} />
         </Suspense>
       </div>
     );

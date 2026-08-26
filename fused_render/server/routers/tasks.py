@@ -90,7 +90,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import schedule, tasks_store
+from fused_render import current_apps, schedule, tasks_store
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -1541,6 +1541,14 @@ def _task_rows() -> list[dict]:
     if not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=lambda r: r["last_active"], reverse=True)
+    # The Current apps desk (current_apps.py) learns about NEW tasks here —
+    # the one place every task on the machine passes, whatever started it.
+    # Best-effort: the desk is a side table, and a store that cannot be
+    # written costs an app on the sidebar, never the listing.
+    try:
+        current_apps.observe(rows)
+    except OSError:
+        pass
     return rows
 
 
@@ -1557,10 +1565,11 @@ def api_tasks():
     return {"tasks": rows}
 
 
-# `project` rides along for the sidebar's Current apps section (D487): which
-# workspace app a task belongs to is a listing fact, and the alternative — a
-# second GET /api/tasks poll from the sidebar — is the double-poll the pulse
-# store exists to prevent.
+# `project` rides along for the sidebar's Current apps section (D487): the
+# section's membership is its own store now (current_apps.py) but the running
+# dot on a row still reads the pulse — which task is under which app is a
+# listing fact, and a second GET /api/tasks poll from the sidebar is the
+# double-poll the pulse store exists to prevent.
 _PULSE_FIELDS = ("key", "status", "unread", "last_active", "project")
 
 
@@ -1846,7 +1855,15 @@ def api_task_archive(patch: ArchivePatch):
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    cancelled, filed = archive_task(task)
+    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
+
+def archive_task(task: dict) -> tuple[int, bool]:
+    """The archive gesture on one collected task: how many messages were
+    called off, and whether a session was filed. Shared with the Current apps
+    router (server/routers/current_apps.py), where removing an app archives
+    every task under it."""
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -1864,8 +1881,7 @@ def api_task_archive(patch: ArchivePatch):
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return {"ok": True, "key": key, "cancelled": cancelled,
-            "filed": bool(session_id)}
+    return cancelled, bool(session_id)
 
 
 class UnarchivePatch(BaseModel):

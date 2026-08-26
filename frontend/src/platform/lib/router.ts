@@ -300,6 +300,9 @@ export function fsPathFromLocation(): string | null {
 // Shared by urlForFsPath/embedUrlForFsPath below: normalize ONLY drive-letter
 // paths — on POSIX a backslash is a legal filename character and must
 // round-trip untouched — then split into encoded segments.
+// Restated (not imported) by shell/current-apps-lib for the app page's
+// `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
+// module touches `location` at import. Keep the two in step.
 function encodeFsPathSegments(fsPath: string): string {
   const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
   return norm

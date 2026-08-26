@@ -85,21 +85,22 @@ def test_the_shell_actually_declares_routes():
 
 
 def test_the_app_page_survives_a_refresh(client):
-    """`/apps/<slug>/<tab>` (D488) is a PARAMETERISED route — App.tsx matches it
-    through `slugFromAppPath`, not a `pathname ===` literal — so the scrape above
-    cannot see it, the same blind spot the canvases workspace has. Requested by
-    hand: both tabs, and the bare slug the client rewrites to the default tab.
-    Three levels stays a 404: the page has no third."""
+    """`/apps/<folder path>/<tab>` (D488, redesigned 2026-08-26) is a
+    PARAMETERISED route — App.tsx matches it through `appPathFromPath`, not a
+    `pathname ===` literal — so the scrape above cannot see it, the same blind
+    spot the canvases workspace has. Requested by hand: an absolute folder with
+    each tab, the bare folder the client rewrites to the default tab, and a
+    Windows drive path. Any depth serves the shell: the folder is the path."""
     for path in (
-        "/apps/some-app",
-        "/apps/some-app/overview",
-        "/apps/some-app/tasks",
-        "/apps/some-app/files",
+        "/apps/Users/me/Fused/local/some-app",
+        "/apps/Users/me/Fused/local/some-app/overview",
+        "/apps/Users/me/Fused/showcase/deep/some-app/tasks",
+        "/apps/Users/me/Fused/local/some-app/files",
+        "/apps/C:/Users/me/Fused/local/some-app/tasks",
     ):
         res = client.get(path)
         assert res.status_code == 200, (path, res.status_code)
         assert res.headers["content-type"].startswith("text/html")
-    assert client.get("/apps/some-app/tasks/deeper").status_code == 404
 
 
 @pytest.mark.parametrize("path", shell_routes())

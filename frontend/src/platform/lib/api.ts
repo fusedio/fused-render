@@ -1900,6 +1900,40 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   );
 }
 
+// ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
+//
+// A store of its own since 2026-08-26: a new task adds its app, nothing removes
+// one automatically, and removing one archives every task under it. Rows arrive
+// in ADDED order; `exists` is false for a folder that has gone (the row stays
+// until the user removes it).
+export interface CurrentAppEntry {
+  /** Canonical (forward-slash) absolute app folder. */
+  path: string;
+  name: string;
+  kind: "workspace" | "linked";
+  entry: string | null;
+  exists: boolean;
+  added_at: number | null;
+}
+
+export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
+  return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** Take an app off the desk. SIDE EFFECT, by design: every task whose project
+ *  is the folder or inside it is archived (the same gesture as
+ *  `archiveTask`, per task — cancelled work, filed session, nothing destroyed). */
+export async function removeCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; removed: boolean; archived: number; cancelled: number }> {
+  const r = await fetch(`/api/current-apps?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
+}
+
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
 // carrying `prompt`, due now — the New task form's own path, so the app's
 // Tasks tab lists it and the scheduler spawns the session. 409 = name
