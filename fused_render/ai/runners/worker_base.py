@@ -492,31 +492,41 @@ def resident_bytes():
 def peak_resident_bytes():
     """The high-water mark of what this model has cost, or None — SPEC AI-8c.
 
-    A runner's own `peak_memory=` probe wins OUTRIGHT when it answers, because
-    it is a TRUE peak rather than a sample: MLX's `mx.get_peak_memory()` is
-    maintained by the allocator across the process's whole life, so it sees a
-    stage that came and went between two `/health` polls — exactly what the
-    RSS fallback below cannot. A probe that raises or answers nothing (a wheel
-    shipping neither `get_peak_memory` name) falls through to that fallback
-    rather than reporting an estimate.
+    **`max(probe, _rss_peak)`, not the probe alone** — the same correction
+    `resident_bytes()` makes between its own two readings, for the identical
+    reason. MLX's `mx.get_peak_memory()` is a true peak of the ALLOCATOR only:
+    it does not count the interpreter and framework baseline `resident_bytes`'s
+    own docstring measures at 379 MB for a 6GB model. Returning the probe
+    outright would let a `measured` footprint (AI-16a) UNDERSTATE what the
+    process actually occupied — the exact dishonesty AI-16c exists to remove,
+    now on the write side instead of the read side: a badge reading "Ran
+    comfortably here (20 GB)" for a load whose real high-water was larger is
+    the same wrong claim a `_fit_verdict` computed over the wrong footprint
+    used to make. Neither reading is a superset of the other (a probe can
+    catch a stage that came and went between two `/health` polls that
+    `_rss_peak`'s sparser sampling missed, and `_rss_peak` catches whatever a
+    probe's own accounting does not cover), so the larger of the two is what
+    is least wrong, exactly as `resident_bytes` already argues for `own`/`rss`.
 
-    The fallback is `_rss_peak`, the running max `resident_bytes()` has been
-    updating on every call — weaker (a sample, not a true peak) but still a
-    monotone bound rather than whatever RSS happened to be at the moment
-    someone last asked.
+    A probe that raises or answers nothing (a wheel shipping neither
+    `get_peak_memory` name) is simply absent from the `max` — `_rss_peak`
+    alone answers, which is `resident_bytes`'s pre-AI-8c behaviour restated as
+    a high-water mark rather than a sample.
 
     `None` when NEITHER has an answer yet — a worker `/health`ed before its
     first `resident_bytes()` call, or one whose environment has no psutil and
     no probe. Never a guess, the same rule `resident_bytes` follows.
     """
+    peak = None
     if _measure_peak is not None:
         try:
-            peak = _measure_peak()
+            probed = _measure_peak()
         except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
-            peak = None
-        if isinstance(peak, int) and peak > 0:
-            return peak
-    return _rss_peak
+            probed = None
+        if isinstance(probed, int) and probed > 0:
+            peak = probed
+    candidates = [n for n in (peak, _rss_peak) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
 
 
 # --------------------------------------------------------- downloading weights

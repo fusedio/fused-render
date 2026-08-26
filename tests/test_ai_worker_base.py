@@ -688,13 +688,22 @@ def test_peak_resident_bytes_is_none_before_anything_has_been_measured(base):
     assert base.peak_resident_bytes() is None
 
 
-def test_peak_resident_bytes_prefers_the_runners_own_probe(base):
-    """MLX's `mx.get_peak_memory()` is a TRUE peak, not a sample — it wins
-    outright over the RSS high-water fallback, even when the fallback would
-    answer too."""
+def test_peak_resident_bytes_takes_the_LARGER_of_probe_and_rss_high_water(base):
+    """MLX's `mx.get_peak_memory()` is a TRUE peak of the ALLOCATOR only — it
+    does not count the interpreter/framework baseline `resident_bytes`
+    corrects for (379 MB for a 6GB model). So this is `max`, the same
+    correction `resident_bytes` already makes between `own` and `rss`, not
+    the probe winning outright: a probe smaller than the RSS high-water mark
+    must not UNDERSTATE what the process actually occupied — code review
+    caught a version of this function that returned the probe alone and would
+    have let a `measured` footprint (AI-16a) badge understate a real load."""
     base._measure_peak = lambda: 9_000_000_000
     base._rss_peak = 1_000_000_000
-    assert base.peak_resident_bytes() == 9_000_000_000
+    assert base.peak_resident_bytes() == 9_000_000_000  # probe is larger here
+
+    base._measure_peak = lambda: 2_000_000_000
+    base._rss_peak = 12_000_000_000
+    assert base.peak_resident_bytes() == 12_000_000_000  # RSS is larger here
 
 
 def test_peak_resident_bytes_falls_back_to_rss_high_water_when_the_probe_answers_nothing(base):
