@@ -467,8 +467,10 @@ def has_lock(project_dir: str) -> bool:
 def _load_manifest(project_dir: str) -> dict | None:
     """Parse `<project_dir>/pyproject.toml`, or None when absent/unreadable.
 
-    tomllib is 3.11+ stdlib and `requires-python` is >=3.10, so on 3.10 the
-    `tomli` dependency supplies it. Unlike the PEP 723 reader this replaces, a
+    tomllib is 3.11+ stdlib and `requires-python` is now >=3.11, so the `tomli`
+    arm below is unreachable in this interpreter; it is kept because this helper
+    is copied into template backends that may run elsewhere, and it costs a
+    single failed import. Unlike the PEP 723 reader this replaces, a
     missing parser is NOT an error the user can act on — every install of
     fused-render has one — so both names are tried and anything else reads as
     "no manifest".

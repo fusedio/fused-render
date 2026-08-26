@@ -19,19 +19,12 @@ so the tests can only pass if the listing really came over HTTP.
 import importlib.util
 import json
 import os
-import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
 from fused_render.server import templates as server
-
-
-requires_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11),
-    reason="canvas.toml parsing needs tomllib (Python 3.11+)",
-)
 
 
 # --------------------------------------------------------------------------
@@ -146,7 +139,6 @@ def _write_toml(tmp_path):
 # remote dir -> list over HTTP, NEVER kernel-listdir
 # --------------------------------------------------------------------------
 
-@requires_tomllib
 def test_remote_siblings_come_from_http_list_not_kernel(reader, fs, tmp_path):
     d = _write_toml(tmp_path)
     # NO sibling files on disk — a kernel os.listdir would see only canvas.toml
@@ -159,7 +151,6 @@ def test_remote_siblings_come_from_http_list_not_kernel(reader, fs, tmp_path):
     assert s.list_calls == 1  # the reader listed over HTTP
 
 
-@requires_tomllib
 def test_remote_dir_never_calls_kernel_listdir(reader, fs, tmp_path, monkeypatch):
     # Loud guard: make os.listdir explode. The remote path must still return
     # siblings (proving it routed through /api/fs/list and never touched the
@@ -175,7 +166,6 @@ def test_remote_dir_never_calls_kernel_listdir(reader, fs, tmp_path, monkeypatch
     assert out["siblings"]["a"] == [".py"]
 
 
-@requires_tomllib
 def test_remote_truncated_page_hides_match_without_wedging(reader, fs, tmp_path):
     # A huge remote dir returns a truncated first page that does NOT contain the
     # match; we accept a missing badge (no cursor-follow) over enumerating the
@@ -190,7 +180,6 @@ def test_remote_truncated_page_hides_match_without_wedging(reader, fs, tmp_path)
 # local / unreachable -> kernel listdir preserved
 # --------------------------------------------------------------------------
 
-@requires_tomllib
 def test_local_dir_uses_kernel_listdir(reader, fs, tmp_path):
     d = _write_toml(tmp_path)
     (d / "a.py").write_text("x = 1\n")
@@ -203,7 +192,6 @@ def test_local_dir_uses_kernel_listdir(reader, fs, tmp_path):
     assert s.list_calls == 0
 
 
-@requires_tomllib
 def test_unreachable_server_falls_back_to_kernel(reader, tmp_path):
     d = _write_toml(tmp_path)
     (d / "a.py").write_text("x = 1\n")
@@ -213,7 +201,6 @@ def test_unreachable_server_falls_back_to_kernel(reader, tmp_path):
     assert out["siblings"]["a"] == [".py"]
 
 
-@requires_tomllib
 def test_no_src_preserves_kernel_behavior(reader, tmp_path):
     d = _write_toml(tmp_path)
     (d / "b.html").write_text("<i></i>\n")

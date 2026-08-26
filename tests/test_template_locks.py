@@ -25,14 +25,15 @@ import pytest
 
 
 def _import_toml():
-    """tomllib (3.11+) or the tomli dependency that covers 3.10.
+    """tomllib, with a `tomli` arm the >=3.11 floor makes unreachable.
 
-    Same shape as `tests/test_bundle_contents.py`'s. A bare `import tomllib` here
-    raised ModuleNotFoundError at COLLECTION on 3.10, which errors the whole
-    module out rather than skipping it. `tomli` is a declared dependency of this
-    project (`fused_render/projectenv.py` reads manifests through the identical
-    fallback), so on 3.10 these tests RUN — the skip is only for an install that
-    genuinely has neither.
+    Same shape as `tests/test_bundle_contents.py`'s. Kept accessor-shaped rather
+    than flattened to a bare `import tomllib`: that bare import raised
+    ModuleNotFoundError at COLLECTION back when 3.10 was supported, erroring the
+    whole module out instead of skipping it, and the accessor is what stops that
+    shape reappearing. `tomli` is no longer a declared dependency, so the skip
+    now only fires on an interpreter with no `tomllib` at all — which
+    `requires-python` already rules out.
     """
     try:
         import tomllib
