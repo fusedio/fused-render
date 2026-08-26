@@ -504,11 +504,24 @@
 }
 
 .bar-ctl.bar-ctl-strong:hover:not(:disabled) {
-  background: var(--on-fg);
+  /* NOT var(--on-fg) — that moved --fg one step FURTHER toward the same
+     extreme (near-black to pure black in light, near-white to pure white in
+     dark), which is a luminance delta of ~0.01–0.02 and reads as no hover at
+     all. This instead steps --fg back TOWARD --bg — the same "mix off --fg"
+     idiom `.apps-tag-chip.is-active` / `.apps-filter-mode-btn.is-active` use
+     (apps.css) to get a background that shifts visibly in BOTH themes while
+     keeping a --bg label legible on it, because the mix moves each theme's
+     fill away from that theme's own extreme rather than further into it.
+     82% keeps it reading as the same filled/strong button (still mostly
+     --fg, not washed toward a ghost tint) while giving a clearly visible
+     step: ~0.28 luminance delta in dark, ~0.05 in light — both an order of
+     magnitude bigger than --on-fg's. */
+  background: color-mix(in srgb, var(--fg) 82%, var(--bg));
   /* The generic .bar-ctl:hover rule right below sets color: var(--fg), which
-     is invisible here — this button is already fg-on-bg, and fg-on-on-fg is
-     the same tone on nearly the same tone in both themes. Restate --bg
-     explicitly so the label stays high-contrast through the hover. */
+     was already illegible against the old --on-fg hover and would be no
+     better against this one. Restate --bg explicitly so the label stays
+     high-contrast through the hover (>9:1 in both themes against the mix
+     above). */
   color: var(--bg);
 }
 
