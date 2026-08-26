@@ -956,6 +956,19 @@
   color: var(--fg-muted);
 }
 
+/* Skills: the description IS the row's payload, and a skill's description is
+   routinely a full sentence — ellipsizing it mid-clause defeated the reason
+   this tab is worth scanning. This is the one row that gets to break out of
+   the app's one-line-at-rest rule: it wraps instead of truncating, and
+   .cc-lrow-line's own align-items:center still centers the row's other cells
+   against whatever height that wrap grows into. */
+.cc-lrow-sub-wrap {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  line-height: 1.4;
+}
+
 .cc-lrow-meta {
   flex: 0 0 auto;
   font-size: 11.5px;
