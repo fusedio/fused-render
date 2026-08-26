@@ -94,6 +94,11 @@ class Child:
     #: The module a warm app worker serves; "" for a template daemon. When set,
     #: `_spawn` passes `--module <this>`.
     module: str = ""
+    #: One of "template", "app", "background" — which bring-up path owns this
+    #: child. Explicit rather than inferred (e.g. from `module` truthiness) so
+    #: reap eligibility and other kind-specific behavior can never drift onto a
+    #: child by accident when a new kind is added.
+    kind: str = "template"
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
@@ -460,9 +465,61 @@ def ensure_app(resolved_py: str, python: str,
         if existing is not None:
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=APP_WORKER,
-                      cache=cache, version=version, module=module)
+                      cache=cache, version=version, module=module, kind="app")
         _spawn(child)
         child.last_used = time.monotonic()
+        with _lock:
+            _children[engine_id] = child
+        return child
+
+
+# --- background apps (background_apps.py, docs/BACKGROUND_APPS) ---------------
+
+
+def _validate_background(engine_id: str, python: str, daemon: str) -> None:
+    """Same invariant-check stance as `_validate`/`_validate_interpreter`: the
+    caller (the enable endpoint, the startup resurrection hook) already
+    resolved `daemon` from the folder's own manifest, so this is not the trust
+    boundary either — it is a check that the caller did not hand over a
+    daemon belonging to some OTHER, non-enabled folder."""
+    from fused_render import background_apps
+
+    if not _ENGINE_ID.match(engine_id):
+        raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
+    _validate_interpreter(python)
+    target = os.path.realpath(daemon)
+    for folder in background_apps.enabled_paths():
+        manifest = background_apps.load_manifest(folder)
+        if manifest is not None and os.path.realpath(manifest.daemon) == target:
+            return
+    raise EngineError(
+        f"refusing to run {daemon!r}: not the declared daemon of a "
+        "currently-enabled background app")
+
+
+def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
+                      version: str) -> Child:
+    """A live child for a background app's engine_id, reusing the current one
+    when it matches and answers — the same double-checked reuse/spawn dance as
+    `ensure`, but for a `kind="background"` child and validated against the
+    enabled store rather than a templates root."""
+    _validate_background(engine_id, python, daemon)
+    existing = _children.get(engine_id)
+    if (existing is not None and existing.kind == "background"
+            and _matches(existing, python, daemon, cache, version)
+            and _alive(existing) and _ping(existing)):
+        return existing
+    with _spawn_lock:
+        existing = _children.get(engine_id)
+        if (existing is not None and existing.kind == "background"
+                and _matches(existing, python, daemon, cache, version)
+                and _alive(existing) and _ping(existing)):
+            return existing
+        if existing is not None:
+            _terminate(existing)
+        child = Child(engine_id=engine_id, python=python, daemon=daemon,
+                      cache=cache, version=version, kind="background")
+        _spawn(child)
         with _lock:
             _children[engine_id] = child
         return child
@@ -515,12 +572,14 @@ def mark_idle(engine_id: str) -> None:
 
 def reap_idle_app_workers(now: float | None = None) -> int:
     """Terminate every warm app worker idle past APP_IDLE_RETIRE_S, returning the
-    count reaped. Only app workers (module set) are eligible. Exposed so a test
-    can drive it directly."""
+    count reaped. Only `kind == "app"` children are eligible — explicit, so a
+    background app can never become reap-eligible by accident (e.g. a future
+    kind that also happens to set `module`). Exposed so a test can drive it
+    directly."""
     now = time.monotonic() if now is None else now
     with _lock:
         candidates = [c for c in _children.values()
-                      if c.module and _busy.get(c.engine_id, 0) == 0
+                      if c.kind == "app" and _busy.get(c.engine_id, 0) == 0
                       and (now - c.last_used) >= APP_IDLE_RETIRE_S]
     # A call that outran its budget got a 504 but its main() may still be running
     # in the worker (we never kill it); the worker reports that, so skip a worker
@@ -564,7 +623,8 @@ def restart(engine_id: str, failed: Child | None = None) -> Child:
         _terminate(existing)
         child = Child(engine_id=engine_id, python=existing.python,
                       daemon=existing.daemon, cache=existing.cache,
-                      version=existing.version, module=existing.module)
+                      version=existing.version, module=existing.module,
+                      kind=existing.kind)
         _spawn(child)
         _replay(child)
         with _lock:

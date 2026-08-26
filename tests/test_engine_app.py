@@ -93,7 +93,7 @@ def test_idle_reaper_skips_a_busy_engine(monkeypatch):
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
         cache="unused", version=engine_host.APP_WORKER_VERSION,
-        module="/tmp/reaper-test/app.py")
+        module="/tmp/reaper-test/app.py", kind="app")
     stale = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
     child.last_used = stale
     reaped = []
@@ -124,7 +124,7 @@ def test_idle_reaper_skips_a_worker_still_running_a_call(monkeypatch):
     child = engine_host.Child(
         engine_id=eid, python=sys.executable, daemon=engine_host.APP_WORKER,
         cache="unused", version=engine_host.APP_WORKER_VERSION,
-        module="/tmp/inflight-test/app.py")
+        module="/tmp/inflight-test/app.py", kind="app")
     child.last_used = time.monotonic() - (engine_host.APP_IDLE_RETIRE_S + 10)
     reaped = []
     monkeypatch.setattr(engine_host, "_terminate",
