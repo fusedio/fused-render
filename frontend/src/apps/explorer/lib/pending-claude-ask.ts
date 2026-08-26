@@ -30,27 +30,51 @@
 // exactly the bug that shape reintroduces — worse here, since the ask would
 // ride along on every navigation to that folder from then on rather than
 // just the one that raised it.
-let pending: { path: string; prompt: string } | null = null;
+//
+// EXPIRES ON A TIMEOUT, for the same class of bug one more way: if the
+// navigated-to surface never reaches a ready Claude route (Claude Code not
+// installed, the gate refuses, the user navigates somewhere else first and
+// only comes back to this folder later), an un-expiring slot would sit here
+// and get delivered to that LATER, unrelated visit — a stale error replayed
+// into a brand-new conversation, the exact failure this module's header
+// already rejects a URL-carried ask over. `PENDING_TTL_MS` is generous
+// enough to cover the real navigate-then-mount-then-gate-settles window
+// (seconds, not the width of a whole session) without giving a truly stale
+// ask a second life.
+const PENDING_TTL_MS = 60_000;
+
+let pending: { path: string; prompt: string; stagedAt: number } | null = null;
 
 export function stageClaudeAsk(path: string, prompt: string): void {
-  pending = { path, prompt };
+  pending = { path, prompt, stagedAt: Date.now() };
+}
+
+function liveOrExpired(): { path: string; prompt: string } | null {
+  if (!pending) return null;
+  if (Date.now() - pending.stagedAt > PENDING_TTL_MS) {
+    pending = null;
+    return null;
+  }
+  return pending;
 }
 
 /**
- * Read-and-clear, but only when `path` matches the surface asking. A surface
- * for a DIFFERENT path must not consume (and thereby lose) an ask that is
- * still waiting for its own target — the folder-pane's own child surfaces
- * and the file sidebar both call this on every mount, for whatever path they
- * each are, and only the one that matches may have it.
+ * Read-and-clear, but only when `path` matches the surface asking AND the
+ * ask hasn't expired (see `PENDING_TTL_MS` above). A surface for a
+ * DIFFERENT path must not consume (and thereby lose) an ask that is still
+ * waiting for its own target — the folder-pane's own child surfaces and the
+ * file sidebar both call this on every mount, for whatever path they each
+ * are, and only the one that matches may have it.
  */
 export function takePendingClaudeAsk(path: string): string | null {
-  if (!pending || pending.path !== path) return null;
-  const { prompt } = pending;
+  const current = liveOrExpired();
+  if (!current || current.path !== path) return null;
   pending = null;
-  return prompt;
+  return current.prompt;
 }
 
 // Test-only: production code never needs to look without taking.
 export function peekPendingClaudeAsk(): { path: string; prompt: string } | null {
-  return pending;
+  const current = liveOrExpired();
+  return current ? { path: current.path, prompt: current.prompt } : null;
 }

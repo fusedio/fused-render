@@ -15,6 +15,7 @@ const status = (over: Partial<RepoStatus> = {}): RepoStatus => ({
   branch: "main",
   default_branch: "main",
   on_default: true,
+  ahead: 0,
   behind: 3,
   checked_at: 1000,
   ...over,
@@ -102,15 +103,15 @@ describe("repoActionLabel", () => {
 });
 
 describe("repoFixPrompt", () => {
-  it("carries the error, the branch, ahead/behind and the repo root", () => {
+  it("carries the error, the branch, real ahead/behind and the repo root", () => {
     const [row] = repoRows([
-      status({ root: "/a/widget", branch: "main", default_branch: "main", behind: 3 }),
+      status({ root: "/a/widget", branch: "main", default_branch: "main", ahead: 1, behind: 3 }),
     ]);
     const prompt = repoFixPrompt(row, "not possible to fast-forward");
     expect(prompt).toContain("not possible to fast-forward");
     expect(prompt).toContain("branch main");
     expect(prompt).toContain("tracking origin/main");
-    expect(prompt).toContain("3 behind");
+    expect(prompt).toContain("1 ahead / 3 behind");
     expect(prompt).toContain("/a/widget");
   });
 
@@ -119,9 +120,34 @@ describe("repoFixPrompt", () => {
     expect(repoFixPrompt(row, "err")).toContain("branch (detached)");
   });
 
-  it("reports the working tree as dirty only for a dirty refusal", () => {
+  it("reports the working tree as dirty for a dirty refusal", () => {
     const [row] = repoRows([status()]);
     expect(repoFixPrompt(row, "err", "dirty")).toContain("working tree dirty");
-    expect(repoFixPrompt(row, "err", "git-failed")).toContain("working tree clean");
+  });
+
+  it("never claims a clean tree for a rebase-conflict-shaped git-failed refusal", () => {
+    // The rebase path exists because the tree may already be conflicted by
+    // the time this prompt is built — asserting "clean" here would be
+    // handing Claude a false fact in exactly the case most likely to have
+    // caused the refusal.
+    const [row] = repoRows([status()]);
+    const prompt = repoFixPrompt(row, "err", "git-failed");
+    expect(prompt).not.toContain("working tree clean");
+    expect(prompt).toContain("working tree state unknown");
+  });
+
+  it("names an in-progress operation rather than calling it dirty", () => {
+    const [row] = repoRows([status()]);
+    const prompt = repoFixPrompt(row, "err", "in-progress");
+    expect(prompt).toContain("mid-operation");
+    expect(prompt).not.toContain("working tree dirty");
+  });
+
+  it("makes no working-tree claim at all for a reason that never got that far", () => {
+    const [row] = repoRows([status()]);
+    for (const reason of ["missing", "mount", "detached", "no-remote", "unknown-repo", undefined]) {
+      const prompt = repoFixPrompt(row, "err", reason);
+      expect(prompt).not.toContain("working tree");
+    }
   });
 });

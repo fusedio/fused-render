@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   peekPendingClaudeAsk,
   stageClaudeAsk,
@@ -54,6 +54,41 @@ describe("peekPendingClaudeAsk", () => {
   });
 
   test("null when nothing is staged", () => {
+    expect(peekPendingClaudeAsk()).toBeNull();
+  });
+});
+
+describe("expiry (finding #13)", () => {
+  const realNow = Date.now;
+  afterEach(() => {
+    Date.now = realNow;
+  });
+
+  test("a staged ask delivered well within the TTL still works", () => {
+    let now = 1_000_000;
+    Date.now = () => now;
+    stageClaudeAsk("/Users/me/repo", "fix it");
+    now += 5_000; // 5s later — the ordinary navigate-then-mount window
+    expect(takePendingClaudeAsk("/Users/me/repo")).toBe("fix it");
+  });
+
+  test("an ask nobody claimed in time expires — a later, unrelated visit does not replay it", () => {
+    // The exact bug this pins: the navigated-to surface never reached a
+    // ready Claude route (gate refused, Claude Code missing), and the user
+    // comes back to the SAME folder much later for an unrelated reason —
+    // that later visit must not receive the stale ask.
+    let now = 1_000_000;
+    Date.now = () => now;
+    stageClaudeAsk("/Users/me/repo", "stale error from a while ago");
+    now += 5 * 60_000; // 5 minutes later, well past the TTL
+    expect(takePendingClaudeAsk("/Users/me/repo")).toBeNull();
+  });
+
+  test("peek also treats an expired ask as gone", () => {
+    let now = 1_000_000;
+    Date.now = () => now;
+    stageClaudeAsk("/Users/me/repo", "fix it");
+    now += 5 * 60_000;
     expect(peekPendingClaudeAsk()).toBeNull();
   });
 });

@@ -114,6 +114,19 @@ def test_both_hosts_install_the_cross_navigation_pull(preview, listing):
         assert "claudeAskActionRef.current(prompt)" in src, label
 
 
+def test_previews_cross_navigation_pull_stands_down_for_the_folder_peek(preview):
+    """"Fix with Claude" navigates to a directory — the repo root — which
+    mounts `_listing` mode in THIS file's own main body. Without standing
+    down there the same way the window._fusedClaudeAsk installer already
+    does (both installed by this same file, both racing the child
+    <Listing>'s own independent pull), this file's pull could win the race
+    and consume the staged ask itself instead of leaving the folder-target
+    case to the installer the Lockstep contract actually intends."""
+    fn = preview[preview.index("// The other side of a \"Fix with Claude\" staged"):]
+    fn = fn[:fn.index("}, [fsPath, claudeAskRoute, suppressForListing]);") + 1]
+    assert "if (suppressForListing) return;" in fn
+
+
 def test_the_shared_take_primitive_reads_and_clears_in_one_step():
     src = _read("lib", "claude-ask.ts")
     fn = src[src.index("export function takeClaudeAsk("):]

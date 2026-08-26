@@ -54,6 +54,13 @@ function useRepoUpdates() {
     let disposed = false;
     let timer = 0;
     const poll = async () => {
+      // Cancel whatever is still pending from a PRIOR call to this same
+      // `poll` — without this, `refresh()` (below) calling `pollRef.current()`
+      // out of band, on top of the timer already ticking, forked a second
+      // setTimeout chain: every Update/Rebase click permanently doubled the
+      // number of concurrent /api/git-upstream poll loops for the session,
+      // and only the LAST-assigned timer id was ever cleared on unmount.
+      window.clearTimeout(timer);
       try {
         const data = await getJson<{ repos?: RepoStatus[] }>("/api/git-upstream");
         if (!disposed) setRepos(data.repos || []);
