@@ -743,6 +743,25 @@ def test_plugins_contents_reads_every_component_kind_off_disk(
     assert body["mcpServers"] == [{
         "name": "beans", "description": "node", "path": str(root / ".mcp.json"),
     }]
+    # Nothing here ran the walk budget out.
+    assert body["truncated"] is False
+
+
+def test_plugins_contents_reads_a_bare_mcp_json(client, claude_dir, tmp_path):
+    # `{"mcpServers": {...}}` is one shape a plugin's own .mcp.json comes in;
+    # a BARE server map at the file's root is the other, and it is the shape
+    # github@claude-plugins-official actually ships on disk. `_hooks` already
+    # tolerates both shapes for hooks.json; mcpServers used to bail on the
+    # wrapper key being absent, so a plugin whose entire contribution was one
+    # MCP server rendered as shipping nothing at all.
+    root = _plugin_tree(tmp_path, "bare-mcp", {"name": "bare-mcp"})
+    _write(root / ".mcp.json", json.dumps({"github": {"type": "http", "url": "https://x"}}))
+    _installed(claude_dir, "bare-mcp@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="bare-mcp@acme").json()
+    assert body["mcpServers"] == [{
+        "name": "github", "description": "https://x", "path": str(root / ".mcp.json"),
+    }]
 
 
 def test_plugins_contents_folds_a_block_scalar_description(client, claude_dir, tmp_path):
@@ -821,6 +840,45 @@ def test_plugins_contents_refuses_a_manifest_path_that_escapes_the_plugin(
     assert body["commands"] == []
 
 
+def test_plugins_contents_refuses_a_symlinked_dir_that_escapes_the_plugin(
+    client, claude_dir, tmp_path
+):
+    # The manifest-string escape above is lexical and `os.path.normpath`
+    # catches it; a SYMLINKED component dir is a different escape entirely —
+    # `skills` pointing at some real directory outside the plugin root passes
+    # a purely lexical containment check (the symlink's own name sits under
+    # root) even though its target does not, and `os.walk(top)` visits `top`
+    # itself regardless of `followlinks` (that flag only governs descendant
+    # symlinks it discovers, not the walk's own starting directory).
+    outside = tmp_path / "outside-home"
+    _write(outside / "secret" / "SKILL.md", "---\nname: secret\n---\n")
+    root = _plugin_tree(tmp_path, "linked", {"name": "linked"})
+    (root / "skills").symlink_to(outside)
+    _installed(claude_dir, "linked@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="linked@acme").json()
+    assert body["ok"] is True
+    assert body["skills"] == []
+
+
+def test_plugins_contents_reports_truncation_once_the_walk_budget_runs_out(
+    client, claude_dir, tmp_path
+):
+    # The walk budget is a bounded-PANEL cost limit, not a per-directory one:
+    # a flat commands/ dir well past the cap must come back partial AND say
+    # so, rather than either hanging on a five-figure file count or silently
+    # under-reporting what the plugin actually ships.
+    root = _plugin_tree(tmp_path, "sprawling", {"name": "sprawling"})
+    for i in range(250):
+        _write(root / "commands" / f"c{i:03d}.md", "")
+    _installed(claude_dir, "sprawling@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="sprawling@acme").json()
+    assert body["ok"] is True
+    assert body["truncated"] is True
+    assert 0 < len(body["commands"]) < 250
+
+
 def test_plugins_contents_survives_a_plugin_that_ships_nothing(client, claude_dir, tmp_path):
     root = _plugin_tree(tmp_path, "bare")
     _installed(claude_dir, "bare@acme", root)
@@ -828,6 +886,7 @@ def test_plugins_contents_survives_a_plugin_that_ships_nothing(client, claude_di
     assert body["ok"] is True
     assert (body["skills"], body["commands"], body["agents"],
             body["hooks"], body["mcpServers"]) == ([], [], [], [], [])
+    assert body["truncated"] is False
 
 
 def test_plugins_contents_keeps_a_broken_hooks_file_visible(client, claude_dir, tmp_path):

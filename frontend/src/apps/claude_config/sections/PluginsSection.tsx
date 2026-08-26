@@ -220,6 +220,15 @@ function PluginContentsPanel({ id }: { id: string }) {
           <span className="cc-pfiles-path">{data.root}</span>
         </a>
       )}
+      {/* The server's per-read walk budget ran out (plugins.py's
+          _WalkBudget) — an unusually large plugin, not a plugin that
+          genuinely ships this little. Said plainly rather than left for the
+          groups above to quietly under-report. */}
+      {data.truncated && (
+        <p className="cc-pblurb cc-ptruncated">
+          This plugin ships more than shown here — the list was cut off to keep this panel fast.
+        </p>
+      )}
     </div>
   );
 }

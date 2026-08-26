@@ -1435,6 +1435,20 @@
   color: var(--fg);
 }
 
+/* The server's walk-budget notice (plugins.py's _WalkBudget) — a caveat about
+   the panel's own completeness, not the plugin's copy, so it reads like
+   .cc-unset's "this is not a stated fact" grammar rather than .cc-pblurb's
+   plain prose. Sits after .cc-pfiles, so it needs its own top margin rather
+   than the `.cc-lrow-details .cc-pblurb` rule's (that one assumes the blurb
+   opens the panel) — same specificity, so the more specific selector here
+   rather than !important is what wins it back. */
+.cc-lrow-details .cc-ptruncated {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
 .cc-icon {
   flex: 0 0 auto;
   width: 13px;

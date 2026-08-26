@@ -187,6 +187,11 @@ export interface PluginContents extends OkResult {
   agents?: PluginComponent[];
   hooks?: PluginComponent[];
   mcpServers?: PluginComponent[];
+  // True once the server's per-read walk budget ran out (plugins.py's
+  // _WalkBudget) — the lists above may be missing components rather than the
+  // plugin genuinely shipping fewer, so the panel says so instead of reading
+  // as a complete inventory of a plugin that is just unusually large.
+  truncated?: boolean;
 }
 
 export interface UpdateResult extends OkResult {

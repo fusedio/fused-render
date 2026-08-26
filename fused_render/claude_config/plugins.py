@@ -196,11 +196,17 @@ _SKIP_DIRS = {"node_modules", "__pycache__", ".git", "dist", "build"}
 
 
 def _within(root: str, path: str) -> bool:
-    """Lexical containment, matching lib.safe_subdir's boundary. A manifest is
-    third-party content and its path values become directories we walk, so
-    `"skills": "../../../.."` must resolve to nothing rather than to a tour of
-    the user's disk."""
-    root = os.path.normpath(root)
+    """Containment against root's REAL location, not just its spelling (code
+    review, 2026-08-26). `os.path.normpath` alone catches the lexical escape
+    (a manifest naming `"skills": "../../../.."`) but not a symlinked one: a
+    plugin shipping `skills -> /Users/<me>` passes a purely lexical check (the
+    symlink's own path sits under root) even though its TARGET is the whole
+    home directory, and `os.walk(top)` visits `top` itself regardless of
+    `followlinks` — that flag only governs descendant symlinks, not the walk's
+    own starting directory. Resolving both sides closes that: `path`'s real
+    location has to sit under root's real location, not just its name."""
+    root = os.path.realpath(root)
+    path = os.path.realpath(path)
     return path == root or path.startswith(root + os.sep)
 
 
@@ -226,12 +232,33 @@ def _manifest_dirs(manifest: dict, key: str, root: str) -> list:
     return out
 
 
-def _walk(top: str):
-    """Depth- and count-bounded os.walk over one component dir, skipping the
+class _WalkBudget:
+    """The entry budget `_walk` spends against, shared across every `_walk`
+    call within one `_contents()` read (code review, 2026-08-26) — the cap is
+    a bounded-panel cost limit, not a per-directory one, so a manifest naming
+    five skill dirs must not multiply it by five.
+
+    Counts FILES too, not just directories: the old `seen` counter in `_walk`
+    incremented once per yielded directory, so `_MAX_ENTRIES` capped
+    DIRECTORIES while `_skills`/`_markdown` then iterated every filename
+    within each uncapped one — a flat `commands/` holding 100k `.md` files was
+    walked and returned in full, the opposite of the "must cost a bounded
+    panel, not a hung request" comment `_walk` used to carry alone."""
+    __slots__ = ("remaining", "truncated")
+
+    def __init__(self, cap: int = _MAX_ENTRIES):
+        self.remaining = cap
+        self.truncated = False
+
+
+def _walk(top: str, budget: _WalkBudget):
+    """Depth- and budget-bounded os.walk over one component dir, skipping the
     dirs that never hold components. Yields (dirpath, filenames)."""
     if not os.path.isdir(top):
         return
-    seen = 0
+    if budget.remaining <= 0:
+        budget.truncated = True
+        return
     base_depth = top.rstrip(os.sep).count(os.sep)
     for dirpath, dirnames, filenames in os.walk(top):
         dirnames[:] = [
@@ -239,9 +266,21 @@ def _walk(top: str):
         ]
         if dirpath.count(os.sep) - base_depth >= _MAX_DEPTH:
             dirnames[:] = []
-        yield dirpath, sorted(filenames)
-        seen += 1
-        if seen >= _MAX_ENTRIES:
+        filenames = sorted(filenames)
+        # This directory plus its own files against what's left of the
+        # budget — a flat dir over budget on files alone still gets a
+        # (truncated) filenames list back, not silently dropped altogether.
+        cost = 1 + len(filenames)
+        if cost > budget.remaining:
+            filenames = filenames[: max(budget.remaining - 1, 0)]
+            budget.remaining = 0
+            budget.truncated = True
+            yield dirpath, filenames
+            return
+        budget.remaining -= cost
+        yield dirpath, filenames
+        if budget.remaining <= 0:
+            budget.truncated = True
             return
 
 
@@ -258,7 +297,7 @@ def _read_frontmatter(path: str) -> dict:
         return {}
 
 
-def _skills(root: str, manifest: dict) -> list:
+def _skills(root: str, manifest: dict, budget: _WalkBudget) -> list:
     """A skill is a directory with a SKILL.md in it (D490's rule, applied to a
     plugin's tree rather than the repo's). Nested, because a plugin is free to
     group them in subdirectories."""
@@ -266,7 +305,7 @@ def _skills(root: str, manifest: dict) -> list:
     for top in _manifest_dirs(manifest, "skills", root):
         # `_walk` yields `top` itself first, so a manifest pointing at ONE skill
         # rather than at a dir of them needs no special case.
-        for dirpath, filenames in _walk(top):
+        for dirpath, filenames in _walk(top, budget):
             if "SKILL.md" not in filenames:
                 continue
             path = os.path.join(dirpath, "SKILL.md")
@@ -279,14 +318,14 @@ def _skills(root: str, manifest: dict) -> list:
     return out
 
 
-def _markdown(root: str, manifest: dict, key: str) -> list:
+def _markdown(root: str, manifest: dict, key: str, budget: _WalkBudget) -> list:
     """Commands and agents are both "every .md under a dir", differing only in
     what names them: an agent declares its own `name` in frontmatter, while a
     command is INVOKED by its path (`/plugin:sub:name`), so the path is the
     honest label and a frontmatter `name` would be a second one."""
     out = []
     for top in _manifest_dirs(manifest, key, root):
-        for dirpath, filenames in _walk(top):
+        for dirpath, filenames in _walk(top, budget):
             for fn in filenames:
                 if not fn.endswith(".md"):
                     continue
@@ -343,8 +382,8 @@ def _hooks(root: str, manifest: dict) -> list:
         if not isinstance(event, str) or not isinstance(entries, list):
             continue
         matchers = [
-            e.get("matcher") for e in entries
-            if isinstance(e, dict) and isinstance(e.get("matcher"), str) and e.get("matcher")
+            m for e in entries
+            if isinstance(e, dict) and isinstance((m := e.get("matcher")), str) and m
         ]
         n = sum(len(e.get("hooks") or []) for e in entries if isinstance(e, dict))
         desc = f"{n} hook{'' if n == 1 else 's'}"
@@ -381,7 +420,17 @@ def _mcp_servers(root: str, manifest: dict) -> list:
                     doc = json.load(f)
             except (OSError, ValueError):
                 continue
-            servers = doc.get("mcpServers") if isinstance(doc, dict) else None
+            if not isinstance(doc, dict):
+                continue
+            # Two shapes are both in the wild for a plugin's own .mcp.json: a
+            # `{"mcpServers": {...}}` wrapper, and a BARE server map at the
+            # file's root (code review, 2026-08-26 — verified against
+            # github@claude-plugins-official's own .mcp.json on disk, which is
+            # bare). `_hooks` above already tolerates both shapes for
+            # hooks.json; this gives mcpServers the same fallback rather than
+            # rendering "ships no … MCP servers" for a plugin whose entire
+            # contribution is one server.
+            servers = doc.get("mcpServers") if isinstance(doc.get("mcpServers"), dict) else doc
         if not isinstance(servers, dict):
             continue
         for name, cfg in servers.items():
@@ -423,16 +472,27 @@ def _contents(pid: str) -> dict:
         manifest = {}
     if not isinstance(manifest, dict):
         manifest = {}
+    # One budget for the whole read, not one per group (code review,
+    # 2026-08-26 — see _WalkBudget): skills and commands/agents all draw
+    # against it, so the panel's total disk cost stays bounded regardless of
+    # how many manifest dirs any one group names.
+    budget = _WalkBudget()
     return {
         "ok": True,
         "id": pid,
         "root": root,
         "description": manifest.get("description") or "",
-        "skills": _skills(root, manifest),
-        "commands": _markdown(root, manifest, "commands"),
-        "agents": _markdown(root, manifest, "agents"),
+        "skills": _skills(root, manifest, budget),
+        "commands": _markdown(root, manifest, "commands", budget),
+        "agents": _markdown(root, manifest, "agents", budget),
         "hooks": _hooks(root, manifest),
         "mcpServers": _mcp_servers(root, manifest),
+        # True once the walk budget above ran out — the lists above may be
+        # missing components rather than the plugin genuinely shipping fewer
+        # (the failure mode _walk's own docstring calls out): said here rather
+        # than staying silent, so a huge plugin reads as "possibly more" and
+        # not as "this is everything".
+        "truncated": budget.truncated,
     }
 
 
