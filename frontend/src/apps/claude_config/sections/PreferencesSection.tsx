@@ -222,12 +222,21 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                         <Icon name="undo" />
                       </button>
                     ) : (
-                      // Stays for every unset key, toggles included: once a
-                      // toggle can sit at Claude's default position, THIS is
-                      // what distinguishes an inherited value from a chosen
-                      // one in words rather than in styling alone.
-                      <span className="cc-unset">
-                        {d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                      // Column 1's other state: a quiet hint rather than
+                      // inline text, so the fact ("Claude default", or the
+                      // documented default value — unbounded in length) can't
+                      // ellipsize into something that reads as a truncated
+                      // VALUE. Carried as a tooltip instead; the same fact is
+                      // also stated by the control itself (a toggle sits at
+                      // its default position, a select/scalar shows it as its
+                      // own placeholder/option text), so this is a redundant
+                      // second channel, not the only one.
+                      <span
+                        className="cc-row-hint"
+                        title={d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
+                        aria-hidden="true"
+                      >
+                        <Icon name="info" />
                       </span>
                     )}
                     {d.control === "toggle" && (
