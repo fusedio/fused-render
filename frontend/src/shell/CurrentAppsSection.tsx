@@ -53,6 +53,17 @@ import {
 // and is folder paths now, and a slug-shaped order would match nothing.
 export const ORDER_KEY = "fused-render:current-apps-order:v2";
 
+// The section fold, "1" when hidden — the Bookmarks section's own key pattern.
+export const COLLAPSED_KEY = "fused-render:current-apps-collapsed";
+
+function readCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
 // The last table this document fetched, kept at module level so the rows do not
 // blink empty on every per-navigation remount of the sidebar while the fetch
 // round-trips.
@@ -365,24 +376,54 @@ export default function CurrentAppsSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
     [onPath, apps, refetch],
   );
-  // The + opens the /apps composer in a modal (D489). The section ALWAYS
-  // renders: a door to "make one" is exactly what an empty desk wants.
+  // The "+ New app" row at the foot of the list opens the /apps composer in a
+  // modal (D489). The section ALWAYS renders: a door to "make one" is exactly
+  // what an empty desk wants.
   const [composing, setComposing] = useState(false);
+  // Whole-section fold, the Bookmarks heading's pattern: local to this machine
+  // (localStorage) — sidebar layout, not desk data. The count chip carries the
+  // collapsed signal, no chevron.
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    try {
+      localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+    } catch {
+      // No store: the fold lasts as long as the page does.
+    }
+    setCollapsed(next);
+  };
   return (
     <div className="sidebar-section sidebar-current-apps">
-      <div className="sidebar-heading current-apps-heading">
-        Current apps
-        <button
-          type="button"
-          className="icon-btn current-apps-add"
-          title="New app"
-          aria-label="New app"
-          onClick={() => setComposing(true)}
-        >
-          +
-        </button>
+      <div
+        className="sidebar-heading recents-heading current-apps-heading"
+        title={collapsed ? "Show projects" : "Hide projects"}
+        onClick={toggleCollapsed}
+      >
+        Projects
+        {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
       </div>
-      {apps.map(render)}
+      {!collapsed && apps.map(render)}
+      {!collapsed && (
+        <div
+          className="bookmark-row current-app-row current-app-new"
+          role="button"
+          tabIndex={0}
+          title="New app"
+          onClick={() => setComposing(true)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setComposing(true);
+            }
+          }}
+        >
+          <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
+            +
+          </span>
+          <span className="bookmark-name">New app</span>
+        </div>
+      )}
       {composing && (
         // The SAME composer /apps and /home show (apps/builder/HomeHero.tsx):
         // it names, scaffolds and navigates into the new app's chat itself,

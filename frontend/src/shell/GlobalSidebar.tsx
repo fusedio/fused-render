@@ -682,8 +682,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             }
           />
         </div>
-        {/* Current apps (D487): the workspace apps with unfiled tasks, above the
-            permanent Bookmarks tree. Renders nothing when there are none. */}
+        {/* Projects (D487, "Current apps" until 2026-08-26): the apps on the
+            desk, above the permanent Bookmarks tree. Collapsible; always ends
+            in a "+ New app" row. */}
         <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
