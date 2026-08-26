@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import jobs
-from fused_render.ai import catalog, fit, footprints, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, speed, supervisor
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
@@ -5291,6 +5291,45 @@ def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
     assert len(row["models"]) >= 3
     assert all(m["fit"] is not None for m in row["models"])
     assert len(calls) == 1
+
+
+def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review on AI-19: `fit._select_pool` used to call `hw_detect.
+    cached_hardware()` itself on every `fit.verdict` invocation — a fresh
+    `storage.read_json` open and JSON parse per catalog ROW, the identical
+    cost the test above already fixed for `footprints.load_store()`.
+    `hw_detect.cached_hardware()` now happens ONCE per request
+    (`describe_catalog`'s own `hardware = hw_detect.cached_hardware()`) and
+    every entry's `fit.verdict` reads off that same threaded-through value.
+
+    A test that only checked the verdict/runMode came out right on each row
+    would pass equally well against the N-reads-per-row bug this pins — the
+    assertion has to be a COUNT, not just a correct answer.
+
+    `speed.estimate_tok_s` is stubbed out here: SPEC AI-21 wired IT to call
+    `hw_detect.cached_hardware()` too (its own, separate, still-unthreaded
+    read, one per `text-generation` entry) — a real, pre-existing cost of
+    its own, but a DIFFERENT one than this test exists to pin, and left in
+    would inflate the count for a reason this test is not about."""
+    calls = []
+    real_cached_hardware = fit.hw_detect.cached_hardware
+
+    def _counting_cached_hardware():
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(fit.hw_detect, "cached_hardware", _counting_cached_hardware)
+    monkeypatch.setattr(speed, "estimate_tok_s", lambda *a, **k: None)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
+        {"id": "org/two", "label": "Two", "size_gb": 8.0, "note": ""},
+        {"id": "org/three", "label": "Three", "size_gb": 12.0, "note": ""},
+    ])
+    row = _fit_text_row(client)
+    assert len(row["models"]) >= 3
+    assert all(m["fit"] is not None for m in row["models"])
+    assert len(calls) == 1, f"expected exactly one hw_detect read, got {len(calls)}"
 
 
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------

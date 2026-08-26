@@ -1,5 +1,5 @@
 """Will this model FIT on this machine? — fused_render/ai/fit.py (SPEC AI-16,
-AI-16b, AI-16c, AI-19, D497, D519, D520, D521).
+AI-16b, AI-16c, AI-19, D497, D519, D520, D521, D540).
 
 `ai_runtime._fit_verdict` used to be handed `size_gb` and asked a memory
 question, which conflates two quantities that coincide only for a
@@ -704,7 +704,8 @@ RUN_MODE_CPU_ONLY = "cpu-only"
 
 
 def _select_pool(footprint: float, usable_ram_bytes: float, *,
-                 is_apple_unified: bool) -> tuple[float, str]:
+                 is_apple_unified: bool,
+                 hardware: hw_detect.HardwareInfo | None) -> tuple[float, str]:
     """The memory pool a footprint is actually judged against, and the run
     mode that pool implies — SPEC item 6.
 
@@ -717,18 +718,19 @@ def _select_pool(footprint: float, usable_ram_bytes: float, *,
     on Apple and then never actually uses it as a ceiling; this codebase's
     wired-limit read is real evidence and stays load-bearing.
 
-    Off Apple, `hw_detect.cached_hardware()` (the ONLY hw_detect function
-    this module may call — see that module's docstring) answers whether a
-    discrete, non-unified GPU exists. No cache yet, no GPU, or a reported
-    VRAM of `0` all read the same way: judge against RAM, `cpu-only` — a
-    machine hw_detect has not gotten to yet must not be silently treated as
-    GPU-less FOREVER, but it also must not be treated as having a GPU it has
-    not confirmed, so the safe default on "we don't know" is the one this
-    module has always used. A non-Apple UNIFIED-memory device (Strix Halo,
-    Grace/DGX Spark — `hw_detect._apply_unified_override`'s own cases) draws
-    from system RAM exactly like Apple Silicon does, so it is treated the
-    same way here: pool stays RAM, mode is `gpu` (the accelerator IS doing
-    the work; the pool just is not a separate one).
+    Off Apple, `hardware` — a caller's own `hw_detect.cached_hardware()`
+    reading, see `verdict()`'s docstring for why this function does not
+    call it itself — answers whether a discrete, non-unified GPU exists.
+    No cache yet, no GPU, or a reported VRAM of `0` all read the same way:
+    judge against RAM, `cpu-only` — a machine hw_detect has not gotten to
+    yet must not be silently treated as GPU-less FOREVER, but it also must
+    not be treated as having a GPU it has not confirmed, so the safe
+    default on "we don't know" is the one this module has always used. A
+    non-Apple UNIFIED-memory device (Strix Halo, Grace/DGX Spark —
+    `hw_detect._apply_unified_override`'s own cases) draws from system RAM
+    exactly like Apple Silicon does, so it is treated the same way here:
+    pool stays RAM, mode is `gpu` (the accelerator IS doing the work; the
+    pool just is not a separate one).
 
     A DISCRETE GPU's pool is its VRAM alone when the footprint fits inside
     it (`gpu`), or VRAM-plus-usable-RAM when it does not but the combined
@@ -739,7 +741,6 @@ def _select_pool(footprint: float, usable_ram_bytes: float, *,
     if is_apple_unified:
         return usable_ram_bytes, RUN_MODE_GPU
 
-    hardware = hw_detect.cached_hardware()
     if hardware is None or not hardware.gpus or hardware.total_vram_gb <= 0:
         return usable_ram_bytes, RUN_MODE_CPU_ONLY
 
@@ -794,6 +795,7 @@ def _fit_score(footprint: float, pool: float) -> float:
 def verdict(capability: str, model_id: str, size_gb: float | None = None,
            resident_gb: float | None = None, *,
            footprint_store: dict | None = _NOT_GIVEN,
+           hardware: hw_detect.HardwareInfo | None = _NOT_GIVEN,
            quantization: str | None = None,
            params: float | str | None = None,
            num_hidden_layers: int | None = None,
@@ -836,6 +838,29 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
 
     `footprint_store` and every keyword from `quantization` on are threaded
     straight through to `footprint_bytes` — see its own docstring.
+
+    `hardware` — a caller's own `hw_detect.cached_hardware()` reading —
+    exists for the identical reason `footprint_store` does (code review):
+    `_select_pool` used to call `hw_detect.cached_hardware()` itself,
+    which is a `storage.read_json` open plus a JSON parse EVERY time this
+    function runs, and a catalog request answers dozens of entries through
+    this same function on a route the model picker polls — the exact cost
+    `machine_ram_gb` is `lru_cache`d to avoid, just not paid off here yet.
+    Unlike `machine_ram_gb`, a PERMANENT cache is the wrong fix: `hw_detect
+    .start_hardware_refresh()` rewrites `ai_hardware.json` on a 6-hour tick
+    (an eGPU plugged in mid-session, say), and a `functools.lru_cache`d
+    reading would never see that — the exact staleness the background
+    refresh exists to prevent. So this is a PER-REQUEST reading threaded
+    through, `footprint_store`'s own shape: left unpassed (the default),
+    this calls `hw_detect.cached_hardware()` itself — correct for a
+    one-off lookup, and what every test and single-verdict caller still
+    gets, and still the ONLY `hw_detect` call this module makes (the
+    boundary `tests/test_ai_hw_detect.py::
+    test_fit_module_only_reads_the_cache_never_the_probe` pins) — passed
+    explicitly, a caller answering MANY entries in one request reads the
+    cache once and threads the SAME reading through every `verdict()` call,
+    each one at most as fresh as that one read, exactly like
+    `footprint_store`.
     """
     footprint, basis = footprint_bytes(
         capability, model_id, size_gb, resident_gb,
@@ -856,8 +881,10 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
         return {"verdict": "no", "basis": basis, "footprintBytes": footprint,
                 "score": 0.0, "runMode": RUN_MODE_GPU}
 
+    resolved_hardware = hw_detect.cached_hardware() if hardware is _NOT_GIVEN else hardware
     usable = max(0.0, ram_bytes - RESERVE_BYTES)
-    pool, run_mode = _select_pool(footprint, usable, is_apple_unified=is_apple)
+    pool, run_mode = _select_pool(footprint, usable, is_apple_unified=is_apple,
+                                  hardware=resolved_hardware)
 
     score = _fit_score(footprint, pool)
     if score >= 100.0:

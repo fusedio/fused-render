@@ -582,6 +582,85 @@ def test_apple_pool_stays_system_ram_regardless_of_a_stale_hw_detect_cache(monke
     assert result["runMode"] == "gpu"
 
 
+# -- SPEC AI-19 item 6b: the hardware reading is threaded, not re-read ------------
+
+
+def test_verdict_reads_the_hardware_cache_itself_when_none_is_threaded_through(monkeypatch):
+    """A lone caller (no `hardware=` passed, `footprint_bytes`'s own
+    `footprint_store` default-fetch shape) still gets a correct verdict —
+    `verdict()` reads `hw_detect.cached_hardware()` itself exactly once per
+    call, the same "do your own single read" fallback `footprint_store`
+    already has."""
+    calls = []
+    real_cached_hardware = hw_detect.cached_hardware
+
+    def _counting_cached_hardware():
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(hw_detect, "cached_hardware", _counting_cached_hardware)
+    result = fit.verdict("text-generation", "org/m", size_gb=4.0)
+    assert result is not None
+    assert len(calls) == 1
+
+
+def test_verdict_does_not_read_the_hardware_cache_again_when_one_is_threaded_through(monkeypatch):
+    """Code review: `_select_pool` used to call `hw_detect.cached_hardware()`
+    itself on every `verdict()` invocation — a fresh `storage.read_json`
+    open and JSON parse per catalog ROW on a route the model picker polls,
+    the exact cost `machine_ram_gb` is `lru_cache`d to avoid and
+    `footprint_store` is threaded through to avoid. A caller that already
+    has a reading in hand (the shape `ai_runtime.describe_catalog` now
+    uses) must not trigger a second read — `hardware=` passed explicitly
+    is used AS-IS, with zero further `hw_detect.cached_hardware()` calls."""
+    calls = []
+    real_cached_hardware = hw_detect.cached_hardware
+
+    def _counting_cached_hardware():
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(hw_detect, "cached_hardware", _counting_cached_hardware)
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)],
+        total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=0.0)
+    result = fit.verdict("text-generation", "org/m", size_gb=10.0, hardware=info)
+    assert result is not None
+    assert result["runMode"] == "gpu"  # the threaded reading was actually used
+    assert len(calls) == 0
+
+
+def test_a_multi_row_catalog_request_reads_hardware_ONCE_not_per_row(monkeypatch):
+    """Pins the improvement itself, not just unchanged behaviour: a caller
+    answering MANY catalog entries in one request (`ai_runtime.
+    describe_catalog`'s own shape, mirroring how `footprint_store` is
+    loaded once and threaded through every `fit.verdict` call) reads
+    `hw_detect.cached_hardware()` exactly ONCE regardless of how many
+    entries it answers for — a test that only checked the verdict came out
+    right on each row would pass equally well against the N-reads-per-row
+    bug this test exists to catch."""
+    calls = []
+    real_cached_hardware = hw_detect.cached_hardware
+
+    def _counting_cached_hardware():
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(hw_detect, "cached_hardware", _counting_cached_hardware)
+
+    # The router's own shape: one read up front, threaded through every
+    # per-entry `fit.verdict` call — see `ai_runtime.describe_catalog`.
+    hardware = hw_detect.cached_hardware()
+    assert len(calls) == 1
+
+    for i in range(5):
+        result = fit.verdict("text-generation", f"org/model-{i}", size_gb=4.0 + i,
+                             hardware=hardware)
+        assert result is not None
+
+    assert len(calls) == 1, f"expected exactly one read, got {len(calls)}"
+
+
 # -- SPEC AI-19 item 7: Gaussian fit score ------------------------------------------
 
 

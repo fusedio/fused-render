@@ -43,7 +43,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, footprints, registry, speed, supervisor
+from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
@@ -796,6 +796,16 @@ def _catalog_with_downloads() -> list[dict]:
     # polls (code review on AI-16). Passed straight through to every
     # `fit.verdict` call so none of them repeats the load.
     footprint_store = footprints.load_store()
+    # Same reasoning, same fix, for `hw_detect.cached_hardware()` (code
+    # review on AI-19): `fit._select_pool` used to call it itself on every
+    # `fit.verdict` invocation, re-opening and re-parsing `ai_hardware.json`
+    # once per catalog entry. Read once here and threaded through every
+    # `fit.verdict` call below — `fit.verdict`'s own docstring explains why
+    # this is a per-request reading, not a process-wide cache: `hw_detect.
+    # start_hardware_refresh()` rewrites that file on a 6-hour tick (an
+    # eGPU plugged in mid-session), and a permanently memoized reading
+    # would never see that.
+    hardware = hw_detect.cached_hardware()
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
@@ -873,6 +883,7 @@ def _catalog_with_downloads() -> list[dict]:
             entry["fit"] = fit.verdict(row["capability"], entry["id"],
                                        entry.get("size_gb"), entry.get("resident_gb"),
                                        footprint_store=footprint_store,
+                                       hardware=hardware,
                                        params=entry.get("params"),
                                        quantization=entry.get("quantization"))
             # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
