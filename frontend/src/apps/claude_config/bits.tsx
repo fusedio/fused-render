@@ -1,10 +1,9 @@
 // Shared pieces of the Claude-config app: the ONE list row every tab's items
 // render as (`ListRow`), the card/pill/group vocabulary around it, the
 // three-state toggle, the change-preview modal, the load-once-with-reload hook
-// every section uses, the git-status hook the tab strip and the History page
-// share, and the split preview pane the MD Files section needs. They lived in
-// ClaudeConfig.tsx; they sit here so a section and the panel can both reach
-// them without importing across pages.
+// every section uses, and the git-status hook the tab strip and the History
+// page share. They lived in ClaudeConfig.tsx; they sit here so a section and
+// the panel can both reach them without importing across pages.
 //
 // The bias is deliberately towards ONE of each thing. Nine tabs doing the same
 // job four ways is four sets of paddings, verbs and action placements for the
@@ -28,7 +27,7 @@ import {
   type ReactNode,
 } from "react";
 import { pushToast } from "@platform/lib/toast";
-import { EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
+import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
 import type { ChangePreview } from "./api";
@@ -119,6 +118,46 @@ export function Card({ children }: { children: ReactNode }) {
   return <div className="cc-card">{children}</div>;
 }
 
+// One bordered card per list, rows inside it separated by hairlines rather
+// than free-floating on the page background — see claude-config.css's .cc-list
+// for the defect this fixes (a row's content stopping well short of the page's
+// full-bleed width, with a hairline running under the void it left).
+export function List({ children }: { children: ReactNode }) {
+  return <div className="cc-list">{children}</div>;
+}
+
+// A list's loading state, in the same card shape it will resolve into —
+// shadcn's own Skeleton primitive rather than the app-wide shimmer-bar
+// pattern (SkeletonLines), so a list's "loading" and "loaded" states share one
+// silhouette instead of a generic bar block that vanishes into a differently
+// shaped card once the rows land.
+export function ListSkeleton({
+  rows = SKELETON_ROWS,
+  label = "Loading",
+}: {
+  rows?: number;
+  label?: string;
+}) {
+  return (
+    <div className="cc-list" role="status" aria-busy="true" aria-label={label}>
+      {Array.from({ length: rows }, (_, i) => (
+        <div className="cc-lrow" key={i}>
+          <div className="cc-lrow-line">
+            {/* Skeleton's own default fill is shadcn's bg-muted — the
+                Tailwind grayscale palette, not this app's tokens. In light
+                theme that resolves within ~1% contrast of .cc-list's own
+                --bg-alt, so every list's loading state was an empty bordered
+                card. --border is what every hairline in this app already
+                uses for "visible against --bg-alt in both themes". */}
+            <Skeleton className="h-3 w-28 shrink-0 rounded-full bg-[var(--border)]" />
+            <Skeleton className="h-3 w-full max-w-64 rounded-full bg-[var(--border)]" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function CardTitle({ children, mono }: { children: ReactNode; mono?: boolean }) {
   return <div className={"cc-card-title" + (mono ? " cc-mono" : "")}>{children}</div>;
 }
@@ -200,20 +239,36 @@ export function SectionToolbar({
 }) {
   return (
     <div className="cc-toolbar">
-      <span className="cc-summary">{summary}</span>
-      {children}
-      {onRefresh && (
-        <button
-          type="button"
-          className="cc-iconbtn"
-          title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
-          aria-label={refreshLabel}
-          aria-busy={refreshBusy || undefined}
-          disabled={refreshBusy}
-          onClick={onRefresh}
-        >
-          <Icon name="refresh" />
-        </button>
+      <span className="cc-summary" title={typeof summary === "string" ? summary : undefined}>
+        {summary}
+      </span>
+      {/* Every control after the summary travels as ONE flex item — see
+          .cc-toolbar-controls in claude-config.css. That is what stops the
+          toolbar wrapping into a ragged stack at a narrow width: the summary
+          drops to its own line first, and the controls keep their single row
+          for as long as there is room for any of them. `-solo` (no children,
+          just the refresh icon — Memory, Skills) is the one exception: at a
+          narrow width the base rule still forces the summary onto its own
+          full line even though a single icon button had room to share it,
+          which read as a dead row under "10 skill(s)". The modifier lets the
+          narrow media query recognize that case and keep them together. */}
+      {(children || onRefresh) && (
+        <div className={"cc-toolbar-controls" + (children ? "" : " cc-toolbar-controls-solo")}>
+          {children}
+          {onRefresh && (
+            <button
+              type="button"
+              className="cc-iconbtn"
+              title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
+              aria-label={refreshLabel}
+              aria-busy={refreshBusy || undefined}
+              disabled={refreshBusy}
+              onClick={onRefresh}
+            >
+              <Icon name="refresh" />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -326,7 +381,10 @@ export function ListRow({
   return (
     <div className={"cc-lrow" + (open ? " open" : "")}>
       <div className="cc-lrow-line">
-        {lead}
+        {/* A fixed-width slot rather than the control's own natural width —
+            it keeps a lead control (Toggle3) from becoming the loudest thing
+            on the line just because it happens to be the widest. */}
+        {lead != null && <span className="cc-lrow-lead">{lead}</span>}
         {details ? (
           <button
             type="button"
@@ -574,54 +632,6 @@ export function useGitStatus(epoch: number): GitStatusState {
   return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
 }
 
-// -- split preview pane -------------------------------------------------------
-
-// fs path -> the encoded tail of an /explorer/view/ or /explorer/embed/ URL.
-// Same codec as router.urlForFsPath, spelled out here because that helper picks
-// the prefix from the CURRENT page's mode and the preview pane needs both.
-function encodePath(fsPath: string): string {
-  return fsPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
-// The split preview pane: the shell's OWN chrome-free view of the file
-// (/explorer/embed/<path>), which is how any markdown gets rendered here — this
-// app has no renderer of its own and should not grow one.
-export function PreviewPane({ path, onClose }: { path: string; onClose: () => void }) {
-  return (
-    <aside className="cc-preview">
-      <div className="cc-preview-head">
-        {/* Ellipsized from the LEFT (direction: rtl) so the filename tail stays
-            readable; <bdi dir="ltr"> keeps the path's own characters in logical
-            order, without which the leading "/" renders at the far end. */}
-        <span className="cc-preview-path cc-mono">
-          <bdi dir="ltr">{path}</bdi>
-        </span>
-        <button
-          type="button"
-          className="btn"
-          title="Open in the file explorer (new tab)"
-          onClick={() => window.open(VIEW_PREFIX + encodePath(path), "_blank")}
-        >
-          ↗
-        </button>
-        <button type="button" className="btn" title="Close preview" onClick={onClose}>
-          ✕
-        </button>
-      </div>
-      <iframe
-        className="cc-preview-frame"
-        title={`Preview of ${path}`}
-        src={EMBED_PREFIX + encodePath(path)}
-      />
-    </aside>
-  );
-}
-
 // -- misc ---------------------------------------------------------------------
 
 // Read a File as base64 with the data: prefix stripped — what the profiles
@@ -640,9 +650,53 @@ export function fileToB64(file: File): Promise<string> {
 export function Icon({
   name,
 }: {
-  name: "edit" | "eye" | "folder" | "trash" | "refresh" | "clock" | "copy" | "chevron" | "plus";
+  name:
+    | "edit"
+    | "eye"
+    | "folder"
+    | "trash"
+    | "refresh"
+    | "clock"
+    | "copy"
+    | "chevron"
+    | "plus"
+    | "undo"
+    | "info"
+    | "lock"
+    | "check";
 }) {
   const paths: Record<string, ReactNode> = {
+    // The Preferences unset-value hint (title= carries the actual text —
+    // see .cc-row-hint in claude-config.css for why it isn't inline text).
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <line x1="12" y1="11" x2="12" y2="16" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </>
+    ),
+    // Memory's per-project Commit — a plain checkmark, distinct from the
+    // trash (Clear) and folder (Reveal) glyphs beside it.
+    check: <polyline points="20 6 9 17 4 12" />,
+    // A read-only marketplace, in the Plugins rail — a muted fact, not a
+    // warning, so it is a quiet glyph rather than a coloured pill (round 2:
+    // the pill overflowed the rail's fixed width and was tinted --warning,
+    // a hue this app reserves for uncommitted git state).
+    lock: (
+      <>
+        <rect x="5" y="11" width="14" height="9" rx="2" />
+        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+      </>
+    ),
+    // The Preferences "reset to default" ghost icon button — a corner-arrow
+    // undo, deliberately not the refresh icon's rotation glyph, so the two
+    // don't read as the same action.
+    undo: (
+      <>
+        <polyline points="9 14 4 9 9 4" />
+        <path d="M20 20v-7a4 4 0 0 0-4-4H4" />
+      </>
+    ),
     // Points down at rest; .cc-lrow.open rotates it (CSS, so no second glyph).
     chevron: <polyline points="6 9 12 15 18 9" />,
     plus: (

@@ -5,7 +5,7 @@
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
 //   "/claude-config"         -> Claude config panel (native, no mount)
-//   "/claude-md"             -> legacy; redirects into the panel's MD Files tab
+//   "/claude-md"             -> legacy; redirects into the Claude config panel
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
 //   "/preferences|/templates|/mounts" -> settings pages
@@ -577,11 +577,12 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", "/home");
   }
-  // Legacy: the CLAUDE.md explorer is a section of the Config panel again, so
-  // the old page URL folds into it (same render-time rewrite as "/" above)
-  // rather than 404ing on someone's bookmark.
+  // Legacy: the CLAUDE.md explorer ("MD Files") was deleted from the Config
+  // panel in round 2, so the old page URL folds into the panel's default tab
+  // (same render-time rewrite as "/" above) rather than 404ing on someone's
+  // bookmark.
   if (location.pathname === "/claude-md") {
-    history.replaceState(null, "", "/claude-config?cctab=claudemd");
+    history.replaceState(null, "", "/claude-config");
   }
   // The AI Models page names each of its five tabs in the path now, and the
   // default is a name like the rest rather than the absence of one — so the
