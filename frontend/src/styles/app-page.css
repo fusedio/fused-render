@@ -76,10 +76,13 @@
 }
 
 /* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
-   under the triggers only need to stop looking like links. */
+   under the triggers only need to lose the underline. NOT the colour: this
+   rule is unlayered and would beat the trigger's own layered state colours
+   (text-foreground/60, hover:, data-active:), leaving the active tab as muted
+   as the rest (Bugbot on #851). There is no global `a` colour rule to cancel;
+   the utilities already win over the UA default. */
 .app-page-tabs a {
   text-decoration: none;
-  color: inherit;
 }
 
 /* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).
