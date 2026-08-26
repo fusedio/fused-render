@@ -10,6 +10,8 @@ import base64
 import json
 import os
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from fused_render import claude_spawn, schedule
@@ -226,6 +228,8 @@ def test_a_send_with_images_pre_allows_the_task_shots_dir(tmp_path, monkeypatch)
     assert shot in seen["prompt"]
 
 
+@pytest.mark.skipif(os.name == "nt",
+                    reason="os.symlink needs elevation on Windows")
 def test_the_pre_allowed_dir_and_the_stored_paths_have_ONE_spelling(tmp_path, monkeypatch):
     """The Read rule matches TEXT, so both sides must resolve identically.
 

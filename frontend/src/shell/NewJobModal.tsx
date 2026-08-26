@@ -2150,40 +2150,49 @@ export default function NewJobModal({
   }, []);
   // Keys for images attached in THIS session, clear of the edit-seeded 0..n.
   const imageKey = useRef(1000);
-  // Every in-flight upload, so Save can await the stragglers instead of
-  // silently scheduling a task with half its images (each promise removes
-  // itself when it settles).
-  const uploadsRef = useRef<Set<Promise<void>>>(new Set());
+  // Every in-flight ATTACHMENT — the read and the upload together, not just
+  // the upload — so Save can await the stragglers instead of silently
+  // scheduling a task with half its images. Each promise removes itself when
+  // it settles. Registering only the upload was a hole: it was added inside
+  // `FileReader.onload`, so a drop-then-Save could run while readers were
+  // still pending, find the set empty, await nothing, and drop every fresh
+  // attachment (Bugbot, PR #865).
+  const pendingRef = useRef<Set<Promise<void>>>(new Set());
   const fileRef = useRef<HTMLInputElement | null>(null);
   const attachImages = useCallback((files: FileList | File[] | null) => {
     const picked = [...(files ?? [])].filter((f) => f.type.startsWith("image/"));
     if (!picked.length) return;
     picked.forEach((file) => {
       const key = imageKey.current++;
-      const fr = new FileReader();
-      fr.onload = () => {
-        const dataUrl = String(fr.result || "");
-        if (!dataUrl.startsWith("data:image/")) return;
-        // The cap is answered against the REF, synchronously, and BEFORE the
-        // POST: files that lose the race used to upload anyway, writing orphan
-        // bytes into a directory with no TTL and leaving Save something to
-        // await that no chip would ever show.
-        if (imagesRef.current.length >= IMAGES_MAX) return;
-        applyImages((prev) => [...prev, { key, path: "", dataUrl }]);
-        const up: Promise<void> = uploadTaskShot(dataUrl)
-          .then(({ path }) =>
+      // Registered SYNCHRONOUSLY, before the read even starts, and covering
+      // read-then-upload as one unit — that is what makes Save's await
+      // meaningful for a file dropped an instant earlier.
+      const pending: Promise<void> = new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onerror = () => reject(fr.error ?? new Error("could not read the image"));
+        fr.onload = () => resolve(String(fr.result || ""));
+        fr.readAsDataURL(file);
+      })
+        .then((dataUrl) => {
+          if (!dataUrl.startsWith("data:image/")) return;
+          // The cap is answered against the REF, synchronously, and BEFORE the
+          // POST: files that lose the race used to upload anyway, writing
+          // orphan bytes into a directory with no TTL and leaving Save
+          // something to await that no chip would ever show.
+          if (imagesRef.current.length >= IMAGES_MAX) return;
+          applyImages((prev) => [...prev, { key, path: "", dataUrl }]);
+          return uploadTaskShot(dataUrl).then(({ path }) =>
             applyImages((prev) => prev.map((i) => (i.key === key ? { ...i, path } : i))),
-          )
-          .catch((e) => {
-            // A failed upload takes its thumbnail with it — a picture on the
-            // card that would not reach the task is the lie to avoid.
-            applyImages((prev) => prev.filter((i) => i.key !== key));
-            setError((e as Error).message || "image upload failed");
-          })
-          .finally(() => uploadsRef.current.delete(up));
-        uploadsRef.current.add(up);
-      };
-      fr.readAsDataURL(file);
+          );
+        })
+        .catch((e) => {
+          // A failed read or upload takes its thumbnail with it — a picture on
+          // the card that would not reach the task is the lie to avoid.
+          applyImages((prev) => prev.filter((i) => i.key !== key));
+          setError((e as Error).message || "image upload failed");
+        })
+        .finally(() => pendingRef.current.delete(pending));
+      pendingRef.current.add(pending);
     });
   }, [applyImages]);
 
@@ -2836,7 +2845,7 @@ export default function NewJobModal({
       // A drop the instant before Save must still make the task: wait out the
       // in-flight uploads, then read the paths off state. Failures already
       // removed themselves (attachImages' catch), so what remains is real.
-      await Promise.all([...uploadsRef.current]);
+      await Promise.all([...pendingRef.current]);
       // One pure function builds the whole body, so what actually goes on the
       // wire can be asserted without a DOM (new-task-form.test.ts). A rule
       // rides with its anchor, a legacy cron line replaces `due`, a CHAT's

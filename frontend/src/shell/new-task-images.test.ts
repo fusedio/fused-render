@@ -101,11 +101,23 @@ describe("the wiring the payload test cannot see", () => {
     expect(at).toBeLessThan(MODAL.indexOf("uploadTaskShot(dataUrl)"));
   });
 
-  it("Save waits out in-flight uploads, then reads paths the ref already holds", () => {
+  it("the whole read+upload pipeline is registered BEFORE the read starts", () => {
+    // Registering only the upload (inside FileReader.onload) let a Save right
+    // after a drop find an empty set, await nothing, and drop the attachment
+    // (Bugbot, PR #865).
+    const add = MODAL.indexOf("pendingRef.current.add(pending);");
+    const read = MODAL.indexOf("fr.readAsDataURL(file);");
+    expect(add).toBeGreaterThan(-1);
+    expect(read).toBeGreaterThan(-1);
+    expect(MODAL).toContain("const pending: Promise<void> = new Promise<string>(");
+    expect(MODAL).toContain("fr.onerror = () =>");
+  });
+
+  it("Save waits out in-flight attachments, then reads paths the ref already holds", () => {
     // The ref is the AUTHORITY, not a mirror taken at render: a `setImages`
     // updater only reaches `images` on the next render, so a drop-then-Save
     // read an empty path and filter(Boolean) dropped the picture.
-    expect(MODAL).toContain("await Promise.all([...uploadsRef.current])");
+    expect(MODAL).toContain("await Promise.all([...pendingRef.current])");
     expect(MODAL).toContain("imagesRef.current.map((i) => i.path).filter(Boolean)");
     expect(MODAL).toContain("imagesRef.current = fn(imagesRef.current);");
   });
