@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9708,19 +9708,42 @@ background apps are the third.
   manifest's own bytes, the daemon file's mtime/size, and the interpreter
   path (D499) — any of the three changing retires the running child rather
   than reusing it.
-- **The enabled store.** `<home_dir()>/background_apps.json` is the sticky
-  "keep this running" list (D501) — a folder path that opts in stays enabled
-  across restarts until explicitly disabled, independent of whether any page
-  for it is currently open. A folder that is temporarily missing or
-  unreadable drops out of `enabled_paths()`'s result (read-only) without
-  being removed from the store, so it reappears the moment it's readable
-  again.
+- **Run state and autostart are independent (D511).** Whether the daemon is
+  alive right now (`engine_host`'s own live-child bookkeeping) and whether
+  the server should bring it up at every launch (a persisted opt-in flag)
+  used to be one conflated "enabled" concept — `enable()` started the daemon
+  AND persisted "keep this running"; `disable()` stopped it AND un-persisted.
+  Nothing could change either fact alone, and the user-visible symptom was
+  the OpenWhisper tray's "Quit" and "Turn Off" looking identical when
+  clicked (both just made the app vanish), differing only invisibly at the
+  next server start. They are now two orthogonal facts: `POST /start` spawns
+  now, `POST /stop` kills now, `POST /restart` respawns — none of the three
+  touch autostart — and `POST /autostart` (body `{"html", "autostart": bool}`)
+  is the ONLY thing that persists it. **Autostart is opt-in**: `start()`
+  alone never sets it, so a "just try it once" call never silently installs
+  a daemon that survives a server restart.
+- **The autostart store.** `<home_dir()>/background_apps.json` (unchanged
+  filename; its `"enabled"` key is now `"autostart"`) is the sticky "bring
+  this back at every launch" list (D501) — a folder that opts in comes back
+  across restarts until autostart is explicitly turned off, independent of
+  whether any page for it is currently open OR whether the daemon happens to
+  be running right now. A folder that is temporarily missing or unreadable
+  drops out of `autostart_paths()`'s result (read-only) without being
+  removed from the store, so it reappears the moment it's readable again.
+  Paths are realpath-normalized (D512, the half of D509's fix that decision
+  deferred), matching `engine_id_for`'s identity everywhere the store is
+  read or written.
 - **Bring-up.** `engine_host.ensure_background` is engine_host's third child
-  kind (D502): validated against the enabled store rather than a templates
-  root (an invariant check, the same stance `_validate`'s interpreter check
-  already documents — not a trust boundary, since the caller already resolved
-  `daemon` from the folder's own manifest), and reused/spawned with the same
-  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
+  kind (D502): validated against the daemon's OWN folder manifest, not the
+  autostart store (D511 — walking the autostart store here used to make
+  `start()` refuse to spawn any app not opted into autostart, backwards once
+  autostart is opt-in; `_validate_background` now derives the folder from
+  `os.path.dirname(daemon)` and checks THAT folder's manifest declares
+  exactly this daemon file — an invariant check, the same stance
+  `_validate`'s interpreter check already documents, not a trust boundary,
+  since the caller already resolved `daemon` from the folder's own
+  manifest), and reused/spawned with the same double-checked dance
+  `ensure`/`ensure_app` already use. A `kind="background"`
   child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
   now gates on `kind == "app"`, not the `module` field's truthiness) —
   sitting idle is the entire point of a background app, unlike a warm script
@@ -9738,41 +9761,48 @@ background apps are the third.
   (D509, 2026-08-26 code review — it used to only `abspath` it): folder
   identity across every endpoint now agrees with `engine_id_for`'s own
   realpath-based hash, so a folder reached through a symlink alias can no
-  longer make `enabled` (compared against the abspath-only `enabled_paths()`)
-  and `running` (keyed off `engine_id_for`) disagree about the same app, and
-  `enable()`/`disable()` through different aliases of one folder can no
-  longer write/remove two separate store entries for it. `GET /status`
-  reports `{enabled, running, pid, version, engine_id}`; `POST /enable`
-  persists then brings the daemon up (409 if the folder's project venv isn't
-  built yet — the same stance `/api/engine` already takes, D500: building
-  one inside a POST would block for minutes, so opening the page once
-  installs it first); `POST /stop` kills the running daemon WITHOUT
-  disabling it, so the startup hook (or a later `enable`/`restart`) brings
-  it back; `POST /disable` kills it AND unpersists, so it stays down;
-  `POST /restart` respawns the currently-enabled daemon, always against a
-  FRESHLY computed version digest (D510, 2026-08-26 code review — the
-  live-child branch used to call `engine_host.restart(engine_id)` bare,
-  which rebuilt the replacement `Child` from `existing.version`, the OLD
-  digest; a restart right after editing `daemon.py` would then respawn the
-  new code tagged with the stale version, and the next enable()/server-start
-  resurrection's own fresh digest would disagree with it and tear the
-  just-restarted child down for a second respawn — `engine_host.restart` now
-  takes an optional `version` override, defaulting to the existing child's
-  version for every other caller, i.e. engine_forward.py's heal-on-proxy,
-  which is unchanged); `GET /running` is the cheap
-  enabled-paths-with-a-live-child-boolean read the `/apps` grid's badge uses
-  (engine_host.current only, no folder walk, no toml reads).
+  longer make `autostart` (compared against the realpath-normalized
+  `autostart_paths()`, D512) and `running` (keyed off `engine_id_for`)
+  disagree about the same app, and `autostart` calls through different
+  aliases of one folder can no longer write/remove two separate store
+  entries for it. `enable`/`disable` are gone — no back-compat aliases
+  (D511; this feature was unmerged when the split landed). `GET /status`
+  reports `{running, autostart, pid, version, engine_id}` as two independent
+  facts; `POST /start` spawns the daemon now WITHOUT touching autostart
+  (409 if the folder's project venv isn't built yet — the same stance
+  `/api/engine` already takes, D500: building one inside a POST would block
+  for minutes, so opening the page once installs it first); `POST /stop`
+  kills the running daemon, also without touching autostart — if it's on,
+  the startup hook (or a later `start`/`restart`) brings it back; if it's
+  off (the default), it stays down until an explicit `start`; `POST
+  /autostart` (body `{"html", "autostart": bool}`) ONLY sets the persisted
+  flag, starting and stopping nothing; `POST /restart` respawns, also
+  autostart-neutral, always against a FRESHLY computed version digest
+  (D510, 2026-08-26 code review — the live-child branch used to call
+  `engine_host.restart(engine_id)` bare, which rebuilt the replacement
+  `Child` from `existing.version`, the OLD digest; a restart right after
+  editing `daemon.py` would then respawn the new code tagged with the stale
+  version, and the next start()/server-start resurrection's own fresh
+  digest would disagree with it and tear the just-restarted child down for
+  a second respawn — `engine_host.restart` now takes an optional `version`
+  override, defaulting to the existing child's version for every other
+  caller, i.e. engine_forward.py's heal-on-proxy, which is unchanged);
+  `GET /running` is the cheap
+  autostart-paths-with-a-live-child-boolean read the `/apps` grid's badge
+  uses (engine_host.current only, no folder walk, no toml reads).
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
-  the pre-bind path) walks `enabled_paths()` and brings each one up,
+  the pre-bind path) walks `autostart_paths()` and brings each one up,
   logging-and-skipping a folder whose manifest went dead or whose project
   venv isn't built rather than letting one bad folder block the others or
-  delay server readiness.
+  delay server readiness. Only paths explicitly present in the autostart
+  store ever come back here — a folder that was only `start()`ed, with
+  autostart never turned on, does not.
 - **`fused.daemon`** (`static/runtime.js`) is the browser's control surface for
   a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
-  variant of `runPython` for the PAGE's own script: `status()` / `enable()` /
-  `disable()` / `stop()` / `restart()` all send the page's own path as
-  `html`; `call(path, body)` reaches the daemon directly, proxied through the
+  variant of `runPython` for the PAGE's own script: `status()` / `start()` /
+  `stop()` / `restart()` / `setAutostart(bool)` all send the page's own path
+  as `html`; `call(path, body)` reaches the daemon directly, proxied through the
   same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
   `engine_id` from a cached `status()` call. Local-only, like `fused.ai`,
@@ -9794,7 +9824,7 @@ background apps are the third.
   `Child.folder`) into a `kind="background"` child's environment only — the
   one affordance the API above doesn't otherwise offer, since every endpoint
   keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
-  is the stdlib-only client that reads it: `status()`/`stop()`/`disable()`/`restart()`
+  is the stdlib-only client that reads it: `status()`/`stop()`/`set_autostart(bool)`/`restart()`
   against the calling daemon's own app, resolving the origin the same ladder
   `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
   `NotUnderEngine` when the env var is absent (not running as an
@@ -9804,22 +9834,27 @@ background apps are the third.
   child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
   bring-up.
 - **Resurrection has three triggers, not one, and they are not equally
-  strong.** Server start (the resurrection hook) and a page's
-  `enable()`/`restart()` are the two deliberate ones. The third,
-  undocumented until D505, is heal-on-proxy: `stop()` pops the `Child` out
-  of `engine_host._children` before killing it (`engine_host.stop`), so a
-  proxied call afterward finds nothing registered and returns 409 rather
-  than reviving anything. A process ended any OTHER way — killed externally,
-  crashed, or `terminate:`d by native code that never called the server's
-  API — leaves the `Child` registered, and the next proxied request
-  (`engine_forward.py:216-222`) heals by respawning it. This makes a raw
-  external kill the WEAKEST way to end a background app: weaker than
-  `stop()`, because it skips the one piece of bookkeeping that prevents an
-  accidental revival. Anything that wants "quit and stay off" from outside
-  the server (a tray icon, a CLI) must go through `stop()`/`disable()` (the
-  D505 client, from inside the daemon, is exactly this), not a direct
-  process kill.
-- **A page must not spawn a daemon merely by being rendered (D507).**
+  strong — and D511 makes the FIRST of the three conditional on autostart.**
+  Server start (the resurrection hook) only brings a folder back if it is in
+  the autostart store; a page's `start()`/`restart()` is unconditional
+  (deliberate — that's what it's for) but never itself sets autostart. The
+  third, undocumented until D505, is heal-on-proxy: `stop()` pops the
+  `Child` out of `engine_host._children` before killing it
+  (`engine_host.stop`), so a proxied call afterward finds nothing registered
+  and returns 409 rather than reviving anything — this trigger is entirely
+  about run state and has nothing to do with autostart. A process ended any
+  OTHER way — killed externally, crashed, or `terminate:`d by native code
+  that never called the server's API — leaves the `Child` registered, and
+  the next proxied request (`engine_forward.py:216-222`) heals by respawning
+  it. This makes a raw external kill the WEAKEST way to end a background
+  app: weaker than `stop()`, because it skips the one piece of bookkeeping
+  that prevents an accidental revival. Anything that wants "stop it and
+  don't come back automatically" from outside the server (a tray icon, a
+  CLI) must go through `stop()` (the D505 client, from inside the daemon, is
+  exactly this) AND confirm autostart is off (or never call `autostart` in
+  the first place — it's off by default) — not a direct process kill.
+- **A page must not spawn a daemon (or persist autostart) merely by being
+  rendered (D507).**
   `AppPreviewCard`'s live thumbnail (Home's app strip, the `/apps` hub — the
   card mounts an app's own `entry_html` live and sandboxed
   `allow-scripts allow-same-origin` whenever it has no `preview.png`, or on
@@ -9835,29 +9870,30 @@ background apps are the third.
   lands in the rendered page's own `location.search`, reliably, not merely
   inherited from an ancestor. `runtime.js` already computed this fact for the
   focus contract (`IS_THUMBNAIL`, mirroring `router.IS_PREVIEW`/
-  `ancestorIsPreview`); `enable()`, `restart()`, and `call()` now check it
+  `ancestorIsPreview`); `start()`, `restart()`, and `call()` now check it
   before making any request and reject with a named `Error` — no silent
   no-op — pointing the author at `status()` on load and an explicit user
-  action for `enable()`/`restart()`. `call()` is in scope despite never
+  action for `start()`/`restart()`. `call()` is in scope despite never
   itself calling `ensure_background`: `engine_forward.py`'s heal-on-proxy
   path (the D505 entry above, `_forward` at lines ~216-222) respawns a
-  dead-but-enabled child on ANY proxied call, so an unguarded `call()` from a
-  preview render could resurrect a daemon some other session had enabled.
-  `stop()` and `disable()` are gated the same way as `enable()`/`restart()`/
-  `call()` (D508, 2026-08-26 code review — the original text here had this
-  inverted): a card thumbnail mounts an app's own `entry_html` live and
-  sandboxed with `allow-scripts`, so an app whose init path calls
-  `fused.daemon.disable()` would un-persist a running daemon just because
-  its card scrolled past or was hovered — worse than the `enable()` hazard
-  this guard exists for in the first place, because `disable()` survives a
-  server restart. `status()` is the one method deliberately left open: it is
-  read-only. This is a client-side guard, addressing a careless app (the
-  verified hazard), not a server-side one: the flag is confirmed to reach
-  the app's own frame directly, so the check belongs where the calls
-  themselves originate; a page willing to bypass `runtime.js` and call the
-  underlying `fetch("/api/apps/background/enable", ...)` directly was never
-  something this guard (or any single function-level guard) could stop, and
-  that bypass is unrelated to preview rendering specifically.
+  dead-but-running child on ANY proxied call, so an unguarded `call()` from a
+  preview render could resurrect a daemon some other session had started.
+  `stop()` and `setAutostart()` are gated the same way as `start()`/
+  `restart()`/`call()` (D508, 2026-08-26 code review — the original text
+  here had this inverted): a card thumbnail mounts an app's own `entry_html`
+  live and sandboxed with `allow-scripts`, so an app whose init path calls
+  `fused.daemon.setAutostart(true)` would persist a "come back forever"
+  flag just because its card scrolled past or was hovered — worse than the
+  old `enable()` hazard this guard exists for in the first place, because
+  it survives a server restart. `status()` is the one method deliberately
+  left open: it is read-only. This is a client-side guard, addressing a
+  careless app (the verified hazard), not a server-side one: the flag is
+  confirmed to reach the app's own frame directly, so the check belongs
+  where the calls themselves originate; a page willing to bypass
+  `runtime.js` and call the underlying
+  `fetch("/api/apps/background/start", ...)` directly was never something
+  this guard (or any single function-level guard) could stop, and that
+  bypass is unrelated to preview rendering specifically.
 - **Sequenced-after, deliberately absent here**: the OpenWhisper port this
   feature exists to support, macOS start-at-login, and any widget surface
   for a background app.
