@@ -1,4 +1,4 @@
-// The app page's Files tab (D488, amended): the app folder's files as a tree
+// The app page's Files tab: the app folder's files as a tree
 // on the left, the selected file rendered in one of ITS templates on the right,
 // with the file's name and a template switcher above the render.
 //

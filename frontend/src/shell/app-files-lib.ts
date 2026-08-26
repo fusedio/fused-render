@@ -1,7 +1,7 @@
 // Pure helpers for the app page's Files tab (shell/AppFiles.tsx): the tree
 // built from a walk, the `?file=` guard, and the template list / iframe URL
-// rules borrowed from the explorer. No DOM here so app-files.test.ts can
-// import it under bun without a window.
+// rules borrowed from the explorer. No DOM here, so it loads anywhere
+// (a bare test runtime included).
 import type { TemplateEntry, WalkEntry } from "@platform/lib/api";
 import { partitionModes } from "@platform/lib/mode-visibility";
 
