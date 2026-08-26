@@ -660,6 +660,211 @@ def test_mcp_refuses_an_option_shaped_server_name(client, claude_dir, monkeypatc
     assert body == {"ok": False, "error": "invalid server name"}
 
 
+# -- plugins: what an installed plugin puts in a session ---------------------
+# `contents` is the only action that reads the plugin's own FILES rather than
+# the two json files beside them, so its whole contract is on-disk layout: the
+# conventional dirs, the manifest's right to relocate them, and the boundary
+# that keeps a third-party manifest from pointing this at the rest of the disk.
+
+
+def _installed(claude_dir, pid, root, **rec):
+    """Record `pid` as installed at `root`, the way the CLI does."""
+    path = claude_dir / "plugins" / "installed_plugins.json"
+    doc = json.loads(path.read_text()) if path.exists() else {"plugins": {}}
+    doc.setdefault("plugins", {})[pid] = [{"installPath": str(root), **rec}]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc))
+
+
+def _plugin_tree(tmp_path, name, manifest=None):
+    root = tmp_path / "plugin-cache" / name
+    (root / ".claude-plugin").mkdir(parents=True)
+    if manifest is not None:
+        body = manifest if isinstance(manifest, str) else json.dumps(manifest)
+        (root / ".claude-plugin" / "plugin.json").write_text(body)
+    return root
+
+
+def _write(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+
+
+def test_plugins_contents_reads_every_component_kind_off_disk(
+    client, claude_dir, tmp_path
+):
+    root = _plugin_tree(tmp_path, "kitchen", {"name": "kitchen", "description": "All of it."})
+    _write(root / "skills" / "brewing" / "SKILL.md",
+           "---\nname: brew-coffee\ndescription: \"Makes coffee.\"\n---\nbody\n")
+    # Nested, because a plugin is free to group its skills in subdirectories.
+    _write(root / "skills" / "group" / "steeping" / "SKILL.md",
+           "---\ndescription: Makes tea.\n---\n")
+    _write(root / "commands" / "sub" / "pour.md", "---\ndescription: Pours.\n---\n")
+    _write(root / "agents" / "taster.md", "---\nname: taster\ndescription: Tastes.\n---\n")
+    _write(root / "hooks" / "hooks.json", json.dumps({"hooks": {
+        "PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}],
+        "SessionStart": [{"hooks": [{"type": "command", "command": "y"},
+                                    {"type": "command", "command": "z"}]}],
+    }}))
+    _write(root / ".mcp.json", json.dumps({"mcpServers": {"beans": {"command": "node"}}}))
+    _installed(claude_dir, "kitchen@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="kitchen@acme").json()
+    assert body["ok"] is True
+    assert body["description"] == "All of it."
+    assert body["root"] == str(root)
+
+    # A skill is a DIRECTORY with a SKILL.md in it; its name comes from
+    # frontmatter, and falls back to the directory when the block names none.
+    assert [(s["name"], s["description"]) for s in body["skills"]] == [
+        ("brew-coffee", "Makes coffee."),
+        ("steeping", "Makes tea."),
+    ]
+    assert body["skills"][0]["path"] == str(root / "skills" / "brewing" / "SKILL.md")
+
+    # A command is INVOKED by its path, so the path is its name — a nested one
+    # spells the separator the way the invocation does.
+    assert body["commands"] == [{
+        "name": "sub:pour", "description": "Pours.",
+        "path": str(root / "commands" / "sub" / "pour.md"),
+    }]
+    # An agent declares its own name, so that is what it is called.
+    assert body["agents"][0]["name"] == "taster"
+
+    # One row per EVENT, counting the commands under it and naming its matchers
+    # — not one row per command, which is a ${CLAUDE_PLUGIN_ROOT} string that
+    # says nothing on one line.
+    assert {h["name"]: h["description"] for h in body["hooks"]} == {
+        "PostToolUse": "1 hook on Write",
+        "SessionStart": "2 hooks",
+    }
+    assert body["hooks"][0]["path"] == str(root / "hooks" / "hooks.json")
+
+    assert body["mcpServers"] == [{
+        "name": "beans", "description": "node", "path": str(root / ".mcp.json"),
+    }]
+
+
+def test_plugins_contents_honours_the_manifest_s_relocated_paths(
+    client, claude_dir, tmp_path
+):
+    # Every path a manifest may move, including the ${CLAUDE_PLUGIN_ROOT} spelling
+    # the CLI substitutes, and the list form.
+    root = _plugin_tree(tmp_path, "moved", {
+        "name": "moved",
+        "skills": ["./elsewhere/skills", "${CLAUDE_PLUGIN_ROOT}/more"],
+        "commands": "./cmds",
+        "agents": "./bots",
+        "hooks": "./cfg/hooks.json",
+        "mcpServers": {"remote": {"type": "http", "url": "https://example.test/mcp"}},
+    })
+    _write(root / "elsewhere" / "skills" / "one" / "SKILL.md", "---\nname: one\n---\n")
+    _write(root / "more" / "two" / "SKILL.md", "---\nname: two\n---\n")
+    _write(root / "cmds" / "go.md", "")
+    _write(root / "bots" / "bot.md", "")
+    _write(root / "cfg" / "hooks.json", json.dumps({"hooks": {"Stop": [{"hooks": [{}]}]}}))
+    # The conventional locations hold decoys: a manifest that names a dir
+    # REPLACES the default, it does not add to it.
+    _write(root / "skills" / "decoy" / "SKILL.md", "---\nname: decoy\n---\n")
+    _write(root / "commands" / "decoy.md", "")
+    _installed(claude_dir, "moved@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="moved@acme").json()
+    assert [s["name"] for s in body["skills"]] == ["one", "two"]
+    assert [c["name"] for c in body["commands"]] == ["go"]
+    assert [a["name"] for a in body["agents"]] == ["bot"]
+    assert [h["name"] for h in body["hooks"]] == ["Stop"]
+    # Declared inline in plugin.json rather than in a .mcp.json — both are in
+    # the wild — and described by its transport.
+    assert body["mcpServers"] == [{
+        "name": "remote", "description": "https://example.test/mcp",
+        "path": str(root / ".claude-plugin" / "plugin.json"),
+    }]
+
+
+def test_plugins_contents_refuses_a_manifest_path_that_escapes_the_plugin(
+    client, claude_dir, tmp_path
+):
+    # A manifest is third-party content and its path values become directories
+    # this walks. One pointing out of the plugin must resolve to nothing rather
+    # than to a tour of the user's disk.
+    outside = tmp_path / "outside"
+    _write(outside / "secret" / "SKILL.md", "---\nname: secret\n---\n")
+    root = _plugin_tree(tmp_path, "nosy", {
+        "name": "nosy", "skills": "../../outside", "commands": str(outside),
+    })
+    _installed(claude_dir, "nosy@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="nosy@acme").json()
+    assert body["ok"] is True
+    assert body["skills"] == []
+    assert body["commands"] == []
+
+
+def test_plugins_contents_survives_a_plugin_that_ships_nothing(client, claude_dir, tmp_path):
+    root = _plugin_tree(tmp_path, "bare")
+    _installed(claude_dir, "bare@acme", root)
+    body = _post(client, "plugins", action="contents", id="bare@acme").json()
+    assert body["ok"] is True
+    assert (body["skills"], body["commands"], body["agents"],
+            body["hooks"], body["mcpServers"]) == ([], [], [], [], [])
+
+
+def test_plugins_contents_keeps_a_broken_hooks_file_visible(client, claude_dir, tmp_path):
+    # A hooks.json we cannot parse is still a hooks.json the plugin ships: the
+    # row stays and opens the file that needs fixing, rather than the panel
+    # quietly reporting a plugin with no hooks.
+    root = _plugin_tree(tmp_path, "torn", {"name": "torn"})
+    _write(root / "hooks" / "hooks.json", "{ not json")
+    _installed(claude_dir, "torn@acme", root)
+    body = _post(client, "plugins", action="contents", id="torn@acme").json()
+    assert body["hooks"] == [{
+        "name": "hooks.json", "description": "could not be read",
+        "path": str(root / "hooks" / "hooks.json"),
+    }]
+
+
+def test_plugins_contents_survives_a_malformed_manifest(client, claude_dir, tmp_path):
+    # lib.read_json lets malformed JSON raise because the user's OWN config
+    # being corrupt must surface. A plugin's manifest is somebody else's file:
+    # a broken one costs this panel the non-default paths, not a 500.
+    root = _plugin_tree(tmp_path, "junk", "{ not json")
+    _write(root / "skills" / "still" / "SKILL.md", "---\nname: still-found\n---\n")
+    _installed(claude_dir, "junk@acme", root)
+    body = _post(client, "plugins", action="contents", id="junk@acme").json()
+    assert body["ok"] is True
+    assert [s["name"] for s in body["skills"]] == ["still-found"]
+
+
+def test_plugins_contents_refuses_an_id_that_is_not_installed(client, claude_dir, tmp_path):
+    # The path is resolved HERE, out of installed_plugins.json, so this action
+    # can never be pointed at an arbitrary directory by its caller.
+    assert _post(client, "plugins", action="contents", id="").json() == {
+        "ok": False, "error": "id required"}
+    assert _post(client, "plugins", action="contents", id="ghost@acme").json() == {
+        "ok": False, "error": "plugin is not installed"}
+    # Recorded, but its files are gone — a distinct answer, because the fix is
+    # different (reinstall, not "you don't have this").
+    _installed(claude_dir, "gone@acme", tmp_path / "was-here")
+    assert _post(client, "plugins", action="contents", id="gone@acme").json() == {
+        "ok": False, "error": "plugin files are missing — reinstall it"}
+
+
+def test_plugins_contents_skips_the_dirs_that_never_hold_components(
+    client, claude_dir, tmp_path
+):
+    # A plugin root is third-party content of unbounded size and this runs on a
+    # UI request: node_modules is the one that actually shows up (context-mode
+    # ships one), and walking it would cost a panel a five-figure file count.
+    root = _plugin_tree(tmp_path, "heavy", {"name": "heavy"})
+    _write(root / "skills" / "real" / "SKILL.md", "---\nname: real\n---\n")
+    _write(root / "skills" / "node_modules" / "dep" / "SKILL.md", "---\nname: dep\n---\n")
+    _write(root / "skills" / ".hidden" / "SKILL.md", "---\nname: hidden\n---\n")
+    _installed(claude_dir, "heavy@acme", root)
+    body = _post(client, "plugins", action="contents", id="heavy@acme").json()
+    assert [s["name"] for s in body["skills"]] == ["real"]
+
+
 def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
     assert plugins.main(action="nope") == {"ok": False, "error": "unknown action: nope"}
 
