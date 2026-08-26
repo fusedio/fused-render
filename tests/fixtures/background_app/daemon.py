@@ -52,6 +52,12 @@ class _Handler(BaseHTTPRequestHandler):
                              "version": self.server.version,  # type: ignore[attr-defined]
                              "pid": os.getpid()})
             return
+        if path == "/health":
+            # A page resource distinct from /ping — the engine_host proxy
+            # (routers/engines.py) refuses "ping" as private, so this is what
+            # an end-to-end smoke through /api/engines/<id>/proxy/health hits.
+            self._json(200, {"ok": True, "pid": os.getpid()})
+            return
         if path == "/quit":
             self._json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()

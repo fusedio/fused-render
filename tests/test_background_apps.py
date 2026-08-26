@@ -444,3 +444,32 @@ def test_resurrect_enabled_skips_a_folder_with_no_venv_built(tmp_path, monkeypat
     background_apps.resurrect_enabled()
 
     assert started == []
+
+
+# --------------------------------------------------------------- end to end
+
+
+def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
+        client, tmp_path, monkeypatch):
+    """Real spawn, real HTTP: enable the fixture app through the actual
+    background_apps API (no engine_host mocking) and confirm the daemon it
+    started answers through the SAME stable-origin proxy a template daemon
+    uses (/api/engines/<id>/proxy) — engine_forward is engine-kind-agnostic,
+    so a background app's traffic rides it exactly like a template's."""
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    html = os.path.join(FIXTURE_APP, "index.html")  # need not exist on disk
+
+    resp = client.post("/api/apps/background/enable", json={"html": html},
+                       headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    engine_id = resp.json()["engine_id"]
+    try:
+        proxied = client.get(f"/api/engines/{engine_id}/proxy/health")
+        assert proxied.status_code == 200
+        assert proxied.json()["ok"] is True
+
+        status = client.get("/api/apps/background/status", params={"html": html})
+        assert status.json()["running"] is True
+    finally:
+        engine_host.stop(engine_id)
+        background_apps.set_enabled(FIXTURE_APP, False)
