@@ -53,7 +53,7 @@ def spawned(monkeypatch):
     the entry lands in `sent`; a test wanting failure re-stubs this."""
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kwargs):
         calls.append({"target": target, "message": prompt,
                       "permission_mode": permission_mode,
                       "session_id": session_id})
@@ -345,7 +345,7 @@ def test_the_claim_is_written_before_the_spawn(target, monkeypatch):
     must already be out of `pending` so the next boot does not send it again."""
     seen = {}
 
-    def spawn_and_look(target_, prompt, mode, session_id=""):
+    def spawn_and_look(target_, prompt, mode, session_id="", **kwargs):
         # what the store says WHILE the helper is away
         seen["state"] = schedule.list_entries()[0]["state"]
         return {"run_id": "r-1"}
@@ -369,7 +369,7 @@ def test_only_the_message_in_flight_is_claimed(target, monkeypatch):
     are still sendable on the next tick or the next launch."""
     seen = []
 
-    def spawn_and_look(target_, prompt, mode, session_id=""):
+    def spawn_and_look(target_, prompt, mode, session_id="", **kwargs):
         # what the store says about EVERY entry while this one is away
         seen.append({e["message"]: e["state"] for e in schedule.list_entries()})
         return {"run_id": f"r-{len(seen)}"}
@@ -440,7 +440,7 @@ def test_one_bad_entry_does_not_stop_the_rest_of_the_tick(target, monkeypatch):
     other messages their send."""
     calls = []
 
-    def flaky(target_, prompt, mode, session_id=""):
+    def flaky(target_, prompt, mode, session_id="", **kwargs):
         calls.append(prompt)
         if prompt == "boom":
             raise RuntimeError("helper exploded")

@@ -79,7 +79,7 @@ def clock(monkeypatch):
 def spawned(monkeypatch):
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kwargs):
         calls.append({"target": target, "message": prompt})
         return {"run_id": f"r-{len(calls)}"}
 

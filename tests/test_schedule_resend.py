@@ -80,7 +80,7 @@ def spawned(monkeypatch):
     than merely asserted about."""
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kwargs):
         claimed = [e["state"] for e in schedule._read()
                    if e.get("fired") and not e.get("run_id")]
         calls.append({"message": prompt, "session_id": session_id,

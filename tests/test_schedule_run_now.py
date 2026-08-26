@@ -73,7 +73,7 @@ def nothing_is_live(monkeypatch):
 def spawned(monkeypatch):
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kwargs):
         calls.append({"message": prompt, "session_id": session_id})
         return {"run_id": f"r-{len(calls)}"}
 

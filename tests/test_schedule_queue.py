@@ -72,7 +72,7 @@ def fresh_process():
 def spawned(monkeypatch):
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kwargs):
         calls.append({"message": prompt, "session_id": session_id})
         return {"run_id": f"r-{len(calls)}"}
 
@@ -518,7 +518,7 @@ def test_the_claim_is_still_written_before_the_spawn(target, monkeypatch):
     already out of `pending`."""
     seen = {}
 
-    def spawn_and_look(target_, prompt, mode, session_id=""):
+    def spawn_and_look(target_, prompt, mode, session_id="", **kwargs):
         seen["state"] = schedule.list_entries()[0]["state"]
         seen["queue"] = [e["id"] for e in schedule.queue()["queued"]]
         seen["running"] = [e["id"] for e in schedule.queue()["running"]]

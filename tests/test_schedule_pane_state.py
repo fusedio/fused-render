@@ -122,7 +122,7 @@ def test_the_send_carries_the_composed_message(target, monkeypatch):
     file, _ = target
     seen = {}
 
-    def fake_spawn(t, prompt, permission_mode, session_id=""):
+    def fake_spawn(t, prompt, permission_mode, session_id="", **kwargs):
         seen["prompt"] = prompt
         return {"error": "stop here"}
 
