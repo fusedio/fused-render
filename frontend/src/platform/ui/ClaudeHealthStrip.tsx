@@ -19,7 +19,16 @@
 // replacement — a CLI can break between this check and the call.
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { getClaudeHealth, refreshClaudeHealth, type ClaudeHealth } from "@platform/lib/api";
+import {
+  getClaudeHealth,
+  getClaudeInstall,
+  refreshClaudeHealth,
+  runClaudeDoctor,
+  startClaudeInstall,
+  type ClaudeDoctor,
+  type ClaudeHealth,
+  type ClaudeInstallStatus,
+} from "@platform/lib/api";
 import {
   claudeIssues,
   dismiss as rememberDismissal,
@@ -71,12 +80,119 @@ function CopyCommand({ command }: { command: string }) {
   );
 }
 
-function IssueRow({ issue }: { issue: ClaudeIssue }) {
+/** How often to ask the server how the install is getting on. The record is an
+    in-memory read on the server side, so this is cheap; the interval is set by
+    what reads as live rather than by cost. */
+const INSTALL_POLL_MS = 1200;
+
+/** `claude doctor`'s own words, or the installer's. Rendered verbatim and in a
+ *  scroll box rather than summarised: the whole reason to surface either is
+ *  that the exact string is what a user can search for and what an issue needs.
+ */
+function OutputBlock({ label, text }: { label: string; text: string }) {
+  if (!text.trim()) return null;
+  return (
+    <div className="claude-health-output">
+      <div className="claude-health-output-label">{label}</div>
+      <pre>{text}</pre>
+    </div>
+  );
+}
+
+function DoctorReport({ doctor }: { doctor: ClaudeDoctor }) {
+  if (!doctor.warnings.length) {
+    return <OutputBlock label="claude doctor" text={doctor.text} />;
+  }
+  return (
+    <div className="claude-health-doctor">
+      <div className="claude-health-output-label">
+        claude doctor found {doctor.warnings.length}{" "}
+        {doctor.warnings.length === 1 ? "problem" : "problems"}
+      </div>
+      <ul className="claude-health-doctor-list">
+        {doctor.warnings.map((w, i) => (
+          <li key={i}>
+            <span className="claude-health-doctor-problem">{w.problem}</span>
+            {/* The CLI's own suggested fix. Shown as a command to copy when it
+                reads like one, because "Run claude install to repair the
+                installation." is exactly the sentence a user then has to
+                retype by hand. */}
+            {w.fix && <span className="claude-health-doctor-fix">{w.fix}</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function IssueRow({
+  issue,
+  install,
+  doctor,
+  onAct,
+  busy,
+  actionError,
+}: {
+  issue: ClaudeIssue;
+  install: ClaudeInstallStatus | null;
+  doctor: ClaudeDoctor | null;
+  onAct: (issue: ClaudeIssue) => void;
+  busy: boolean;
+  actionError: string | null;
+}) {
+  // The install record belongs to whichever issue asked for it — a running
+  // install is about `missing`, a running update about `outdated` — so a row
+  // only shows progress for its OWN action. Without this the update row would
+  // narrate an install it did not start. `doctor` never matches, because it is
+  // not run through that record at all: it is a single bounded probe that
+  // answers inline.
+  const mine = Boolean(install && issue.action && install.action === issue.action.kind);
+  const running = Boolean(mine && install!.state === "running");
+  const failed = Boolean(mine && install!.state === "error");
+  const finished = Boolean(mine && install!.state === "done");
+
   return (
     <li className="claude-health-issue">
       <div className="claude-health-issue-title">{issue.title}</div>
       <p className="claude-health-issue-detail">{issue.detail}</p>
-      {issue.command && <CopyCommand command={issue.command} />}
+
+      {issue.action && (
+        <div className="claude-health-actions">
+          <button
+            type="button"
+            className="claude-health-action"
+            onClick={() => onAct(issue)}
+            disabled={busy || running}
+          >
+            {running ? "Working…" : finished ? "Done" : issue.action.label}
+          </button>
+          {/* What will actually run, before it runs. Piping a remote script
+              into a shell on someone's behalf is a thing to disclose, not to
+              do quietly behind a friendly label. */}
+          {issue.command && (
+            <code className="claude-health-action-cmd">{issue.command}</code>
+          )}
+        </div>
+      )}
+
+      {running && (
+        <p className="claude-health-progress" role="status">
+          {install!.detail || "Working…"}
+        </p>
+      )}
+      {failed && (
+        <OutputBlock
+          label={install!.error || "It didn't work"}
+          text={install!.output}
+        />
+      )}
+      {actionError && <p className="claude-health-error">{actionError}</p>}
+      {doctor && <DoctorReport doctor={doctor} />}
+
+      {/* Still a command to copy, even where a button exists: a user on a
+          locked-down machine, or one who would simply rather run it themselves,
+          should not have to press our button to find out what it was. */}
+      {issue.command && !issue.action && <CopyCommand command={issue.command} />}
       <a
         className="version-panel-link"
         href={issueHelpUrl(issue)}
@@ -103,6 +219,20 @@ export function ClaudeHealthStrip() {
   // the signature check exists precisely so a new problem still gets through.
   const [, redraw] = useState(0);
   const lastCheck = useRef(0);
+  // The install/update record, polled only while one is running. Null means
+  // nothing has been started from this page.
+  const [install, setInstall] = useState<ClaudeInstallStatus | null>(null);
+  // `claude doctor`'s report, once it has been asked for. Seeded from the
+  // snapshot, because the server already ran one whenever it found something
+  // worth explaining — making the user press a button for a report we are
+  // already holding would be the same do-our-work-for-us failure the shell
+  // adoption exists to avoid.
+  const [doctor, setDoctor] = useState<ClaudeDoctor | null>(null);
+  // A REFUSAL, shown verbatim. The one that matters is the 409 from an update
+  // that would no-op: its text names the command that would actually work, and
+  // rewording it would throw that away.
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [acting, setActing] = useState(false);
 
   const load = useCallback((force: boolean) => {
     lastCheck.current = Date.now();
@@ -130,6 +260,73 @@ export function ClaudeHealthStrip() {
   useEffect(() => {
     load(false);
   }, [load]);
+
+  // Seed the doctor report from the snapshot the server already took.
+  useEffect(() => {
+    if (health?.doctor) setDoctor(health.doctor);
+  }, [health]);
+
+  // POLL ONLY WHILE SOMETHING IS RUNNING. An install outlives this component —
+  // the user can navigate away and the download manager keeps showing it — so
+  // the poll is tied to the record's state, not to the component's lifetime.
+  useEffect(() => {
+    if (install?.state !== "running") return;
+    let alive = true;
+    const timer = window.setInterval(() => {
+      getClaudeInstall().then(
+        (next) => {
+          if (!alive) return;
+          setInstall(next);
+          // A finished install changed the machine. Re-probe so the strip can
+          // close itself rather than sitting on a claim the user just fixed.
+          if (next.state === "done") load(true);
+        },
+        () => {
+          /* A failed poll is not a failed install — keep what we last knew. */
+        },
+      );
+    }, INSTALL_POLL_MS);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [install?.state, load]);
+
+  const act = useCallback(
+    (issue: ClaudeIssue) => {
+      if (!issue.action) return;
+      setActionError(null);
+      setActing(true);
+      const done = () => setActing(false);
+      if (issue.action.kind === "doctor") {
+        runClaudeDoctor().then((res) => {
+          done();
+          if (res.doctor) setDoctor(res.doctor);
+          // `ok: false` with no report is itself the finding — two probes have
+          // now failed to get a word out of this binary — so its sentence is
+          // shown rather than swallowed.
+          else setActionError(res.error || "The diagnostics did not answer.");
+        }, (e) => {
+          done();
+          setActionError(String(e?.message || e));
+        });
+        return;
+      }
+      startClaudeInstall(issue.action.kind).then(
+        (rec) => {
+          done();
+          setInstall(rec);
+        },
+        (e) => {
+          done();
+          // The server's own words. A 409 here is the "that update would do
+          // nothing, run this instead" refusal.
+          setActionError(String(e?.message || e));
+        },
+      );
+    },
+    [],
+  );
 
   const issues = claudeIssues(health);
   const showing = loaded && issues.length > 0 && !isDismissed(issues);
@@ -201,7 +398,17 @@ export function ClaudeHealthStrip() {
       </div>
       <ul className="claude-health-issues">
         {issues.map((issue) => (
-          <IssueRow key={issue.id} issue={issue} />
+          <IssueRow
+            key={issue.id}
+            issue={issue}
+            install={install}
+            // The report belongs to the row that can act on it, and only the
+            // broken-install row can.
+            doctor={issue.id === "broken" ? doctor : null}
+            onAct={act}
+            busy={acting}
+            actionError={issue.action ? actionError : null}
+          />
         ))}
       </ul>
     </section>

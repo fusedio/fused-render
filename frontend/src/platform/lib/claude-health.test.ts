@@ -35,6 +35,17 @@ function healthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
     outdated: false,
     signed_in: true,
     config_dir: "/Users/x/.claude",
+    platform: "darwin",
+    install_command: "curl -fsSL https://claude.ai/install.sh | bash",
+    broken: false,
+    // A healthy machine never pays for a doctor probe, so these are what a
+    // fine snapshot actually carries: no method read, and `updatable` unknown.
+    install_method: null,
+    updatable: null,
+    update_command: "claude update",
+    update_manager: null,
+    update_blocked_reason: null,
+    doctor: null,
     checked_at: 1_700_000_000,
     ...over,
   };
@@ -302,4 +313,142 @@ test("dismissal is decided only by the signature check, never a local flag", () 
   // for the rest of the page's life.
   expect(STRIP).not.toContain("setClosed");
   expect(STRIP).toContain("!isDismissed(issues)");
+});
+
+// -- the repair actions -------------------------------------------------------
+//
+// The strip stopped being a notice and became a repair. What these check is the
+// half of that which can be wrong invisibly: WHICH rows get a button, and — the
+// one that matters most — which row must NOT, because pressing it would do
+// nothing at all.
+
+const issueById = (h: ClaudeHealth, id: string) =>
+  claudeIssues(h).find((i) => i.id === id);
+
+test("a missing install offers to install itself", () => {
+  const issue = issueById(healthy({ found: false, source: null }), "missing");
+  expect(issue?.action).toEqual({ kind: "install", label: "Install Claude Code" });
+});
+
+test("the install command comes from the server, so Windows gets the Windows one", () => {
+  // The bug this fixes: the bash line was attached to every `missing` card
+  // regardless of platform, so a Windows user was handed a command their shell
+  // cannot run and the PowerShell one was only reachable through the help link.
+  const win = healthy({
+    found: false,
+    source: null,
+    platform: "win32",
+    install_command: "irm https://claude.ai/install.ps1 | iex",
+  });
+  expect(issueById(win, "missing")?.command).toBe("irm https://claude.ai/install.ps1 | iex");
+  const mac = healthy({ found: false, source: null });
+  expect(issueById(mac, "missing")?.command).toBe(CLAUDE_INSTALL_COMMAND);
+});
+
+test("a dead override still offers no button — we cannot edit a shell profile", () => {
+  const issue = issueById(
+    healthy({ found: false, source: "override", path: "/gone/claude" }),
+    "unusable-override",
+  );
+  expect(issue).toBeTruthy();
+  expect(issue?.action).toBeUndefined();
+});
+
+test("an install that will not report its version leads, and offers diagnostics", () => {
+  // It also short-circuits: nothing else can be trusted about a binary that
+  // would not answer the first question we asked it.
+  const h = healthy({ broken: true, version: null, signed_in: false, outdated: false });
+  expect(ids(h)).toEqual(["broken"]);
+  expect(issueById(h, "broken")?.action).toEqual({
+    kind: "doctor",
+    label: "Run diagnostics",
+  });
+});
+
+test("a broken install quotes doctor's own first finding when there is one", () => {
+  const h = healthy({
+    broken: true,
+    version: null,
+    doctor: {
+      install_method: "native",
+      warnings: [{ problem: "claude command at ~/.local/bin/claude missing or broken",
+                   fix: "Run claude install to repair the installation." }],
+      text: "…",
+    },
+  });
+  expect(issueById(h, "broken")?.detail).toContain("missing or broken");
+});
+
+test("an outdated CLI that updates itself gets the button", () => {
+  const h = healthy({ outdated: true, version: "1.9.0", updatable: true,
+                      install_method: "native", update_command: "claude update" });
+  const issue = issueById(h, "outdated");
+  expect(issue?.action).toEqual({ kind: "update", label: "Update Claude Code" });
+  expect(issue?.command).toBe(CLAUDE_UPDATE_COMMAND);
+});
+
+test("an unknown install method still gets the button — not knowing is not a no", () => {
+  // Mirrors the `signed_in === false` rule exactly: only an explicit false is
+  // authoritative enough to withhold the offer.
+  const h = healthy({ outdated: true, version: "1.9.0", updatable: null,
+                      install_method: null, update_command: "claude update" });
+  expect(issueById(h, "outdated")?.action?.kind).toBe("update");
+});
+
+test("a Homebrew install gets NO update button and the brew command instead", () => {
+  // THE POINT OF THE WHOLE `updatable` FIELD. `claude update` answers "Claude is
+  // up to date!" on a managed install and changes nothing, so a button there is
+  // a button that cannot work.
+  const h = healthy({
+    outdated: true, version: "1.9.0", updatable: false, install_method: "brew",
+    update_command: "brew upgrade claude-code", update_manager: "brew",
+    update_blocked_reason: "brew owns this install, so it updates through brew",
+  });
+  const issue = issueById(h, "outdated");
+  expect(issue?.action).toBeUndefined();
+  expect(issue?.command).toBe("brew upgrade claude-code");
+  expect(issue?.detail).toContain("would not change anything");
+});
+
+test("a system package install offers neither a button nor a guessed command", () => {
+  // We know a package manager owns it and NOT which one, so there is no command
+  // to name — and naming `claude update` anyway would be offering the one
+  // answer we know is wrong.
+  const h = healthy({
+    outdated: true, version: "1.9.0", updatable: false, install_method: "system",
+    update_command: null, update_manager: "system",
+    update_blocked_reason: "a system package manager owns this install",
+  });
+  const issue = issueById(h, "outdated");
+  expect(issue?.action).toBeUndefined();
+  expect(issue?.command).toBeUndefined();
+});
+
+test("updates switched off withhold the button too", () => {
+  const h = healthy({
+    outdated: true, version: "1.9.0", updatable: false, install_method: "native",
+    update_command: null,
+    update_blocked_reason: "updates are disabled by DISABLE_UPDATES",
+  });
+  expect(issueById(h, "outdated")?.action).toBeUndefined();
+});
+
+test("dismissing a broken install does not hide a later, different problem", () => {
+  const broken = claudeIssues(healthy({ broken: true, version: null }));
+  dismiss(broken);
+  expect(isDismissed(broken)).toBe(true);
+  const signedOut = claudeIssues(healthy({ signed_in: false }));
+  expect(isDismissed(signedOut)).toBe(false);
+  undismiss();
+});
+
+test("the strip polls only while an install is running, and re-probes when it ends", () => {
+  expect(STRIP).toContain('if (install?.state !== "running") return;');
+  // A finished install changed the machine, so the claim on screen is now stale.
+  expect(STRIP).toContain('if (next.state === "done") load(true);');
+  expect(STRIP).toContain("window.clearInterval(timer)");
+});
+
+test("the strip discloses the command beside the button that runs it", () => {
+  expect(STRIP).toContain("claude-health-action-cmd");
 });

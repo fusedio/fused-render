@@ -9103,6 +9103,40 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   repair that held.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
+  **Two commands now**, one per platform: the strip attached the macOS/Linux
+  `curl … | bash` line to every not-found card regardless of platform, so a
+  Windows user with no Claude Code was handed a command their shell cannot run
+  and the PowerShell one was reachable only through the help link. The server
+  states `platform` and `install_command` on the health snapshot and the UI
+  stops guessing (D517).
+- **TR-12** **Where the app can apply the fix, it applies it** (D517). Three of
+  the setup findings are mechanisable and are mechanised: a missing install runs
+  the native installer as a background job, an install that will not report its
+  version runs `claude doctor` and shows its warning/fix pairs in the CLI's own
+  words, and an outdated CLI runs `claude update`. The strip stops being a place
+  that describes a fix and becomes the place that performs one.
+- **TR-13** **An update is offered only where updating would do something.**
+  Homebrew, WinGet, apt, dnf and apk own their own binary and answer
+  `claude update` with "Claude is up to date!" while changing nothing, so those
+  installs get the owning manager's real upgrade line and NO button;
+  `DISABLE_UPDATES` withholds it too. The refusal is enforced server-side as a
+  409 naming the command that would work, so it holds even against a caller that
+  ignores the flag. **An unknown install method still gets the offer** — the
+  same rule TR-2 makes about sign-in, from the other side: only an authoritative
+  negative may withhold an offer, and not knowing is not a negative.
+- **TR-14** **`claude doctor` is the diagnosis, not us.** A resolved, runnable
+  binary that will not report a version was measured all along and said nothing,
+  which was right — one failed probe is not a cause — and left the user with a
+  dead app and no sentence anywhere. Doctor is read-only, starts no session, and
+  names the cause itself, so the card quotes it rather than inferring. It is
+  gated to the broken and outdated cases: a ~1.2s spawn is worth paying for a
+  card that renders while something is wrong, and is not worth paying on every
+  health read of a machine that is fine.
+- **TR-15** **The one fix deliberately left as a sentence** is a dead
+  `FUSED_RENDER_CLAUDE_BIN`. It lives in a shell profile or a launchd plist the
+  app cannot durably edit, and `adopt()` already refuses to overwrite a setting
+  the user made on purpose. A button that silently does nothing is worse than
+  the sentence it would replace.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
   path it says how to find it.** TR-8's degradation is right for the report — a
   person reading a paste does not need labels with nothing after them — but it
