@@ -1177,41 +1177,92 @@
 }
 
 /* -- a plugin's contents (Plugins > Installed, expanded) --------------------- */
-/* The one place in this app where an expanded row holds a LIST of things rather
-   than a paragraph and some key/value pairs: what a plugin puts in a session.
-   Grouped by kind, each entry a link to the file that declares it — so the
-   panel is a table of contents, and reading the actual skill is one click away
-   rather than something this page tries to paraphrase. */
+/* The one expanded row in this app that holds a LIST of things rather than a
+   paragraph and some key/value pairs: what a plugin puts in a session, which is
+   an INDEX — kinds, then named entries, then where the files are. It is styled
+   as one, because the first cut styled it as a stack of lines and read like a
+   dump: the blurb, the group heading, the entries and the install path all
+   shared one size, one colour and one rhythm, so the path read as one more
+   skill and nothing said which lines belonged to which heading.
+ *
+ * Three devices, all structural, none decorative:
+ *   1. a hairline SPINE down the left, so the whole block reads as subordinate
+ *      to the row that opened it (the same hairline vocabulary the rows
+ *      themselves are separated with);
+ *   2. an aligned name column per group, so descriptions start on ONE left
+ *      edge instead of wherever each name happened to end;
+ *   3. a rule above the install path, which is metadata about the plugin
+ *      rather than one of the things it gives you. */
 
-.cc-pgroup {
-  margin-top: 8px;
+/* ONE grid for the whole panel, and every level between it and an entry
+   passes its two tracks down through subgrid. The tracks are shared on
+   purpose: sized per GROUP, each group found its own longest name, so the
+   description edge stepped sideways between Skills and Agents — a misalignment
+   of a few characters that reads as an accident rather than a decision. One
+   spine for the panel means one edge, whatever mix of kinds a plugin ships. */
+.cc-pcontents {
+  display: grid;
+  grid-template-columns: fit-content(16rem) 1fr;
+  align-content: start;
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
 }
 
+.cc-pgroup,
+.cc-pitems,
+.cc-pitems > li,
+.cc-pitem {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.cc-lrow-details .cc-pblurb,
+.cc-pgroup-title,
+.cc-pfiles {
+  grid-column: 1 / -1;
+}
+
+/* The plugin's own blurb — the only prose here, and marketing copy at that, so
+   it is measured for reading and then gets out of the way of the index.
+   Scoped under .cc-lrow-details to outrank that block's own `p { margin: 0 }`,
+   which silently ate this margin and left the first group heading sitting on
+   the last line of the paragraph. */
+.cc-lrow-details .cc-pblurb {
+  max-width: 68ch;
+  margin: 0 0 14px;
+}
+
+.cc-pgroup + .cc-pgroup {
+  margin-top: 14px;
+}
+
+/* The app's established eyebrow (.cc-index-header's size, weight, tracking and
+   case), because this is the same kind of label over the same kind of list. */
 .cc-pgroup-title {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
-  margin-bottom: 2px;
+  margin: 0 0 3px;
   font-size: 11px;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }
 
+/* The name column takes what the longest name in the PANEL needs and stops at
+   16rem — `fit-content` rather than `max-content` so one pathological name
+   cannot push every description off the right edge. */
 .cc-pitems {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-/* Name and description on ONE line, the description ellipsizing — the same
-   scan-twenty-of-these rule the rows above obey, applied one level in. The
-   full text is in title=, and the file itself is one click away. */
 .cc-pitem {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
+  gap: 12px;
   padding: 2px 6px;
   margin-left: -6px;
   border-radius: 4px;
@@ -1223,33 +1274,60 @@
 .cc-pitem:hover,
 .cc-pitem:focus-visible {
   background: var(--row-bg-hover);
-  color: var(--fg);
 }
 
-.cc-pitem-name {
-  flex: 0 0 auto;
-  color: var(--fg);
-}
-
+/* The name can outrun 16rem; it ellipsizes rather than breaking the column. */
+.cc-pitem-name,
 .cc-pitem-desc {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cc-pitem-name {
+  color: var(--fg);
+}
+
+.cc-pitem-desc {
   color: var(--fg-muted);
 }
 
-/* The install path at the foot of the panel: a link, but a quiet one — it is
-   where the files are, not one of the things the plugin gives you. */
-.cc-plink {
-  color: inherit;
+/* Where the files are. A rule above it, and its own label column — it is a
+   fact about the plugin, not an entry in any of the lists above. */
+.cc-pfiles {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
   text-decoration: none;
-  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
 }
 
-.cc-plink:hover,
-.cc-plink:focus-visible {
+.cc-pfiles-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* NOT `direction: rtl`, the usual trick for ellipsizing a path from the left:
+   it reorders the string's own boundary punctuation, so an absolute path came
+   out as "Users/…/6d6d7ba7825d/" — leading slash moved to the end, on a value
+   whose whole job is to be a path you can read and copy. A tail that truncates
+   is a smaller loss than a path that lies. */
+.cc-pfiles-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-pfiles:hover .cc-pfiles-path,
+.cc-pfiles:focus-visible .cc-pfiles-path {
   color: var(--fg);
-  border-bottom-color: currentColor;
 }
 
 .cc-icon {

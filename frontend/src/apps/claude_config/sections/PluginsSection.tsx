@@ -165,60 +165,63 @@ function PluginContentsPanel({ id }: { id: string }) {
   })).filter((g) => g.items.length > 0);
 
   return (
-    <>
-      {data.description && <p>{data.description}</p>}
+    <div className="cc-pcontents">
+      {data.description && <p className="cc-pblurb">{data.description}</p>}
       {groups.length === 0 && (
-        <p>This plugin ships no skills, commands, agents, hooks or MCP servers.</p>
+        <p className="cc-pblurb">
+          This plugin ships no skills, commands, agents, hooks or MCP servers.
+        </p>
       )}
       {groups.map((g) => (
-        <div className="cc-pgroup" key={String(g.key)}>
-          <div className="cc-pgroup-title">
+        <section className="cc-pgroup" key={String(g.key)}>
+          <h4 className="cc-pgroup-title">
             {g.label}
             <span className="cc-count">{g.items.length}</span>
-          </div>
+          </h4>
+          {/* The panel is one grid and every level down to the anchor passes
+              its two tracks along (see .cc-pcontents), which is what puts
+              every description on a single left edge. Laid out per-entry, each
+              description started wherever its name happened to end — a ragged
+              left edge down thirteen rows was the loudest thing in here. */}
           <ul className="cc-pitems">
             {g.items.map((it) => (
               // A real anchor, not a click handler: the entry IS a file, so it
-              // gets the file's affordances for free — middle-click, cmd-click,
-              // a copyable target in the context menu. A new tab because this
-              // page is a config editor with unsaved-ish state (an open filter,
-              // a half-typed marketplace form); navigating it away to read a
-              // SKILL.md would lose all of it.
+              // gets the file's affordances for free — middle-click,
+              // cmd-click, a copyable target in the context menu. A new tab
+              // because this page holds unsaved-ish state (an open filter, a
+              // half-typed marketplace form) that navigating away would lose.
               <li key={it.path + it.name}>
                 <a
                   className="cc-pitem"
                   href={urlForFsPath(it.path)}
                   target="_blank"
                   rel="noopener"
-                  title={it.path}
+                  title={it.description ? `${it.description}\n\n${it.path}` : it.path}
                 >
                   <span className="cc-pitem-name">{it.name}</span>
-                  {it.description && (
-                    <span className="cc-pitem-desc">{it.description}</span>
-                  )}
+                  <span className="cc-pitem-desc">{it.description}</span>
                 </a>
               </li>
             ))}
           </ul>
-        </div>
+        </section>
       ))}
+      {/* Where the files ARE — metadata about the plugin, not one of the
+          things it gives you, so it sits below a rule rather than becoming a
+          sixth row of whatever group happened to be last. */}
       {data.root && (
-        <dl className="cc-lrow-dl">
-          <dt className="cc-lrow-dt">Files</dt>
-          <dd className="cc-lrow-dd">
-            <a
-              className="cc-plink"
-              href={urlForFsPath(data.root)}
-              target="_blank"
-              rel="noopener"
-              title={data.root}
-            >
-              {data.root}
-            </a>
-          </dd>
-        </dl>
+        <a
+          className="cc-pfiles"
+          href={urlForFsPath(data.root)}
+          target="_blank"
+          rel="noopener"
+          title={data.root}
+        >
+          <span className="cc-pfiles-label">Files</span>
+          <span className="cc-pfiles-path">{data.root}</span>
+        </a>
       )}
-    </>
+    </div>
   );
 }
 
