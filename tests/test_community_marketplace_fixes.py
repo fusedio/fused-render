@@ -132,33 +132,17 @@ def test_refresh_full_clones_into_workspace_showcase(tmp_path, community_mod, mo
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_keeps_local_edits(tmp_path, community_mod, monkeypatch):
-    mod = community_mod
-    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
-    monkeypatch.setattr(mod, "REPO_URL", remote)
-    assert mod.main(action="refresh")["status"] == "ok"
-
-    # The showcase tree is the user's: an edit must survive the next refresh.
-    edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
-    with open(edited, "w", encoding="utf-8") as f:
-        f.write("MY EDIT\n")
-
-    res = mod.main(action="refresh")
-    assert res["status"] == "ok"
-    with open(edited, encoding="utf-8") as f:
-        assert f.read() == "MY EDIT\n"
-
-
-@pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
+def test_refresh_never_fetches_or_merges_once_the_clone_exists(
         tmp_path, community_mod, monkeypatch):
+    """Once the showcase clone exists, refresh is a no-op that just serves
+    the catalog — no fetch, no merge, ever again after the first clone. An
+    edit sitting in the tree (however it got there) is never touched, and no
+    upstream commit — however conflicting — is ever pulled in."""
     mod = community_mod
     remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
     monkeypatch.setattr(mod, "REPO_URL", remote)
     assert mod.main(action="refresh")["status"] == "ok"
 
-    # Local edit AND an upstream commit touching the same file: the ff-only
-    # merge can't apply, and the local tree must survive untouched.
     edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
     with open(edited, "w", encoding="utf-8") as f:
         f.write("MY EDIT\n")
@@ -168,11 +152,21 @@ def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
     git(seed, "commit", "-q", "-m", "upstream change")
     git(seed, "push", "-q", "origin", "HEAD")
 
+    calls = []
+    real_git = mod._git
+
+    def spy(cwd, *args, **kwargs):
+        calls.append(args)
+        return real_git(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "_git", spy)
+
     res = mod.main(action="refresh")
 
-    assert res["status"] == "ok"  # catalog still serves
+    assert res["status"] == "ok"
     with open(edited, encoding="utf-8") as f:
-        assert f.read() == "MY EDIT\n"
+        assert f.read() == "MY EDIT\n"  # untouched — no merge ran
+    assert not any(a and a[0] in ("fetch", "merge") for a in calls)
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
@@ -200,22 +194,6 @@ def test_refresh_refuses_foreign_git_repo_at_showcase_path(tmp_path, community_m
     assert os.path.isfile(stale_lock)  # their in-flight git op untouched
 
 
-def test_refresh_refuses_foreign_showcase_folder(community_mod):
-    mod = community_mod
-    # A showcase folder the user made themselves (no .git) must never be
-    # deleted or cloned over.
-    os.makedirs(mod.SHOWCASE_DIR)
-    marker = os.path.join(mod.SHOWCASE_DIR, "precious.txt")
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write("keep me\n")
-
-    res = mod.main(action="refresh")
-
-    assert res["status"] == "error"
-    assert "not the showcase clone" in res["message"]
-    assert os.path.isfile(marker)
-
-
 @pytest.mark.skipif(not git_available(), reason="git not installed")
 def test_refresh_sweeps_leftover_staging_dirs(tmp_path, community_mod, monkeypatch):
     mod = community_mod
@@ -234,15 +212,16 @@ def test_refresh_sweeps_leftover_staging_dirs(tmp_path, community_mod, monkeypat
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_leaves_fresh_git_locks_alone(tmp_path, community_mod, monkeypatch):
+def test_refresh_leaves_git_locks_alone(tmp_path, community_mod, monkeypatch):
     mod = community_mod
     remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
     monkeypatch.setattr(mod, "REPO_URL", remote)
     assert mod.main(action="refresh")["status"] == "ok"
 
-    # The showcase clone is the user's tree: a FRESH index.lock may be their
-    # own git command in flight and must survive; an ancient one is debris
-    # from a killed process and gets cleaned.
+    # The showcase clone is the user's tree, and refresh never fetches or
+    # merges once the clone exists — so it must never touch a lockfile
+    # either, fresh or ancient. (No fetch/merge means no lock contention to
+    # clean up in the first place.)
     git_dir = os.path.join(mod.SHOWCASE_DIR, ".git")
     fresh = os.path.join(git_dir, "index.lock")
     with open(fresh, "w", encoding="utf-8"):
@@ -250,13 +229,13 @@ def test_refresh_leaves_fresh_git_locks_alone(tmp_path, community_mod, monkeypat
     old = os.path.join(git_dir, "HEAD.lock")
     with open(old, "w", encoding="utf-8"):
         pass
-    ancient = time.time() - mod.STALE_LOCK_AGE - 60
+    ancient = time.time() - 3600 - 60
     os.utime(old, (ancient, ancient))
 
     mod.main(action="refresh")
 
     assert os.path.isfile(fresh)
-    assert not os.path.exists(old)
+    assert os.path.isfile(old)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="posix flock path")

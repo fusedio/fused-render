@@ -15,8 +15,9 @@ Actions:
               own metadata.json) joined with installs.json
               ({status:"no-cache"} before the first refresh; never touches
               the network)
-  refresh   — clone (first run) or fetch+ff the community repo into
-              <workspace>/showcase, then return the same payload as `catalog`
+  refresh   — clone the community repo into <workspace>/showcase if it isn't
+              there yet, then return the same payload as `catalog`; once the
+              clone exists this never fetches or syncs it again
   install   — copy the showcase app folder into <workspace>/local/<slug>,
               git-init it with a pristine first commit, record the install
   update    — clean copy: replace + commit on top; edited copy: refuse with
@@ -226,38 +227,15 @@ def _touch(slug):
 
 
 
-# A git lockfile this old cannot belong to a live operation — real git calls
-# hold their locks for seconds, ours are bounded by CLONE_TIMEOUT. Anything
-# younger is left alone: the showcase clone is the USER's tree, and a fresh
-# index.lock may be their own git command (IDE, terminal) in flight.
-STALE_LOCK_AGE = 3600
-
-
-def _remove_stale_locks():
-    """Drop leftover git lockfiles in the showcase clone. A git process killed
-    mid-operation (a hard kill, app quit) leaves its .lock behind, and every
-    later command dies with "Unable to create '….lock': File exists … remove
-    the file manually to continue". Because the clone is a user-editable
-    workspace tree, a lock here is NOT stale by definition — only ones old
-    enough (STALE_LOCK_AGE) that no live git process can be holding them are
-    removed; a fresh lock just makes this refresh's fetch/merge fail, and the
-    next one retries."""
-    import glob
-    git_dir = os.path.join(SHOWCASE_DIR, ".git")
-    cutoff = time.time() - STALE_LOCK_AGE
-    for lock in (glob.glob(os.path.join(git_dir, "*.lock"))
-                 + glob.glob(os.path.join(git_dir, "info", "*.lock"))
-                 + glob.glob(os.path.join(git_dir, "refs", "**", "*.lock"),
-                             recursive=True)):
-        try:
-            if os.path.getmtime(lock) <= cutoff:
-                os.unlink(lock)
-        except OSError:
-            pass
-
-
 def _cache_ready():
-    return os.path.isdir(os.path.join(SHOWCASE_DIR, ".git"))
+    """The showcase clone exists at SHOWCASE_DIR and is OURS (tracks
+    REPO_URL). A foreign git repo the user placed at this path — tracking
+    some other remote — is never treated as ready; refresh must refuse it,
+    not silently adopt it."""
+    if not os.path.isdir(os.path.join(SHOWCASE_DIR, ".git")):
+        return False
+    r = _git(SHOWCASE_DIR, "remote", "get-url", "origin")
+    return r.returncode == 0 and r.stdout.strip() == REPO_URL
 
 
 def _read_metadata(slug):
@@ -359,45 +337,34 @@ def _clear_stale_staging():
 
 
 def _refresh():
+    """Clone the showcase repo if it isn't there yet; once it exists this is
+    a no-op that just serves the catalog. The clone is the user's tree —
+    apps are editable in place — so nothing here ever fetches, merges, or
+    otherwise touches it again after the first clone."""
     _clear_stale_staging()
-    if not _cache_ready():
-        if os.path.exists(SHOWCASE_DIR):
-            # A showcase folder that isn't our clone (user-made, or a clone
-            # whose .git was stripped) is the user's — never delete it.
-            raise ActionError(
-                f"{SHOWCASE_DIR} exists but is not the showcase clone — "
-                "move it aside to let the catalog sync")
-        os.makedirs(WORKSPACE, exist_ok=True)
-        # Clone into a hidden staging dir, then claim the final name with one
-        # rename — no half-clone ever flashes up in the explorer listing.
-        staging = tempfile.mkdtemp(dir=WORKSPACE, prefix=".showcase-clone-")
-        try:
-            r = _git(WORKSPACE, "clone", "--", REPO_URL,
-                     os.path.join(staging, "showcase"), timeout=CLONE_TIMEOUT)
-            if r.returncode != 0:
-                detail = (r.stderr or "").strip().splitlines()
-                raise ActionError("could not fetch the community catalog: "
-                                  f"{detail[-1] if detail else 'clone failed'}")
-            os.rename(os.path.join(staging, "showcase"), SHOWCASE_DIR)
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-    else:
-        # OUR clone only: a git repo the user put at this path themselves
-        # (tracking some other remote) must not have its locks yanked, its
-        # remote fetched, or its files fast-forwarded.
-        r = _git(SHOWCASE_DIR, "remote", "get-url", "origin")
-        if r.returncode != 0 or r.stdout.strip() != REPO_URL:
-            raise ActionError(
-                f"{SHOWCASE_DIR} is a git repo but not the showcase clone — "
-                "move it aside to let the catalog sync")
-        _remove_stale_locks()
-        _git_ok(SHOWCASE_DIR, "fetch", "--", "origin", what="fetch",
-                timeout=CLONE_TIMEOUT)
-        # ff-only, best-effort: the tree is the USER's (apps are editable in
-        # place), so a merge that can't fast-forward — local edits conflict,
-        # upstream rewrote history — keeps the local tree untouched and still
-        # serves the catalog. Never reset, never re-clone over user files.
-        _git(SHOWCASE_DIR, "merge", "--ff-only", "FETCH_HEAD")
+    if _cache_ready():
+        return _catalog_payload()
+    if os.path.exists(SHOWCASE_DIR):
+        # A showcase folder that isn't our clone (user-made, a clone whose
+        # .git was stripped, or a git repo tracking some other remote) is
+        # the user's — never delete it, never fetch it, never touch its locks.
+        raise ActionError(
+            f"{SHOWCASE_DIR} exists but is not the showcase clone — "
+            "move it aside to let the catalog sync")
+    os.makedirs(WORKSPACE, exist_ok=True)
+    # Clone into a hidden staging dir, then claim the final name with one
+    # rename — no half-clone ever flashes up in the explorer listing.
+    staging = tempfile.mkdtemp(dir=WORKSPACE, prefix=".showcase-clone-")
+    try:
+        r = _git(WORKSPACE, "clone", "--", REPO_URL,
+                 os.path.join(staging, "showcase"), timeout=CLONE_TIMEOUT)
+        if r.returncode != 0:
+            detail = (r.stderr or "").strip().splitlines()
+            raise ActionError("could not fetch the community catalog: "
+                              f"{detail[-1] if detail else 'clone failed'}")
+        os.rename(os.path.join(staging, "showcase"), SHOWCASE_DIR)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
     return _catalog_payload()
 
 
@@ -621,15 +588,16 @@ def _uninstall(slug):
     return {"status": "uninstalled", "trashed_to": trashed}
 
 
-def refresh_in_background():
-    """Fire-and-forget showcase clone/sync, called by the server entry points
+def ensure_showcase_in_background():
+    """Fire-and-forget showcase clone, called by the server entry points
     (cli._run_serve, app._start_server_thread) right after ensure_fused_dir —
     NOT from create_app, so importing the server in tests never clones into a
-    real workspace. First run performs the full clone; later runs fetch+ff.
-    Failures are logged, never raised — while the clone is missing, every
-    visit to the apps page escalates to its own refresh (Apps.tsx), so a
-    failed startup clone retries there without waiting for the next process
-    start. Once the clone exists, this startup sync is the only fetch."""
+    real workspace. Clones once, if the folder is missing; once the clone
+    exists this is a no-op every subsequent start — the showcase is never
+    fetched or synced again. Failures are logged, never raised — while the
+    clone is missing, every visit to the apps page escalates to its own
+    refresh (Apps.tsx), so a failed startup clone retries there without
+    waiting for the next process start."""
     import logging
     import threading
 
@@ -637,9 +605,9 @@ def refresh_in_background():
         res = main(action="refresh")
         if res.get("status") != "ok":
             logging.getLogger(__name__).warning(
-                "showcase refresh failed: %s", res.get("message") or res.get("status"))
+                "showcase clone failed: %s", res.get("message") or res.get("status"))
 
-    threading.Thread(target=_run, daemon=True, name="showcase-refresh").start()
+    threading.Thread(target=_run, daemon=True, name="showcase-clone").start()
 
 
 def main(action: str = "catalog", slug: str = "", force: bool = False):
