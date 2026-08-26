@@ -1,4 +1,4 @@
-"""Tests for the Hub `config.json` metadata harvest (SPEC AI-17d, D498).
+"""Tests for the Hub `config.json` metadata harvest (SPEC AI-17, D517).
 
 `hub_metadata.get()` answers "what does this repo's `config.json` say" for a
 model that may not be cached on disk at all — the whole reason it exists is to
@@ -25,6 +25,16 @@ def _raw(config: dict) -> bytes:
     return json.dumps(config).encode("utf-8")
 
 
+def _meta(repo_id: str, **kwargs) -> dict:
+    """`hub_metadata.get()`, narrowed to a plain dict for the tests that
+    already know (by construction) it answered — `get()`'s return type is
+    `dict | None` for its real callers, and every one of THOSE has to keep
+    checking; a test that just fed it a stub 200 response does not."""
+    meta = hub_metadata.get(repo_id, **kwargs)
+    assert meta is not None
+    return meta
+
+
 CONFIG = {
     "model_type": "qwen3",
     "architectures": ["Qwen3ForCausalLM"],
@@ -39,7 +49,7 @@ CONFIG = {
 
 def test_a_successful_fetch_is_harvested_and_cached(monkeypatch):
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
-    meta = hub_metadata.get("org/m")
+    meta = _meta("org/m")
     assert meta["modelType"] == "qwen3"
     assert meta["architecture"] == "Qwen3ForCausalLM"
     assert meta["numHiddenLayers"] == 36
@@ -55,19 +65,19 @@ def test_a_successful_fetch_is_harvested_and_cached(monkeypatch):
 def test_a_vision_tower_is_detected_from_vision_config(monkeypatch):
     config = {**CONFIG, "vision_config": {"depth": 12}}
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(config))
-    assert hub_metadata.get("org/m")["hasVisionTower"] is True
+    assert _meta("org/m")["hasVisionTower"] is True
 
 
 def test_a_vision_tower_is_detected_from_image_token_id(monkeypatch):
     config = {**CONFIG, "image_token_id": 151655}
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(config))
-    assert hub_metadata.get("org/m")["hasVisionTower"] is True
+    assert _meta("org/m")["hasVisionTower"] is True
 
 
 def test_quantization_config_quant_method_is_harvested(monkeypatch):
     config = {**CONFIG, "quantization_config": {"quant_method": "awq"}}
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(config))
-    assert hub_metadata.get("org/m")["quantMethod"] == "awq"
+    assert _meta("org/m")["quantMethod"] == "awq"
 
 
 def test_a_network_failure_degrades_to_none_never_raises(monkeypatch):
@@ -85,7 +95,7 @@ def test_a_non_json_body_degrades_to_none(monkeypatch):
 
 def test_missing_fields_read_as_none_not_a_raise(monkeypatch):
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw({}))
-    meta = hub_metadata.get("org/m")
+    meta = _meta("org/m")
     assert meta["modelType"] is None
     assert meta["numHiddenLayers"] is None
     assert meta["hasVisionTower"] is False
@@ -139,7 +149,7 @@ def test_a_stale_cache_falls_back_when_the_refetch_fails(monkeypatch):
         raise OSError("timed out")
 
     monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
-    meta = hub_metadata.get("org/m")
+    meta = _meta("org/m")
     assert meta["modelType"] == "qwen3"
 
 
@@ -151,7 +161,7 @@ def test_a_hostile_repo_id_is_never_reached_into_a_path(monkeypatch):
     assert hub_metadata.get("../../etc/passwd") is not None
 
 
-def test_a_corrupt_store_reads_as_no_metadata(monkeypatch, tmp_path):
+def test_a_corrupt_store_reads_as_no_metadata(monkeypatch):
     monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: (_ for _ in ()).throw(OSError("down")))
     path = hub_metadata._path()
     import os

@@ -8571,6 +8571,74 @@ an AI Models page that could say what was on disk but not what was *running*.
   "Measured on this machine" or "Judged against this machine's memory" — because
   the whole complaint this item answers is a reader who could not tell which of
   those two the badge meant.
+- **AI-17** **A model's `config.json` is harvested from the Hub and cached with
+  a TTL, so `fit`'s KV-cache/vision estimates and a picker's "does this take
+  images?" question can be answered for a repo the user has not downloaded a
+  single byte of** (D517). `fused_render/ai/hub_metadata.py`'s `get(repo_id)`
+  fetches `huggingface.co/{repo}/resolve/main/config.json` — a few KB, no
+  weights — and harvests `model_type`, `architectures[0]`, `num_hidden_layers`,
+  `num_key_value_heads`, `num_attention_heads`, `head_dim`, `hidden_size`,
+  `max_position_embeddings`, whether a `vision_config`/`image_token_id`
+  declares a vision tower, `quantization_config.quant_method`, and (for
+  hybrid/Mamba configs) which layers are real attention under `layer_types` /
+  `layers_block_type`.
+
+  `hub_cache.has_vision_tower` answers the same question but can only read a
+  snapshot already ON DISK — a Hub *search* result has no snapshot yet. This
+  is the missing "before a download exists" half.
+
+  Cached at `~/.fused-render/ai_hub_metadata.json`, in the `bench_store.py`/
+  `footprints.py` shape (a private `_path()` over `storage.home_dir()`, then
+  `storage.read_json`/`storage.write_json`), but **not machine-scoped**:
+  `config.json` describes the MODEL, not the machine that asked, so there is
+  no `_same_machine`-style identity check the way **AI-16a**'s store has one —
+  a home directory carried onto a new laptop keeps a warm cache. 13-day TTL,
+  matching the analogous cache in the comparative study this build derives
+  from. A refetch past the TTL that FAILS serves the stale entry rather than
+  discarding it — going blank on a transient network hiccup for a repo
+  answered two weeks ago would regress a page that used to render a fact into
+  one that renders nothing. Only a repo with no prior entry and a failed first
+  fetch answers `None`. Every network or parse failure — DNS, timeout, a
+  non-200, a truncated or non-JSON body — is caught and answered as "no
+  metadata", never raised into the route this feeds.
+- **AI-18** **VRAM, a device name, multi-GPU aggregation, and a
+  name -> memory-bandwidth table, kept off the verdict path the same way
+  **AI-16b**'s wired-limit read already is** (D518). `fit.py` judges a
+  footprint against system RAM only, which is correct for CPU and
+  Apple-Silicon unified-memory loads and silently wrong on a discrete
+  CUDA/ROCm box, where the pool that actually holds the weights is VRAM — a
+  different, usually much smaller number. `fused_render/ai/hw_detect.py` is
+  the missing half.
+
+  Detection is a subprocess probe (`nvidia-smi`, `rocm-smi`, a PowerShell
+  WMI/registry query, `sysctl`) — 50-500ms cold, the same cost
+  `fit._wired_limit_mb`'s own docstring refuses on a route the picker polls.
+  So the split mirrors that function's: `detect_hardware()`/
+  `refresh_hardware()` do the probing and persist
+  `~/.fused-render/ai_hardware.json`; `cached_hardware()` is a plain
+  `storage.read_json` and is the ONLY function `fit.py` or `benchmark.py` may
+  call. A source-grep test (`test_fit_module_only_reads_the_cache_never_the_
+  probe`) pins that boundary so it stays true after a later phase wires
+  either module up to read it, not just by accident today.
+
+  Three traps, each with its own test: Windows' `Win32_VideoController.
+  AdapterRAM` is a 32-bit field that caps a 16GB card's reading at ~4GB — the
+  fix is the display driver's own registry key
+  (`HardwareInformation.qwMemorySize`, a 64-bit `REG_QWORD`), not a bigger
+  read of the same WMI field, and NOT `Win32_PhysicalMemory` (total system
+  RAM, a different number used only for the next trap). Unified-memory APUs
+  (AMD Ryzen AI Max/"Strix Halo", NVIDIA Grace/DGX Spark parts) report a tiny
+  BIOS-assigned carveout as their "VRAM"; detected by name and overridden to
+  system RAM, exactly like Apple Silicon already is. And a cold spawn must
+  never read as "no GPU": every probe degrades to `None` on any failure and
+  `detect_hardware` composes them with `or`, so one vendor's absence falls
+  through to the next.
+
+  The bandwidth table (device-name substring, matched on word boundaries, ->
+  GB/s) covers Apple M1-M5, NVIDIA RTX 30/40/50 plus A100/H100, and AMD
+  RDNA/CDNA — manufacturer-published figures, not measured on our own
+  hardware, for a future speed-estimate feature to consume; an unlisted name
+  answers `None` rather than a guess.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

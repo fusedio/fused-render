@@ -1,11 +1,12 @@
-"""GPU/VRAM detection beyond RAM (SPEC AI-2, D499).
+"""GPU/VRAM detection beyond RAM (SPEC AI-18, D518).
 
 `fit.py` judges a footprint against system RAM only — correct for CPU and
 Apple-Silicon unified-memory loads, silently wrong on a discrete CUDA/ROCm
 box, where the pool that actually holds the weights is VRAM, a completely
 different (usually much smaller) number than `machine_ram_gb()`. This module
 is the missing half: per-device VRAM, a device name, multi-GPU aggregation,
-and a name -> memory-bandwidth lookup table AI-9's speed estimate needs.
+and a name -> memory-bandwidth lookup table a future speed-estimate feature
+needs.
 
 **Detection is a subprocess probe, and subprocess probes do not belong on the
 verdict path.** `fit._wired_limit_mb`'s own docstring states the rule this
@@ -17,8 +18,9 @@ never calls it — see `test_ai_hw_detect.py::
 test_fit_module_only_reads_the_cache_never_the_probe`, which greps `fit.py`'s
 own source to keep that true. `refresh_hardware()` runs the probe and writes
 the result to `~/.fused-render/ai_hardware.json`; `cached_hardware()` is a
-plain `storage.read_json` and nothing else — the only thing `fit.py` (AI-6)
-and `benchmark.py` (AI-9) are meant to call.
+plain `storage.read_json` and nothing else — the only thing `fit.py` and
+`benchmark.py` are meant to call, once a later phase wires either of them
+up to read it.
 
 **Three traps, each hit by the study this module is modelled on and each with
 its own test:**
@@ -90,12 +92,13 @@ class GpuDevice:
 @dataclass
 class HardwareInfo:
     """One probe's (or one cache read's) answer. `total_vram_gb` is the sum
-    across every device (AI-2's "multi-GPU aggregation: sum of vram x
-    count") — a model sharded across identical cards fits against the SUM,
-    not any one card's share, which is the pool `device_map="auto"`-style
-    loading actually draws from. `bandwidth_gb_s` is the primary device's
-    figure from the lookup table, or None when the name is not in it — AI-9
-    falls back to a per-backend constant in that case, not to a guess here."""
+    across every device (multi-GPU aggregation: sum of vram x count) — a
+    model sharded across identical cards fits against the SUM, not any one
+    card's share, which is the pool `device_map="auto"`-style loading
+    actually draws from. `bandwidth_gb_s` is the primary device's figure from
+    the lookup table, or None when the name is not in it — a future
+    speed-estimate feature falls back to a per-backend constant in that case,
+    not to a guess here."""
     gpus: list
     total_vram_gb: float
     bandwidth_gb_s: float | None
@@ -311,18 +314,19 @@ def _apply_unified_override(device: GpuDevice, *, cpu_name: str, ram_gb: float) 
 
 
 def _total_vram_gb(gpus: list[GpuDevice]) -> float:
-    """The sum across every device — AI-2's "multi-GPU aggregation (sum of
-    vram x count)". Identical GPUs are not deduplicated: two real 24GB cards
-    really do sum to a 48GB pool for a sharded load."""
+    """The sum across every device — multi-GPU aggregation, sum of vram x
+    count. Identical GPUs are not deduplicated: two real 24GB cards really do
+    sum to a 48GB pool for a sharded load."""
     return sum(g.vram_gb for g in gpus)
 
 
 # ---------------------------------------------------------- bandwidth table
 
 
-#: Device name substring -> memory bandwidth in GB/s, used by AI-9's speed
-#: estimate (`tok/s ~= bandwidth / model_size * 0.55`) when a device's own
-#: bandwidth is known, falling back to a per-backend constant otherwise.
+#: Device name substring -> memory bandwidth in GB/s, for a future speed
+#: estimate (`tok/s ~= bandwidth / model_size * 0.55`) that will use it when a
+#: device's own bandwidth is known, falling back to a per-backend constant
+#: otherwise.
 #: Figures are manufacturer-published memory-bandwidth specs (not measured
 #: on any of our own hardware), rounded to a representative value per SKU
 #: family — a small model-to-model spread within a family (e.g. a binned
@@ -341,7 +345,7 @@ _BANDWIDTH_TABLE: list[tuple[str, float]] = [
     ("m4 max", 546.0), ("m4 pro", 273.0), ("m4", 120.0),
     # M5 (base only; Apple's own published spec at introduction). Pro/Max/
     # Ultra are deliberately absent rather than guessed at — an unlisted name
-    # falls back to AI-9's per-backend constant, which is the honest answer
+    # falls back to a per-backend constant, which is the honest answer
     # until Apple publishes those figures.
     ("m5", 153.0),
     # NVIDIA data-center (HBM).
@@ -367,8 +371,9 @@ _BANDWIDTH_TABLE: list[tuple[str, float]] = [
 
 def _bandwidth_for(device_name: str) -> float | None:
     """The memory-bandwidth table entry for `device_name`, or None when it
-    names nothing this table knows — AI-9 falls back to a per-backend
-    constant in that case rather than guessing a bandwidth.
+    names nothing this table knows — a future speed-estimate feature falls
+    back to a per-backend constant in that case rather than guessing a
+    bandwidth.
 
     Matched on WORD boundaries, not a bare substring: a plain `in` check
     made `"m3"` match inside `"NVIDIA H100 80GB HBM3"` (the tail of `HBM3`),

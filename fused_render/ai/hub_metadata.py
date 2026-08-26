@@ -1,5 +1,5 @@
 """Hub `config.json` harvest, cached at ~/.fused-render/ai_hub_metadata.json
-(SPEC AI-17d, D498).
+(SPEC AI-17, D517).
 
 **Why this exists.** `hub_cache.has_vision_tower` and every KV-cache/fit
 computation in `fit.py` need a model's architecture facts — layer count,
@@ -22,8 +22,8 @@ the MODEL, not the machine that asked for it, so there is no
 `_same_machine`-style identity check and a home directory carried onto a new
 laptop keeps a warm cache rather than discarding it.
 
-**13-day TTL**, matching the analogous cache in the study this module is
-modelled on (see the module-level docstring in `AI-FIT-OVERHAUL-SPEC.md`) — a
+**13-day TTL**, matching the analogous cache in the comparative study this
+build was derived from (`llmfit`, read-only reference, not vendored) — a
 `config.json` changes when a repo is re-published under the same id, which
 happens on the order of weeks, not minutes; a shorter TTL would re-fetch on
 every page load for no benefit, and a much longer one risks serving a stale
@@ -54,7 +54,7 @@ import urllib.request
 from fused_render.shell import storage
 
 #: `huggingface.co/{repo}/resolve/main/config.json` — the same URL shape a
-#: browser's "raw file" link uses, and (per AI-1's own text) a few KB, no
+#: browser's "raw file" link uses, and (per AI-17's own text) a few KB, no
 #: weights: fetching this for every row a Hub search returns is cheap in a way
 #: fetching even one weight file would not be.
 _CONFIG_URL = "https://huggingface.co/{repo}/resolve/main/config.json"
@@ -86,7 +86,7 @@ VERSION = 1
 _UNREACHABLE = (urllib.error.URLError, OSError, ValueError, TimeoutError)
 
 #: The subset of `config.json` this module harvests, and the key each lands
-#: under in the returned dict — SPEC AI-1's own list. `head_dim` is read
+#: under in the returned dict — SPEC AI-17's own list. `head_dim` is read
 #: verbatim when present; `fit.py`'s KV-cache term derives it from
 #: `hidden_size / num_attention_heads` when it is absent, not this module —
 #: harvesting stays a straight read of what the Hub published, never a guess.
@@ -102,10 +102,13 @@ _FIELDS = {
 
 #: Hybrid/Mamba configs (Jamba, Zamba, Nemotron-H, ...) expose which layers
 #: are real attention vs. a state-space/Mamba block under one of these keys.
-#: `fit.py`'s KV-cache term (AI-5) needs this list to count only the
+#: A future `fit.py` KV-cache term needs this list to count only the
 #: attention layers — a flat `num_hidden_layers` overcounts a hybrid model's
 #: KV cache by however many Mamba layers it has, which carry no KV cache at
-#: all.
+#: all. Harvested here even though nothing reads it yet, for the same reason
+#: `bench_store.py`'s `VERSION` field exists ahead of its first migration:
+#: cheaper to capture alongside the rest of this fetch than to add a second
+#: harvest pass later.
 _LAYER_TYPE_KEYS = ("layer_types", "layers_block_type")
 
 
@@ -156,7 +159,7 @@ def _fetch_raw(repo_id: str) -> bytes | None:
     return raw
 
 
-def _harvest(config: dict) -> dict:
+def _harvest(config: dict) -> dict[str, object]:
     """`config.json`'s body, narrowed to the fields this module promises —
     every one of them present in the returned dict, `None` where the source
     config did not declare it. Never raises: a value of the wrong shape
@@ -182,7 +185,7 @@ def _harvest(config: dict) -> dict:
             layer_types = value
             break
 
-    harvested = {v: _get(k) for k, v in _FIELDS.items()}
+    harvested: dict[str, object] = {v: _get(k) for k, v in _FIELDS.items()}
     harvested["architecture"] = architecture
     harvested["quantMethod"] = quant_method
     harvested["hasVisionTower"] = "vision_config" in config or "image_token_id" in config
@@ -190,7 +193,7 @@ def _harvest(config: dict) -> dict:
     return harvested
 
 
-def get(repo_id: str, *, force: bool = False) -> dict | None:
+def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
     """The harvested metadata for `repo_id` — from cache when fresh, fetched
     and cached when stale or absent, or None when nothing is known and a
     fetch could not answer either.

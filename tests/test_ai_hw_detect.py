@@ -1,4 +1,4 @@
-"""Tests for GPU/VRAM detection beyond RAM (SPEC AI-2, D499).
+"""Tests for GPU/VRAM detection beyond RAM (SPEC AI-18, D518).
 
 `hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`, a
 PowerShell WMI/registry query, `sysctl`) — exactly the kind of 50-500ms cold
@@ -39,6 +39,7 @@ def test_fit_module_only_reads_the_cache_never_the_probe():
 def test_nvidia_smi_csv_is_parsed_into_gpu_devices():
     csv = "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 4090, 24564\n"
     gpus = hw_detect._parse_nvidia_smi(csv)
+    assert gpus is not None
     assert len(gpus) == 2
     assert gpus[0].name == "NVIDIA GeForce RTX 4090"
     assert gpus[0].vram_gb == pytest.approx(24564 / 1024, rel=1e-3)
@@ -58,6 +59,7 @@ def test_rocm_smi_json_is_parsed_into_gpu_devices():
                    "VRAM Total Memory (B)": "25753026560"},
     })
     gpus = hw_detect._parse_rocm_smi(payload)
+    assert gpus is not None
     assert len(gpus) == 1
     assert gpus[0].name == "AMD Radeon RX 7900 XTX"
     assert gpus[0].vram_gb == pytest.approx(25753026560 / 1e9, rel=1e-3)
@@ -94,6 +96,7 @@ def test_registry_qwmemorysize_overrides_a_capped_reading(monkeypatch):
     monkeypatch.setattr(hw_detect, "_windows_registry_vram",
                          lambda: {"NVIDIA GeForce RTX 4080": 17179869184})  # 16 GiB
     gpus = hw_detect._windows_gpus()
+    assert gpus is not None
     assert gpus[0].vram_gb == pytest.approx(17179869184 / 1024 ** 3, rel=1e-3)
 
 
@@ -102,6 +105,7 @@ def test_an_uncapped_reading_is_kept_even_when_the_registry_disagrees(monkeypatc
                          "NVIDIA GeForce RTX 3050|3221225472\n")  # 3 GiB, real
     monkeypatch.setattr(hw_detect, "_windows_registry_vram", lambda: {})
     gpus = hw_detect._windows_gpus()
+    assert gpus is not None
     assert gpus[0].vram_gb == pytest.approx(3221225472 / 1024 ** 3, rel=1e-3)
 
 
@@ -166,6 +170,7 @@ def test_bandwidth_lookup_prefers_the_more_specific_match():
     """`M1 Max` must not be matched by a bare `M1` rule."""
     m1 = hw_detect._bandwidth_for("Apple M1")
     m1_max = hw_detect._bandwidth_for("Apple M1 Max")
+    assert m1 is not None and m1_max is not None
     assert m1_max > m1
 
 
