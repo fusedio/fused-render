@@ -111,8 +111,27 @@ def _run(args: list[str], timeout: float = _PROBE_TIMEOUT_S) -> str | None:
     error. The one seam every vendor probe below goes through, and the one
     every test monkeypatches instead of touching a real subprocess."""
     try:
+        # `encoding`/`errors` pinned explicitly, never left to `text=True`'s
+        # default `locale.getpreferredencoding(False)` — a GUI-launched
+        # fused-render process inherits no LANG/LC_ALL, which resolves that to
+        # ASCII, so the first non-ASCII byte a vendor tool prints (a curly
+        # quote in an OEM device name, a Windows codepage that is not UTF-8)
+        # would raise `UnicodeDecodeError` and turn "no GPU detected" into a
+        # crashed background refresh. `errors="replace"` over a *correct*
+        # per-platform codepage (`cp1252`, PowerShell's OEM page, ...)
+        # because every field this module reads back out of `_run`'s output —
+        # a GPU name, a byte count — is matched by `in`/parsed as a number;
+        # a mis-decoded byte in the middle of a name that isn't in the
+        # bandwidth table already read as "unknown" before this fix, and
+        # `errors="replace"` keeps that the same failure mode (a table miss)
+        # instead of a new one (a crash) — see `tests/
+        # test_subprocess_encoding.py`, the repo-wide invariant this pins,
+        # and `app_git.py`'s identical `subprocess.run(..., encoding="utf-8",
+        # errors="replace")`, the house answer this matches rather than
+        # picking a fresh one.
         result = subprocess.run(args, capture_output=True, timeout=timeout,
-                                text=True, check=False)
+                                text=True, encoding="utf-8", errors="replace",
+                                check=False)
     except (OSError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:

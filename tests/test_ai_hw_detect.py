@@ -10,6 +10,7 @@ asserts that `fit.py` only ever reads the on-disk cache
 whole module exists to keep.
 """
 import json
+import sys
 import time
 
 import pytest
@@ -201,6 +202,27 @@ def test_a_corrupt_cache_reads_as_none(tmp_path):
     with open(path, "w") as f:
         f.write("{not json")
     assert hw_detect.cached_hardware() is None
+
+
+def test_run_survives_non_utf8_bytes_from_a_real_child(tmp_path):
+    """`_run` pins `encoding="utf-8", errors="replace"` (SPEC AI-18, house
+    convention per `app_git.py`/`tests/test_subprocess_encoding.py`) rather
+    than falling through `text=True`'s locale-dependent default — a
+    GUI-launched process inherits no LANG/LC_ALL, which resolves to ASCII,
+    so a vendor tool's non-ASCII byte would otherwise raise
+    `UnicodeDecodeError` and crash the whole refresh. Driven against a REAL
+    child process (not a monkeypatch of `_run` itself) so this actually
+    exercises the `subprocess.run` kwargs rather than asserting they were
+    typed correctly."""
+    script = tmp_path / "emit_bad_bytes.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'NVIDIA GeForce RTX 4090\\xff\\xfe, 24564\\n')\n"
+    )
+    out = hw_detect._run([sys.executable, str(script)])
+    assert out is not None
+    assert "NVIDIA GeForce RTX 4090" in out
+    assert "\ufffd" in out  # the replaced byte, not a raised exception
 
 
 def test_detect_hardware_never_raises_when_every_probe_fails(monkeypatch):
