@@ -80,6 +80,10 @@
   margin: 0;
 }
 
+.workbench-deploy-share-note {
+  margin: -6px 0 0 24px;
+}
+
 .workbench-deploy-plan,
 .workbench-deploy-warnings {
   display: flex;

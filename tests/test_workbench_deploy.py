@@ -99,3 +99,48 @@ def test_plan_api_requires_guard_and_valid_canvas_name(tmp_path):
     )
     assert response.status_code == 400
     assert "letters" in response.json()["error"]
+
+
+def test_a_corrupt_row_does_not_break_listing_or_saving(tmp_path, monkeypatch):
+    """One bad `deployed_at` used to 500 every later deploy, after the push.
+
+    _save_record reads the store once the canvas is already pushed and shared,
+    so a bare float() there turned a successful deploy into a visible failure
+    the user would reasonably retry.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
+    from fused_render.shell import storage
+
+    store = workbench_deploy._store_path()
+    storage.write_json(
+        store,
+        {
+            "version": 1,
+            "deployments": [
+                {"page": "/a/index.html", "canvas_name": "A", "deployed_at": "corrupt"},
+                {"page": "/b/index.html", "canvas_name": "B", "deployed_at": 20.0},
+                {"page": "/c/index.html", "canvas_name": "C", "deployed_at": 10.0},
+            ],
+        },
+    )
+
+    listed = workbench_deploy.list_deployments()
+    assert [item["canvas_name"] for item in listed] == ["B", "C", "A"]
+
+    record = workbench_deploy.DeploymentRecord(
+        page="/d/index.html",
+        canvas_name="D",
+        digest="d" * 64,
+        shell_slug="fr_shell_dddddddd",
+        environment="prod",
+        deployed_at=30.0,
+        generated_bytes=1,
+        workbench_url="https://www.fused.io/workbench",
+        share_url=None,
+        app_url=None,
+        shared=False,
+        warnings=(),
+    )
+    workbench_deploy._save_record(record)
+    assert [item["canvas_name"] for item in workbench_deploy.list_deployments()][0] == "D"

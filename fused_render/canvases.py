@@ -163,9 +163,22 @@ _ENV_WEB_URLS = {
     "dev": "http://localhost:3000",
 }
 
-WORKBENCH_BASE_URL = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _ENV_WEB_URLS.get(
-    WORKBENCH_ENV, "https://www.fused.io"
-)
+def web_base_url(environment: str | None = None) -> str:
+    """The www host for one Workbench environment, override applied.
+
+    A function rather than the constant alone because every caller that builds
+    a Workbench link needs the same table and the same override — one copy of
+    it, or the copies drift and a single deploy ends up naming two different
+    environments in two different URLs.
+    """
+    env = WORKBENCH_ENV if environment is None else environment
+    return (
+        os.environ.get("FUSED_RENDER_WORKBENCH_URL")
+        or _ENV_WEB_URLS.get(env, "https://www.fused.io")
+    ).rstrip("/")
+
+
+WORKBENCH_BASE_URL = web_base_url()
 
 
 def _cli_env(cli) -> dict[str, str]:

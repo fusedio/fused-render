@@ -9,8 +9,8 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from fused_render._canvas_push import INTERNAL_ENV
-from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+from fused_render.canvases import _cli_env, web_base_url
+from fused_render.fusedcli import cli_error, fused_cli, workbench_env
 from fused_render.shell import storage
 from fused_render.workbench_app import (
     CompiledWorkbenchApp,
@@ -24,13 +24,8 @@ SHARE_TIMEOUT_S = 90
 _STORE_NAME = "workbench_app_deployments.json"
 _URL_RE = re.compile(r"https?://[^\s]+")
 _TOKEN_RE = re.compile(r"/canvas/(fc_[A-Za-z0-9_-]+)")
-_WEB_BASES = {
-    "prod": "https://www.fused.io",
-    "unstable": "https://unstable.fused.io",
-    "stg": "https://staging.fused.io",
-    "staging": "https://staging.fused.io",
-    "dev": "http://localhost:3000",
-}
+# The www hosts live in canvases.web_base_url(); only the UDF hosts are this
+# module's own, because nothing else builds them.
 _UDF_BASES = {
     "prod": "https://udf.ai",
     "unstable": "https://unstable.udf.ai",
@@ -64,6 +59,22 @@ def _store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
 
 
+def _deployed_at(item: dict[str, Any]) -> float:
+    """The sort key, defensively.
+
+    A bare float() here made one corrupt row fatal to DEPLOYING, not just to
+    listing: _save_record reads the store after the push and the share have
+    already succeeded, so the canvas would be live — possibly public — while
+    the user saw a 500 and reasonably retried a deploy that had already
+    happened. The rest of this store's readers are careful about its shape;
+    this is the one that was not.
+    """
+    try:
+        return float(item.get("deployed_at", 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def list_deployments(page: str | None = None) -> list[dict[str, Any]]:
     raw = storage.read_json(_store_path())
     records = raw.get("deployments", []) if isinstance(raw, dict) else []
@@ -75,7 +86,7 @@ def list_deployments(page: str | None = None) -> list[dict[str, Any]]:
             for item in valid
             if os.path.normcase(os.path.abspath(str(item.get("page", "")))) == identity
         ]
-    return sorted(valid, key=lambda item: float(item.get("deployed_at", 0)), reverse=True)
+    return sorted(valid, key=_deployed_at, reverse=True)
 
 
 def _save_record(record: DeploymentRecord) -> None:
@@ -108,13 +119,6 @@ def deployment_plan(compiled: CompiledWorkbenchApp) -> dict[str, Any]:
     }
 
 
-def _cli_environment(cli) -> dict[str, str]:
-    env = child_env(cli)
-    env["FUSED_ENV"] = workbench_env()
-    env[INTERNAL_ENV] = "1"
-    return env
-
-
 def _run_cli(cli, args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     try:
         process = subprocess.run(
@@ -124,7 +128,7 @@ def _run_cli(cli, args: list[str], timeout: int) -> subprocess.CompletedProcess[
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env=_cli_environment(cli),
+            env=_cli_env(cli),
         )
     except subprocess.TimeoutExpired as exc:
         raise WorkbenchDeployError(
@@ -147,11 +151,17 @@ def _last_url(output: str) -> str | None:
 
 
 def _bases(environment: str) -> tuple[str, str]:
-    web = os.environ.get("FUSED_RENDER_WORKBENCH_URL") or _WEB_BASES.get(
-        environment, "https://www.fused.io"
+    """The (www, udf) hosts one deployment's URLs are built from.
+
+    Each host has its own override. They used to share one: FUSED_RENDER_
+    WORKBENCH_URL moved the www base while the UDF base stayed pinned to the
+    table, so pointing the app at a non-prod host produced a record whose
+    workbench_url and app_url named two different deployments.
+    """
+    udf = os.environ.get("FUSED_RENDER_WORKBENCH_UDF_URL") or _UDF_BASES.get(
+        environment, "https://udf.ai"
     )
-    udf = _UDF_BASES.get(environment, "https://udf.ai")
-    return web.rstrip("/"), udf.rstrip("/")
+    return web_base_url(environment), udf.rstrip("/")
 
 
 def deploy_workbench_app(

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   deployWorkbenchApp,
   planWorkbenchApp,
@@ -30,11 +30,19 @@ export default function DeployWorkbenchModal({
   const shareId = useId();
   const [canvasName, setCanvasName] = useState(() => canvasNameForApp(appName));
   const [cacheMaxAge, setCacheMaxAge] = useState("0s");
-  const [share, setShare] = useState(true);
+  // Sharing is OFF by default: `canvas share` mints a public token, and the
+  // compiler's own warning says a public Canvas exposes the generated UDF
+  // sources — the app's Python among them. Publishing is a choice the user
+  // makes, not a default they have to notice and undo.
+  const [share, setShare] = useState(false);
   const [plan, setPlan] = useState<WorkbenchAppPlan | null>(null);
   const [result, setResult] = useState<WorkbenchAppDeployment | null>(null);
   const [busy, setBusy] = useState<"plan" | "deploy" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Set when the user leaves while a request is still out, so the response
+  // never lands on an unmounted dialog.
+  const abandoned = useRef(false);
+  useEffect(() => () => { abandoned.current = true; }, []);
 
   const request = { page, canvas_name: canvasName, cache_max_age: cacheMaxAge, share };
   const canReview = /^[A-Za-z0-9_]{1,128}$/.test(canvasName) && busy === null;
@@ -49,11 +57,14 @@ export default function DeployWorkbenchModal({
     setBusy("plan");
     setError(null);
     try {
-      setPlan(await planWorkbenchApp(request));
+      const next = await planWorkbenchApp(request);
+      if (abandoned.current) return;
+      setPlan(next);
     } catch (reason) {
+      if (abandoned.current) return;
       setError((reason as Error).message);
     } finally {
-      setBusy(null);
+      if (!abandoned.current) setBusy(null);
     }
   };
 
@@ -61,11 +72,14 @@ export default function DeployWorkbenchModal({
     setBusy("deploy");
     setError(null);
     try {
-      setResult(await deployWorkbenchApp(request));
+      const next = await deployWorkbenchApp(request);
+      if (abandoned.current) return;
+      setResult(next);
     } catch (reason) {
+      if (abandoned.current) return;
       setError((reason as Error).message);
     } finally {
-      setBusy(null);
+      if (!abandoned.current) setBusy(null);
     }
   };
 
@@ -93,8 +107,14 @@ export default function DeployWorkbenchModal({
           </>
         ) : (
           <>
-            <button type="button" className="btn btn-secondary" onClick={onClose} disabled={busy !== null}>
-              Cancel
+            {/* Never disabled. Modal gates Esc, the backdrop and the ✕ on
+                `busy`, so while a push runs (up to PUSH_TIMEOUT_S +
+                SHARE_TIMEOUT_S, ~5.5 min) this is the only way out — the
+                footer way out Modal.tsx says every busy modal must have.
+                Leaving does not stop the push; the CLI is already running
+                server-side, and the deployment is recorded either way. */}
+            <button type="button" className="btn btn-secondary" onClick={onClose}>
+              {busy === "deploy" ? "Close" : "Cancel"}
             </button>
             {plan ? (
               <button type="button" className="btn btn-primary" onClick={deploy} disabled={busy !== null}>
@@ -166,8 +186,12 @@ export default function DeployWorkbenchModal({
               checked={share}
               onChange={(event) => setShare(event.target.checked)}
             />
-            Resolve a Canvas share URL after pushing
+            Publish a public share link
           </label>
+          <p className="field-hint workbench-deploy-share-note">
+            Anyone with the link can open the Canvas and read its generated UDF
+            sources, including this app's Python code and embedded assets.
+          </p>
           {plan && (
             <div className="workbench-deploy-plan">
               <p>
@@ -177,6 +201,11 @@ export default function DeployWorkbenchModal({
               </p>
               {plan.warnings.map((warning) => <p key={warning}>⚠ {warning}</p>)}
             </div>
+          )}
+          {busy === "deploy" && (
+            <p className="deploy-muted" role="status">
+              Pushing to Workbench. Closing this dialog does not cancel the push.
+            </p>
           )}
           {error && <ErrorBanner>{error}</ErrorBanner>}
         </div>

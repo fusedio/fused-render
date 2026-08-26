@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
 import types
 from pathlib import Path
@@ -10,37 +12,44 @@ from fused_render.export import ExportError
 from fused_render.workbench_app import compile_workbench_app, write_compiled_canvas
 
 
-class _Udf:
-    def __init__(self, fn, registry):
-        self._fn = fn
-        registry.append(self)
+# How the generated UDFs are exercised here, and why.
+#
+# The plane runs one whole source file per UDF: `canvas push` zips the canvas
+# directory, the server stores the ENTIRE file as the UDF's `code`
+# (server/svc/code_proxy/shared.py::hydrate_udf_code_and_headers_from_files),
+# and execution exec()s all of it and then calls the `udf` entrypoint
+# (fused/_udf/compile_v2.py::compile_udf_and_run_v3).  Module-level constants
+# are in scope; whatever the entrypoint returns goes to job2's serializer.
+#
+# `_load` reproduces exactly that: exec the whole file, call the entrypoint,
+# look at the raw return value.  `fused` is stubbed during the exec because the
+# real decorator would hand back a Udf object whose call goes over the network
+# to a live realtime instance — a unit test must not do that.  The stub defines
+# `udf` and NOTHING else, which is the point: an earlier revision faked
+# `fused.HTMLResponse`, `fused.Response` and `fused._registered_udfs`, so the
+# suite stayed green over generated code that could not run on Workbench at
+# all.  test_real_fused_wheel_has_no_response_helpers pins that the stub is not
+# lying about the wheel's surface, and _load asserts the module never reaches
+# for a `fused` attribute the wheel lacks.
 
-    def __call__(self, *args, **kwargs):
-        return self._fn(*args, **kwargs)
 
+class _StubFused(types.ModuleType):
+    """`fused` as the wheel really is, for the two names generated code uses."""
 
-class _Response:
-    def __init__(self, body, *, media_type, status_code=200, headers=None):
-        self.body = body
-        self.media_type = media_type
-        self.status_code = status_code
-        self.headers = headers
+    def __init__(self) -> None:
+        super().__init__("fused")
 
-
-def _fake_fused() -> types.ModuleType:
-    module = types.ModuleType("fused")
-    module._registered_udfs = []
-
+    @staticmethod
     def udf(fn):
-        return _Udf(fn, module._registered_udfs)
+        # The real decorator returns a Udf object; generated code only ever
+        # uses the decorator as a marker, and never calls back into it.
+        return fn
 
-    module.udf = udf
-    module.Response = _Response
-    module.HTMLResponse = lambda body, **kwargs: _Response(body, media_type="text/html", **kwargs)
-    module.PlainTextResponse = lambda body, **kwargs: _Response(
-        body, media_type="text/plain", **kwargs
-    )
-    return module
+    def __getattr__(self, name: str):
+        # AttributeError, not a louder failure: it is what the real module
+        # raises, so a defensive getattr(fused, name, default) in generated
+        # code behaves here exactly as it does on the plane.
+        raise AttributeError(f"module 'fused' has no attribute {name!r}")
 
 
 def _app(tmp_path: Path) -> Path:
@@ -62,15 +71,29 @@ fused.readFile("./note.txt");
     return page
 
 
-def _exec_source(source: bytes, monkeypatch: pytest.MonkeyPatch):
-    fake = _fake_fused()
-    monkeypatch.setitem(sys.modules, "fused", fake)
+def _load(compiled, name: str, monkeypatch: pytest.MonkeyPatch):
+    """Exec one generated UDF file whole and hand back its entrypoint."""
+    monkeypatch.setitem(sys.modules, "fused", _StubFused())
     namespace: dict = {}
-    exec(compile(source, "<generated>", "exec"), namespace)
-    return namespace, fake
+    exec(compile(compiled.files[name], f"<{name}>", "exec"), namespace)
+    return namespace["udf"]
 
 
-def test_compile_generates_valid_dedicated_canvas(tmp_path, monkeypatch):
+def test_real_fused_wheel_has_no_response_helpers():
+    """The guard behind _StubFused: generated code may rely on none of these.
+
+    `fused.HTMLResponse`/`Response`/`PlainTextResponse` and
+    `fused._registered_udfs` live only in the openfused serve-plane shim
+    (fused/agent_core/backends/aws/handler/fused.py), which is the plane this
+    deployment path deliberately bypasses.
+    """
+    import fused
+
+    for name in ("HTMLResponse", "Response", "PlainTextResponse", "_registered_udfs"):
+        assert not hasattr(fused, name), f"the wheel now has fused.{name}"
+
+
+def test_compile_generates_valid_dedicated_canvas(tmp_path):
     page = _app(tmp_path)
     compiled = compile_workbench_app(str(page), "My_app", cache_max_age="5m")
     output = tmp_path / "generated"
@@ -88,28 +111,40 @@ def test_compile_generates_valid_dedicated_canvas(tmp_path, monkeypatch):
     assert "cacheMaxAge\":300" in (output / f"{compiled.shell_slug}.py").read_text()
 
 
-def test_generated_routes_execute_main_shell_and_asset(tmp_path, monkeypatch):
+def test_generated_run_route_answers_json(tmp_path, monkeypatch):
+    """job2 zips a bare dict return, so the wrapper must hand back real JSON."""
     compiled = compile_workbench_app(str(_app(tmp_path)), "Executable")
-
     run_slug = compiled.entrypoints["./calc.py"]
-    run_ns, fake = _exec_source(compiled.files[f"{run_slug}.py"], monkeypatch)
-    assert run_ns["udf"](value="7") == {"answer": 14}
-    # The nested page module must not leak its decorated UDF registrations into a warm worker.
-    assert len(fake._registered_udfs) == 1
+    udf = _load(compiled, f"{run_slug}.py", monkeypatch)
 
-    shell_ns, _ = _exec_source(compiled.files[f"{compiled.shell_slug}.py"], monkeypatch)
-    shell = shell_ns["udf"]()
-    assert shell.media_type == "text/html"
-    assert "window.__FUSED_RENDER_WORKBENCH__" in shell.body
-    assert "window.fused" in shell.body
+    response = udf(value="7")
+    assert response.media_type == "application/json"
+    assert json.loads(response.body) == {"answer": 14}
 
+
+def test_generated_shell_route_returns_html_as_a_str(tmp_path, monkeypatch):
+    """A str return is what job2 serializes as text/html; charset=utf-8."""
+    compiled = compile_workbench_app(str(_app(tmp_path)), "Executable")
+    udf = _load(compiled, f"{compiled.shell_slug}.py", monkeypatch)
+
+    body = udf()
+    assert isinstance(body, str)
+    assert "window.__FUSED_RENDER_WORKBENCH__" in body
+    assert "window.fused" in body
+
+
+def test_generated_asset_route_serves_bytes(tmp_path, monkeypatch):
+    compiled = compile_workbench_app(str(_app(tmp_path)), "Executable")
     asset_name = next(name for name in compiled.files if "_asset_" in name)
-    asset_ns, _ = _exec_source(compiled.files[asset_name], monkeypatch)
-    asset = asset_ns["udf"](name="note.txt")
+    udf = _load(compiled, asset_name, monkeypatch)
+
+    asset = udf(name="note.txt")
     assert asset.body == b"hello from an asset\n"
     assert asset.media_type == "text/plain"
-    missing = asset_ns["udf"](name="missing")
-    assert missing.status_code == 404
+    # job2 forwards body + media_type only, so a miss cannot answer 404.
+    missing = udf(name="missing")
+    assert missing.body == b"asset not found"
+    assert missing.media_type == "text/plain"
 
 
 def test_compile_is_deterministic(tmp_path):
@@ -121,6 +156,12 @@ def test_compile_is_deterministic(tmp_path):
 
 
 def test_generated_route_dispatches_decorated_udf(tmp_path, monkeypatch):
+    """A decorated function carries the app's own name, never `udf`.
+
+    The plane's entrypoint must be named `udf` and the generated wrapper is;
+    the app's own .py is loaded by that wrapper, so its function is named
+    whatever the author called it — which is what local accepts too.
+    """
     (tmp_path / "decorated.py").write_text(
         "import fused\n\n"
         "@fused.udf\n"
@@ -131,10 +172,32 @@ def test_generated_route_dispatches_decorated_udf(tmp_path, monkeypatch):
     page.write_text('<script>fused.runPython("./decorated.py", {})</script>')
     compiled = compile_workbench_app(str(page), "Decorated")
     run_slug = compiled.entrypoints["./decorated.py"]
-    namespace, fake = _exec_source(compiled.files[f"{run_slug}.py"], monkeypatch)
+    udf = _load(compiled, f"{run_slug}.py", monkeypatch)
 
-    assert namespace["udf"](value="8") == 9
-    assert len(fake._registered_udfs) == 1
+    response = udf(value="8")
+    assert json.loads(response.body) == 9
+
+
+def test_long_route_names_do_not_collide_on_one_udf(tmp_path):
+    """The readable tail is truncated; the slug must stay unique regardless."""
+    stem = "a" * 80
+    for suffix in ("alpha", "beta"):
+        (tmp_path / f"{stem}_{suffix}.py").write_text("def main():\n    return 1\n")
+    page = tmp_path / "index.html"
+    page.write_text(
+        "<script>"
+        f'fused.runPython("./{stem}_alpha.py", {{}});'
+        f'fused.runPython("./{stem}_beta.py", {{}});'
+        "</script>"
+    )
+    compiled = compile_workbench_app(str(page), "Collide")
+
+    slugs = list(compiled.entrypoints.values())
+    assert len(slugs) == 2
+    assert len(set(slugs)) == 2, f"two entrypoints share one UDF name: {slugs}"
+    assert all(len(slug) <= 96 for slug in slugs)
+    for slug in slugs:
+        assert f"{slug}.py" in compiled.files
 
 
 def test_compile_keeps_export_blockers(tmp_path):
@@ -142,3 +205,45 @@ def test_compile_keeps_export_blockers(tmp_path):
     page.write_text('<meta name="fused-app"><script>fused.writeFile("x", "y")</script>')
     with pytest.raises(ExportError, match=r"fused\.writeFile"):
         compile_workbench_app(str(page), "Unsupported")
+
+
+@pytest.mark.skipif(
+    os.environ.get("FUSED_RENDER_LIVE_WORKBENCH") != "1",
+    reason="runs generated UDFs on a live realtime instance; set FUSED_RENDER_LIVE_WORKBENCH=1",
+)
+def test_generated_routes_run_on_a_live_realtime_instance(tmp_path):
+    """End-to-end against the real plane — no canvas is pushed or shared.
+
+    fused.load() carries the whole file as the UDF code, which is what the
+    plane stores, so calling it exercises the real executor and job2's real
+    serializer.  Note the Python client cannot deserialize a text/plain body
+    (it falls back to parquet), so the asset route is not checked here; a
+    browser reads those bytes directly.
+    """
+    import fused
+
+    compiled = compile_workbench_app(str(_app(tmp_path)), "LiveCheck")
+    staged = tmp_path / "live"
+    write_compiled_canvas(compiled, str(staged))
+
+    shell = fused.load(str(staged / f"{compiled.shell_slug}.py"))()
+    assert isinstance(shell, str) and "window.__FUSED_RENDER_WORKBENCH__" in shell
+
+    run_slug = compiled.entrypoints["./calc.py"]
+    assert fused.load(str(staged / f"{run_slug}.py"))(value="7") == {"answer": 14}
+
+    # The decorated-UDF path against the REAL wheel, where @fused.udf returns a
+    # Udf recorded in no registry — the case the capture decorator exists for.
+    (tmp_path / "decorated.py").write_text(
+        "import fused\n\n"
+        "@fused.udf\n"
+        "def calculate(value: int):\n"
+        "    return value + 1\n"
+    )
+    decorated_page = tmp_path / "decorated.html"
+    decorated_page.write_text('<script>fused.runPython("./decorated.py", {})</script>')
+    decorated = compile_workbench_app(str(decorated_page), "LiveDecorated")
+    staged_decorated = tmp_path / "live_decorated"
+    write_compiled_canvas(decorated, str(staged_decorated))
+    slug = decorated.entrypoints["./decorated.py"]
+    assert fused.load(str(staged_decorated / f"{slug}.py"))(value="8") == 9

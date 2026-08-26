@@ -84,6 +84,12 @@
   var inflight = new Map();
   function runPython(path, params, opts) {
     opts = opts || {};
+    // Validate first: routeFor throws synchronously, as the local runtime
+    // does. Resolving it after the supersede bookkeeping would let a bad path
+    // abort a perfectly good in-flight request sharing its opts.key, leave
+    // that key's record in `inflight` forever (cleanup never runs), and never
+    // detach the abort listener from a reused long-lived signal.
+    var url = routeUrl(routeFor(path));
     var channel = opts.key === undefined ? path : opts.key;
     var keyed = channel !== null;
     var controller = new AbortController();
@@ -109,7 +115,7 @@
       if (detach) detach();
       if (keyed && inflight.get(channel) === record) inflight.delete(channel);
     }
-    return fetch(routeUrl(routeFor(path)), {
+    return fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params || {}),
@@ -198,14 +204,83 @@
       try { listener(value); } catch (error) { console.error("[fused] params listener", error); }
     });
   }
-  function setParam(key, value) {
-    if (isReserved(key)) throw new Error("fused.params.set: reserved key " + JSON.stringify(key));
+  // A real gesture in this document, tracked exactly as the local runtime
+  // tracks it (capture phase, sticky): a param the page writes for itself
+  // before any interaction is part of the as-loaded state, not a step the
+  // user can press Back out of.
+  var sawGesture = false;
+  function markGesture() { sawGesture = true; }
+  ["pointerdown", "keydown"].forEach(function (type) {
+    document.addEventListener(type, markGesture, true);
+  });
+
+  // The local runtime's set() contract, ported whole (fused_render/static/
+  // runtime.js). It has to be the same contract: a page is authored against
+  // the local one and then deployed, and every divergence here is a bug the
+  // author cannot see until it is live. That means the loud validation as
+  // well as the behaviour — silently accepting `{history: "replce"}` would
+  // hand back the push it was passed to avoid.
+  //
+  // What is deliberately NOT ported is the coalescing/rAF budget around the
+  // history write: it is a scrub-performance device, not a semantic, and the
+  // entry it produces is the same one this immediate write produces.
+  function setParam(key, value, options) {
+    if (isReserved(key)) {
+      throw new Error(
+        "fused.params.set: '" + key + "' is a reserved param name and cannot be set"
+      );
+    }
+    var removing = value === null;
+    if (!removing && typeof value !== "string") {
+      throw new Error(
+        "fused.params.set: value for '" + key + "' must be a string or null, got " + typeof value
+      );
+    }
+    var opts = options || {};
+    if (opts.history !== undefined && opts.history !== "replace") {
+      throw new Error(
+        'fused.params.set: options.history must be "replace", got ' + JSON.stringify(opts.history)
+      );
+    }
+    if (opts.default !== undefined && typeof opts.default !== "string") {
+      throw new Error(
+        "fused.params.set: options.default for '" + key + "' must be a string, got " +
+          typeof opts.default
+      );
+    }
+    if (removing && opts.default !== undefined) {
+      throw new Error(
+        "fused.params.set: options.default is meaningless when removing '" + key + "'"
+      );
+    }
+
     var params = currentParams();
-    if (value === null || value === undefined) params.delete(key);
-    else if (typeof value === "string") params.set(key, value);
-    else throw new Error("fused.params.set: values must be strings or null");
+    if (removing) params.delete(key);
+    else params.set(key, value);
     var query = params.toString();
-    history.replaceState(history.state, "", location.pathname + (query ? "?" + query : ""));
+    var newSearch = query ? "?" + query : "";
+    // Two ways a write is a no-op: the URL already says this byte-for-byte,
+    // or (opts.default) it already MEANS this by saying nothing.
+    var meansDefault =
+      opts.default !== undefined && value === opts.default && getParam(key) === undefined;
+    var unchanged = meansDefault || newSearch === window.location.search;
+    if (!unchanged) {
+      var prevState = history.state;
+      var newUrl = window.location.pathname + newSearch;
+      if (opts.history === "replace" || !sawGesture || (prevState && prevState.fusedParamEntry)) {
+        history.replaceState(prevState, "", newUrl);
+      } else {
+        // The once-per-visit push: the first user-caused write gets one entry
+        // so Back restores the as-loaded state; every later write replaces on
+        // top of it, so param churn costs at most one entry per visit.
+        var nextState = Object.assign({}, prevState, { fusedParamEntry: true });
+        try {
+          history.pushState(nextState, "", newUrl);
+        } catch (error) {
+          console.warn("[fused] history write throttled:", error);
+        }
+      }
+    }
     notify();
   }
   function onChange(listener) {

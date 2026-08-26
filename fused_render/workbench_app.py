@@ -50,10 +50,20 @@ class CompiledWorkbenchApp:
 
 
 def _udf_slug(prefix: str, digest: str, value: str = "") -> str:
-    tail = _SLUG_CHARS.sub("_", value).strip("_")
+    """A stable, unique UDF name for one generated route.
+
+    The readable tail is truncated to fit the 96-char budget, so two long route
+    names that agree on their first bytes would otherwise land on one slug —
+    and one generated .py would silently overwrite the other, leaving both
+    entrypoints pointing at whichever file was written last.  A hash of the
+    FULL value goes in ahead of the truncated tail so the slug stays unique
+    however much of the tail survives.
+    """
     slug = f"fr_{prefix}_{digest[:8]}"
-    if tail:
-        slug += "_" + tail
+    if value:
+        mark = hashlib.blake2b(value.encode("utf-8"), digest_size=4).hexdigest()
+        tail = _SLUG_CHARS.sub("_", value).strip("_")
+        slug += "_" + mark + ("_" + tail if tail else "")
     return slug[:96].rstrip("_")
 
 
@@ -81,8 +91,18 @@ def _inject_runtime(html: str, seed: dict) -> str:
         + _runtime_js()
         + "</script>"
     )
-    index = html.lower().rfind("</head>")
-    return html[:index] + injection + html[index:] if index >= 0 else injection + html
+    # The local server injects immediately AFTER the opening <head>
+    # (server/routers/render.py), and this has to land in the same place: at
+    # the END of <head> instead, a page whose own <head> script calls
+    # fused.runPython works locally and breaks once deployed. The no-<head>
+    # fallback is local's too — prepending ahead of the doctype, which costs
+    # both of them standards mode; worth fixing, but worth fixing in both at
+    # once, so the two stay honest about being one contract.
+    index = html.lower().find("<head>")
+    if index < 0:
+        return injection + html
+    insert_at = index + len("<head>")
+    return html[:insert_at] + injection + html[insert_at:]
 
 
 def _deterministic_archive(page_dir: str, plan: ExportPlan) -> bytes:
@@ -108,6 +128,12 @@ def _deterministic_archive(page_dir: str, plan: ExportPlan) -> bytes:
     return out.getvalue()
 
 
+# job2's serializer (job2/serialize/udf.py::_serialize_output) is the whole
+# contract for what a Workbench UDF may return.  Only two branches matter here:
+# a `str` return is serialized as text/html, and a `fastapi.Response` is passed
+# through as its own body + media_type.  `fused.HTMLResponse` and friends exist
+# only in the openfused serve-plane shim (agent_core/backends/aws/handler),
+# which is exactly the plane this deployment path bypasses.
 def _shell_source(html: str) -> str:
     return """\
 import fused
@@ -116,7 +142,8 @@ _HTML = %s
 
 @fused.udf
 def udf():
-    return fused.HTMLResponse(_HTML)
+    # A str return is served as text/html; charset=utf-8.
+    return _HTML
 """ % ascii(html)
 
 
@@ -126,6 +153,7 @@ def _run_source(target: str, archive: bytes, digest: str) -> str:
 import base64 as _fr_base64
 import inspect as _fr_inspect
 import io as _fr_io
+import json as _fr_json_mod
 import os as _fr_os
 import runpy as _fr_runpy
 import sys as _fr_sys
@@ -136,6 +164,21 @@ import fused
 _FR_ARCHIVE = {payload!r}
 _FR_DIGEST = {digest!r}
 _FR_TARGET = {target!r}
+
+
+def _fr_json(value):
+    """Hand a result back as application/json.
+
+    job2 serializes a bare dict as a multi-part zip and a bare str as HTML, so
+    returning the value directly would not match the page's fetch().json() —
+    nor the local bridge, which JSON-encodes every return value
+    (fused_render/engine.py).  A fastapi Response is job2's one pass-through
+    branch: it forwards body + media_type verbatim.
+    """
+    from fastapi import Response as _FrResponse
+
+    body = _fr_json_mod.dumps(value, default=str).encode("utf-8")
+    return _FrResponse(body, media_type="application/json")
 
 
 def _fr_coerce(value, annotation):
@@ -198,29 +241,44 @@ def udf(**params):
     target = _fr_os.path.join(root, *_FR_TARGET.split("/"))
     old_cwd = _fr_os.getcwd()
     old_path = list(_fr_sys.path)
-    registered = getattr(fused, "_registered_udfs", None)
-    before = len(registered) if isinstance(registered, list) else 0
+    # Bring our own registry rather than reading fused's.  The app file's
+    # decorated function may be named anything (locally, engine.py takes
+    # _registered_udfs[-1] and calls ._fn, never looking at the name), but
+    # _registered_udfs exists only in the openfused serve-plane shim — on the
+    # real wheel @fused.udf just returns a Udf object that is recorded
+    # nowhere, so an app holding one @fused.udf and no main() used to raise.
+    # Swapping in a capturing identity decorator for the duration of the load
+    # gives us the raw function with its module globals intact, which is what
+    # local calls too; Udf.run_local is not the tool, since a Udf built this
+    # way carries only the decorated function's own source.
+    captured = []
+    real_udf = getattr(fused, "udf", None)
+
+    def _fr_capture(fn):
+        captured.append(fn)
+        return fn
+
     try:
         _fr_os.chdir(root)
         if root not in _fr_sys.path:
             _fr_sys.path.insert(0, root)
+        if real_udf is not None:
+            fused.udf = _fr_capture
         namespace = _fr_runpy.run_path(target, run_name="__fused_render__")
         if "result" in namespace:
-            return namespace["result"]
-        added = registered[before:] if isinstance(registered, list) else []
-        if added:
-            fn = added[-1]
-            inner = getattr(fn, "_fn", fn)
-            return inner(**_fr_bind(inner, params))
+            return _fr_json(namespace["result"])
+        if captured:
+            inner = captured[-1]
+            return _fr_json(inner(**_fr_bind(inner, params)))
         main = namespace.get("main")
         if not callable(main):
             raise AttributeError(
                 "fused-render app code must define main(), one @fused.udf, or result"
             )
-        return main(**_fr_bind(main, params))
+        return _fr_json(main(**_fr_bind(main, params)))
     finally:
-        if isinstance(registered, list):
-            del registered[before:]
+        if real_udf is not None:
+            fused.udf = real_udf
         _fr_sys.path[:] = old_path
         _fr_os.chdir(old_cwd)
 '''
@@ -241,12 +299,17 @@ _FR_MEDIA = {media!r}
 
 @fused.udf
 def udf(name: str = ""):
+    # job2 forwards a fastapi Response's body and media_type and nothing else:
+    # status_code and headers are dropped, so a missing asset comes back as a
+    # 200 with this body rather than a 404, and Cache-Control cannot be set
+    # here (the plane's own cache_max_age query param is what the runtime uses).
+    from fastapi import Response as _FrResponse
+
     if name not in _FR_ASSETS:
-        return fused.PlainTextResponse("asset not found", status_code=404)
-    return fused.Response(
+        return _FrResponse(b"asset not found", media_type="text/plain")
+    return _FrResponse(
         _fr_base64.b64decode(_FR_ASSETS[name]),
         media_type=_FR_MEDIA[name],
-        headers={{"Cache-Control": "public, max-age=31536000, immutable"}},
     )
 '''
 
