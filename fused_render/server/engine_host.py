@@ -671,7 +671,7 @@ def restart(engine_id: str, failed: Child | None = None) -> Child:
         child = Child(engine_id=engine_id, python=existing.python,
                       daemon=existing.daemon, cache=existing.cache,
                       version=existing.version, module=existing.module,
-                      kind=existing.kind)
+                      kind=existing.kind, folder=existing.folder)
         _spawn(child)
         _replay(child)
         with _lock:

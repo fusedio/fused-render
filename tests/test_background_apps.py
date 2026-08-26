@@ -416,6 +416,42 @@ def test_ensure_background_stores_folder_on_the_child():
         background_apps.set_enabled(FIXTURE_APP, False)
 
 
+def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
+    # Regression: engine_host.restart() rebuilds the replacement Child field
+    # by field (the same shape `ensure_app`'s reuse-or-respawn already
+    # takes), and the first cut of D505 forgot `folder` in that rebuild —
+    # invisible in every ensure_background test above, since none of them
+    # go through restart(). This is exactly the path a killed-and-healed
+    # background child takes (engine_forward.py's heal-on-proxy) and the
+    # one `/api/apps/background/restart` takes when a child IS live
+    # (engine_host.current(engine_id) is not None branch) — both would
+    # silently drop FUSED_RENDER_APP_DIR from the respawned daemon's env,
+    # taking away its only way to call stop()/disable() on itself.
+    background_apps.set_enabled(FIXTURE_APP, True)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    original = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        assert original.folder == FIXTURE_APP  # sanity: the premise holds
+
+        restarted = engine_host.restart(engine_id)
+        assert restarted is not original
+        assert restarted.folder == FIXTURE_APP, (
+            "restart() dropped Child.folder — the respawned daemon would "
+            "boot with no FUSED_RENDER_APP_DIR")
+        env = engine_host._spawn_env(restarted)
+        assert env.get("FUSED_RENDER_APP_DIR") == FIXTURE_APP, (
+            "restart()'s replacement child does not carry FUSED_RENDER_APP_DIR "
+            "into its own spawn env")
+    finally:
+        engine_host.stop(engine_id)
+        background_apps.set_enabled(FIXTURE_APP, False)
+
+
 def test_ensure_background_without_folder_defaults_to_empty_string():
     # The folder param is optional so existing direct callers that don't
     # care need not pass one.

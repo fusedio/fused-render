@@ -9776,7 +9776,11 @@ background apps are the third.
   against the calling daemon's own app, resolving the origin the same ladder
   `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
   `NotUnderEngine` when the env var is absent (not running as an
-  engine-spawned background daemon at all).
+  engine-spawned background daemon at all). `engine_host.restart()` carries
+  `folder` over onto its replacement `Child` the same as `python`/`daemon`/
+  `cache`/`version`/`kind` — a healed or manually-restarted background
+  child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
+  bring-up.
 - **Resurrection has three triggers, not one, and they are not equally
   strong.** Server start (the resurrection hook) and a page's
   `enable()`/`restart()` are the two deliberate ones. The third,
