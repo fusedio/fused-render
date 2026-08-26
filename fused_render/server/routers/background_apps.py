@@ -30,9 +30,23 @@ router = APIRouter()
 
 
 def _folder_for(html) -> str | None:
+    """The app folder `html` (the caller's own page path) belongs to.
+
+    realpath'd (not just abspath'd) — D509, 2026-08-26 code review: this used
+    to be a bare `os.path.dirname(os.path.abspath(html))`, which diverged
+    from `background_apps.engine_id_for`'s realpath-based identity the
+    moment a folder was reached through a symlink alias. `enabled` (compared
+    against `enabled_paths()`, itself abspath-only) and `running` (keyed off
+    `engine_id_for`'s realpath hash) could then disagree for the exact same
+    app — `{"enabled": False, "running": True}` through one alias while the
+    other alias showed the opposite — and `enable()`/`disable()` through
+    different aliases wrote/removed different store entries for what is
+    really one folder. Realpath'ing here makes every endpoint's folder
+    identity agree with `engine_id_for`'s, the same normalization
+    `background_apps.py`'s own `daemon`-containment check already applies."""
     if not isinstance(html, str) or not html:
         return None
-    return os.path.dirname(os.path.abspath(html))
+    return os.path.realpath(os.path.dirname(os.path.abspath(html)))
 
 
 def _resolve(html) -> tuple[str, background_apps.Manifest, str, None] | tuple[None, None, None, JSONResponse]:
@@ -159,14 +173,24 @@ async def api_background_restart(body: dict = Body(...),
         return error
     engine_id = background_apps.engine_id_for(folder)
     try:
+        # Always recompute the version fresh (D510, 2026-08-26 code review):
+        # a live child's restart used to keep `existing.version` — the
+        # digest from whenever it was last brought up — which meant a
+        # restart right after editing daemon.py respawned the new code
+        # tagged with the OLD version. The next enable()/server-start
+        # resurrection would then see its own fresh digest disagree with
+        # the registered one and tear the just-restarted child down and
+        # spawn it a SECOND time. Computing it once here and passing it to
+        # both branches keeps them in sync.
+        version = background_apps.version_for(folder, interpreter)
         if engine_host.current(engine_id) is None:
-            version = background_apps.version_for(folder, interpreter)
             child = await asyncio.to_thread(
                 engine_host.ensure_background, engine_id, interpreter,
                 manifest.daemon, background_apps.cache_dir_for(engine_id), version,
                 folder)
         else:
-            child = await asyncio.to_thread(engine_host.restart, engine_id)
+            child = await asyncio.to_thread(
+                engine_host.restart, engine_id, None, version=version)
     except (engine_host.EngineError, OSError) as e:
         return _error(str(e), status=502)
     return {"ok": True, "pid": child.pid, "version": child.version}

@@ -673,6 +673,57 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     assert ensured == [engine_id]  # fell back to a fresh bring-up, not engine_host.restart
 
 
+def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
+        client, tmp_path, monkeypatch):
+    # Code-review finding D: when a child IS live, the endpoint used to call
+    # `engine_host.restart(engine_id)` with no version, and `restart()`
+    # rebuilds the replacement Child from `existing.version` — the OLD
+    # digest. So `fused.daemon.restart()` right after editing daemon.py
+    # respawned the new code but tagged it with the stale version string;
+    # the next enable()/server-start resurrection then computes the current
+    # digest, `_matches` fails against it, and the just-restarted child gets
+    # torn down and respawned a SECOND time. The endpoint must pass the
+    # freshly computed version through to the respawn.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    background_apps.set_enabled(str(folder), True)
+    engine_id = background_apps.engine_id_for(str(folder))
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+
+    stale_version = "stale-version-from-before-the-edit"
+    live_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version=stale_version, kind="background", pid=1)
+    monkeypatch.setattr(engine_host, "current",
+                        lambda eid: live_child if eid == engine_id else None)
+
+    captured = {}
+
+    def fake_restart(eid, failed=None, version=None):
+        captured["engine_id"] = eid
+        captured["version"] = version
+        return engine_host.Child(
+            engine_id=eid, python=sys.executable, daemon=str(folder / "daemon.py"),
+            cache="c", version=version or stale_version, kind="background", pid=2222)
+
+    monkeypatch.setattr(engine_host, "restart", fake_restart)
+
+    fresh_version = background_apps.version_for(str(folder), sys.executable)
+    assert fresh_version != stale_version  # sanity: the premise holds
+
+    resp = client.post("/api/apps/background/restart", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["pid"] == 2222
+    assert captured["engine_id"] == engine_id
+    assert captured["version"] == fresh_version, (
+        "restart() of a live child was not given the freshly computed "
+        "version — it would carry the stale digest and get torn down and "
+        "respawned again on the next enable()/server-start resurrection")
+    assert body["version"] == fresh_version
+
+
 def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
@@ -704,6 +755,84 @@ def test_api_status_not_running_when_no_live_child(client, tmp_path):
     assert body["enabled"] is False
     assert body["running"] is False
     assert body["pid"] is None
+
+
+def test_status_agrees_on_enabled_and_running_through_a_symlinked_alias(
+        client, tmp_path, monkeypatch):
+    # Code-review finding C: `enabled` used to compare `_folder_for` (an
+    # abspath) against `enabled_paths()` (also abspath, never realpath'd),
+    # while `engine_id_for` (and therefore `running`) keys on realpath. A
+    # folder reached through a symlink alias diverged: `enable()`d via the
+    # link, `status()`'d via the real path (or vice versa) reported
+    # {"enabled": False, "running": True} — a fact that cannot be true, since
+    # the two paths name the exact same app and the exact same running
+    # engine_id.
+    real = _bg_folder(tmp_path, name="real")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+
+    engine_id = background_apps.engine_id_for(str(real))
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(real / "daemon.py"),
+        cache="c", version="v9", kind="background", pid=777)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **kw: fake_child)
+    monkeypatch.setattr(engine_host, "current",
+                        lambda eid: fake_child if eid == engine_id else None)
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+
+    resp = client.post("/api/apps/background/enable",  # enable via the ALIAS
+                       json={"html": str(link / "index.html")}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+
+    # status() through the REAL (non-alias) path must see the same
+    # enabled/running facts as status() through the alias it was enabled
+    # through — both name one app.
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(real / "index.html")})
+    body = resp.json()
+    assert body["engine_id"] == engine_id
+    assert body["running"] is True
+    assert body["enabled"] is True, (
+        "enabled/running diverged through a symlinked folder alias")
+
+
+def test_enable_through_one_alias_and_disable_through_another_fully_disables(
+        client, tmp_path, monkeypatch):
+    # The other half of finding C: enable() writing folder identity
+    # inconsistently with engine_id_for means two aliases of the same folder
+    # can each get their OWN store entry. disable() through one alias must
+    # not leave the other alias's entry (i.e. the same app) still enabled.
+    real = _bg_folder(tmp_path, name="real2")
+    link = tmp_path / "link2"
+    link.symlink_to(real)
+    engine_id = background_apps.engine_id_for(str(real))
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(real / "daemon.py"),
+        cache="c", version="v1", kind="background", pid=888)
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **kw: fake_child)
+    stopped = []
+    monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
+
+    html_via_link = str(link / "index.html")
+    html_via_real = str(real / "index.html")
+
+    resp = client.post("/api/apps/background/enable", json={"html": html_via_link},
+                       headers=HDRS)
+    assert resp.status_code == 200, resp.text
+
+    resp = client.post("/api/apps/background/disable",
+                       json={"html": html_via_real}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+    assert stopped == [engine_id]
+
+    for html in (html_via_link, html_via_real):
+        status = client.get("/api/apps/background/status",
+                            params={"html": html}).json()
+        assert status["enabled"] is False, (
+            f"{html} still enabled after disabling the same app "
+            "through its symlinked alias")
 
 
 # ---------------------------------------------------------------- resurrection
