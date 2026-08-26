@@ -262,7 +262,7 @@
   }
   /* The one accent in the first viewport. */
   .btn {
-    display: inline-flex; align-items: center; min-height: 46px;
+    display: inline-flex; align-items: center; gap: 11px; min-height: 46px;
     padding: 0 26px; border-radius: 99px;
     background: var(--accent-fill); color: var(--accent-on);
     border: 1px solid var(--accent-edge);
@@ -270,6 +270,7 @@
     text-decoration: none;
     transition: transform 0.22s var(--ease);
   }
+  .btn svg { width: 17px; height: 17px; }
   .link-plain {
     display: inline-flex; align-items: center; min-height: 40px;
     font-size: 15px; text-decoration: none;
@@ -537,6 +538,14 @@
   }
   .dl-others[open] summary::after { transform: rotate(225deg) translateY(-1px); }
   .dl-others summary:hover { color: var(--ink-2); }
+  .dl-note {
+    margin: 0; max-width: 34ch; text-align: center;
+    font: 500 var(--t-xs)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
+  }
+  .dl-list-note {
+    margin: 6px 4px 2px; font-size: var(--t-xs); line-height: 1.5; color: var(--ink-4);
+  }
   .dl-others { position: relative; }
   .dl-list {
     position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
@@ -1185,9 +1194,9 @@
     <div class="hero-left">
       <h1>Your files,<br>your AI,<br>your apps.</h1>
       <div class="acts">
-        <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
+        <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases"><svg viewBox="0 0 20 20" aria-hidden="true"><use id="hero-cta-icon" href="#i-apple"/></svg><span id="hero-cta-label">Download for macOS</span></a>
       </div>
-      <p class="fine">No account needed.<br>Native support for macOS<br>limited support on Windows &amp; Linux.</p>
+      <p class="fine">No account needed.</p>
     </div>
   </section>
 
@@ -1505,18 +1514,19 @@
               <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
               <span class="mac-title">Fused Render</span>
             </div>
-            <img class="mac-shot" src="assets/showcase/app-home.jpg" width="3420" height="1970"
+            <img class="mac-shot" src="assets/showcase/app-home.jpg" width="3024" height="1572"
                  loading="lazy" decoding="async" alt="The Fused Render home screen: apps, AI playground and Claude tasks.">
           </div>
         </div>
         <div class="getbody" id="getbody">
-          <h2>Free, and it stays on your machine.</h2>
-          <p class="deck">One download. No account, no key, no card.</p>
+          <h2>Open source, and it stays on your machine.</h2>
+          <p class="deck">Free. No account, no key, no card.</p>
           <div class="dl">
             <a class="dl-btn" id="dl-primary" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
               <svg viewBox="0 0 20 20" aria-hidden="true"><use id="dl-primary-icon" href="#i-apple"/></svg>
               <span id="dl-primary-label">Download for macOS</span>
             </a>
+            <p class="dl-note" id="dl-note" hidden></p>
             <details class="dl-others">
               <summary>Other platforms</summary>
               <div class="dl-list">
@@ -1532,6 +1542,8 @@
                   <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux</span>
                   <span class="sub">AppImage</span>
                 </a>
+                <p class="dl-list-note">Native support on macOS; limited support on
+                Windows &amp; Linux.</p>
               </div>
             </details>
             <span class="version" id="version" hidden></span>
@@ -1703,11 +1715,21 @@
   var osIcon = { mac: "#i-apple", win: "#i-windows", linux: "#i-linux" }[visitorOS];
   function syncCta() {
     var href = document.getElementById(osCardId).href;
-    heroCta.textContent = "Download for " + osLabel;
+    document.getElementById("hero-cta-label").textContent = "Download for " + osLabel;
+    document.getElementById("hero-cta-icon").setAttribute("href", osIcon);
     heroCta.href = href;
     dlBtn.href = href;
     document.getElementById("dl-primary-label").textContent = "Download for " + osLabel;
     document.getElementById("dl-primary-icon").setAttribute("href", osIcon);
+    // macOS is the native build; say so where it matters, on the other two.
+    var note = document.getElementById("dl-note");
+    if (note) {
+      if (visitorOS === "mac") { note.hidden = true; }
+      else {
+        note.textContent = "Limited support on " + osLabel + " \u00b7 native on macOS";
+        note.hidden = false;
+      }
+    }
   }
   syncCta();
 
