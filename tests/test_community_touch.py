@@ -20,13 +20,17 @@ def community_mod(tmp_path, monkeypatch):
     state = tmp_path / "state"
     monkeypatch.setattr(mod, "STATE_DIR", str(state))
     monkeypatch.setattr(mod, "SHOWCASE_DIR", str(tmp_path / "workspace" / "showcase"))
-    monkeypatch.setattr(mod, "INSTALLS_JSON", str(state / "installs.json"))
     monkeypatch.setattr(mod, "OPENED_JSON", str(state / "opened.json"))
     return mod
 
 
 def _fake_cache(mod, apps):
-    os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)
+    # _cache_ready() now also checks the origin remote, so a real (if empty)
+    # git repo tracking REPO_URL is needed — a bare .git dir is no longer
+    # enough to look "ready".
+    os.makedirs(mod.SHOWCASE_DIR, exist_ok=True)
+    mod._git(mod.SHOWCASE_DIR, "init", "-q")
+    mod._git(mod.SHOWCASE_DIR, "remote", "add", "origin", mod.REPO_URL)
     for app in apps:
         folder = os.path.join(mod.SHOWCASE_DIR, app["slug"])
         os.makedirs(folder, exist_ok=True)

@@ -16,7 +16,7 @@ import { getApps, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
-import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
+import { runCommunity } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -70,39 +70,29 @@ const MODES: { key: FilterMode; label: string }[] = [
 const modeLabel = (m: FilterMode): string =>
   MODES.find((x) => x.key === m)?.label ?? m;
 
-type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
+type ShowcaseCatalog = { status?: string };
 
-const clonedSet = (c: ShowcaseCatalog) =>
-  new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug));
-
-// Read the showcase install records once per mount; feeds the "cloned"
-// badges on showcase cards.
+// Read the showcase catalog once per mount, purely to force the clone when
+// it's missing.
 //
-// `catalog` first — a cheap local read (installs.json + folder scan), no lock,
-// no network, so badges never wait on git. Only when it reports no-cache
-// (the clone is missing or the startup clone is still running) does this
-// escalate to `refresh`: that call parks on the cache lock behind an
-// in-flight startup clone (or performs the clone itself after a failed
-// start), and its completion is the signal that <workspace>/showcase just
-// landed — `onSynced` then refetches the grid so the first visit doesn't
-// keep a stale listing until reload. An already-cloned catalog never
-// touches the network here (server start owns the fetch+ff sync), so a
-// Clone click right after mount isn't stuck behind a fetch holding the
-// lock. Decoration plus refetch only — failures just mean no badges.
-function useShowcaseSync(onSynced: () => void): Set<string> {
-  const [slugs, setSlugs] = useState<Set<string>>(new Set());
+// `catalog` first — a cheap local read (a folder scan), no lock, no network.
+// Only when it reports no-cache (the clone is missing or the startup clone
+// is still running) does this escalate to `refresh`: that call parks on the
+// cache lock behind an in-flight startup clone (or performs the clone itself
+// after a failed start), and its completion is the signal that
+// <workspace>/showcase just landed — `onSynced` then refetches the grid so
+// the first visit doesn't keep a stale listing until reload. An
+// already-cloned catalog never touches the network here (it's cloned once,
+// then left alone), so this never blocks on git after the first visit.
+function useShowcaseSync(onSynced: () => void): void {
   useEffect(() => {
     let alive = true;
     (async () => {
       const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
       if (!alive) return;
-      if (local.status !== "no-cache") {
-        setSlugs(clonedSet(local));
-        return;
-      }
-      const synced = await runCommunity<ShowcaseCatalog>({ action: "refresh" });
+      if (local.status !== "no-cache") return;
+      await runCommunity<ShowcaseCatalog>({ action: "refresh" });
       if (!alive) return;
-      setSlugs(clonedSet(synced));
       onSynced();
     })().catch(() => undefined);
     return () => {
@@ -110,7 +100,6 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
-  return slugs;
 }
 
 export default function Apps({ config }: { config: Config }) {
@@ -251,7 +240,7 @@ export default function Apps({ config }: { config: Config }) {
     () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
     [all],
   );
-  const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
+  useShowcaseSync(() => setNonce((n) => n + 1));
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -379,9 +368,6 @@ export default function Apps({ config }: { config: Config }) {
                     key={app.path}
                     app={app}
                     onContextMenu={openCardMenu}
-                    badge={
-                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name) ? "cloned" : undefined
-                    }
                   />
                 ))}
               </div>

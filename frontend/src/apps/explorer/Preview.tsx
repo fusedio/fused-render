@@ -44,7 +44,6 @@ import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
-import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
@@ -152,46 +151,6 @@ function TopbarActions({ children }: { children: ReactNode }) {
 // renders the box: same arrangement as TopbarActions above, other way round.
 function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
-}
-
-// "Clone" in the preview header of a showcase app: copy the app (current
-// state, edits included) into the workspace (Fused/local/<slug>, community.py's
-// `install`) and navigate to the cloned copy — the same open convention the
-// /apps community grid uses. The showcase tree itself is fully editable; the
-// clone is how you keep a copy that catalog refreshes never touch.
-function CloneCommunityButton({ slug }: { slug: string }) {
-  const [busy, setBusy] = useState(false);
-  const doClone = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const r = await runCommunity<{ status?: string; message?: string; path?: string }>({
-        action: "install",
-        slug,
-      });
-      // `already-installed` also carries the path — an app cloned elsewhere
-      // still opens the user's copy rather than erroring.
-      if (!r.path) throw new Error(r.message || "clone failed");
-      touchCommunityApp(slug);
-      navigate(r.path, { isDir: true });
-    } catch (e) {
-      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
-      setBusy(false);
-    }
-    // Success navigates away and unmounts this button; no busy reset needed.
-  };
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={"Clone this app into Fused/local/" + slug + " and open your copy"}
-      onClick={doClone}
-      disabled={busy}
-    >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Cloning…" : "Clone"}
-    </button>
-  );
 }
 
 // "Clone" in the preview header of a `.fused` app file: copy the payload into
@@ -716,9 +675,6 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  // Showcase clone app: fully editable, no mode restrictions — the slug only
-  // decides whether the Clone button renders in the header.
-  const communitySlug = communityCacheSlug(fsPath);
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
@@ -1544,9 +1500,6 @@ function TemplatePreview({
           pane shows (and the way back to Live) is stated in the git sidebar's
           own commit list — the dot, the `previewing` pill, and its banner's
           "Back to now". One surface owns the state it controls. */}
-      {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
-          never touch your copy. */}
-      {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
           app, or opens the copy that is already there (D397). Keyed off the
           extension, which is what routes this file to the fusedapp template in

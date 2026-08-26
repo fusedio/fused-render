@@ -20,5 +20,4 @@ def api_community(body: dict = Body(...)):
     return community.main(
         action=str(body.get("action") or "catalog"),
         slug=str(body.get("slug") or ""),
-        force=bool(body.get("force")),
     )
