@@ -13,38 +13,26 @@ import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { Select, TextArea } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
-// URL of an app folder's claude chat, attached to a specific live run.
-// `_mode` is the shell's template selector; `run` is a plain view param the
-// claude template reads through fused.params (its boot resumes that
-// run, so a session started server-side is picked up exactly like one the
-// page started itself). Folder-scoped on purpose: the server starts the
-// scaffolding session via the claude agent on the app FOLDER, so the
-// re-attach must land in the same template — same runs dir.
-// (There is only one chat template now, so "which
-// chat" is no longer a question at all; the `_mode` still has to be spelled out
-// because the folder's default mode is the app itself, not the chat.)
-// An ORDINARY explorer URL for the folder. It used to be the builder route
-// (/apps/<tag>/<name>, rebuilt from the folder's last two path segments); that
-// namespace is gone, and urlForFsPath takes the whole abspath the server
-// returned — including its Windows-backslash normalization, which the old
-// segment split had to do by hand or silently take the drive-rooted path as one
-// segment.
-// `model`/`effort` ride along when the composer's pickers were used, so
-// the chat's own pills open showing what the scaffolding turn actually ran with
-// and the NEXT turn keeps it. Omitted when empty: the template reads these
-// through fused.params, and an empty param would beat its own detection of what
-// this project is really being worked in.
-export function claudeChatUrl(
-  appDir: string,
+// The new app's page with the Claude pane open on the scaffolding turn: the
+// file's ordinary explorer URL, `_side=claude` for the pane (the same hop a
+// task row makes, schedule-lib.explorerUrl), and `run` so the pane's boot
+// re-attaches to the live run instead of showing its landing page — with no
+// session id yet there is nothing else it could adopt. `model`/`effort` ride
+// along when the composer's pickers were used, so the pane's own pills open
+// showing what the turn actually ran with and the NEXT turn keeps it; omitted
+// when empty, since an empty param would beat the template's own detection.
+export function appLandingUrl(
+  entryHtml: string,
   runId: string,
   model: DefaultModel = "",
   effort: SessionEffort = "",
 ): string {
-  const params = new URLSearchParams({ _mode: "claude", run: runId });
+  const params = new URLSearchParams({ _side: "claude", run: runId });
   if (model) params.set("model", model);
   if (effort) params.set("effort", effort);
-  return urlForFsPath(appDir.replace(/\/+$/, ""), "?" + params.toString());
+  return urlForFsPath(entryHtml, "?" + params.toString());
 }
 
 // -- Prompt-first creation (the hero composer) --------------------------------
@@ -305,23 +293,33 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
       setPhase("creating");
       const res = await createAppUnderFreeName(name, full, model, effort);
       // The folder exists from here on, so the Recent grid is stale — refresh it
-      // now, since the session-error branch below stays on this page.
+      // now, since the task-error branch below stays on this page.
       onCreated();
-      // Same landing logic as NewAppPanel: a session error must not read as
-      // success, and a live run means the claude chat is the right landing.
-      if (res.session_error) {
+      // And the prompt is a task now: the sidebar's Current apps section reads
+      // the shared tasks store, which otherwise learns of the new row on its
+      // next slow poll (up to 30s idle). One announcement, forwarded by App.tsx
+      // to pokeTasks, and the app is in the sidebar before the page turns.
+      if (res.task) announceTasksChanged();
+      // A task error must not read as success: the FOLDER exists, only the
+      // task failed. Kept as its own state so the card can say that plainly
+      // and still show the error verbatim.
+      if (res.task_error) {
         if (alive.current) {
-          // The FOLDER exists; only the session failed. Kept as its own state
-          // so the card can say that plainly and still show the spawn error
-          // verbatim — folding the two into one string made the error
-          // unclassifiable (and unsearchable) by prefixing it.
-          setSessionError(res.session_error);
+          setSessionError(res.task_error);
           setPhase("idle");
         }
         return;
       }
-      if (res.run_id) navigateUrl(claudeChatUrl(res.path, res.run_id, model, effort), { isDir: true });
-      else navigate(res.entry_html, { isDir: false });
+      // Land on the app's page with Claude building it in the side pane. The
+      // prompt is a task on this file now; the server ran it and waited for
+      // the run id, so the pane can attach. A task whose send failed (or is
+      // still spawning past the server's wait) lands on the bare page — the
+      // row in the app's Tasks tab tells the rest.
+      if (res.task?.run_id) {
+        navigateUrl(appLandingUrl(res.entry_html, res.task.run_id, model, effort), { isDir: false });
+      } else {
+        navigate(res.entry_html, { isDir: false });
+      }
     } catch (e) {
       if (alive.current) {
         setError((e as Error).message);
@@ -452,13 +450,13 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
           prefixed string could not do. */}
       {sessionError && (
         <TroubleCard
-          what="starting a Claude session to build a new app"
+          what="creating the task that builds a new app"
           error={sessionError}
           facts={{ page: location.pathname + location.search }}
           onRetry={() => setSessionError(null)}
         >
           <span className="deploy-muted">
-            The app folder was created — only the session failed.
+            The app folder was created — only the task failed.
           </span>
         </TroubleCard>
       )}

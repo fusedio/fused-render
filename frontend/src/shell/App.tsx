@@ -52,6 +52,7 @@ import {
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
+import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
@@ -463,6 +464,15 @@ export default function App({ config }: { config: Config }) {
     const onStorage = (e: StorageEvent) => pokeOnChatActivity(e.key);
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // The third producer: an APP that just created a task (the Home hero's
+  // new-app composer). It sits below shell and cannot reach pokeTasks, so it
+  // announces on the window (platform/lib/tasksChanged.ts) and this is where
+  // the announcement becomes the poke.
+  useEffect(() => {
+    window.addEventListener(TASKS_CHANGED_EVENT, pokeTasks);
+    return () => window.removeEventListener(TASKS_CHANGED_EVENT, pokeTasks);
   }, []);
 
   // Keep <html data-theme> in step with the appearance preference for the
