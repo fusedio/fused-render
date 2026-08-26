@@ -1260,8 +1260,11 @@ const OPS = "./ops.py";
 
 /* The ops that can lose uncommitted work. Mirrors ops.py's DESTRUCTIVE_OPS, and
  * the mirroring is the safety property: an op named here gets the inline
- * confirmation step, and one that is not gets called on the first click. */
-const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve"]);
+ * confirmation step, and one that is not gets called on the first click.
+ * "rebase" rewrites this branch's own commits (ops.py's module docstring has
+ * the full reasoning for why that op exists at all), so it gets the same
+ * confirmation step every other entry here does. */
+const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve", "rebase"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -3227,6 +3230,19 @@ function pendingConfirm(data) {
        conflicted file is also listed in BOTH the staged and the changes section,
        so there is no single row to attach it to. */
     return null;
+  }
+  if (op === "rebase") {
+    return {
+      where: "branch",
+      node: confirmBar(
+        "Rebase " + (data.repo.branch || "this branch")
+        + " onto the remote's default branch? Your commits are replayed on "
+        + "top of it with new hashes — the old ones only survive in the "
+        + "reflog. A conflict stops the rebase in place, for the conflicts "
+        + "panel to resolve.",
+        () => run("rebase", { op: "rebase" }),
+        "Rebase"),
+    };
   }
   if (op === "stash_drop") {
     const split = rest.indexOf(":");

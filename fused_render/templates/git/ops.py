@@ -26,9 +26,14 @@ to be about.
 
 What this module will NOT do, ever (GT-15):
 
-* **Rewrite history.** No `--amend`, no hard resets, no rebase, no force push,
-  no `branch -D`. Those are decisions with no undo, and git's own error message
-  (or a terminal) is a better answer than a button.
+* **Rewrite history on a ref the view did not name.** No `--amend`, no hard
+  resets, no force push, no `branch -D`, no `--interactive` or `--onto`
+  rebase. Those are decisions with no undo, and git's own error message (or a
+  terminal) is a better answer than a button. The one deliberate, narrow
+  exception is `rebase` (DESTRUCTIVE_OPS): it rebases the current branch onto
+  exactly one target — the remote's tracked default branch — offered only
+  from the repo-updates card's secondary action, off that default branch,
+  behind the same confirmation every other work-losing op gets.
 * **`git commit -- <paths>`.** Commit is index-based, because that is what the
   word means in git. Committing a path list bypasses the index and records the
   *working tree* for those paths — so a file you deliberately staged in one state
@@ -183,7 +188,19 @@ _SAFE_OPS = (
 # left me", and once it is replaced the only way back is `git checkout --merge`.
 # So it gets the confirmation step every other work-losing op gets, and the
 # proposed-resolution panel in front of it is a review surface, not the consent.
-DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve")
+#
+# `rebase` joins this list for the same reason: it REWRITES the commits this
+# branch has locally (new hashes, the old ones only reachable through the
+# reflog) and a conflict is a real possibility the view must ask about first —
+# unlike `pull --ff-only`, which only ever succeeds or does nothing. It is
+# offered from exactly one place (the repo-updates card's secondary action,
+# off the default branch) and rebases onto exactly one target (the remote's
+# tracked default branch) — never a user-chosen ref, and never `--interactive`
+# or `--onto` — which is what keeps it inside the "no history rewrite the view
+# decided FOR you" rule the rest of this module holds: the destination is the
+# same one `pull` already refuses to guess a merge/rebase between, made
+# explicit and confirmed rather than decided silently.
+DESTRUCTIVE_OPS = ("discard", "discard_all", "stash_drop", "resolve", "rebase")
 _OPS = _SAFE_OPS + DESTRUCTIVE_OPS
 
 # Ops that take an explicit `paths` list, and ops that operate on the whole open
@@ -1059,6 +1076,26 @@ def _fetch(root):
     return _ok("fetch", f"Fetched from {remote}.")
 
 
+def _default_branch(root, remote):
+    """The remote's default branch name, off the `refs/remotes/<remote>/HEAD`
+    symref a clone records — mirrors `deeplink.py::_default_branch`
+    (deeplink.py:274-282) and `fused_render/git_upstream.py`'s own copy of
+    the same logic (mirrored rather than imported, for the reason this
+    module's docstring gives), including the `remote set-head --auto`
+    re-ask fallback for a repository whose symref is missing or stale.
+    None when it cannot be resolved — no such remote HEAD, or git refuses."""
+    code, out, _ = _run(root, "symbolic-ref", "--short",
+                        f"refs/remotes/{remote}/HEAD")
+    if code != 0:
+        _run(root, "remote", "set-head", remote, "--auto")
+        code, out, _ = _run(root, "symbolic-ref", "--short",
+                            f"refs/remotes/{remote}/HEAD")
+        if code != 0:
+            return None
+    short = out.decode("utf-8", "replace").strip()
+    return short[len(remote) + 1:] if short.startswith(remote + "/") else None
+
+
 def _upstream_target(root, remote, branch):
     """`(remote-side branch name, whether an upstream is recorded)`.
 
@@ -1093,15 +1130,51 @@ def _pull(root):
     if code == 0:
         return _ok("pull", f"Pulled {remote}/{target} — the branch fast-forwarded.")
     if _NOT_FF in _said(out, err) or "diverge" in _said(out, err):
-        # A divergence is a decision, not an error. Both automatic answers are
-        # wrong to take on someone's behalf: a merge writes a commit they did not
-        # ask for, a rebase rewrites commits they already have. So this stops.
+        # A divergence is a decision, not an error. An automatic merge is wrong
+        # to take on someone's behalf — it writes a commit they did not ask
+        # for — so this still stops rather than picking one. Rebase is no
+        # longer unavailable, though: it is the repo-updates card's own named
+        # action for exactly this branch shape (DESTRUCTIVE_OPS, `_rebase`
+        # below), confirmed rather than silent.
         raise _Refused(
             "not-fast-forward",
             "Your branch and its upstream have diverged, so this cannot "
-            "fast-forward. Merging or rebasing is a decision this view will not "
-            "make for you — do it in a terminal.")
+            "fast-forward. Merging is a decision this view will not make for "
+            "you — do it in a terminal, or use Rebase to replay your commits "
+            "onto the tracked default branch.")
     raise _Refused("git-failed", _brief(err) or f"git exited {code}.")
+
+
+def _rebase(root):
+    """DESTRUCTIVE (rewrites this branch's commits): rebase the current
+    branch onto the remote's tracked DEFAULT branch — never a user-chosen
+    ref, and never `--interactive` or `--onto` (see the module docstring's
+    GT-15 note). The repo-updates card offers this exactly where `_pull`
+    would refuse to fast-forward: on a branch other than the default one.
+
+    A conflict is left exactly where a conflicting `stash apply` leaves one
+    — mid-operation, in the working tree — rather than aborted, because the
+    conflict reader and `resolve` op already handle a rebase in progress
+    generically (log.py's `_operation_in_flight`, which checks
+    `rebase-merge` / `rebase-apply` first and for exactly this reason).
+    Aborting here would silently discard a decision the button just took on
+    the user's behalf a second time.
+    """
+    branch = _current_branch(root)
+    if not branch:
+        raise _Refused("detached",
+                       "HEAD is detached, so there is nothing to rebase. "
+                       "Check out a branch first.")
+    remote = _require_remote(root, branch)
+    default = _default_branch(root, remote)
+    if not default:
+        raise _Refused(
+            "no-remote",
+            f"{remote} has no default branch this app could resolve. "
+            "Rebase in a terminal instead.")
+    _git_ok(root, "fetch", "--", remote, default)
+    _git_ok(root, "rebase", "--", f"{remote}/{default}")
+    return _ok("rebase", f"Rebased onto {remote}/{default}.")
 
 
 def _push(root):
@@ -1228,6 +1301,8 @@ def main(
             return _fetch(root)
         if op == "pull":
             return _pull(root)
+        if op == "rebase":
+            return _rebase(root)
         return _push(root)
     except _Refused as refused:
         return refused.payload

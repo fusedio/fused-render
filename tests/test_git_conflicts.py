@@ -29,7 +29,7 @@ import os
 
 import pytest
 
-from _git_repo import git, git_available
+from _git_repo import bare_repo, git, git_available
 
 _TPL = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "git")
@@ -186,6 +186,89 @@ def test_resolve_is_declared_destructive(ops):
     # It overwrites a file in the working tree; the view keys its confirmation
     # step off this tuple, so omitting it ships the op without one.
     assert "resolve" in ops.DESTRUCTIVE_OPS
+
+
+def test_rebase_is_declared_destructive(ops):
+    # Rewrites this branch's own commits — the view's confirmation step is
+    # keyed off this tuple exactly like every other work-losing op.
+    assert "rebase" in ops.DESTRUCTIVE_OPS
+
+
+def rebase_conflict_repo(root, path="pkg/mod.py"):
+    """A repo whose current branch, rebased onto `origin/main`, conflicts on
+    one path: local HEAD has an uncommitted-free commit changing `path` one
+    way, `origin/main` was advanced (from a second clone) changing the same
+    line another way."""
+    remote = root + "-remote.git"
+    bare_repo(remote)
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, path, "one\ntwo\nthree\n")
+    _put(root, "README.md", "readme\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "remote", "add", "origin", remote)
+    git(root, "push", "-q", "-u", "origin", "HEAD:main")
+    git(root, "remote", "set-head", "origin", "--auto")
+
+    # A second clone advances the remote's main — root never sees this commit
+    # until it fetches (which `_rebase` itself does).
+    other = root + "-other"
+    git(os.path.dirname(root), "clone", "-q", remote, other)
+    _put(other, path, "one\nTHEIRS\nthree\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "theirs")
+    git(other, "push", "-q", "origin", "HEAD:main")
+
+    # root's own, unpushed commit on the same line.
+    _put(root, path, "one\nOURS\nthree\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "ours")
+    return root
+
+
+def test_rebase_fast_forwards_when_there_is_nothing_local_to_replay(ops, tmp_path):
+    root = str(tmp_path / "ff")
+    remote = root + "-remote.git"
+    bare_repo(remote)
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, "a.txt", "1\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "remote", "add", "origin", remote)
+    git(root, "push", "-q", "-u", "origin", "HEAD:main")
+    git(root, "remote", "set-head", "origin", "--auto")
+
+    other = root + "-other"
+    git(os.path.dirname(root), "clone", "-q", remote, other)
+    _put(other, "b.txt", "2\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "ahead")
+    git(other, "push", "-q", "origin", "HEAD:main")
+
+    payload = ops.main(file=root, op="rebase")
+
+    assert payload["ok"] is True, payload
+    assert git(root, "log", "-1", "--format=%s").strip() == "ahead"
+
+
+def test_a_rebase_conflict_leaves_the_repo_in_a_state_the_conflicts_reader_finds(
+        ops, reader, tmp_path):
+    root = rebase_conflict_repo(str(tmp_path / "rbconflict"))
+
+    payload = ops.main(file=root, op="rebase")
+
+    assert payload["ok"] is False
+    assert payload["reason"] == "git-failed"
+    # The conflict is left IN PLACE — this op never aborts on failure — so the
+    # existing conflict reader and `resolve` op pick it up exactly as they
+    # would for a conflicting merge or stash apply.
+    assert unmerged(root) == ["pkg/mod.py"]
+    conflicts = reader.main(file=root, op="conflicts")
+    assert conflicts["ok"] is True
+    assert conflicts["operation"] == "rebase"
+    assert [f["path"] for f in conflicts["files"]] == ["pkg/mod.py"]
 
 
 def test_resolve_writes_the_file_and_stages_nothing(ops, tmp_path):

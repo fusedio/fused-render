@@ -184,3 +184,78 @@ def test_a_mount_backed_path_is_refused(tmp_path, monkeypatch):
 
     assert not started
     assert git_upstream.known_repos() == []
+
+
+# ------------------------------------------------------------- update / rebase
+
+
+def test_update_ff_only_pulls_on_a_clean_default_branch(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is True
+    assert git(local, "log", "-1", "--format=%s").strip() == "c3"
+
+
+def test_update_refuses_a_dirty_tree(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    write(local, "a.txt", "dirty\n")
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "dirty"
+    # untouched — the pull never ran
+    assert git(local, "log", "-1", "--format=%s").strip() == "c1"
+    with open(os.path.join(local, "a.txt"), encoding="utf-8") as f:
+        assert f.read() == "dirty\n"
+
+
+def test_update_refuses_a_mount_backed_repo(tmp_path, monkeypatch):
+    local = _clone_with_remote_ahead(tmp_path)
+    monkeypatch.setattr(git_upstream.shell_mounts, "is_mount_backed", lambda p: True)
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "mount"
+
+
+def test_update_refuses_a_repo_with_no_origin(tmp_path):
+    local = str(tmp_path / "solo")
+    os.makedirs(local)
+    git(local, "init", "-q")
+    write(local, "a.txt", "1\n")
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "c1")
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "no-remote"
+
+
+def test_rebase_replays_local_commits_onto_the_default_branch(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    write(local, "c.txt", "mine\n")
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "local work")
+
+    res = git_upstream.rebase_repo(local)
+
+    assert res["ok"] is True
+    subjects = git(local, "log", "--format=%s").splitlines()
+    assert subjects[:2] == ["local work", "c3"]
+
+
+def test_rebase_refuses_a_dirty_tree(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    write(local, "c.txt", "uncommitted\n")
+
+    res = git_upstream.rebase_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "dirty"

@@ -225,6 +225,128 @@ def check_repo(root):
     }
 
 
+# --------------------------------------------------------------- the mutations
+#
+# The two actions the activity card's repo rows offer: Update (an --ff-only
+# pull, primary, on the default branch) and Rebase (secondary, everywhere
+# else — offered exactly where Update would refuse to fast-forward, and onto
+# exactly one target: the remote's tracked default branch, never a
+# user-chosen ref). Both mirror templates/git/ops.py's own `_pull`
+# (ops.py:1096-1121, the explicit remote-and-refspec argument) and
+# `_require_remote` (ops.py:827-836, the no-remote refusal) — mirrored, not
+# imported, for the reason the module docstring gives. `_rebase` there is
+# this function's twin; keep the two in step.
+
+
+def _brief(result):
+    """The lines of git's stderr worth quoting back into a refusal — same
+    "pick the diagnosis, not the first N lines" idea as ops.py's `_brief`."""
+    if not result:
+        return ""
+    text = result[2].decode("utf-8", "replace")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    diagnostic = [line for line in lines
+                  if line.lower().startswith(("fatal:", "error:", "warning:"))]
+    return " ".join((diagnostic or lines)[:3])
+
+
+def _refuse(reason, message):
+    return {"ok": False, "reason": reason, "message": message}
+
+
+def _is_clean(root):
+    result = _run(root, "status", "--porcelain")
+    if not _ok(result):
+        return False  # unknown status — never mutate a repo we cannot read
+    return not _out(result)
+
+
+def _mutation_preflight(root):
+    """Every check both mutations need before touching anything: the repo
+    still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
+    `ops.py:_refuse_mounts` exists to prevent), has a clean working tree, an
+    attached branch, and a resolvable `origin` with a default branch. Returns
+    `(branch, default_branch, refusal)` — exactly one of the first two or the
+    third is None."""
+    if not os.path.isdir(root):
+        return None, None, _refuse("missing", f"{root} no longer exists.")
+    if shell_mounts.is_mount_backed(root):
+        return None, None, _refuse(
+            "mount", "Git operations are not available on remote mounts.")
+    if not _is_clean(root):
+        return None, None, _refuse(
+            "dirty", "This repository has uncommitted changes — commit, "
+            "stash, or discard them first.")
+    branch = _current_branch(root)
+    if not branch:
+        return None, None, _refuse(
+            "detached", "HEAD is detached, so there is nothing to update. "
+            "Check out a branch first.")
+    if not _ok(_run(root, "remote", "get-url", "origin")):
+        return None, None, _refuse(
+            "no-remote", "This repository has no origin remote to talk to.")
+    default_branch = _default_branch(root)
+    if not default_branch:
+        return None, None, _refuse(
+            "no-remote",
+            "origin has no default branch this app could resolve.")
+    return branch, default_branch, None
+
+
+def _record(result):
+    if result is not None:
+        with _state_lock:
+            _state[result["root"]] = result
+
+
+def update_repo(root):
+    """--ff-only pull of `origin/<default>` — the card's primary action, on
+    the default branch. Refuses on a dirty tree, a detached HEAD, a missing
+    or unresolvable remote, or a mount-backed repo; a non-fast-forward pull
+    (should not happen for the default branch under normal use, but the tree
+    may have moved between the check and the click) is reported in git's own
+    words, exactly like ops.py's `_pull`."""
+    branch, default_branch, refusal = _mutation_preflight(root)
+    if refusal is not None:
+        return refusal
+    result = _run(root, "pull", "--ff-only", "--", "origin", default_branch,
+                  timeout=TIMEOUT_S)
+    if not _ok(result):
+        return _refuse("git-failed", _brief(result) or "git pull failed.")
+    _record(check_repo(root))
+    return {"ok": True, "op": "update", "root": root,
+            "message": f"Updated to origin/{default_branch}."}
+
+
+def rebase_repo(root):
+    """Rebase the current branch onto `origin/<default>` — the card's
+    secondary action, offered exactly where `update_repo` would refuse to
+    fast-forward (off the default branch). Same preflight as `update_repo`.
+
+    A conflict is left in place, mid-rebase, rather than aborted: the git
+    companion's conflict reader and `resolve` op already handle a rebase in
+    progress generically (the same reasoning `templates/git/ops.py`'s
+    `_rebase` — this function's twin — documents in full), so the way back
+    in is the git panel (or Fix with Claude, scoped to this repo), never a
+    silent discard of the rebase the button just started."""
+    branch, default_branch, refusal = _mutation_preflight(root)
+    if refusal is not None:
+        return refusal
+    fetch = _run(root, "fetch", "--", "origin", default_branch, timeout=TIMEOUT_S)
+    if not _ok(fetch):
+        return _refuse("git-failed", _brief(fetch) or "git fetch failed.")
+    result = _run(root, "rebase", "--", f"origin/{default_branch}",
+                  timeout=TIMEOUT_S)
+    if not _ok(result):
+        return _refuse(
+            "git-failed",
+            _brief(result) or "git rebase failed — resolve the conflict in "
+            "the git panel.")
+    _record(check_repo(root))
+    return {"ok": True, "op": "rebase", "root": root,
+            "message": f"Rebased onto origin/{default_branch}."}
+
+
 # ------------------------------------------------------------------- the throttle
 
 _checked_lock = threading.Lock()
@@ -252,10 +374,7 @@ def _run_check(root):
     """The check itself, off the request thread. Never raises: a render must
     not fail, or slow down, because a git housekeeping check did."""
     try:
-        result = check_repo(root)
-        if result is not None:
-            with _state_lock:
-                _state[root] = result
+        _record(check_repo(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", root)
     finally:

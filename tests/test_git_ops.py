@@ -1051,8 +1051,17 @@ def test_no_op_can_reach_a_history_rewriting_verb(ops):
     # A grep is a blunt instrument, and that is the point: these strings must not
     # be constructible from this module at all, so the file itself must not name
     # them. If a future change needs one, this test is the conversation.
+    #
+    # "rebase" is deliberately NOT in this list any more (the module docstring's
+    # GT-15 note explains the one narrow exception): `_rebase` is reachable from
+    # exactly one op, targets exactly one ref (the remote's tracked default
+    # branch, never a user-chosen one), takes no `--interactive`/`--onto`, and
+    # is confirmed like every other DESTRUCTIVE_OPS entry. The other verbs below
+    # stay forbidden outright — there is no scoped-and-confirmed version of
+    # `--amend` or `reset` this module offers.
     with open(OPS, encoding="utf-8") as handle:
         body = "\n".join(line.split("#", 1)[0] for line in handle)
-    for forbidden in ('"--amend"', '"--hard"', '"rebase"', '"-D"', '"--force"',
-                      '"--force-with-lease"', '"filter-branch"', '"reset"'):
+    for forbidden in ('"--amend"', '"--hard"', '"--interactive"', '"--onto"',
+                      '"-D"', '"--force"', '"--force-with-lease"',
+                      '"filter-branch"', '"reset"'):
         assert forbidden not in body, forbidden
