@@ -8639,6 +8639,81 @@ an AI Models page that could say what was on disk but not what was *running*.
   RDNA/CDNA — manufacturer-published figures, not measured on our own
   hardware, for a future speed-estimate feature to consume; an unlisted name
   answers `None` rather than a guess.
+- **AI-19** **`fit.py`'s `download` rung stops being a bare `size_gb` reading
+  and becomes a physics-grounded estimate — a flat runtime-overhead
+  constant, a quantization-aware weight-size table, a KV-cache term, and
+  VRAM-vs-RAM pool selection with a run-mode concept — and the old
+  `EASY_FRACTION = 0.6` cliff is replaced by a continuous Gaussian fit
+  score** (D519). One coherent change confined to the `download` rung's
+  arithmetic: `measured` (**AI-16a**) and `declared` (a curator's
+  `resident_gb`) are already real, observed numbers, so none of the four
+  additions below touches either — only `download`, this module's one
+  rung that has ever had to GUESS, gets a better guess.
+
+  **A flat 0.5GB `RUNTIME_OVERHEAD_BYTES`** — CUDA/Metal context, allocator
+  scratch, a hybrid model's fixed recurrent state — added to every
+  `download`-rung estimate. **A real-world `QUANT_BYTES_PER_PARAM` table**
+  (`F32=4.0` down to `Q2_K=0.37`, plus MLX/AWQ/GPTQ rows, default `0.58`) —
+  GGUF-overhead-inclusive bytes-per-parameter, not `bits_per_weight / 8`,
+  parsed out of `catalog.py`'s free-text `quantization` display string by
+  `_quant_key`. `weight_bytes = params x bytes_per_param` once a real
+  parameter COUNT is known (nothing populates `params` yet — the field is
+  additive and a later builder wires a source in); `size_gb x GB_BYTES`
+  otherwise, unchanged. This is the fix for the bug class `catalog.py:52-58`
+  documents: an 18.6GB actual download hand-curated as 2.6GB for eighteen
+  months, because nothing had ever multiplied a real parameter count by a
+  real per-format byte cost.
+
+  **A KV-cache term**, `2 x n_kv_heads x head_dim x ctx x bytes_per_element
+  x n_full_attention_layers`, at a fixed **8192-token** estimation context
+  (a model's *advertised* maximum context routinely overestimates by 10-30x;
+  llama.cpp/Ollama's own default is 8192) — `0.0`, never guessed, when the
+  geometry (`head_dim` and a full-attention layer count) is not known.
+  `num_key_value_heads` falls back to `num_attention_heads` then a flat `8`.
+  `head_dim`, absent from the Hub (**AI-17**'s `headDim` reads `None` rather
+  than guessing), is DERIVED here as `hidden_size / num_attention_heads` —
+  the derivation **AI-17**'s own text assigns to this module rather than to
+  the harvest. A hybrid/Mamba config's `layer_types` counts only entries
+  `_is_full_attention_layer` recognises as real attention (Mamba/SSM/
+  linear-attention/short-conv layers hold fixed recurrent state, not a
+  context-scaled KV cache, per **AI-17**'s own note); a sliding-window
+  attention layer still counts, since it still caches real, if
+  window-bounded, K/V.
+
+  **Pool selection + run mode.** `_select_pool` judges a footprint against
+  whichever pool would actually hold it: Apple Silicon's pool stays SYSTEM
+  RAM unconditionally (unified memory has no separate VRAM to select
+  between, and the **AI-16b** wired-limit hard ceiling — checked FIRST,
+  entirely independent of pool selection — is the machine-specific cap that
+  already governs there; this property must not regress, and the comparative
+  study this build derives from detects an Apple VRAM-alike figure and then
+  never actually uses it as a ceiling, which this codebase does not repeat).
+  Off Apple, **AI-18**'s `hw_detect.cached_hardware()` (the only `hw_detect`
+  function this module may call) answers whether a discrete GPU exists: no
+  cache yet, no GPU, or `0` VRAM all judge against RAM (`"cpu-only"`, the
+  safe default on "we don't know"); a non-Apple UNIFIED-memory device
+  (Strix Halo, Grace/DGX Spark) draws from system RAM exactly like Apple
+  Silicon (`"gpu"`, pool stays RAM); a discrete GPU's pool is its VRAM alone
+  when the footprint fits (`"gpu"`), or VRAM plus usable RAM when it does
+  not but the COMBINED pool would (`"cpu-offload"` — a real, commonly-used
+  offloading path, not folded into a plain "no").
+
+  **The Gaussian fit score** (`ratio = footprint / pool`, `COMFORT = 0.70`,
+  `SIGMA = 0.20`, `z = max(0, (ratio - COMFORT) / SIGMA)`,
+  `score = 100 * exp(-0.5 * z**2)`, floored to exactly `0` when `footprint >
+  pool` rather than left to the exponential's own never-quite-zero tail)
+  replaces `EASY_FRACTION`'s step function, which scored every ratio under
+  60% identically and every ratio from 60-100% identically — a discontinuity
+  ("79% scored 100, 81% scored 70" in the comparative study's own words for
+  its analogous old rule) a UI progress bar cannot render honestly. The
+  three-way `verdict` is now DERIVED from `score` (`score == 100` is "easy",
+  `0 < score < 100` is "tight", `score == 0` is "no") rather than computed
+  by a separate check, and `score` itself is exposed on the response
+  alongside `runMode` so a future bar-style rendering has both to draw from.
+  `frontend/src/apps/ai_models/shared/fitNote.ts`'s copy table is keyed on
+  `basis` + `verdict`, neither of which gained a new value, so it needed no
+  new branch — only its header comment now says so, and
+  `AiFitVerdict.score`/`.runMode` are optional additions on the TS side.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

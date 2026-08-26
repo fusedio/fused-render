@@ -2796,6 +2796,19 @@ export interface AiFitVerdict {
   verdict: "easy" | "tight" | "no";
   basis: "measured" | "declared" | "download";
   footprintBytes: number;
+  /** 0-100, SPEC AI-19: the continuous Gaussian fit score `verdict` is now
+   *  DERIVED from — 100 at or under a comfortable utilization, easing down
+   *  smoothly past it, 0 once the footprint exceeds the selected pool
+   *  outright. Optional so an object built by hand (a test literal, an
+   *  older cached response shape) does not have to carry it. */
+  score?: number;
+  /** How the footprint would run, over whichever pool (VRAM, a combined
+   *  VRAM+RAM offload budget, or system RAM) it was judged against — SPEC
+   *  AI-19 item 6. `"gpu"` also covers Apple Silicon's unified memory and a
+   *  non-Apple unified-memory APU, both of which draw from system RAM
+   *  rather than a separate VRAM carveout. Optional for the same reason
+   *  `score` is. */
+  runMode?: "gpu" | "cpu-offload" | "cpu-only";
 }
 
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
