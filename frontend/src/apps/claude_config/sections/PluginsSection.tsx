@@ -487,10 +487,13 @@ export default function PluginsSection({ onChanged }: SectionProps) {
       </SectionToolbar>
       <div className="cc-split">
         <nav className="cc-index" aria-label="Marketplaces">
-          <div className="cc-index-header">
-            <span>Marketplaces</span>
-            <span className="cc-count">{mktData?.marketplaces.length ?? "…"}</span>
-          </div>
+          {/* No count beside this label, deliberately. It used to carry one,
+              and the number it showed counted a DIFFERENT NOUN from every
+              number below it — marketplaces here, plugins in each row — while
+              sitting in the same right-hand column, in the same shape as the
+              clickable row directly beneath it. It read as a row you could
+              click, and its value was four rows you can see. */}
+          <div className="cc-index-header">Marketplaces</div>
           {/* Structurally the SAME shape as every marketplace row below it —
               a plain div wrapping the .cc-index-filter button — not a
               standalone <button>. It used to BE the outer button, which is
@@ -537,6 +540,13 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     uncommitted git drift — a read-only marketplace is
                     neither dirty nor a warning, just a fact, so it is now a
                     fixed-size muted icon that can never overflow. */}
+                {/* One fixed-width slot for everything trailing the filter,
+                    whether a row fills it or not. Without it each row's button
+                    ended wherever its own icons began — and those icons are
+                    invisible at rest (opacity 0, still occupying space), so
+                    the counts sat at three different x positions with nothing
+                    on screen to explain why. */}
+                <div className="cc-index-trail">
                 {!m.editable && (
                   <span className="cc-index-lock" title="Read-only marketplace" aria-label="Read-only marketplace">
                     <Icon name="lock" />
@@ -566,10 +576,12 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     </button>
                   )}
                 </div>
+                </div>
               </div>
             );
           })}
           <DisclosureButton
+            quiet
             open={addingMkt}
             controls={mktFormId}
             label="Add marketplace"

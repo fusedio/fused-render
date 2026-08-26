@@ -772,13 +772,12 @@
   top: 70px;
 }
 
-/* The header above the rail — same eyebrow weight as .cc-group-title, but
-   inline with a count on the right rather than standing alone above a group of
-   settings rows. */
+/* The header above the rail — the same eyebrow weight as .cc-group-title,
+   standing alone. It used to be a flex row with a count pushed to the right,
+   which gave it the exact silhouette of the clickable row beneath it (name
+   left, number right) and made a label look like a control. See the comment at
+   its call site for why the count went rather than the shape. */
 .cc-index-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 0 8px 6px;
   font-size: 11px;
   font-weight: 600;
@@ -844,6 +843,39 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* Add a marketplace: the action AFTER the list, not an entry in it. A .btn
+   here put a bordered box in a column whose whole premise is that it has no
+   borders and no surface (see .cc-index above), which made it the heaviest
+   thing on the rail — and sitting one 1px gap below the last marketplace, it
+   read as a sixth row that had somehow grown a border. Separated by space
+   rather than by a hairline: the rail already spends its one rule on the
+   divider under "All", and two rules in a 180px column is book-keeping. */
+.cc-index-add {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.cc-index-add:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--fg);
+}
+
+.cc-index-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* A read-only marketplace's marker — see Icon's "lock" case for why this
    replaced a Pill. Fixed-size and always visible (a fact, not an action), so
    it can never be the thing that overflows the rail's 180px the way the pill
@@ -858,6 +890,22 @@
 .cc-index-lock .cc-icon {
   width: 12px;
   height: 12px;
+}
+
+/* Everything trailing the filter button lives in ONE slot of a fixed width,
+   the same on every row whether it holds two icon buttons, a lock and one
+   button, or (while loading) nothing. That constant is what puts the counts in
+   a column: the filter button is `flex: 1` beside it, so an equal trail means
+   an equal button, and the count sits at the same x down the whole rail.
+   58px = two .cc-iconbtn (26px each) + their 2px gap + 4px right padding,
+   which is the widest this can get — a locked marketplace is by definition not
+   editable, so a lock and a Remove button cannot both appear. */
+.cc-index-trail {
+  display: flex;
+  flex: 0 0 58px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
 }
 
 /* Share/remove, per marketplace. Same fade-on-hover rule as .cc-lrow-actions —
@@ -887,6 +935,13 @@
 }
 
 /* The count is pushed to the right edge; the name is what gives way. */
+/* Lining figures, so the counts read as a column rather than as digits that
+   happen to be near each other. */
+.cc-index-filter .cc-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
 .cc-index-name {
   flex: 1 1 auto;
   min-width: 0;
