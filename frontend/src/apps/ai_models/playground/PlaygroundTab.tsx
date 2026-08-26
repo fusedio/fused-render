@@ -137,9 +137,10 @@ export default function PlaygroundTab() {
   // lets the tick lapse on its own.
   const [copiedRepo, setCopiedRepo] = useState(false);
   const runtime = useAiRuntime();
-  // `useUrlVersion`, not `useNavEpoch`: the selection is written with
-  // `replaceSearch`, which fires only fused:urlchange — the nav epoch counts
-  // pushes and pops and would leave a click's own rewrite unread.
+  // `useUrlVersion`, not `useNavEpoch`: a model pick is PUSHED (so Back walks
+  // through the models tried) and the nav epoch would hear that, but the
+  // stages' own slider rewrites are `replaceSearch`, which fires only
+  // fused:urlchange — and this counter hears all three.
   const urlVersion = useUrlVersion();
 
   // One fetch per mount, then again when a download lands: `downloaded` on the
@@ -305,13 +306,16 @@ export default function PlaygroundTab() {
     const nextCapability = railRows.find((row) =>
       row.models.some((model) => model.id === id),
     )?.capability;
+    // Both writes PUSH a history entry: moving between models is moving between
+    // places, and Back should return to the one before — with the settings it
+    // had, since a stage's slider rewrites edit the entry it is on.
     if (nextCapability && selected && nextCapability !== selected.row.capability) {
-      resetParams({ model: id });
+      resetParams({ model: id }, "push");
       return;
     }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
-    writeParams({ model: id, cap: null });
+    writeParams({ model: id, cap: null }, "push");
   };
 
   const residentRow = selected
