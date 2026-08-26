@@ -72,15 +72,19 @@ def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path))
     return FileResponse(shell_path)
 
 
-# The app page (D488): `/apps/<slug>` is one workspace app, <fused_dir>/local/<slug>,
-# with the app running in an Overview tab and its tasks in a Tasks tab
-# (frontend shell/AppPage.tsx). ONE path segment, on purpose: the retired
-# `/apps/<tag>/<name>` shape above stays a 404, and the page's tab rides the
-# query (`?tab=tasks`) rather than a second segment so the two never look alike.
-# The slug is validated client-side (current-apps-lib.slugFromAppPath); this is
-# only the shell fallback that lets a refresh or a bookmark land on the page.
+# The app page (D488): `/apps/<slug>/<tab>` is one workspace app,
+# <fused_dir>/local/<slug>, with the app running in an Overview tab and its
+# tasks in a Tasks tab (frontend shell/AppPage.tsx) — one path per tab, as the
+# AI Models page does below. The bare slug is served too; the client rewrites it
+# to the default tab. The tab set is the FRONTEND's (current-apps-lib
+# APP_PAGE_TABS), so this is a wildcard: an unknown second segment — including a
+# stale link in the retired `/apps/<tag>/<name>` builder shape — lands on the
+# default tab client-side rather than 404ing here. The slug is validated
+# client-side (slugFromAppPath); this is only the shell fallback that lets a
+# refresh or a bookmark land on the page.
 @router.get("/apps/{slug}")
-def shell_app_page(slug: str, shell_path: str = Depends(get_shell_path)):
+@router.get("/apps/{slug}/{tab}")
+def shell_app_page(slug: str, tab: str = "", shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)
 
 

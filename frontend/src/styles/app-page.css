@@ -58,52 +58,44 @@
   text-decoration: underline;
 }
 
-/* Tabs as underlined labels sitting ON the header's bottom rule: the active one
-   carries the accent bar, so the strip reads as "which half of this page" and
-   not as a segmented control competing with the Tasks page's own List / Board
-   toggle one line below. */
-.app-page-tabs {
-  flex: 0 0 auto;
+/* The gutter frame — the same width story as the playground's .pg-frame
+   (ai-playground.css): one centered column, capped, with gutters either side
+   below the cap. The tab strip, the app frame and the Tasks page all share it,
+   so nothing on the page can drift wider than anything else. */
+.app-page-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* 1050px: the Tasks page's own column cap (schedule.css), so the two pages
+     line up. tests/test_schedule_css.py reads that file's literal, not this. */
+  width: min(1050px, calc(100% - 48px));
+  margin: 0 auto;
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 0 16px;
 }
 
-.app-page-tab {
-  padding: 8px 12px 10px;
-  font-size: 13px;
-  color: var(--fg-muted);
+/* The tab strip is shadcn's Tabs (line variant, AppPage.tsx) — the anchors
+   under the triggers only need to lose the underline. NOT the colour: this
+   rule is unlayered and would beat the trigger's own layered state colours
+   (text-foreground/60, hover:, data-active:), leaving the active tab as muted
+   as the rest (Bugbot on #851). There is no global `a` colour rule to cancel;
+   the utilities already win over the UA default. */
+.app-page-tabs a {
   text-decoration: none;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
 }
 
-.app-page-tab:hover {
-  color: var(--fg);
-}
-
-.app-page-tab.active {
-  color: var(--fg);
-  font-weight: 600;
-  border-bottom-color: var(--accent);
-}
-
-.app-page-tab:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-  border-radius: 4px;
-}
-
-/* The two panels. Overview is kept MOUNTED behind Tasks (display:none, not
-   unmount) so the running app keeps its state across a tab switch. */
-.app-page-overview,
-.app-page-tasks {
+/* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).
+   A `keepMounted` panel — the Overview — stays behind the active one as
+   display:none, not unmounted, so the running app keeps its state. */
+.app-page-panel {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.app-page-overview.is-hidden {
+.app-page-panel.is-hidden {
   display: none;
 }
 
@@ -111,19 +103,31 @@
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
-  border: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
   background: var(--bg);
+}
+
+/* The nested Tasks page brings its own 22px page padding and a 1050px column
+   (schedule.css); inside the gutter frame both would be a second gutter. */
+.app-page-tasks .schedule-page {
+  padding-inline: 0;
+}
+
+.app-page-tasks .prefs-page.schedule-page > *,
+.app-page-tasks .schedule-page > .prefs-section {
+  max-width: none;
 }
 
 .app-page-empty {
   margin: 0;
-  padding: 24px 22px;
+  padding: 24px 0;
   font-size: 13px;
   color: var(--fg-muted);
 }
 
 /* The page-level banners / skeleton sit in the header's gutter, not flush. */
-.app-page > .error-banner,
-.app-page > .skeleton-lines {
-  margin: 14px 22px 0;
+.app-page-body > .error-banner,
+.app-page-body > .skeleton-lines {
+  margin: 0;
 }

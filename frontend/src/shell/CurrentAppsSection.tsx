@@ -15,7 +15,13 @@
 // own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
 // reader and a second one is the double-poll that store exists to prevent.
 // `project` rides the compact row for exactly this reader.
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { archiveTask, getConfig } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -23,7 +29,7 @@ import { HeroComposer } from "@apps/builder/HomeHero";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
-  appPageTab,
+  appPageTabFromPath,
   appPageUrl,
   assignSequences,
   bySequence,
@@ -157,7 +163,8 @@ function CurrentAppRow({
     // is the OVERVIEW, so from the Tasks tab the click still goes — it is how
     // the sidebar gets back to the running app. Only a click that would land
     // exactly where the page already is stays a no-op.
-    if (!active || appPageTab(location.search) !== "overview") navigateUrl(href);
+    if (!active || appPageTabFromPath(location.pathname) !== "overview")
+      navigateUrl(href);
   };
   const onArchive = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -260,7 +267,9 @@ export default function CurrentAppsSection() {
   const clearDrag = () => {
     const marks = ["drag-above", "drag-below", "dragging"];
     const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
-    document.querySelectorAll(sel).forEach((el) => el.classList.remove(...marks));
+    document
+      .querySelectorAll(sel)
+      .forEach((el) => el.classList.remove(...marks));
   };
   const isBelow = (e: React.DragEvent<HTMLDivElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -282,7 +291,8 @@ export default function CurrentAppsSection() {
       e.currentTarget.classList.toggle("drag-above", !after);
       e.currentTarget.classList.toggle("drag-below", after);
     },
-    onDragLeave: (e) => e.currentTarget.classList.remove("drag-above", "drag-below"),
+    onDragLeave: (e) =>
+      e.currentTarget.classList.remove("drag-above", "drag-below"),
     onDrop: (e) => {
       const from = draggedRef.current;
       // Reset BEFORE the re-render: it detaches the source row, and Chrome

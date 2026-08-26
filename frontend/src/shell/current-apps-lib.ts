@@ -71,7 +71,13 @@ export function currentApps(tasks: TaskPulseTask[], fusedDir: string): CurrentAp
     if (!dir) continue;
     let app = byDir.get(dir);
     if (!app) {
-      app = { slug: dir.slice(root.length), dir, taskKeys: [], lastActive: 0, running: false };
+      app = {
+        slug: dir.slice(root.length),
+        dir,
+        taskKeys: [],
+        lastActive: 0,
+        running: false,
+      };
       byDir.set(dir, app);
     }
     app.taskKeys.push(t.key);
@@ -85,35 +91,59 @@ export function currentApps(tasks: TaskPulseTask[], fusedDir: string): CurrentAp
 
 // ---- the app page's address (D488) ------------------------------------------
 //
-// `/apps/<slug>` — ONE level under the hub, the slug being the folder name
-// under <fused_dir>/local. Exactly one level: the retired `/apps/<tag>/<name>`
-// builder route (D262) was two, and shell.py deliberately 404s that shape so a
-// stale deep link fails loudly; the page's tab therefore rides the QUERY
-// (`?tab=tasks`) rather than a second path segment. tasks-lib.viewUrl keeps
-// foreign params, so the Tasks tab's own `?view=` toggle leaves `tab` alone.
+// `/apps/<slug>/<tab>` — the slug being the folder name under <fused_dir>/local,
+// the tab one of APP_PAGE_TABS, one path per tab the way /ai-models does it
+// (D420). Bare `/apps/<slug>` redirects to the default tab (App.tsx, the same
+// render-time replaceState as `/ai-models`). The tab first rode the query
+// (`?tab=tasks`) so this page could never look like the retired two-level
+// `/apps/<tag>/<name>` builder route (D262); the owner chose the path anyway
+// (2026-08-26), so shell.py now serves two levels under /apps and a stale
+// builder link lands here on the default tab like any unknown sub-path. The
+// query is left to the tab's own params (`?view=` on Tasks) and is carried
+// across a tab switch untouched.
 
 export const APP_PAGE_PREFIX = "/apps/";
-export const APP_PAGE_TAB_PARAM = "tab";
-export type AppPageTab = "overview" | "tasks";
+/** Tab-strip order; the first is the default. THE list: the type below is
+ *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
+ *  so adding a tab is one string here plus one entry there — the compiler
+ *  refuses the second being forgotten. */
+export const APP_PAGE_TABS = ["overview", "tasks"] as const;
+export type AppPageTab = (typeof APP_PAGE_TABS)[number];
+export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
-/** The page URL for an app slug. */
-export function appPageUrl(slug: string, tab: AppPageTab = "overview"): string {
-  const q = tab === "tasks" ? `?${APP_PAGE_TAB_PARAM}=tasks` : "";
-  return APP_PAGE_PREFIX + encodeURIComponent(slug) + q;
+/** The page URL for an app slug and tab. */
+export function appPageUrl(
+  slug: string,
+  tab: AppPageTab = DEFAULT_APP_PAGE_TAB,
+): string {
+  return APP_PAGE_PREFIX + encodeURIComponent(slug) + "/" + tab;
+}
+
+// The pathname split into its (raw) slug segment and whatever follows it.
+function splitAppPath(
+  pathname: string,
+): { raw: string; rest: string | null } | null {
+  if (!pathname.startsWith(APP_PAGE_PREFIX)) return null;
+  const tail = pathname.slice(APP_PAGE_PREFIX.length);
+  const cut = tail.indexOf("/");
+  return cut < 0
+    ? { raw: tail, rest: null }
+    : { raw: tail.slice(0, cut), rest: tail.slice(cut + 1) };
 }
 
 /** The slug an app-page pathname names, or null for anything that is not one.
  *  Validated AFTER decoding: the slug becomes a folder name under the
  *  workspace, and the server route is a bare shell fallback, so this is the
  *  only guard against `..`, a separator, or an empty segment. A malformed
- *  percent-escape is likewise "not this page". */
+ *  percent-escape is likewise "not this page". Anything deeper than
+ *  `/apps/<slug>/<tab>` is not this page either. */
 export function slugFromAppPath(pathname: string): string | null {
-  if (!pathname.startsWith(APP_PAGE_PREFIX)) return null;
-  const raw = pathname.slice(APP_PAGE_PREFIX.length);
-  if (!raw || raw.includes("/")) return null;
+  const parts = splitAppPath(pathname);
+  if (!parts || !parts.raw) return null;
+  if (parts.rest !== null && parts.rest.includes("/")) return null;
   let slug: string;
   try {
-    slug = decodeURIComponent(raw);
+    slug = decodeURIComponent(parts.raw);
   } catch {
     return null;
   }
@@ -121,21 +151,23 @@ export function slugFromAppPath(pathname: string): string | null {
   return slug;
 }
 
-/** Which tab a search string asks for; anything but `tasks` is the overview. */
-export function appPageTab(search: string): AppPageTab {
-  const raw = search.startsWith("?") ? search.slice(1) : search;
-  return new URLSearchParams(raw).get(APP_PAGE_TAB_PARAM) === "tasks" ? "tasks" : "overview";
+/** The tab a pathname names. Missing or unknown falls back to the default
+ *  SILENTLY (the /ai-models posture): a stale link opens the page, not an
+ *  error. App.tsx rewrites the bare-slug case so the default has an address. */
+export function appPageTabFromPath(pathname: string): AppPageTab {
+  const rest = splitAppPath(pathname)?.rest ?? null;
+  return rest !== null && (APP_PAGE_TABS as readonly string[]).includes(rest)
+    ? (rest as AppPageTab)
+    : DEFAULT_APP_PAGE_TAB;
 }
 
-/** `search` with the tab written in — `overview` is the absence of the param,
- *  so the bare `/apps/<slug>` stays the page's address. Other params survive. */
-export function withAppPageTab(search: string, tab: AppPageTab): string {
-  const raw = search.startsWith("?") ? search.slice(1) : search;
-  const q = new URLSearchParams(raw);
-  if (tab === "overview") q.delete(APP_PAGE_TAB_PARAM);
-  else q.set(APP_PAGE_TAB_PARAM, tab);
-  const rest = q.toString();
-  return rest ? `?${rest}` : "";
+/** Is this pathname the bare `/apps/<slug>` (no tab segment) that App.tsx
+ *  rewrites to the default tab? */
+export function isBareAppPath(pathname: string): boolean {
+  const parts = splitAppPath(pathname);
+  return (
+    parts !== null && parts.rest === null && slugFromAppPath(pathname) !== null
+  );
 }
 
 // ---- the displayed order: a sequence per app --------------------------------

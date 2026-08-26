@@ -7,15 +7,15 @@ import {
   bySequence,
   moveSlug,
   reorderTo,
-  appPageTab,
+  appPageTabFromPath,
   appPageUrl,
+  isBareAppPath,
   currentApps,
   isUnderDir,
   localAppsRoot,
   orderedSlugs,
   parseSavedOrder,
   slugFromAppPath,
-  withAppPageTab,
   type AppOrder,
 } from "./current-apps-lib";
 
@@ -86,7 +86,10 @@ const of = (...specs: [string, number][]) =>
 
 // The displayed order (sequence per app). `shown` is what the section renders:
 // seed from whatever recency currently says, then sort by sequence.
-function shown(order: AppOrder, apps: ReturnType<typeof currentApps>): string[] {
+function shown(
+  order: AppOrder,
+  apps: ReturnType<typeof currentApps>,
+): string[] {
   assignSequences(order, apps);
   return bySequence(apps, order).map((a) => a.slug);
 }
@@ -125,13 +128,9 @@ describe("the displayed order", () => {
   it("numbers several new apps so the newest of them lands on top", () => {
     const order: AppOrder = new Map();
     expect(shown(order, of(["a", 1], ["b", 2], ["c", 3]))[0]).toBe("c");
-    expect(shown(order, of(["a", 1], ["b", 2], ["c", 3], ["d", 4], ["e", 5]))).toEqual([
-      "e",
-      "d",
-      "c",
-      "b",
-      "a",
-    ]);
+    expect(
+      shown(order, of(["a", 1], ["b", 2], ["c", 3], ["d", 4], ["e", 5])),
+    ).toEqual(["e", "d", "c", "b", "a"]);
   });
 
   it("keeps a reorder across later recompute, whatever recency says", () => {
@@ -150,14 +149,22 @@ describe("the displayed order", () => {
     shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]));
     // app3's tasks are all archived — off the desk, so the slot goes with it.
     // Nothing removed is remembered (owner, 2026-08-26).
-    expect(shown(order, of(["app1", 30], ["app2", 20]))).toEqual(["app1", "app2"]);
+    expect(shown(order, of(["app1", 30], ["app2", 20]))).toEqual([
+      "app1",
+      "app2",
+    ]);
     expect(order.has("app3")).toBe(false);
-    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))[0]).toBe("app3");
+    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))[0]).toBe(
+      "app3",
+    );
   });
 
   it("holds nothing but the desk, so the store needs no size limit", () => {
     const order: AppOrder = new Map();
-    const many = Array.from({ length: 50 }, (_, i): [string, number] => ["app" + i, i]);
+    const many = Array.from({ length: 50 }, (_, i): [string, number] => [
+      "app" + i,
+      i,
+    ]);
     shown(order, of(...many));
     expect(order.size).toBe(50);
     shown(order, of(["app0", 1], ["app1", 2]));
@@ -168,7 +175,10 @@ describe("the displayed order", () => {
     const order: AppOrder = new Map();
     shown(order, of(["app1", 10], ["app2", 20]));
     expect(shown(order, [])).toEqual([]);
-    expect(shown(order, of(["app1", 10], ["app2", 20]))).toEqual(["app2", "app1"]);
+    expect(shown(order, of(["app1", 10], ["app2", 20]))).toEqual([
+      "app2",
+      "app1",
+    ]);
   });
 });
 
@@ -206,7 +216,10 @@ describe("the saved order", () => {
   it("drops a saved slug the desk is no longer using", () => {
     const order: AppOrder = new Map();
     reorderTo(order, parseSavedOrder('["gone","live"]'));
-    assignSequences(order, currentApps([task("k", ROOT + "live", "done", 5)], FUSED));
+    assignSequences(
+      order,
+      currentApps([task("k", ROOT + "live", "done", 5)], FUSED),
+    );
     expect(orderedSlugs(order)).toEqual(["live"]);
   });
 
@@ -220,13 +233,14 @@ describe("the saved order", () => {
     reorderTo(order, parseSavedOrder('["old1","a","old2","b"]'));
     const live = of(["a", 20], ["b", 10]);
     assignSequences(order, live);
-    expect(orderedSlugs(order)).toEqual(bySequence(live, order).map((x) => x.slug));
+    expect(orderedSlugs(order)).toEqual(
+      bySequence(live, order).map((x) => x.slug),
+    );
     // And a drag over that list writes a contiguous arrangement, top to bottom.
     reorderTo(order, moveSlug(orderedSlugs(order), "b", "a", false));
     expect(orderedSlugs(order)).toEqual(["b", "a"]);
     expect([...order.values()].sort((x, y) => x - y)).toEqual([1, 2]);
   });
-
 });
 
 describe("moveSlug", () => {
@@ -281,7 +295,9 @@ describe("CurrentAppsSection's half of the saved order", () => {
     // there let a second tab re-save its own pre-drag order over this tab's
     // drag on its next tick — and it is also what would make the cross-tab
     // adopt below ping-pong between two tabs forever.
-    expect(SECTION).toContain("if (localStorage.getItem(ORDER_KEY) === next) return;");
+    expect(SECTION).toContain(
+      "if (localStorage.getItem(ORDER_KEY) === next) return;",
+    );
   });
 
   it("adopts another tab's order instead of fighting it", () => {
@@ -324,7 +340,9 @@ describe("appDirOf", () => {
   });
 
   it("folds a backslashed Windows fused_dir onto forward-slash task paths", () => {
-    expect(localAppsRoot("C:\\Users\\me\\Fused")).toBe("C:/Users/me/Fused/local/");
+    expect(localAppsRoot("C:\\Users\\me\\Fused")).toBe(
+      "C:/Users/me/Fused/local/",
+    );
   });
 });
 
@@ -339,15 +357,17 @@ describe("isUnderDir", () => {
 
 describe("app page codec", () => {
   it("round-trips a slug through the URL, escaping what needs it", () => {
-    expect(appPageUrl("my app")).toBe("/apps/my%20app");
+    expect(appPageUrl("my app")).toBe("/apps/my%20app/overview");
+    expect(slugFromAppPath("/apps/my%20app/overview")).toBe("my app");
     expect(slugFromAppPath("/apps/my%20app")).toBe("my app");
-    expect(appPageUrl("x", "tasks")).toBe("/apps/x?tab=tasks");
+    expect(appPageUrl("x", "tasks")).toBe("/apps/x/tasks");
   });
 
   it("refuses anything that is not one folder name under the workspace", () => {
     expect(slugFromAppPath("/apps")).toBeNull();
     expect(slugFromAppPath("/apps/")).toBeNull();
-    expect(slugFromAppPath("/apps/tag/name")).toBeNull();
+    expect(slugFromAppPath("/apps/a/tasks/deeper")).toBeNull();
+    expect(slugFromAppPath("/apps//tasks")).toBeNull();
     expect(slugFromAppPath("/apps/..")).toBeNull();
     expect(slugFromAppPath("/apps/.")).toBeNull();
     expect(slugFromAppPath("/apps/%2e%2e")).toBeNull();
@@ -357,12 +377,19 @@ describe("app page codec", () => {
     expect(slugFromAppPath("/tasks")).toBeNull();
   });
 
-  it("keeps the tab in the query and leaves other params alone", () => {
-    expect(appPageTab("?tab=tasks&view=board")).toBe("tasks");
-    expect(appPageTab("?tab=nope")).toBe("overview");
-    expect(appPageTab("")).toBe("overview");
-    expect(withAppPageTab("?view=board", "tasks")).toBe("?view=board&tab=tasks");
-    expect(withAppPageTab("?view=board&tab=tasks", "overview")).toBe("?view=board");
-    expect(withAppPageTab("?tab=tasks", "overview")).toBe("");
+  it("reads the tab from the path, falling back to the overview", () => {
+    expect(appPageTabFromPath("/apps/x/tasks")).toBe("tasks");
+    expect(appPageTabFromPath("/apps/x/overview")).toBe("overview");
+    // A stale two-level builder link (`/apps/<tag>/<name>`) is an unknown tab.
+    expect(appPageTabFromPath("/apps/tag/name")).toBe("overview");
+    expect(appPageTabFromPath("/apps/x")).toBe("overview");
+  });
+
+  it("knows the bare slug address that App.tsx rewrites to the default tab", () => {
+    expect(isBareAppPath("/apps/x")).toBe(true);
+    expect(isBareAppPath("/apps/x/overview")).toBe(false);
+    expect(isBareAppPath("/apps/x/nope")).toBe(false);
+    expect(isBareAppPath("/apps/..")).toBe(false);
+    expect(isBareAppPath("/apps")).toBe(false);
   });
 });
