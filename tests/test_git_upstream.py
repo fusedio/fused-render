@@ -259,3 +259,81 @@ def test_rebase_refuses_a_dirty_tree(tmp_path):
 
     assert res["ok"] is False
     assert res["reason"] == "dirty"
+
+
+# ------------------------------------------------------------- is_known_repo
+
+
+def test_is_known_repo_is_false_for_a_root_never_checked(tmp_path):
+    assert not git_upstream.is_known_repo(str(tmp_path / "never-seen"))
+
+
+def test_is_known_repo_is_true_once_a_check_has_recorded_it(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert git_upstream.is_known_repo(os.path.realpath(local))
+
+
+def test_is_known_repo_stays_true_after_the_repo_is_brought_up_to_date(tmp_path):
+    # A repo the check just zeroed out (behind == 0) drops out of
+    # known_repos()'s filtered view but must still be a legitimate POST
+    # target — a card race (poll said behind, click lands after a
+    # concurrent check already caught the update) must not 403.
+    local = _clone_with_remote_ahead(tmp_path)
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "main", "default_branch": "main",
+                          "on_default": True, "behind": 0, "checked_at": 0.0})
+    assert not any(r["root"] == root for r in git_upstream.known_repos())
+    assert git_upstream.is_known_repo(root)
+
+
+# ---------------------------------------------------------- POST /api/git-upstream
+
+
+def _client(tmp_path):
+    from fastapi.testclient import TestClient
+    from fused_render.server import create_app
+
+    workspace = tmp_path / "Fused"
+    workspace.mkdir()
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def test_post_without_x_fused_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    client = _client(tmp_path)
+
+    r = client.post("/api/git-upstream", json={"action": "update", "root": "/tmp/whatever"})
+
+    assert r.status_code == 403
+
+
+def test_post_for_an_unrecorded_root_is_refused_even_with_x_fused(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    client = _client(tmp_path)
+
+    r = client.post("/api/git-upstream",
+                    json={"action": "update", "root": "/any/repo/on/disk"},
+                    headers={"X-Fused": "1"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "unknown-repo"
+
+
+def test_post_for_a_recorded_root_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    client = _client(tmp_path)
+    local = _clone_with_remote_ahead(tmp_path)
+    root = os.path.realpath(local)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert git_upstream.is_known_repo(root)
+
+    r = client.post("/api/git-upstream",
+                    json={"action": "update", "root": root},
+                    headers={"X-Fused": "1"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body

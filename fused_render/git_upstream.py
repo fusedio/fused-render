@@ -417,3 +417,18 @@ def known_repos():
     successfully checked) produces no row."""
     with _state_lock:
         return [dict(v) for v in _state.values() if v.get("behind", 0) > 0]
+
+
+def is_known_repo(root):
+    """Whether `root` is a repo THIS module's own background check has
+    recorded state for — the allowlist `POST /api/git-upstream` (server/
+    routers/git_upstream.py) checks a client-supplied `root` against before
+    running `update_repo`/`rebase_repo`. Membership in `_state`, not
+    `known_repos()`'s filtered (behind > 0) view: a repo the check just
+    brought up to date (behind == 0) is still a repo THIS server checked,
+    and a card race (poll says behind, click lands after a concurrent
+    check already zeroed it) must not turn into a 403 for an otherwise
+    legitimate root. What this refuses is a root the check has never even
+    heard of — an arbitrary path handed in from an open page's POST body."""
+    with _state_lock:
+        return root in _state

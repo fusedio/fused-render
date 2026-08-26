@@ -606,10 +606,12 @@ def create_app(start_dir: str) -> FastAPI:
     # here while a frame carries `_rev`. Read-only, no guard; it refuses a
     # mount-backed path outright, like every other git call in the app.
     app.include_router(git_show_router)
-    # GET /api/git-upstream (routers/git_upstream.py): repos with a known
-    # upstream update, for the activity card's repo-update rows. Read-only —
-    # the check that populates it runs off GET /render (D301), throttled per
-    # repo root.
+    # /api/git-upstream (routers/git_upstream.py): repos with a known
+    # upstream update, for the activity card's repo-update rows. GET is
+    # unguarded (the check that populates it runs off GET /render, D301,
+    # throttled per repo root); POST (the card's Update/Rebase buttons) is
+    # guarded by X-Fused (D3) and only accepts a `root` the GET side has
+    # already recorded — never an arbitrary client-supplied path.
     app.include_router(git_upstream_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
     # "AI Models" page (routers/ai_models.py). The reads are unguarded;
