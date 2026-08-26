@@ -95,6 +95,61 @@ def api_schedule_events_ack(body: dict = Body(...),
     return {"delivered": schedule.ack_events(event_id)}
 
 
+# What the New task form's attach/drop accepts, and the one place bytes are
+# written: everything else (the create endpoint, the model) deals only in the
+# returned paths, which `schedule._images` refuses unless they live under
+# `schedule.shots_dir()`. Data-URL JSON rather than multipart because the form
+# already holds the image as a data URL for its thumbnail, and one body shape
+# means one validator.
+_SHOT_MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg",
+                  "image/webp": ".webp", "image/gif": ".gif"}
+#: Decoded-byte cap per image. Matches the spirit of the claude template's
+#: SEGMENT_IMAGE_CAP (an 8 MB screenshot is not a more useful attachment than
+#: the same pixels at 2), with headroom for full-window PNG shots.
+_SHOT_MAX_BYTES = 4 * 1024 * 1024
+
+
+@router.post("/api/schedule/shot")
+def api_schedule_shot(body: dict = Body(...),
+                      x_fused: str | None = Header(default=None)):
+    """Store one task-attachment image; return the path to schedule with."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    data = body.get("data")
+    if not isinstance(data, str) or not data.startswith("data:"):
+        return _error("data: expected a data: URL", status=400)
+    head, sep, payload = data.partition(",")
+    mime = head[5:].split(";", 1)[0].strip().lower()
+    ext = _SHOT_MIME_EXT.get(mime)
+    if not sep or not ext or ";base64" not in head:
+        return _error("data: expected a base64 image data: URL "
+                      "(png, jpeg, webp or gif)", status=400)
+    import base64
+    import binascii
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (ValueError, binascii.Error):
+        return _error("data: not valid base64", status=400)
+    if not raw:
+        return _error("data: empty image", status=400)
+    if len(raw) > _SHOT_MAX_BYTES:
+        return _error(
+            f"data: image too large (over {_SHOT_MAX_BYTES // (1024 * 1024)} MB)",
+            status=400)
+    shots = schedule.shots_dir()
+    os.makedirs(shots, mode=0o700, exist_ok=True)
+    # Server-minted name, never the client's: the path returned here is what
+    # `schedule._images` later trusts.
+    name = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            + "-" + os.urandom(4).hex() + ext)
+    path = os.path.join(shots, name).replace("\\", "/")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(raw)
+    return {"path": path}
+
+
 @router.post("/api/schedule")
 def api_schedule_create(body: dict = Body(...),
                         x_fused: str | None = Header(default=None)):
@@ -191,6 +246,7 @@ def api_schedule_create(body: dict = Body(...),
             new_task_each_run=body.get("new_task_each_run"),
             session_learned=body.get("session_learned"),
             immediate=body.get("immediate"),
+            images=body.get("images"),
             # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
             # you name a folder that does not exist yet — it shows the path as a
             # new folder while you type it — and this is where that promise is

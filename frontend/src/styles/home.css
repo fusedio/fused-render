@@ -470,7 +470,7 @@
 }
 
 .home-composer .home-composer-name-input[aria-invalid="true"] {
-  border-color: var(--danger, #d33);
+  border-color: var(--error);
 }
 
 .home-composer-name-cancel {

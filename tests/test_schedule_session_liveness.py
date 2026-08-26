@@ -77,7 +77,7 @@ def projects_dir(tmp_path, monkeypatch):
 def spawned(monkeypatch):
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kw):
         calls.append({"message": prompt, "session_id": session_id})
         return {"run_id": f"r-{len(calls)}"}
 
