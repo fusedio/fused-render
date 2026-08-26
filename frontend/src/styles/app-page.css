@@ -355,6 +355,14 @@
   opacity: 0.6;
 }
 
+/* The switcher sits on the header's bottom rule, so its active underline
+   (the trigger's ::after, 5px below the text) lands ON that rule — the same
+   trick the page strip uses with its own border-b. */
+.app-files-modes {
+  align-self: flex-end;
+  padding-bottom: 5px;
+}
+
 .app-files-mode-icon {
   display: inline-flex;
   width: 14px;

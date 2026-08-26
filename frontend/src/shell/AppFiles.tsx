@@ -282,14 +282,25 @@ export default function AppFiles({
                   <span className="app-files-meta">{formatSize(selectedNode.size)}</span>
                 )}
               </div>
+              {/* Line variant, the same vocabulary as the page's tab strip:
+                  the active template is the one underlined, the rest are
+                  quiet text — no pill, no filled block in the header. */}
               {active && visible.length > 1 && (
-                <Tabs value={active.mode} onValueChange={(v) => pickMode(String(v))}>
-                  <TabsList aria-label="Template" className="h-7">
+                <Tabs
+                  value={active.mode}
+                  onValueChange={(v) => pickMode(String(v))}
+                  className="app-files-modes"
+                >
+                  <TabsList
+                    variant="line"
+                    aria-label="Template"
+                    className="h-auto rounded-none p-0"
+                  >
                     {visible.map((t) => (
                       <TabsTrigger
                         key={t.mode}
                         value={t.mode}
-                        className="px-2 text-xs"
+                        className="flex-none px-2 py-1 text-xs"
                         disabled={!!t.conditional && verdicts === null}
                         title={modeTitle(t.mode)}
                       >
