@@ -36,13 +36,14 @@ import { rawUrl, statPath, writeFile } from "@platform/lib/api";
 import { formatSize } from "@platform/lib/format";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { ClaudeMdFile } from "../api";
 import {
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -201,7 +202,7 @@ export default function ClaudeMdSection({
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading CLAUDE.md files" />;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading CLAUDE.md files" />;
 
   const emptyCount = data.files.filter((f) => f.empty).length;
 
@@ -243,7 +244,9 @@ export default function ClaudeMdSection({
           No CLAUDE.md files found on this machine, via {data.engine}.
         </Empty>
       )}
-      {data.files.map((f) => (
+      {data.files.length > 0 && (
+        <List>
+          {data.files.map((f) => (
         <ListRow
           key={f.path}
           name={f.name}
@@ -330,7 +333,9 @@ export default function ClaudeMdSection({
             </>
           }
         />
-      ))}
+          ))}
+        </List>
+      )}
     </>
   );
 }
