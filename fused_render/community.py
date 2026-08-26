@@ -146,15 +146,6 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
                           "network and revisit the apps page to retry")
 
 
-def _git_ok(cwd, *args, what="", timeout=GIT_TIMEOUT):
-    r = _git(cwd, *args, timeout=timeout)
-    if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "").strip().splitlines()
-        raise ActionError(f"{what or 'git ' + args[0]} failed: "
-                          f"{detail[-1] if detail else 'unknown error'}")
-    return r
-
-
 def _read_opened():
     """{slug: epoch seconds of the last open} — best-effort, like installs."""
     try:
