@@ -483,30 +483,9 @@
    of a machine's project groups — the single most destructive action on this
    page ended up its loudest and most repeated element. It is a plain
    .cc-iconbtn now (danger-tinted on hover, same as every other destructive
-   icon action in this app), and Commit (only rendered when the project has
-   drift to commit) joined it as a plain .cc-iconbtn too — both fade in the
-   same way .cc-lrow-actions' icons do: quiet at rest, reachable by keyboard
-   via :focus-within, visible outright with no hover to reveal them from.
-   Reveal-in-Finder alone stays permanently visible — it is informational,
-   not an act on the repo, so there's nothing to hide it FOR — which is why
-   this keys off :not(:first-child) rather than naming Clear and Commit each
-   by their own class: Reveal renders first unconditionally, so it is always
-   excluded regardless of which of the other two are present. */
-.cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
-}
-
-.cc-memgroup-head:hover .cc-memgroup-actions > .cc-iconbtn:not(:first-child),
-.cc-memgroup-head:focus-within .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-  opacity: 1;
-}
-
-@media (hover: none), (max-width: 640px) {
-  .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-    opacity: 1;
-  }
-}
+   icon action in this app). It USED to fade in on hover as well; nothing on
+   this page does that any more (see .cc-lrow-actions), so a muted icon is what
+   keeps it quiet now. */
 
 /* A filesystem path is not a category name: it keeps its own casing and wraps. */
 .cc-group-path {
@@ -884,66 +863,30 @@
   outline-offset: 1px;
 }
 
-/* A read-only marketplace's marker — see Icon's "lock" case for why this
-   replaced a Pill. Fixed-size and always visible (a fact, not an action), so
-   it can never be the thing that overflows the rail's 180px the way the pill
-   did. */
-.cc-index-lock {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  color: var(--fg-muted);
-}
-
-.cc-index-lock .cc-icon {
-  width: 12px;
-  height: 12px;
-}
-
-/* Everything trailing the filter button lives in ONE slot of a fixed width,
-   the same on every row whether it holds two icon buttons, a lock and one
-   button, or (while loading) nothing. That constant is what puts the counts in
-   a column: the filter button is `flex: 1` beside it, so an equal trail means
-   an equal button, and the count sits at the same x down the whole rail.
-   58px = two .cc-iconbtn (26px each) + their 2px gap + 4px right padding,
-   which is the widest this can get — a locked marketplace is by definition not
-   editable, so a lock and a Remove button cannot both appear. */
+/* The row's one trailing slot, a fixed width whether its button is showing or
+   not. That constant is what puts the counts in a column: the filter button is
+   `flex: 1` beside it, so an equal trail means an equal button and one x for
+   every count down the rail. 26px is a single .cc-iconbtn — it held two of
+   them plus a lock before the row menu replaced all three, which cost the
+   names 32px of a 180px column. */
 .cc-index-trail {
   display: flex;
-  flex: 0 0 58px;
+  flex: 0 0 26px;
   align-items: center;
   justify-content: flex-end;
-  gap: 2px;
 }
 
-/* Share/remove, per marketplace. Same fade-on-hover rule as .cc-lrow-actions —
-   quiet at rest, reachable by keyboard, visible outright on touch/narrow. */
-.cc-index-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 2px;
-  padding-right: 4px;
+/* Visible at rest like every other action on this page (see .cc-lrow-actions
+   for why nothing here fades in any more), and marked while ITS menu is open
+   so the row you are acting on stays identifiable once the pointer has left it
+   for the menu. */
+.cc-index-trail > .cc-iconbtn-on {
+  background: rgba(var(--tint), 0.1);
+  color: var(--fg);
 }
 
-.cc-index-actions > .cc-iconbtn {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
-}
-
-.cc-index-item:hover .cc-index-actions > .cc-iconbtn,
-.cc-index-item:focus-within .cc-index-actions > .cc-iconbtn {
-  opacity: 1;
-}
-
-@media (hover: none), (max-width: 640px) {
-  .cc-index-actions > .cc-iconbtn {
-    opacity: 1;
-  }
-}
-
-/* The count is pushed to the right edge; the name is what gives way. */
-/* Lining figures, so the counts read as a column rather than as digits that
+/* The count is pushed to the right edge; the name is what gives way.
+   Lining figures, so the counts read as a column rather than as digits that
    happen to be near each other. */
 .cc-index-filter .cc-count {
   flex: 0 0 auto;
@@ -1166,36 +1109,29 @@
   margin-left: auto;
 }
 
-/* Fade in on hover/focus so a 20-row list of quiet icon buttons reads calmly
-   at rest — but ONLY discretionary icon actions (copy, reveal-in-Finder,
-   update): a state pill (History's "current"), a status word (Skills' "no
-   recorded source"), a primary text button that is a row's only affordance
-   (Discover's Install, History's Restore, a danger .btn like Remove/Delete)
-   and the disclosure chevron all stay visible outright, because hiding any of
-   those was the actual defect — a Discover list at rest offered no visible
-   way to install anything. Scoped to .cc-iconbtn specifically (never .btn,
-   never a Pill/span) and excludes .cc-lrow-chev, so nothing needs to opt in
-   or out per section — the class each element already carries decides it.
-   Never truly hidden either way: opacity, not display, so every action stays
-   in the tab order and :focus-within reveals it for a keyboard user. */
-.cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
+/* A row's icon actions used to fade in on hover, so that a long list of quiet
+   icon buttons read calmly at rest. Owner's call, 2026-08-26: "I don't like
+   things appearing on hover" — so they don't any more, anywhere on this page.
+   What the rule actually bought was a calm list; what it cost was a row that
+   showed a gap where its actions are and only admitted what lived there once
+   the pointer was already on it. The calm is now bought the honest way, by the
+   icons being muted (.cc-iconbtn is --fg-muted until hovered) rather than
+   absent — and it also retires the touch/narrow media query that existed only
+   because hover-to-discover cannot work on a device with no hover. */
+
+/* The plugin row's own icons, which ride in `meta` ahead of the version. */
+.cc-lrow-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.cc-lrow:hover .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
-.cc-lrow:focus-within .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
-.cc-lrow.open .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-  opacity: 1;
-}
-
-/* No hover to fade in from (touch, or a narrow window where discovery-by-hover
-   isn't realistic) — stay visible outright rather than requiring a tap that
-   discovers nothing. */
-@media (hover: none), (max-width: 640px) {
-  .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-    opacity: 1;
-  }
+/* A column, not a label: versions run from "v1.0.0" to a 12-char commit sha,
+   and with the icons now sitting to their LEFT a ragged version means ragged
+   icons all the way down the list. */
+.cc-lrow-ver {
+  min-width: 92px;
+  text-align: right;
 }
 
 .cc-lrow.open .cc-lrow-chev .cc-icon {

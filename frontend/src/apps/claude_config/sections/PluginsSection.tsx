@@ -27,6 +27,8 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { urlForFsPath } from "@platform/lib/router";
+import ContextMenu from "@platform/ui/ContextMenu";
+import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import type {
@@ -241,6 +243,9 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   const [mktValue, setMktValue] = useState("");
   const [mktBusy, setMktBusy] = useState(false);
   const [addingMkt, setAddingMkt] = useState(false);
+  // Which marketplace's row menu is open, and where to hang it. One at a time
+  // by construction — the rail has one menu, not one per row.
+  const [mktMenu, setMktMenu] = useState<{ name: string; x: number; y: number } | null>(null);
   const mktFormId = useId();
   // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
   // URL-held page would be reset by the very navigation meant to preserve it —
@@ -386,6 +391,29 @@ export default function PluginsSection({ onChanged }: SectionProps) {
     }
   };
 
+  // A row's menu. Remove is always PRESENT and disabled on a read-only
+  // marketplace rather than absent: an item you can see and cannot use says
+  // "this one is not yours to remove", where a missing item says nothing and
+  // leaves the reader wondering whether they mis-clicked.
+  const menuItemsFor = (name: string): MenuEntry[] => {
+    const m = (mktData?.marketplaces ?? []).find((x) => x.name === name);
+    if (!m) return [];
+    return [
+      {
+        label: "Copy install command",
+        disabled: !m.shareCommand,
+        onClick: () => m.shareCommand && share(m.shareCommand),
+      },
+      "separator",
+      {
+        label: "Remove marketplace",
+        danger: true,
+        disabled: !m.editable,
+        onClick: () => removeMarketplace(name),
+      },
+    ];
+  };
+
   const removeMarketplace = async (mktName: string) => {
     try {
       const res = await cc.marketplaces.remove(mktName);
@@ -512,6 +540,12 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               <span className="cc-index-name">All</span>
               <span className="cc-count">{shown.length}</span>
             </button>
+            {/* Empty, and load-bearing: the trail slot is what fixes where a
+                row's filter button ends, so a row without one ends 58px
+                further right and its count leaves the column — which is
+                exactly what "All" did, at the top of the rail where the
+                misalignment is most visible. */}
+            <div className="cc-index-trail" />
           </div>
           {(mktData?.marketplaces ?? []).map((m) => {
             const n = index.find((x) => x.name === m.name)?.n ?? 0;
@@ -530,52 +564,38 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                   <span className="cc-index-name">{m.name}</span>
                   <span className="cc-count">{n}</span>
                 </button>
-                {/* A read-only marker states a fact about the row and stays
-                    visible outright — it is not an action, so it does not
-                    follow the hover-fade rule the icon buttons beside it do.
-                    A lock glyph rather than the "read-only" Pill this used to
-                    be: the pill's text wrapped inside the rail's fixed
-                    180px width and spilled over the plugin list beside it,
-                    and it was tinted --warning, a hue this app reserves for
-                    uncommitted git drift — a read-only marketplace is
-                    neither dirty nor a warning, just a fact, so it is now a
-                    fixed-size muted icon that can never overflow. */}
-                {/* One fixed-width slot for everything trailing the filter,
-                    whether a row fills it or not. Without it each row's button
-                    ended wherever its own icons began — and those icons are
-                    invisible at rest (opacity 0, still occupying space), so
-                    the counts sat at three different x positions with nothing
-                    on screen to explain why. */}
+                {/* ONE menu button per row, in place of the two icon buttons
+                    and the always-visible read-only lock that used to share
+                    this slot. Three glyphs is a lot of a 180px column to spend
+                    on a row whose job is a name and a count — and the lock was
+                    the worst of them, a permanent fixture saying "you cannot
+                    remove this" in a dialect the reader had to already know.
+                    That fact now lives where it can be READ: a Remove item
+                    that is present and disabled.
+
+                    The slot is fixed-width whether a row's button is showing
+                    or not, and that is what puts the counts in a column — the
+                    filter button beside it is `flex: 1`, so an equal trail
+                    means an equal button and one x for every count. */}
                 <div className="cc-index-trail">
-                {!m.editable && (
-                  <span className="cc-index-lock" title="Read-only marketplace" aria-label="Read-only marketplace">
-                    <Icon name="lock" />
-                  </span>
-                )}
-                <div className="cc-index-actions">
-                  {m.shareCommand && (
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      title={`Copy install command — ${m.shareCommand}`}
-                      aria-label={`Copy the install command for ${m.name}`}
-                      onClick={() => share(m.shareCommand as string)}
-                    >
-                      <Icon name="copy" />
-                    </button>
-                  )}
-                  {m.editable && (
-                    <button
-                      type="button"
-                      className="cc-iconbtn cc-iconbtn-danger"
-                      title="Remove marketplace"
-                      aria-label={`Remove marketplace ${m.name}`}
-                      onClick={() => removeMarketplace(m.name)}
-                    >
-                      <Icon name="trash" />
-                    </button>
-                  )}
-                </div>
+                  <button
+                    type="button"
+                    className={"cc-iconbtn" + (mktMenu?.name === m.name ? " cc-iconbtn-on" : "")}
+                    aria-haspopup="menu"
+                    aria-expanded={mktMenu?.name === m.name}
+                    aria-label={`Actions for ${m.name}`}
+                    title={`Actions for ${m.name}`}
+                    onPointerDown={(e) => {
+                      // This same pointerdown already closed an open menu (it
+                      // dismisses on any outside pointerdown), so reopening
+                      // here would make the button un-closable.
+                      if (mktMenu?.name === m.name) return;
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMktMenu({ name: m.name, x: r.left, y: r.bottom + 4 });
+                    }}
+                  >
+                    <Icon name="kebab" />
+                  </button>
                 </div>
               </div>
             );
@@ -672,30 +692,41 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     secondaryTitle={p.id}
                     secondaryMono
                     details={p.installed ? <PluginContentsPanel id={p.id} /> : null}
-                    meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
-                    actions={
+                    // The row's icon actions ride in `meta`, BEFORE the
+                    // version, rather than in `actions` after it. In `actions`
+                    // they sat between the version and the chevron, and since
+                    // they only appeared on hover, what the row showed at rest
+                    // was a 54px hole between two things that belong beside
+                    // each other. The version keeps a fixed column (.cc-lrow-
+                    // ver) so the icons to its left land on one x too.
+                    meta={
                       <>
-                        {p.installed && (
+                        <span className="cc-lrow-inline-actions">
+                          {p.installed && (
+                            <button
+                              type="button"
+                              className="cc-iconbtn"
+                              disabled={busy === p.id}
+                              title={busy === p.id ? "Updating…" : "Update this plugin"}
+                              aria-label={`Update ${p.name}`}
+                              onClick={() => update(p)}
+                            >
+                              <Icon name="refresh" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             className="cc-iconbtn"
-                            disabled={busy === p.id}
-                            title={busy === p.id ? "Updating…" : "Update this plugin"}
-                            aria-label={`Update ${p.name}`}
-                            onClick={() => update(p)}
+                            title={`Copy install command — ${p.shareCommand}`}
+                            aria-label={`Copy the install command for ${p.name}`}
+                            onClick={() => share(p.shareCommand)}
                           >
-                            <Icon name="refresh" />
+                            <Icon name="copy" />
                           </button>
-                        )}
-                        <button
-                          type="button"
-                          className="cc-iconbtn"
-                          title={`Copy install command — ${p.shareCommand}`}
-                          aria-label={`Copy the install command for ${p.name}`}
-                          onClick={() => share(p.shareCommand)}
-                        >
-                          <Icon name="copy" />
-                        </button>
+                        </span>
+                        <span className="cc-lrow-meta cc-lrow-ver">
+                          {p.version ? `v${p.version}` : ""}
+                        </span>
                       </>
                     }
                   />
@@ -810,6 +841,21 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           )}
         </div>
       </div>
+      {/* OUTSIDE .cc-index, and that is load-bearing. The menu is
+          position:fixed, but `position: sticky` on the rail makes it a
+          stacking context — so a menu rendered inside it has its z-index
+          resolved AGAINST ITS SIBLINGS IN THE RAIL, not against the page. The
+          rail itself has z-index auto and comes before .cc-rows in the DOM, so
+          the plugin list painted straight over the open menu: the toggles
+          showed through it, as if the panel were transparent. */}
+      {mktMenu && (
+        <ContextMenu
+          x={mktMenu.x}
+          y={mktMenu.y}
+          items={menuItemsFor(mktMenu.name)}
+          onClose={() => setMktMenu(null)}
+        />
+      )}
     </>
   );
 }
