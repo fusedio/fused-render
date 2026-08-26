@@ -43,7 +43,7 @@ Actions:
           "turn": <int, how many turns have finished on this run so far>}
   main(action="steer", run_id=..., message=...) -> {"steered": bool, "error": ...}
       a follow-up message for a run `poll` reported as "persistent" — see
-      `_steer` and D496. Refused (not queued here) for anything else: a
+      `_steer` and D497. Refused (not queued here) for anything else: a
       one-shot run, a dead run, or an unknown run_id.
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
@@ -1800,7 +1800,7 @@ def _persistent_ok() -> bool:
     turn, over a FIFO, instead of the one-shot `-p` process this template has
     always spawned.
 
-    Env-gated while this is new — D496 has the probe writeup this is built
+    Env-gated while this is new — D497 has the probe writeup this is built
     from, and the short version is: the CLI has NO true mid-turn message
     injection (a message written to a live process while a turn is running is
     QUEUED BY THE CLI, not spliced into what's in flight), but the process
@@ -1887,7 +1887,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         # would exit the instant the first message's write-then-close ran
         # (exactly the one-shot behaviour this whole path exists to avoid).
         # Verified empirically against both a bare `cat` and the real `claude`
-        # CLI before this was built on — see D496.
+        # CLI before this was built on — see D497.
         fifo_path = os.path.join(run_dir, "stdin.fifo")
         os.mkfifo(fifo_path, 0o600)
         # mkfifo's mode is filtered by umask like any other create, so a loose
@@ -2085,7 +2085,7 @@ def _steer(run_id: str, message: str) -> dict:
     plain stdin pipe (see `_persistent_ok`).
 
     Not true mid-turn injection — nothing here claims that, because the CLI
-    does not offer it (D496). If the run is mid-turn when this lands, the CLI
+    does not offer it (D497). If the run is mid-turn when this lands, the CLI
     QUEUES the message itself and starts it as its own turn the moment the
     current one's `result` row lands; `_poll`'s `turn` counter is what lets a
     page tell "queued, not started yet" from "now running" without this

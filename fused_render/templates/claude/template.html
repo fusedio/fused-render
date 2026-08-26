@@ -13800,7 +13800,7 @@ let activeRun = null;
 // Whether `activeRun`'s process can take a `steer` (a follow-up written
 // straight into its FIFO) instead of the composer having to park text in
 // `queuedMsgs` until the turn ends. Set from `poll`'s own "persistent" field
-// (agent.py, D496) — never guessed at here, since a page has no other way to
+// (agent.py, D497) — never guessed at here, since a page has no other way to
 // know whether the server actually kept this process alive past this turn.
 // Reset alongside `activeRun` in pollLoop's finally: it describes THIS run,
 // not a standing preference, so a later one-shot run (persistence flipped
@@ -14121,7 +14121,7 @@ function queueMessage(text) {
 // code allows the user to queue new prompt at any point... we can't add
 // additional context for previous prompt". The dashed bubble is kept
 // (same look as a parked one) because the CLI has no true mid-turn
-// injection either (see D496): a message sent here while a turn is running
+// injection either (see D497): a message sent here while a turn is running
 // is QUEUED BY THE CLI ITSELF and starts as its own turn the instant the
 // current one ends, so there genuinely is a wait — the user just needed to
 // SEE that their message was accepted rather than silently held in this

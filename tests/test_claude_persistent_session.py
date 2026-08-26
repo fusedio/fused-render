@@ -2,7 +2,7 @@
 turn, and the two new actions built on top of it (`steer`, and `_cancel`'s new
 interrupt branch).
 
-Background — see D496 for the full probe writeup. The stock `claude -p` CLI
+Background — see D497 for the full probe writeup. The stock `claude -p` CLI
 has no true mid-turn injection: a message written to a live process's stdin
 while a turn is running is QUEUED BY THE CLI ITSELF and starts as its own
 separate turn the moment the current one's `result` row lands. What IS real
