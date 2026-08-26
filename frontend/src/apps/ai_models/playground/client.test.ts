@@ -40,6 +40,7 @@ const JOB: Job = {
   state: "running",
   done: null,
   total: null,
+  total_scope: "phase",
   unit: "",
   message: "",
   page: "",

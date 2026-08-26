@@ -6538,6 +6538,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   transformer comes out of `unsloth/FLUX.2-klein-4B-GGUF` while the permitted id
   is the base repo, so the component's `download_file` finds no permission by
   construction rather than by a rule anyone has to remember.
+- **AI-5n** **A download's total is the WHOLE download. A runner that fetches
+  more than one repo declares all of them up front through `download_plan`, and
+  the bar is priced at their sum** (D498, TARGET). AI-5b established that a
+  wrong total is worse than no total, and AI-5a's `_capped` protects a SCOPED
+  total from a folder measured wider than it. Neither covers the opposite
+  defect: a total that is honest about its phase and silent about the
+  download. `ltx-video` fetches the weights repo and then
+  `mlx-community/gemma-3-12b-it-4bit` (**AI-15a**) as two sequential
+  `download_snapshot` calls, so the LTX-2.3 int4 pull reports **19.1 GB** —
+  true of phase one, and 8.07 GB short of what the button started;
+  `torch_image.py`'s GGUF recipe has the same shape. The card beside it reads
+  the catalog's `size_gb`, which AI-11a defines as every byte across every repo
+  the download touches, so one download presents two figures 30% apart with no
+  way for a reader to tell that neither is wrong.
+  - **`worker_base.download_plan(phases)` is the one door**, `phases` being an
+    ordered list of `(model_id, allow_patterns, ignore_patterns)`. It sums
+    `repo_total_bytes` per phase ONCE into a grand total, reports `done` as the
+    sum of `bytes_on_disk` across every phase's repo folder, and names progress
+    per phase (`"Fetching weights… (2 of 2)"`). Each phase still runs through
+    `download_snapshot`, so AI-5l's mirror branch, AI-5i's segmented fetch and
+    the already-complete fast path are unchanged and untouched — this composes
+    them, it does not replace them.
+  - **A phase whose total is unknown costs the WHOLE total, not just its own.**
+    `_total_bytes` already answers `None` for an indeterminate repo, and summing
+    a known phase with an unknown one would price the bar at a fraction and then
+    jump — AI-5b's original defect, rebuilt one level up. Indeterminate is
+    honest; partial is not.
+  - **The job row says whether its total is whole**: a new `totalScope` on the
+    progress record, `"download"` from `download_plan` and `"phase"` from a bare
+    `download_snapshot`. Without it the frontend cannot tell a stale catalog
+    constant from a mid-download phase, which is exactly why
+    `shared/modelSize.ts` had to adopt a never-understate rule instead of simply
+    preferring the measured number. With it that module's rule becomes:
+    `totalScope === "download"` → the live total WINS outright (a measured whole
+    download is better than any hand-written constant, including one that is
+    stale HIGH); anything else → today's never-understate fallback, unchanged.
+    Single-repo runners are therefore correct without migrating, and each
+    multi-phase runner improves the moment it adopts the plan.
 - **AI-8b** **A runner whose weights live outside RSS supplies its own memory
   probe.** AI-8a made the hook for MLX's memory-mapped, lazily-materialised
   arrays; the image runner needs it for an unrelated reason and the number was
@@ -6546,6 +6584,36 @@ an AI Models page that could say what was on disk but not what was *running*.
   reported **33 MB in memory**. Both runners now answer for themselves, and the
   test asks it of BOTH with the reason each one needs it, because "supplies a
   probe" is a property of a runner rather than a fact about MLX.
+- **AI-8c** **A runner also supplies its own PEAK, because the resident probe is
+  sampled far too rarely to catch one** (D497, TARGET). AI-8a and AI-8b built
+  `serve(memory=…)` so a worker could answer "what am I costing right now"
+  honestly; `fit` (**AI-16**) needs a different number — the HIGH-WATER mark of a
+  whole load-and-generate pass — and the existing one cannot supply it.
+  `supervisor.refresh_memory` polls `/health` only when the status endpoint is
+  read ("the number is only interesting when someone is looking at it", its own
+  docstring), so on a staged pipeline like `ltx-video` — whose peak is one stage
+  and whose stages are freed between renders (`low_memory=True`) — the sampled
+  figure is whichever stage happened to be resident when a page was open, which
+  is not a bound on anything. `benchmark.py::_memory_and_device` already states
+  the same limitation about its own reading: "a resident figure and a
+  second-order number, not a true peak of the whole run."
+  - `serve(peak_memory=…)` is a SECOND optional hook beside `memory=`, and
+    `/health` reports `peak_resident_bytes` beside `resident_bytes`. A runner
+    that supplies neither reports `null`, exactly as AI-8a's contract already
+    allows — never an estimate.
+  - **The MLX runners get it for free and it is a true peak, not a sample**:
+    `mx.get_peak_memory()` is maintained by MLX's own allocator across the
+    process's whole life. Probed through the same defensive getattr PAIR the
+    existing `memory()` probes use (`mx.get_peak_memory`, then
+    `mx.metal.get_peak_memory`) — see `ltx_video/worker.py::memory`, which is
+    that pattern for `get_active_memory` — so a wheel that ships neither name
+    costs the figure and never the health response.
+  - **RSS is the fallback and it is a high-water mark kept by the WORKER, not by
+    the supervisor**: `worker_base.resident_bytes()` is already called on every
+    `/health` and at load; remembering `max()` of what it has returned costs one
+    module-level integer and turns a sparse sample into a monotone bound. It is
+    still weaker than the allocator's own peak (it only sees the moments health
+    was asked), and AI-16's `basis` is what carries that difference outward.
 - **AI-6** **Availability is answered with a REASON.** MLX is Apple-Silicon-only,
   so `available()` returns "needs Apple Silicon (this is linux/x86_64)", and
   resolution SKIPS an unavailable runner rather than picking it and failing at
@@ -8401,6 +8469,108 @@ an AI Models page that could say what was on disk but not what was *running*.
   already fetched its 144GB; and `/api/ai/video`'s cross-engine refusal is
   kept as deliberately unreachable code, generic over runners, so a second
   video engine's arrival does not have to remember to add it back.
+- **AI-16** **"Will this fit?" is answered over a FOOTPRINT — what the model
+  costs RESIDENT — never over a download size, and the answer carries the basis
+  it was reached on** (D497, TARGET). `ai_runtime._fit_verdict` is handed
+  `size_gb` and asked a memory question, which conflates two quantities that
+  coincide only for a single-checkpoint text model:
+  - `ltx-video` runs `DistilledPipeline(low_memory=True)`, which FREES the
+    transformer and the Gemma text encoder between stages
+    (`ltx_video/worker.py`, and see **AI-15a**). Its peak is one stage; its
+    download, per **AI-11a**, is every byte of two repos. On a 32GB machine the
+    28.5GB constant lands at "Likely too big for this machine" for a model that
+    demonstrably renders there — the page contradicting the catalog note on the
+    same row, which promises "a 16 GB+ Mac".
+  - a CACHED, uncurated repo (**AI-11e**) takes `size_gb` from
+    `_cached_size_gb`, which is bytes on DISK including every revision the cache
+    holds. That is a disk figure wearing a memory badge, and it gets worse the
+    longer the cache lives.
+
+  The verdict is therefore computed by a new `fused_render/ai/fit.py` — not by
+  the router, which is a view — over the best footprint available, on a
+  precedence ladder that degrades to today's behaviour:
+
+  | `basis` | source | meaning |
+  | --- | --- | --- |
+  | `measured` | `footprints.py` (**AI-16a**), keyed `<capability>/<model_id>` | this model has RUN here and this is what it cost |
+  | `declared` | an optional `resident_gb` on a curated catalog entry | the curator (or the runner's own docstring) knows the envelope |
+  | `download` | `size_gb`, exactly as today | nothing better is known |
+
+  `None` when even `size_gb` is missing, unchanged: **AI-11a**'s rule that an
+  unknown size is a dash and never a guess governs the verdict too. `resident_gb`
+  is optional and additive in the shape **AI-11i** and **AI-11j** established for
+  `recommended` and `acceptsImage` — a curator MAY answer, and absence falls
+  through rather than meaning anything.
+- **AI-16a** **A model's peak footprint on THIS machine is written down, because
+  it is measured for free on every load and is worthless forgotten** (D497,
+  TARGET). `fused_render/ai/footprints.py` at `~/.fused-render/ai_footprints.json`,
+  in the shape `bench_store.py` already establishes for shell-owned state: a
+  private `_path()` over `storage.home_dir()`, then `storage.read_json` /
+  `storage.write_json` and nothing else. A corrupt or absent file reads as no
+  observations, never a raise.
+  - **Written by `supervisor.refresh_memory`**, which already re-reads every live
+    worker's health, from `peak_resident_bytes` where the runner reports one
+    (**AI-8c**) and the `resident_bytes` high-water otherwise. A benchmark run
+    (**AI-14**) is covered by construction rather than by a second writer:
+    `benchmark._memory_and_device` reads the same `describe()` rows.
+  - **Keyed by `<capability>/<model_id>`, not by repo.** Since **AI-11j** the same
+    checkpoint serves two capabilities with two different footprints — an mlx-vlm
+    load that touches the vision tower is not the load that does not.
+  - **The MACHINE is recorded once, at the top of the file, and a mismatch
+    discards the file wholesale.** `benchmark.machine()` is the identity
+    (`platform`/`arch`/`totalMemoryBytes`) and its docstring gives the reason a
+    per-run copy exists at all: "a home directory gets restored onto a new
+    laptop". Every number here was measured on the other machine, so there is
+    nothing to salvage and nothing to reconcile — a rule with no partial case.
+  - **Bounded by construction**, the discipline `server/ai_metrics.py` and
+    `bench_store.py` both state: at most `MAX_MODELS` rows, oldest `observedAt`
+    dropped on insert. A high-water is only rewritten when it grows (past a small
+    tolerance, so a jittering RSS does not write a file per status poll).
+- **AI-16b** **The thresholds are HEADROOM, not a fraction of total RAM, and on
+  Apple Silicon the wired limit is a hard ceiling above them** (D497, TARGET).
+  Today's rule is `≤25%` easy / `≤50%` tight, and a fraction scales wrong in
+  exactly one direction: on a 16GB machine 50% leaves 8GB for the OS, the browser
+  and this server, which is about right; on a 64GB machine it leaves 32GB
+  unusable for no stated reason.
+
+  ```
+  RESERVE   = 8e9                      # OS + browser + this server
+  usable    = max(0, ram - RESERVE)
+  easy      footprint <= 0.6 * usable
+  tight     footprint <= usable
+  no        otherwise
+  ```
+
+  Chosen so small machines keep roughly the boundaries they have (16GB: 5.5/9.2GB
+  against today's 4.3/8.6) and only large ones change. `ram` stays
+  `_machine_ram_gb`'s stdlib reading — decimal GB, cached forever, unchanged.
+  - **`no` is also returned above the Apple-Silicon wired limit regardless of the
+    arithmetic above**: MLX cannot exceed `iogpu.wired_limit_mb`, so a footprint
+    past it fails to allocate no matter how much headroom the subtraction found.
+    Read via `sysctl` with `0` meaning "the default", which is ~75% of RAM;
+    unreadable or non-Darwin costs the gate and never the verdict.
+- **AI-16c** **`fit` is an OBJECT, and the page words a measured verdict as a
+  fact rather than as a guess** (D497, TARGET). `entry["fit"]` becomes
+  `{verdict, basis, footprintBytes}` (still `null` when nothing is known), and
+  `PlaygroundTab`'s badge keys its copy off `basis` — the hedge is what the
+  guessed answers need and what a measured one must not carry:
+
+  | `basis` | `easy` | `tight` | `no` |
+  | --- | --- | --- | --- |
+  | `measured` | "Ran comfortably here (20 GB)" | "Ran here, tight (28 GB)" | "Ran here, over budget (30 GB)" |
+  | `declared` / `download` | "Runs comfortably here" | "Tight fit on this machine" | "Likely too big for this machine" |
+
+  A measured `no` is reachable and is NOT a contradiction: the footprint store
+  only ever holds models that ran, but **AI-16b**'s budget is what is left after
+  the reserve, so a model measured above it ran while nothing else was open. It
+  is worded as what it is rather than as a prediction of failure.
+
+  The dot hues are unchanged (**D461**'s reservation of the loud treatment for
+  RUNNING still holds, and amber/red still mark only the two verdicts that ask
+  the reader to do something differently). The `title` gains the basis in words —
+  "Measured on this machine" or "Judged against this machine's memory" — because
+  the whole complaint this item answers is a reader who could not tell which of
+  those two the badge meant.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
