@@ -14,11 +14,14 @@ computes for the focus contract (`IS_THUMBNAIL`, mirroring
 directly; `call()` does too, because `engine_forward.py`'s `_forward` heals a
 dead-but-enabled child back to life on ANY proxied call — a preview render
 that calls `call()` against an app some other session already enabled can
-resurrect its daemon exactly like `enable()` would. `status()`, `stop()`, and
-`disable()` are deliberately left open: `status()` is read-only (and the
-pattern the rejection message points authors at), and `stop()`/`disable()`
-only ever turn a daemon OFF — gating them would let a preview do something
-worse than starting a daemon, namely killing a real one.
+resurrect its daemon exactly like `enable()` would. `stop()` and `disable()`
+are gated the same way: a card thumbnail mounts `entry_html` live with
+`allow-scripts`, so an app whose init path calls `fused.daemon.disable()`
+could un-persist a running daemon just because its card scrolled past or was
+hovered — worse than the enable bug this guard exists for, because
+`disable()` survives a server restart. `status()` is the one method
+deliberately left open: it is read-only (and the pattern the rejection
+message points authors at).
 
 Same node-harness style as the `aiTranscribe`/`aiImage` suites in
 test_ai_runtime.py: named functions are lifted out of runtime.js by their
@@ -169,18 +172,38 @@ def test_restart_still_works_outside_preview():
     assert result["fetchCount"] == 1
 
 
-def test_stop_is_never_gated_even_in_preview():
-    """`stop()` only turns a daemon OFF — a preview must never be able to
-    turn a user's daemon off either, but it must also never be BLOCKED from
-    reaching the (harmless) stop endpoint by this guard."""
+def test_stop_is_refused_when_this_frame_is_a_preview_thumbnail():
+    """`stop()` only turns a daemon OFF, but a card thumbnail mounts
+    `entry_html` live with `allow-scripts` — an app whose init path calls
+    `fused.daemon.stop()` must not be able to kill a real user's daemon just
+    because their card scrolled past. Gate it exactly like `enable()`."""
     result = _run_daemon("stop", search="?path=/apps/x/index.html&_preview=1")
+    assert result["ok"] is False
+    assert "fused.daemon.stop" in result["message"]
+    assert "refused" in result["message"]
+    assert result["fetchCount"] == 0
+
+
+def test_disable_is_refused_when_this_frame_is_a_preview_thumbnail():
+    """`disable()` is worse than `enable()` if left open: it un-persists a
+    running daemon, and that survives a server restart — a preview must not
+    be able to reach it either."""
+    result = _run_daemon("disable", search="?path=/apps/x/index.html&_preview=1")
+    assert result["ok"] is False
+    assert "fused.daemon.disable" in result["message"]
+    assert "refused" in result["message"]
+    assert result["fetchCount"] == 0
+
+
+def test_stop_still_works_outside_preview():
+    result = _run_daemon("stop", search="?path=/apps/x/index.html")
     assert result["ok"] is True
     assert result["fetchCount"] == 1
     assert "/api/apps/background/stop" in result["urls"][0]
 
 
-def test_disable_is_never_gated_even_in_preview():
-    result = _run_daemon("disable", search="?path=/apps/x/index.html&_preview=1")
+def test_disable_still_works_outside_preview():
+    result = _run_daemon("disable", search="?path=/apps/x/index.html")
     assert result["ok"] is True
     assert result["fetchCount"] == 1
     assert "/api/apps/background/disable" in result["urls"][0]

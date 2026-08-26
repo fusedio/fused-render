@@ -2345,11 +2345,14 @@
   // `_forward` heals a dead-but-enabled child back to life on ANY proxied
   // call, so a preview render that calls `call()` against an app enabled in
   // some other session can resurrect its daemon exactly like `enable()`
-  // would. `status()` is deliberately left open (read-only — and the
-  // pattern the rejection below points authors at); so are `stop()` and
-  // `disable()` — they only ever turn a daemon OFF, and gating them here
-  // would let a preview do the one thing worse than starting a daemon: kill
-  // a real user's daemon just because their card scrolled past.
+  // would. `stop()` and `disable()` are gated the same way, NOT left open
+  // (D508): a card thumbnail mounts `entry_html` live in a sandboxed iframe
+  // with `allow-scripts`, so an app whose init path calls
+  // `fused.daemon.disable()` would un-persist a running daemon just because
+  // its card scrolled past or was hovered — worse than the enable bug this
+  // guard exists for in the first place, because `disable()` survives a
+  // server restart. `status()` is the one method deliberately left open
+  // (read-only — and the pattern the rejection below points authors at).
   function _daemonRejectPreview(method) {
     return Promise.reject(new Error(
       `fused.daemon.${method}: refused — this page is rendering as a preview ` +
@@ -2402,10 +2405,12 @@
   }
 
   function daemonDisable() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("disable");
     return _daemonPost("/api/apps/background/disable", false);
   }
 
   function daemonStop() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("stop");
     return _daemonPost("/api/apps/background/stop", false);
   }
 
