@@ -505,6 +505,11 @@
 
 .bar-ctl.bar-ctl-strong:hover:not(:disabled) {
   background: var(--on-fg);
+  /* The generic .bar-ctl:hover rule right below sets color: var(--fg), which
+     is invisible here — this button is already fg-on-bg, and fg-on-on-fg is
+     the same tone on nearly the same tone in both themes. Restate --bg
+     explicitly so the label stays high-contrast through the hover. */
+  color: var(--bg);
 }
 
 .bar-ctl:hover:not(:disabled) {
