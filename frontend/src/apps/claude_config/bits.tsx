@@ -1,10 +1,9 @@
 // Shared pieces of the Claude-config app: the ONE list row every tab's items
 // render as (`ListRow`), the card/pill/group vocabulary around it, the
 // three-state toggle, the change-preview modal, the load-once-with-reload hook
-// every section uses, the git-status hook the tab strip and the History page
-// share, and the split preview pane the MD Files section needs. They lived in
-// ClaudeConfig.tsx; they sit here so a section and the panel can both reach
-// them without importing across pages.
+// every section uses, and the git-status hook the tab strip and the History
+// page share. They lived in ClaudeConfig.tsx; they sit here so a section and
+// the panel can both reach them without importing across pages.
 //
 // The bias is deliberately towards ONE of each thing. Nine tabs doing the same
 // job four ways is four sets of paddings, verbs and action placements for the
@@ -28,7 +27,6 @@ import {
   type ReactNode,
 } from "react";
 import { pushToast } from "@platform/lib/toast";
-import { EMBED_PREFIX, VIEW_PREFIX } from "@platform/lib/router";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
@@ -627,54 +625,6 @@ export function useGitStatus(epoch: number): GitStatusState {
   }, [epoch, n]);
 
   return { status, failed, recheck: useCallback(() => setN((v) => v + 1), []) };
-}
-
-// -- split preview pane -------------------------------------------------------
-
-// fs path -> the encoded tail of an /explorer/view/ or /explorer/embed/ URL.
-// Same codec as router.urlForFsPath, spelled out here because that helper picks
-// the prefix from the CURRENT page's mode and the preview pane needs both.
-function encodePath(fsPath: string): string {
-  return fsPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
-// The split preview pane: the shell's OWN chrome-free view of the file
-// (/explorer/embed/<path>), which is how any markdown gets rendered here — this
-// app has no renderer of its own and should not grow one.
-export function PreviewPane({ path, onClose }: { path: string; onClose: () => void }) {
-  return (
-    <aside className="cc-preview">
-      <div className="cc-preview-head">
-        {/* Ellipsized from the LEFT (direction: rtl) so the filename tail stays
-            readable; <bdi dir="ltr"> keeps the path's own characters in logical
-            order, without which the leading "/" renders at the far end. */}
-        <span className="cc-preview-path cc-mono">
-          <bdi dir="ltr">{path}</bdi>
-        </span>
-        <button
-          type="button"
-          className="btn"
-          title="Open in the file explorer (new tab)"
-          onClick={() => window.open(VIEW_PREFIX + encodePath(path), "_blank")}
-        >
-          ↗
-        </button>
-        <button type="button" className="btn" title="Close preview" onClick={onClose}>
-          ✕
-        </button>
-      </div>
-      <iframe
-        className="cc-preview-frame"
-        title={`Preview of ${path}`}
-        src={EMBED_PREFIX + encodePath(path)}
-      />
-    </aside>
-  );
 }
 
 // -- misc ---------------------------------------------------------------------

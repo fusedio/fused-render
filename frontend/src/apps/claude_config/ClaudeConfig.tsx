@@ -12,11 +12,11 @@
 //   ┌ cc-header ───────────────────────────────────────────── 49px ┐
 //   │ Claude config                          [● Clean / N uncommitted]│
 //   ├ cc-tabbar ──────────────────────────────────────────────────┤
-//   │ Preferences  Plugins  MD Files  …                            │
-//   ├ cc-body ───────────────────────────┬──────────────────────┤
-//   │ caption (the file this tab edits)  │  preview pane        │
-//   │ section content                    │  (MD Files only)     │
-//   └────────────────────────────────────┴──────────────────────┘
+//   │ Preferences  Plugins  …                                      │
+//   ├ cc-body ──────────────────────────────────────────────────┤
+//   │ caption (the file this tab edits)                            │
+//   │ section content                                               │
+//   └───────────────────────────────────────────────────────────┘
 //
 // Two pieces of state, each in the place that suits it:
 //
@@ -35,14 +35,11 @@
 // profile is a git branch over the same repo, so it belongs with the history
 // rather than beside Preferences.
 //
-// The CLAUDE.md explorer ("MD Files", `?cctab=claudemd`) is a section here.
-// It briefly had a page of its own; it is back because the sidebar's CLAUDE
-// group reads better with one Config entry than with two peers. It is the one
-// section that needs a split PREVIEW pane, which is why .cc-body lays out as
-// two columns (content / preview) — the pane renders beside the content column,
-// so the preview path lives in this file and the section is handed
-// `preview`/`onPreview`. Every other section leaves the second column empty.
-// A stale `/claude-md` URL redirects here (shell/App.tsx).
+// The CLAUDE.md explorer ("MD Files") is GONE (round 2): it was a browse-and-
+// preview surface bolted onto a page whose job is configuring things, and it
+// was the only section that needed a second body column. `?cctab=claudemd`
+// and the legacy `/claude-md` URL both redirect to Preferences now
+// (shell/App.tsx).
 //
 // A note on remounting: the shell renders this page keyed on the nav epoch, so
 // any navigation — including this panel's own `?cctab=` writes — remounts it.
@@ -51,8 +48,7 @@
 // app re-rendered.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
-import ClaudeMdSection from "./sections/ClaudeMdSection";
+import { Icon, Pill, useGitStatus } from "./bits";
 import HistorySection from "./sections/HistorySection";
 import McpSection from "./sections/McpSection";
 import MemorySection from "./sections/MemorySection";
@@ -70,11 +66,6 @@ const TABS = [
     id: "plugins",
     label: "Plugins",
     file: "settings.json → enabledPlugins + extraKnownMarketplaces",
-  },
-  {
-    id: "claudemd",
-    label: "MD Files",
-    file: "CLAUDE.md / CLAUDE.local.md across all projects",
   },
   // `readOnly` puts one pill in the caption row. It replaces the
   // "(read-only viewer)" that used to be baked into three of these strings —
@@ -124,9 +115,6 @@ export default function ClaudeConfig() {
   //                  loses its "uncommitted" markers). Only this remounts the
   //                  section.
   const [badgeEpoch, setBadgeEpoch] = useState(0);
-  // The MD Files section's split preview pane — a second column beside the
-  // content column, so its path lives here rather than in the section.
-  const [preview, setPreview] = useState<string | null>(null);
   const [sectionEpoch, setSectionEpoch] = useState(0);
   const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
   const onCommitted = useCallback(() => {
@@ -167,9 +155,10 @@ export default function ClaudeConfig() {
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
   // `?cctab=profiles` was a tab of its own until Profiles became a block of the
-  // History page, and `?cctab=marketplaces` until Marketplaces folded into the
-  // Plugins rail. Either old bookmark should land where its content went, not
-  // on the default tab.
+  // History page, `?cctab=marketplaces` until Marketplaces folded into the
+  // Plugins rail, and `?cctab=claudemd` until the MD Files tab was deleted
+  // outright. Every old bookmark should land where its content went (or, for
+  // claudemd, on the default tab — there is no replacement page for it).
   const active: SectionId = raw === "profiles"
     ? HISTORY.id
     : raw === "marketplaces"
@@ -195,10 +184,6 @@ export default function ClaudeConfig() {
         return <PreferencesSection onChanged={onChanged} />;
       case "plugins":
         return <PluginsSection onChanged={onChanged} />;
-      case "claudemd":
-        return (
-          <ClaudeMdSection onChanged={onChanged} preview={preview} onPreview={setPreview} />
-        );
       case "memory":
         return <MemorySection onChanged={onChanged} />;
       case "skills":
@@ -304,9 +289,6 @@ export default function ClaudeConfig() {
             {body()}
           </div>
         </main>
-        {active === "claudemd" && preview && (
-          <PreviewPane path={preview} onClose={() => setPreview(null)} />
-        )}
       </div>
     </div>
   );
