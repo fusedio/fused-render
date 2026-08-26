@@ -283,13 +283,26 @@
  * so it grows to fill .cc-body deterministically off its flex-grow alone.
  *
  * No overflow-y here any more either — .cc-root is the scroll container now
- * (below), so this box just grows to whatever height its content needs. */
+ * (below), so this box just grows to whatever height its content needs.
+ *
+ * overflow-x is `clip`, not `hidden` (code review, 2026-08-26): per the CSS
+ * overflow spec, a box with one axis non-visible computes ITS OTHER axis's
+ * `visible` to `auto` too — so `overflow-x: hidden` here silently made
+ * overflow-y `auto` as well, turning .cc-main back into a scroll container
+ * even though nothing sets overflow-y on it. That's invisible normally
+ * because .cc-main is height-bounded (flex:1 1 0% inside .cc-root's column)
+ * and so never actually grows a scrollbar — but .cc-toolbar's and .cc-index's
+ * `position: sticky` resolve against the nearest scroll container, which was
+ * silently THIS box instead of .cc-root, so they pinned against a box that
+ * happens to never scroll rather than against the page. `clip` keeps the same
+ * horizontal clamp without establishing a scrollport, so sticky escapes to
+ * .cc-root where the comment above already says it lives. */
 .cc-main {
   flex: 1 1 0%;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  overflow-x: hidden;
+  overflow-x: clip;
   padding: 24px 28px 40px;
 }
 
@@ -1858,18 +1871,22 @@
 }
 
 /* -- narrow windows -------------------------------------------------------- */
-/* Below ~900px the content and the preview pane don't fit side by side, so the
-   pane stacks under the content column instead. The tab strip needs no rule of
-   its own: it scrolls sideways at every width. What DOES go is the caption's
-   standing note — at this width the file the tab edits is the only half of that
-   row worth the space, and the note survives as the row's title=. */
+/* Used to also stack .cc-body's content column and its preview pane below
+   ~900px (`.cc-body { flex-direction: column; overflow-y: auto; }`) — dead
+   since the MD Files split-pane section that pane belonged to was removed
+   (round 2, see ClaudeConfig.tsx's header comment): .cc-body has exactly one
+   child now, so there is nothing left to stack. Worse than dead: that
+   `overflow-y: auto` re-created the "which box actually scrolls" bug below
+   900px width specifically (code review, 2026-08-26, same root cause as
+   .cc-main's own — see .cc-main's comment) by making .cc-body its own scroll
+   container instead of .cc-root, which strands .cc-toolbar's and .cc-index's
+   `position: sticky` against a narrower scrollport than the rest of the page
+   uses everywhere else. The tab strip needs no rule of its own: it scrolls
+   sideways at every width. What DOES go is the caption's standing note — at
+   this width the file the tab edits is the only half of that row worth the
+   space, and the note survives as the row's title=. */
 
 @media (max-width: 900px) {
-  .cc-body {
-    flex-direction: column;
-    overflow-y: auto;
-  }
-
   .cc-caption-note {
     display: none;
   }
