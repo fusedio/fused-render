@@ -54,7 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import footprints, registry
+from fused_render.ai import fit, footprints, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -1811,6 +1811,72 @@ def start_reaper() -> None:
 
     _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
     _reaper_thread.start()
+
+
+#: How often the background hardware-detection thread re-probes once it has
+#: probed at least once (SPEC AI-18, D518; wiring per code review — the
+#: probe had no caller in production, so `hw_detect.cached_hardware()`
+#: always answered None and `fit._select_pool`/`speed._uncalibrated` always
+#: took their no-GPU-known branch). Unlike `_REAPER_TICK_S`'s 30s (evaluating
+#: something that changes by the minute), this is generous: a machine's
+#: VRAM/GPU does not change while it is running, under ordinary use — this
+#: interval exists mainly to notice an eGPU plugged in mid-session, not to
+#: track something that moves often, and `hw_detect.detect_hardware` is a
+#: real subprocess spawn (50-500ms) that has no business running often.
+_HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
+
+_hardware_refresh_thread: threading.Thread | None = None
+
+
+def _hardware_refresh_tick() -> None:
+    """One probe-and-cache cycle — split out of `start_hardware_refresh`'s
+    loop so a test can drive it directly with `hw_detect.refresh_hardware`
+    monkeypatched, the same way `reap_idle(now)` is tested without ever
+    starting `start_reaper`'s thread (see `tests/conftest.py`'s
+    `_no_ai_idle_reaper_thread`, which documents why no test asserts a
+    THREAD gets spawned)."""
+    hw_detect.refresh_hardware(ram_gb=fit.machine_ram_gb())
+
+
+def start_hardware_refresh() -> None:
+    """Start the background GPU/VRAM-detection thread, once per process —
+    the missing wiring `hw_detect.py`'s own docstring assumes exists:
+    `detect_hardware()`/`refresh_hardware()` are a slow subprocess probe
+    (`nvidia-smi`/`rocm-smi`/a PowerShell WMI+registry query/`sysctl`) that
+    must never run on the verdict path, so `fit.py` and `speed.py` only ever
+    read `hw_detect.cached_hardware()` — but until SOMETHING calls
+    `refresh_hardware`, that cache never gets written, and both modules
+    silently take their "no hardware known" branch forever. This is that
+    something.
+
+    Idempotent via a module-level handle, for the identical reason
+    `start_reaper` is: the startup hook that calls this (`server/app.py`)
+    can run more than once across the test suite's many `create_app` calls
+    in one process.
+
+    **One probe fires immediately**, unlike the reaper's sleep-then-tick
+    shape — a fit verdict on the very first catalog request after server
+    startup should not have to wait `_HARDWARE_REFRESH_INTERVAL_S` for a
+    number to exist at all. The thread then sleeps and re-probes on that
+    interval, forever. A failed tick (no vendor tool found, a hung spawn
+    past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
+    logged and never kills the loop — the next tick tries again.
+    """
+    global _hardware_refresh_thread
+    if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hardware_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hardware-refresh tick failed")
+            time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
+
+    _hardware_refresh_thread = threading.Thread(
+        target=run, name="ai-hardware-refresh", daemon=True)
+    _hardware_refresh_thread.start()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
