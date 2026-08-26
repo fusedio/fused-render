@@ -191,12 +191,13 @@
   /* Scrolling expands the video across the full measure while the text
      lifts away; then the section releases and scrolls off normally. */
   @media (min-width: 861px) {
-    html.anim .hero-scroll { height: 175vh; }
-    /* The stage hugs its content: a 100vh pin left dead bands above and
-       below the 16:9 video once it expanded. */
+    /* Full-viewport pin so nothing empty trails the hero; the scroll span
+       below is what makes the expansion feel unhurried. */
+    html.anim .hero-scroll { height: 260vh; }
     html.anim .hero-stage {
-      position: sticky; top: 0;
-      padding: clamp(16px, 3vh, 40px) 0;
+      position: sticky; top: 0; height: 100vh;
+      padding: 64px 0 clamp(16px, 4vh, 48px);
+      box-sizing: border-box;
     }
     html.anim .hero-left { will-change: transform, opacity; }
     html.anim .hero-media { will-change: transform; }
@@ -2089,8 +2090,11 @@
       var r = scroller.getBoundingClientRect();
       var span = r.height - innerHeight;
       target = span > 0 ? Math.max(0, Math.min(1, -r.top / span)) : 0;
-      var mw = media.offsetWidth;
-      smax = mw > 0 ? stage.clientWidth / mw : 1;
+      var mw = media.offsetWidth, mh = media.offsetHeight;
+      var byW = mw > 0 ? stage.clientWidth / mw : 1;
+      // leave a little air so the expanded video never clips at the top
+      var byH = mh > 0 ? (stage.clientHeight - 96) / mh : 1;
+      smax = Math.max(1, Math.min(byW, byH));
     }
     addEventListener("scroll", measure, { passive: true });
     addEventListener("resize", measure, { passive: true });
