@@ -131,7 +131,7 @@ def test_engine_id_for_differs_per_folder(tmp_path):
 
 def test_version_for_changes_with_pyproject_bytes(tmp_path):
     folder = _make_app(tmp_path)
-    interpreter = "/usr/bin/python3"
+    interpreter = sys.executable  # must exist: version_for now os.stats it
     v1 = background_apps.version_for(str(folder), interpreter)
     (folder / "pyproject.toml").write_text(
         (folder / "pyproject.toml").read_text() + "\nextra = 1\n")
@@ -141,7 +141,7 @@ def test_version_for_changes_with_pyproject_bytes(tmp_path):
 
 def test_version_for_changes_with_daemon_mtime(tmp_path):
     folder = _make_app(tmp_path)
-    interpreter = "/usr/bin/python3"
+    interpreter = sys.executable  # must exist: version_for now os.stats it
     v1 = background_apps.version_for(str(folder), interpreter)
     daemon = folder / "daemon.py"
     new_time = time.time() + 5
@@ -150,11 +150,67 @@ def test_version_for_changes_with_daemon_mtime(tmp_path):
     assert v1 != v2
 
 
-def test_version_for_changes_with_interpreter(tmp_path):
+def test_version_for_changes_with_interpreter_path(tmp_path):
+    # Two DIFFERENT files at two different paths (version_for now requires
+    # the interpreter to actually exist — os.stat, mirroring the daemon).
+    # Bogus paths like "/usr/bin/python3" broke this on Linux CI, where
+    # /usr/bin/python3 and /usr/bin/python3.12 are symlinks to the identical
+    # file and the old realpath-based digest collapsed them to one identity.
     folder = _make_app(tmp_path)
-    v1 = background_apps.version_for(str(folder), "/usr/bin/python3")
-    v2 = background_apps.version_for(str(folder), "/usr/bin/python3.12")
+    interp_a = tmp_path / "python_a"
+    interp_a.write_bytes(b"cpython")
+    interp_b = tmp_path / "python_b"
+    interp_b.write_bytes(b"cpython")  # identical bytes, different PATH
+    v1 = background_apps.version_for(str(folder), str(interp_a))
+    v2 = background_apps.version_for(str(folder), str(interp_b))
     assert v1 != v2
+
+
+def test_version_for_changes_with_interpreter_mtime_at_the_same_path(tmp_path):
+    # Code-review fix (D495 revised): the exact upgrade-rot case this digest
+    # exists for is the packaged interpreter rewritten IN PLACE at the same
+    # path — same path, same version string, different bytes/mtime. A
+    # path-only component (realpath'd or not) cannot see that; the
+    # interpreter now gets an os.stat, exactly like the daemon file two lines
+    # above it (test_version_for_changes_with_daemon_mtime's identical shape).
+    folder = _make_app(tmp_path)
+    interpreter = tmp_path / "python"
+    interpreter.write_bytes(b"cpython")
+    v1 = background_apps.version_for(str(folder), str(interpreter))
+    new_time = time.time() + 5
+    os.utime(interpreter, (new_time, new_time))
+    v2 = background_apps.version_for(str(folder), str(interpreter))
+    assert v1 != v2
+
+
+def test_version_for_does_not_collapse_symlinked_venv_pythons_via_realpath(tmp_path):
+    # The regression guard against realpath coming back: two different
+    # venvs' bin/python are each a symlink to the SAME base CPython (the
+    # normal shape of a venv), which is exactly what made the old
+    # os.path.realpath(interpreter) component collapse two distinct venvs
+    # into one identity on Linux (/usr/bin/python3 -> /usr/bin/python3.12,
+    # both -> the same real binary).
+    folder = _make_app(tmp_path)
+    base = tmp_path / "base_python"
+    base.write_bytes(b"cpython")
+    venv_a_bin = tmp_path / "venv_a" / "bin"
+    venv_a_bin.mkdir(parents=True)
+    python_a = venv_a_bin / "python"
+    python_a.symlink_to(base)
+    venv_b_bin = tmp_path / "venv_b" / "bin"
+    venv_b_bin.mkdir(parents=True)
+    python_b = venv_b_bin / "python"
+    python_b.symlink_to(base)
+
+    v1 = background_apps.version_for(str(folder), str(python_a))
+    v2 = background_apps.version_for(str(folder), str(python_b))
+    assert v1 != v2
+
+
+def test_version_for_raises_on_missing_interpreter(tmp_path):
+    folder = _make_app(tmp_path)
+    with pytest.raises(OSError):
+        background_apps.version_for(str(folder), str(tmp_path / "no_such_python"))
 
 
 def test_version_for_raises_on_missing_daemon_file(tmp_path):

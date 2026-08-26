@@ -115,26 +115,51 @@ def engine_id_for(folder: str) -> str:
 
 def version_for(folder: str, interpreter: str) -> str:
     """Digest of the manifest's declaring bytes, the daemon file's mtime/size,
-    and the interpreter path. Changing any of the three must retire a running
-    child rather than reuse it: a `pyproject.toml` edit, a daemon.py edit, or
-    a bundled-CPython swap across an app upgrade (the interpreter is what
-    fixes the OpenWhisper upgrade-rot class — a stale venv reused against a
-    new interpreter).
+    and the INTERPRETER's own path-plus-identity (mtime/size at that path, not
+    a realpath). Changing any of the three must retire a running child rather
+    than reuse it: a `pyproject.toml` edit, a daemon.py edit, or a
+    bundled-CPython swap across an app upgrade (this is what fixes the
+    OpenWhisper upgrade-rot class — a stale venv reused against a new
+    interpreter).
 
-    Raises OSError if the manifest is missing/invalid or the daemon file does
-    not exist — a "dead manifest", which callers (the enable endpoint, the
-    startup resurrection hook) must treat as a failure to skip, not fall back
-    on a stale version for."""
+    D495 revised (2026-08-26 code review): the interpreter component used to
+    be `os.path.realpath(interpreter)` alone, which broke two ways. First, a
+    realpath DESTROYS venv identity rather than naming it: a venv's `bin/
+    python` is a symlink to its base CPython, so realpath collapses every
+    venv built on the same base interpreter into one identity, and two
+    different app folders' venvs contributed an IDENTICAL digest component —
+    caught by CI (Linux's `/usr/bin/python3` and `/usr/bin/python3.12` are
+    symlinks to the same file; macOS/Windows runners happened not to alias
+    the two paths the test used, so it passed everywhere else). Second, a
+    path alone — realpath'd or not — cannot see the exact upgrade-rot case
+    D495 exists for: the packaged app's own interpreter gets rewritten IN
+    PLACE at the same path on upgrade (confirmed against a real install: same
+    path, same `--version` string, different bytes, mtime moved). So the
+    interpreter now gets the identical treatment the daemon file already gets
+    two lines above it — the RAW path (no realpath) plus an `os.stat` of the
+    file actually at that path, mtime and size both — which catches an
+    in-place rewrite the same way it already catches a daemon.py edit.
+
+    Raises OSError if the manifest is missing/invalid, the daemon file does
+    not exist, or the interpreter does not exist — all "dead manifest" /
+    "dead bring-up" cases, which callers (the enable endpoint's `_resolve`,
+    the startup resurrection hook) must treat as a failure to skip, not fall
+    back on a stale version for. Both already `os.path.isfile(interpreter)`
+    BEFORE calling this, so the interpreter `os.stat` below should not raise
+    in practice — this is the same TOCTOU-tolerant stance the daemon stat
+    already has, not a new trust assumption."""
     manifest = load_manifest(folder)
     if manifest is None:
         raise OSError(f"{folder!r} has no valid background-app manifest")
     with open(os.path.join(manifest.folder, "pyproject.toml"), "rb") as f:
         pyproject_bytes = f.read()
-    st = os.stat(manifest.daemon)
+    daemon_st = os.stat(manifest.daemon)
+    interp_st = os.stat(interpreter)
     h = hashlib.sha256()
     h.update(pyproject_bytes)
-    h.update(f"{st.st_mtime_ns}:{st.st_size}".encode("utf-8"))
-    h.update(os.path.realpath(interpreter).encode("utf-8"))
+    h.update(f"{daemon_st.st_mtime_ns}:{daemon_st.st_size}".encode("utf-8"))
+    h.update(interpreter.encode("utf-8"))
+    h.update(f"{interp_st.st_mtime_ns}:{interp_st.st_size}".encode("utf-8"))
     return h.hexdigest()
 
 
