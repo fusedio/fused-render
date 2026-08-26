@@ -18,6 +18,7 @@ missing).
 import asyncio
 import json
 import os
+import threading
 import time
 
 from fastapi import FastAPI
@@ -40,6 +41,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_health import router as claude_health_router
@@ -336,6 +338,40 @@ def create_app(start_dir: str) -> FastAPI:
 
         engine.warm_unless_forced_builtin()
 
+    # Background apps (background_apps.py): resurrect every autostart-opted-in
+    # app's daemon at server startup. A daemon thread, not the create_app body
+    # or an unthreaded await here — same D228 rationale as
+    # _startup_sync_user_plugin below: each bring-up is a subprocess spawn
+    # plus a bootstrap wait (BOOTSTRAP_TIMEOUT_S), nowhere near cheap enough
+    # for the pre-bind path, and one folder's failure (dead manifest, project
+    # venv not built, a spawn error) must never delay server readiness or the
+    # other apps' bring-up — `resurrect_autostart` already logs-and-skips
+    # those itself. Autostart is opt-in (D511): only paths explicitly present
+    # in the autostart store come back here — a `start()` with no `autostart`
+    # call never persisted anything and does NOT return at the next launch.
+    #
+    # `_background_apps_shutdown` is a per-app-instance Event (a local here,
+    # not a module global): a bring-up only registers its child once `_spawn`
+    # returns, up to BOOTSTRAP_TIMEOUT_S (120s) later, so a shutdown landing
+    # mid-spawn would otherwise have `engine_host.stop_all()` walk a
+    # `_children` that does not hold it yet, and the child would start
+    # running unowned right after `stop_all()` already finished. Setting this
+    # on shutdown lets `resurrect_autostart`'s own thread catch that — see its
+    # docstring — for exactly the race a code review caught (2026-08-26).
+    _background_apps_shutdown = threading.Event()
+
+    @app.on_event("startup")
+    async def _startup_resurrect_background_apps():
+        from fused_render import background_apps
+
+        threading.Thread(target=background_apps.resurrect_autostart,
+                         args=(_background_apps_shutdown,),
+                         name="background-apps-resurrect", daemon=True).start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_background_apps_resurrection():
+        _background_apps_shutdown.set()
+
     # The published `fusedio/fused-render` plugin, installed or refreshed in
     # the user's own Claude config (user_plugin.py, D492) — for sessions
     # fused-render did NOT launch, the user's own `claude` in a terminal or
@@ -534,6 +570,11 @@ def create_app(start_dir: str) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # Background apps (routers/background_apps.py): enable/disable/stop/
+    # restart/status for a folder's declared long-running daemon, backed by
+    # engine_host's "background" child kind + background_apps.py's enabled
+    # store. See the startup resurrection hook below.
+    app.include_router(background_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
