@@ -15,7 +15,7 @@ child's environment only (`engine_host.py`'s `_spawn_env`, alongside
 module reads that var, synthesizes a stand-in `html` path inside the folder
 (the server only ever takes its `dirname`, so the leaf name is arbitrary —
 `"index.html"` is used because that is what a real page would be called), and
-speaks the same endpoints a page's `fused.app.*` calls speak.
+speaks the same endpoints a page's `fused.daemon.*` calls speak.
 
 **Stdlib only, no `import fused_render`** — same constraint as `fused_ai.py`
 and `appenv.py` beside this file (see the `adding-a-shared-template-utility`

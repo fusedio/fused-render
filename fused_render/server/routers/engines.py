@@ -87,7 +87,7 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
         return error
     body = await request.body() if request.method == "POST" else b""
     # Per-kind retry policy on a POST: a background app's proxied POST
-    # (fused.app.call) can run arbitrary side-effecting daemon code, the same
+    # (fused.daemon.call) can run arbitrary side-effecting daemon code, the same
     # shape as the warm /api/engine worker's own /call — which already passes
     # at_most_once=True so a heal-restart surfaces the failure instead of
     # silently re-sending it. A template daemon's POST traffic (e.g. a

@@ -7,9 +7,9 @@ its version, and honors `/quit` for a graceful stop. Real background apps are
 free to serve whatever else they like on top of this.
 
 Also serves POST `/count` — a side-effecting endpoint (an in-memory counter)
-that is what `fused.app.call()` actually exercises: the runtime hardcodes
+that is what `fused.daemon.call()` actually exercises: the runtime hardcodes
 POST, so a fixture with only `do_GET` (the original shape here) would answer
-every real `fused.app.call()` with a 501 and never actually get exercised by
+every real `fused.daemon.call()` with a 501 and never actually get exercised by
 the JS API it is the reference implementation for. `/count`'s count is also
 what a retry-safety test reads: a re-sent POST (the exact failure a heal
 retrying an at-most-once call would cause) shows up as the counter advancing
@@ -88,7 +88,7 @@ class _Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or "0")
         raw = self.rfile.read(length) if length else b""
         if path == "/count":
-            # The one side-effecting endpoint: fused.app.call("/count", body)
+            # The one side-effecting endpoint: fused.daemon.call("/count", body)
             # hits this. Echoes the posted body back alongside the new count
             # so a test can also confirm a POST body actually arrived intact.
             global _count

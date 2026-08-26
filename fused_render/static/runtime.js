@@ -7,7 +7,7 @@
  *     stale slider scrubs with no author effort. opts.key regroups the channel;
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
- *   fused.app.status() / enable() / disable() / stop() / restart() -> Promise
+ *   fused.daemon.status() / enable() / disable() / stop() / restart() -> Promise
  *     Control surface for a FOLDER's declared background daemon
  *     (server/routers/background_apps.py), not this page's own script — a
  *     folder opts in with a `[tool.fused-render.app]` manifest in its
@@ -21,12 +21,12 @@
  *     resurrection hook (or a later enable()/restart()) brings it back;
  *     `disable()` kills it AND turns it off, so it stays down across
  *     restarts too. `restart()` respawns the currently-enabled daemon.
- *   fused.app.call(path, body?) -> Promise<any>
+ *   fused.daemon.call(path, body?) -> Promise<any>
  *     Reach the running daemon directly, proxied through the same
  *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
  *     already rides. Resolves the engine_id from a cached status() first
  *     (calling status() itself if none is cached yet) — rejects if the app
- *     was never enabled. Local-only, like the rest of fused.app — not
+ *     was never enabled. Local-only, like the rest of fused.daemon — not
  *     available on hosted/exported pages (see the file header below).
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
@@ -2295,8 +2295,8 @@
     };
   }
 
-  // ---- background apps (fused.app, server/routers/background_apps.py) ------
-  // fused.app is the browser control surface for a FOLDER's declared
+  // ---- background apps (fused.daemon, server/routers/background_apps.py) ---
+  // fused.daemon is the browser control surface for a FOLDER's declared
   // long-running daemon, not this page's own script — every method sends the
   // page's own path as `html` (same derivation as fused.engine above), and the
   // server resolves which app folder that page belongs to, exactly like
@@ -2310,28 +2310,28 @@
   // daemon but leaves it enabled, so the server's startup hook (or a later
   // `enable`/`restart`) brings it back; `disable` kills it AND turns it off,
   // so it stays down across restarts too.
-  // `_appEngineId` is a hash of the FOLDER, so `status()` always resolves one
+  // `_daemonEngineId` is a hash of the FOLDER, so `status()` always resolves one
   // whether or not the app is enabled — it names WHICH app, not whether one is
-  // running. `_appKnownRunning` is the separate, actually-gating fact
+  // running. `_daemonKnownRunning` is the separate, actually-gating fact
   // (`call()`'s guard reads this, never engine_id's presence, which is always
   // truthy and so cannot tell "not enabled" from "enabled and running").
-  let _appEngineId = null;
-  let _appKnownRunning = false;
+  let _daemonEngineId = null;
+  let _daemonKnownRunning = false;
 
-  function _noteAppPayload(data, marksRunning) {
-    if (data && data.engine_id) _appEngineId = data.engine_id;
+  function _noteDaemonPayload(data, marksRunning) {
+    if (data && data.engine_id) _daemonEngineId = data.engine_id;
     if (marksRunning !== undefined) {
       // enable()/restart() succeeding means ensure_background returned a live
       // child (both 502 on any spawn failure, so a 200 here IS "running");
       // disable()/stop() succeeding means the daemon is now definitely down.
-      _appKnownRunning = marksRunning;
+      _daemonKnownRunning = marksRunning;
     } else if (data && typeof data.running === "boolean") {
       // status()'s own report of the live-child boolean.
-      _appKnownRunning = data.running;
+      _daemonKnownRunning = data.running;
     }
   }
 
-  function _appPost(path, marksRunning) {
+  function _daemonPost(path, marksRunning) {
     return fetch(path, {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
@@ -2342,17 +2342,17 @@
           // A failed enable/restart is not a state change either way — the
           // daemon's actual state is whatever it already was, so only note
           // the engine_id (still useful for status()), never marksRunning.
-          _noteAppPayload(data, undefined);
+          _noteDaemonPayload(data, undefined);
           const err = new Error((data && data.error) || `${path} failed`);
           throw err;
         }
-        _noteAppPayload(data, marksRunning);
+        _noteDaemonPayload(data, marksRunning);
         return data;
       })
     );
   }
 
-  function appStatus() {
+  function daemonStatus() {
     const html = encodeURIComponent(ownQuery("path") || "");
     return fetch(`/api/apps/background/status?html=${html}`).then((res) =>
       res.json().then((data) => {
@@ -2360,31 +2360,31 @@
           const err = new Error((data && data.error) || "app status failed");
           throw err;
         }
-        _noteAppPayload(data);
+        _noteDaemonPayload(data);
         return data;
       })
     );
   }
 
-  function appEnable() {
-    return _appPost("/api/apps/background/enable", true);
+  function daemonEnable() {
+    return _daemonPost("/api/apps/background/enable", true);
   }
 
-  function appDisable() {
-    return _appPost("/api/apps/background/disable", false);
+  function daemonDisable() {
+    return _daemonPost("/api/apps/background/disable", false);
   }
 
-  function appStop() {
-    return _appPost("/api/apps/background/stop", false);
+  function daemonStop() {
+    return _daemonPost("/api/apps/background/stop", false);
   }
 
-  function appRestart() {
-    return _appPost("/api/apps/background/restart", true);
+  function daemonRestart() {
+    return _daemonPost("/api/apps/background/restart", true);
   }
 
-  function appCall(path, body) {
+  function daemonCall(path, body) {
     const doCall = () =>
-      fetch(`/api/engines/${_appEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
+      fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
         method: "POST",
         headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
         body: JSON.stringify(body || {}),
@@ -2394,22 +2394,22 @@
     // — learn engine_id AND whether it's actually running from one status()
     // fetch before deciding. Once something is cached, trust it rather than
     // re-fetching on every call.
-    const ready = _appEngineId !== null ? Promise.resolve() : appStatus();
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
     return ready.then(() => {
-      if (!_appKnownRunning) {
-        // Gated on the payload's running/enabled fact, not on _appEngineId's
+      if (!_daemonKnownRunning) {
+        // Gated on the payload's running/enabled fact, not on _daemonEngineId's
         // presence — engine_id is a hash of the folder and is always
         // populated by status(), enabled or not, so checking it alone can
         // never catch "never enabled" (the proxy's own 409 in that case is a
         // "register the layer again" message meaningless to an app author).
         return Promise.reject(
-          new Error("fused.app.call: no running background app for this page " +
+          new Error("fused.daemon.call: no running background app for this page " +
                     "(call enable() first)")
         );
       }
       return doCall().then(({ data, httpOk }) => {
         if (!httpOk) {
-          const err = new Error((data && data.error) || "fused.app.call failed");
+          const err = new Error((data && data.error) || "fused.daemon.call failed");
           throw err;
         }
         return data;
@@ -2417,13 +2417,13 @@
     });
   }
 
-  const app = {
-    status: appStatus,
-    enable: appEnable,
-    disable: appDisable,
-    stop: appStop,
-    restart: appRestart,
-    call: appCall,
+  const daemon = {
+    status: daemonStatus,
+    enable: daemonEnable,
+    disable: daemonDisable,
+    stop: daemonStop,
+    restart: daemonRestart,
+    call: daemonCall,
   };
 
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
@@ -4685,7 +4685,7 @@
     env: "local",
     runPython,
     engine,
-    app,
+    daemon,
     rawUrl,
     stat,
     readFile,

@@ -820,7 +820,7 @@ def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
         assert proxied.status_code == 200
         assert proxied.json()["ok"] is True
 
-        # The documented client API (fused.app.call) hardcodes POST — this is
+        # The documented client API (fused.daemon.call) hardcodes POST — this is
         # what a real call from the runtime actually exercises, not just the
         # GET path above. Code-review fix: the fixture used to answer every
         # POST with a 501 (do_GET only), so this path was never under test.
@@ -841,7 +841,7 @@ def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
 
 def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatch):
     # Code-review fix: a background app's proxied POST can run side-effecting
-    # daemon code (fused.app.call), the same shape as the warm /api/engine
+    # daemon code (fused.daemon.call), the same shape as the warm /api/engine
     # worker's own /call — which already guards a heal-restart from silently
     # re-sending it via at_most_once=True. Pin the routing decision directly
     # rather than relying on flaky real-network-failure simulation.

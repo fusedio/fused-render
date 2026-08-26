@@ -148,7 +148,7 @@ async def api_background_restart(body: dict = Body(...),
     was `stop()`ped, or this is the first bring-up after a server start where
     the resurrection hook hasn't reached it yet — `engine_host.restart` alone
     would raise "has never been started", an opaque 502 for a caller that
-    just did `fused.app.stop()` then `fused.app.restart()` (the documented
+    just did `fused.daemon.stop()` then `fused.daemon.restart()` (the documented
     stop/restart contract). Falls back to a fresh `ensure_background`
     bring-up in that case: the folder is enough to recompute the interpreter
     and version from scratch, same as `enable`."""

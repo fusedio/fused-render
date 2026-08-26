@@ -1,6 +1,6 @@
 ---
 name: fused-render-background-apps
-description: How to give a fused-render app folder its own long-running daemon that the server supervises — resident, exempt from idle-retire, killed with the server, resurrected at every server start while the user has it enabled. Use when a folder needs to keep running after its page closes, hold a persistent connection or in-memory state across calls, poll something on a timer, or run native desktop UI (tray icon, menu-bar item); when the user mentions "background app", "daemon", `[tool.fused-render.app]`, `kind = "background"`, `fused.app.status/enable/disable/stop/restart/call`, or asks why a warm worker "keeps dying" after 15 minutes idle.
+description: How to give a fused-render app folder its own long-running daemon that the server supervises — resident, exempt from idle-retire, killed with the server, resurrected at every server start while the user has it enabled. Use when a folder needs to keep running after its page closes, hold a persistent connection or in-memory state across calls, poll something on a timer, or run native desktop UI (tray icon, menu-bar item); when the user mentions "background app", "daemon", `[tool.fused-render.app]`, `kind = "background"`, `fused.daemon.status/enable/disable/stop/restart/call`, or asks why a warm worker "keeps dying" after 15 minutes idle.
 ---
 
 # Background apps: a folder's own long-running daemon
@@ -45,11 +45,11 @@ Your `daemon.py` is a plain script, run directly as `[interpreter, daemon.py, --
 5. **Answer `GET /ping`** with `{"ok": true, "version": <the --version you were given>}`. `_spawn`'s bootstrap wait polls this after the status file lands, and `ensure_background`'s reuse check pings it on every subsequent call — a `/ping` that returns the wrong `version` string is treated as a stale child and respawned.
 6. **Answer `GET /quit`** by starting `shutdown()` on a separate thread (never call `server.shutdown()` from inside the request handler thread that's serving it — it deadlocks `ThreadingHTTPServer`). `stop()`/`disable()`/a respawn go through `engine_host`'s own SIGTERM→SIGKILL tree-kill (`_kill_tree`), not `/quit` — nothing in the shipped code calls it — but it costs nothing to implement and is a cleaner exit path for your own tooling.
 
-Everything else — what routes you serve, what state you hold, what background threads you run — is yours. The fixture also serves `POST /count` as a worked example of the request shape `fused.app.call()` actually sends (a JSON body, POST only — the runtime hardcodes the verb).
+Everything else — what routes you serve, what state you hold, what background threads you run — is yours. The fixture also serves `POST /count` as a worked example of the request shape `fused.daemon.call()` actually sends (a JSON body, POST only — the runtime hardcodes the verb).
 
 ## Calling the background-apps API about yourself (D505)
 
-Every `fused.app` method sends the caller's own page path as `html`, which
+Every `fused.daemon` method sends the caller's own page path as `html`, which
 the server turns into an app folder server-side. Your daemon has no page and
 no `html` path — so before D505 it had no way to ask the server anything
 about itself: not "am I still enabled", not "stop me", not "turn me off".
@@ -79,15 +79,25 @@ running as an engine-spawned background daemon) and
 `background_app.ServerNotRunning`/`background_app.BackgroundAppError` for
 the same reasons `fused_ai`'s equivalents raise.
 
-## Driving it from the page: `fused.app`
+## Driving it from the page: `fused.daemon`
+
+The browser namespace is `fused.daemon` (D506) — the HTTP endpoints underneath
+it (`/api/apps/background/*`) and the Python modules (`background_apps.py`,
+`background_app.py`) still say "background". That split is deliberate, not a
+half-finished rename: "app" already means three other things here (an
+`fused-app`-tagged folder, `ensure_app`'s warm worker `Child.kind`, the
+`/apps` hub), so `fused.app.enable()` read as "enable this app" when it meant
+"install a resident daemon". `daemon` is the noun already used everywhere
+else — the manifest's `daemon = "daemon.py"` key, the file itself, and
+`engine_host`'s own vocabulary — so only the author-facing JS name changed.
 
 ```js
-await fused.app.enable();          // persist "keep this running" + start it now
-const st = await fused.app.status(); // {enabled, running, pid, version, engine_id}
-const res = await fused.app.call("/count", { hello: "world" }); // POST, proxied to the daemon
-await fused.app.stop();            // kill it now, stays enabled
-await fused.app.restart();         // respawn
-await fused.app.disable();         // kill it AND un-enable
+await fused.daemon.enable();          // persist "keep this running" + start it now
+const st = await fused.daemon.status(); // {enabled, running, pid, version, engine_id}
+const res = await fused.daemon.call("/count", { hello: "world" }); // POST, proxied to the daemon
+await fused.daemon.stop();            // kill it now, stays enabled
+await fused.daemon.restart();         // respawn
+await fused.daemon.disable();         // kill it AND un-enable
 ```
 
 Every method except `call` sends **this page's own path**, never a folder path — the server resolves which app folder the page belongs to server-side, the same `resolve_py` pattern `/api/run`/`/api/engine` already use, so there's no path-typed API to defend. `call(path, body)` reaches the daemon directly through `/api/engines/<engine_id>/proxy/<path>`, resolving `engine_id` from a cached `status()` call (fetching one first if none is cached yet) and rejecting client-side if the app isn't known to be running — call `enable()` first.
@@ -113,7 +123,7 @@ these — there is no fifth path:
    killed EXTERNALLY (a `kill`, a crash, a tray "Quit" that never talks to
    the server), the `Child` stays registered in `engine_host._children` —
    nothing ever popped it out. The next proxied call
-   (`fused.app.call(...)`, `/api/engines/<id>/proxy/...`) finds a `Child`
+   (`fused.daemon.call(...)`, `/api/engines/<id>/proxy/...`) finds a `Child`
    that doesn't answer and heals by respawning it (`engine_forward.py`).
    **`stop()` deliberately does not have this problem**: it pops the child
    out of `_children` (`engine_host.stop`) before killing it, so a proxied
@@ -137,7 +147,7 @@ daemon uses to do that about itself.
 
 ## Enablement is the user's decision, not yours
 
-Opening a folder, or even the page loading and calling `fused.app.status()`, **never starts or persists anything**. `enabled_paths()` reads `<home_dir()>/background_apps.json` — the *only* thing "enabled" means — and the startup resurrection hook only resurrects folders already in that store. Your daemon comes up when something explicitly calls `POST /api/apps/background/enable` (i.e. `fused.app.enable()`), typically from a button the user clicks, never from page load. Do not call `enable()` in an `onload`/init path — that would install a permanent, server-launch-surviving daemon on someone's machine the moment they open your folder, without them asking for it.
+Opening a folder, or even the page loading and calling `fused.daemon.status()`, **never starts or persists anything**. `enabled_paths()` reads `<home_dir()>/background_apps.json` — the *only* thing "enabled" means — and the startup resurrection hook only resurrects folders already in that store. Your daemon comes up when something explicitly calls `POST /api/apps/background/enable` (i.e. `fused.daemon.enable()`), typically from a button the user clicks, never from page load. Do not call `enable()` in an `onload`/init path — that would install a permanent, server-launch-surviving daemon on someone's machine the moment they open your folder, without them asking for it.
 
 ## Authoring conventions: being one of many apps on a user's machine
 
@@ -145,28 +155,28 @@ Everything above is mechanics — what the engine does. This section is what an 
 
 ### Lead rule: never call `enable()` on page load
 
-An app going from off to resident-daemon-that-survives-restarts is the user's decision, made by clicking something. A page whose script calls `fused.app.enable()` unconditionally takes that decision away from them the moment its JS runs — which is not only "the user opened my folder."
+An app going from off to resident-daemon-that-survives-restarts is the user's decision, made by clicking something. A page whose script calls `fused.daemon.enable()` unconditionally takes that decision away from them the moment its JS runs — which is not only "the user opened my folder."
 
-**This is a live hazard, not a theoretical one — verified against the code, not assumed.** The home page's "Fused Apps" strip and the `/apps` hub render a *live picture* of each app, not a static screenshot, whenever the app has no authored `preview.png`: `AppPreviewCard` mounts the app's own `entry_html` in an iframe (`frontend/src/platform/ui/AppPreviewCard.tsx`, the `liveSrc`/`wantsLive` logic) once the card is near the viewport, and even a card that *does* have a `preview.png` swaps to the same live iframe on hover. That iframe's sandbox is `"allow-scripts allow-same-origin"` (`frontend/src/platform/lib/frame-focus.ts:180-181`, `THUMB_SEAL`) — scripts run. Nothing in `runtime.js`'s `fused.app.enable()` (`fused_render/static/runtime.js`) checks the `_preview=1` URL flag the shell stamps onto these frames (`frontend/src/platform/lib/router.ts`'s `PREVIEW_PARAM`) before sending the POST — that flag exists so the built-in `fusedapp` template can suppress a recorded "open" (`fused_render/templates/fusedapp/template.html`), and nothing extends that suppression to `fused.app.enable()`. So: an app that calls `enable()` on load gets it called every time its card scrolls into view or is hovered in a listing — someone merely *browsing* apps, never opening one, silently installs a resident daemon that survives the page, outlives the session, and comes back at every server start (the "Server start" resurrection path above applies to it exactly like a deliberately-enabled app).
+**This is a live hazard, not a theoretical one — verified against the code, not assumed.** The home page's "Fused Apps" strip and the `/apps` hub render a *live picture* of each app, not a static screenshot, whenever the app has no authored `preview.png`: `AppPreviewCard` mounts the app's own `entry_html` in an iframe (`frontend/src/platform/ui/AppPreviewCard.tsx`, the `liveSrc`/`wantsLive` logic) once the card is near the viewport, and even a card that *does* have a `preview.png` swaps to the same live iframe on hover. That iframe's sandbox is `"allow-scripts allow-same-origin"` (`frontend/src/platform/lib/frame-focus.ts:180-181`, `THUMB_SEAL`) — scripts run. Nothing in `runtime.js`'s `fused.daemon.enable()` (`fused_render/static/runtime.js`) checks the `_preview=1` URL flag the shell stamps onto these frames (`frontend/src/platform/lib/router.ts`'s `PREVIEW_PARAM`) before sending the POST — that flag exists so the built-in `fusedapp` template can suppress a recorded "open" (`fused_render/templates/fusedapp/template.html`), and nothing extends that suppression to `fused.daemon.enable()`. So: an app that calls `enable()` on load gets it called every time its card scrolls into view or is hovered in a listing — someone merely *browsing* apps, never opening one, silently installs a resident daemon that survives the page, outlives the session, and comes back at every server start (the "Server start" resurrection path above applies to it exactly like a deliberately-enabled app).
 
-This was a real bug: `Sina/OpenWhisper/index.html`'s menu-bar control used to call `fused.app.enable()` unconditionally on load. The daemon came back every time the page rendered — including in a listing preview — which made the tray's "Turn Off" item effectively unreachable: the user turned it off, the page (or a preview of it) rendered again, and it was back.
+This was a real bug: `Sina/OpenWhisper/index.html`'s menu-bar control used to call `fused.daemon.enable()` unconditionally on load. The daemon came back every time the page rendered — including in a listing preview — which made the tray's "Turn Off" item effectively unreachable: the user turned it off, the page (or a preview of it) rendered again, and it was back.
 
 ```js
 // Wrong: fires the instant this script runs, including inside a display-only
 // preview iframe that scrolled into view. The user never clicked anything.
-fused.app.enable();
+fused.daemon.enable();
 
 // Right: page load only reads and renders the current state. Enabling is
 // something a control does, in response to a click.
 async function refreshMenubar() {
-  const st = await fused.app.status();       // {enabled, running, pid, ...}
+  const st = await fused.daemon.status();       // {enabled, running, pid, ...}
   render(st);                                 // see "Render all three states" below
 }
 refreshMenubar();
 
 toggleBtn.addEventListener("click", async () => {
   const turnOn = !toggleBtn.classList.contains("on");
-  turnOn ? await fused.app.enable() : await fused.app.disable();
+  turnOn ? await fused.daemon.enable() : await fused.daemon.disable();
   await refreshMenubar();
 });
 ```
@@ -175,16 +185,16 @@ toggleBtn.addEventListener("click", async () => {
 
 | On load | Allowed | Why |
 |---|---|---|
-| `fused.app.status()` | Yes | Read-only; does not spawn, persist, or kill anything. |
+| `fused.daemon.status()` | Yes | Read-only; does not spawn, persist, or kill anything. |
 | Rendering the result | Yes | Pure display logic. |
-| `fused.app.enable()` | No | Spawns a daemon and persists it — see above. |
-| `fused.app.restart()` | No | Same spawn as `enable()`; a page render is not a reason to bounce a daemon the user may be mid-use of. |
-| `fused.app.stop()` / `disable()` | No | Turning something the user has running *off* on a page render is exactly as surprising as turning it on — a load is not a "turn it off" click either. |
-| `fused.app.call(path, body)` | Only if it's a genuine read | `call()` proxies straight to the daemon's own HTTP surface (`engine_forward.py`); the runtime itself won't spawn on your behalf for it (client-side rejects if the app isn't known to be running — see `fused.app` above), but your daemon might still treat a given route as "start work," and nothing stops a page from calling that route on load. Treat routes that kick off work the same as `enable()`/`restart()`: gate them behind an explicit control, not a load path.
+| `fused.daemon.enable()` | No | Spawns a daemon and persists it — see above. |
+| `fused.daemon.restart()` | No | Same spawn as `enable()`; a page render is not a reason to bounce a daemon the user may be mid-use of. |
+| `fused.daemon.stop()` / `disable()` | No | Turning something the user has running *off* on a page render is exactly as surprising as turning it on — a load is not a "turn it off" click either. |
+| `fused.daemon.call(path, body)` | Only if it's a genuine read | `call()` proxies straight to the daemon's own HTTP surface (`engine_forward.py`); the runtime itself won't spawn on your behalf for it (client-side rejects if the app isn't known to be running — see `fused.daemon` above), but your daemon might still treat a given route as "start work," and nothing stops a page from calling that route on load. Treat routes that kick off work the same as `enable()`/`restart()`: gate them behind an explicit control, not a load path.
 
 ### Render all three states honestly
 
-`fused.app.status()` distinguishes **running** (`running: true`) from **enabled but not running** (`enabled: true, running: false` — stopped externally or via `stop()`, waiting for the next server start or an explicit `enable()`/`restart()`) from **off** (`enabled: false`). A page's UI should show all three, not collapse the last two:
+`fused.daemon.status()` distinguishes **running** (`running: true`) from **enabled but not running** (`enabled: true, running: false` — stopped externally or via `stop()`, waiting for the next server start or an explicit `enable()`/`restart()`) from **off** (`enabled: false`). A page's UI should show all three, not collapse the last two:
 
 - **Running** — the daemon is up right now.
 - **Enabled, not running** — "will come back" (at next server start, or on a click). Don't render this as broken or as an error; it's the ordinary state right after a `stop()`, or after any external kill the heal-on-proxy path hasn't repaired yet.
@@ -195,7 +205,7 @@ toggleBtn.addEventListener("click", async () => {
 A background app that runs native desktop UI (a tray icon, a menu-bar item) needs its own off switch there too, not only on the page — a user who never has the page open still needs a way to quit it. Two things follow directly from the stop-vs-disable section above:
 
 - Decide deliberately whether that control should call `stop()` ("quit for now, comes back at next server start or the next `enable()`") or `disable()` ("turn it off, stays off"). A tray "Quit" that means "stop bothering me until I ask again" should call `disable()`, not `stop()` — `stop()` alone is exactly what leaves an app that *looks* off silently resurrecting itself at the next launch.
-- That control must go through the server's own API — `fused.app.stop()`/`disable()` from the page, or `background_app.stop()`/`disable()` (`fused_render/templates/shared/background_app.py`) from inside the daemon itself — never a raw process kill (`terminate()`, `sys.exit()`, a bare `kill`). A raw kill is the *weakest* way to end a background app: it skips the `_children` bookkeeping `stop()` pops, so the next proxied call heals the daemon back to life (resurrection path 3 in "When does it come back?" above). This is the exact mechanism behind the OpenWhisper tray bug this skill section exists for.
+- That control must go through the server's own API — `fused.daemon.stop()`/`disable()` from the page, or `background_app.stop()`/`disable()` (`fused_render/templates/shared/background_app.py`) from inside the daemon itself — never a raw process kill (`terminate()`, `sys.exit()`, a bare `kill`). A raw kill is the *weakest* way to end a background app: it skips the `_children` bookkeeping `stop()` pops, so the next proxied call heals the daemon back to life (resurrection path 3 in "When does it come back?" above). This is the exact mechanism behind the OpenWhisper tray bug this skill section exists for.
 
 ### The daemon is a guest process: assume nothing about its own continuity
 
@@ -216,7 +226,7 @@ Three things follow from facts already established elsewhere in this skill, rest
 
 Nothing below is checked by any code path — a careless app can still do the wrong thing, and no test or manifest rule will catch it. This is a deliberate list, not an oversight: enforcing any of these is a separate decision for the user to make, not something this documentation pass adds code for.
 
-- Never calling `enable()`/`restart()` (or a work-starting `call()` route) on page load — nothing gates `fused.app.enable()` on the `_preview` flag or on any notion of user intent; it is a plain POST that fires whenever the calling script runs.
+- Never calling `enable()`/`restart()` (or a work-starting `call()` route) on page load — nothing gates `fused.daemon.enable()` on the `_preview` flag or on any notion of user intent; it is a plain POST that fires whenever the calling script runs.
 - Rendering all three `status()` states honestly, and specifically not presenting "off" as an error or a missing feature — purely a UI choice.
 - Exposing an in-app off switch (tray/menu-bar or otherwise) at all — nothing requires a background app with native UI to offer one.
 - Routing that off switch through `stop()`/`disable()` (or `background_app.py`'s equivalents) instead of a raw process kill — the heal-on-proxy resurrection path exists precisely because the engine tolerates a raw kill; it does not forbid one.
@@ -266,7 +276,7 @@ A daemon doing native desktop UI — a macOS menu-bar item, a Windows/Linux tray
 
 - Writing `daemon.py` to publish the status file AFTER calling `serve_forever()` → the parent's bootstrap poll never sees it in time, or worse, sees a port that isn't accepting connections yet; publish immediately after `bind()`, before serving.
 - Calling `server.shutdown()` from inside the request handler answering `/quit` → deadlocks `ThreadingHTTPServer`; shut down from a separate thread.
-- Expecting `fused.app.enable()` from page load to be harmless → it installs a server-launch-surviving daemon the user never asked for, and a display-only preview iframe (Home's app strip, the `/apps` hub) runs that same load path — see "Authoring conventions" above. Gate it behind an explicit user action.
+- Expecting `fused.daemon.enable()` from page load to be harmless → it installs a server-launch-surviving daemon the user never asked for, and a display-only preview iframe (Home's app strip, the `/apps` hub) runs that same load path — see "Authoring conventions" above. Gate it behind an explicit user action.
 - Ending a background app from a tray/menu-bar control with a raw process kill instead of `stop()`/`disable()` → the weakest way to quit it; skips the bookkeeping that keeps it from silently reviving on the next proxied call.
 - Rendering "enabled, not running" or "off" as an error/broken state instead of an ordinary one → both are expected, common states, not failures.
 - Treating `stop()` and `disable()` as the same action → `stop()` comes back at the next server start; `disable()` doesn't. A test (`test_api_stop_vs_disable_distinguished`) fails if this collapses.

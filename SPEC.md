@@ -9685,9 +9685,9 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506)
 
-A folder can declare a daemon that outlives any one page: `fused.app` (the
+A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
 + `server/routers/background_apps.py` (the server side) turn engine_host's
 existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
@@ -9751,7 +9751,7 @@ background apps are the third.
   logging-and-skipping a folder whose manifest went dead or whose project
   venv isn't built rather than letting one bad folder block the others or
   delay server readiness.
-- **`fused.app`** (`static/runtime.js`) is the browser's control surface for
+- **`fused.daemon`** (`static/runtime.js`) is the browser's control surface for
   a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
   variant of `runPython` for the PAGE's own script: `status()` / `enable()` /
   `disable()` / `stop()` / `restart()` all send the page's own path as
@@ -9760,7 +9760,12 @@ background apps are the third.
   already rides (`engine_forward` is engine-kind-agnostic), resolving the
   `engine_id` from a cached `status()` call. Local-only, like `fused.ai`,
   `fused.capture` and the rest of the local-only surface named in the file
-  header — not available on hosted/exported pages.
+  header — not available on hosted/exported pages. Named `fused.app` through
+  D505; renamed to `fused.daemon` (D506) to resolve a three-way collision on
+  "app" (an app-tagged folder, `ensure_app`'s warm worker, the `/apps` hub) —
+  the HTTP endpoints (`/api/apps/background/*`) and the Python modules
+  (`background_apps.py`, `background_app.py`) deliberately kept their
+  "background" naming; only the author-facing JS name changed.
 - **The `/apps` grid** decorates a card with a "running" badge
   (`getBackgroundAppsRunning`, `apps/builder/Apps.tsx`) through
   `AppPreviewCard`'s existing generic `badge` prop, using the same
