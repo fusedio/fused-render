@@ -177,7 +177,16 @@ export default function AppPage({
       if (e.isComposing || e.defaultPrevented) return;
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       if (isOverlayOpen()) return;
-      const el = document.activeElement;
+      const el = document.activeElement as HTMLElement | null;
+      // A text field keeps its caret keys — the sidebar holds one mid-rename
+      // (BookmarksSection's RenameInput), so "in the sidebar" is not enough.
+      if (
+        el &&
+        (el.tagName === "INPUT" ||
+          el.tagName === "TEXTAREA" ||
+          el.isContentEditable)
+      )
+        return;
       const onBody =
         !el || el === document.body || el === document.documentElement;
       const inSidebar = !!el && !!document.getElementById("sidebar")?.contains(el);
