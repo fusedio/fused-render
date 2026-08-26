@@ -1240,13 +1240,27 @@ def for_runner(code: str) -> list[dict]:
     (`catalog_overlay.apply`, SPEC AI-25) — an overlay row whose `id`
     matches a built-in one overrides it, a new `id` appends.
 
+    **The overlay is looked up under the same RESOLVED key `builtin` is**
+    (code review finding 3) — `_SHARED_SUGGESTIONS.get(code, code)`, not the
+    raw `code` a caller passed in. `for_runner("llamacpp-text-vulkan")`
+    reads the built-in `llamacpp-text` list; an overlay keyed by `code`
+    alone would look for `models.json["llamacpp-text-vulkan"]` and find
+    nothing there even when the user wrote the entry under
+    `"llamacpp-text"` (the only name that appears anywhere in the built-in
+    curation a user could plausibly have copied), silently doing nothing on
+    every Vulkan/CUDA/ROCm/DirectML machine — exactly the scenario
+    `catalog_overlay.py`'s own module docstring gives as the motivating
+    example. Every hardware variant of a runner shares ONE overlay
+    namespace, matching how they already share one built-in list.
+
     A copy of the list, as it always was — callers append to it (the router's
     cached-repo union does) and must not be editing the curation.
     """
     from fused_render.ai import catalog_overlay
 
-    builtin = SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(code, code), ())
-    return catalog_overlay.apply(code, list(builtin))
+    canonical = _SHARED_SUGGESTIONS.get(code, code)
+    builtin = SUGGESTIONS.get(canonical, ())
+    return catalog_overlay.apply(canonical, list(builtin))
 
 
 def for_capability(capability: str) -> list[dict]:

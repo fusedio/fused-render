@@ -109,3 +109,31 @@ def test_for_runner_applies_the_overlay_live(monkeypatch):
     result = catalog.for_runner(code)
     assert result[0]["id"] == existing
     assert result[0]["note"] == "overlaid"
+
+
+def test_for_runner_applies_the_overlay_on_a_hardware_variant_runner(monkeypatch):
+    """Code review finding 3: `for_runner("llamacpp-text-vulkan")` reads the
+    BUILT-IN `llamacpp-text` list (`_SHARED_SUGGESTIONS`'s alias), so the
+    overlay lookup has to be keyed by that same resolved name — not the raw
+    variant code — or an overlay entry silently never applies on a Vulkan/
+    CUDA/ROCm/DirectML machine, exactly the example `catalog_overlay.py`'s
+    own module docstring gives as the motivating case."""
+    canonical = catalog._SHARED_SUGGESTIONS["llamacpp-text-vulkan"]
+    assert canonical == "llamacpp-text"
+    existing = catalog.SUGGESTIONS[canonical][0]["id"]
+    _write(monkeypatch, {canonical: [{"id": existing, "note": "overlaid"}]})
+    result = catalog.for_runner("llamacpp-text-vulkan")
+    assert result[0]["id"] == existing
+    assert result[0]["note"] == "overlaid"
+
+
+def test_for_runner_overlay_keyed_by_the_raw_variant_code_does_nothing(monkeypatch):
+    """The overlay file is keyed by the CANONICAL runner name — an entry
+    filed under the raw hardware-variant code (a plausible mistake for a
+    user who copied the code straight off a runner listing) is silently
+    inert, same as any other runner code the built-in list has no rows
+    under. Documents the boundary rather than asserting a crash."""
+    existing = catalog.SUGGESTIONS["llamacpp-text"][0]["id"]
+    _write(monkeypatch, {"llamacpp-text-vulkan": [{"id": existing, "note": "overlaid"}]})
+    result = catalog.for_runner("llamacpp-text-vulkan")
+    assert result[0].get("note") != "overlaid"
