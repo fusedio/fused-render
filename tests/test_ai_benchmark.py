@@ -555,13 +555,44 @@ def test_a_failing_unload_does_not_mask_the_measurement_error(bench, monkeypatch
 # -- _total_memory_bytes() Windows fallback (SPEC AI-20) ------------------------
 
 
+def _raising_sysconf(name):
+    raise OSError("no such sysconf value on this fake platform")
+
+
 def test_total_memory_bytes_falls_back_to_globalmemorystatusex_on_windows(
         monkeypatch):
     """`fit.machine_ram_gb` already has this fallback (`os.sysconf` does not
     exist on Windows); `benchmark._total_memory_bytes` did not, so `machine()`
     recorded `totalMemoryBytes: null` on every Windows run. Driven the same
     way `test_index_rank_concurrency.py` drives a Windows-only ctypes path on
-    non-Windows CI: force `sys.platform` and hand `ctypes.windll` a fake."""
+    non-Windows CI: force `sys.platform` and hand `ctypes.windll` a fake.
+
+    Runs correctly on BOTH kinds of host this suite executes on:
+
+    * **A POSIX machine simulating Windows** (the common case — this repo's
+      Mac/Linux CI lanes): `os.sysconf` is real here, so patching it over
+      needs no `raising=False`, but `ctypes.windll` does not exist on a real
+      POSIX `ctypes` module at all, so THAT patch needs it.
+    * **A genuine Windows host** (the `test-python-windows` CI lane): the
+      opposite is true — `os.sysconf` does not exist there, so patching
+      it over WITHOUT `raising=False` raised `AttributeError` before this
+      fix (this test passed on a Mac and failed on the only platform it
+      actually describes). `ctypes.windll` DOES exist for real on Windows,
+      so this patch REPLACES a genuine object rather than injecting a new
+      attribute — `raising=False` is still correct there (tolerant either
+      way), and replacing it, not merely wrapping it, is what stops this
+      test from silently exercising the REAL `GlobalMemoryStatusEx` syscall
+      on a real Windows runner instead of the fake.
+
+    `calls` on `FakeKernel32` asserts the PREMISE, not only the conclusion:
+    a value of `17_179_869_184` almost certainly could not come from the
+    real Windows API by coincidence, but "almost certainly" is not a
+    guarantee — if `sys.platform`/`ctypes.windll` failed to patch for any
+    reason (a future `ctypes` internal that reads `windll` through a
+    different name, say), this call count is what would actually catch a
+    real Windows runner silently falling through to its own real memory
+    reading instead of the fake one this test means to exercise.
+    """
     class _MemoryStatus(benchmark.ctypes.Structure):
         _fields_ = [("dwLength", benchmark.ctypes.c_ulong),
                     ("dwMemoryLoad", benchmark.ctypes.c_ulong),
@@ -573,8 +604,11 @@ def test_total_memory_bytes_falls_back_to_globalmemorystatusex_on_windows(
                     ("ullAvailVirtual", benchmark.ctypes.c_uint64),
                     ("ullAvailExtendedVirtual", benchmark.ctypes.c_uint64)]
 
+    calls = []
+
     class FakeKernel32:
         def GlobalMemoryStatusEx(self, ref):
+            calls.append(1)
             status = _MemoryStatus.from_address(benchmark.ctypes.addressof(ref._obj))
             status.ullTotalPhys = 17_179_869_184  # 16 GiB
             return 1
@@ -582,38 +616,57 @@ def test_total_memory_bytes_falls_back_to_globalmemorystatusex_on_windows(
     class FakeWindll:
         kernel32 = FakeKernel32()
 
-    def raising_sysconf(name):
-        raise OSError("no such sysconf value on this fake platform")
-
-    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    # `raising=False`: real on POSIX (this fake platform genuinely lacks
+    # `os.sysconf`), essential on real Windows (the attribute never existed
+    # there either — see the docstring).
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
     monkeypatch.setattr(benchmark.sys, "platform", "win32")
+    # `raising=False`: essential on POSIX (`ctypes.windll` does not exist to
+    # overwrite), a no-op guard on real Windows (it exists there for real,
+    # and this REPLACES it rather than requiring it to be absent first).
     monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
     assert benchmark._total_memory_bytes() == 17_179_869_184
+    assert len(calls) == 1, (
+        "the fake GlobalMemoryStatusEx was not called — on a real Windows "
+        "host this would mean the patch did not take and the REAL syscall "
+        "ran instead")
 
 
 def test_total_memory_bytes_is_none_when_the_windows_read_fails(monkeypatch):
+    calls = []
+
     class FailingKernel32:
         def GlobalMemoryStatusEx(self, ref):
+            calls.append(1)
             return 0  # falsy per the real API's own failure contract
 
     class FakeWindll:
         kernel32 = FailingKernel32()
 
-    def raising_sysconf(name):
-        raise OSError("no such sysconf value on this fake platform")
-
-    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
     monkeypatch.setattr(benchmark.sys, "platform", "win32")
     monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
     assert benchmark._total_memory_bytes() is None
+    assert len(calls) == 1, "the fake GlobalMemoryStatusEx was not called"
 
 
 def test_total_memory_bytes_is_none_off_windows_when_sysconf_is_unavailable(
         monkeypatch):
-    def raising_sysconf(name):
-        raise OSError("no such sysconf value on this fake platform")
-
-    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    """The off-Windows case — `sys.platform` forced to neither a real POSIX
+    nor `"win32"` value. Meaningful on a genuine Windows host too: this
+    function has exactly two real branches (`os.sysconf`, gated by whatever
+    the platform actually supports, and the `sys.platform == "win32"` block)
+    and this test neutralizes BOTH regardless of the host's real OS — the
+    `sysconf` patch removes the POSIX path (or, on real Windows, patches an
+    attribute that was never there to begin with) and `sys.platform` is
+    forced away from `"win32"` so the branch that DOES exist on a real
+    Windows host is skipped by construction, not by accident of which OS
+    happens to be running the suite. No result-shaped assertion could
+    distinguish "correctly hit neither branch" from "accidentally still hit
+    one", so this also has to be believed by reading the two `if`s in
+    `_total_memory_bytes` — there is no third branch for a stale platform
+    guard to fall into unnoticed."""
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
     monkeypatch.setattr(benchmark.sys, "platform", "some-future-os")
     assert benchmark._total_memory_bytes() is None
 
