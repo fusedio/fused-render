@@ -1241,14 +1241,30 @@ def pick_gguf_file(filenames) -> str | None:
 #: deliberately, never offering anything larger by default. This table is
 #: the opposite question — given a KNOWN budget, which of a repo's OWN
 #: quantizations is the best one that fits — so it runs the full quality
-#: range top to bottom, largest/highest-fidelity first, exactly SPEC item
-#: 14's own list. `Q6_K_L` (llama.cpp's mixed-precision "L" variant, heavier
-#: layers kept at a higher bit width) sits between `Q6_K` and `Q5_K_M` on
-#: the same reasoning `_gguf_rank`'s dynamic-quant tiers already use: a named
-#: variant of a ranked family, not a family of its own.
+#: range top to bottom, largest/highest-fidelity first.
+#:
+#: **Ordered by real BIT WIDTH, not by "named quants then every IQ variant"**
+#: (code review finding 5) — SPEC item 14's own list happened to write the
+#: four `IQ*` rows last, and taking that literally put a 4-bit `IQ4_XS`
+#: AFTER a 2-bit `Q2_K`, so a repo offering both, on a budget both fit,
+#: returned the LOWER-quality file — the exact opposite of this table's own
+#: purpose. `IQ4_XS` is interleaved into the 4-bit tier, `IQ3_M` into the
+#: 3-bit tier, `IQ2_M` into the 2-bit tier; `IQ1_M` has no plain sibling
+#: at 1-bit and stays the bottom rung. Within one bit-width tier a PLAIN
+#: quant still outranks its `IQ` sibling — the same "no engineering needed
+#: at that width" precedence `_gguf_rank`'s dynamic-quant tiers already use
+#: for `pick_gguf_file`. `Q6_K_L` (llama.cpp's mixed-precision "L" variant,
+#: heavier layers kept at a higher bit width) sits between `Q6_K` and
+#: `Q5_K_M` on the identical reasoning: a named variant of a ranked family,
+#: not a family of its own.
 GGUF_QUALITY_ORDER: tuple[str, ...] = (
-    "Q8_0", "Q6_K", "Q6_K_L", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q4_0",
-    "Q3_K_M", "Q3_K_S", "Q2_K", "IQ4_XS", "IQ3_M", "IQ2_M", "IQ1_M",
+    "Q8_0",
+    "Q6_K", "Q6_K_L",
+    "Q5_K_M", "Q5_K_S",
+    "Q4_K_M", "Q4_K_S", "Q4_0", "IQ4_XS",
+    "Q3_K_M", "Q3_K_S", "IQ3_M",
+    "Q2_K", "IQ2_M",
+    "IQ1_M",
 )
 
 #: The quant token immediately before an OPTIONAL multi-part shard suffix and

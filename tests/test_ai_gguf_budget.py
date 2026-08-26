@@ -83,12 +83,51 @@ def test_an_empty_listing_returns_none():
     assert formats.select_gguf_recipe({}, budget_bytes=100 * GB) is None
 
 
+def test_a_higher_bit_iq_variant_beats_a_lower_bit_plain_quant_when_both_fit(monkeypatch):
+    """Code review finding 5: `IQ4_XS` (a 4-bit i-quant) sat AFTER `Q2_K`
+    (a 2-bit quant) in the old ladder, so a repo offering both, on a budget
+    both fit, returned the LOWER-quality `Q2_K` — contradicting the
+    function's own docstring ("best quality that still fits"). `IQ4_XS`
+    must rank ahead of `Q2_K` now that the ladder is bit-width-ordered."""
+    files = {"model-Q2_K.gguf": 3 * GB, "model-IQ4_XS.gguf": 5 * GB}
+    name, total = formats.select_gguf_recipe(files, budget_bytes=6 * GB)
+    assert name == "model-IQ4_XS.gguf"
+    assert total == 5 * GB
+
+
+def test_a_plain_quant_still_beats_its_own_iq_variant_at_the_same_width():
+    """Within one bit-width tier, a PLAIN quant still outranks its `IQ`
+    sibling — the same "no engineering needed at that width" precedence
+    `_gguf_rank`'s dynamic-quant tiers already establish for `pick_gguf_
+    file`, restated here for the budget-aware ladder."""
+    files = {"model-Q4_K_M.gguf": 5 * GB, "model-IQ4_XS.gguf": 4 * GB}
+    # Both fit easily — the higher-ranked one (Q4_K_M, plain) must win even
+    # though IQ4_XS is smaller, since "best quality that still fits" ranks
+    # by quality first, not by size.
+    name, _total = formats.select_gguf_recipe(files, budget_bytes=100 * GB)
+    assert name == "model-Q4_K_M.gguf"
+
+
 def test_ordering_matches_the_quality_ladder_best_first():
     # Every named token in the ladder ranks strictly ahead of the next.
     assert formats.GGUF_QUALITY_ORDER.index("Q8_0") < formats.GGUF_QUALITY_ORDER.index("Q6_K")
     assert formats.GGUF_QUALITY_ORDER.index("Q6_K") < formats.GGUF_QUALITY_ORDER.index("Q6_K_L")
     assert formats.GGUF_QUALITY_ORDER.index("Q4_K_M") < formats.GGUF_QUALITY_ORDER.index("Q4_0")
     assert formats.GGUF_QUALITY_ORDER.index("IQ4_XS") < formats.GGUF_QUALITY_ORDER.index("IQ1_M")
+    # Code review finding 5: the IQ rows are interleaved at their REAL
+    # bit-width tier, not dumped after every named quant regardless of
+    # width — a 4-bit i-quant must outrank every 3-bit and 2-bit entry, a
+    # 3-bit i-quant every 2-bit entry, and so on down to IQ1_M at the
+    # bottom (no plain 1-bit quant exists in this ladder to rank below).
+    assert formats.GGUF_QUALITY_ORDER.index("IQ4_XS") < formats.GGUF_QUALITY_ORDER.index("Q3_K_M")
+    assert formats.GGUF_QUALITY_ORDER.index("IQ4_XS") < formats.GGUF_QUALITY_ORDER.index("Q2_K")
+    assert formats.GGUF_QUALITY_ORDER.index("IQ3_M") < formats.GGUF_QUALITY_ORDER.index("Q2_K")
+    assert formats.GGUF_QUALITY_ORDER.index("IQ2_M") < formats.GGUF_QUALITY_ORDER.index("IQ1_M")
+    # Within one bit-width tier, the plain quant still outranks its IQ
+    # sibling (same precedence `_gguf_rank`'s dynamic-quant tiers use).
+    assert formats.GGUF_QUALITY_ORDER.index("Q4_0") < formats.GGUF_QUALITY_ORDER.index("IQ4_XS")
+    assert formats.GGUF_QUALITY_ORDER.index("Q3_K_S") < formats.GGUF_QUALITY_ORDER.index("IQ3_M")
+    assert formats.GGUF_QUALITY_ORDER.index("Q2_K") < formats.GGUF_QUALITY_ORDER.index("IQ2_M")
 
 
 def test_an_unknown_size_estimates_via_the_shared_bpp_table_when_params_given():
