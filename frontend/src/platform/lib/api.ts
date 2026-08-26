@@ -3498,6 +3498,10 @@ export interface ScheduleEvent {
   // the user hunting, and the first words of what they asked for identify it.
   message: string;
   detail: string;
+  // The entry was RUN, not scheduled — a New task with its when-row untouched,
+  // or a new app's scaffolding task. Absent on an older server: read as false,
+  // which is the "scheduled" wording that was the only one before.
+  immediate?: boolean;
   ts: number;
 }
 

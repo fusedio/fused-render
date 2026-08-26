@@ -13,6 +13,7 @@ import logoMarkDark from "@assets/logo-black-bg-transparent.png";
 import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { Select, TextArea } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
+import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 // -- Prompt-first creation (the hero composer) --------------------------------
 
@@ -272,8 +273,13 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
       setPhase("creating");
       const res = await createAppUnderFreeName(name, full, model, effort);
       // The folder exists from here on, so the Recent grid is stale — refresh it
-      // now, since the session-error branch below stays on this page.
+      // now, since the task-error branch below stays on this page.
       onCreated();
+      // And the prompt is a task now: the sidebar's Current apps section reads
+      // the shared tasks store, which otherwise learns of the new row on its
+      // next slow poll (up to 30s idle). One announcement, forwarded by App.tsx
+      // to pokeTasks, and the app is in the sidebar before the page turns.
+      if (res.task) announceTasksChanged();
       // A task error must not read as success: the FOLDER exists, only the
       // task failed. Kept as its own state so the card can say that plainly
       // and still show the error verbatim.

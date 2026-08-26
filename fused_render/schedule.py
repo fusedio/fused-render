@@ -383,6 +383,11 @@ def _emit(kind: str, entry: dict, detail: str = "") -> None:
             # asked for are what identifies it to them.
             "message": str(entry.get("message") or "")[:200],
             "detail": detail,
+            # Whether this was a task somebody RAN (New task with the when-row
+            # untouched, a new app's scaffolding task) rather than one they
+            # scheduled. The shell's toast reads it: "Scheduled message ran"
+            # is a lie about a task that ran because the user just clicked.
+            "immediate": _flag(entry.get("immediate")),
             "ts": time.time(),
         })
         del _events[:-_EVENTS_MAX]
