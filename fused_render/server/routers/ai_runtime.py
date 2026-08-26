@@ -885,7 +885,7 @@ def _catalog_with_downloads() -> list[dict]:
 
 
 #: `_machine_ram_gb` and `_fit_verdict` moved to `fused_render/ai/fit.py`
-#: (SPEC AI-16, AI-16b, D495) — the verdict is now computed over a
+#: (SPEC AI-16, AI-16b, D497) — the verdict is now computed over a
 #: FOOTPRINT, not `size_gb` alone, on a precedence ladder this router does
 #: not own. `fit.machine_ram_gb()` is the same stdlib RAM reading, cached
 #: forever, moved rather than duplicated.

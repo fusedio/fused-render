@@ -235,7 +235,7 @@ class Worker:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
     #: The high-water mark of what this model has cost, as the runner
-    #: reported it (SPEC AI-8c, D495) — `worker_base.peak_resident_bytes()`,
+    #: reported it (SPEC AI-8c, D497) — `worker_base.peak_resident_bytes()`,
     #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
     #: on MLX) over its own RSS high-water fallback. `refresh_memory` writes
     #: this into `footprints.py` on every poll that grows it, which is what
@@ -2321,7 +2321,7 @@ def refresh_memory() -> None:
     process mid-generation is a request that waits on a GPU call for no reason.
 
     **Also writes `peak_resident_bytes` into `footprints.py`** (SPEC AI-16a,
-    D495) — this is the ONE place a load's peak becomes a durable "measured"
+    D497) — this is the ONE place a load's peak becomes a durable "measured"
     footprint `fit.py` can read back later. Written here rather than at
     `_bring_up`'s own "ready" transition because a load's OWN peak can still
     be climbing after that moment (a first generation is often where a

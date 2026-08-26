@@ -1,5 +1,5 @@
 """Measured resident footprints at ~/.fused-render/ai_footprints.json (SPEC
-AI-16a, D495).
+AI-16a, D497).
 
 One more shell-state resource in the shape `bench_store.py` establishes: a
 private `_path()` over `storage.home_dir()`, then `storage.read_json` /

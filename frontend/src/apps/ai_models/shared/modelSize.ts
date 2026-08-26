@@ -37,7 +37,7 @@
 // multi-part download or a conservative constant, and in both cases quoting
 // it would promise a download cheaper than it is.
 //
-// **`total_scope` (SPEC AI-5n, D496) says whether a row's total is the WHOLE
+// **`total_scope` (SPEC AI-5n, D498) says whether a row's total is the WHOLE
 // download**, and when it is, the never-understate hedge is unnecessary and
 // actively wrong: `worker_base.download_plan` sums every phase of a
 // multi-repo download into one grand total BEFORE a byte moves, so that

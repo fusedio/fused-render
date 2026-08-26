@@ -85,7 +85,7 @@ def test_first_report_creates_a_row_and_later_ones_update_it(client):
 
 
 def test_total_scope_defaults_to_phase_and_a_download_plan_can_claim_the_whole(client):
-    """SPEC AI-5n/D496: a bare download report never claims to be the whole
+    """SPEC AI-5n/D498: a bare download report never claims to be the whole
     download — `total_scope` defaults to "phase", the honest reading of a
     plain `download_snapshot` call that only ever knows its own repo. A
     reporter that DOES know the whole shape (`download_plan`) says so

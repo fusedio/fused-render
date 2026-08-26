@@ -393,7 +393,7 @@ def memory():
 
 def peak_memory():
     """The HIGH-WATER mark MLX's allocator has reached over this process's
-    whole life, in bytes — SPEC AI-8c, D495, `ltx_video.worker.peak_memory`'s
+    whole life, in bytes — SPEC AI-8c, D497, `ltx_video.worker.peak_memory`'s
     own probe, verbatim. Same reason as `memory()` above: `mx.get_peak_memory()`
     already tracks this without a sample, and `fit` (AI-16) needs "at its
     worst" where `memory()` only ever answers "right now"."""

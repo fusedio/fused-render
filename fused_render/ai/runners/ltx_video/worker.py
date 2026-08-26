@@ -224,7 +224,7 @@ def download(model_id):
     spending any of a user's bandwidth on files nobody is going to open.
 
     **`worker_base.download_plan`, not two bare `download_snapshot` calls**
-    (SPEC AI-5n, D496). Two sequential calls each report their OWN repo's
+    (SPEC AI-5n, D498). Two sequential calls each report their OWN repo's
     total, so the bar read 19.1 GB for the weights and then jumped straight to
     "complete" having never shown the 8.07 GB the Gemma-3 text encoder was
     always going to cost too — 30% short of the catalog's own `size_gb`, which
@@ -387,7 +387,7 @@ def memory():
 
 def peak_memory():
     """The HIGH-WATER mark of what MLX has allocated over this process's whole
-    life, in bytes — SPEC AI-8c, D495. Where `memory()` above answers "right
+    life, in bytes — SPEC AI-8c, D497. Where `memory()` above answers "right
     now", this answers "at its worst", which is the number `fit` (AI-16) needs
     and `memory()` cannot supply: `DistilledPipeline(low_memory=True)` frees
     the transformer and the Gemma text encoder BETWEEN stages, so the resident

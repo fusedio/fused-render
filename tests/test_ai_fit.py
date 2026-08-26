@@ -1,4 +1,4 @@
-"""Tests for the fit verdict (SPEC AI-16, AI-16b, AI-16c, D495).
+"""Tests for the fit verdict (SPEC AI-16, AI-16b, AI-16c, D497).
 
 `ai/fit.py` computes {verdict, basis, footprintBytes} over the best footprint
 available for a model, on the precedence ladder measured > declared >

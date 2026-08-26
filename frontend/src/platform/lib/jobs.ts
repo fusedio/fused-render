@@ -35,7 +35,7 @@ export interface Job {
   done: number | null;
   total: number | null;
   // Whether `total` prices the WHOLE download or only the phase currently in
-  // flight (SPEC AI-5n, D496). "phase" — the default every plain reporter has
+  // flight (SPEC AI-5n, D498). "phase" — the default every plain reporter has
   // always sent without knowing it, correct as-is for a single-repo download.
   // "download" — an explicit claim only a multi-phase reporter
   // (`worker_base.download_plan`) is entitled to make. `shared/modelSize.ts`

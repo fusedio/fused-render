@@ -52,7 +52,7 @@ STATES = (RUNNING,) + TERMINAL_STATES
 # spinner. Kept a small closed set so the UI never has to guess.
 KINDS = ("download", "task")
 
-# Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D496).
+# Whether `total` is the WHOLE download or one phase of it (SPEC AI-5n, D498).
 # "phase" is the default a bare `download_snapshot` reporter has always sent
 # without knowing it — a single repo's own total, which for a single-repo
 # runner already is the whole download and needed no migration. "download" is
@@ -223,7 +223,7 @@ class Job:
     done: float | None = None
     total: float | None = None
     # Whether `total` prices the WHOLE download or only the phase currently in
-    # flight (SPEC AI-5n, D496). "download" — a reporter used `download_plan`
+    # flight (SPEC AI-5n, D498). "download" — a reporter used `download_plan`
     # (or a runner with only ever one repo, where a phase total already is the
     # whole download) and the figure is complete; "phase" — a bare
     # `download_snapshot` call, which only ever knows its own repo. Read by

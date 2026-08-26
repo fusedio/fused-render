@@ -426,7 +426,7 @@ def report_or_cancel(job=None, **fields):
 #: the model — 379 MB for a 6GB model, which is what sent us looking.
 _measure = None
 
-#: A runner's own PEAK-memory probe, when it has one — SPEC AI-8c, D495. A
+#: A runner's own PEAK-memory probe, when it has one — SPEC AI-8c, D497. A
 #: second, OPTIONAL hook beside `_measure`, for a different question:
 #: `_measure`/`resident_bytes()` answer "what is this costing RIGHT NOW",
 #: which `supervisor.refresh_memory` only samples when `/health` happens to be
@@ -2801,7 +2801,7 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     if total is None:
         total = repo_total_bytes(model_id)
     # `total_scope` explicit on EVERY tick, not left for the row's default or
-    # a caller a level up to have set (code review, SPEC AI-5n/D496):
+    # a caller a level up to have set (code review, SPEC AI-5n/D498):
     # `total_scope` is STICKY on the job row (`jobs.py` only overwrites it
     # when a tick's body names it), and `download_plan` wraps a multi-phase
     # download with its own ticker beating `total_scope="download"` on a
@@ -3518,7 +3518,7 @@ def _phase_total(model_id, allow, ignore, folder):
 
 def download_plan(phases):
     """Fetch several repos as ONE download, priced at their SUM (SPEC AI-5n,
-    D496). Returns each phase's own `download_snapshot` result, in order.
+    D498). Returns each phase's own `download_snapshot` result, in order.
 
     `phases` is an ordered list of `(model_id, allow_patterns, ignore_patterns)`
     — every repo one logical "Download" button touches. `ltx-video` fetches
@@ -4006,7 +4006,7 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     there, because the supervisor waits on the process rather than on a health
     route, so a failure must not be swallowed into a status nobody reads.
 
-    `peak_memory` is `memory`'s sibling (SPEC AI-8c, D495) — a runner that can
+    `peak_memory` is `memory`'s sibling (SPEC AI-8c, D497) — a runner that can
     answer "what did this cost at its WORST", not just "right now". See
     `peak_resident_bytes` for what a runner without one gets instead.
     """

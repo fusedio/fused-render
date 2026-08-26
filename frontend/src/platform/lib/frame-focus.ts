@@ -31,9 +31,26 @@
 //   3. The pane guards the door anyway (shouldReclaimFocus below). Same-origin
 //      means the shell can see the frame take focus and simply take it back —
 //      belt and braces for a page loaded from somewhere runtime.js does not
-//      reach, and for the frames the browser focuses itself. Cards need no
-//      such guard: step 2 covers them, and there is no keyboard mode on a grid
-//      of links for a leaked focus to break.
+//      reach, and for the frames the browser focuses itself.
+//   4. The CARD THUMBNAILS are SEALED, which is a different kind of answer
+//      from 1–3 and the one that carries the weight for them (THUMB_SEAL at the
+//      foot of this file): `sandbox` + an empty `allow`, attributes of the
+//      EMBEDDER, which the page cannot opt out of and the shell does not have
+//      to police. `autofocus` and autoplay stop applying at all, and the other
+//      things a thumbnail could do to the page around it — navigate the shell
+//      away, pop up a window, start a download, block everything with a
+//      `confirm`, ask for the camera — stop being possible rather than being
+//      undone afterwards.
+//
+//      This replaces a first attempt that put the guard in the SHELL: remember
+//      where the card grid's scroller was, notice a frame displacing it, put it
+//      back. That worked, and it was the wrong shape — the shell repairing
+//      damage a thumbnail had already done, once per escape route, forever. The
+//      containment belongs at the boundary and inside the frame, which is where
+//      it now is. What is left of the scripted routes — `focus()`, `select()`,
+//      `scrollIntoView()` — is handled in the page by runtime.js under this
+//      flag, and `_nofocus=1` is inherited from a same-origin ancestor there,
+//      so a page a thumbnail's page frames itself is covered too.
 //
 // Deliberate acts are untouched: clicking into the pane, tabbing into it, or
 // expanding the preview full-screen all move focus for real. The contract is
@@ -115,3 +132,52 @@ export function tabEntersFrame<T>(
   if (i < 0) return (back ? stops[stops.length - 1] : stops[0]) === frame;
   return stops[back ? i - 1 : i + 1] === frame;
 }
+
+
+// -- THE SEAL: what the browser enforces about a thumbnail -----------------------
+//
+// Spread onto every display-only thumbnail frame. It is the half of the contract
+// that is NOT cooperation: the shell asks for nothing and the page cannot opt
+// out, because these are the embedder's attributes rather than the page's code.
+//
+//   • `sandbox` — every restriction on, and only two lifted back. Scripts,
+//     because a thumbnail of an app that cannot run is a blank box.
+//     Same-origin, because the app has to be able to render: `/api`
+//     (runPython, fused.ai, readFile) and the theme it reads out of
+//     localStorage are both origin-bound, and an opaque origin turns every
+//     data-driven card into its own empty state.
+//
+//     What the attribute's mere PRESENCE buys is the sandboxed automatic
+//     features flag, for which no re-enabling token exists: `autofocus` never
+//     applies and media never autoplays. That is the single biggest cause of
+//     the /apps grid jumping (D496) closed by the browser, in markup, with no
+//     runtime involved — and a thumbnail can no longer make noise either.
+//
+//     Everything not listed stays denied, and each one is something a
+//     thumbnail could otherwise do TO the page around it: navigate the shell
+//     away (`allow-top-navigation`), open a popup, start a download, submit a
+//     form, take pointer lock, or raise an `alert`/`confirm`/`print` that
+//     blocks the whole window (`allow-modals`).
+//
+//     `allow-scripts allow-same-origin` together is famously not a security
+//     boundary — a frame with both can reach out through `parent` and delete
+//     the sandbox attribute off its own iframe element — and it is not used as
+//     one here. These are the reader's own local apps; the attribute is doing
+//     feature containment, not privilege separation. The scripted escapes it
+//     leaves open are closed inside the page instead, by runtime.js under
+//     `_nofocus=1`.
+//
+//   • `allow=""` — an empty permissions policy: camera, microphone,
+//     geolocation, display capture and fullscreen are all undelegated, so a
+//     thumbnail cannot raise a permission prompt in the reader's name.
+//
+// Deliberately NOT here: `inert`. It reads like the answer — a picture should
+// not be focusable — but the part that would matter, inertness propagating into
+// the frame's own document, is the part being REMOVED from Blink (it is a
+// cross-site leak and blocks fenced frames) and never existed in WebKit or
+// Gecko (whatwg/html#7605). What it does cover — hit-testing and the tab order
+// — these frames already have from the card's pointer shield and `tabIndex={-1}`.
+export const THUMB_SEAL = {
+  sandbox: "allow-scripts allow-same-origin",
+  allow: "",
+} as const;

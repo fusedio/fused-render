@@ -1,4 +1,4 @@
-"""Tests for the measured-footprint store (SPEC AI-16a, D495).
+"""Tests for the measured-footprint store (SPEC AI-16a, D497).
 
 `ai/footprints.py` at ~/.fused-render/ai_footprints.json — the shape
 `bench_store.py` establishes, mirrored: a corrupt or absent file reads as no

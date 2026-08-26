@@ -1,5 +1,5 @@
 """Will this model FIT on this machine? — fused_render/ai/fit.py (SPEC AI-16,
-AI-16b, AI-16c, D495).
+AI-16b, AI-16c, D497).
 
 `ai_runtime._fit_verdict` used to be handed `size_gb` and asked a memory
 question, which conflates two quantities that coincide only for a

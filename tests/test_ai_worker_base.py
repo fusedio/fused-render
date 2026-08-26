@@ -681,7 +681,7 @@ def test_report_or_cancel_raises_on_a_requested_cancel(base, monkeypatch):
     assert base.report_or_cancel(job="sys:ai-image:x") == {"cancel_requested": False}
 
 
-# -- a runner's own PEAK-memory probe (SPEC AI-8c, D495) -------------------------
+# -- a runner's own PEAK-memory probe (SPEC AI-8c, D497) -------------------------
 
 
 def test_peak_resident_bytes_is_none_before_anything_has_been_measured(base):
@@ -1224,7 +1224,7 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
 
 
 def test_every_MLX_runner_supplies_a_true_peak_probe():
-    """SPEC AI-8c, D495: the MLX runners get a true peak "for free" —
+    """SPEC AI-8c, D497: the MLX runners get a true peak "for free" —
     `mx.get_peak_memory()` is maintained by the allocator across the whole
     process life, so every runner that already has an active-memory probe
     gets a peak one beside it. A `peak_memory=` nobody passes leaves `fit`
@@ -1321,7 +1321,7 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
 
 
 def test_fetch_with_progress_declares_its_own_total_scope_every_tick(base, monkeypatch):
-    """Code review on AI-5n/D496: `total_scope` is STICKY on the job row
+    """Code review on AI-5n/D498: `total_scope` is STICKY on the job row
     (`jobs.py` only updates it when a tick's body carries the field) —
     written once by whichever tick last mentioned it. `download_plan` wraps a
     multi-phase download with its OWN ticker beating `total_scope="download"`
@@ -1352,7 +1352,7 @@ def test_fetch_with_progress_declares_its_own_total_scope_every_tick(base, monke
 # present and the 7.75GB root bundle beside it was not something a substring
 # check could see.
 
-# -- a multi-repo download is priced as ONE (SPEC AI-5n, D496) ------------------
+# -- a multi-repo download is priced as ONE (SPEC AI-5n, D498) ------------------
 
 
 def test_download_plan_sums_every_phases_total_and_claims_the_whole(base, monkeypatch):

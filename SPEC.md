@@ -6540,7 +6540,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   construction rather than by a rule anyone has to remember.
 - **AI-5n** **A download's total is the WHOLE download. A runner that fetches
   more than one repo declares all of them up front through `download_plan`, and
-  the bar is priced at their sum** (D496, TARGET). AI-5b established that a
+  the bar is priced at their sum** (D498, TARGET). AI-5b established that a
   wrong total is worse than no total, and AI-5a's `_capped` protects a SCOPED
   total from a folder measured wider than it. Neither covers the opposite
   defect: a total that is honest about its phase and silent about the
@@ -6585,7 +6585,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   test asks it of BOTH with the reason each one needs it, because "supplies a
   probe" is a property of a runner rather than a fact about MLX.
 - **AI-8c** **A runner also supplies its own PEAK, because the resident probe is
-  sampled far too rarely to catch one** (D495, TARGET). AI-8a and AI-8b built
+  sampled far too rarely to catch one** (D497, TARGET). AI-8a and AI-8b built
   `serve(memory=…)` so a worker could answer "what am I costing right now"
   honestly; `fit` (**AI-16**) needs a different number — the HIGH-WATER mark of a
   whole load-and-generate pass — and the existing one cannot supply it.
@@ -8471,7 +8471,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   video engine's arrival does not have to remember to add it back.
 - **AI-16** **"Will this fit?" is answered over a FOOTPRINT — what the model
   costs RESIDENT — never over a download size, and the answer carries the basis
-  it was reached on** (D495, TARGET). `ai_runtime._fit_verdict` is handed
+  it was reached on** (D497, TARGET). `ai_runtime._fit_verdict` is handed
   `size_gb` and asked a memory question, which conflates two quantities that
   coincide only for a single-checkpoint text model:
   - `ltx-video` runs `DistilledPipeline(low_memory=True)`, which FREES the
@@ -8502,7 +8502,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `recommended` and `acceptsImage` — a curator MAY answer, and absence falls
   through rather than meaning anything.
 - **AI-16a** **A model's peak footprint on THIS machine is written down, because
-  it is measured for free on every load and is worthless forgotten** (D495,
+  it is measured for free on every load and is worthless forgotten** (D497,
   TARGET). `fused_render/ai/footprints.py` at `~/.fused-render/ai_footprints.json`,
   in the shape `bench_store.py` already establishes for shell-owned state: a
   private `_path()` over `storage.home_dir()`, then `storage.read_json` /
@@ -8527,7 +8527,7 @@ an AI Models page that could say what was on disk but not what was *running*.
     dropped on insert. A high-water is only rewritten when it grows (past a small
     tolerance, so a jittering RSS does not write a file per status poll).
 - **AI-16b** **The thresholds are HEADROOM, not a fraction of total RAM, and on
-  Apple Silicon the wired limit is a hard ceiling above them** (D495, TARGET).
+  Apple Silicon the wired limit is a hard ceiling above them** (D497, TARGET).
   Today's rule is `≤25%` easy / `≤50%` tight, and a fraction scales wrong in
   exactly one direction: on a 16GB machine 50% leaves 8GB for the OS, the browser
   and this server, which is about right; on a 64GB machine it leaves 32GB
@@ -8550,7 +8550,7 @@ an AI Models page that could say what was on disk but not what was *running*.
     Read via `sysctl` with `0` meaning "the default", which is ~75% of RAM;
     unreadable or non-Darwin costs the gate and never the verdict.
 - **AI-16c** **`fit` is an OBJECT, and the page words a measured verdict as a
-  fact rather than as a guess** (D495, TARGET). `entry["fit"]` becomes
+  fact rather than as a guess** (D497, TARGET). `entry["fit"]` becomes
   `{verdict, basis, footprintBytes}` (still `null` when nothing is known), and
   `PlaygroundTab`'s badge keys its copy off `basis` — the hedge is what the
   guessed answers need and what a measured one must not carry:

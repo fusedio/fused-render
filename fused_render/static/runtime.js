@@ -378,37 +378,78 @@
   // was not special, and the next one with an input would have re-broken it.
   // The shell marks the frame's URL and every page gets the behaviour for free:
   //
-  //   • `autofocus` attributes are stripped as the document parses, before the
-  //     browser has finished parsing (and so before it applies the last one);
-  //   • el.focus() calls are DROPPED until the reader actually interacts with
-  //     the page — the whole boot path, however long its async tail, rather
-  //     than some guessed settle window;
-  //   • the first real user gesture in the document lifts both, permanently:
-  //     from then on focus() works exactly as written. Clicking into the pane
-  //     is a deliberate act and the page owns the keyboard after it.
+  //   • a focus that lands anyway is bounced straight back out — the case
+  //     `autofocus` falls into, since the browser queues its candidate when the
+  //     element is inserted and no cooperation in here can dequeue it;
+  //   • el.focus() and select() are DROPPED until the reader actually interacts
+  //     with the page — the whole boot path, however long its async tail,
+  //     rather than some guessed settle window;
+  //   • scrollIntoView keeps its scroll inside this document;
+  //   • the first real user gesture in the document lifts all of it,
+  //     permanently: from then on everything works exactly as written. Clicking
+  //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // `window.__fusedNoAutofocus` is published for pages that would rather ask
-  // than be corrected (the claude template gates its own boot focus on it).
-  // Deliberately not on `window.fused`: that is the documented portable bridge
-  // mirrored by the hosted runtime, and this is local-shell plumbing — same
-  // reason the other `_fused*` globals are bare.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
+  // flag used to be, so a page could gate its own boot focus instead of being
+  // corrected — and the claude template was its only reader, gating a focus()
+  // the patch below was already dropping. One mechanism, applied to every page
+  // including the ones nobody has written yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
   // what covers frames this suppression cannot reach.
   var NO_FOCUS_PARAM = "_nofocus";
+  // The other half of what a shell-mounted frame is told: this render is a
+  // PICTURE of a page, not a use of one (D301 records opens off its absence).
+  // Read here as well as by the shell, because two of the containments below
+  // are about being a thumbnail rather than about focus.
+  var PREVIEW_PARAM = "_preview";
 
-  function noFocusRequested(search) {
+  // One reader for both: an affirmative `=1` and nothing else, so a `_nofocus=0`
+  // is a "no" rather than "the key is present, therefore yes".
+  function flagRequested(search, param) {
     try {
-      return new URLSearchParams(String(search).replace(/^\?/, "")).get(NO_FOCUS_PARAM) === "1";
+      return new URLSearchParams(String(search).replace(/^\?/, "")).get(param) === "1";
     } catch (e) {
       return false;
     }
   }
 
+  function noFocusRequested(search) {
+    return flagRequested(search, NO_FOCUS_PARAM);
+  }
+
+  // INHERITED, not just requested. A page the shell mounts as a picture may
+  // frame a page of its own, and that inner URL is the app author's — it carries
+  // none of the shell's stamps, so asking only about `location.search` left
+  // every nested frame free to take focus (and to write the shell's URL) while
+  // its scroll chain still reached the card grid. The thumbnail flag has had
+  // this inheritance on the shell side all along (router.ancestorIsPreview);
+  // this is the same climb, for either flag: up while same-origin, stopping
+  // where a cross-origin read throws, since nothing above that boundary is ours
+  // to read anyway.
+  function selfOrAncestorHasFlag(param) {
+    if (flagRequested(location.search, param)) return true;
+    try {
+      var w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (flagRequested(w.location.search, param)) return true;
+      }
+    } catch (e) {
+      /* cross-origin ancestor: the climb ends here */
+    }
+    return false;
+  }
+
+  // --- end of the flag readers ---
+
+  // Is this render a card thumbnail — mine or an ancestor's? One containment
+  // hangs off it: a thumbnail writes no URL but its own (findTarget below).
+  var IS_THUMBNAIL = selfOrAncestorHasFlag(PREVIEW_PARAM);
+
   function startNoFocus() {
-    if (!noFocusRequested(location.search)) return;
-    window.__fusedNoAutofocus = true;
+    if (!selfOrAncestorHasFlag(NO_FOCUS_PARAM)) return;
 
     // Anything that manages to take focus anyway gives it straight back. This
     // is the one that catches `autofocus`, which cannot be beaten by stripping
@@ -427,27 +468,105 @@
     };
     document.addEventListener("focusin", bounceFocus, true);
 
-    // Strip `autofocus` from anything already parsed and anything that arrives
-    // while the document streams. Belt and braces beside the blur above — an
-    // attribute that never applies is one fewer focus flicker. The observer is
-    // disconnected at DOMContentLoaded: after that the attribute has no effect
-    // on its own, and the focus() suppression below covers a script that adds
-    // one and focuses.
-    var strip = function (root) {
-      var nodes = root.querySelectorAll ? root.querySelectorAll("[autofocus]") : [];
-      for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute("autofocus");
-    };
-    strip(document);
-    var observer = null;
-    try {
-      observer = new MutationObserver(function () {
-        strip(document);
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    } catch (e) {
-      /* no MutationObserver — the initial strip and the guard below still hold */
+    // `select()` joins the focus gate. It is the escape nobody expects, because
+    // it reads as a selection call: `input.select()` FOCUSES the input on the
+    // way (Blink, WebKit), and it does it natively — so the patched
+    // `HTMLElement.prototype.focus` below never sees it and the suppression it
+    // is under does not apply. Suppressed outright rather than reduced to
+    // "select without focusing": a thumbnail is a picture, and a selection
+    // highlight on a control nobody clicked says nothing about the app.
+    var selectOwners = [window.HTMLInputElement, window.HTMLTextAreaElement];
+    var realSelects = [];
+    for (var si = 0; si < selectOwners.length; si++) {
+      if (!selectOwners[si]) continue;
+      realSelects.push([selectOwners[si], selectOwners[si].prototype.select]);
+      selectOwners[si].prototype.select = function () {
+        /* embedded and unasked: no selection, and so no focus with it */
+      };
     }
 
+    // scrollIntoView, CONTAINED. Same jump as a stolen focus with no focus in
+    // it at all: the native call scrolls every scroll container up the chain,
+    // and the chain does not stop at this frame — it walks out into the
+    // embedder's own scroller, so a thumbnail whose app scrolls a chat log to
+    // the bottom on boot drags the card grid to its own row. There is no native
+    // way to stop that from either side (w3c/csswg-drafts#7134 is the open
+    // request for one; WebKit blocks cross-origin bubbling, Blink does not), and
+    // a thumbnail is same-origin with the shell by design (THUMB_SEAL).
+    //
+    // So the native call is not made. What the author meant — bring this element
+    // into view INSIDE this page — is done here instead, walking this document's
+    // own scrollable ancestors and stopping at its own viewport. Nothing crosses
+    // the frame boundary, and the shell needs to know nothing about it: an app
+    // that scrolls its own log to the bottom still shows its bottom in the
+    // thumbnail.
+    //
+    // Instant, always: an animated scroll inside a picture is frames of work for
+    // something nobody is watching, and it is the reason this cannot be done by
+    // measuring afterwards.
+    var realScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (arg) {
+      // The three argument shapes, kept faithful: `false` aligns to the end,
+      // `true`/nothing to the start, an options object keeps its own alignment.
+      var block = arg === false ? "end" : "start";
+      var inline = "nearest";
+      if (arg && typeof arg === "object") {
+        if (arg.block) block = arg.block;
+        if (arg.inline) inline = arg.inline;
+      }
+      containScroll(this, block, inline);
+    };
+
+    // How far a container must move to satisfy one axis of an alignment. Reads
+    // as the spec does: start/end/center are absolute, `nearest` is the smallest
+    // move that makes the element visible and nothing at all if it already is.
+    function alignDelta(tStart, tEnd, cStart, cEnd, mode) {
+      if (mode === "start") return tStart - cStart;
+      if (mode === "end") return tEnd - cEnd;
+      if (mode === "center") return (tStart + tEnd) / 2 - (cStart + cEnd) / 2;
+      if (tStart >= cStart && tEnd <= cEnd) return 0; // already in view
+      if (tEnd - tStart > cEnd - cStart) return tStart - cStart; // taller than the box
+      return Math.abs(tStart - cStart) < Math.abs(tEnd - cEnd) ? tStart - cStart : tEnd - cEnd;
+    }
+
+    function containScroll(el, block, inline) {
+      if (!el || typeof el.getBoundingClientRect !== "function") return;
+      var node = el.parentElement;
+      var guard = 0;
+      while (node && guard++ < 100) {
+        var canY = node.scrollHeight > node.clientHeight;
+        var canX = node.scrollWidth > node.clientWidth;
+        if (canY || canX) {
+          // Re-measured per container: moving an outer one moves the element.
+          var t = el.getBoundingClientRect();
+          var box = node.getBoundingClientRect();
+          if (canY) node.scrollTop += alignDelta(t.top, t.bottom, box.top, box.bottom, block);
+          if (canX) node.scrollLeft += alignDelta(t.left, t.right, box.left, box.right, inline);
+        }
+        node = node.parentElement;
+      }
+      // This frame's own viewport, and the walk ENDS here — scrolling it moves
+      // nothing outside the frame, which is the whole point.
+      try {
+        var f = el.getBoundingClientRect();
+        var dy = alignDelta(f.top, f.bottom, 0, window.innerHeight, block);
+        var dx = alignDelta(f.left, f.right, 0, window.innerWidth, inline);
+        if (dx || dy) window.scrollBy(dx, dy);
+      } catch (e) {
+        /* no layout to scroll (a detached element): nothing to do */
+      }
+    }
+
+    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
+    // MutationObserver re-stripping as the document streamed. It never worked on
+    // its own — the browser queues the candidate when the element is inserted
+    // and removing the attribute afterwards does not dequeue it — so the blur
+    // above was already carrying that case, and for a card thumbnail the
+    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // features flag, which has no re-enabling token — THUMB_SEAL). What is left
+    // is one focus flicker in a pane preview before the bounce lands, against
+    // an observer running over every mutation of every previewed document.
+    //
     // Suppress programmatic focus until the reader touches the page. Patched on
     // the prototype rather than per element because the point is to cover code
     // that has not been written yet; restored — not left wrapped — on the first
@@ -461,8 +580,14 @@
       if (released) return;
       released = true;
       HTMLElement.prototype.focus = realFocus;
-      window.__fusedNoAutofocus = false;
-      if (observer) observer.disconnect();
+      // Restored with the rest of it: after a deliberate gesture the page owns
+      // itself, and a reader who has clicked into a preview is entitled to have
+      // `select()` select and `scrollIntoView` scroll exactly as written —
+      // including out into the pane, which is now their scroll to ask for.
+      Element.prototype.scrollIntoView = realScrollIntoView;
+      for (var ri = 0; ri < realSelects.length; ri++) {
+        realSelects[ri][0].prototype.select = realSelects[ri][1];
+      }
       // Every part of the suppression lifts at once, this one included — a
       // focusin bounce left installed would make the page permanently
       // unfocusable for the reader who just clicked into it.
@@ -484,9 +609,6 @@
     // such an act (see usePaneFocusGuard). An app-internal global, not part of
     // `fused`, for the same reason `__fusedFlushEdits` is.
     window.__fusedReleaseNoFocus = release;
-    document.addEventListener("DOMContentLoaded", function () {
-      if (observer) observer.disconnect();
-    });
   }
 
   startNoFocus();
@@ -495,6 +617,16 @@
   // a cross-origin window throws, so a try/catch marks the boundary.
   function findTarget() {
     let t = window;
+    // A THUMBNAIL DOES NOT CLIMB. Params reaching the ancestor URL is the point
+    // of D46 for a pane preview — the reader's state belongs in the address bar
+    // — and it is a leak for a card: `fused.params.set` in an app that scrubs a
+    // slider on boot was rewriting the /apps URL from inside a picture, one
+    // `history.replaceState` on the shell per card. Its own window instead, so
+    // the page's own reads still answer (`standalone` below) and nothing outside
+    // the frame moves. Only replaceState can be reached from in here anyway: the
+    // push path needs a gesture, and a thumbnail's pointer shield means it never
+    // sees one — so this cannot add joint history entries and break Back either.
+    if (IS_THUMBNAIL) return t;
     try {
       while (t.parent && t.parent !== t) {
         // Probe: throws if t.parent is cross-origin — stop at the last

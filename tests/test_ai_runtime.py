@@ -2734,7 +2734,7 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
 
 
 def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
-    """SPEC AI-16a, D495: the ONE writer for the measured-footprint store is
+    """SPEC AI-16a, D497: the ONE writer for the measured-footprint store is
     `supervisor.refresh_memory`, re-reading `/health` on the same cadence the
     rest of the app already relies on — this is the wiring `fit.py`'s
     "measured" basis depends on existing at all."""
@@ -5148,7 +5148,7 @@ def test_editing_a_model_WITH_an_edit_recipe_still_opens_a_job(
     _wait_job(started["jobId"])
 
 
-# -- the fit verdict: measured > declared > download (SPEC AI-16, AI-16c, D495) -
+# -- the fit verdict: measured > declared > download (SPEC AI-16, AI-16c, D497) -
 
 
 def _fit_text_row(client):

@@ -135,7 +135,7 @@ describe("modelSizeLabel", () => {
   });
 });
 
-describe("a \"download\"-scoped total (SPEC AI-5n, D496)", () => {
+describe("a \"download\"-scoped total (SPEC AI-5n, D498)", () => {
   it("wins outright over a catalog constant that is stale HIGH", () => {
     // The never-understate rule alone could never fix this: a live total
     // SMALLER than the constant used to always lose. `total_scope: "download"`
