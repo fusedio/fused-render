@@ -699,9 +699,19 @@ export function Icon({
     | "copy"
     | "chevron"
     | "plus"
-    | "undo";
+    | "undo"
+    | "info";
 }) {
   const paths: Record<string, ReactNode> = {
+    // The Preferences unset-value hint (title= carries the actual text —
+    // see .cc-row-hint in claude-config.css for why it isn't inline text).
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <line x1="12" y1="11" x2="12" y2="16" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+      </>
+    ),
     // The Preferences "reset to default" ghost icon button — a corner-arrow
     // undo, deliberately not the refresh icon's rotation glyph, so the two
     // don't read as the same action.
