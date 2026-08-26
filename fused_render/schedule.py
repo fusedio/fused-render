@@ -607,7 +607,8 @@ def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
            new_task_each_run=None, session_learned=None,
-           immediate=None, create_target: bool = False) -> dict:
+           immediate=None, create_target: bool = False,
+           model: str = "", effort: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -780,6 +781,14 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # provenance for nothing is a claim the form would have to second-guess.
         "session_learned": _flag(session_learned) and bool(session_id or ""),
         "permission_mode": mode,
+        # WHICH Claude runs the turn, and how hard: the new-app composer's two
+        # pickers (routers/apps.py), handed to `spawn_helper` by `_send` exactly
+        # as the direct spawn used to hand them. "" is "no flag" — the session
+        # detects its own defaults — and is what every other creator stores.
+        # Not carried through an edit (the Tasks form does not know them), so a
+        # re-created entry falls back to the defaults; stated, not fixed.
+        "model": str(model or ""),
+        "effort": str(effort or ""),
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
         # unvalidated, exactly as it does for every other field here.
@@ -1305,7 +1314,9 @@ def _send(entry: dict) -> None:
     try:
         res = claude_spawn.spawn_helper(
             entry["target"], _outgoing(entry), entry.get("permission_mode")
-            or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "")
+            or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
+            model=str(entry.get("model") or ""),
+            effort=str(entry.get("effort") or ""))
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
         return

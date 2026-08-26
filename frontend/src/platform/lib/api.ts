@@ -1900,21 +1900,23 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   );
 }
 
-// Scaffold a new app folder and (optionally) kick off a Claude session seeded
-// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
-// thrown HttpError's message for inline display.
+// Scaffold a new app folder and (optionally) create ONE task on its index.html
+// carrying `prompt`, due now — the New task form's own path, so the app's
+// Tasks tab lists it and the scheduler spawns the session. 409 = name
+// collision, 400 = bad name — both surface via the thrown HttpError's message
+// for inline display.
 export interface NewAppResult {
   path: string;
   entry_html: string;
-  // Whether a Claude session was actually kicked off for the prompt.
-  session_started: boolean;
-  // The live run, for attaching to the session that was just started; null
-  // when no prompt was given or the spawn failed.
-  run_id: string | null;
-  // Why the session did not start (claude CLI missing, spawn failure). The
-  // app itself was created either way — surface this so a prompt that went
-  // nowhere isn't silent. Null when it started, or when there was no prompt.
-  session_error: string | null;
+  // The scheduled entry carrying the prompt (the shape GET /api/schedule
+  // lists); null when no prompt was given or the task could not be stored.
+  // Whether the session then started is the entry's own story, read where
+  // every task's is — this call does not wait for the spawn.
+  task: ScheduledMessage | null;
+  // Why the task was not created. The app itself was created either way —
+  // surface this so a prompt that went nowhere isn't silent. Null when it was
+  // created, or when there was no prompt.
+  task_error: string | null;
 }
 
 // `model`/`effort` are the hero composer's pickers — short model names

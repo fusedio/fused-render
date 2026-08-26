@@ -28,12 +28,16 @@ which a card shows INSTEAD of rendering the entry live.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
-plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
-detached Claude Code session in the new folder via the claude template's own
-backend (templates/claude/agent.py), so the session's transcript lands in the
-folder's ~/.claude/projects dir and the existing claude template UI lists and
-resumes it with no new machinery. "local" is just this feature's own tag — nothing about
-the listing side treats it specially.
+plus a ``CLAUDE.md``) and — when the request carries a prompt — creates ONE
+TASK on the new folder's ``index.html`` carrying that prompt, due now
+(``fused_render/schedule.py``). Creating an app is therefore the New task form
+with three steps in front of it: name the app, make the folder, copy the
+starter, then a task exactly like any the Tasks page makes. The scheduler's
+own loop spawns the session (it wakes on the store write, so "now" is now),
+its watcher records how the turn went, and the app's Tasks tab lists the row
+with no new machinery — the same row a task scheduled by hand would get.
+"local" is just this feature's own tag — nothing about the listing side treats
+it specially.
 
 An app folder carries no ``.claude/`` of its own (D185); the starter
 ``CLAUDE.md`` references the canonical skills by name and fused-render supplies
@@ -46,12 +50,11 @@ is machine-wide and synced only at startup.
 """
 import os
 import shutil
-import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
 
-from fused_render import app_listing, claude_spawn
+from fused_render import app_listing, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -430,36 +433,6 @@ def _app_name_error(name) -> str | None:
     return None
 
 
-# The spawn machinery (where agent.py lives, why _start cannot be called in
-# this process, and the poll that gets a run's turn committed) is shared with
-# scheduled messages and lives in fused_render/claude_spawn.py.
-#
-# These two are re-bound as module-level names rather than called through
-# `claude_spawn.` at the use site, because `_start_app_session` resolves them as
-# globals — which is what lets a test swap either one out.
-_claude_agent = claude_spawn.load_agent
-_record_session_when_ready = claude_spawn.record_session_when_ready
-
-
-# The permission mode the scaffolding session runs in, passed EXPLICITLY rather
-# than left to agent.py's default ("prompt", the strictest).
-#
-# A template chat is watched: the page polls, a card appears, the user answers.
-# This session has no page yet — it starts from an HTTP POST and nobody is
-# polling `decide`, so under "prompt" the first tool call parks a request in
-# the run's perm/ dir and blocks there until PERMISSION_WAIT (an hour by
-# default) expires and the server denies it on the user's behalf. From the
-# outside that is indistinguishable from the crash this module's helper fixes:
-# a folder full of untouched boilerplate.
-#
-# "auto" is the broadest mode the template offers (bypassPermissions is
-# deliberately not among PERMISSION_MODES at all): the CLI's own classifier
-# approves what it judges safe and escalates the rest to a card. So the
-# first-pass scaffolding work proceeds unattended, and anything the classifier
-# won't take on itself still parks a request — answerable once the user opens
-# the app's chat, which `run_id` in the response is there to let the UI do.
-_APP_SESSION_PERMISSION_MODE = "auto"
-
 # What the hero composer's two pickers may ask for. Models are the
 # default-model preference's own set — the claude template's MODELS vocabulary,
 # already written down once in shell/prefs.py — so a third copy of that list
@@ -468,20 +441,20 @@ _APP_SESSION_PERMISSION_MODE = "auto"
 # it, so the tuple lives here until a second one does.
 #
 # `""` is a first-class member of both, exactly as it is in
-# VALID_DEFAULT_MODELS: it means NO --model/--effort flag on the spawn, i.e.
-# the session keeps whatever a chat opened by hand would have detected for
-# itself. That is what an absent key from an older client resolves to too.
+# VALID_DEFAULT_MODELS: "no flag", so the session keeps its own defaults.
 _VALID_SESSION_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 
 
 def _session_choice_error(field: str, value, allowed) -> str | None:
-    """Reject a model/effort the pickers cannot produce, rather than
-    substituting one. Our own UI only ever sends a list value, so this fires
-    for a hand-rolled request — and a caller that asked for `opus` and
-    silently got the default has been answered with the wrong session, which
-    is worse than a 400. (The claude template falls BACK for an unknown
-    permission mode instead, but there the safe direction is the strict one;
-    here there is no strict direction, only a different model.)"""
+    """Why `value` is not an acceptable `field`, or None.
+
+    A 400 rather than a silent fallback: the pickers only ever send members of
+    these sets, so anything else is a stale client or a typo in a hand-rolled
+    request — and a caller that asked for `opus` and silently got the default
+    has been answered with the wrong session, which is worse than a 400. (The
+    claude template falls BACK for an unknown permission mode instead, but
+    there the safe direction is the strict one; here there is no strict
+    direction, only a different model.)"""
     if not isinstance(value, str):
         return f"{field!r} must be a string"
     if value not in allowed:
@@ -490,45 +463,36 @@ def _session_choice_error(field: str, value, allowed) -> str | None:
     return None
 
 
-def _spawn_session_helper(target: str, prompt: str,
-                          model: str = "", effort: str = "") -> dict:
-    """Run agent._start in the fork-safe helper; return its result dict.
+def _create_app_task(entry_html: str, prompt: str, model: str = "",
+                     effort: str = "") -> tuple[dict | None, str | None]:
+    """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
-    Thin wrapper over claude_spawn.spawn_helper, which holds the posix_spawn
-    discipline this call depends on. What stays here is the one policy choice:
-    the permission mode above, and a FRESH session always — an app is being
-    scaffolded, so there is no prior conversation to resume.
+    The seam a test stubs. `schedule.create` is the New task form's own path
+    (POST /api/schedule), used with what that form would send for a one-off
+    opened from the list with the when-row untouched — `immediate` says the
+    time is a default, not a plan, so the calendar draws no chip for it. The
+    target is the FILE, not the folder, for the same reason a task on a file
+    is: `_outgoing` then names it in the transcript's first turn, which is
+    what lets "open this task" land on the page rather than the folder.
 
-    `model`/`effort` are the composer's picks, already validated by the route;
-    empty means "leave the session on its own defaults"."""
-    return claude_spawn.spawn_helper(
-        target, prompt, _APP_SESSION_PERMISSION_MODE, model=model, effort=effort)
+    No title: a blank one is the first branch of a precedence the tasks
+    endpoint owns (user's title, else Claude Code's own ai-title, else the
+    prompt's first line), and pinning the folder name here would beat the
+    better name forever. No permission mode: `schedule.create` defaults to
+    "auto", the broadest the template offers, and the right one for a turn
+    nobody is watching yet — anything the CLI's classifier will not take on
+    itself parks a card the Tasks row answers.
 
-
-def _start_app_session(app_dir: str, prompt: str, model: str = "",
-                       effort: str = "") -> tuple[str | None, str | None]:
-    """Start a detached Claude Code session on the new app's FOLDER.
-
-    The seam the tests stub. Reuses the claude agent's _start (via the
-    fork-safe helper above) — cwd = the app folder, stream-json log, the
-    transcript in the same project dir the split view the app opens in lists
-    and resumes from — with the prompt over stdin
-    (message_via_stdin) so user text never enters argv. Returns
-    (run_id, error), exactly one of them set: a missing claude CLI or spawn
-    failure must not fail the creation that already succeeded, but the reason
-    rides back so the UI isn't silent about it, and the run_id lets the
-    caller attach to the live run."""
+    Returns (entry, error), exactly one set: a task that could not be stored
+    must not fail the creation that already succeeded, but the reason rides
+    back so the UI is not silent about the prompt going nowhere."""
     try:
-        res = _spawn_session_helper(app_dir, prompt, model, effort)
-    except Exception as exc:
-        return None, f"failed to start Claude session: {exc}"
-    if res.get("error") or not res.get("run_id"):
-        return None, str(res.get("error") or "failed to start Claude session")
-    threading.Thread(
-        target=_record_session_when_ready, args=(_claude_agent(), res["run_id"]),
-        daemon=True, name="fused-app-session-record",
-    ).start()
-    return str(res["run_id"]), None
+        entry = schedule.create(
+            entry_html, prompt, datetime.now(timezone.utc),
+            immediate=True, model=model, effort=effort)
+    except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
+        return None, f"failed to create the app's task: {exc}"
+    return entry, None
 
 
 @router.post("/api/apps/new")
@@ -599,22 +563,22 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     app_git.init_repo(dest)
 
-    entry_html = os.path.join(dest, "index.html")
-    run_id, session_error = None, None
+    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
+    task, task_error = None, None
     if prompt.strip():
-        run_id, session_error = _start_app_session(dest, prompt, model, effort)
+        task, task_error = _create_app_task(entry_html, prompt, model, effort)
 
     return {
         "path": os.path.abspath(dest),
-        "entry_html": os.path.abspath(entry_html),
-        "session_started": run_id is not None,
-        # The live run, for a caller that wants to attach to the session it
-        # just started (the claude template's own `run` param re-attach path:
-        # poll it and answer any approval the "auto" classifier escalated).
-        # None when no prompt was given or the spawn failed.
-        "run_id": run_id,
-        # Why the session did NOT start (claude CLI missing, spawn failure) —
-        # the app itself was created fine, but the UI shouldn't be silent
-        # about the prompt going nowhere. None when started or no prompt.
-        "session_error": session_error,
+        "entry_html": entry_html,
+        # The scheduled entry carrying the prompt — the same shape GET
+        # /api/schedule lists. None when no prompt was given or the task
+        # could not be stored. Whether the SESSION then started is the
+        # entry's own story (state/run_id/error), read where every task's is:
+        # this response does not wait for the spawn.
+        "task": task,
+        # Why the task was NOT created — the app itself was created fine, but
+        # the UI shouldn't be silent about the prompt going nowhere. None when
+        # created, or when there was no prompt.
+        "task_error": task_error,
     }
