@@ -184,6 +184,37 @@ def test_the_store_is_capped_and_drops_the_oldest_first(tmp_path, monkeypatch):
     assert kept == ["org/m2", "org/m3", "org/m4"]
 
 
+def test_a_malformed_row_does_not_crash_bounding_an_over_cap_store(tmp_path, monkeypatch):
+    """Code review on AI-16a: `_bounded` sorts on `kv[1].get("observedAt", 0)`,
+    which assumes every row is a dict — but `_load` never validates row
+    SHAPE, only the envelope (`data`, `machine`, `models`). A hand-edited or
+    partially-written file with one non-dict row must still be boundable
+    once the store is past `MAX_MODELS`, the same way `peak_from_store`
+    already tolerates a non-dict row by returning None for it rather than
+    raising."""
+    home = _home(tmp_path, monkeypatch)
+    _pin_machine(monkeypatch)
+    monkeypatch.setattr(footprints, "MAX_MODELS", 3)
+    home.mkdir(parents=True)
+    machine = benchmark.machine()
+    path = home / "ai_footprints.json"
+    path.write_text(json.dumps({
+        "version": footprints.VERSION,
+        "machine": machine,
+        "models": {
+            "text-generation/org/malformed": "not a dict",
+            "text-generation/org/m0": {"peakBytes": 1_000_000_000, "observedAt": 1},
+            "text-generation/org/m1": {"peakBytes": 2_000_000_000, "observedAt": 2},
+            "text-generation/org/m2": {"peakBytes": 3_000_000_000, "observedAt": 3},
+        },
+    }), encoding="utf-8")
+    # Recording one more reading forces `_bounded` to run over a
+    # store that already has a malformed row in it.
+    footprints.record("text-generation", "org/m3", 4_000_000_000)
+    assert footprints.read("text-generation", "org/m3") == 4_000_000_000
+    assert footprints.read("text-generation", "org/malformed") is None
+
+
 # -- clear -----------------------------------------------------------------------------
 
 

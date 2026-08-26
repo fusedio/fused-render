@@ -144,10 +144,23 @@ def _write(store: dict) -> None:
 
 
 def _bounded(models: dict) -> dict:
-    """`models`, capped at `MAX_MODELS` rows, oldest `observedAt` dropped."""
+    """`models`, capped at `MAX_MODELS` rows, oldest `observedAt` dropped.
+
+    `_load` validates the envelope (`data`, `machine`, `models`) but never
+    each ROW's shape — `peak_from_store`/`read` tolerate a non-dict row by
+    `isinstance`-checking it and answering None (code review). A hand-edited
+    or partially-written file can still carry one, and this is the one place
+    that reads INTO a row rather than just checking for one, so it needs the
+    same guard: a non-dict row sorts as `observedAt=0`, the oldest possible,
+    so it is the first thing dropped once the store is over the cap rather
+    than raising trying to bound it.
+    """
     if len(models) <= MAX_MODELS:
         return models
-    ordered = sorted(models.items(), key=lambda kv: kv[1].get("observedAt", 0))
+    def _observed_at(kv):
+        value = kv[1]
+        return value.get("observedAt", 0) if isinstance(value, dict) else 0
+    ordered = sorted(models.items(), key=_observed_at)
     keep = ordered[len(ordered) - MAX_MODELS:]
     return dict(keep)
 
