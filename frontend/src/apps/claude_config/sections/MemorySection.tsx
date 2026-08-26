@@ -105,6 +105,14 @@ export default function MemorySection({ onChanged }: SectionProps) {
                 <span className="cc-memgroup-count">{count}</span>
                 {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
               </div>
+              {/* Reveal is informational; Clear is the most destructive act on
+                  this page. Round 1 made it a repeated, always-visible red
+                  outlined button on all eight groups — the loudest thing on
+                  the tab, eight times over. It is an icon now, fading in on
+                  hover/focus-within like every other row action in this app
+                  (cc-memgroup-head:hover/:focus-within below), reachable by
+                  keyboard and visible outright where hover doesn't apply. The
+                  confirm it opens is unchanged. */}
               <div className="cc-memgroup-actions">
                 <button
                   type="button"
@@ -115,8 +123,14 @@ export default function MemorySection({ onChanged }: SectionProps) {
                 >
                   <Icon name="folder" />
                 </button>
-                <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
-                  Clear
+                <button
+                  type="button"
+                  className="cc-iconbtn cc-iconbtn-danger"
+                  title="Clear this project's memory"
+                  aria-label={`Clear memory for ${p.path ?? p.project}`}
+                  onClick={() => clear(p.project)}
+                >
+                  <Icon name="trash" />
                 </button>
               </div>
             </div>
@@ -127,6 +141,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
                   name={f.name}
                   nameMono
                   secondary={f.description ?? undefined}
+                  secondaryClass="cc-lrow-sub-clamp2"
                   secondaryTitle={f.description ?? undefined}
                 />
               ))}
