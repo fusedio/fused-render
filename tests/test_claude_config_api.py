@@ -270,18 +270,214 @@ def test_preferences_patch_writes_settings_and_rejects_unmanaged_keys(client, cl
 
 
 # -- the catalog override: reads fall back, writes never touch the package ----
+#
+# Anthropic reshaped code.claude.com/docs/en/settings-reference.md (2026-08):
+# no more table, one `### `key`` heading per setting followed by a prose
+# paragraph and a bullet list. The OLD version of these tests fed a synthetic
+# fixture in the table shape the parser no longer reads — which is exactly why
+# the suite stayed green while `refresh_catalog` was 100% broken against the
+# real page (ValueError: could not find '### Available settings' section, a
+# raw 500 through the button). `_LIVE_DOC_SLICE` below is captured verbatim
+# from the live page instead — four real sections (a plain key, a dotted
+# sub-key, a backticked default, a prose "unset" default, and a
+# `#### Fields for` sub-heading that must NOT parse as a key of its own).
+
+# Captured verbatim from https://code.claude.com/docs/en/settings-reference.md
+# on 2026-08-26. Do not hand-edit; if the docs reshape again, recapture.
+_LIVE_DOC_SLICE = '''\
+### `model`
+
+Set the model every new session uses, so you don't have to pick one with `/model` each time. Setting it here doesn't stop you from switching mid-session. If your admin set an [organization default model](/docs/en/model-config#organization-default-model) to override user selection, you get that model even when you set this key in user, project, or local settings.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: string, a model alias or full model ID
+* **Default**: unset, so Claude Code uses your account's default model
+* **Per-session overrides**: `--model` takes precedence over [`ANTHROPIC_MODEL`](/docs/en/env-vars), and both take precedence over this key for one session, including over a managed `model`; an [`availableModels`](#availablemodels) list still applies to the pick
+
+```json settings.json theme={null}
+{
+  "model": "claude-sonnet-5"
+}
+```
+
+A value here outranks [`ANTHROPIC_DEFAULT_MODEL`](/docs/en/model-config#set-a-default-model-for-new-sessions), which Claude Code uses only when nothing else selects a model.
+
+### `showThinkingSummaries`
+
+See summaries of Claude's [extended thinking](/docs/en/model-config#extended-thinking) in interactive sessions. Set it if you want the full summaries when you expand thinking with `Ctrl+O`. When unset or `false`, the Anthropic API redacts thinking blocks and Claude Code shows a collapsed stub; third-party providers don't redact.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: Boolean
+  * `true`: you see full thinking summaries when you expand thinking with `Ctrl+O`
+  * `false`: the Anthropic API redacts thinking blocks and Claude Code shows a collapsed stub
+* **Default**: `false`
+
+```json settings.json theme={null}
+{
+  "showThinkingSummaries": true
+}
+```
+
+Redaction only changes what you see, not what the model generates: to reduce thinking spend, [lower the budget or disable thinking](/docs/en/model-config#extended-thinking) instead. This setting has no effect in non-interactive mode (`-p`), the Agent SDK, or IDE extensions such as VS Code.
+
+### `permissions.allow`
+
+List the tool uses Claude Code approves without asking you. In an MCP rule, `*` can appear only in the tool name after the `mcp__<server>__` prefix, such as `mcp__github__get_*`; it can't appear in the server name.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: array of permission rule strings
+* **Default**: unset
+* **Per-session overrides**: `--allowedTools` adds allow rules for one session, and a deny rule from any settings file still blocks a tool it names
+
+This example approves `git diff` and lets Claude Code read your `.zshrc` without asking:
+
+```json settings.json theme={null}
+{
+  "permissions": {
+    "allow": ["Bash(git diff *)", "Read(~/.zshrc)"]
+  }
+}
+```
+
+Claude Code applies `allow` rules from a project's `.claude/settings.json` only after you accept the [workspace trust dialog](/docs/en/permissions#project-allow-rules-and-workspace-trust) for that folder.
+
+#### Permission rule syntax
+
+Permission rules follow the format `Tool` or `Tool(specifier)`. Claude Code evaluates `deny` rules first, then `ask`, then `allow`, and the first match decides regardless of how specific each rule is; see the [permission rule evaluation order](/docs/en/permissions#manage-permissions).
+
+### `modelPicker`
+
+List the models the `/model` picker offers, in the order you write them and under labels you choose, so the picker lists the models your organization runs, after the built-in lineup or instead of it. Each row's `model` is taken verbatim, so it accepts anything `--model` accepts: an alias such as `opus`, an Anthropic model ID, or a provider-format ID for Amazon Bedrock, Google Cloud's Agent Platform, Microsoft Foundry, or an LLM gateway. Requires Claude Code v2.1.242 or later.
+
+* **Scope**: [`User or managed`](#scopes). Claude Code reads the key from managed settings, `--settings`, and user settings, and ignores it in project and local settings so a repository you clone can't relabel the picker. The highest of those three that sets the key supplies the whole lineup, and Claude Code never combines lineups from two sources.
+* **Type**: object with an `options` array of rows and an optional `replaceBuiltInOptions` Boolean
+* **Default**: unset, so the picker shows the built-in lineup
+
+This example adds two Bedrock deployments after the built-in lineup, under names your team recognizes:
+
+```json managed-settings.json theme={null}
+{
+  "modelPicker": {
+    "options": [
+      { "model": "us.anthropic.claude-opus-4-8", "label": "Opus (production)" },
+      {
+        "model": "us.anthropic.claude-sonnet-4-6",
+        "label": "Sonnet (production)",
+        "description": "Day-to-day work"
+      }
+    ]
+  }
+}
+```
+
+<span id="modelpicker-options" />
+
+<span id="modelpicker-replacebuiltinoptions" />
+
+#### Fields for `modelPicker`
+
+The key takes two fields, one for the rows themselves and one for whether they replace the built-in lineup or add to it.
+
+| Field                   | Type                                                                                  | What it does                                                                                                                                                                                                                                                                  |
+| :---------------------- | :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `options`               | array of rows, each with a required `model` and an optional `label` and `description` | The rows the picker shows, in this order, except that a grayed-out row moves to the bottom. Without a `label`, Claude Code titles the row with the built-in name for a model it knows, or the model ID otherwise, and without a `description` it writes a generic second line |
+| `replaceBuiltInOptions` | Boolean, default `false`                                                              | Set it to `true` to show only these rows, **Default**, and a row for the model the session is already using. Leave it unset to add these rows after the built-in lineup                                                                                                       |
+
+With `replaceBuiltInOptions` on, Claude Code hides every other row: the built-in lineup, the rows it adds for [`availableModels`](#availablemodels) entries, the models [gateway discovery](/docs/en/llm-gateway-protocol#model-discovery) found, and [`ANTHROPIC_CUSTOM_MODEL_OPTION`](/docs/en/model-config#add-a-custom-model-option). With it off, Claude Code skips a listed model that the built-in lineup already covers. A label changes what the picker shows, not which model Claude Code runs.
+'''
 
 
-def _fake_docs(doc_keys):
-    """A settings-reference page documenting `doc_keys`, padded past the parser's
-    50-key sanity floor with filler rows."""
-    # Filler names must start with a letter: the row regex only accepts keys that
-    # look like real settings keys.
-    keys = list(doc_keys) + [f"filler{i}" for i in range(60)]
-    rows = "\n".join(
-        f"| `{k}` | Doc for {k}. **Default**: `false` | `example` |" for k in keys)
-    return ("### Available settings\n\n| Key | Description | Example |\n"
-            "|---|---|---|\n" + rows + "\n\n## Next section\n")
+def test_parse_settings_reference_reads_a_real_docs_slice_verbatim():
+    # Pinned against the CAPTURED page, not a synthetic stand-in — this is the
+    # test that would have caught the docs reshape before it shipped broken.
+    entries = refresh_catalog.parse_settings_reference(_LIVE_DOC_SLICE)
+
+    # `#### Fields for `modelPicker`` and `#### Permission rule syntax` are
+    # both 4-hash headings under real keys above — neither becomes a key of
+    # its own. Exactly the four `### `key`` headings resolve.
+    assert sorted(entries) == ["model", "modelPicker", "permissions.allow",
+                                "showThinkingSummaries"]
+
+    # A plain key, doc'd with a PROSE "unset" default: honest None, not the
+    # literal word "unset" and not the unrelated backticked terms later in
+    # the same explanatory clause.
+    assert entries["model"]["default"] is None
+    assert entries["model"]["doc"] == (
+        "Set the model every new session uses, so you don't have to pick "
+        "one with /model each time.")
+
+    # A BACKTICKED default, coerced from JSON the way the old table's example
+    # column used to be.
+    assert entries["showThinkingSummaries"]["default"] is False
+
+    # A dotted sub-key heading resolves under its own dotted name — existing
+    # `docKey` lookups (e.g. `permissions.defaultMode`) depend on this.
+    assert entries["permissions.allow"]["default"] is None
+
+    # `modelPicker`'s own prose default is honestly None (unset), and its
+    # "Requires Claude Code vX.Y.Z" sentence (min-version prose is the only
+    # surviving signal — literal "min-version:" text is gone from the new
+    # page entirely) is still picked up from its paragraph.
+    assert entries["modelPicker"]["default"] is None
+    assert entries["modelPicker"]["minVersion"] == "2.1.242"
+
+
+# Captured verbatim from settings-reference.md alongside _LIVE_DOC_SLICE — its
+# own constant because it pins a distinct failure mode: a `**Type**` bullet
+# that is itself a NESTED list of every enumerated value. The old table put
+# prose and the value list in one cell, so the catalog's stored `doc` used to
+# be the whole enumeration — which is what the owner saw wrapping to three
+# lines beside a select that already showed the same values. clean_doc must
+# take the doc from the prose paragraph only, never folding the Type bullet's
+# nested list in, or this bloat reappears across every enumerated key.
+_LIVE_DOC_THEME_SLICE = '''\
+### `theme`
+
+Pick the color theme for the interface. Appears in `/config` as **Theme**.
+
+* **Scope**: [`Any file`](#scopes). A value in `~/.claude.json` from an older version applies when no settings file sets it.
+* **Type**: string, one of:
+  * `"auto"`: matches your terminal's light or dark background
+  * `"dark"`: the dark theme
+  * `"light"`: the light theme
+  * `"dark-daltonized"`: the dark theme with colorblind-friendly colors
+  * `"light-daltonized"`: the light theme with colorblind-friendly colors
+  * `"dark-ansi"`: the dark theme using only your terminal's ANSI color palette
+  * `"light-ansi"`: the light theme using only your terminal's ANSI color palette
+  * `"custom:<slug>"` or `"custom:<plugin-name>:<slug>"`: a custom theme from `~/.claude/themes/` or a plugin
+* **Default**: `"dark"`
+
+```json settings.json theme={null}
+{
+  "theme": "light-daltonized"
+}
+```
+'''
+
+
+def test_parse_settings_reference_keeps_a_nested_type_list_out_of_the_doc():
+    entries = refresh_catalog.parse_settings_reference(_LIVE_DOC_THEME_SLICE)
+    # The prose sentence only — none of the eight `"auto"`/`"dark"`/… bullet
+    # values the Type list under it enumerates.
+    assert entries["theme"]["doc"] == "Pick the color theme for the interface."
+    assert entries["theme"]["default"] == "dark"
+
+
+def _fake_settings_reference(doc_keys):
+    """A settings-reference page in the real page's heading-per-key shape,
+    padded past the parser's 100-key sanity floor with filler sections in the
+    same shape. The shape-specific behavior (dotted keys, prose vs. backticked
+    defaults, a `####` sub-heading that isn't a key) is pinned for real above
+    against `_LIVE_DOC_SLICE`; this only has to be structurally honest, not
+    individually verbatim, to exercise the round trip through the catalog."""
+    keys = list(doc_keys) + [f"filler{i}" for i in range(100)]
+    return "\n\n".join(
+        f"### `{k}`\n\nDoc for {k}.\n\n"
+        f"* **Scope**: `Any file`\n"
+        f"* **Type**: Boolean\n"
+        f"* **Default**: `false`"
+        for k in keys
+    )
 
 
 def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
@@ -296,13 +492,14 @@ def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
 
 def test_refresh_writes_the_override_and_leaves_the_package_untouched(
         catalog_home, monkeypatch):
-    # Only the fetch is stubbed; the parse, the >=50-key floor and the write path
-    # are the real ones.
+    # Only the fetch is stubbed; the parse, the >=100-key floor and the write
+    # path are the real ones.
     packaged = lib.packaged_catalog_path()
     before = open(packaged, "rb").read()
     shipped = json.loads(before.decode())
     doc_keys = [d.get("docKey") or d["key"] for d in shipped]
-    monkeypatch.setattr(refresh_catalog, "_fetch", lambda: _fake_docs(doc_keys))
+    monkeypatch.setattr(refresh_catalog, "_fetch",
+                        lambda: _fake_settings_reference(doc_keys))
 
     res = refresh_catalog.main()
 
@@ -321,16 +518,65 @@ def test_refresh_writes_the_override_and_leaves_the_package_untouched(
     assert served[0]["doc"].startswith("Doc for ")
 
 
+def test_refresh_keeps_a_surfaced_key_s_doc_when_the_new_docs_omit_it(
+        catalog_home, monkeypatch):
+    # Real finding against the live page (2026-08-26): three shipped keys —
+    # `defaultView`, `todoFeatureEnabled`, `skipWorkflowUsageWarning` — have
+    # zero mentions anywhere on the reshaped settings-reference.md. Absent
+    # from the docs is not the same claim as removed from Claude Code, so a
+    # refresh must leave a key like this exactly as it was (doc, default,
+    # minVersion all untouched) and merely name it in `undocumented` —
+    # never blank it, never invent a value for it, never drop it from the
+    # catalog.
+    packaged = lib.packaged_catalog_path()
+    shipped = json.loads(open(packaged, "rb").read().decode())
+    doc_keys = [d.get("docKey") or d["key"] for d in shipped if d["key"] != "defaultView"]
+    monkeypatch.setattr(refresh_catalog, "_fetch",
+                        lambda: _fake_settings_reference(doc_keys))
+
+    before = next(d for d in shipped if d["key"] == "defaultView")
+    res = refresh_catalog.main()
+
+    assert res["ok"] is True
+    assert "defaultView" in res["undocumented"]
+    served = preferences._catalog()
+    after = next(d for d in served if d["key"] == "defaultView")
+    assert after["doc"] == before["doc"]
+    assert after["default"] == before["default"]
+    assert after["minVersion"] == before["minVersion"]
+    # Every OTHER key still resolved and got the fresh doc/default.
+    assert res["updated"] == len(shipped) - 1
+
+
 def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
         catalog_home, monkeypatch):
+    # Below the sanity floor — the parser found real headings, just not
+    # nearly enough of them, the same "docs shape changed" signal a table
+    # missing most of its rows used to give.
     monkeypatch.setattr(refresh_catalog, "_fetch",
-                        lambda: "### Available settings\n\n| `only` | one row | x |")
+                        lambda: "### `only`\n\nOne key.\n\n* **Default**: `1`\n")
     res = refresh_catalog.main()
     assert res["ok"] is False
     assert "docs shape changed" in res["error"]
     # Nothing written anywhere — a truncated refresh must not become the catalog.
     assert not os.path.exists(lib.catalog_override_path())
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
+
+
+def test_refresh_over_the_api_survives_a_page_with_no_headings_at_all(
+        catalog_home, monkeypatch):
+    # main()'s docstring promises failures are RETURNED, never raised — but it
+    # used to wrap only `_fetch()`. `parse_settings_reference` raises
+    # ValueError when it finds no `### `key`` heading at all (a page reshaped
+    # even more drastically than "too few keys"), and that escaped straight
+    # through to the HTTP router as a raw 500 — which is exactly what the
+    # owner saw against the real reshaped docs. Pinned here so the button
+    # renders an in-band error again if the docs move a second time.
+    monkeypatch.setattr(refresh_catalog, "_fetch", lambda: "# Not a settings page at all\n")
+    res = refresh_catalog.main()
+    assert res == {"ok": False, "error": "parse failed (found no '### `key`' "
+                                          "headings); kept existing catalog"}
+    assert not os.path.exists(lib.catalog_override_path())
 
 
 # -- memory: the project slug back to a real folder --------------------------

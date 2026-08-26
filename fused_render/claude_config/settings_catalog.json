@@ -58,8 +58,12 @@
     "control": "select",
     "options": [
       "auto",
+      "dark",
       "light",
-      "dark"
+      "dark-daltonized",
+      "light-daltonized",
+      "dark-ansi",
+      "light-ansi"
     ],
     "doc": "Color theme for the interface: \"auto\", \"dark\", \"light\", \"dark-daltonized\", \"light-daltonized\", \"dark-ansi\", \"light-ansi\", or a custom theme reference such as \"custom:<slug>\" or \"custom:<plugin-name>:<slug>\".",
     "default": "dark",
@@ -144,12 +148,13 @@
     "control": "select",
     "options": [
       "default",
-      "auto",
       "acceptEdits",
       "plan",
-      "bypassPermissions"
+      "auto",
+      "dontAsk",
+      "bypassPermissions",
+      "manual"
     ],
-    "docKey": "defaultMode",
     "doc": "Default permission mode when opening Claude Code.",
     "default": null,
     "minVersion": "2.1.200"
@@ -170,10 +175,12 @@
     "control": "select",
     "options": [
       "auto",
-      "terminal",
-      "ghostty",
+      "terminal_bell",
       "iterm2",
-      "none"
+      "iterm2_with_bell",
+      "kitty",
+      "ghostty",
+      "notifications_disabled"
     ],
     "doc": "Method for task-complete and permission-prompt notifications: \"auto\", \"terminal_bell\", \"iterm2\", \"iterm2_with_bell\", \"kitty\", \"ghostty\", or \"notifications_disabled\".",
     "default": "auto",
