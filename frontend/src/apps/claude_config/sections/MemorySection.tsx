@@ -16,12 +16,13 @@
 // an option.
 import { useCallback } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import {
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   SKELETON_ROWS,
   SectionToolbar,
   guard,
@@ -60,7 +61,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading memory" />;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />;
 
   const files = data.projects.reduce((n, p) => n + p.files.length, 0);
 
@@ -74,7 +75,9 @@ export default function MemorySection({ onChanged }: SectionProps) {
       {!data.projects.length && (
         <Empty>No persistent memory found under projects/*/memory/.</Empty>
       )}
-      {data.projects.map((p) => {
+      {data.projects.length > 0 && (
+        <List>
+          {data.projects.map((p) => {
         const dirty = p.changes.length;
         const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
         return (
@@ -137,7 +140,9 @@ export default function MemorySection({ onChanged }: SectionProps) {
             }
           />
         );
-      })}
+          })}
+        </List>
+      )}
     </>
   );
 }
