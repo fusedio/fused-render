@@ -10,7 +10,15 @@
 // Nothing here knows what a model or a stage is: it is `location.search` in
 // and out. That is the whole reason it is in `lib/` rather than `playground/`
 // — the page shell reads `?cap=` through the same door (see routes.ts).
-import { replaceSearch } from "@platform/lib/router";
+import { navigateUrl, replaceSearch } from "@platform/lib/router";
+
+// How a rewrite lands in history. `replace` (the default) edits the current
+// entry — a slider drag must not stack entries. `push` adds one, so the Back
+// button undoes it: that is for a MODEL change, which is a move between
+// places rather than a tweak to the place one is in.
+export type WriteMode = "replace" | "push";
+const land = (url: string, mode: WriteMode) =>
+  mode === "push" ? navigateUrl(url) : replaceSearch(url);
 
 /** Read one query param off the CURRENT url. The second argument exists so
  *  tests can drive this without a `location`, the same three-argument trick
@@ -68,18 +76,24 @@ export function searchString(updates: Record<string, string | null>): string {
  *  name happens to collide and are dead weight in the URL if it does not.
  *  Naming what to keep, rather than what to clear, is the direction that does
  *  not go stale: a stage that adds a parameter tomorrow is covered. */
-export function resetParams(updates: Record<string, string | null>): void {
-  replaceSearch(location.pathname + searchString(updates));
+export function resetParams(
+  updates: Record<string, string | null>,
+  mode: WriteMode = "replace",
+): void {
+  land(location.pathname + searchString(updates), mode);
 }
 
-/** Rewrite query params in place — null deletes. `replaceSearch`, not
- *  navigate: model browsing and slider drags must not stack history entries. */
-export function writeParams(updates: Record<string, string | null>): void {
+/** Rewrite query params — null deletes. `replace` by default: slider drags
+ *  must not stack history entries. The model picker passes `push`. */
+export function writeParams(
+  updates: Record<string, string | null>,
+  mode: WriteMode = "replace",
+): void {
   const params = new URLSearchParams(location.search);
   for (const [key, value] of Object.entries(updates)) {
     if (value === null) params.delete(key);
     else params.set(key, value);
   }
   const search = params.toString();
-  replaceSearch(location.pathname + (search ? "?" + search : ""));
+  land(location.pathname + (search ? "?" + search : ""), mode);
 }
