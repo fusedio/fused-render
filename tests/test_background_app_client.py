@@ -2,9 +2,15 @@
 daemon's client for the background-apps API, about itself (SPEC.md §46,
 D505).
 
-Same style as `test_fused_ai_client.py`: loaded the way production loads it
-(shared dir on `sys.path`, then a plain `import`), HTTP mocked throughout
-(`urllib.request.urlopen`), no real socket and no real daemon.
+Same style as `test_fused_ai_client.py`: this file inserts `templates/shared`
+onto `sys.path` directly and then does a plain `import` — it does NOT run
+the actual bootstrap a production background daemon needs (reading
+`server.json`'s `shared` key off `FUSED_RENDER_HOME_DIR`, the pattern in the
+`fused-render-background-apps` skill and `menubar.py`'s
+`_bootstrap_background_app`); it seeds the same end state that bootstrap
+would produce, so the module under test loads, and tests the module's own
+behavior from there. HTTP mocked throughout (`urllib.request.urlopen`), no
+real socket and no real daemon.
 """
 import io
 import json

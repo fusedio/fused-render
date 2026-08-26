@@ -57,17 +57,44 @@ about itself: not "am I still enabled", not "stop me", not "turn me off".
 `engine_host._spawn_env` now exports `FUSED_RENDER_APP_DIR` (the app's own
 folder) into a `kind="background"` child's environment, and
 `templates/shared/background_app.py` is the stdlib-only client that uses it
-— import it exactly like `fused_ai`/`appenv` (same shared dir, same
-sibling-load-by-path pattern, same "never `import fused_render`" rule):
+— but a bare `import background_app` does NOT work here the way it would
+under `/api/run` or the warm `/api/engine` worker. Those get `templates/shared`
+appended onto `sys.path` for free (`_child.py:68-69`); a background daemon
+is spawned as a plain script with no such seeding (see "Two things verified
+against the code" below) — a bare import raises `ModuleNotFoundError`.
+
+Bootstrap it off the same discovery file `server/app.py` writes at bind time
+(`write_server_json`, `fused_render/server/app.py:209`): `server.json`'s
+`shared` key names the exact `templates/shared` directory this server build
+ships, and `FUSED_RENDER_HOME_DIR` (branch-resolved for a dev worktree
+server, falling back to `~/.fused-render`) says where to find it:
 
 ```python
-import background_app
+import json, os, sys
+
+def _bootstrap_background_app():
+    home_dir = os.environ.get("FUSED_RENDER_HOME_DIR") or os.path.expanduser(
+        "~/.fused-render")
+    with open(os.path.join(home_dir, "server.json"), encoding="utf-8") as f:
+        info = json.load(f)
+    if info["shared"] not in sys.path:
+        sys.path.insert(0, info["shared"])
+    import background_app
+    return background_app
+
+background_app = _bootstrap_background_app()
 
 background_app.status()   # {"enabled", "running", "pid", "version", "engine_id"}
 background_app.stop()     # kills THIS process's daemon, stays enabled
 background_app.disable()  # kills it AND un-persists — does not come back
 background_app.restart()  # respawns
 ```
+
+This is the production pattern, not a simplification of it — see
+`_bootstrap_fused_ai`/`_bootstrap_background_app` in the OpenWhisper tray's
+`menubar.py` for the shipping version (it also wraps this in a
+try/except so a missing or unreadable `server.json` degrades to `None`
+rather than crashing the daemon at import time).
 
 Calling `stop()`/`disable()` from inside your own daemon is exactly what a
 tray "Quit"/"Turn off" should do instead of a raw self-`terminate`/`exit` —
@@ -161,7 +188,7 @@ An app going from off to resident-daemon-that-survives-restarts is the user's de
 
 This was a real bug: `Sina/OpenWhisper/index.html`'s menu-bar control used to call `fused.daemon.enable()` unconditionally on load. The daemon came back every time the page rendered — including in a listing preview — which made the tray's "Turn Off" item effectively unreachable: the user turned it off, the page (or a preview of it) rendered again, and it was back.
 
-**This is now enforced, not just documented (D507, SPEC.md §46).** The `_preview=1` flag reaches a card's live iframe reliably: `thumbFrame`/`withPreviewFlag` (`frontend/src/platform/lib/thumb-frame.ts`, `router.ts`) stamp it onto the `/render?path=...` URL that becomes the iframe's own `src`, and `fused_render/server/routers/render.py`'s `GET /render` serves the app's HTML at exactly that URL with no redirect — so the flag lands in the rendered page's own `location.search`, the same fact `runtime.js` already computed for the focus contract (`IS_THUMBNAIL`). `fused.daemon.enable()`, `restart()`, and `call()` now check it before doing anything: inside a preview thumbnail (this frame's own URL, or any same-origin ancestor's, carrying `_preview=1`), each rejects immediately with an `Error` naming the method and the rule — no POST is ever sent. See "How the guard rejects" below for the exact message. `status()`, `stop()`, and `disable()` are deliberately left ungated: `status()` is read-only, and `stop()`/`disable()` only ever turn a daemon *off* — a preview must never be able to do that to a real one either, so gating them would create a worse hole than the one this closes.
+**This is now enforced, not just documented (D507, SPEC.md §46).** The `_preview=1` flag reaches a card's live iframe reliably: `thumbFrame`/`withPreviewFlag` (`frontend/src/platform/lib/thumb-frame.ts`, `router.ts`) stamp it onto the `/render?path=...` URL that becomes the iframe's own `src`, and `fused_render/server/routers/render.py`'s `GET /render` serves the app's HTML at exactly that URL with no redirect — so the flag lands in the rendered page's own `location.search`, the same fact `runtime.js` already computed for the focus contract (`IS_THUMBNAIL`). `fused.daemon.enable()`, `restart()`, `call()`, `stop()`, and `disable()` now check it before doing anything: inside a preview thumbnail (this frame's own URL, or any same-origin ancestor's, carrying `_preview=1`), each rejects immediately with an `Error` naming the method and the rule — no POST is ever sent. See "How the guard rejects" below for the exact message. `status()` is the one method deliberately left ungated: it is read-only. `stop()` and `disable()` are gated exactly like `enable()`/`restart()`/`call()` (D508, 2026-08-26 code review) — leaving them open would let a preview do the one thing worse than starting a daemon: a card thumbnail mounts an app's own `entry_html` live with `allow-scripts`, so an app whose init path calls `disable()` would un-persist a running daemon just because its card scrolled past, and unlike an unwanted `enable()`, that survives a server restart.
 
 ```js
 // Wrong: fires the instant this script runs, including inside a display-only
@@ -191,7 +218,7 @@ toggleBtn.addEventListener("click", async () => {
 | Rendering the result | Yes | Pure display logic. |
 | `fused.daemon.enable()` | No — **and refused in a preview thumbnail** | Spawns a daemon and persists it — see above. Called inside a card's live/hover iframe, it now rejects instead of spawning. |
 | `fused.daemon.restart()` | No — **and refused in a preview thumbnail** | Same spawn as `enable()`; a page render is not a reason to bounce a daemon the user may be mid-use of. Same rejection as `enable()` inside a preview. |
-| `fused.daemon.stop()` / `disable()` | No | Turning something the user has running *off* on a page render is exactly as surprising as turning it on — a load is not a "turn it off" click either. Not gated on the preview flag (see below), but the "don't call on load" rule still applies — this is a coding convention, not an engine guard. |
+| `fused.daemon.stop()` / `disable()` | No — **and refused in a preview thumbnail** | Turning something the user has running *off* on a page render is exactly as surprising as turning it on — a load is not a "turn it off" click either. Gated on the preview flag too (D508): a card thumbnail mounts an app's own `entry_html` live with `allow-scripts`, so an unguarded `disable()` could un-persist a real user's daemon just because their card scrolled past — worse than an unwanted `enable()`, since `disable()` survives a server restart. |
 | `fused.daemon.call(path, body)` | Only if it's a genuine read — **and refused in a preview thumbnail** | `call()` proxies straight to the daemon's own HTTP surface (`engine_forward.py`); the runtime itself won't spawn on your behalf for it (client-side rejects if the app isn't known to be running — see `fused.daemon` above), but `engine_forward.py`'s heal-on-proxy path (`_forward`, lines ~216-222) *will* respawn a dead-but-enabled child on any proxied call, so a preview render that calls `call()` against an app enabled elsewhere can resurrect its daemon exactly like `enable()` would — the guard covers it for that reason. Beyond that, your daemon might still treat a given route as "start work" server-side, and nothing stops a page from calling that route on load outside a preview. Treat routes that kick off work the same as `enable()`/`restart()`: gate them behind an explicit control, not a load path.
 
 ### How the guard rejects
@@ -291,7 +318,7 @@ A daemon doing native desktop UI — a macOS menu-bar item, a Windows/Linux tray
 
 - Writing `daemon.py` to publish the status file AFTER calling `serve_forever()` → the parent's bootstrap poll never sees it in time, or worse, sees a port that isn't accepting connections yet; publish immediately after `bind()`, before serving.
 - Calling `server.shutdown()` from inside the request handler answering `/quit` → deadlocks `ThreadingHTTPServer`; shut down from a separate thread.
-- Expecting `fused.daemon.enable()` from page load to be harmless → it installs a server-launch-surviving daemon the user never asked for, and a display-only preview iframe (Home's app strip, the `/apps` hub) runs that same load path. Gate it behind an explicit user action; the runtime now refuses `enable()`/`restart()`/`call()` inside a preview thumbnail and throws a named error if you don't — see "How the guard rejects" above.
+- Expecting `fused.daemon.enable()` from page load to be harmless → it installs a server-launch-surviving daemon the user never asked for, and a display-only preview iframe (Home's app strip, the `/apps` hub) runs that same load path. Gate it behind an explicit user action; the runtime now refuses `enable()`/`restart()`/`call()`/`stop()`/`disable()` inside a preview thumbnail and throws a named error if you don't — see "How the guard rejects" above.
 - Ending a background app from a tray/menu-bar control with a raw process kill instead of `stop()`/`disable()` → the weakest way to quit it; skips the bookkeeping that keeps it from silently reviving on the next proxied call.
 - Rendering "enabled, not running" or "off" as an error/broken state instead of an ordinary one → both are expected, common states, not failures.
 - Treating `stop()` and `disable()` as the same action → `stop()` comes back at the next server start; `disable()` doesn't. A test (`test_api_stop_vs_disable_distinguished`) fails if this collapses.
