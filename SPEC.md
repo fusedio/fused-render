@@ -8799,6 +8799,41 @@ an AI Models page that could say what was on disk but not what was *running*.
   the result, the surrounding `finally` tears the thread down
   unconditionally so a raise mid-pass cannot leak it).
 
+- **AI-22** **The `declared` rung of `fit.py`'s precedence ladder — plumbed
+  since AI-16 (`resident_gb`, `fit.footprint_bytes`, `ai_runtime.describe_
+  catalog`) but set by NOTHING — is populated for the two `ltx-video`
+  rows, `dgrauet/ltx-2.3-mlx-q4` (`resident_gb: 20.5`) and `dgrauet/
+  ltx-2.3-mlx-q8` (`resident_gb: 29.8`), and deliberately left absent on
+  every other curated row.** (D525) `ltx-video` is the row `fit.py`'s own
+  module docstring names as the reason `resident_gb` exists at all:
+  `DistilledPipeline(low_memory=True)` frees the transformer and the
+  Gemma-3 text encoder between stages, so the true resident peak is one
+  stage, not the sum `size_gb` correctly reports as the download. The two
+  seeded values are `max(weights bytes, gemma bytes) / 1e9`, computed from
+  the exact Hub-measured byte counts `catalog.py`'s own comment above
+  these rows already states (2026-08-23) — real evidence derived from
+  numbers already curated in the file, not a fresh estimate invented for
+  this rung.
+
+  **Every other curated row is left alone, on purpose.** A row whose
+  pipeline holds every component resident together for the whole run (every
+  Diffusers/mflux/GGUF/mlx text, image and embedding entry in the file) has
+  `size_gb` already equal to its true resident footprint — seeding
+  `resident_gb` there would not be BETTER evidence than `size_gb`, only a
+  second copy of the same number that can drift out of sync with the first
+  the next time either is edited. `params x bpp + KV + overhead` (the
+  `download` rung's own arithmetic, AI-19) was considered as a source for
+  every row and rejected for the same reason: computing it once here and
+  writing the result into `catalog.py` as a static `resident_gb` would not
+  add information the `download` rung does not already compute live — it
+  would only go stale the next time `fit.py`'s constants improve, while
+  wearing the `declared` label's implicit "a curator confirmed this"
+  claim it would not have earned. A regression test
+  (`tests/test_ai_catalog_resident_gb.py::
+  test_no_single_stage_pipeline_entry_declares_a_resident_gb`) pins the
+  absence, so a future edit has to make the same case in words rather than
+  add a plausible-looking number by habit.
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,

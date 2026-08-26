@@ -1090,6 +1090,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # (the plan's own estimate — ~29.9/~39.2 GB — was written before the
     # worker's final pattern set excluded the second, unused transformer
     # copy; these are the re-derived figures the plan itself calls for).
+    #
+    # **`resident_gb` (SPEC AI-22, D525) is the declared rung `fit.py`'s own
+    # module docstring names THIS row as the motivating case for**:
+    # `DistilledPipeline(low_memory=True)` frees the transformer and the
+    # Gemma-3 text encoder between stages, so the true resident PEAK is one
+    # stage — the larger of the two components above — never their sum.
+    # `size_gb` is correct as the download figure (every byte both repos
+    # fetch, per this file's own rule); `resident_gb` is `max(weights bytes,
+    # gemma bytes) / 1e9`, rounded to the same one decimal `size_gb` uses,
+    # computed from the exact figures stated above rather than a fresh
+    # guess — real evidence this rung requires, not an estimate invented
+    # for it. The weights component is the larger one at BOTH tiers (gemma
+    # is a fixed 8,068,021,302 B either way), so `resident_gb` here is
+    # simply the weights half of the sum above: int4 20.5, int8 29.8.
     "ltx-video": [
         {
             "id": "dgrauet/ltx-2.3-mlx-q4",
@@ -1111,6 +1125,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "22B",
             "quantization": "MLX 4-bit",
             "size_gb": 28.5,
+            # See this list's own header comment for where 20.5 comes from —
+            # the larger of the two components DistilledPipeline ever holds
+            # resident at once (20,479,309,067 B weights, the larger of the
+            # pair), not the 28.5 GB sum both downloads fetch.
+            "resident_gb": 20.5,
             "note": "Text-to-video with audio, 8 denoising steps, on a "
                     "16 GB+ Mac. Diverges from the bf16 sample at this "
                     "tier — upstream's own ladder calls it a different "
@@ -1138,6 +1157,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "22B",
             "quantization": "MLX 8-bit",
             "size_gb": 37.8,
+            # See the int4 entry above (and this list's header comment) —
+            # 29.8 is the larger single-stage component (29,754,496,331 B
+            # weights), not the 37.8 GB sum both downloads fetch.
+            "resident_gb": 29.8,
             "note": "The same LTX-2 Community License, for the tier that "
                     "reproduces the bf16 sample — a 32 GB+ machine and "
                     "roughly 9 GB more download than the int4 default.",
