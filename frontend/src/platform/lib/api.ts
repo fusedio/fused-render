@@ -2726,6 +2726,27 @@ export function getAiRuntime(): Promise<AiRuntime> {
   return getJson<AiRuntime>("/api/ai/runtime");
 }
 
+/** Will this model sit comfortably on THIS machine — the server's judgement,
+ *  widened from a bare verdict string to an object (SPEC AI-16, AI-16c, D495)
+ *  so the page can tell a MEASURED answer apart from a guess. `basis`:
+ *
+ *  - "measured" — this model actually RAN here, and `footprintBytes` is what
+ *    it cost at its peak (`fused_render/ai/footprints.py`). Worded on the
+ *    page as a FACT ("Ran here, tight (28 GB)"), never as a hedge.
+ *  - "declared" — a curator's optional `resident_gb` estimate.
+ *  - "download" — nothing better is known; `footprintBytes` is the download's
+ *    own `size_gb`, exactly what `fit` meant before this shape existed.
+ *
+ *  `footprintBytes` is the figure the verdict was judged against, in bytes —
+ *  not necessarily `size_gb` scaled, since a "measured" or "declared" figure
+ *  can differ from the download entirely (LTX-2.3's `low_memory=True` peak is
+ *  one stage of a two-repo download). */
+export interface AiFitVerdict {
+  verdict: "easy" | "tight" | "no";
+  basis: "measured" | "declared" | "download";
+  footprintBytes: number;
+}
+
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
  *  the server's catalog is the curation, and what is on this disk is the cache
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
@@ -2768,14 +2789,21 @@ export interface AiCatalogModel {
    *  cached entries and on models nobody has measured; the consumer keeps the
    *  server's default then. */
   defaults?: { steps?: number } | null;
-  /** Will this model sit comfortably on THIS machine — the server's judgement
-   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
-   *  when either half is unknown. A judgement, not a measurement; the page
-   *  words it as one. */
-  fit?: "easy" | "tight" | "no" | null;
+  /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
+   *  Null when nothing is known at all (no size, no measurement, no curator
+   *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
+   *  follows. */
+  fit?: AiFitVerdict | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
+  /** A curator's optional estimate of this model's RESIDENT footprint in GB —
+   *  additive, in the shape `recommended`/`acceptsImage` already established
+   *  (SPEC AI-11i/AI-11j): a curator MAY answer, and absence falls through
+   *  `fit`'s ladder to `size_gb` rather than meaning anything. Never present
+   *  on a cached entry — nobody has curated a repo the user found themselves,
+   *  same reason `note` is null there. */
+  resident_gb?: number | null;
   /** Why you would or would not pick this one. Null on a CACHED entry: nobody
    *  wrote a note for a repo the user found themselves, and null says so where
    *  prose generated from a repo id would claim otherwise. */
