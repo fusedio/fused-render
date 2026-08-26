@@ -35,7 +35,7 @@ import { HeroComposer } from "@apps/builder/HomeHero";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
-  appPageTabFromPath,
+  appPageTabFromSearch,
   appPageUrl,
   appPathFromPath,
   assignSequences,
@@ -178,7 +178,7 @@ function CurrentAppRow({
     // destination is the OVERVIEW, so from the Tasks tab the click still goes —
     // it is how the sidebar gets back to the running app. Only a click that
     // would land exactly where the page already is stays a no-op.
-    if (!active || appPageTabFromPath(location.pathname) !== "overview")
+    if (!active || appPageTabFromSearch(location.search) !== "overview")
       navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {

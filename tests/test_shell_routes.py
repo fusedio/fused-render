@@ -85,18 +85,18 @@ def test_the_shell_actually_declares_routes():
 
 
 def test_the_app_page_survives_a_refresh(client):
-    """`/apps/<folder path>/<tab>` (D488, redesigned 2026-08-26) is a
+    """`/apps/<folder path>?_tab=<tab>` (D488, redesigned 2026-08-26) is a
     PARAMETERISED route — App.tsx matches it through `appPathFromPath`, not a
     `pathname ===` literal — so the scrape above cannot see it, the same blind
-    spot the canvases workspace has. Requested by hand: an absolute folder with
-    each tab, the bare folder the client rewrites to the default tab, and a
-    Windows drive path. Any depth serves the shell: the folder is the path."""
+    spot the canvases workspace has. Requested by hand: absolute folders at
+    several depths, with and without the tab query, and a Windows drive path.
+    Any depth serves the shell: the whole path is the folder."""
     for path in (
         "/apps/Users/me/Fused/local/some-app",
-        "/apps/Users/me/Fused/local/some-app/overview",
-        "/apps/Users/me/Fused/showcase/deep/some-app/tasks",
-        "/apps/Users/me/Fused/local/some-app/files",
-        "/apps/C:/Users/me/Fused/local/some-app/tasks",
+        "/apps/Users/me/Fused/local/some-app?_tab=tasks",
+        "/apps/Users/me/Fused/showcase/deep/some-app?_tab=files",
+        "/apps/Users/me/Fused/local/tasks",
+        "/apps/C:/Users/me/Fused/local/some-app?_tab=tasks",
     ):
         res = client.get(path)
         assert res.status_code == 200, (path, res.status_code)

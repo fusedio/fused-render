@@ -43,12 +43,7 @@ import { autoStartTourFor, maybeAutoStartTour } from "@platform/lib/tours";
 import { useThemeSync } from "@platform/lib/theme";
 import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
-import {
-  appPageUrl,
-  appPathFromPath,
-  DEFAULT_APP_PAGE_TAB,
-  isBareAppPath,
-} from "@shell/current-apps-lib";
+import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -596,16 +591,8 @@ export default function App({ config }: { config: Config }) {
       AI_MODELS_PREFIX + "/" + DEFAULT_TAB + location.search,
     );
   }
-  // The app page names its tabs in the path the same way; bare `/apps/<folder>`
-  // redirects to the default tab so every tab has exactly one address.
-  if (isBareAppPath(location.pathname)) {
-    history.replaceState(
-      null,
-      "",
-      appPageUrl(appPathFromPath(location.pathname)!, DEFAULT_APP_PAGE_TAB) +
-        location.search,
-    );
-  }
+  // (The app page's tab is a query param, `?_tab=` — current-apps-lib — and
+  // the default is its absence, so that page needs no rewrite here.)
 
   const pathname = location.pathname;
   // Via the router's predicate, not a second copy of the two spellings: a pane's
@@ -650,9 +637,9 @@ export default function App({ config }: { config: Config }) {
   // the "Unrecognized URL" branch below, deliberately unredirected.
   //
   // Everything under the hub is the app PAGE (D488, shell/AppPage.tsx):
-  // `/apps/<folder path>/<tab>` is one app folder — anywhere on disk the
+  // `/apps/<folder path>?_tab=<tab>` is one app folder — anywhere on disk the
   // Current apps desk can name — as a place: the app running in an Overview
-  // tab, its tasks in a Tasks tab, its files in a Files tab, one sub-path each.
+  // tab, its tasks in a Tasks tab, its files in a Files tab.
   // Asked through the lib's own codec, which is also the validation (no `.`
   // or `..` segment, a rooted folder). A stale `/apps/<tag>/<name>` builder
   // link decodes as a folder that is not there and lands on the page's

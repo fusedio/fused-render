@@ -6,10 +6,9 @@ import {
   bySequence,
   moveSlug,
   reorderTo,
-  appPageTabFromPath,
+  appPageTabFromSearch,
   appPageUrl,
   appPathFromPath,
-  isBareAppPath,
   currentApps,
   isUnderDir,
   orderedSlugs,
@@ -160,34 +159,50 @@ describe("app page codec", () => {
   it("round-trips a folder through the URL, escaping what needs it", () => {
     const dir = "/Users/me/Fused/local/my app#1";
     const url = appPageUrl(dir, "tasks");
-    expect(url).toBe("/apps/Users/me/Fused/local/my%20app%231/tasks");
-    expect(appPathFromPath(url)).toBe(dir);
-    expect(appPageTabFromPath(url)).toBe("tasks");
+    expect(url).toBe("/apps/Users/me/Fused/local/my%20app%231?_tab=tasks");
+    const [pathname, search] = url.split("?");
+    expect(appPathFromPath(pathname)).toBe(dir);
+    expect(appPageTabFromSearch("?" + search)).toBe("tasks");
+  });
+
+  it("gives the default tab exactly one address — no _tab", () => {
+    expect(appPageUrl("/Users/me/a")).toBe("/apps/Users/me/a");
+    expect(appPageUrl("/Users/me/a", "overview", "?_tab=tasks&view=board")).toBe(
+      "/apps/Users/me/a?view=board",
+    );
+  });
+
+  it("carries a tab's own params across a switch, rewriting only _tab", () => {
+    expect(appPageUrl("/Users/me/a", "files", "?view=board")).toBe(
+      "/apps/Users/me/a?view=board&_tab=files",
+    );
+    expect(appPageUrl("/Users/me/a", "tasks", "?_tab=files&file=x")).toBe(
+      "/apps/Users/me/a?_tab=tasks&file=x",
+    );
   });
 
   it("carries a Windows drive as the explorer does", () => {
     const url = appPageUrl("C:\\Users\\me\\Fused\\local\\a", "files");
-    expect(url).toBe("/apps/C%3A/Users/me/Fused/local/a/files");
-    expect(appPathFromPath(url)).toBe("C:/Users/me/Fused/local/a");
+    expect(url).toBe("/apps/C%3A/Users/me/Fused/local/a?_tab=files");
+    expect(appPathFromPath(url.split("?")[0])).toBe("C:/Users/me/Fused/local/a");
+  });
+
+  it("treats a folder named like a tab as a folder", () => {
+    expect(appPathFromPath("/apps/Users/me/tasks")).toBe("/Users/me/tasks");
+    expect(appPathFromPath("/apps/overview")).toBe("/overview");
   });
 
   it("refuses dot segments, empties and bad escapes", () => {
     expect(appPathFromPath("/apps/")).toBeNull();
-    expect(appPathFromPath("/apps/overview")).toBeNull();
-    expect(appPathFromPath("/apps/Users/../etc/overview")).toBeNull();
-    expect(appPathFromPath("/apps/%E0%A4%A/overview")).toBeNull();
+    expect(appPathFromPath("/apps/Users/../etc")).toBeNull();
+    expect(appPathFromPath("/apps/%E0%A4%A")).toBeNull();
     expect(appPathFromPath("/tasks")).toBeNull();
   });
 
-  it("reads the tab from the last segment, falling back to the overview", () => {
-    expect(appPageTabFromPath("/apps/Users/me/a/files")).toBe("files");
-    expect(appPageTabFromPath("/apps/Users/me/a")).toBe("overview");
-    expect(appPathFromPath("/apps/Users/me/a")).toBe("/Users/me/a");
-  });
-
-  it("knows the bare address that App.tsx rewrites to the default tab", () => {
-    expect(isBareAppPath("/apps/Users/me/a")).toBe(true);
-    expect(isBareAppPath("/apps/Users/me/a/overview")).toBe(false);
-    expect(isBareAppPath("/apps")).toBe(false);
+  it("reads the tab from the query, falling back to the overview", () => {
+    expect(appPageTabFromSearch("?_tab=files")).toBe("files");
+    expect(appPageTabFromSearch("?view=board")).toBe("overview");
+    expect(appPageTabFromSearch("?_tab=bogus")).toBe("overview");
+    expect(appPageTabFromSearch("")).toBe("overview");
   });
 });

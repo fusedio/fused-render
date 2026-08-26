@@ -75,21 +75,18 @@ export function currentApps(
 
 // ---- the app page's address (D488) ------------------------------------------
 //
-// `/apps/<folder path>/<tab>` — the folder as path segments in the explorer's
-// own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`, so a Windows
-// drive rides as `C:/…` exactly as it does under /explorer/view), the tab one
-// of APP_PAGE_TABS as the LAST segment, one path per tab the way /ai-models
-// does it (D420). It was `/apps/<slug>` — one folder name under
-// <fused_dir>/local — until 2026-08-26, when the desk widened to every app
-// kind and the address had to carry the whole folder. Bare `/apps/<folder>`
-// (last segment not a tab) redirects to the default tab (App.tsx, the same
-// render-time replaceState as `/ai-models`). shell.py serves the shell for
-// everything under /apps/. The query is left to the tab's own params (`?view=`
-// on Tasks, `?file=`/`?_mode=` on Files) and rides across a tab switch.
-//
-// Known edge: a folder itself NAMED `overview`, `tasks` or `files` opened by a
-// hand-typed BARE address reads its own name as the tab; every address this
-// app generates carries the tab, so the rows and the strip are never wrong.
+// `/apps/<folder path>?_tab=<tab>` — the folder as path segments in the
+// explorer's own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`, so
+// a Windows drive rides as `C:/…` exactly as it does under /explorer/view),
+// and the tab as the `_tab` QUERY param, absent for the default. It was
+// `/apps/<slug>/<tab>` — one folder name under <fused_dir>/local, tab as the
+// last segment — until 2026-08-26, when the desk widened to every app kind and
+// the address had to carry the whole folder. With the folder in the path a
+// trailing tab segment is ambiguous (a folder itself named `tasks`), so the
+// owner moved the tab back to the query the same day. `_tab` is underscored
+// like the explorer's own `_mode`, so it cannot collide with a tab's own
+// params (`?view=` on Tasks, `?file=` on Files), which ride across a switch
+// untouched. shell.py serves the shell for everything under /apps/.
 
 export const APP_PAGE_PREFIX = "/apps/";
 /** Tab-strip order; the first is the default. THE list: the type below is
@@ -100,24 +97,37 @@ export const APP_PAGE_TABS = ["overview", "tasks", "files"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
-function isTab(seg: string): seg is AppPageTab {
-  return (APP_PAGE_TABS as readonly string[]).includes(seg);
+/** The query param that names the tab. Absent = the default tab. */
+export const APP_PAGE_TAB_PARAM = "_tab";
+
+function isTab(seg: string | null): seg is AppPageTab {
+  return seg !== null && (APP_PAGE_TABS as readonly string[]).includes(seg);
 }
 
-/** The page URL for an app folder and tab. */
+/** The page URL for an app folder and tab. `search` is the current query to
+ *  carry (a tab's own params — `?view=` on Tasks, `?file=` on Files — ride
+ *  across a switch untouched); only `_tab` is rewritten, and it is DROPPED for
+ *  the default so the default tab has exactly one address. */
 export function appPageUrl(
   dir: string,
   tab: AppPageTab = DEFAULT_APP_PAGE_TAB,
+  search = "",
 ): string {
-  return APP_PAGE_PREFIX + encodeFsPathSegments(dir) + "/" + tab;
+  const params = new URLSearchParams(search);
+  if (tab === DEFAULT_APP_PAGE_TAB) params.delete(APP_PAGE_TAB_PARAM);
+  else params.set(APP_PAGE_TAB_PARAM, tab);
+  const query = params.toString();
+  return (
+    APP_PAGE_PREFIX + encodeFsPathSegments(dir) + (query ? "?" + query : "")
+  );
 }
 
-// The pathname split into decoded folder segments and the trailing tab (null
-// when the last segment is not a tab — the bare address). Null for anything
-// that is not under /apps/ or that does not decode.
-function splitAppPath(
-  pathname: string,
-): { segments: string[]; tab: AppPageTab | null } | null {
+/** The app folder an app-page pathname names (canonical, forward-slash), or
+ *  null for anything that is not one — every segment under /apps/ is the
+ *  folder. Validated AFTER decoding: the folder is stat'ed and framed, and the
+ *  server route is a bare shell fallback, so this is the only guard against
+ *  `.`/`..` segments, an empty folder, or a malformed percent-escape. */
+export function appPathFromPath(pathname: string): string | null {
   if (!pathname.startsWith(APP_PAGE_PREFIX)) return null;
   const raw = pathname
     .slice(APP_PAGE_PREFIX.length)
@@ -130,39 +140,18 @@ function splitAppPath(
   } catch {
     return null;
   }
-  const last = segments[segments.length - 1];
-  if (isTab(last)) return { segments: segments.slice(0, -1), tab: last };
-  return { segments, tab: null };
-}
-
-/** The app folder an app-page pathname names (canonical, forward-slash), or
- *  null for anything that is not one. Validated AFTER decoding: the folder is
- *  stat'ed and framed, and the server route is a bare shell fallback, so this
- *  is the only guard against `.`/`..` segments, an empty folder, or a
- *  malformed percent-escape. */
-export function appPathFromPath(pathname: string): string | null {
-  const parts = splitAppPath(pathname);
-  if (!parts || !parts.segments.length) return null;
-  for (const seg of parts.segments) {
+  for (const seg of segments) {
     if (!seg || seg === "." || seg === ".." || seg.includes("\\")) return null;
   }
-  return rootedFsPath(parts.segments.join("/"));
+  return rootedFsPath(segments.join("/"));
 }
 
-/** The tab a pathname names. Missing falls back to the default SILENTLY (the
- *  /ai-models posture): a stale link opens the page, not an error. App.tsx
- *  rewrites the bare case so the default has an address. */
-export function appPageTabFromPath(pathname: string): AppPageTab {
-  return splitAppPath(pathname)?.tab ?? DEFAULT_APP_PAGE_TAB;
-}
-
-/** Is this pathname the bare `/apps/<folder>` (no tab segment) that App.tsx
- *  rewrites to the default tab? */
-export function isBareAppPath(pathname: string): boolean {
-  const parts = splitAppPath(pathname);
-  return (
-    parts !== null && parts.tab === null && appPathFromPath(pathname) !== null
-  );
+/** The tab a query names. Missing or unknown falls back to the default
+ *  SILENTLY (the /ai-models posture): a stale link opens the page, not an
+ *  error. */
+export function appPageTabFromSearch(search: string): AppPageTab {
+  const tab = new URLSearchParams(search).get(APP_PAGE_TAB_PARAM);
+  return isTab(tab) ? tab : DEFAULT_APP_PAGE_TAB;
 }
 
 // ---- the displayed order: a sequence per app --------------------------------

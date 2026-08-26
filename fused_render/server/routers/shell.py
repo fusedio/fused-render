@@ -72,17 +72,16 @@ def shell_canvas_workspace(name: str, shell_path: str = Depends(get_shell_path))
     return FileResponse(shell_path)
 
 
-# The app page (D488, redesigned 2026-08-26): `/apps/<folder path>/<tab>` is
-# ONE app folder — anywhere the Current apps desk can name (a workspace
+# The app page (D488, redesigned 2026-08-26): `/apps/<folder path>?_tab=<tab>`
+# is ONE app folder — anywhere the Current apps desk can name (a workspace
 # folder, a linked app elsewhere on disk) — with the app running in an
 # Overview tab, its tasks in a Tasks tab and its files in a Files tab
-# (frontend shell/AppPage.tsx), one path per tab as the AI Models page does
-# below. The folder rides as path segments in the explorer's own codec
-# (router.ts encodeFsPathSegments), so this is a wildcard over everything
-# under /apps/: the client splits the trailing tab off (current-apps-lib) and
-# rewrites a bare folder address to the default tab. The path is validated
-# client-side; this is only the shell fallback that lets a refresh or a
-# bookmark land on the page.
+# (frontend shell/AppPage.tsx). The folder rides as path segments in the
+# explorer's own codec (router.ts encodeFsPathSegments) and the tab as a
+# query param (a trailing tab segment would be ambiguous with a folder named
+# `tasks`), so this is a wildcard over everything under /apps/. The path is
+# validated client-side (current-apps-lib appPathFromPath); this is only the
+# shell fallback that lets a refresh or a bookmark land on the page.
 @router.get("/apps/{path:path}")
 def shell_app_page(path: str, shell_path: str = Depends(get_shell_path)):
     return FileResponse(shell_path)

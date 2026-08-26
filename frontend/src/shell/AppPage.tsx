@@ -1,7 +1,7 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
-// as a place rather than as a folder. Three tabs, one path each
-// (`/apps/<folder>/overview`, `/tasks`, `/files` — current-apps-lib):
+// as a place rather than as a folder. Three tabs, named by the `_tab` query
+// param (absent = overview; `?_tab=tasks`, `?_tab=files` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -45,7 +45,7 @@ import { basename } from "@platform/lib/format";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
   APP_PAGE_TABS,
-  appPageTabFromPath,
+  appPageTabFromSearch,
   appPageUrl,
   type AppPageTab,
 } from "./current-apps-lib";
@@ -128,10 +128,10 @@ export default function AppPage({
 }) {
   const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
-  // The tab is the path's last segment, re-read on every URL event so
+  // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   useUrlVersion();
-  const tab = appPageTabFromPath(location.pathname);
+  const tab = appPageTabFromSearch(location.search);
 
   useEffect(() => {
     let live = true;
@@ -169,7 +169,7 @@ export default function AppPage({
     e.preventDefault();
     // The query rides along: it is the tab's own (`?view=` on Tasks), and a
     // switch away and back should find it as it was.
-    if (next !== tab) navigateUrl(appPageUrl(dir, next) + location.search);
+    if (next !== tab) navigateUrl(appPageUrl(dir, next, location.search));
   };
 
   const folderHref = urlForFsPath(dir);
@@ -216,7 +216,7 @@ export default function AppPage({
                   nativeButton={false}
                   render={
                     <a
-                      href={appPageUrl(dir, id) + location.search}
+                      href={appPageUrl(dir, id, location.search)}
                       onClick={(e) => pickTab(e, id)}
                     />
                   }
