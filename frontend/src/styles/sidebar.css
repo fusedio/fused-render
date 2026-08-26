@@ -1159,6 +1159,13 @@ a.bookmark-name::after {
   cursor: default;
 }
 
+/* An app whose folder is gone stays on the desk until the user removes it
+   (the table never prunes itself); it reads as faded so the row says so. */
+.current-app-row.is-missing .bookmark-name {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
 /* "Current apps" heading with its + (D489): the plus sits at the far end of the
    heading row and only shows itself on hover, like the rows' own actions. */
 .current-apps-heading {

@@ -68,6 +68,7 @@ from fused_render.server.routers.app_engine import router as app_engine_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -547,6 +548,9 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The Current apps desk (fused_render/current_apps.py): GET the table,
+    # DELETE one app (archiving its tasks). Fed by the tasks listing above.
+    app.include_router(current_apps_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)

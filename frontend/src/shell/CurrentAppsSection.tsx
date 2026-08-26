@@ -1,20 +1,22 @@
-// "Current apps" — the sidebar section above Bookmarks (D487): EVERY workspace
-// app (<fused_dir>/local/<slug>) that still has a task not filed away, newest
-// activity first, uncapped. A row opens the app's PAGE (`/apps/<slug>`,
-// shell/AppPage.tsx, D488) — the one door that page has; its cross archives
-// every task under it, which is the one gesture that takes an app off this list.
+// "Current apps" — the sidebar section above Bookmarks (D487, redesigned
+// 2026-08-26): the apps on the user's desk, read from a STORE of their own
+// (`GET /api/current-apps`, fused_render/current_apps.py) — every kind of app,
+// workspace or linked. A row opens the app's PAGE (`/apps/<folder>`,
+// shell/AppPage.tsx, D488) — the one door that page has; its cross REMOVES the
+// app from the desk and, as the side effect, archives every task under it.
 //
-// The ORDER is a sequence per app, not the recency it is seeded from
-// (current-apps-lib.ts): a row moves only when the user drags it, so new work in
-// an app already listed does not reshuffle the list under the cursor. The store
-// is the module-level `appOrder` below, hydrated from localStorage at import and
-// written back BY A DRAG AND ONLY BY A DRAG, so an arrangement survives a reload
-// and the next launch without a poll ever having an opinion about it.
+// The desk is NOT the task list. A new task puts its app on the desk; nothing
+// takes it off but the cross. So this section fetches the table itself, and
+// re-fetches when the task pulse shows a task key it has not seen — the only
+// event that can add a row. The pulse is still read for one thing: the running
+// dot. That is a subscription this sidebar already holds, not a second poll.
 //
-// Fed by the task pulse store (useTasksPulseRows) rather than a poll of its
-// own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
-// reader and a second one is the double-poll that store exists to prevent.
-// `project` rides the compact row for exactly this reader.
+// The ORDER is a sequence per app, not the added order it is seeded from
+// (current-apps-lib.ts): a row moves only when the user drags it, so new work
+// does not reshuffle the list under the cursor. The store is the module-level
+// `appOrder` below, hydrated from localStorage at import and written back BY A
+// DRAG AND ONLY BY A DRAG, so an arrangement survives a reload and the next
+// launch without a fetch ever having an opinion about it.
 import React, {
   useCallback,
   useEffect,
@@ -22,15 +24,20 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { archiveTask, getConfig } from "@platform/lib/api";
+import {
+  getCurrentApps,
+  removeCurrentApp,
+  type CurrentAppEntry,
+} from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
-  appPageTabFromPath,
+  appPageTabFromSearch,
   appPageUrl,
+  appPathFromPath,
   assignSequences,
   bySequence,
   currentApps,
@@ -38,27 +45,26 @@ import {
   orderedSlugs,
   parseSavedOrder,
   reorderTo,
-  slugFromAppPath,
   type AppOrder,
   type CurrentApp,
 } from "@shell/current-apps-lib";
 
-// Read once per mount; the sidebar remounts per navigation, which is cheap
-// enough (Scheduled.tsx reads config the same way). Cached at module level so
-// the row list does not blink empty on every remount while the config
-// round-trips. `fused_dir`, not `home`: the workspace root honours
-// FUSED_RENDER_DIR, and a root built from home would list nothing under it.
-let knownRoot = "";
+// Bumped from `current-apps-order` with the redesign: the saved list was slugs
+// and is folder paths now, and a slug-shaped order would match nothing.
+export const ORDER_KEY = "fused-render:current-apps-order:v2";
 
-export const ORDER_KEY = "fused-render:current-apps-order";
+// The last table this document fetched, kept at module level so the rows do not
+// blink empty on every per-navigation remount of the sidebar while the fetch
+// round-trips.
+let knownApps: CurrentAppEntry[] = [];
 
 // The displayed order: a module-level Map (it outlives the sidebar's
 // per-navigation remount — pushState routing) hydrated from localStorage at
 // import, so the order is already in hand before the first render and there is
-// no window where recency wins a race against what the user dragged.
+// no window where the fetch wins a race against what the user dragged.
 //
 // Every store touch sits inside a try: a blocked or full store costs the saved
-// order, not the section. Reading a JSON array of slugs (top first) rather than
+// order, not the section. Reading a JSON array of paths (top first) rather than
 // the sequence numbers themselves keeps the stored shape the one thing that
 // matters — nothing on disk has to agree with a numbering scheme this module is
 // free to change.
@@ -74,17 +80,16 @@ function readSavedOrder(): string[] {
 
 // Called from the DROP HANDLER and nowhere else — that placement is the whole
 // cross-tab design, so it is worth stating plainly. A persist effect keyed on
-// the app list looks equivalent and is not: the store hands out a fresh `rows`
-// array every poll, so such an effect fires per tick, and two tabs then take
-// turns saving their own view of a world they briefly disagree about (Bugbot
-// twice, 2026-08-26 — first a second tab clobbering a drag, then an outright
-// write loop). A drag is one user gesture. There is no second writer to race.
+// the app list looks equivalent and is not: two tabs then take turns saving
+// their own view of a world they briefly disagree about (Bugbot twice,
+// 2026-08-26 — first a second tab clobbering a drag, then an outright write
+// loop). A drag is one user gesture. There is no second writer to race.
 //
 // The equality guard is belt-and-braces on top of that: re-dragging a row back
 // where it was writes nothing.
-function saveOrder(slugs: string[]): void {
+function saveOrder(paths: string[]): void {
   try {
-    const next = JSON.stringify(slugs);
+    const next = JSON.stringify(paths);
     if (localStorage.getItem(ORDER_KEY) === next) return;
     localStorage.setItem(ORDER_KEY, next);
   } catch {
@@ -92,9 +97,9 @@ function saveOrder(slugs: string[]): void {
   }
 }
 
-/** Take `slugs` as the whole order, replacing what this page held. Empty is NOT
+/** Take `paths` as the whole order, replacing what this page held. Empty is NOT
  *  an order — a missing or cleared key must leave the live order alone rather
- *  than flattening it. A live slug the incoming list does not mention gets a
+ *  than flattening it. A live app the incoming list does not mention gets a
  *  fresh sequence and goes on top, which is correct: the tab that dragged did
  *  not have that app, so its arrangement has nothing to say about where it
  *  belongs. Nothing answers back — adopting never writes. */
@@ -121,19 +126,27 @@ try {
   // No store and no window: the order lives and dies with this page.
 }
 
-function useFusedDir(): string {
-  const [root, setRoot] = useState(knownRoot);
+/** The desk's table, fetched on mount and again whenever `signal` changes —
+ *  the caller passes the pulse's set of task keys, since a task this document
+ *  has not seen is the one thing that can add a row. Errors keep the last
+ *  answer: a failed read is not an empty desk. */
+function useCurrentApps(signal: string, refreshEpoch: number): CurrentAppEntry[] {
+  const [apps, setApps] = useState<CurrentAppEntry[]>(knownApps);
   useEffect(() => {
-    if (knownRoot) return;
-    getConfig().then(
-      (c) => {
-        knownRoot = c.fused_dir || "";
-        setRoot(knownRoot);
+    let live = true;
+    getCurrentApps().then(
+      (r) => {
+        if (!live) return;
+        knownApps = r.apps ?? [];
+        setApps(knownApps);
       },
       () => {},
     );
-  }, []);
-  return root;
+    return () => {
+      live = false;
+    };
+  }, [signal, refreshEpoch]);
+  return apps;
 }
 
 interface RowDragProps {
@@ -148,44 +161,56 @@ function CurrentAppRow({
   app,
   active,
   drag,
+  onRemoved,
 }: {
   app: CurrentApp;
   active: boolean;
   drag: RowDragProps;
+  onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const href = appPageUrl(app.slug);
+  const href = appPageUrl(app.path);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    // `active` is slug-only (the row lights up on either tab); the destination
-    // is the OVERVIEW, so from the Tasks tab the click still goes — it is how
-    // the sidebar gets back to the running app. Only a click that would land
-    // exactly where the page already is stays a no-op.
-    if (!active || appPageTabFromPath(location.pathname) !== "overview")
+    // `active` is folder-only (the row lights up on either tab); the
+    // destination is the OVERVIEW, so from the Tasks tab the click still goes —
+    // it is how the sidebar gets back to the running app. Only a click that
+    // would land exactly where the page already is stays a no-op.
+    if (!active || appPageTabFromSearch(location.search) !== "overview")
       navigateUrl(href);
   };
-  const onArchive = async (e: React.MouseEvent) => {
+  const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (busy) return;
     setBusy(true);
     try {
-      // Every task under the app, tolerant of one failing: the row leaves the
-      // list only once the pulse re-reads, so a half-archived app simply stays
-      // with fewer tasks rather than lying about being gone.
-      await Promise.allSettled(app.taskKeys.map((k) => archiveTask(k)));
+      // One call: the server drops the row AND archives every task under the
+      // folder (the side effect the owner asked for). The tasks surfaces learn
+      // through the poke; the desk through the refetch the caller runs.
+      await removeCurrentApp(app.path);
+    } catch {
+      // A failed remove leaves the row; the refetch below shows the truth.
     } finally {
       setBusy(false);
       pokeTasks();
+      onRemoved();
     }
   };
-  const n = app.taskKeys.length;
-  const tip = `${app.dir} — ${n} ${n === 1 ? "task" : "tasks"}${app.running ? ", running" : ""}`;
+  const tip =
+    app.path +
+    (app.kind === "linked" ? " — linked app" : "") +
+    (app.exists ? "" : " — folder missing") +
+    (app.running ? " — running" : "");
   return (
     <div
-      className={"bookmark-row current-app-row" + (active ? " active" : "")}
+      className={
+        "bookmark-row current-app-row" +
+        (active ? " active" : "") +
+        (app.exists ? "" : " is-missing")
+      }
       title={tip}
       draggable
       {...drag}
@@ -200,15 +225,15 @@ function CurrentAppRow({
         aria-current={active ? "page" : undefined}
         onClick={onOpen}
       >
-        {app.slug}
+        {app.name}
       </a>
       <span className="bookmark-actions">
         <button
           className="icon-btn delete-btn current-app-archive"
-          title={`Archive ${n === 1 ? "its task" : `all ${n} tasks`}`}
-          aria-label={`Archive all tasks for ${app.slug}`}
+          title="Remove from current apps (archives its tasks)"
+          aria-label={`Remove ${app.name} from current apps and archive its tasks`}
           disabled={busy}
-          onClick={onArchive}
+          onClick={onRemove}
         >
           ✕
         </button>
@@ -219,25 +244,38 @@ function CurrentAppRow({
 
 export default function CurrentAppsSection() {
   const rows = useTasksPulseRows();
-  const fusedDir = useFusedDir();
+  // The set of task keys, as one string: it changes exactly when a task
+  // appears or leaves, and a new task is the only thing that can add an app.
+  // Order-independent (sorted) so a re-sorted pulse does not refetch.
+  const keySignal = useMemo(
+    () =>
+      rows
+        .map((r) => r.key)
+        .sort()
+        .join("\n"),
+    [rows],
+  );
+  const runningProjects = useMemo(
+    () => rows.filter((r) => r.status === "in_progress").map((r) => r.project || ""),
+    [rows],
+  );
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
+  const entries = useCurrentApps(keySignal, refreshEpoch);
   // A drop mutates `appOrder`, which React cannot see; this counter is what
-  // turns that mutation into a render. The pulse's own ticks re-run the memo
-  // anyway, so without it a drag would land only on the next poll.
+  // turns that mutation into a render.
   const [orderEpoch, setOrderEpoch] = useState(0);
   const apps = useMemo(() => {
-    const found = currentApps(rows, fusedDir);
+    const found = currentApps(entries, runningProjects);
     // Assigning during render is safe because it is idempotent: an app that
     // already has a sequence keeps it, so a double-invoked render (StrictMode)
     // or a re-run on the same rows cannot renumber anything.
     assignSequences(appOrder, found);
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
-  }, [rows, fusedDir, orderEpoch]);
-  // NOTHING is saved here. A new app, an archived one, a pulse landing — all of
+  }, [entries, runningProjects, orderEpoch]);
+  // NOTHING is saved here. A new app, a removed one, a fetch landing — all of
   // those move rows on screen and write nothing to the store; the saved order is
-  // an arrangement the user made, and only they can change it. That is what
-  // keeps two tabs from arguing (see `saveOrder`), and it is also why a list
-  // nobody has dragged simply seeds from recency again on the next reload.
+  // an arrangement the user made, and only they can change it.
 
   // Repaint when another tab drags. The adopt already happened at the module
   // listener; this is only the render half of it.
@@ -251,7 +289,7 @@ export default function CurrentAppsSection() {
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
-  const onSlug = slugFromAppPath(location.pathname);
+  const onPath = appPathFromPath(location.pathname);
 
   // ---- reordering by drag ----------------------------------------------------
   // A flat list, so the only question a drop asks is "above or below this row",
@@ -261,9 +299,6 @@ export default function CurrentAppsSection() {
   // carry `bookmark-row`, so `.dragging` / `.drag-above` / `.drag-below` are
   // painted by sidebar.css with nothing new added.
   const draggedRef = useRef<string | null>(null);
-  // Cleared by query rather than by ref: the row that started the drag may
-  // already be detached when the drop lands, and any row still on screen must
-  // not keep wearing a class from a finished gesture.
   const clearDrag = () => {
     const marks = ["drag-above", "drag-below", "dragging"];
     const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
@@ -275,16 +310,16 @@ export default function CurrentAppsSection() {
     const r = e.currentTarget.getBoundingClientRect();
     return e.clientY > r.top + r.height / 2;
   };
-  const dragProps = (slug: string): RowDragProps => ({
+  const dragProps = (path: string): RowDragProps => ({
     onDragStart: (e) => {
-      draggedRef.current = slug;
+      draggedRef.current = path;
       e.currentTarget.classList.add("dragging");
       e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", slug); // Firefox needs a payload to start
+      e.dataTransfer.setData("text/plain", path); // Firefox needs a payload to start
     },
     onDragOver: (e) => {
       const from = draggedRef.current;
-      if (from === null || from === slug) return;
+      if (from === null || from === path) return;
       e.preventDefault(); // required to allow a drop
       e.dataTransfer.dropEffect = "move";
       const after = isBelow(e);
@@ -300,15 +335,11 @@ export default function CurrentAppsSection() {
       // records at its own drop handler).
       draggedRef.current = null;
       clearDrag();
-      if (from === null || from === slug) return;
+      if (from === null || from === path) return;
       e.preventDefault();
       // Moved within the WHOLE store, not the visible run. They are the same
-      // list — the store is pruned to the desk on every assignment — and taking
-      // it from the store is what keeps them the same: renumbering a subset
-      // would leave anything outside it on a stale sequence, free to sort in
-      // above the arrangement the user just made (Bugbot, 2026-08-26, against a
-      // version that did remember non-live slugs).
-      const next = moveSlug(orderedSlugs(appOrder), from, slug, isBelow(e));
+      // list — the store is pruned to the desk on every assignment.
+      const next = moveSlug(orderedSlugs(appOrder), from, path, isBelow(e));
       reorderTo(appOrder, next);
       saveOrder(next);
       setOrderEpoch((n) => n + 1);
@@ -320,22 +351,22 @@ export default function CurrentAppsSection() {
     },
   });
 
+  const refetch = useCallback(() => setRefreshEpoch((n) => n + 1), []);
   const render = useCallback(
     (app: CurrentApp) => (
       <CurrentAppRow
-        key={app.dir}
+        key={app.path}
         app={app}
-        active={app.slug === onSlug}
-        drag={dragProps(app.slug)}
+        active={app.path === onPath}
+        drag={dragProps(app.path)}
+        onRemoved={refetch}
       />
     ),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps closes over `apps`
-    [onSlug, apps],
+    [onPath, apps, refetch],
   );
-  // The + opens the /apps composer in a modal (D489). The section therefore
-  // ALWAYS renders now — it first hid itself with zero current apps (D487),
-  // but a door to "make one" is exactly what an empty desk wants, and hiding
-  // the heading would hide the door with it. Empty = heading + plus, no rows.
+  // The + opens the /apps composer in a modal (D489). The section ALWAYS
+  // renders: a door to "make one" is exactly what an empty desk wants.
   const [composing, setComposing] = useState(false);
   return (
     <div className="sidebar-section sidebar-current-apps">
