@@ -244,14 +244,37 @@ def sources_for(repo_id: str, *, params: float | None = None,
     candidate.
 
     `force=True` bypasses the TTL, mirroring `hub_metadata.get`'s own flag.
+
+    **A NEGATIVE result cached from a call with no `params` is never reused
+    by a later call that DOES supply one** (code review finding 6). Without
+    `params`, only the `base_model`-tag tier can confirm a candidate — a
+    genuine match the param-similarity tier WOULD have found stays
+    unconfirmed and the probe answers `()`. Caching that `()` under `repo_
+    id` alone would then shadow a later, better-informed call for the rest
+    of `TTL_SECONDS`: the later call passes `params`, finds the SAME repo
+    it already found before, but the cache answers from a strictly weaker
+    prior probe instead of re-running with the new evidence. The store's
+    `paramsKnown` flag records whether `params` was available on the probe
+    that produced the cached NEGATIVE; a positive result is trusted
+    regardless (a confirmed `base_model` tag is real evidence with or
+    without `params`, and cannot be invalidated by having MORE information
+    later), and a negative cached WITH `params` already reflects the full
+    two-tier check, so it is trusted too.
     """
     store = _load()
     entry = store["repos"].get(repo_id)
-    fresh = (isinstance(entry, dict) and not force
-             and time.time() - _fetched_at(entry) < TTL_SECONDS)
-    if fresh:
-        sources = entry.get("sources")
-        return tuple(sources) if isinstance(sources, list) else ()
+    within_ttl = isinstance(entry, dict) and not force and \
+        time.time() - _fetched_at(entry) < TTL_SECONDS
+    if within_ttl:
+        cached_sources = entry.get("sources")
+        cached_is_negative = not cached_sources
+        # A cached NEGATIVE from a probe with no `params` must not shadow a
+        # later call that DOES supply one — see the docstring above for why.
+        # A POSITIVE result, or a negative that already reflects a probe
+        # WITH `params`, is trusted as-is.
+        usable = not cached_is_negative or bool(entry.get("paramsKnown")) or params is None
+        if usable:
+            return tuple(cached_sources) if isinstance(cached_sources, list) else ()
 
     try:
         sources = _probe(repo_id, params)
@@ -261,7 +284,8 @@ def sources_for(repo_id: str, *, params: float | None = None,
         # like a plain network failure would.
         sources = ()
 
-    store["repos"][repo_id] = {"sources": list(sources), "fetchedAt": time.time()}
+    store["repos"][repo_id] = {"sources": list(sources), "fetchedAt": time.time(),
+                               "paramsKnown": params is not None}
     store["repos"] = _bounded(store["repos"])
     _write(store)
     return sources

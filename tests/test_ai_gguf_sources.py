@@ -170,3 +170,61 @@ def test_a_corrupt_fetchedat_never_raises_into_the_route(monkeypatch):
                                       "fetchedAt": "not-a-timestamp"}
     gguf_sources._write(store)
     assert gguf_sources.sources_for("org/Qwen3-8B") == ("unsloth/Qwen3-8B-GGUF",)
+
+
+# -- a without-params negative must not poison a later with-params call -----
+# (code review finding 6)
+
+
+def test_a_negative_without_params_is_not_reused_for_a_later_call_with_params(monkeypatch):
+    """A first call with no `params` can only confirm via the `base_model`
+    tag tier and caches `()` when no candidate carries one. A LATER call
+    that supplies `params` could confirm the SAME candidate via the
+    param-similarity fallback tier — the cached `()` must not shadow that
+    real answer for the rest of the 7-day TTL."""
+    def fetch(repo_id):
+        if repo_id == "unsloth/Qwen3-8B-GGUF":
+            return _info(params=8_000_000_000)  # no base_model tag
+        return None
+
+    monkeypatch.setattr(gguf_sources, "_fetch_model_info", fetch)
+    assert gguf_sources.sources_for("org/Qwen3-8B") == ()  # no params -> no match
+    assert gguf_sources.sources_for("org/Qwen3-8B", params=8_000_000_000) == (
+        "unsloth/Qwen3-8B-GGUF",)
+
+
+def test_a_negative_with_params_is_still_cached_and_reused(monkeypatch):
+    """The opposite case must still be cheap: a call that DID have `params`
+    available, and genuinely found nothing, is a real negative and should
+    not be re-probed by a later without-params call."""
+    calls = []
+
+    def fetch(repo_id):
+        calls.append(repo_id)
+        return None
+
+    monkeypatch.setattr(gguf_sources, "_fetch_model_info", fetch)
+    assert gguf_sources.sources_for("org/Qwen3-8B", params=8_000_000_000) == ()
+    n_calls = len(calls)
+    assert gguf_sources.sources_for("org/Qwen3-8B") == ()
+    assert len(calls) == n_calls  # no re-probe
+
+
+def test_a_positive_result_from_a_without_params_call_is_still_cached(monkeypatch):
+    """A confirmed MATCH (via the base_model tag, which needs no params at
+    all) is real evidence regardless of whether params was ever supplied —
+    only a NEGATIVE result's cache-ability depends on it."""
+    calls = []
+
+    def fetch(repo_id):
+        calls.append(repo_id)
+        if repo_id == "unsloth/Qwen3-8B-GGUF":
+            return _info(base_model="org/Qwen3-8B")
+        return None
+
+    monkeypatch.setattr(gguf_sources, "_fetch_model_info", fetch)
+    assert gguf_sources.sources_for("org/Qwen3-8B") == ("unsloth/Qwen3-8B-GGUF",)
+    n_calls = len(calls)
+    assert gguf_sources.sources_for("org/Qwen3-8B", params=8_000_000_000) == (
+        "unsloth/Qwen3-8B-GGUF",)
+    assert len(calls) == n_calls  # no re-probe
