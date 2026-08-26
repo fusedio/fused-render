@@ -2964,6 +2964,22 @@ export interface AiCatalogModel {
    *  change nothing about the vectors. So a control drawn off the truthiness of
    *  this field and the route's own refusal are keyed on the same fact. */
   promptScheme?: string | null;
+  /** Orthogonal capability tags — `"tool-use"` / `"vision"` (SPEC AI-28) — ON
+   *  TOP OF `capability`, never a replacement for it: a model can be
+   *  `text-generation` AND carry either or both tags. `"tool-use"` comes off a
+   *  known-family allowlist (`registry.TOOL_USE_FAMILIES` — Qwen3, Qwen2.5,
+   *  Command R, Hermes, Llama 3/Mistral instruct, Gemma 3/4 `-it`), never a
+   *  regex over the repo id. `"vision"` restates the same fact `acceptsImage`
+   *  already gates on for a `text-generation` row (a cached checkpoint's own
+   *  `has_vision_tower`, or `hub_metadata`'s pre-download reading when nothing
+   *  is cached yet) as a tag rather than a permission. Always an array — empty
+   *  rather than absent when neither applies, and always `[]` on every
+   *  non-`text-generation` capability, so a consumer can test membership
+   *  (`tags?.includes("tool-use")`). Optional, matching every other field
+   *  added to this interface (`score`/`runMode`/`speedEstimate`): a stale
+   *  client, a test literal, or an older cached response shape does not have
+   *  to carry it. */
+  tags?: string[];
 }
 
 export interface AiCatalogCapability {
