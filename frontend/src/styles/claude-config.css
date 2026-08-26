@@ -529,6 +529,21 @@
 
 /* -- settings rows --------------------------------------------------------- */
 
+/* Preferences' own measure — ~1000px, left-aligned (not centred, matching
+   .cc-main's own left-aligned rationale above: this page sits beside the
+   sidebar, not floating in the window). Scoped to THIS section's wrapper
+   rather than .cc-main (owner, 2026-08-26): a cap here bounds only
+   Preferences, so it can never again squeeze AI Models' Playground the way
+   the old .cc-main-capped did. Wraps the toolbar row too (summary · Refresh
+   catalog), not just the rows beneath it — otherwise the caption/toolbar
+   stretches full-bleed above a narrower column of rows, which reads as
+   misaligned even though each piece is individually "correct". Below 640px
+   .cc-row itself switches to a stacked column layout (see that block); this
+   cap doesn't need its own breakpoint, it just shrinks with the viewport. */
+.cc-prefs {
+  max-width: 1000px;
+}
+
 .cc-row {
   display: flex;
   align-items: flex-start;
