@@ -646,3 +646,38 @@ def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monk
     resp = client.post("/api/engines/map_tiles/proxy/describe", json={}, headers=HDRS)
     assert resp.status_code == 200
     assert captured["at_most_once"] is False
+
+
+# --------------------------------------------------- Python 3.10 compatibility
+
+
+def test_background_apps_has_no_bare_tomllib_import():
+    """Code-review fix (CI regression): `requires-python = ">=3.10"`, but
+    tomllib is 3.11+ stdlib — a bare module-level `import tomllib` raises
+    ImportError on 3.10, and since server/app.py imports the background_apps
+    router which imports this module, that took the whole server down on the
+    `test-python (3.10)` CI lane, not just this feature.
+
+    A clean-import test alone is weak here — this pytest run is always on the
+    dev venv's 3.12+, so it can't reproduce a 3.10-only failure. This is a
+    static pin on the SHAPE of the fix (the try tomllib / except tomli
+    fallback `projectenv._load_manifest` already uses) instead, plus this
+    module having actually been re-verified by hand against a real 3.10 venv
+    with only `tomli` installed (no tomllib) — `uv venv --python 3.10` +
+    `uv pip install -e .[dev]`, then `from fused_render import
+    background_apps` and `background_apps.load_manifest(...)` both succeed."""
+    import inspect
+
+    src = inspect.getsource(background_apps)
+    top_level_lines = [
+        line for line in src.splitlines()
+        if line.startswith("import ") or line.startswith("from ")
+    ]
+    assert not any("tomllib" in line for line in top_level_lines), (
+        "background_apps.py must not import tomllib at module level — "
+        "it needs the try/except tomli fallback (see load_manifest)"
+    )
+    assert "import tomllib" in src and "import tomli as tomllib" in src, (
+        "background_apps.py's tomllib fallback pattern (projectenv.py's "
+        "shape) appears to have been removed"
+    )

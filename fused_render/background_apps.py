@@ -26,7 +26,6 @@ import hashlib
 import logging
 import os
 import sys
-import tomllib
 from dataclasses import dataclass
 
 from fused_render.index.ignore import MountGuard
@@ -55,6 +54,22 @@ def load_manifest(folder: str) -> Manifest | None:
     (`daemon = "."` passes the containment check below on its own) all simply
     read as "no manifest" rather than reaching engine_host as a `python
     <folder>` bring-up that fails opaquely."""
+    # tomllib is 3.11+ stdlib and `requires-python` is >=3.10, so on 3.10 the
+    # `tomli` dependency supplies it (same fallback as projectenv._load_manifest
+    # — both names expose TOMLDecodeError, so aliasing keeps the except below
+    # unchanged). A missing parser is not a user-actionable error (every
+    # install of fused-render has one), so it's a warning, not a raise.
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            logger.warning(
+                "neither tomllib (Python 3.11+) nor tomli is available; "
+                "pyproject.toml files cannot be read"
+            )
+            return None
     folder = os.path.abspath(folder)
     pyproject = os.path.join(folder, "pyproject.toml")
     try:
