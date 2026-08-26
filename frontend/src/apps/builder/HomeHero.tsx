@@ -324,8 +324,11 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
 
   // Second half of a create: the app has a name, scaffold it and land in its
   // chat. Shared by the automatic path (haiku named it) and the ask path (the
-  // user did), so both end up in exactly the same place.
-  const createNamed = async (name: string) => {
+  // user did), so both end up in exactly the same place. `back` is where a
+  // failure returns to: the ask row keeps the name the user typed (a retry
+  // from idle would re-run naming and overwrite it with a fresh my-app-N),
+  // the automatic path goes back to the prompt.
+  const createNamed = async (name: string, back: "idle" | "askName") => {
     setError(null);
     setSessionError(null);
     setPhase("creating");
@@ -362,7 +365,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
     } catch (e) {
       if (alive.current) {
         setError((e as Error).message);
-        setPhase("idle");
+        setPhase(back);
       }
     }
   };
@@ -378,7 +381,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
     const name = await suggestAppName(prompt.trim());
     if (!alive.current) return;
     if (name) {
-      await createNamed(name);
+      await createNamed(name, "idle");
       return;
     }
     const generic = await genericAppName();
@@ -391,7 +394,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   const nameOk = KEBAB_RE.test(nameDraft);
   const confirmName = () => {
     if (phase !== "askName" || !nameOk) return;
-    void createNamed(nameDraft);
+    void createNamed(nameDraft, "askName");
   };
   const cancelName = () => {
     setPhase("idle");
