@@ -28,6 +28,7 @@ import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
 import CurrentAppsSection from "@shell/CurrentAppsSection";
+import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -360,6 +361,8 @@ const AI_MODELS_HOME = tabHref("playground", "");
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
+  // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
+  useSidebarArrowNav();
 
   // No builtin-mount gate any more: the entries they guarded (Inbox, App
   // Basics) are gone from the sidebar — the learn content ships as a community

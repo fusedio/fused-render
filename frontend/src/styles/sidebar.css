@@ -637,6 +637,17 @@ button.sidebar-prefs-trigger {
   margin-bottom: 0;
 }
 
+/* Keyboard position: Up/Down walk the Projects + Bookmarks rows
+   (shell/sidebarArrowNav.ts) and land focus on the row's link, so the row
+   shows where the cursor is. `:has()` lifts the ring onto the row itself. */
+.bookmark-row:has(> a.bookmark-name:focus-visible) {
+  outline: 1.5px solid var(--accent, currentColor);
+  outline-offset: -1.5px;
+}
+.bookmark-row > a.bookmark-name:focus-visible {
+  outline: none;
+}
+
 /* The collapsed count sits at the row's far end, clear of the label+chevron. */
 .recents-heading > .sidebar-count-chip {
   margin-left: auto;
