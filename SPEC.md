@@ -8894,6 +8894,19 @@ an AI Models page that could say what was on disk but not what was *running*.
   or missing file reads as empty, never raises). Network failure — a
   timeout, a non-200, a malformed body, or a monkeypatched seam raising in
   a test — degrades the whole probe to `()`, never into a route.
+- **AI-24** **`formats.select_gguf_recipe(files, budget_bytes, params=None)`
+  picks the best-quality GGUF file a repo's own listing offers that still
+  fits a known budget -- `GGUF_QUALITY_ORDER`'s full top-to-bottom ladder
+  (`Q8_0` down to `IQ1_M`), a SEPARATE table from `GGUF_SUFFIX_PRIORITY`'s
+  hardware-blind default** (D527). A multi-part shard set collapses into
+  ONE candidate at the summed size before ranking, so a 3-shard model
+  cannot look like it fits by judging one part alone. `pick_gguf_file`
+  (D412) is untouched -- this is a new, opt-in entry point for a caller that
+  already has a budget, not a replacement for the id-resolution default
+  every bare repo id still gets. A file with no known size is estimated as
+  `params x fit.quant_bytes_per_param(token)` -- the SAME table item 4's
+  `download` rung uses, imported lazily so `formats.py`'s bare-module load
+  path (a worker's interpreter) never pays for it.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

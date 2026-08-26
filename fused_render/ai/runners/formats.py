@@ -1231,6 +1231,122 @@ def pick_gguf_file(filenames) -> str | None:
     return None
 
 
+# --------------------------------------------------------------- SPEC AI-24
+#: "Best quality that still fits" order — most-preferred first — used ONLY by
+#: `select_gguf_recipe` below, a caller that already knows its own memory
+#: budget. **Deliberately a SEPARATE table from `GGUF_SUFFIX_PRIORITY`**, not
+#: a reordering of it: that table encodes `pick_gguf_file`'s hardware-BLIND
+#: default (D412's considered rejection of a budget — a bare repo id must
+#: resolve to the same bytes on every machine) and starts at `Q4_K_M`
+#: deliberately, never offering anything larger by default. This table is
+#: the opposite question — given a KNOWN budget, which of a repo's OWN
+#: quantizations is the best one that fits — so it runs the full quality
+#: range top to bottom, largest/highest-fidelity first, exactly SPEC item
+#: 14's own list. `Q6_K_L` (llama.cpp's mixed-precision "L" variant, heavier
+#: layers kept at a higher bit width) sits between `Q6_K` and `Q5_K_M` on
+#: the same reasoning `_gguf_rank`'s dynamic-quant tiers already use: a named
+#: variant of a ranked family, not a family of its own.
+GGUF_QUALITY_ORDER: tuple[str, ...] = (
+    "Q8_0", "Q6_K", "Q6_K_L", "Q5_K_M", "Q5_K_S", "Q4_K_M", "Q4_K_S", "Q4_0",
+    "Q3_K_M", "Q3_K_S", "Q2_K", "IQ4_XS", "IQ3_M", "IQ2_M", "IQ1_M",
+)
+
+#: The quant token immediately before an OPTIONAL multi-part shard suffix and
+#: `.gguf` — e.g. `Q4_K_M` out of both `model-Q4_K_M.gguf` and
+#: `model-Q4_K_M-00001-of-00003.gguf`. Deliberately more permissive than
+#: `_GGUF_QUANT_TOKEN_RE` (which anchors the token to the literal end of the
+#: filename): a shard file's last path component is the `-NNNNN-of-NNNNN`
+#: marker, not the quant token, and `select_gguf_recipe` has to group a
+#: shard set by the token that precedes it in order to collapse the set into
+#: one candidate at all.
+_QUALITY_TOKEN_RE = re.compile(
+    r"(?:^|[-_.])(?P<token>I?Q\d(?:_[A-Za-z0-9]+)*)(?:-\d{5}-of-\d{5})?\.gguf$",
+    re.IGNORECASE,
+)
+
+
+def _quality_token(filename: str) -> str | None:
+    """`filename`'s `GGUF_QUALITY_ORDER` token, or None when it names no
+    token this ladder ranks — an unlisted variant (a plain sub-4-bit quant,
+    an unquantized `BF16`/`F16`/`F32`, or a naming scheme this table simply
+    has not been taught) is excluded from budget-aware candidacy rather than
+    guessed at, the same "no evidence, no guess" rule `_gguf_rank` already
+    keeps for the hardware-blind picker."""
+    match = _QUALITY_TOKEN_RE.search(filename)
+    if not match:
+        return None
+    token = match.group("token").upper()
+    return token if token in GGUF_QUALITY_ORDER else None
+
+
+def select_gguf_recipe(files: dict[str, int | None], budget_bytes: float | None,
+                       params: float | None = None) -> tuple[str, int] | None:
+    """The best-quality GGUF candidate `files` (a repo's OWN root-relative
+    listing, filename -> size in bytes) offers that still fits `budget_bytes`
+    — or the single best-quality candidate when `budget_bytes` is None (no
+    machine budget known yet) — as `(representative_filename, total_bytes)`,
+    or None when nothing here qualifies or nothing fits.
+
+    **Shard sets collapse to ONE candidate at the summed size.** A repo that
+    splits `Q4_K_M` across `-00001-of-00003.gguf` / `-00002-of-00003.gguf` /
+    `-00003-of-00003.gguf` is one 3-part DOWNLOAD, not three independent
+    files any one of which alone would look like it fits — judging shard 1
+    alone against the budget is exactly how a 3-shard model would silently
+    look like it fits when the whole download does not. Every filename
+    carrying the same `_quality_token` is summed into one group and reported
+    under its lowest-sorting member's name (the shard set's own first part,
+    or the sole file when there is no shard suffix at all).
+
+    **Auxiliary weights and subdirectory entries are excluded**, reusing
+    `GGUF_AUXILIARY_RE` and the same `"/" in name` rule `pick_gguf_file`
+    applies — an `mmproj` file ranking as though it were a smaller chat-model
+    quant would be the same wrong offer that function already refuses to make.
+
+    **A missing size (`None`) is estimated from `params x bytes_per_param`,
+    sharing `fit.QUANT_BYTES_PER_PARAM` rather than a second, driftable copy
+    of the same table** (SPEC item 14's own instruction) — imported lazily so
+    a bare `import formats` (the shape a worker's interpreter loads this
+    module in, per the module's own top-of-file note) never pays for
+    `fused_render.ai.fit`'s import unless this function is actually called,
+    which no worker path does. Estimated only when `params` is supplied;
+    otherwise an unsized file is excluded from candidacy outright — a
+    caller-facing default of "no size, no evidence" rather than a silent
+    zero that would make an unsized file look free.
+    """
+    groups: dict[str, list[str]] = {}
+    for name in files:
+        if "/" in name or not name.lower().endswith(GGUF_EXTENSION):
+            continue
+        if GGUF_AUXILIARY_RE.search(name):
+            continue
+        token = _quality_token(name)
+        if token is None:
+            continue
+        groups.setdefault(token, []).append(name)
+
+    candidates = []
+    for token, names in groups.items():
+        names.sort()
+        sizes = [files[name] for name in names]
+        if all(size is None for size in sizes):
+            if params is None:
+                continue
+            from fused_render.ai import fit  # lazy: see docstring above
+
+            total = params * fit.quant_bytes_per_param(token)
+        else:
+            total = sum(size for size in sizes if size is not None)
+        candidates.append((token, names[0], total))
+
+    ranked = sorted(candidates, key=lambda c: GGUF_QUALITY_ORDER.index(c[0]))
+    if budget_bytes is None:
+        return (ranked[0][1], ranked[0][2]) if ranked else None
+    for _token, name, total in ranked:
+        if total <= budget_bytes:
+            return name, total
+    return None
+
+
 #: Quantization methods NO engine in this app can read, so a repo declaring one
 #: is not offered a Load button (`loaders()` below) whatever else its snapshot
 #: contains. AWQ, GPTQ and compressed-tensors each need a package no runner
