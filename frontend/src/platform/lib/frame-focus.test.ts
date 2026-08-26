@@ -8,6 +8,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   NO_FOCUS_PARAM,
+  THUMB_SEAL,
   noFocusRequested,
   shouldReclaimFocus,
   tabEntersFrame,
@@ -118,3 +119,47 @@ describe("tabEntersFrame", () => {
     expect(tabEntersFrame([], null, FRAME, false)).toBe(false);
   });
 });
+
+describe("THUMB_SEAL", () => {
+  // The seal is markup rather than behaviour, so what a test can hold is the two
+  // decisions inside it: which restrictions are lifted back, and that the
+  // permissions policy is empty rather than absent.
+  test("lifts scripts and same-origin, and nothing else", () => {
+    // Scripts, because a thumbnail of an app that cannot run is a blank box.
+    // Same-origin, because `/api` and the theme in localStorage are both
+    // origin-bound and an opaque origin turns every data-driven card into its
+    // own empty state. This is the line the owner drew (sealed but functional).
+    expect(THUMB_SEAL.sandbox.split(" ").sort()).toEqual([
+      "allow-same-origin",
+      "allow-scripts",
+    ]);
+  });
+
+  test("does not lift the ones that reach the page around it", () => {
+    // Each of these is something a thumbnail could otherwise do TO the shell —
+    // and the ones that matter most are not in this list at all, because there
+    // is no token for them: `autofocus` and autoplay are off for as long as the
+    // attribute is present at all (the sandboxed automatic features flag).
+    for (const token of [
+      "allow-top-navigation",
+      "allow-top-navigation-by-user-activation",
+      "allow-popups",
+      "allow-downloads",
+      "allow-forms",
+      "allow-modals",
+      "allow-pointer-lock",
+      "allow-presentation",
+      "allow-orientation-lock",
+    ]) {
+      expect(THUMB_SEAL.sandbox).not.toContain(token);
+    }
+  });
+
+  test("delegates no permissions at all", () => {
+    // An empty `allow` is not the same as an absent one: absent means the
+    // defaults, which for a same-origin frame include inheriting the embedder's
+    // own camera/microphone/geolocation grants.
+    expect(THUMB_SEAL.allow).toBe("");
+  });
+});
+
