@@ -105,9 +105,9 @@ def test_stop_without_app_dir_env_raises_not_under_engine():
         background_app.stop()
 
 
-def test_disable_without_app_dir_env_raises_not_under_engine():
+def test_set_autostart_without_app_dir_env_raises_not_under_engine():
     with pytest.raises(background_app.NotUnderEngine):
-        background_app.disable()
+        background_app.set_autostart(True)
 
 
 # ------------------------------------------------------------------ requests
@@ -124,7 +124,7 @@ def test_status_gets_the_status_endpoint_with_urlencoded_html(monkeypatch, tmp_p
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         return _FakeHTTPResponse(json.dumps(
-            {"enabled": True, "running": True, "pid": 111,
+            {"autostart": True, "running": True, "pid": 111,
              "version": "v1", "engine_id": "bg_x"}).encode("utf-8"))
 
     monkeypatch.setattr(background_app.urllib.request, "urlopen", fake_urlopen)
@@ -163,7 +163,7 @@ def test_stop_posts_with_x_fused_header_and_html_body(monkeypatch, tmp_path):
     assert result == {"ok": True}
 
 
-def test_disable_posts_to_the_disable_endpoint(monkeypatch, tmp_path):
+def test_set_autostart_posts_to_the_autostart_endpoint_with_the_flag(monkeypatch, tmp_path):
     app_dir = str(tmp_path / "myapp")
     monkeypatch.setenv(background_app.APP_DIR_ENV, app_dir)
     monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:2266")
@@ -172,12 +172,15 @@ def test_disable_posts_to_the_disable_endpoint(monkeypatch, tmp_path):
 
     def fake_urlopen(req, timeout=None):
         captured["url"] = req.full_url
-        return _FakeHTTPResponse(json.dumps({"ok": True}).encode("utf-8"))
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeHTTPResponse(json.dumps({"ok": True, "autostart": True}).encode("utf-8"))
 
     monkeypatch.setattr(background_app.urllib.request, "urlopen", fake_urlopen)
 
-    background_app.disable()
-    assert captured["url"] == "http://127.0.0.1:2266/api/apps/background/disable"
+    background_app.set_autostart(True)
+    assert captured["url"] == "http://127.0.0.1:2266/api/apps/background/autostart"
+    assert captured["body"] == {
+        "html": os.path.join(app_dir, "index.html"), "autostart": True}
 
 
 def test_an_http_error_body_is_surfaced_as_background_app_error(monkeypatch, tmp_path):

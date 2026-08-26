@@ -517,23 +517,34 @@ def ensure_app(resolved_py: str, python: str,
 
 def _validate_background(engine_id: str, python: str, daemon: str) -> None:
     """Same invariant-check stance as `_validate`/`_validate_interpreter`: the
-    caller (the enable endpoint, the startup resurrection hook) already
-    resolved `daemon` from the folder's own manifest, so this is not the trust
-    boundary either — it is a check that the caller did not hand over a
-    daemon belonging to some OTHER, non-enabled folder."""
+    caller (the start/restart endpoints, the startup resurrection hook)
+    already resolved `daemon` from the folder's own manifest, so this is not
+    the trust boundary either — it is a check that the caller did not hand
+    over a daemon belonging to some folder whose OWN manifest does not
+    declare it.
+
+    Deliberately independent of the autostart store (D511, code review):
+    this used to walk `background_apps.enabled_paths()` looking for a match,
+    which meant `ensure_background` would refuse to spawn any app that
+    wasn't opted into autostart — exactly backwards now that autostart is a
+    separate, opt-in flag and `start()` must work whether or not it is set.
+    Instead, `daemon`'s own containing folder is asked for ITS manifest
+    (`background_apps.load_manifest`, self-contained — no store lookup) and
+    the check is simply "does that folder's manifest declare exactly this
+    daemon file", which needs nothing but the daemon path itself."""
     from fused_render import background_apps
 
     if not _ENGINE_ID.match(engine_id):
         raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
     _validate_interpreter(python)
     target = os.path.realpath(daemon)
-    for folder in background_apps.enabled_paths():
-        manifest = background_apps.load_manifest(folder)
-        if manifest is not None and os.path.realpath(manifest.daemon) == target:
-            return
+    folder = os.path.dirname(daemon)
+    manifest = background_apps.load_manifest(folder)
+    if manifest is not None and os.path.realpath(manifest.daemon) == target:
+        return
     raise EngineError(
-        f"refusing to run {daemon!r}: not the declared daemon of a "
-        "currently-enabled background app")
+        f"refusing to run {daemon!r}: not the declared daemon of its "
+        "folder's own [tool.fused-render.app] background manifest")
 
 
 def ensure_background(engine_id: str, python: str, daemon: str, cache: str,

@@ -10,18 +10,19 @@ straight onto the `/render?path=...` URL that becomes that iframe's own
 exactly that URL with no redirect, so the flag lands in the rendered
 document's OWN `location.search` — the same fact `runtime.js` already
 computes for the focus contract (`IS_THUMBNAIL`, mirroring
-`router.ancestorIsPreview`/`IS_PREVIEW`). `enable()`/`restart()` guard on it
+`router.ancestorIsPreview`/`IS_PREVIEW`). `start()`/`restart()` guard on it
 directly; `call()` does too, because `engine_forward.py`'s `_forward` heals a
-dead-but-enabled child back to life on ANY proxied call — a preview render
-that calls `call()` against an app some other session already enabled can
-resurrect its daemon exactly like `enable()` would. `stop()` and `disable()`
-are gated the same way: a card thumbnail mounts `entry_html` live with
-`allow-scripts`, so an app whose init path calls `fused.daemon.disable()`
-could un-persist a running daemon just because its card scrolled past or was
-hovered — worse than the enable bug this guard exists for, because
-`disable()` survives a server restart. `status()` is the one method
-deliberately left open: it is read-only (and the pattern the rejection
-message points authors at).
+dead-but-running child back to life on ANY proxied call — a preview render
+that calls `call()` against an app some other session already started can
+resurrect its daemon exactly like `start()` would. `stop()` and
+`setAutostart()` are gated the same way: a card thumbnail mounts
+`entry_html` live with `allow-scripts`, so an app whose init path calls
+`fused.daemon.stop()` (or flips autostart) could change a real user's daemon
+state just because its card scrolled past or was hovered —
+`setAutostart(true)` is worse than the enable bug this guard exists for in
+the first place, because it survives a server restart. `status()` is the one
+method deliberately left open: it is read-only (and the pattern the
+rejection message points authors at).
 
 Same node-harness style as the `aiTranscribe`/`aiImage` suites in
 test_ai_runtime.py: named functions are lifted out of runtime.js by their
@@ -108,7 +109,7 @@ def _run_daemon(method, args_js="", search="?path=/apps/x/index.html",
           {{ok: false, message: err.message, fetchCount: fetchCalls.length, urls: fetchCalls}})),
       );
     """
-    # The lifted source defines daemonEnable/daemonRestart/daemonCall/etc as
+    # The lifted source defines daemonStart/daemonRestart/daemonCall/etc as
     # plain function declarations — alias the one under test to a name this
     # harness can call without pulling in the whole `daemon` object literal
     # (which is fine to also define, just unused).
@@ -119,10 +120,10 @@ def _run_daemon(method, args_js="", search="?path=/apps/x/index.html",
     return json.loads(out.stdout)
 
 
-def test_enable_is_refused_when_this_frame_is_a_preview_thumbnail():
-    result = _run_daemon("enable", search="?path=/apps/x/index.html&_preview=1")
+def test_start_is_refused_when_this_frame_is_a_preview_thumbnail():
+    result = _run_daemon("start", search="?path=/apps/x/index.html&_preview=1")
     assert result["ok"] is False
-    assert "fused.daemon.enable" in result["message"]
+    assert "fused.daemon.start" in result["message"]
     assert "refused" in result["message"]
     assert "preview" in result["message"].lower()
     # The whole point: no request ever leaves the page.
@@ -144,12 +145,12 @@ def test_call_is_refused_when_this_frame_is_a_preview_thumbnail():
     assert result["fetchCount"] == 0
 
 
-def test_enable_is_refused_when_an_ancestor_frame_is_the_preview():
+def test_start_is_refused_when_an_ancestor_frame_is_the_preview():
     """The nested case: a card iframes a shell page that itself iframes this
     app (IS_THUMBNAIL/selfOrAncestorHasFlag's whole reason to climb) — this
     frame's own URL carries no `_preview`, only its parent's does."""
     result = _run_daemon(
-        "enable",
+        "start",
         search="?path=/apps/x/index.html",
         ancestor_search="?path=/explorer/embed/apps/x&_preview=1",
     )
@@ -157,13 +158,13 @@ def test_enable_is_refused_when_an_ancestor_frame_is_the_preview():
     assert result["fetchCount"] == 0
 
 
-def test_enable_still_works_outside_preview():
+def test_start_still_works_outside_preview():
     """The guard must not break the legitimate path: a normal (non-preview)
-    render can still enable."""
-    result = _run_daemon("enable", search="?path=/apps/x/index.html")
+    render can still start the daemon."""
+    result = _run_daemon("start", search="?path=/apps/x/index.html")
     assert result["ok"] is True
     assert result["fetchCount"] == 1
-    assert "/api/apps/background/enable" in result["urls"][0]
+    assert "/api/apps/background/start" in result["urls"][0]
 
 
 def test_restart_still_works_outside_preview():
@@ -176,7 +177,7 @@ def test_stop_is_refused_when_this_frame_is_a_preview_thumbnail():
     """`stop()` only turns a daemon OFF, but a card thumbnail mounts
     `entry_html` live with `allow-scripts` — an app whose init path calls
     `fused.daemon.stop()` must not be able to kill a real user's daemon just
-    because their card scrolled past. Gate it exactly like `enable()`."""
+    because their card scrolled past. Gate it exactly like `start()`."""
     result = _run_daemon("stop", search="?path=/apps/x/index.html&_preview=1")
     assert result["ok"] is False
     assert "fused.daemon.stop" in result["message"]
@@ -184,13 +185,14 @@ def test_stop_is_refused_when_this_frame_is_a_preview_thumbnail():
     assert result["fetchCount"] == 0
 
 
-def test_disable_is_refused_when_this_frame_is_a_preview_thumbnail():
-    """`disable()` is worse than `enable()` if left open: it un-persists a
-    running daemon, and that survives a server restart — a preview must not
-    be able to reach it either."""
-    result = _run_daemon("disable", search="?path=/apps/x/index.html&_preview=1")
+def test_set_autostart_is_refused_when_this_frame_is_a_preview_thumbnail():
+    """`setAutostart(true)` is worse than the old enable bug if left open: it
+    persists a flag that survives a server restart — a preview must not be
+    able to reach it either."""
+    result = _run_daemon("setAutostart", args_js="true",
+                         search="?path=/apps/x/index.html&_preview=1")
     assert result["ok"] is False
-    assert "fused.daemon.disable" in result["message"]
+    assert "fused.daemon.setAutostart" in result["message"]
     assert "refused" in result["message"]
     assert result["fetchCount"] == 0
 
@@ -202,11 +204,12 @@ def test_stop_still_works_outside_preview():
     assert "/api/apps/background/stop" in result["urls"][0]
 
 
-def test_disable_still_works_outside_preview():
-    result = _run_daemon("disable", search="?path=/apps/x/index.html")
+def test_set_autostart_still_works_outside_preview():
+    result = _run_daemon("setAutostart", args_js="true",
+                         search="?path=/apps/x/index.html")
     assert result["ok"] is True
     assert result["fetchCount"] == 1
-    assert "/api/apps/background/disable" in result["urls"][0]
+    assert "/api/apps/background/autostart" in result["urls"][0]
 
 
 def test_status_is_never_gated_even_in_preview():

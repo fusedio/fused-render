@@ -1,9 +1,10 @@
 """Background apps (fused_render/background_apps.py): the folder manifest
-([tool.fused-render.app] in pyproject.toml), the enabled-store persisted at
-~/.fused-render/background_apps.json, engine_id identity, and the version
+([tool.fused-render.app] in pyproject.toml), the autostart store persisted
+at ~/.fused-render/background_apps.json, engine_id identity, and the version
 digest that retires a child when the manifest, daemon file, or interpreter
 changes. Also covers engine_host's "background" child kind: validated
-against the enabled store, and exempt from the warm-app idle reaper.
+against the folder's own manifest (independent of autostart, D511), and
+exempt from the warm-app idle reaper.
 """
 import os
 import sys
@@ -24,8 +25,8 @@ HDRS = {"X-Fused": "1"}
 
 @pytest.fixture(autouse=True)
 def _isolated_home(tmp_path, monkeypatch):
-    # The enabled store lives in the shell home; isolate it per test the same
-    # way test_registered_apps.py does.
+    # The autostart store lives in the shell home; isolate it per test the
+    # same way test_registered_apps.py does.
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
@@ -285,39 +286,110 @@ def test_interpreter_for_app_declaring_its_own_deps_uses_its_own_venv(
     assert result == f"venv-python-for:{os.path.abspath(str(folder))}"
 
 
-# ------------------------------------------------------------- enabled store
+# ----------------------------------------------------------- autostart store
 
 
-def test_enabled_store_round_trip(tmp_path):
+def test_autostart_store_round_trip(tmp_path):
     folder = _make_app(tmp_path)
-    assert background_apps.enabled_paths() == []
-    background_apps.set_enabled(str(folder), True)
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
-    background_apps.set_enabled(str(folder), False)
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    assert background_apps.autostart_paths() == []
+    background_apps.set_autostart(str(folder), True)
+    assert os.path.realpath(str(folder)) in background_apps.autostart_paths()
+    background_apps.set_autostart(str(folder), False)
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_enabled_store_skips_missing_folder_but_keeps_entry(tmp_path):
+def test_autostart_store_skips_missing_folder_but_keeps_entry(tmp_path):
     folder = _make_app(tmp_path)
-    background_apps.set_enabled(str(folder), True)
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+    background_apps.set_autostart(str(folder), True)
+    assert os.path.realpath(str(folder)) in background_apps.autostart_paths()
 
     # Delete the folder: the entry drops out of the live listing...
     import shutil
     shutil.rmtree(folder)
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
     # ...but the store itself was never rewritten, so recreating the folder
-    # brings the entry straight back with no re-enable.
+    # brings the entry straight back with no re-opt-in.
     folder.mkdir()
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) in background_apps.autostart_paths()
 
 
-def test_enabled_store_re_enable_does_not_duplicate(tmp_path):
+def test_autostart_store_re_opt_in_does_not_duplicate(tmp_path):
     folder = _make_app(tmp_path)
-    background_apps.set_enabled(str(folder), True)
-    background_apps.set_enabled(str(folder), True)
-    assert background_apps.enabled_paths().count(os.path.abspath(str(folder))) == 1
+    background_apps.set_autostart(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
+    assert background_apps.autostart_paths().count(os.path.realpath(str(folder))) == 1
+
+
+def test_autostart_store_normalizes_via_realpath_like_engine_id_for(tmp_path):
+    """D512 (folded in from the deferred half of D509): the store used to
+    normalize with `os.path.abspath` while `engine_id_for` keys identity off
+    `os.path.realpath` — a symlinked folder and its target could then get
+    TWO separate autostart entries for what `engine_id_for` treats as one
+    app. Setting autostart through a symlinked alias must read back as set
+    through the real path too, and the two must never coexist as separate
+    entries."""
+    real = _make_app(tmp_path, "realtarget")
+    link = tmp_path / "aliaslink"
+    link.symlink_to(real)
+
+    background_apps.set_autostart(str(link), True)
+    assert os.path.realpath(str(real)) in background_apps.autostart_paths()
+    # Setting it again through the REAL path must not create a second entry.
+    background_apps.set_autostart(str(real), True)
+    assert background_apps.autostart_paths().count(os.path.realpath(str(real))) == 1
+    # Turning it off through the real path must clear it for the alias too.
+    background_apps.set_autostart(str(real), False)
+    assert background_apps.autostart_paths() == []
+
+
+def test_autostart_is_opt_in_start_alone_never_sets_it():
+    """The whole point of the split (D511): `ensure_background`/`start` must
+    never persist autostart as a side effect. Uses the real, spawnable
+    fixture daemon (same as `test_ensure_background_spawns_and_reuses_the_
+    fixture_daemon` above) — `set_autostart` is the only thing that may ever
+    add to the store; merely resolving/spawning a background app must never
+    call it."""
+    assert background_apps.autostart_paths() == []
+
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        assert engine_host._ping(child)
+        assert background_apps.autostart_paths() == [], (
+            "start (ensure_background) must never persist autostart")
+    finally:
+        engine_host.stop(engine_id)
+
+
+def test_start_then_simulated_restart_does_not_resurrect_without_autostart(monkeypatch):
+    """End-to-end (module level) proof of the opt-in default: start the
+    fixture daemon, never touch autostart, then simulate a server restart by
+    calling `resurrect_autostart()` directly — the app must NOT come back."""
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        assert engine_host._ping(child)
+    finally:
+        engine_host.stop(engine_id)
+
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a) or None)
+    background_apps.resurrect_autostart()
+    assert started == [], (
+        "a folder that was only start()ed (never opted into autostart) "
+        "must not come back at the next server start")
 
 
 # ---------------------------------------------- engine_host: background kind
@@ -332,27 +404,53 @@ def test_ensure_background_rejects_foreign_interpreter(tmp_path):
             str(tmp_path / "cache"), "v1")
 
 
-def test_ensure_background_rejects_daemon_of_non_enabled_folder(tmp_path):
-    # A valid interpreter but no enabled apps at all: the daemon must be
-    # refused regardless of how real it looks on disk.
-    folder = _make_app(tmp_path)
+def test_ensure_background_rejects_daemon_whose_folder_has_no_manifest(tmp_path):
+    # No pyproject.toml [tool.fused-render.app] table at all in the daemon's
+    # own folder: the daemon must be refused regardless of how real it looks
+    # on disk. Deliberately NOT gated on the autostart store any more (D511)
+    # — `start()` must work for an app that was never opted into autostart,
+    # so this validation is now self-contained against the folder's own
+    # manifest instead of a "currently enabled" list.
+    folder = tmp_path / "no_manifest"
+    folder.mkdir()
     daemon = folder / "daemon.py"
+    daemon.write_text("# daemon\n")
     with pytest.raises(engine_host.EngineError):
         engine_host.ensure_background(
-            "bg_notenabled", sys.executable, str(daemon),
+            "bg_nomanifest", sys.executable, str(daemon),
             str(tmp_path / "cache"), "v1")
 
 
-def test_ensure_background_rejects_daemon_not_matching_enabled_manifest(tmp_path):
-    # One folder IS enabled, but the daemon path handed to ensure_background
-    # belongs to a different, non-enabled folder — must still be refused.
-    enabled = _make_app(tmp_path, "enabled")
-    other = _make_app(tmp_path, "other")
-    background_apps.set_enabled(str(enabled), True)
+def test_ensure_background_rejects_daemon_not_matching_its_own_folders_manifest(tmp_path):
+    # The folder DOES have a valid manifest, but the daemon path handed to
+    # ensure_background is a different file inside it than the one the
+    # manifest declares — must still be refused.
+    app = _make_app(tmp_path, "app", daemon="daemon.py")
+    wrong = app / "not_the_declared_daemon.py"
+    wrong.write_text("# not the manifest's daemon\n")
     with pytest.raises(engine_host.EngineError):
         engine_host.ensure_background(
-            "bg_wrongdaemon", sys.executable, str(other / "daemon.py"),
+            "bg_wrongdaemon", sys.executable, str(wrong),
             str(tmp_path / "cache"), "v1")
+
+
+def test_ensure_background_succeeds_for_a_valid_manifest_without_autostart():
+    # The other half of D511: a folder with NO autostart entry at all must
+    # still be able to start — autostart is opt-in, not a precondition. Uses
+    # the real, spawnable fixture daemon (a plain "# daemon\n" stub file
+    # exits immediately once actually spawned, so this needs the fixture,
+    # not `_make_app`'s placeholder).
+    assert background_apps.autostart_paths() == []
+    engine_id = background_apps.engine_id_for(FIXTURE_APP)
+    manifest = background_apps.load_manifest(FIXTURE_APP)
+    version = background_apps.version_for(FIXTURE_APP, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version, FIXTURE_APP)
+    try:
+        assert child.kind == "background"
+    finally:
+        engine_host.stop(engine_id)
 
 
 def test_reap_idle_app_workers_skips_background_kind():
@@ -373,7 +471,6 @@ def test_reap_idle_app_workers_skips_background_kind():
 
 
 def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
-    background_apps.set_enabled(FIXTURE_APP, True)
     manifest = background_apps.load_manifest(FIXTURE_APP)
     assert manifest is not None
     engine_id = background_apps.engine_id_for(FIXTURE_APP)
@@ -394,14 +491,12 @@ def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
         assert again is child
     finally:
         engine_host.stop(engine_id)
-        background_apps.set_enabled(FIXTURE_APP, False)
 
 
 def test_ensure_background_stores_folder_on_the_child():
     # D505: `folder` flows through ensure_background onto Child.folder the
     # same way cache/version already do, so `_spawn_env` can export
     # FUSED_RENDER_APP_DIR for a daemon to address itself.
-    background_apps.set_enabled(FIXTURE_APP, True)
     manifest = background_apps.load_manifest(FIXTURE_APP)
     engine_id = background_apps.engine_id_for(FIXTURE_APP)
     version = background_apps.version_for(FIXTURE_APP, sys.executable)
@@ -413,7 +508,6 @@ def test_ensure_background_stores_folder_on_the_child():
         assert child.folder == FIXTURE_APP
     finally:
         engine_host.stop(engine_id)
-        background_apps.set_enabled(FIXTURE_APP, False)
 
 
 def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
@@ -427,7 +521,6 @@ def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
     # (engine_host.current(engine_id) is not None branch) — both would
     # silently drop FUSED_RENDER_APP_DIR from the respawned daemon's env,
     # taking away its only way to call stop()/disable() on itself.
-    background_apps.set_enabled(FIXTURE_APP, True)
     manifest = background_apps.load_manifest(FIXTURE_APP)
     engine_id = background_apps.engine_id_for(FIXTURE_APP)
     version = background_apps.version_for(FIXTURE_APP, sys.executable)
@@ -449,13 +542,11 @@ def test_restart_preserves_folder_so_a_healed_child_keeps_app_dir():
             "into its own spawn env")
     finally:
         engine_host.stop(engine_id)
-        background_apps.set_enabled(FIXTURE_APP, False)
 
 
 def test_ensure_background_without_folder_defaults_to_empty_string():
     # The folder param is optional so existing direct callers that don't
     # care need not pass one.
-    background_apps.set_enabled(FIXTURE_APP, True)
     manifest = background_apps.load_manifest(FIXTURE_APP)
     engine_id = background_apps.engine_id_for(FIXTURE_APP)
     version = background_apps.version_for(FIXTURE_APP, sys.executable)
@@ -467,7 +558,6 @@ def test_ensure_background_without_folder_defaults_to_empty_string():
         assert child.folder == ""
     finally:
         engine_host.stop(engine_id)
-        background_apps.set_enabled(FIXTURE_APP, False)
 
 
 def test_spawn_env_exports_app_dir_for_background_children_with_a_folder():
@@ -497,7 +587,7 @@ def test_spawn_env_omits_app_dir_for_non_background_kinds():
     assert "FUSED_RENDER_APP_DIR" not in env
 
 
-def test_api_enable_passes_folder_through_to_ensure_background(client, tmp_path, monkeypatch):
+def test_api_start_passes_folder_through_to_ensure_background(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
@@ -514,12 +604,12 @@ def test_api_enable_passes_folder_through_to_ensure_background(client, tmp_path,
 
     monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
 
-    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
     assert resp.status_code == 200, resp.text
-    assert calls == [os.path.abspath(str(folder))]
+    assert calls == [os.path.realpath(str(folder))]
 
 
-# ------------------------------------------------- router: enable/disable/etc
+# ---------------------------------------------- router: start/stop/autostart/etc
 
 
 @pytest.fixture()
@@ -545,7 +635,8 @@ def _bg_folder(tmp_path, name="app"):
     return folder
 
 
-def test_api_enable_persists_and_calls_ensure_background(client, tmp_path, monkeypatch):
+def test_api_start_calls_ensure_background_without_touching_autostart(
+        client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
@@ -561,58 +652,80 @@ def test_api_enable_persists_and_calls_ensure_background(client, tmp_path, monke
 
     monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
 
-    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
     assert resp.status_code == 200
     body = resp.json()
     assert body["ok"] is True
     assert body["pid"] == 4242
     assert len(calls) == 1
     assert calls[0][2] == str(folder / "daemon.py")
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+    # D511, the whole point: start() must NEVER persist autostart.
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_api_enable_requires_x_fused_header(client, tmp_path):
+def test_api_start_requires_x_fused_header(client, tmp_path):
     folder = _bg_folder(tmp_path)
-    resp = client.post("/api/apps/background/enable",
+    resp = client.post("/api/apps/background/start",
                        json={"html": str(folder / "index.html")})
     assert resp.status_code == 403
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_api_enable_409_when_project_venv_not_built(client, tmp_path, monkeypatch):
+def test_api_start_409_when_project_venv_not_built(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
 
-    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
     assert resp.status_code == 409
-    # A 409 must not persist — the app is not enabled until it can actually start.
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
-def test_api_disable_stops_and_unpersists(client, tmp_path, monkeypatch):
+def test_api_autostart_sets_the_flag_without_starting_or_stopping_anything(
+        client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
-    background_apps.set_enabled(str(folder), True)
-    engine_id = background_apps.engine_id_for(str(folder))
 
+    ensured = []
     stopped = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: ensured.append(a) or None)
     monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
 
-    resp = client.post("/api/apps/background/disable", json={"html": html}, headers=HDRS)
+    resp = client.post("/api/apps/background/autostart",
+                       json={"html": html, "autostart": True}, headers=HDRS)
     assert resp.status_code == 200
-    assert resp.json()["ok"] is True
-    assert stopped == [engine_id]
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["autostart"] is True
+    assert os.path.realpath(str(folder)) in background_apps.autostart_paths()
+    assert ensured == []
+    assert stopped == []
+
+    resp = client.post("/api/apps/background/autostart",
+                       json={"html": html, "autostart": False}, headers=HDRS)
+    assert resp.status_code == 200
+    assert resp.json()["autostart"] is False
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
+    assert ensured == []
+    assert stopped == []
 
 
-def test_api_stop_kills_without_disabling(client, tmp_path, monkeypatch):
-    # The whole point of the stop/disable split: stop must kill the process
-    # but leave the folder enabled, so the startup hook brings it back.
+def test_api_autostart_requires_x_fused_header(client, tmp_path):
+    folder = _bg_folder(tmp_path)
+    resp = client.post("/api/apps/background/autostart",
+                       json={"html": str(folder / "index.html"), "autostart": True})
+    assert resp.status_code == 403
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
+
+
+def test_api_stop_kills_without_touching_autostart(client, tmp_path, monkeypatch):
+    # The whole point of the run-state/autostart split: stop must kill the
+    # process but leave autostart exactly where it was.
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
-    background_apps.set_enabled(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
     engine_id = background_apps.engine_id_for(str(folder))
 
     stopped = []
@@ -622,20 +735,17 @@ def test_api_stop_kills_without_disabling(client, tmp_path, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
     assert stopped == [engine_id]
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) in background_apps.autostart_paths()
 
 
-def test_api_stop_vs_disable_distinguished(client, tmp_path, monkeypatch):
+def test_api_stop_leaves_autostart_off_when_it_was_off(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
-    background_apps.set_enabled(str(folder), True)
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
     monkeypatch.setattr(engine_host, "stop", lambda eid: None)
 
     client.post("/api/apps/background/stop", json={"html": html}, headers=HDRS)
-    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
-
-    client.post("/api/apps/background/disable", json={"html": html}, headers=HDRS)
-    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+    assert os.path.realpath(str(folder)) not in background_apps.autostart_paths()
 
 
 def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path, monkeypatch):
@@ -644,7 +754,6 @@ def test_api_restart_after_stop_falls_back_to_a_fresh_bring_up(client, tmp_path,
     # the documented stop() -> restart() recovery path with an opaque 502.
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
-    background_apps.set_enabled(str(folder), True)
     engine_id = background_apps.engine_id_for(str(folder))
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
     monkeypatch.setattr(engine_host, "current", lambda eid: None)  # stopped: no live child
@@ -680,13 +789,12 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
     # rebuilds the replacement Child from `existing.version` — the OLD
     # digest. So `fused.daemon.restart()` right after editing daemon.py
     # respawned the new code but tagged it with the stale version string;
-    # the next enable()/server-start resurrection then computes the current
+    # the next start()/server-start resurrection then computes the current
     # digest, `_matches` fails against it, and the just-restarted child gets
     # torn down and respawned a SECOND time. The endpoint must pass the
     # freshly computed version through to the respawn.
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
-    background_apps.set_enabled(str(folder), True)
     engine_id = background_apps.engine_id_for(str(folder))
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
 
@@ -720,7 +828,7 @@ def test_api_restart_of_a_live_child_carries_the_freshly_computed_version(
     assert captured["version"] == fresh_version, (
         "restart() of a live child was not given the freshly computed "
         "version — it would carry the stale digest and get torn down and "
-        "respawned again on the next enable()/server-start resurrection")
+        "respawned again on the next start()/server-start resurrection")
     assert body["version"] == fresh_version
 
 
@@ -728,7 +836,7 @@ def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
     html = str(folder / "index.html")
     engine_id = background_apps.engine_id_for(str(folder))
-    background_apps.set_enabled(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
 
     fake_child = engine_host.Child(
         engine_id=engine_id, python=sys.executable, daemon="d", cache="c",
@@ -740,33 +848,59 @@ def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
     resp = client.get("/api/apps/background/status", params={"html": html})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["enabled"] is True
+    assert body["autostart"] is True
     assert body["running"] is True
     assert body["pid"] == 555
     assert body["version"] == "v9"
     assert body["engine_id"] == engine_id
 
 
-def test_api_status_not_running_when_no_live_child(client, tmp_path):
+def test_api_status_not_running_and_autostart_false_on_a_never_configured_app(
+        client, tmp_path):
+    # D511: a folder nobody ever touched must report autostart False, not
+    # merely "not running" — the opt-in default has to be visible here.
     folder = _bg_folder(tmp_path)
     resp = client.get("/api/apps/background/status",
                       params={"html": str(folder / "index.html")})
     body = resp.json()
-    assert body["enabled"] is False
+    assert body["autostart"] is False
     assert body["running"] is False
     assert body["pid"] is None
 
 
-def test_status_agrees_on_enabled_and_running_through_a_symlinked_alias(
+def test_api_start_leaves_autostart_false_on_status(client, tmp_path, monkeypatch):
+    # The end-to-end proof of the opt-in default through the real API: start
+    # the app, then read status() back — autostart must still read False.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    engine_id = background_apps.engine_id_for(str(folder))
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version="v1", kind="background", pid=321)
+    monkeypatch.setattr(engine_host, "ensure_background", lambda *a, **kw: fake_child)
+    monkeypatch.setattr(engine_host, "current",
+                        lambda eid: fake_child if eid == engine_id else None)
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+
+    resp = client.post("/api/apps/background/start", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200, resp.text
+
+    status = client.get("/api/apps/background/status", params={"html": html}).json()
+    assert status["running"] is True
+    assert status["autostart"] is False
+
+
+def test_status_agrees_on_autostart_and_running_through_a_symlinked_alias(
         client, tmp_path, monkeypatch):
-    # Code-review finding C: `enabled` used to compare `_folder_for` (an
-    # abspath) against `enabled_paths()` (also abspath, never realpath'd),
-    # while `engine_id_for` (and therefore `running`) keys on realpath. A
-    # folder reached through a symlink alias diverged: `enable()`d via the
-    # link, `status()`'d via the real path (or vice versa) reported
-    # {"enabled": False, "running": True} — a fact that cannot be true, since
-    # the two paths name the exact same app and the exact same running
-    # engine_id.
+    # Code-review finding C (D509/D512): `autostart` used to compare
+    # `_folder_for` against a store normalized differently than
+    # `engine_id_for` (and therefore `running`), which keys on realpath. A
+    # folder reached through a symlink alias diverged: opted into autostart
+    # via the link, `status()`'d via the real path (or vice versa) reported
+    # {"autostart": False, "running": True} — a fact that cannot be true,
+    # since the two paths name the exact same app and the exact same
+    # running engine_id.
     real = _bg_folder(tmp_path, name="real")
     link = tmp_path / "link"
     link.symlink_to(real)
@@ -781,68 +915,63 @@ def test_status_agrees_on_enabled_and_running_through_a_symlinked_alias(
                         lambda eid: fake_child if eid == engine_id else None)
     monkeypatch.setattr(engine_host, "_alive", lambda c: True)
 
-    resp = client.post("/api/apps/background/enable",  # enable via the ALIAS
-                       json={"html": str(link / "index.html")}, headers=HDRS)
+    resp = client.post("/api/apps/background/autostart",  # opt in via the ALIAS
+                       json={"html": str(link / "index.html"), "autostart": True},
+                       headers=HDRS)
     assert resp.status_code == 200, resp.text
+    client.post("/api/apps/background/start",
+               json={"html": str(link / "index.html")}, headers=HDRS)
 
     # status() through the REAL (non-alias) path must see the same
-    # enabled/running facts as status() through the alias it was enabled
+    # autostart/running facts as status() through the alias it was set
     # through — both name one app.
     resp = client.get("/api/apps/background/status",
                       params={"html": str(real / "index.html")})
     body = resp.json()
     assert body["engine_id"] == engine_id
     assert body["running"] is True
-    assert body["enabled"] is True, (
-        "enabled/running diverged through a symlinked folder alias")
+    assert body["autostart"] is True, (
+        "autostart/running diverged through a symlinked folder alias")
 
 
-def test_enable_through_one_alias_and_disable_through_another_fully_disables(
+def test_autostart_set_through_one_alias_and_cleared_through_another_fully_clears(
         client, tmp_path, monkeypatch):
-    # The other half of finding C: enable() writing folder identity
+    # The other half of finding C: the store writing folder identity
     # inconsistently with engine_id_for means two aliases of the same folder
-    # can each get their OWN store entry. disable() through one alias must
-    # not leave the other alias's entry (i.e. the same app) still enabled.
+    # can each get their OWN store entry. Clearing autostart through one
+    # alias must not leave the other alias's entry (i.e. the same app)
+    # still opted in.
     real = _bg_folder(tmp_path, name="real2")
     link = tmp_path / "link2"
     link.symlink_to(real)
-    engine_id = background_apps.engine_id_for(str(real))
-    fake_child = engine_host.Child(
-        engine_id=engine_id, python=sys.executable, daemon=str(real / "daemon.py"),
-        cache="c", version="v1", kind="background", pid=888)
-    monkeypatch.setattr(engine_host, "ensure_background",
-                        lambda *a, **kw: fake_child)
-    stopped = []
-    monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
 
     html_via_link = str(link / "index.html")
     html_via_real = str(real / "index.html")
 
-    resp = client.post("/api/apps/background/enable", json={"html": html_via_link},
-                       headers=HDRS)
+    resp = client.post("/api/apps/background/autostart",
+                       json={"html": html_via_link, "autostart": True}, headers=HDRS)
     assert resp.status_code == 200, resp.text
 
-    resp = client.post("/api/apps/background/disable",
-                       json={"html": html_via_real}, headers=HDRS)
+    resp = client.post("/api/apps/background/autostart",
+                       json={"html": html_via_real, "autostart": False}, headers=HDRS)
     assert resp.status_code == 200, resp.text
-    assert stopped == [engine_id]
 
     for html in (html_via_link, html_via_real):
         status = client.get("/api/apps/background/status",
                             params={"html": html}).json()
-        assert status["enabled"] is False, (
-            f"{html} still enabled after disabling the same app "
+        assert status["autostart"] is False, (
+            f"{html} still opted into autostart after clearing it "
             "through its symlinked alias")
 
 
 # ---------------------------------------------------------------- resurrection
 
 
-def test_resurrect_enabled_starts_every_app_and_survives_one_raising(tmp_path, monkeypatch):
+def test_resurrect_autostart_starts_every_app_and_survives_one_raising(tmp_path, monkeypatch):
     good = _bg_folder(tmp_path, "good")
     bad = _bg_folder(tmp_path, "bad")
-    background_apps.set_enabled(str(good), True)
-    background_apps.set_enabled(str(bad), True)
+    background_apps.set_autostart(str(good), True)
+    background_apps.set_autostart(str(bad), True)
 
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
 
@@ -857,30 +986,30 @@ def test_resurrect_enabled_starts_every_app_and_survives_one_raising(tmp_path, m
 
     monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
 
-    background_apps.resurrect_enabled()  # must not raise despite "bad" failing
+    background_apps.resurrect_autostart()  # must not raise despite "bad" failing
 
     assert started == [background_apps.engine_id_for(str(good))]
 
 
-def test_resurrect_enabled_skips_a_folder_with_no_venv_built(tmp_path, monkeypatch):
+def test_resurrect_autostart_skips_a_folder_with_no_venv_built(tmp_path, monkeypatch):
     folder = _bg_folder(tmp_path)
-    background_apps.set_enabled(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
     monkeypatch.setattr(background_apps, "interpreter_for",
                         lambda f: "/definitely/not/a/real/python")
     started = []
     monkeypatch.setattr(engine_host, "ensure_background",
                         lambda *a, **k: started.append(a) or None)
 
-    background_apps.resurrect_enabled()
+    background_apps.resurrect_autostart()
 
     assert started == []
 
 
-def test_resurrect_enabled_stops_before_starting_once_shutdown_is_set(tmp_path, monkeypatch):
+def test_resurrect_autostart_stops_before_starting_once_shutdown_is_set(tmp_path, monkeypatch):
     # Code-review fix: the resurrection loop must not start MORE apps once
     # the server has begun shutting down.
     folder = _bg_folder(tmp_path)
-    background_apps.set_enabled(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
     started = []
     monkeypatch.setattr(engine_host, "ensure_background",
@@ -888,21 +1017,21 @@ def test_resurrect_enabled_stops_before_starting_once_shutdown_is_set(tmp_path, 
 
     shutdown_event = threading.Event()
     shutdown_event.set()  # already shutting down before the loop even starts
-    background_apps.resurrect_enabled(shutdown_event)
+    background_apps.resurrect_autostart(shutdown_event)
 
     assert started == []
 
 
-def test_resurrect_enabled_stops_a_child_that_finished_spawning_during_shutdown(
+def test_resurrect_autostart_stops_a_child_that_finished_spawning_during_shutdown(
         tmp_path, monkeypatch):
     # Code-review fix (the orphan race): engine_host.ensure_background only
     # registers its child into _children AFTER the (possibly slow) spawn
     # returns. If shutdown lands while that spawn is in flight,
     # engine_host.stop_all() can walk an empty/partial _children and miss it
-    # entirely — so resurrect_enabled must check the flag again right after
+    # entirely — so resurrect_autostart must check the flag again right after
     # its own call returns and clean up anything that landed late.
     folder = _bg_folder(tmp_path)
-    background_apps.set_enabled(str(folder), True)
+    background_apps.set_autostart(str(folder), True)
     engine_id = background_apps.engine_id_for(str(folder))
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
 
@@ -922,7 +1051,7 @@ def test_resurrect_enabled_stops_a_child_that_finished_spawning_during_shutdown(
     stopped = []
     monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
 
-    background_apps.resurrect_enabled(shutdown_event)
+    background_apps.resurrect_autostart(shutdown_event)
 
     assert stopped == [engine_id]  # torn down instead of left running unowned
 
@@ -930,9 +1059,9 @@ def test_resurrect_enabled_stops_a_child_that_finished_spawning_during_shutdown(
 # --------------------------------------------------------------- end to end
 
 
-def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
+def test_start_through_the_api_reaches_the_fixture_daemon_via_proxy(
         client, tmp_path, monkeypatch):
-    """Real spawn, real HTTP: enable the fixture app through the actual
+    """Real spawn, real HTTP: start the fixture app through the actual
     background_apps API (no engine_host mocking) and confirm the daemon it
     started answers through the SAME stable-origin proxy a template daemon
     uses (/api/engines/<id>/proxy) — engine_forward is engine-kind-agnostic,
@@ -940,7 +1069,7 @@ def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
     monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
     html = os.path.join(FIXTURE_APP, "index.html")  # need not exist on disk
 
-    resp = client.post("/api/apps/background/enable", json={"html": html},
+    resp = client.post("/api/apps/background/start", json={"html": html},
                        headers=HDRS)
     assert resp.status_code == 200, resp.text
     engine_id = resp.json()["engine_id"]
@@ -965,7 +1094,6 @@ def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
         assert status.json()["running"] is True
     finally:
         engine_host.stop(engine_id)
-        background_apps.set_enabled(FIXTURE_APP, False)
 
 
 def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatch):

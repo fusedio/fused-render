@@ -1,8 +1,7 @@
 """Background apps: a folder can declare a long-running daemon that this
 server supervises — single instance, the folder's own venv, exempt from
-idle-retire, killed with the server, and restarted at every server startup
-while the user has it enabled (see engine_host.py's "background" child kind
-and server/routers/background_apps.py).
+idle-retire, killed with the server (see engine_host.py's "background" child
+kind and server/routers/background_apps.py).
 
 A folder opts in with a manifest table in its own `pyproject.toml`:
 
@@ -14,11 +13,21 @@ Nothing reads this table today — greenfield, following registered_apps.py's
 containment-guard style: a `daemon` value that resolves outside the folder
 (e.g. via `../`) is refused rather than trusted.
 
-The enabled store (`<home_dir()>/background_apps.json`) is the user's sticky
-"keep this running" list, following registered_apps.py's read/write
-discipline: a folder that is temporarily missing or unreadable drops out of
-`enabled_paths()` (read-only — it may come back), and only `set_enabled`
-rewrites the store.
+Run state and autostart are two independent, orthogonal things (D511, code
+review that produced this module's current shape): whether the daemon is
+alive RIGHT NOW is `engine_host`'s own live-child bookkeeping, while
+autostart is only "should the server bring this up at every launch" — a
+persisted opt-in flag, and nothing else. The autostart store
+(`<home_dir()>/background_apps.json`) is that sticky "bring this back at
+startup" list, following registered_apps.py's read/write discipline: a
+folder that is temporarily missing or unreadable drops out of
+`autostart_paths()` (read-only — it may come back), and only `set_autostart`
+rewrites the store. **Autostart is opt-in and starting an app never touches
+it** — `server/routers/background_apps.py`'s `start` endpoint spawns a
+daemon without persisting anything; only an explicit `autostart` call (or a
+direct `set_autostart(path, True)`) turns the flag on. `resurrect_autostart`
+(the startup hook) only ever brings up paths explicitly present in the
+store.
 """
 from __future__ import annotations
 
@@ -163,22 +172,31 @@ def version_for(folder: str, interpreter: str) -> str:
     return h.hexdigest()
 
 
-# --------------------------------------------------------- enabled store
+# -------------------------------------------------------- autostart store
 
 
 def _store_path() -> str:
     return os.path.join(storage.home_dir(), "background_apps.json")
 
 
-def enabled_paths() -> list[str]:
-    """Absolute folder paths the user has enabled, in stored order. A folder
-    that is behind a blocked mount, missing, or otherwise unreadable is
-    skipped from the result (read-only — the store itself is untouched, so
-    the folder reappears here the moment it's readable again)."""
+def autostart_paths() -> list[str]:
+    """Folder paths the user has opted into autostart, in stored order,
+    realpath-normalized. A folder that is behind a blocked mount, missing,
+    or otherwise unreadable is skipped from the result (read-only — the
+    store itself is untouched, so the folder reappears here the moment it's
+    readable again).
+
+    realpath, not abspath (D512, folded in from the deferred half of D509):
+    `engine_id_for` and the router's `_folder_for` both key identity off
+    `os.path.realpath`, so a symlinked folder's autostart entry must
+    normalize the same way — an abspath-only store could disagree with
+    `engine_id_for` about whether a symlinked alias and its target are "the
+    same" folder, exactly the bug D509 fixed for the router's own
+    `_folder_for`."""
     data = storage.read_json(_store_path())
     if not isinstance(data, dict):
         return []
-    raw = data.get("enabled")
+    raw = data.get("autostart")
     if not isinstance(raw, list):
         return []
     guard = MountGuard()
@@ -193,22 +211,23 @@ def enabled_paths() -> list[str]:
                 continue
         except OSError:
             continue
-        out.append(os.path.abspath(path))
+        out.append(os.path.realpath(path))
     return out
 
 
-def set_enabled(path: str, enabled: bool) -> None:
-    """Persist *path*'s enabled state. Idempotent: enabling an already-enabled
-    path (or disabling an already-disabled one) is a no-op write, not a
-    duplicate entry."""
-    path = os.path.abspath(path)
+def set_autostart(path: str, autostart: bool) -> None:
+    """Persist *path*'s autostart flag. Idempotent: turning autostart on for
+    an already-on path (or off for an already-off one) is a no-op write, not
+    a duplicate entry. Does NOT start or stop anything — see the module
+    docstring: autostart is opt-in and orthogonal to run state."""
+    path = os.path.realpath(path)
     data = storage.read_json(_store_path())
-    raw = data.get("enabled") if isinstance(data, dict) else None
+    raw = data.get("autostart") if isinstance(data, dict) else None
     current = [p for p in raw if isinstance(p, str)] if isinstance(raw, list) else []
-    current = [p for p in current if os.path.abspath(p) != path]
-    if enabled:
+    current = [p for p in current if os.path.realpath(p) != path]
+    if autostart:
         current.append(path)
-    storage.write_json(_store_path(), {"enabled": current})
+    storage.write_json(_store_path(), {"autostart": current})
 
 
 # --------------------------------------------------------- bring-up helpers
@@ -254,10 +273,13 @@ def cache_dir_for(engine_id: str) -> str:
     return os.path.join(storage.home_dir(), "apps", engine_id)
 
 
-def resurrect_enabled(shutdown_event=None) -> None:
-    """Start every enabled app's daemon, best-effort: a folder that fails
-    (dead manifest, project venv not built, a spawn error) is logged and
-    skipped, never allowed to stop the rest. Meant to run on a daemon thread
+def resurrect_autostart(shutdown_event=None) -> None:
+    """Start every autostart-opted-in app's daemon, best-effort: a folder
+    that fails (dead manifest, project venv not built, a spawn error) is
+    logged and skipped, never allowed to stop the rest. Only ever brings up
+    paths explicitly present in the autostart store (`autostart_paths()`) —
+    a `start()` call that never set autostart must never come back here.
+    Meant to run on a daemon thread
     from the server's startup event (app.py) — never on the pre-bind path
     (D228): each bring-up is a subprocess spawn plus a bootstrap wait.
 
@@ -276,7 +298,7 @@ def resurrect_enabled(shutdown_event=None) -> None:
     with no separate pass needed."""
     from fused_render.server import engine_host
 
-    for folder in enabled_paths():
+    for folder in autostart_paths():
         if shutdown_event is not None and shutdown_event.is_set():
             return  # server is shutting down: stop starting more apps
         try:

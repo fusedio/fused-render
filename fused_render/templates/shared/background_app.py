@@ -17,6 +17,10 @@ module reads that var, synthesizes a stand-in `html` path inside the folder
 `"index.html"` is used because that is what a real page would be called), and
 speaks the same endpoints a page's `fused.daemon.*` calls speak.
 
+Run state and autostart are independent (D511): `stop()` only kills this
+process, `set_autostart(bool)` only flips the persisted flag — neither
+implies the other. There is no `disable()` here any more.
+
 **Stdlib only, no `import fused_render`** — same constraint as `fused_ai.py`
 and `appenv.py` beside this file (see the `adding-a-shared-template-utility`
 skill): a background daemon runs in its own project's venv with `PYTHONPATH`
@@ -219,34 +223,36 @@ def _request(method: str, path: str, body: dict | None = None,
 
 def status() -> dict:
     """`GET /api/apps/background/status` for THIS daemon's own app folder —
-    `{"enabled", "running", "pid", "version", "engine_id"}`."""
+    `{"running", "autostart", "pid", "version", "engine_id"}`."""
     html = _self_html_path()
     return _request("GET", "/api/apps/background/status?html=" + quote(html))
 
 
 def stop() -> dict:
     """`POST /api/apps/background/stop` for this app: kills the running
-    daemon (this process) WITHOUT disabling it — pops it from
+    daemon (this process) WITHOUT touching autostart — pops it from
     `engine_host._children` so a proxied page call cannot silently revive
-    it, but the startup-resurrection hook still brings it back on the next
-    server start. Call this to end THIS process's life cleanly instead of a
-    raw self-terminate: the caller should expect the process to exit shortly
+    it. If autostart is on, the startup-resurrection hook still brings it
+    back on the next server start; if it's off (the default), it stays down.
+    Call this to end THIS process's life cleanly instead of a raw
+    self-terminate: the caller should expect the process to exit shortly
     after this returns, killed by the server on the other end of this call."""
     html = _self_html_path()
     return _request("POST", "/api/apps/background/stop", body={"html": html})
 
 
-def disable() -> dict:
-    """`POST /api/apps/background/disable` for this app: stops the running
-    daemon (this process) AND unpersists it from the enabled store, so it
-    does NOT come back at the next server start, unlike `stop()`."""
+def set_autostart(autostart: bool) -> dict:
+    """`POST /api/apps/background/autostart` for this app: persists whether
+    it should come back at the next server start. Does NOT start or stop
+    anything — orthogonal to `stop()`/run state (D511)."""
     html = _self_html_path()
-    return _request("POST", "/api/apps/background/disable", body={"html": html})
+    return _request("POST", "/api/apps/background/autostart",
+                    body={"html": html, "autostart": bool(autostart)})
 
 
 def restart() -> dict:
     """`POST /api/apps/background/restart` for this app — respawns the
     daemon. Included for symmetry with the router's own endpoint set; most
-    callers want `stop()` or `disable()`."""
+    callers want `stop()`."""
     html = _self_html_path()
     return _request("POST", "/api/apps/background/restart", body={"html": html})

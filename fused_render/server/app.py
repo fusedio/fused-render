@@ -336,14 +336,17 @@ def create_app(start_dir: str) -> FastAPI:
 
         engine.warm_unless_forced_builtin()
 
-    # Background apps (background_apps.py): resurrect every enabled app's
-    # daemon at server startup. A daemon thread, not the create_app body or an
-    # unthreaded await here — same D228 rationale as _startup_sync_user_plugin
-    # below: each bring-up is a subprocess spawn plus a bootstrap wait
-    # (BOOTSTRAP_TIMEOUT_S), nowhere near cheap enough for the pre-bind path,
-    # and one folder's failure (dead manifest, project venv not built, a spawn
-    # error) must never delay server readiness or the other apps' bring-up —
-    # `resurrect_enabled` already logs-and-skips those itself.
+    # Background apps (background_apps.py): resurrect every autostart-opted-in
+    # app's daemon at server startup. A daemon thread, not the create_app body
+    # or an unthreaded await here — same D228 rationale as
+    # _startup_sync_user_plugin below: each bring-up is a subprocess spawn
+    # plus a bootstrap wait (BOOTSTRAP_TIMEOUT_S), nowhere near cheap enough
+    # for the pre-bind path, and one folder's failure (dead manifest, project
+    # venv not built, a spawn error) must never delay server readiness or the
+    # other apps' bring-up — `resurrect_autostart` already logs-and-skips
+    # those itself. Autostart is opt-in (D511): only paths explicitly present
+    # in the autostart store come back here — a `start()` with no `autostart`
+    # call never persisted anything and does NOT return at the next launch.
     #
     # `_background_apps_shutdown` is a per-app-instance Event (a local here,
     # not a module global): a bring-up only registers its child once `_spawn`
@@ -351,7 +354,7 @@ def create_app(start_dir: str) -> FastAPI:
     # mid-spawn would otherwise have `engine_host.stop_all()` walk a
     # `_children` that does not hold it yet, and the child would start
     # running unowned right after `stop_all()` already finished. Setting this
-    # on shutdown lets `resurrect_enabled`'s own thread catch that — see its
+    # on shutdown lets `resurrect_autostart`'s own thread catch that — see its
     # docstring — for exactly the race a code review caught (2026-08-26).
     _background_apps_shutdown = threading.Event()
 
@@ -359,7 +362,7 @@ def create_app(start_dir: str) -> FastAPI:
     async def _startup_resurrect_background_apps():
         from fused_render import background_apps
 
-        threading.Thread(target=background_apps.resurrect_enabled,
+        threading.Thread(target=background_apps.resurrect_autostart,
                          args=(_background_apps_shutdown,),
                          name="background-apps-resurrect", daemon=True).start()
 
