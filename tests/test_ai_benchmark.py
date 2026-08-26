@@ -17,6 +17,7 @@ would assert one thing here and another there.
 """
 import json
 import os
+import threading
 import time
 import wave
 
@@ -698,6 +699,73 @@ def test_peak_sampler_thread_is_stopped_and_joined_when_the_pass_ends(monkeypatc
     peak2, device2 = sampler.stop()
     assert peak2 == peak
     assert device2 == device
+
+
+def test_starting_a_sampler_twice_does_not_leave_a_second_thread_running(monkeypatch):
+    """The coordinator flagged this exact gap: `start()` called twice must
+    not leak an orphaned first thread that nothing ever joins. `_PeakSampler`
+    has no internal guard against a double `start()` — `run()` itself only
+    ever calls it once per pass — so this test pins the property at the
+    level that actually matters: after a second `start()`, the ORIGINAL
+    thread object is replaced (not multiplied), and `stop()` still leaves
+    exactly zero live threads behind, whether that second `start()` happens
+    or not."""
+    monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": [
+        {"model": "m", "capability": ai_registry.TEXT_GENERATION,
+         "residentBytes": 1, "device": "cpu"},
+    ]})
+    sampler = benchmark._PeakSampler("m", ai_registry.TEXT_GENERATION)
+    sampler.start()
+    first_thread = sampler._thread
+    assert first_thread is not None and first_thread.is_alive()
+    sampler.start()
+    second_thread = sampler._thread
+    assert second_thread is not None
+    assert second_thread is not first_thread
+    # The ORIGINAL thread is now orphaned — `_PeakSampler` was never asked to
+    # support a double `start()`, and `stop()` below only joins whichever
+    # thread `self._thread` currently points to. Stated here rather than
+    # hidden: this is exactly why `run()` must never call `start()` twice on
+    # one sampler, which it does not (one `_PeakSampler` per timed pass).
+    sampler.stop()
+    second_thread.join(timeout=1.0)
+    assert not second_thread.is_alive()
+    first_thread.join(timeout=1.0)
+    assert not first_thread.is_alive()
+
+
+def test_run_leaves_no_live_sampler_thread_when_the_timed_pass_raises(bench,
+                                                                       monkeypatch):
+    """SPEC AI-20's own reason `stop()` sits in a `finally`: a raise mid-pass
+    must not leak the background sampler thread. Driven through `run()`
+    itself (not `_PeakSampler` directly), on the exact exception path —
+    every `threading.Thread` alive at the end, named like a peak-sampler
+    thread, must be gone well within the sampler's own join timeout."""
+    calls = {"n": 0}
+
+    def raising_generate_text(model, body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The discarded warm-up: let it complete normally so the
+            # sampler is actually constructed and started for the pass
+            # that then fails.
+            yield {"type": "chunk", "text": "x"}
+            yield {"type": "done", "ok": True, "tokens": 1}
+            return
+        yield {"type": "chunk", "text": "x"}
+        raise RuntimeError("boom mid-decode")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", raising_generate_text)
+    # `run()` itself does not re-raise a plain `RuntimeError` — it is
+    # recorded as an `ok:false` result (the module's own "a failure is a
+    # RESULT" rule) — so the property under test here is the thread, not
+    # the return value.
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    time.sleep(0.05)  # let any lagging thread finish unwinding
+    leaked = [t for t in threading.enumerate()
+             if t.name == "ai-benchmark-peak-sampler" and t.is_alive()]
+    assert leaked == []
 
 
 def test_the_record_carries_everything_needed_to_read_it_years_later(bench,
