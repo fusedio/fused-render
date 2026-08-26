@@ -1653,12 +1653,29 @@
     display: none;
   }
 
-  /* The fixed 168px name column is a desktop-width affordance — Skills' own
-     description-over-source swap above already fixes the narrow layout, and
-     168px of a ~340px content column left almost nothing for the name. */
+  /* The fixed 168px name column is a desktop-width affordance, and at a
+     ~340px content column it left so little room that the two-column shape
+     itself was the defect: the name — the row's identity — was what got
+     crushed down to two or three characters (`c..`) while the description
+     kept nearly the full row width. Below this width Skills' rows stack
+     instead: the name (with its "not linked" badge, still stacked under it
+     via .cc-skills-namebox) gets its own full-width line, the description
+     its own line(s) below — still clamped to 2 lines by .cc-lrow-sub-clamp2
+     above — and the source meta stays dropped, same as the comment above
+     already says. .cc-lrow-body flips to a column so those two lines stack;
+     align-items must go from the row layout's flex-start (top-aligns NAME
+     beside SUB) to stretch, or the column's cross axis would shrink-wrap
+     each line to its own content width instead of spanning the row. */
+  .cc-skills-list .cc-lrow-body {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+  }
+
   .cc-skills-list .cc-lrow-name {
-    flex: 0 1 auto;
+    flex: 0 0 auto;
     width: auto;
+    max-width: 100%;
   }
 
   /* The marketplace filter column would leave the list ~120px at this width.
