@@ -8937,6 +8937,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   distinct exception so `describe_failure`'s chain-walk prints the shortfall
   in GB at the top rather than whatever call happened to be running when a
   mid-download `ENOSPC` used to surface.
+- **AI-27** **`ai_runtime._accepts_image`'s TEXT_GENERATION branch gains a
+  pre-download fallback: `hub_cache.has_vision_tower` stays the
+  higher-precedence source when a snapshot IS cached
+  (`hub_cache.has_cached_snapshot`), and only when nothing is cached does it
+  fall back to `hub_metadata.get(model_id)["hasVisionTower"]`** (D530). The
+  new `has_cached_snapshot` splits `has_vision_tower`'s two different
+  "False" cases apart -- "this checkpoint really has no tower" and "there is
+  nothing on disk to read a tower off of" -- so the fallback only fires for
+  the second, never overriding a real on-disk measurement with a stale or
+  wrong Hub reading. Reuses `_embed_snapshot_dir`'s existing path-segment
+  guard, so a hostile repo id answers False exactly as `has_vision_tower`
+  already does.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

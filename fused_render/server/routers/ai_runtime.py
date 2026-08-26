@@ -57,9 +57,10 @@ from fused_render.server.common import _error, _require_fused
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models, embed_family, has_vision_tower,
-    is_downloaded,
+    CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
+    has_vision_tower, is_downloaded,
 )
+from fused_render.ai import hub_metadata
 
 router = APIRouter()
 
@@ -940,12 +941,19 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
     - TEXT_GENERATION — True only when the resolved runner is `mlx-text` (the
       one runner here that reads a checkpoint through mlx-vlm at all — a
       llama.cpp GGUF text model has no vision tower to speak of and must come
-      back False the same as before) AND `hub_cache.has_vision_tower` finds a
-      `vision_config`/`image_token_id` in the cached checkpoint's own
-      `config.json`. Read straight off disk, with no model load involved —
-      an attach button whose request then 400s is exactly the failure this
-      field exists to prevent, so "cannot tell" answers False rather than
-      guessing True.
+      back False the same as before) AND the checkpoint has a vision tower.
+      **Two sources, in precedence order (SPEC AI-17 item 17):**
+      `hub_cache.has_vision_tower` first, reading straight off an already-
+      cached snapshot's own `config.json` with no model load involved — the
+      MEASURED answer, when there is a snapshot to measure. Only when
+      `hub_cache.has_cached_snapshot` says there is NOTHING on disk yet does
+      this fall back to `hub_metadata.get(model_id)`'s `hasVisionTower` — the
+      Hub's OWN `config.json`, harvested ahead of any download (AI-17) — so a
+      search result still classifies before the user fetches a single byte.
+      A cached snapshot that genuinely has no tower is never second-guessed
+      by a stale Hub reading: "cannot tell" (no snapshot, no harvested
+      metadata either) answers False rather than guessing True, same as
+      before.
     - Every other capability: False. `engine_options` is an exception list
       for the image route alone, so treating "refuses nothing" as evidence
       would have every non-image, non-mlx-text model in the payload claiming
@@ -962,7 +970,10 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
             return formats.mflux_edit_recipe(model_id) is not None
         return True
     if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
-        return has_vision_tower(model_id)
+        if has_cached_snapshot(model_id):
+            return has_vision_tower(model_id)
+        meta = hub_metadata.get(model_id)
+        return bool(meta and meta.get("hasVisionTower"))
     return False
 
 

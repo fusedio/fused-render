@@ -5430,6 +5430,43 @@ def test_accepts_image_is_false_with_no_runner_resolved(hub):
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, None, "org/whatever") is False
 
 
+# -- `acceptsImage`'s pre-download fallback (SPEC AI-17 item 17) --------------
+#
+# `has_vision_tower` can only read a snapshot already on disk. For a curated
+# or searched repo with NOTHING cached yet, `_accepts_image` falls back to
+# `hub_metadata.get`'s Hub-harvested `hasVisionTower` — but only there: an
+# ALREADY-cached snapshot's own on-disk reading stays higher precedence, so a
+# stale or wrong Hub-metadata reading can never override a real measurement.
+
+
+def test_accepts_image_falls_back_to_hub_metadata_when_nothing_is_cached(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
+                        lambda repo_id, **kw: {"hasVisionTower": True})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-vlm") is True
+
+
+def test_accepts_image_is_false_when_uncached_and_hub_metadata_says_no_tower(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
+                        lambda repo_id, **kw: {"hasVisionTower": False})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-chat") is False
+
+
+def test_accepts_image_is_false_when_uncached_and_hub_metadata_has_nothing(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "get", lambda repo_id, **kw: None)
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/never-seen") is False
+
+
+def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeypatch):
+    """The on-disk answer wins even when it disagrees with a stale/wrong Hub
+    reading — a real cached snapshot with no vision tower must not be
+    overridden by `hub_metadata` claiming otherwise."""
+    _cached_repo(hub, "org/plain-chat", files=("model.safetensors",),
+                config={"model_type": "llama"})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
+                        lambda repo_id, **kw: {"hasVisionTower": True})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/plain-chat") is False
+
+
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
                                                         monkeypatch):
     monkeypatch.setenv("FAKE_IMAGE_FAILS", "1")
