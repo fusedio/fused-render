@@ -36,6 +36,7 @@ import {
 } from "react";
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
+import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -162,6 +163,33 @@ export default function AppPage({
     return () => {
       live = false;
     };
+  }, [dir]);
+
+  // Left/Right step the tabs (owner, 2026-08-26), the sibling of the sidebar's
+  // Up/Down over its rows (sidebarArrowNav.ts): together the two axes make the
+  // app page steerable from the keyboard alone. Same ownership rule as there —
+  // only when nothing in particular is focused (<body>) or focus is in the
+  // sidebar, so a focused control, a text field, or the base-ui tab list's own
+  // arrow handling keeps its keys. Ends stop, no wrap.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.isComposing || e.defaultPrevented) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (isOverlayOpen()) return;
+      const el = document.activeElement;
+      const onBody =
+        !el || el === document.body || el === document.documentElement;
+      const inSidebar = !!el && !!document.getElementById("sidebar")?.contains(el);
+      if (!onBody && !inSidebar) return;
+      const cur = appPageTabFromSearch(location.search);
+      const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
+      e.preventDefault();
+      if (i < 0 || i >= APP_PAGE_TABS.length) return;
+      navigateUrl(appPageUrl(dir, APP_PAGE_TABS[i], location.search));
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
   }, [dir]);
 
   const pickTab = (e: MouseEvent<HTMLAnchorElement>, next: AppPageTab) => {
