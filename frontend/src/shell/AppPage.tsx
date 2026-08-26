@@ -1,5 +1,6 @@
 // The app page — `/apps/<slug>` (D488): one workspace app, <fused_dir>/local/<slug>,
-// as a place rather than as a folder. Two tabs:
+// as a place rather than as a folder. Two tabs, one path each
+// (`/apps/<slug>/overview`, `/apps/<slug>/tasks` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -18,7 +19,7 @@
 // folder is one caption-click away for when the files are the question.
 //
 // Mounted per SLUG, not per nav epoch (App.tsx): the Overview frame holds live
-// app state, and a tab switch — a navigation, since the tab is in the URL —
+// app state, and a tab switch — a navigation, since the tab is in the path —
 // must not reload it. The frame stays mounted behind the Tasks tab for the
 // same reason (display:none, not unmount).
 import { useEffect, useMemo, useState, type MouseEvent } from "react";
@@ -31,9 +32,9 @@ import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
-  appPageTab,
+  appPageTabFromPath,
+  appPageUrl,
   localAppsRoot,
-  withAppPageTab,
   type AppPageTab,
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
@@ -64,10 +65,10 @@ export default function AppPage({
     [config.fused_dir, slug],
   );
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
-  // The tab is the URL's (`?tab=`), re-read on every URL event so back/forward
-  // between the two tabs lands on the right one.
+  // The tab is the path's last segment, re-read on every URL event so
+  // back/forward between the two tabs lands on the right one.
   useUrlVersion();
-  const tab = appPageTab(location.search);
+  const tab = appPageTabFromPath(location.pathname);
 
   useEffect(() => {
     let live = true;
@@ -103,8 +104,9 @@ export default function AppPage({
   const pickTab = (e: MouseEvent<HTMLAnchorElement>, next: AppPageTab) => {
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    if (next !== tab)
-      navigateUrl(location.pathname + withAppPageTab(location.search, next));
+    // The query rides along: it is the tab's own (`?view=` on Tasks), and a
+    // switch away and back should find it as it was.
+    if (next !== tab) navigateUrl(appPageUrl(slug, next) + location.search);
   };
 
   const folderHref = urlForFsPath(dir);
@@ -145,9 +147,7 @@ export default function AppPage({
                 className="flex-none px-2 py-1.5"
                 render={
                   <a
-                    href={
-                      location.pathname + withAppPageTab(location.search, t.id)
-                    }
+                    href={appPageUrl(slug, t.id) + location.search}
                     onClick={(e) => pickTab(e, t.id)}
                   />
                 }

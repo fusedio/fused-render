@@ -16,7 +16,7 @@ import { HeroComposer } from "@apps/builder/HomeHero";
 import { opensElsewhere } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import {
-  appPageTab,
+  appPageTabFromPath,
   appPageUrl,
   currentApps,
   slugFromAppPath,
@@ -56,7 +56,8 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
     // is the OVERVIEW, so from the Tasks tab the click still goes — it is how
     // the sidebar gets back to the running app. Only a click that would land
     // exactly where the page already is stays a no-op.
-    if (!active || appPageTab(location.search) !== "overview") navigateUrl(href);
+    if (!active || appPageTabFromPath(location.pathname) !== "overview")
+      navigateUrl(href);
   };
   const onArchive = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -76,7 +77,10 @@ function CurrentAppRow({ app, active }: { app: CurrentApp; active: boolean }) {
   const n = app.taskKeys.length;
   const tip = `${app.dir} — ${n} ${n === 1 ? "task" : "tasks"}${app.running ? ", running" : ""}`;
   return (
-    <div className={"bookmark-row current-app-row" + (active ? " active" : "")} title={tip}>
+    <div
+      className={"bookmark-row current-app-row" + (active ? " active" : "")}
+      title={tip}
+    >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.running ? <span className="sidebar-rail-dot is-running" /> : "▣"}
       </span>
@@ -112,7 +116,9 @@ export default function CurrentAppsSection() {
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
   const onSlug = slugFromAppPath(location.pathname);
   const render = useCallback(
-    (app: CurrentApp) => <CurrentAppRow key={app.dir} app={app} active={app.slug === onSlug} />,
+    (app: CurrentApp) => (
+      <CurrentAppRow key={app.dir} app={app} active={app.slug === onSlug} />
+    ),
     [onSlug],
   );
   // The + opens the /apps composer in a modal (D489). The section therefore

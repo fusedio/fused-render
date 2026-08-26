@@ -2,13 +2,13 @@ import { describe, expect, it } from "bun:test";
 import type { TaskPulseTask } from "@platform/lib/api";
 import {
   appDirOf,
-  appPageTab,
+  appPageTabFromPath,
   appPageUrl,
+  isBareAppPath,
   currentApps,
   isUnderDir,
   localAppsRoot,
   slugFromAppPath,
-  withAppPageTab,
 } from "./current-apps-lib";
 
 const FUSED = "/Users/me/Fused";
@@ -68,7 +68,9 @@ describe("appDirOf", () => {
   });
 
   it("folds a backslashed Windows fused_dir onto forward-slash task paths", () => {
-    expect(localAppsRoot("C:\\Users\\me\\Fused")).toBe("C:/Users/me/Fused/local/");
+    expect(localAppsRoot("C:\\Users\\me\\Fused")).toBe(
+      "C:/Users/me/Fused/local/",
+    );
   });
 });
 
@@ -83,15 +85,17 @@ describe("isUnderDir", () => {
 
 describe("app page codec", () => {
   it("round-trips a slug through the URL, escaping what needs it", () => {
-    expect(appPageUrl("my app")).toBe("/apps/my%20app");
+    expect(appPageUrl("my app")).toBe("/apps/my%20app/overview");
+    expect(slugFromAppPath("/apps/my%20app/overview")).toBe("my app");
     expect(slugFromAppPath("/apps/my%20app")).toBe("my app");
-    expect(appPageUrl("x", "tasks")).toBe("/apps/x?tab=tasks");
+    expect(appPageUrl("x", "tasks")).toBe("/apps/x/tasks");
   });
 
   it("refuses anything that is not one folder name under the workspace", () => {
     expect(slugFromAppPath("/apps")).toBeNull();
     expect(slugFromAppPath("/apps/")).toBeNull();
-    expect(slugFromAppPath("/apps/tag/name")).toBeNull();
+    expect(slugFromAppPath("/apps/a/tasks/deeper")).toBeNull();
+    expect(slugFromAppPath("/apps//tasks")).toBeNull();
     expect(slugFromAppPath("/apps/..")).toBeNull();
     expect(slugFromAppPath("/apps/.")).toBeNull();
     expect(slugFromAppPath("/apps/%2e%2e")).toBeNull();
@@ -101,12 +105,19 @@ describe("app page codec", () => {
     expect(slugFromAppPath("/tasks")).toBeNull();
   });
 
-  it("keeps the tab in the query and leaves other params alone", () => {
-    expect(appPageTab("?tab=tasks&view=board")).toBe("tasks");
-    expect(appPageTab("?tab=nope")).toBe("overview");
-    expect(appPageTab("")).toBe("overview");
-    expect(withAppPageTab("?view=board", "tasks")).toBe("?view=board&tab=tasks");
-    expect(withAppPageTab("?view=board&tab=tasks", "overview")).toBe("?view=board");
-    expect(withAppPageTab("?tab=tasks", "overview")).toBe("");
+  it("reads the tab from the path, falling back to the overview", () => {
+    expect(appPageTabFromPath("/apps/x/tasks")).toBe("tasks");
+    expect(appPageTabFromPath("/apps/x/overview")).toBe("overview");
+    // A stale two-level builder link (`/apps/<tag>/<name>`) is an unknown tab.
+    expect(appPageTabFromPath("/apps/tag/name")).toBe("overview");
+    expect(appPageTabFromPath("/apps/x")).toBe("overview");
+  });
+
+  it("knows the bare slug address that App.tsx rewrites to the default tab", () => {
+    expect(isBareAppPath("/apps/x")).toBe(true);
+    expect(isBareAppPath("/apps/x/overview")).toBe(false);
+    expect(isBareAppPath("/apps/x/nope")).toBe(false);
+    expect(isBareAppPath("/apps/..")).toBe(false);
+    expect(isBareAppPath("/apps")).toBe(false);
   });
 });
