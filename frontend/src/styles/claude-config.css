@@ -836,7 +836,9 @@
    thing on the rail — and sitting one 1px gap below the last marketplace, it
    read as a sixth row that had somehow grown a border. Separated by space
    rather than by a hairline: the rail already spends its one rule on the
-   divider under "All", and two rules in a 180px column is book-keeping. */
+   divider under "All", and two rules in a 180px column is book-keeping.
+   It opens a DIALOG (the form never fitted the rail), so it has one label and
+   no open state — nothing here turns into a bare "Cancel" any more. */
 .cc-index-add {
   display: flex;
   align-items: center;
@@ -1173,6 +1175,25 @@
   color: var(--fg);
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+/* A label over its control, in a dialog. The modal chassis brings the shared
+   form vocabulary with it (fields.css via .deploy-body), so this only has to
+   say how a field STACKS. */
+.cc-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.cc-modal-field:last-child {
+  margin-bottom: 0;
+}
+
+.cc-modal-field > label {
+  font-size: 12px;
+  color: var(--fg-muted);
 }
 
 /* -- a plugin's contents (Plugins > Installed, expanded) --------------------- */

@@ -24,10 +24,11 @@
 // deliberately no reload after a successful toggle — the only thing that
 // changed is the flag we already painted, and a refetch here would fight the
 // optimistic value.
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { urlForFsPath } from "@platform/lib/router";
 import ContextMenu from "@platform/ui/ContextMenu";
+import Modal from "@platform/ui/modal/Modal";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
@@ -40,10 +41,6 @@ import type {
   PluginContents,
 } from "../api";
 import {
-  Card,
-  CardActions,
-  CardTitle,
-  DisclosureButton,
   Empty,
   Icon,
   List,
@@ -246,7 +243,6 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   // Which marketplace's row menu is open, and where to hang it. One at a time
   // by construction — the rail has one menu, not one per row.
   const [mktMenu, setMktMenu] = useState<{ name: string; x: number; y: number } | null>(null);
-  const mktFormId = useId();
   // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
   // URL-held page would be reset by the very navigation meant to preserve it —
   // and it would re-read every marketplace catalog on the way. Same reasoning
@@ -600,56 +596,19 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               </div>
             );
           })}
-          <DisclosureButton
-            quiet
-            open={addingMkt}
-            controls={mktFormId}
-            label="Add marketplace"
-            onToggle={() => setAddingMkt((v) => !v)}
-          />
-          {addingMkt && (
-            <div id={mktFormId}>
-              <Card>
-                <CardTitle>Add a marketplace</CardTitle>
-                <CardActions>
-                  <input
-                    className="field-control"
-                    aria-label="Marketplace name"
-                    placeholder="name"
-                    value={mktName}
-                    disabled={mktBusy}
-                    onChange={(e) => setMktName(e.target.value)}
-                  />
-                  <select
-                    className="field-control"
-                    aria-label="Marketplace kind"
-                    value={mktKind}
-                    disabled={mktBusy}
-                    onChange={(e) => setMktKind(e.target.value as MarketplaceKind)}
-                  >
-                    <option value="github">github (owner/repo)</option>
-                    <option value="git">git url</option>
-                  </select>
-                  <input
-                    className="field-control cc-grow"
-                    aria-label="Marketplace source"
-                    placeholder="owner/repo or url"
-                    value={mktValue}
-                    disabled={mktBusy}
-                    onChange={(e) => setMktValue(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    disabled={mktBusy}
-                    onClick={addMarketplace}
-                  >
-                    Add
-                  </button>
-                </CardActions>
-              </Card>
-            </div>
-          )}
+          {/* Opens a dialog, so it is a plain button rather than the
+              DisclosureButton this used to be. That control swapped its label
+              for "Cancel" while open — and with the rail's borderless styling
+              on it, "Cancel" rendered as bare accent-yellow text under the
+              marketplace list, which reads as a warning, not a control. */}
+          <button
+            type="button"
+            className="cc-index-add"
+            onClick={() => setAddingMkt(true)}
+          >
+            <Icon name="plus" />
+            Add marketplace
+          </button>
         </nav>
         <div className="cc-rows">
           {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
@@ -848,6 +807,78 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           rail itself has z-index auto and comes before .cc-rows in the DOM, so
           the plugin list painted straight over the open menu: the toggles
           showed through it, as if the panel were transparent. */}
+      {/* A dialog, not a panel in the rail. Three fields — a name, a kind and a
+          source url — do not fit a 180px column: the card they were in was a
+          bordered surface on a rail that deliberately has none, its select
+          barely cleared its own text, and open it stood taller than the
+          marketplace list it belonged to. */}
+      {addingMkt && (
+        <Modal
+          title="Add a marketplace"
+          onClose={() => setAddingMkt(false)}
+          busy={mktBusy}
+          width={420}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={mktBusy}
+                onClick={() => setAddingMkt(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={mktBusy || !mktName.trim() || !mktValue.trim()}
+                onClick={addMarketplace}
+              >
+                {mktBusy ? "Adding…" : "Add marketplace"}
+              </button>
+            </>
+          }
+        >
+          <div className="cc-modal-field">
+            <label htmlFor="cc-mkt-name">Name</label>
+            <input
+              id="cc-mkt-name"
+              className="field-control"
+              placeholder="my-marketplace"
+              value={mktName}
+              autoFocus
+              disabled={mktBusy}
+              onChange={(e) => setMktName(e.target.value)}
+            />
+          </div>
+          <div className="cc-modal-field">
+            <label htmlFor="cc-mkt-kind">Source kind</label>
+            <select
+              id="cc-mkt-kind"
+              className="field-control"
+              value={mktKind}
+              disabled={mktBusy}
+              onChange={(e) => setMktKind(e.target.value as MarketplaceKind)}
+            >
+              <option value="github">GitHub repository</option>
+              <option value="git">Git URL</option>
+            </select>
+          </div>
+          <div className="cc-modal-field">
+            <label htmlFor="cc-mkt-value">
+              {mktKind === "github" ? "Repository" : "URL"}
+            </label>
+            <input
+              id="cc-mkt-value"
+              className="field-control"
+              placeholder={mktKind === "github" ? "owner/repo" : "https://example.com/repo.git"}
+              value={mktValue}
+              disabled={mktBusy}
+              onChange={(e) => setMktValue(e.target.value)}
+            />
+          </div>
+        </Modal>
+      )}
       {mktMenu && (
         <ContextMenu
           x={mktMenu.x}

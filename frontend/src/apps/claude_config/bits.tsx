@@ -284,7 +284,6 @@ export function DisclosureButton({
   controls,
   label,
   onToggle,
-  quiet,
 }: {
   open: boolean;
   // The id of the form this reveals — aria-controls, so the relationship is on
@@ -292,16 +291,11 @@ export function DisclosureButton({
   controls: string;
   label: string;
   onToggle: () => void;
-  // Drops the .btn chrome for a borderless one (.cc-index-add). Exists for the
-  // Plugins rail, which is deliberately undecorated — no surface, no border —
-  // so a bordered box in it was the heaviest thing on the column and read as a
-  // sixth list row rather than as the action after the list.
-  quiet?: boolean;
 }) {
   return (
     <button
       type="button"
-      className={(quiet ? "cc-index-add" : "btn") + (open ? " cc-btn-on" : "")}
+      className={"btn" + (open ? " cc-btn-on" : "")}
       aria-expanded={open}
       aria-controls={controls}
       onClick={onToggle}
