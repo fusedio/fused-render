@@ -7,7 +7,7 @@
 // runtime reads, the sandbox/permissions seal the browser enforces, and the
 // small markup that keeps the frame out of the tab order and off the scrollbar.
 // A card that got four of the five was the bug (D348 shipped `_preview` without
-// `_nofocus`; D495 found `_nofocus` without inheritance), and a fifth thumbnail
+// `_nofocus`; D496 found `_nofocus` without inheritance), and a fifth thumbnail
 // surface would have had to remember all of them from scratch.
 //
 // What each part is for is written where it is defined: the stamps in
@@ -22,7 +22,7 @@ import { THUMB_SEAL, withNoFocus } from "./frame-focus";
 import { withPreviewFlag } from "./router";
 
 // The URL of a page being rendered as a picture: it records no open (D301) and
-// takes no keyboard (D495). For a caller that needs the address rather than a
+// takes no keyboard (D496). For a caller that needs the address rather than a
 // whole frame — the export capture's staging frame builds its own element.
 export function thumbUrl(src: string): string {
   return withNoFocus(withPreviewFlag(src));

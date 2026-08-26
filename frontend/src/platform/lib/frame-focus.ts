@@ -150,7 +150,7 @@ export function tabEntersFrame<T>(
 //     What the attribute's mere PRESENCE buys is the sandboxed automatic
 //     features flag, for which no re-enabling token exists: `autofocus` never
 //     applies and media never autoplays. That is the single biggest cause of
-//     the /apps grid jumping (D495) closed by the browser, in markup, with no
+//     the /apps grid jumping (D496) closed by the browser, in markup, with no
 //     runtime involved — and a thumbnail can no longer make noise either.
 //
 //     Everything not listed stays denied, and each one is something a
