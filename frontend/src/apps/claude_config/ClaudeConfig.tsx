@@ -92,18 +92,6 @@ const PAGES = [...TABS, HISTORY];
 
 type SectionId = (typeof PAGES)[number]["id"];
 
-// The content column is capped at 900px by default (.cc-main-capped, this page only) —
-// right for Preferences, whose label+doc column is itself capped near 60ch
-// for readability and should not stretch just because the page has room.
-// Wrong for the list-bearing tabs: at 1400px a 900px cap left roughly a
-// third of the window empty, and at 2000px more than half. These are the
-// tabs whose content actually uses extra width — Plugins' list (the rail
-// stays a fixed 180px beside it), Skills' description column (fewer rows
-// hit the 2-line clamp), Memory/MCP/History's rows. Statusline is left out
-// on purpose: it is a script summary and an ANSI preview, not a list, and
-// nothing about it benefits from stretching past 900px.
-const WIDE_SECTIONS = new Set<SectionId>(["plugins", "memory", "skills", "mcp", "history"]);
-
 const SECTION_PARAM = "cctab";
 
 // What the nav used to say in its tagline. It is one sentence of standing
@@ -283,9 +271,7 @@ export default function ClaudeConfig() {
         </div>
       </div>
       <div className="cc-body">
-        {/* cc-main-capped: the 900px cap is this page's, not the chassis' —
-            AI Models shares .cc-main and must not inherit it. */}
-        <main className={"cc-main cc-main-capped" + (WIDE_SECTIONS.has(active) ? " cc-main-wide" : "")}>
+        <main className="cc-main">
           {/* title= on the ROW, not on the note: the note itself is hidden on a
               narrow window, and the sentence should still be reachable there. */}
           <div className="cc-caption-row" title={TAGLINE}>

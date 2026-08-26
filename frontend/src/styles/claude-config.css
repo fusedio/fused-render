@@ -43,23 +43,40 @@
   flex-direction: column;
 }
 
+/* Tab strip on top, then the body — and THIS box is what scrolls, as one
+   page, header and tab strip included. USED TO be overflow:hidden with
+   .cc-main as the only scroll container underneath it (owner, 2026-08-26: "I
+   want the whole page to be scrollable" — .cc-main scrolled, the page did
+   not). It is still bounded to the viewport (flex:1 1 auto + min-height:0
+   inside #content, which chains up to #app's fixed 100vh — see base.css for
+   why #app itself never scrolls: overscroll-behavior-y on html/body exists
+   because an unconsumed wheel delta chaining to the DOCUMENT is what caused
+   the elastic-bounce lurch Akshil hit on 2026-08-20), so this is still an
+   INNER scroll region, not the literal document — just the outermost one
+   this route owns, matching how AI Models' own .cc-main already scrolls its
+   whole page (heading and tab strip included, AiModelsPage.tsx) rather than
+   only some inner pane. Reusing that same edge is what keeps this page
+   consistent with the rest of the shell instead of inventing a second way to
+   "make the document scroll" that fights base.css's own fix. */
 .cc-root {
   display: flex;
-  /* Tab strip on top, then the body — each of whose columns scrolls inside this
-     box rather than the page scrolling as a whole. */
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--bg);
   font-size: 13px;
 }
 
+/* No longer its own bounded, clipped box: .cc-root is the scroll container
+   now, so this just lays .cc-main out and lets it grow to whatever height its
+   content needs — min-height:0/overflow:hidden here would do the opposite,
+   clipping content at exactly the viewport instead of letting the page
+   beneath it scroll to reach the rest. */
 .cc-body {
   display: flex;
   flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
 }
 
 /* -- header band ------------------------------------------------------------- */
@@ -248,37 +265,32 @@
 
 /* -- content column -------------------------------------------------------- */
 
-/* Single column, left-aligned, capped so a row never stretches across a wide
-   monitor (defect: full-bleed content at any window width). Not centred —
-   margin stays 0, matching the sidebar it sits beside rather than floating in
-   the middle of the remaining space. flex-basis 0 (not auto) so it grows to
-   fill .cc-body deterministically off its flex-grow alone. */
+/* Single column, left-aligned, full-bleed to whatever width .cc-body gives it.
+   USED TO be capped at 900px (.cc-main-capped) — gone (owner, 2026-08-26:
+   "what is that 900px thing? that is bad"). That cap already cost the AI
+   Models page once: it lives on this SHARED chassis class (AiModelsPage.tsx
+   stands on it too), and a 900px cap here squeezed the Playground tab into a
+   column with the page background showing all around it, which is what made
+   the cap an opt-in class in the first place rather than a property of
+   .cc-main itself. Removing the opt-in class is what the owner actually wants
+   gone, not a second attempt at picking a bigger number — every row on this
+   page already bounds its own measure where it needs to (.cc-row-meta's 60ch,
+   .cc-lrow-sub's ellipsis), so the column has nothing left to protect against
+   by capping itself too.
+ *
+ * Not centred — margin stays 0, matching the sidebar it sits beside rather
+ * than floating in the middle of the remaining space. flex-basis 0 (not auto)
+ * so it grows to fill .cc-body deterministically off its flex-grow alone.
+ *
+ * No overflow-y here any more either — .cc-root is the scroll container now
+ * (below), so this box just grows to whatever height its content needs. */
 .cc-main {
   flex: 1 1 0%;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
   overflow-x: hidden;
-  overflow-y: auto;
   padding: 24px 28px 40px;
-}
-
-/* The cap is Claude Config's, NOT .cc-main's: that class is the shared chassis
-   the AI Models page stands on too (AiModelsPage.tsx), and a 900px cap there
-   squeezed the Playground into a column with the page background showing all
-   around it (owner, 2026-08-26). So the cap is an opt-in class ClaudeConfig.tsx
-   puts on its own <main>. */
-.cc-main-capped {
-  max-width: 900px;
-}
-
-/* The list-bearing tabs (see WIDE_SECTIONS in ClaudeConfig.tsx) get more room
-   than Preferences: a 900px cap left roughly a third of a 1400px window
-   empty and more than half of a 2000px one. min() rather than a bare
-   1400px so a window narrower than that still just gets .cc-main's own
-   width:100% — this raises the ceiling, it doesn't set a floor. */
-.cc-main-wide {
-  max-width: min(1400px, 100%);
 }
 
 .cc-heading {
@@ -338,10 +350,14 @@
    controls travel together as one atomic flex item (.cc-toolbar-controls) and
    never break apart into a ragged stack — that was the defect (a filter input
    truncating its own placeholder as the row folded mid-control). */
-/* Sticky within .cc-main. .cc-index (Plugins' marketplace rail) is ALSO
-   sticky at top:0 in the same scroll container, offset below this box's
-   height — if this toolbar's height changes, that offset (.cc-index's
-   `top`) has to follow or the rail slides under this and disappears. */
+/* Sticky within .cc-root (the page's own scroll container — see .cc-root's
+   comment). top:0 still means what it always did: nothing else is sticky
+   above this on the page, so it pins to the very top of the scrollport once
+   the header and tab strip have scrolled past it, same as before .cc-root
+   became the scroller. .cc-index (Plugins' marketplace rail) is ALSO sticky
+   in the same scroll container, offset below this box's height — if this
+   toolbar's height changes, that offset (.cc-index's `top`) has to follow or
+   the rail slides under this and disappears. */
 .cc-toolbar {
   position: sticky;
   top: 0;
@@ -750,11 +766,15 @@
   gap: 1px;
   /* Sticks while the (much longer) list scrolls past it — offset below
      .cc-toolbar's own sticky top:0, not stacked on top of it. Both stick to
-     the SAME scroll container (.cc-main), so without this offset scrolling
-     slides this rail under the toolbar's opaque background and it vanishes.
-     70px = the toolbar's own height (32px .field-control/select, the
-     tallest thing it holds, + 10px top/bottom padding = 52) plus its 18px
-     margin-bottom before .cc-split begins. */
+     the SAME scroll container — .cc-root now (it used to be .cc-main; see
+     .cc-root's comment for why the scroller moved) — so without this offset
+     scrolling slides this rail under the toolbar's opaque background and it
+     vanishes. The number itself didn't move with the scroller: sticky offsets
+     are measured from the scrollport, not from the document, so this is still
+     just the toolbar's own rendered height regardless of which ancestor is
+     doing the scrolling. 70px = the toolbar's own height (32px
+     .field-control/select, the tallest thing it holds, + 10px top/bottom
+     padding = 52) plus its 18px margin-bottom before .cc-split begins. */
   position: sticky;
   top: 70px;
 }
@@ -946,7 +966,9 @@
    free-floating rows on the page background. That boundary is what stops a
    row's content from reading as if it stopped halfway across the page: the
    card's own right edge is where the row is "supposed" to end, at any window
-   width up to .cc-main's 900px cap. */
+   width — .cc-main has no cap of its own (owner, 2026-08-26: "what is that
+   900px thing? that is bad" — it forced AI Models' Playground into a squeezed
+   column once already, see .cc-main's own comment). */
 .cc-list {
   width: 100%;
   box-sizing: border-box;
