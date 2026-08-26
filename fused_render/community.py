@@ -17,8 +17,6 @@ Actions:
   refresh   — clone the community repo into <workspace>/showcase if it isn't
               there yet, then return the same payload as `catalog`; once the
               clone exists this never fetches or syncs it again
-  touch     — record that an app was opened; feeds the "last opened"
-              ordering of community cards
 
 The repo is a FULL clone living inside the user's workspace
 (~/Fused/showcase). It is the user's tree: apps are edited in place, and
@@ -26,10 +24,10 @@ nothing here ever resets, deletes, fetches, or syncs it once cloned — that
 is the whole point of "edit in the showcase" (there is no separate installed
 copy to keep in sync). Opening an app there IS opening your copy.
 
-Bookkeeping (opened.json) stays under ~/.fused-render/community/. Every git
-call runs with GIT_TERMINAL_PROMPT=0 and a bounded timeout — a first clone
-that can't finish in time surfaces as a friendly retry error rather than a
-hang.
+The lock file (`.lock`, `_cache_lock`) stays under ~/.fused-render/community/.
+Every git call runs with GIT_TERMINAL_PROMPT=0 and a bounded timeout — a
+first clone that can't finish in time surfaces as a friendly retry error
+rather than a hang.
 """
 import contextlib
 import json
@@ -39,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 from fused_render.shell.seed import fused_dir
 
@@ -70,7 +69,6 @@ REPO_URL = os.environ.get(
 STATE_DIR = os.path.join(
     os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render"),
     "community")
-OPENED_JSON = os.path.join(STATE_DIR, "opened.json")
 LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 
 # The one definition of the workspace, imported rather than mirrored — this
@@ -146,46 +144,51 @@ def _git(cwd, *args, timeout=GIT_TIMEOUT):
                           "network and revisit the apps page to retry")
 
 
-def _read_opened():
-    """{slug: epoch seconds of the last open} — best-effort, like installs."""
-    try:
-        with open(OPENED_JSON, encoding="utf-8") as f:
-            data = json.load(f)
-        opened = data.get("opened")
-        return opened if isinstance(opened, dict) else {}
-    except (OSError, ValueError):
-        return {}
 
-
-def _touch(slug):
-    _require_slug(slug)
-    opened = _read_opened()
-    opened[slug] = time.time()
-    os.makedirs(STATE_DIR, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=STATE_DIR, prefix=".opened-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump({"schema": 1, "opened": opened}, f, indent=2)
-        os.replace(tmp, OPENED_JSON)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return {"status": "ok", "opened_at": opened[slug]}
-
+def _normalize_git_url(url):
+    """A remote URL reduced to `(host, path)`, tolerant of the spellings
+    that name the SAME remote without being the same string: a trailing
+    `.git`, a trailing slash, and the ssh scp-like form
+    (`git@host:org/repo`) versus an explicit scheme (`https://host/org/
+    repo`, `ssh://git@host/org/repo`). Without this, `_cache_ready`'s exact
+    string match reported a genuine clone as `no-cache` forever the moment
+    its origin was authored differently than `REPO_URL` happens to be
+    spelled today (an ssh remote against an https REPO_URL, a
+    FUSED_RENDER_COMMUNITY_REPO override that changed form) — and
+    `_refresh` then read that as "exists but is not the showcase clone",
+    refusing on every visit. Host is case-folded (DNS is
+    case-insensitive); the path is left as-is, since it can be
+    case-sensitive depending on the host."""
+    u = (url or "").strip()
+    if not u:
+        return ("", "")
+    if "://" not in u and "@" in u and ":" in u.split("@", 1)[1]:
+        # scp-like syntax: user@host:org/repo — the colon is a path
+        # separator here, not a port (that form requires an explicit
+        # scheme, handled by the branch below).
+        userhost, _, path = u.partition(":")
+        host = userhost.rsplit("@", 1)[-1]
+    else:
+        parsed = urlsplit(u)
+        host = parsed.netloc.rsplit("@", 1)[-1]  # drop any userinfo
+        path = parsed.path
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-len(".git")]
+    return (host.lower(), path)
 
 
 def _cache_ready():
     """The showcase clone exists at SHOWCASE_DIR and is OURS (tracks
-    REPO_URL). A foreign git repo the user placed at this path — tracking
-    some other remote — is never treated as ready; refresh must refuse it,
-    not silently adopt it."""
+    REPO_URL, allowing for the URL spellings `_normalize_git_url`
+    tolerates). A foreign git repo the user placed at this path — tracking
+    some other remote entirely — is never treated as ready; refresh must
+    refuse it, not silently adopt it."""
     if not os.path.isdir(os.path.join(SHOWCASE_DIR, ".git")):
         return False
     r = _git(SHOWCASE_DIR, "remote", "get-url", "origin")
-    return r.returncode == 0 and r.stdout.strip() == REPO_URL
+    return (r.returncode == 0
+            and _normalize_git_url(r.stdout.strip()) == _normalize_git_url(REPO_URL))
 
 
 def _read_metadata(slug):
@@ -214,7 +217,7 @@ def _scan_catalog():
     for name in names:
         if not _is_slug(name):
             # Also skips .git and hidden dirs (slugs validate with the same
-            # pattern _require_slug enforces).
+            # pattern below).
             continue
         meta = _read_metadata(name)
         if meta is not None:
@@ -225,9 +228,7 @@ def _scan_catalog():
 def _catalog_payload():
     if not _cache_ready():
         return {"status": "no-cache"}
-    opened = _read_opened()
-    entries = _scan_catalog()
-    apps = [{**entry, "opened_at": opened.get(entry["slug"])} for entry in entries]
+    apps = _scan_catalog()
     head = _git(SHOWCASE_DIR, "rev-parse", "HEAD")
     return {
         "status": "ok",
@@ -286,11 +287,6 @@ def _is_slug(slug):
     return bool(re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", slug or ""))
 
 
-def _require_slug(slug):
-    if not _is_slug(slug):
-        raise ActionError(f"invalid app slug: {slug!r}")
-
-
 def ensure_showcase_in_background():
     """Fire-and-forget showcase clone, called by the server entry points
     (cli._run_serve, app._start_server_thread) right after ensure_fused_dir —
@@ -313,7 +309,7 @@ def ensure_showcase_in_background():
     threading.Thread(target=_run, daemon=True, name="showcase-clone").start()
 
 
-def main(action: str = "catalog", slug: str = ""):
+def main(action: str = "catalog"):
     try:
         if action == "catalog":
             return _catalog_payload()
@@ -322,8 +318,6 @@ def main(action: str = "catalog", slug: str = ""):
             # can never race on the same on-disk repo.
             with _cache_lock():
                 return _refresh()
-        if action == "touch":
-            return _touch(slug)
         raise ActionError(f"unknown action {action!r}")
     except ActionError as exc:
         return {"status": "error", "message": str(exc)}

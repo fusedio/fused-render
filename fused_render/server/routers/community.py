@@ -1,6 +1,5 @@
 """POST /api/community — the community marketplace backend (fused_render/
-community.py), for the /apps hub's Showcase tab and the explorer preview's
-Clone button.
+community.py), for the /apps hub's Showcase tab.
 
 A sync def on purpose: community.main shells out to git, and FastAPI runs
 sync endpoints on its threadpool, keeping those subprocess waits off the
@@ -17,7 +16,4 @@ router = APIRouter()
 
 @router.post("/api/community")
 def api_community(body: dict = Body(...)):
-    return community.main(
-        action=str(body.get("action") or "catalog"),
-        slug=str(body.get("slug") or ""),
-    )
+    return community.main(action=str(body.get("action") or "catalog"))

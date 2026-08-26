@@ -30,7 +30,6 @@ def community_mod(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "STATE_DIR", str(state))
     monkeypatch.setattr(mod, "WORKSPACE", str(workspace))
     monkeypatch.setattr(mod, "SHOWCASE_DIR", str(workspace / "showcase"))
-    monkeypatch.setattr(mod, "OPENED_JSON", str(state / "opened.json"))
     monkeypatch.setattr(mod, "LOCK_PATH", str(state / ".lock"))
     return mod
 
@@ -201,3 +200,50 @@ def test_cache_lock_times_out_instead_of_racing(community_mod, monkeypatch):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+# -------------------------------------------------- normalized origin (finding #11)
+
+
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_cache_ready_tolerates_an_equivalent_but_differently_spelled_origin(
+        tmp_path, community_mod, monkeypatch):
+    """A genuine clone of REPO_URL, whose origin is merely spelled
+    differently (an ssh remote against an https REPO_URL, a trailing
+    `.git`) must still read as ready — an exact string match reported it
+    `no-cache` forever, and `_refresh` then refused it outright on every
+    visit ("exists but is not the showcase clone")."""
+    mod = community_mod
+    monkeypatch.setattr(mod, "REPO_URL", "https://github.com/fusedio/fused-render-community-apps.git")
+    os.makedirs(mod.SHOWCASE_DIR)
+    git(mod.SHOWCASE_DIR, "init", "-q")
+    # Same repo, spelled as ssh + no trailing .git.
+    git(mod.SHOWCASE_DIR, "remote", "add", "origin",
+        "git@github.com:fusedio/fused-render-community-apps")
+
+    assert mod._cache_ready()
+
+    res = mod.main(action="refresh")
+    assert res["status"] == "ok"
+
+
+def test_normalize_git_url_treats_scp_and_https_and_dotgit_as_equal(community_mod):
+    mod = community_mod
+    forms = [
+        "https://github.com/fusedio/fused-render-community-apps.git",
+        "https://github.com/fusedio/fused-render-community-apps",
+        "https://github.com/fusedio/fused-render-community-apps/",
+        "git@github.com:fusedio/fused-render-community-apps.git",
+        "git@github.com:fusedio/fused-render-community-apps",
+        "ssh://git@github.com/fusedio/fused-render-community-apps.git",
+        "https://GITHUB.com/fusedio/fused-render-community-apps.git",
+    ]
+    normalized = {mod._normalize_git_url(f) for f in forms}
+    assert len(normalized) == 1, normalized
+
+
+def test_normalize_git_url_still_tells_different_repos_apart(community_mod):
+    mod = community_mod
+    a = mod._normalize_git_url("https://github.com/fusedio/fused-render-community-apps.git")
+    b = mod._normalize_git_url("https://github.com/someone-else/unrelated-repo.git")
+    assert a != b
