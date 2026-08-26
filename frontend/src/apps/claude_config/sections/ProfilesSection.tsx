@@ -16,7 +16,6 @@
 import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Modal } from "@platform/ui/modal/Modal";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { DirtyRefusal, ZipEntry } from "../api";
 import {
@@ -25,7 +24,9 @@ import {
   CardSub,
   CardTitle,
   DisclosureButton,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -450,39 +451,47 @@ export default function ProfilesSection({ onChanged }: SectionProps) {
         </div>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading profiles" />}
+      {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading profiles" />}
       {/* No chevron: a profile is a branch name and two flags, all of which fit
           on the line — the interesting detail about a profile is the diff, and
           that already has a home in the switch preview. */}
-      {data?.profiles.map((p) => (
-        <ListRow
-          key={p.name}
-          name={p.name}
-          pills={
-            <>
-              {p.current && <Pill tone="on">current</Pill>}
-              {p.isDefault && <Pill>default</Pill>}
-            </>
-          }
-          actions={
-            <>
-              {!p.current && (
-                <button type="button" className="btn" onClick={() => switchInto(p.name)}>
-                  Switch
-                </button>
-              )}
-              <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
-                Export .zip
-              </button>
-              {!p.current && !p.isDefault && (
-                <button type="button" className="btn btn-danger" onClick={() => remove(p.name)}>
-                  Delete
-                </button>
-              )}
-            </>
-          }
-        />
-      ))}
+      {data && data.profiles.length > 0 && (
+        <List>
+          {data.profiles.map((p) => (
+            <ListRow
+              key={p.name}
+              name={p.name}
+              pills={
+                <>
+                  {p.current && <Pill tone="on">current</Pill>}
+                  {p.isDefault && <Pill>default</Pill>}
+                </>
+              }
+              actions={
+                <>
+                  {!p.current && (
+                    <button type="button" className="btn" onClick={() => switchInto(p.name)}>
+                      Switch
+                    </button>
+                  )}
+                  <button type="button" className="btn" onClick={() => exportProfile(p.name)}>
+                    Export .zip
+                  </button>
+                  {!p.current && !p.isDefault && (
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      onClick={() => remove(p.name)}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </>
+              }
+            />
+          ))}
+        </List>
+      )}
     </>
   );
 }
