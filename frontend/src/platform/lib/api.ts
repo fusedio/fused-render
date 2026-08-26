@@ -644,6 +644,61 @@ export async function searchFiles(
   return data as SearchFilesResult;
 }
 
+// ---- the app page's API tab (routers/app_api.py) ----------------------------
+//
+// One .py described the way the `api` template describes it (inspector.py's
+// shape, plus `rel`/`path`): the module docstring, the project's declared
+// dependencies (fused engine only), and the entrypoint the ACTIVE engine would
+// call — `@fused.udf` or `main()` under fused, `main()` alone under builtin. A
+// file with no function but a top-level `result = …` is a parameterless run
+// under the fused engine (`static_result`).
+export interface PyParam {
+  name: string;
+  annotation: string | null;
+  has_default: boolean;
+  default: unknown;
+  /** Source of a non-literal default (a call, a name) — shown, never evaluated. */
+  default_repr: string | null;
+}
+
+export interface PyEndpoint {
+  rel: string;
+  path: string;
+  parse_error: string | null;
+  module_docstring?: string | null;
+  dependencies?: string[];
+  project?: string | null;
+  ignored_manifests?: string[];
+  function?: { name: string; docstring: string | null; params: PyParam[] } | null;
+  static_result?: boolean;
+}
+
+export interface AppPyResult {
+  engine: "fused" | "builtin";
+  endpoints: PyEndpoint[];
+  truncated: boolean;
+}
+
+export function getAppPy(dir: string): Promise<AppPyResult> {
+  return getJson<AppPyResult>(`/api/apps/py?path=${encodeURIComponent(dir)}`);
+}
+
+// POST /api/run's wire shape (D69/§20): the same for both engines. A failed run
+// is a 200 with `ok:false` — the traceback is the payload, not an HTTP error.
+export interface RunResult {
+  ok: boolean;
+  result?: unknown;
+  error?: { type?: string; message?: string; traceback?: string };
+  stdout?: string;
+  stderr?: string;
+  duration_ms?: number;
+  resolved_py?: string;
+}
+
+export function runPy(py: string, params: Record<string, unknown>): Promise<RunResult> {
+  return postJson<RunResult>("/api/run", { py, params });
+}
+
 // `signal` matters for callers that stat on a user's behalf and then navigate:
 // a stat on a slow mount can resolve after the user has moved on, and acting on
 // it would move them back. See FilesHome's path shortcut.

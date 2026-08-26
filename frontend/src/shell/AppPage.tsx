@@ -1,6 +1,6 @@
 // The app page — `/apps/<slug>` (D488): one workspace app, <fused_dir>/local/<slug>,
-// as a place rather than as a folder. Three tabs, one path each
-// (`/apps/<slug>/overview`, `/tasks`, `/files` — current-apps-lib):
+// as a place rather than as a folder. Four tabs, one path each
+// (`/apps/<slug>/overview`, `/tasks`, `/files`, `/api` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -12,6 +12,9 @@
 //   Files     the folder's files as a tree, each rendered in one of its own
 //             templates (shell/AppFiles.tsx) — "what is in this app and what
 //             does each piece look like", without leaving the page.
+//   API       every .py in the folder as an endpoint, Swagger-style
+//             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
+//             response — the api template's view, for the whole app at once.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -36,7 +39,7 @@ import {
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
+import { AppWindow, Files, ListTodo, Webhook, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -50,6 +53,7 @@ import {
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
+import AppApi from "./AppApi";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -108,6 +112,13 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     render: ({ dir, entry, folderHref }) => (
       <AppFiles dir={dir} entry={entry} folderHref={folderHref} />
     ),
+  },
+  api: {
+    label: "API",
+    Icon: Webhook,
+    // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
+    // one folder inspection — form values and responses are session scratch.
+    render: ({ dir, folderHref }) => <AppApi dir={dir} folderHref={folderHref} />,
   },
 };
 

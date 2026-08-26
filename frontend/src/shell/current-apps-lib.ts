@@ -107,7 +107,7 @@ export const APP_PAGE_PREFIX = "/apps/";
  *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
  *  so adding a tab is one string here plus one entry there — the compiler
  *  refuses the second being forgotten. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files"] as const;
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 

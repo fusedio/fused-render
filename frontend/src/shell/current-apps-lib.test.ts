@@ -362,6 +362,7 @@ describe("app page codec", () => {
     expect(slugFromAppPath("/apps/my%20app")).toBe("my app");
     expect(appPageUrl("x", "tasks")).toBe("/apps/x/tasks");
     expect(appPageUrl("x", "files")).toBe("/apps/x/files");
+    expect(appPageUrl("x", "api")).toBe("/apps/x/api");
   });
 
   it("refuses anything that is not one folder name under the workspace", () => {
