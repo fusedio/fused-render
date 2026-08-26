@@ -108,14 +108,21 @@ const ASPECT_CHIPS = [
 // same functions decide which chip a saved size lights. A pair is a shape's if
 // EITHER side derives the other: a height edit writes `widthFor(h)`, whose
 // own `heightFor` can land one step off after rounding, and a link saved then
-// must reload with the lock it was showing.
+// must reload with the lock it was showing. Where the rail's edge clamped a
+// side, more than one shape can derive the same pair (16:9 and 4:3 both reach
+// 2048×1600), so the candidates are ranked by how close their true ratio is
+// to the pair's rather than by list order.
 const snap16 = (n: number) =>
   Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], Math.round(n / 16) * 16));
 const heightFor = (width: number, a: Aspect) => snap16((width * a.rh) / a.rw);
 const widthFor = (height: number, a: Aspect) => snap16((height * a.rw) / a.rh);
-const aspectOf = (width: number, height: number) =>
-  ASPECTS.find((a) => heightFor(width, a) === height || widthFor(height, a) === width)?.value ??
-  CUSTOM;
+const aspectOf = (width: number, height: number) => {
+  const off = (a: Aspect) => Math.abs(Math.log(width / height) - Math.log(a.rw / a.rh));
+  const fits = ASPECTS.filter(
+    (a) => heightFor(width, a) === height || widthFor(height, a) === width,
+  ).sort((x, y) => off(x) - off(y));
+  return fits[0]?.value ?? CUSTOM;
+};
 
 // Eight authored examples — two pages of four (D465). Every one names a
 // subject AND a way of rendering it (medium, light, lens, texture), because
