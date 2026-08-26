@@ -3455,6 +3455,43 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
 _PLAN_TICK_S = 0.3
 
 
+def _phase_total(model_id, allow, ignore, folder):
+    """One phase's own total, in bytes, or None — WITHOUT a Hub metadata call
+    when the phase is already complete on disk per this app's own
+    completeness record (SPEC AI-5l's fast path in `download_snapshot`,
+    reused rather than reimplemented).
+
+    This is `download_plan`'s fix for the bug review caught: pricing every
+    phase up front via a bare `repo_total_bytes()` call means an LTX bring-up
+    with `mlx-community/gemma-3-12b-it-4bit` already cached contacted the Hub
+    anyway, purely to price a phase that needed no network to answer at all
+    — the exact "no metadata call, no etag revalidation" fast path
+    `download_snapshot` documents for itself, silently defeated one level up
+    by a pricing step that never checked. `_cached_path` is the SAME check
+    (`local_files_only=True`, verified against our own fetch record) that
+    function runs first, so a fully-offline bring-up with every phase already
+    on disk now prices the whole plan without touching the network once.
+
+    **Still not perfectly mirror-transparent.** A phase NOT in our own
+    completeness record but servable entirely by `_mirror_snapshot` (AI-5l)
+    still pays one Hub metadata call here before `download_snapshot`'s own
+    mirror check gets a chance to run — `_mirror_snapshot` does not offer a
+    cheap, network-free "would you serve this" probe separate from actually
+    fetching, so there is no way to skip pricing for that case without either
+    duplicating its logic or triggering the fetch itself twice. Narrower than
+    the reported defect, which is specifically about an ALREADY-CACHED phase,
+    and accepted rather than solved here.
+    """
+    def local():
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, local_files_only=True)
+
+    if _cached_path(model_id, local, allow=allow, ignore=ignore):
+        return bytes_on_disk(folder)
+    return repo_total_bytes(model_id, allow=allow, ignore=ignore)
+
+
 def download_plan(phases):
     """Fetch several repos as ONE download, priced at their SUM (SPEC AI-5n,
     D496). Returns each phase's own `download_snapshot` result, in order.
@@ -3467,10 +3504,12 @@ def download_plan(phases):
     silent about the download the button actually started.
 
     **The grand total is summed ONCE, before a byte moves**, from
-    `repo_total_bytes` per phase — the SAME call `download_snapshot` makes for
-    its own scoped total, so a phase that only fetches part of a repo is
-    priced against exactly what it fetches, in the sum as much as on its own.
-    **A phase whose size the Hub cannot answer costs the WHOLE total**, not
+    `_phase_total` per phase — the SAME call `download_snapshot` makes for
+    its own scoped total when a phase is not already on disk, so a phase that
+    only fetches part of a repo is priced against exactly what it fetches, in
+    the sum as much as on its own. See `_phase_total`'s own docstring for how
+    an already-complete phase is priced with no network at all.
+    **A phase whose size cannot be answered costs the WHOLE total**, not
     just its own: `total` is `None` the moment any phase's is, rather than
     summing the KNOWN phases and pretending the rest cost nothing — that is
     AI-5b's defect rebuilt a second way, a bar priced at a fraction that jumps
@@ -3498,15 +3537,25 @@ def download_plan(phases):
     `download_snapshot`'s three fetch paths (mirror, segmented, hub fallback)
     to suppress its own ticks, which is exactly the duplication this function
     exists to avoid. `_PLAN_TICK_S` keeps that window well under a second.
+
+    **The closing tick only lands on SUCCESS.** A phase that raises — a
+    network failure, or `Cancelled` from the ✕ — must not be followed by a
+    tick claiming `done=<the grand total>`: that is a finished-download shape
+    for a download that did not finish, the same lie a `state="running"`
+    revival elsewhere in this file is written not to tell. `fetch_with_progress`
+    itself never sends a closing tick on failure either — the exception is the
+    report — and this function now matches it.
     """
     resolved = list(phases)
     if not resolved:
         return []
 
-    per_phase_totals = [repo_total_bytes(model_id, allow=allow, ignore=ignore)
-                        for model_id, allow, ignore in resolved]
-    total = None if any(t is None for t in per_phase_totals) else sum(per_phase_totals)
     folders = [repo_folder(model_id) for model_id, _allow, _ignore in resolved]
+    per_phase_totals = [
+        _phase_total(model_id, allow, ignore, folder)
+        for (model_id, allow, ignore), folder in zip(resolved, folders)
+    ]
+    total = None if any(t is None for t in per_phase_totals) else sum(per_phase_totals)
     count = len(resolved)
 
     def grand_done():
@@ -3540,16 +3589,27 @@ def download_plan(phases):
             current_phase[0] = index
             results.append(download_snapshot(model_id, allow_patterns=allow,
                                              ignore_patterns=ignore))
-        return results
-    finally:
+    except BaseException:
         _plan_stop.set()
-        ticker.join(timeout=2.0)
-        # Land on the grand total, `fetch_with_progress`'s own closing tick's
-        # reasoning applied one level up: every phase folder's snapshot
-        # symlinks are not counted, so a finished plan measures slightly under
-        # its own total and a bar stuck short of 100% reads as a download that
-        # gave up.
-        _tick(detail="Fetching weights…", done=total if total is not None else grand_done())
+        # JOINED on the SAME bound `heartbeat()` uses (`JOB_TIMEOUT_S + 1.0`),
+        # not a shorter one: `_tick` is a plain `report`, which POSTs with a
+        # `JOB_TIMEOUT_S` socket timeout, and a `ticker.join` shorter than
+        # that can return while a beat is still inside its POST. That beat
+        # then lands AFTER this function returns — reviving a row a moment
+        # later flipped `state` back to "running" and cleared `finished_at`,
+        # exactly the "tick in flight outlives the work" bug `heartbeat`
+        # already had to fix once.
+        ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+        raise
+    _plan_stop.set()
+    ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+    # Land on the grand total, `fetch_with_progress`'s own closing tick's
+    # reasoning applied one level up: every phase folder's snapshot
+    # symlinks are not counted, so a finished plan measures slightly under
+    # its own total and a bar stuck short of 100% reads as a download that
+    # gave up. Only reached on success — see the docstring's closing note.
+    _tick(detail="Fetching weights…", done=total if total is not None else grand_done())
+    return results
 
 
 def download_file(repo_id, filename, detail=None, job=None, row=None):

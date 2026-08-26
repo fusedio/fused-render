@@ -1433,6 +1433,134 @@ def test_download_plan_of_no_phases_is_a_no_op(base, monkeypatch):
     assert base.download_plan([]) == []
 
 
+def test_download_plan_prices_an_already_cached_phase_with_NO_network(base, monkeypatch):
+    """Code review: pricing every phase up front via a bare `repo_total_bytes`
+    call meant an LTX bring-up with `mlx-community/gemma-3-12b-it-4bit`
+    already cached contacted the Hub anyway, purely to price a phase that
+    needed no network at all — silently defeating `download_snapshot`'s own
+    "no metadata call" fast path (AI-5l) one level up."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/w"
+                        if model_id == "weights/repo" else "/g")
+    monkeypatch.setattr(base, "bytes_on_disk",
+                        lambda folder: 19_100_000_000 if folder == "/w" else 8_070_000_000)
+    # "gemma/repo" is already fully cached; "weights/repo" is not.
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None:
+                        "/g/snapshots/c0ffee" if model_id == "gemma/repo" else None)
+    priced_over_network = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced_over_network.append(model_id) or 19_100_000_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("weights/repo", None, None), ("gemma/repo", None, None)])
+
+    # Only the NOT-already-cached phase paid for a listing.
+    assert priced_over_network == ["weights/repo"]
+
+
+def test_download_plan_prices_every_uncached_phase_over_the_network(base, monkeypatch):
+    """The inverse: nothing here should ever price the WRONG phase, or skip a
+    phase that genuinely needs the network to answer."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    priced = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced.append(model_id) or 1_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("a", None, None), ("b", None, None)])
+
+    assert priced == ["a", "b"]
+
+
+def test_download_plans_ticker_join_uses_the_job_timeout_bound(base, monkeypatch):
+    """Code review: `ticker.join(timeout=2.0)` was SHORTER than
+    `JOB_TIMEOUT_S` (3.0) — the socket timeout a beat's own `report` POST can
+    still be waiting on — so a beat that entered its POST just before the
+    plan finished could still be in flight when the join gave up, and land
+    AFTER the function returned. `heartbeat()` already guards this with
+    `JOB_TIMEOUT_S + 1.0`; this asserts `download_plan` joins on the same
+    bound rather than its own shorter one."""
+    import threading
+
+    joins = []
+    real_join = threading.Thread.join
+
+    def spy_join(self, timeout=None):
+        if self.name == "download-plan":
+            joins.append(timeout)
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", spy_join)
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert joins == [base.JOB_TIMEOUT_S + 1.0]
+
+
+def test_a_failed_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    """Code review: the closing tick used to run in a `finally`, so a phase
+    that raised (a network failure) was followed by a tick claiming
+    `done=<the grand total>` — a finished-download shape for a download that
+    did not finish."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def boom(model_id, allow_patterns=None, ignore_patterns=None):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(base, "download_snapshot", boom)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks), (
+        "a failed phase must not be followed by a tick landing on the total")
+
+
+def test_a_cancelled_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def cancelled(model_id, allow_patterns=None, ignore_patterns=None):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "download_snapshot", cancelled)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(base.Cancelled):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks)
+
+
 # -- the cached path does not touch the network ---------------------------------
 #
 # Measured on this machine for `mlx-community/whisper-tiny.en-8bit`, fully
