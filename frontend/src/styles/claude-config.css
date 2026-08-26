@@ -161,6 +161,15 @@
   background: var(--warning);
 }
 
+/* Unknown (loading, or the read failed) — italic, the same "not a stated
+   fact" grammar .cc-unset uses elsewhere, so it can't be mistaken for the
+   quiet default styling "Clean" also wears. Deliberately NOT the --warning
+   treatment: unknown isn't a claim that something is wrong, only that this
+   chip cannot vouch for "nothing is wrong" the way it usually does. */
+.cc-gitchip.unknown {
+  font-style: italic;
+}
+
 /* -- section tab strip ----------------------------------------------------- */
 /* A quiet underline strip, not a bar of its own surface — it sits directly on
    the page background under the header. The tabs scroll sideways rather than
@@ -186,6 +195,16 @@
   scrollbar-width: none;
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
   mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+}
+
+/* Scrolled all the way to its own end: nothing left to hint at, so the mask
+   releases and the last tab's label renders fully opaque instead of sitting
+   semi-transparent inside a fade that no longer means anything — the exact
+   failure this fade exists to prevent. .at-end is set by ClaudeConfig.tsx
+   from the tablist's own scrollLeft/scrollWidth. */
+.cc-tablist.at-end {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
 .cc-tablist::-webkit-scrollbar {
@@ -303,6 +322,10 @@
    controls travel together as one atomic flex item (.cc-toolbar-controls) and
    never break apart into a ragged stack — that was the defect (a filter input
    truncating its own placeholder as the row folded mid-control). */
+/* Sticky within .cc-main. .cc-index (Plugins' marketplace rail) is ALSO
+   sticky at top:0 in the same scroll container, offset below this box's
+   height — if this toolbar's height changes, that offset (.cc-index's
+   `top`) has to follow or the rail slides under this and disappears. */
 .cc-toolbar {
   position: sticky;
   top: 0;
@@ -445,11 +468,12 @@
    CONTROL's own left edge drifted with whatever text sat in front of it (a
    select showing "opus" sat at a different x than one showing "auto"). Two
    fixed tracks fix that: column 1 is always 22px (reset or the unset hint,
-   or nothing), column 2 is everything left of the row's right edge — so
-   every control, whatever its own content, starts and ends at the same x
-   down the page. Grid's default stretch is what makes a <select>/<input>
-   with no width of its own fill that second track; a fixed-size control
-   (the switch) opts out with justify-self: end below. */
+   or nothing), column 2 is the control's own track — so every control,
+   whatever its own content, starts (and, for the ones that fill the track,
+   ends) at the same x down the page. Grid's default stretch is what makes a
+   <select>/<input> with no width of its own fill that second track; a
+   fixed-size control (the switch) is pinned to the SAME left edge with
+   justify-self below, rather than stretching or drifting to its own width. */
 .cc-row-control {
   flex: 0 0 240px;
   width: 240px;
@@ -465,8 +489,14 @@
   min-width: 0;
 }
 
+/* Left-aligned, not right: a select/input already fills the full column
+   (width:100%, so its own left edge sits at the column's left edge), and a
+   switch has to match that same left edge or toggle rows break the vertical
+   line every other control establishes. Grid's default justify-items is
+   already start; this exists to say so explicitly and rule out a future
+   "align it with the ones that fill the column" edit re-adding `end`. */
 .cc-row-control .cc-switch {
-  justify-self: end;
+  justify-self: start;
 }
 
 /* "using Claude's default" — italic and muted so it never reads as a value.
@@ -639,9 +669,15 @@
   flex: 0 0 180px;
   width: 180px;
   gap: 1px;
-  /* Sticks while the (much longer) list scrolls past it. */
+  /* Sticks while the (much longer) list scrolls past it — offset below
+     .cc-toolbar's own sticky top:0, not stacked on top of it. Both stick to
+     the SAME scroll container (.cc-main), so without this offset scrolling
+     slides this rail under the toolbar's opaque background and it vanishes.
+     70px = the toolbar's own height (32px .field-control/select, the
+     tallest thing it holds, + 10px top/bottom padding = 52) plus its 18px
+     margin-bottom before .cc-split begins. */
   position: sticky;
-  top: 0;
+  top: 70px;
 }
 
 .cc-index-item {
@@ -845,17 +881,28 @@
   align-items: center;
   gap: 2px;
   margin-left: auto;
-  /* Fade in on hover/focus so a 20-row list reads calmly at rest — but never
-     truly hidden: opacity, not display, so the buttons stay in the tab order
-     and a keyboard user tabbing into one makes it (and its siblings) visible
-     via :focus-within. */
+}
+
+/* Fade in on hover/focus so a 20-row list of quiet icon buttons reads calmly
+   at rest — but ONLY discretionary icon actions (copy, reveal-in-Finder,
+   update): a state pill (History's "current"), a status word (Skills' "no
+   recorded source"), a primary text button that is a row's only affordance
+   (Discover's Install, History's Restore, a danger .btn like Remove/Delete)
+   and the disclosure chevron all stay visible outright, because hiding any of
+   those was the actual defect — a Discover list at rest offered no visible
+   way to install anything. Scoped to .cc-iconbtn specifically (never .btn,
+   never a Pill/span) and excludes .cc-lrow-chev, so nothing needs to opt in
+   or out per section — the class each element already carries decides it.
+   Never truly hidden either way: opacity, not display, so every action stays
+   in the tab order and :focus-within reveals it for a keyboard user. */
+.cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
   opacity: 0;
   transition: opacity 120ms var(--ease-out);
 }
 
-.cc-lrow:hover .cc-lrow-actions,
-.cc-lrow:focus-within .cc-lrow-actions,
-.cc-lrow.open .cc-lrow-actions {
+.cc-lrow:hover .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
+.cc-lrow:focus-within .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
+.cc-lrow.open .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
   opacity: 1;
 }
 
@@ -863,7 +910,7 @@
    isn't realistic) — stay visible outright rather than requiring a tap that
    discovers nothing. */
 @media (hover: none), (max-width: 640px) {
-  .cc-lrow-actions {
+  .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
     opacity: 1;
   }
 }
