@@ -50,6 +50,7 @@ is machine-wide and synced only at startup.
 """
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header
@@ -483,16 +484,59 @@ def _create_app_task(entry_html: str, prompt: str, model: str = "",
     nobody is watching yet — anything the CLI's classifier will not take on
     itself parks a card the Tasks row answers.
 
+    THEN SENT, HERE, AND WAITED FOR. The loop would send it on its own — the
+    store write rings it awake — but the caller is about to land the user on
+    the new page with the Claude pane open, and that pane can only show a turn
+    whose run id it has (template.html's boot: a `run` param re-attaches, a
+    bare `_side=claude` with no session shows the landing page). So the entry
+    is run now (`schedule.run_now`, the Board's own drag path — the ordinary
+    send brought forward, not a second spawn path) and the stored entry is
+    read back until it carries a `run_id` or has failed. If the loop got to it
+    first, `run_now` says "already claimed" — that is success, not failure:
+    the wait below reads the same store either way.
+
     Returns (entry, error), exactly one set: a task that could not be stored
     must not fail the creation that already succeeded, but the reason rides
-    back so the UI is not silent about the prompt going nowhere."""
+    back so the UI is not silent about the prompt going nowhere. An entry that
+    was stored but whose send failed comes back as the entry — its own
+    `state`/`error` say so, where every task's does."""
     try:
         entry = schedule.create(
             entry_html, prompt, datetime.now(timezone.utc),
             immediate=True, model=model, effort=effort)
     except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
         return None, f"failed to create the app's task: {exc}"
-    return entry, None
+    entry_id = str(entry.get("id") or "")
+    try:
+        schedule.run_now(entry_id)
+    except Exception:  # noqa: BLE001 — the loop still has the entry
+        pass
+    return _await_sent(entry_id, entry), None
+
+
+# How long the create call waits for the task's spawn to report a run id.
+# spawn_helper's own timeout is 60s; a spawn ordinarily returns in a second or
+# two. Past this the response goes out without a run id and the page lands on
+# the file with the pane open on its sessions list, where the run turns up.
+_SENT_WAIT_S = 20.0
+
+
+def _await_sent(entry_id: str, fallback: dict) -> dict:
+    """The stored entry once its send has resolved — `run_id` set, or a
+    terminal state — else the freshest copy after `_SENT_WAIT_S`."""
+    deadline = time.monotonic() + _SENT_WAIT_S
+    latest = fallback
+    while True:
+        for e in schedule.list_entries():
+            if str(e.get("id") or "") == entry_id:
+                latest = e
+                break
+        if latest.get("run_id") or latest.get("state") not in (
+                schedule.PENDING, schedule.SENDING):
+            return latest
+        if time.monotonic() >= deadline:
+            return latest
+        time.sleep(0.2)
 
 
 @router.post("/api/apps/new")
@@ -572,10 +616,10 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         "path": os.path.abspath(dest),
         "entry_html": entry_html,
         # The scheduled entry carrying the prompt — the same shape GET
-        # /api/schedule lists. None when no prompt was given or the task
-        # could not be stored. Whether the SESSION then started is the
-        # entry's own story (state/run_id/error), read where every task's is:
-        # this response does not wait for the spawn.
+        # /api/schedule lists, read back after its send resolved so `run_id`
+        # is set when the spawn succeeded (the page attaches the Claude pane
+        # to it) and `state`/`error` say so when it did not. None when no
+        # prompt was given or the task could not be stored.
         "task": task,
         # Why the task was NOT created — the app itself was created fine, but
         # the UI shouldn't be silent about the prompt going nowhere. None when

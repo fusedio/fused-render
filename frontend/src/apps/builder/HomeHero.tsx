@@ -4,7 +4,7 @@
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState } from "react";
 import { aiComplete, createApp, type DefaultModel, type SessionEffort } from "@platform/lib/api";
-import { navigate, replaceSearch } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { useAutoGrow } from "@platform/lib/autoGrow";
@@ -14,6 +14,26 @@ import logoMarkLight from "@assets/logo-white-bg-transparent.png";
 import { Select, TextArea } from "@platform/ui/field/fields";
 import { type AppAnnotation } from "@platform/lib/appAnnotation";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
+
+// The new app's page with the Claude pane open on the scaffolding turn: the
+// file's ordinary explorer URL, `_side=claude` for the pane (the same hop a
+// task row makes, schedule-lib.explorerUrl), and `run` so the pane's boot
+// re-attaches to the live run instead of showing its landing page — with no
+// session id yet there is nothing else it could adopt. `model`/`effort` ride
+// along when the composer's pickers were used, so the pane's own pills open
+// showing what the turn actually ran with and the NEXT turn keeps it; omitted
+// when empty, since an empty param would beat the template's own detection.
+export function appLandingUrl(
+  entryHtml: string,
+  runId: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): string {
+  const params = new URLSearchParams({ _side: "claude", run: runId });
+  if (model) params.set("model", model);
+  if (effort) params.set("effort", effort);
+  return urlForFsPath(entryHtml, "?" + params.toString());
+}
 
 // -- Prompt-first creation (the hero composer) --------------------------------
 
@@ -290,10 +310,16 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
         }
         return;
       }
-      // Land on the app's page (its explorer URL). The prompt is a task on
-      // this file now — the scheduler spawns the session and the app's Tasks
-      // tab lists the row — so there is no live run to attach a chat to here.
-      navigate(res.entry_html, { isDir: false });
+      // Land on the app's page with Claude building it in the side pane. The
+      // prompt is a task on this file now; the server ran it and waited for
+      // the run id, so the pane can attach. A task whose send failed (or is
+      // still spawning past the server's wait) lands on the bare page — the
+      // row in the app's Tasks tab tells the rest.
+      if (res.task?.run_id) {
+        navigateUrl(appLandingUrl(res.entry_html, res.task.run_id, model, effort), { isDir: false });
+      } else {
+        navigate(res.entry_html, { isDir: false });
+      }
     } catch (e) {
       if (alive.current) {
         setError((e as Error).message);
