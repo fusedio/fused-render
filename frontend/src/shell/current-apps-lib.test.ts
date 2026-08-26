@@ -361,6 +361,7 @@ describe("app page codec", () => {
     expect(slugFromAppPath("/apps/my%20app/overview")).toBe("my app");
     expect(slugFromAppPath("/apps/my%20app")).toBe("my app");
     expect(appPageUrl("x", "tasks")).toBe("/apps/x/tasks");
+    expect(appPageUrl("x", "files")).toBe("/apps/x/files");
   });
 
   it("refuses anything that is not one folder name under the workspace", () => {
@@ -379,6 +380,7 @@ describe("app page codec", () => {
 
   it("reads the tab from the path, falling back to the overview", () => {
     expect(appPageTabFromPath("/apps/x/tasks")).toBe("tasks");
+    expect(appPageTabFromPath("/apps/x/files")).toBe("files");
     expect(appPageTabFromPath("/apps/x/overview")).toBe("overview");
     // A stale two-level builder link (`/apps/<tag>/<name>`) is an unknown tab.
     expect(appPageTabFromPath("/apps/tag/name")).toBe("overview");

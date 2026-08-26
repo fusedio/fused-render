@@ -99,15 +99,15 @@ export function currentApps(tasks: TaskPulseTask[], fusedDir: string): CurrentAp
 // `/apps/<tag>/<name>` builder route (D262); the owner chose the path anyway
 // (2026-08-26), so shell.py now serves two levels under /apps and a stale
 // builder link lands here on the default tab like any unknown sub-path. The
-// query is left to the tab's own params (`?view=` on Tasks) and is carried
-// across a tab switch untouched.
+// query is left to the tab's own params (`?view=` on Tasks, `?file=`/`?_mode=`
+// on Files) and is carried across a tab switch untouched.
 
 export const APP_PAGE_PREFIX = "/apps/";
 /** Tab-strip order; the first is the default. THE list: the type below is
  *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
  *  so adding a tab is one string here plus one entry there — the compiler
  *  refuses the second being forgotten. */
-export const APP_PAGE_TABS = ["overview", "tasks"] as const;
+export const APP_PAGE_TABS = ["overview", "tasks", "files"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
