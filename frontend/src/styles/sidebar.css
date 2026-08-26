@@ -597,8 +597,7 @@ button.sidebar-prefs-trigger {
 
 /* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
    Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
-   metrics; heading click toggles the fold; the count pill carries the
-   collapsed signal — no chevron, matching D44's folder rows. */
+   metrics; heading click toggles the fold. */
 .sidebar-recents {
   flex: 0 0 auto;
   /* The bookmarks section above already ends in its own 8px padding — start
@@ -606,12 +605,41 @@ button.sidebar-prefs-trigger {
   padding-top: 0;
 }
 
+/* A foldable section heading (Projects, Bookmarks). Since 2026-08-26 it is set
+   in title case rather than the small-caps of the other headings, and the
+   label is followed by a chevron that says "this folds": pointing down when
+   open, right when collapsed. The count pill still rides the collapsed state. */
 .recents-heading {
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
   user-select: none;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+
+.sidebar-heading-chevron {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px 1px 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+  opacity: 0.8;
+}
+
+.recents-heading.collapsed .sidebar-heading-chevron {
+  transform: rotate(-45deg);
+  margin-bottom: 0;
+}
+
+/* The collapsed count sits at the row's far end, clear of the label+chevron. */
+.recents-heading > .sidebar-count-chip {
+  margin-left: auto;
 }
 
 /* The heading's collapsed count. No skin of its own since 2026-08-18: it wears

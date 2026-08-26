@@ -396,11 +396,15 @@ export default function CurrentAppsSection() {
   return (
     <div className="sidebar-section sidebar-current-apps">
       <div
-        className="sidebar-heading recents-heading current-apps-heading"
+        className={
+          "sidebar-heading recents-heading current-apps-heading" +
+          (collapsed ? " collapsed" : "")
+        }
         title={collapsed ? "Show projects" : "Hide projects"}
         onClick={toggleCollapsed}
       >
         Projects
+        <span className="sidebar-heading-chevron" aria-hidden="true" />
         {collapsed && <span className="sidebar-count-chip">{apps.length}</span>}
       </div>
       {!collapsed && apps.map(render)}
