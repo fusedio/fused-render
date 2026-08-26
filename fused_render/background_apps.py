@@ -185,15 +185,31 @@ def cache_dir_for(engine_id: str) -> str:
     return os.path.join(storage.home_dir(), "apps", engine_id)
 
 
-def resurrect_enabled() -> None:
+def resurrect_enabled(shutdown_event=None) -> None:
     """Start every enabled app's daemon, best-effort: a folder that fails
     (dead manifest, project venv not built, a spawn error) is logged and
     skipped, never allowed to stop the rest. Meant to run on a daemon thread
     from the server's startup event (app.py) — never on the pre-bind path
-    (D228): each bring-up is a subprocess spawn plus a bootstrap wait."""
+    (D228): each bring-up is a subprocess spawn plus a bootstrap wait.
+
+    `shutdown_event` (a `threading.Event`, or None to run to completion
+    unconditionally — the direct-call/test default) closes a startup/shutdown
+    race: a bring-up (`ensure_background`) only registers its child into
+    `engine_host._children` AFTER `_spawn` returns, which can take up to
+    `BOOTSTRAP_TIMEOUT_S` (120s); if the server starts shutting down during
+    that window, `engine_host.stop_all()` walks a `_children` that does not
+    yet hold this child, and the child would land in the registry — and keep
+    running — only after `stop_all()` has already finished. Checked BEFORE
+    each folder (skip starting more once shutdown has begun) and AFTER each
+    `ensure_background` call (stop whatever just came up, if shutdown began
+    while it was spawning) — the same thread that is already blocked in the
+    (possibly slow) spawn call does its own cleanup immediately on return,
+    with no separate pass needed."""
     from fused_render.server import engine_host
 
     for folder in enabled_paths():
+        if shutdown_event is not None and shutdown_event.is_set():
+            return  # server is shutting down: stop starting more apps
         try:
             manifest = load_manifest(folder)
             if manifest is None:
@@ -212,6 +228,15 @@ def resurrect_enabled() -> None:
             engine_host.ensure_background(
                 engine_id, interpreter, manifest.daemon,
                 cache_dir_for(engine_id), version)
+            if shutdown_event is not None and shutdown_event.is_set():
+                # Shutdown began WHILE this one was spawning — stop_all() may
+                # already have run (and missed it, per the docstring above),
+                # so tear it down explicitly rather than leave an orphan with
+                # no owner.
+                logger.info(
+                    "background app %s: server is shutting down; stopping "
+                    "the child that just finished spawning", folder)
+                engine_host.stop(engine_id)
         except Exception:  # noqa: BLE001 — one folder's failure must not skip the rest
             logger.exception(
                 "background app %s failed to start at startup", folder)

@@ -344,12 +344,28 @@ def create_app(start_dir: str) -> FastAPI:
     # and one folder's failure (dead manifest, project venv not built, a spawn
     # error) must never delay server readiness or the other apps' bring-up —
     # `resurrect_enabled` already logs-and-skips those itself.
+    #
+    # `_background_apps_shutdown` is a per-app-instance Event (a local here,
+    # not a module global): a bring-up only registers its child once `_spawn`
+    # returns, up to BOOTSTRAP_TIMEOUT_S (120s) later, so a shutdown landing
+    # mid-spawn would otherwise have `engine_host.stop_all()` walk a
+    # `_children` that does not hold it yet, and the child would start
+    # running unowned right after `stop_all()` already finished. Setting this
+    # on shutdown lets `resurrect_enabled`'s own thread catch that — see its
+    # docstring — for exactly the race a code review caught (2026-08-26).
+    _background_apps_shutdown = threading.Event()
+
     @app.on_event("startup")
     async def _startup_resurrect_background_apps():
         from fused_render import background_apps
 
         threading.Thread(target=background_apps.resurrect_enabled,
+                         args=(_background_apps_shutdown,),
                          name="background-apps-resurrect", daemon=True).start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_background_apps_resurrection():
+        _background_apps_shutdown.set()
 
     # The published `fusedio/fused-render` plugin, installed or refreshed in
     # the user's own Claude config (user_plugin.py, D492) — for sessions

@@ -7,6 +7,7 @@ against the enabled store, and exempt from the warm-app idle reaper.
 """
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -479,6 +480,57 @@ def test_resurrect_enabled_skips_a_folder_with_no_venv_built(tmp_path, monkeypat
     background_apps.resurrect_enabled()
 
     assert started == []
+
+
+def test_resurrect_enabled_stops_before_starting_once_shutdown_is_set(tmp_path, monkeypatch):
+    # Code-review fix: the resurrection loop must not start MORE apps once
+    # the server has begun shutting down.
+    folder = _bg_folder(tmp_path)
+    background_apps.set_enabled(str(folder), True)
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a) or None)
+
+    shutdown_event = threading.Event()
+    shutdown_event.set()  # already shutting down before the loop even starts
+    background_apps.resurrect_enabled(shutdown_event)
+
+    assert started == []
+
+
+def test_resurrect_enabled_stops_a_child_that_finished_spawning_during_shutdown(
+        tmp_path, monkeypatch):
+    # Code-review fix (the orphan race): engine_host.ensure_background only
+    # registers its child into _children AFTER the (possibly slow) spawn
+    # returns. If shutdown lands while that spawn is in flight,
+    # engine_host.stop_all() can walk an empty/partial _children and miss it
+    # entirely — so resurrect_enabled must check the flag again right after
+    # its own call returns and clean up anything that landed late.
+    folder = _bg_folder(tmp_path)
+    background_apps.set_enabled(str(folder), True)
+    engine_id = background_apps.engine_id_for(str(folder))
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+
+    shutdown_event = threading.Event()
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version="v1", kind="background")
+
+    def fake_ensure(eid, python, daemon, cache, version):
+        # Simulate shutdown landing WHILE this spawn was still running — by
+        # the time it returns (registering the child), the server has
+        # already started tearing down.
+        shutdown_event.set()
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+    stopped = []
+    monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
+
+    background_apps.resurrect_enabled(shutdown_event)
+
+    assert stopped == [engine_id]  # torn down instead of left running unowned
 
 
 # --------------------------------------------------------------- end to end
