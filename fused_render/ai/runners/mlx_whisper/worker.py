@@ -323,6 +323,24 @@ def memory():
     return None
 
 
+def peak_memory():
+    """The HIGH-WATER mark MLX's allocator has reached over this process's
+    whole life, in bytes — SPEC AI-8c, D495, `ltx_video.worker.peak_memory`'s
+    own probe, verbatim. Same reason as `memory()` above: `mx.get_peak_memory()`
+    already tracks this without a sample, and `fit` (AI-16) needs "at its
+    worst" where `memory()` only ever answers "right now"."""
+    import mlx.core as mx
+
+    for probe in (getattr(mx, "get_peak_memory", None),
+                  getattr(getattr(mx, "metal", None), "get_peak_memory", None)):
+        if probe is None:
+            continue
+        value = probe()
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
 # ------------------------------------------------------------- audio, no ffmpeg
 
 
@@ -1541,4 +1559,4 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory)

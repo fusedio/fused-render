@@ -426,6 +426,28 @@ def report_or_cancel(job=None, **fields):
 #: the model — 379 MB for a 6GB model, which is what sent us looking.
 _measure = None
 
+#: A runner's own PEAK-memory probe, when it has one — SPEC AI-8c, D495. A
+#: second, OPTIONAL hook beside `_measure`, for a different question:
+#: `_measure`/`resident_bytes()` answer "what is this costing RIGHT NOW",
+#: which `supervisor.refresh_memory` only samples when `/health` happens to be
+#: read. `fit` (AI-16) needs the HIGH-WATER MARK of a whole load-and-generate
+#: pass instead — a staged pipeline like `ltx-video` frees stages between
+#: renders (`low_memory=True`), so its peak is whichever stage happened to be
+#: resident at the moment someone looked, which bounds nothing. Set by
+#: `serve(peak_memory=...)`.
+_measure_peak = None
+
+#: The RSS high-water mark this worker has observed, kept HERE rather than by
+#: the supervisor — SPEC AI-8c. `resident_bytes()` already runs on every
+#: `/health` and at load; remembering the running `max()` of what it measured
+#: turns a sparse sample into a monotone bound at the cost of one module-level
+#: integer. Still weaker than a runner's own allocator peak (it only sees the
+#: moments `/health` was actually polled), which is exactly why a runner that
+#: HAS a true peak probe is asked to supply one instead — see `peak_resident_
+#: bytes` for the precedence between the two, and AI-16's `basis` for how that
+#: difference is carried outward to a reader.
+_rss_peak = None
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
@@ -440,7 +462,14 @@ def resident_bytes():
 
     psutil comes with every runner's environment; if it is somehow absent the
     answer is whatever the runner could measure, or None rather than a guess.
+
+    **Also updates `_rss_peak`**, as a side effect of the one RSS reading this
+    function already takes — see `peak_resident_bytes`. Every call site here
+    already runs on every `/health` and at load, so no new sampling point is
+    needed to turn this into a high-water mark; it would just be a second read
+    of the same number.
     """
+    global _rss_peak
     own = None
     if _measure is not None:
         try:
@@ -454,8 +483,40 @@ def resident_bytes():
         rss = int(psutil.Process(os.getpid()).memory_info().rss)
     except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
         rss = None
+    if isinstance(rss, int) and rss > 0:
+        _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
+
+
+def peak_resident_bytes():
+    """The high-water mark of what this model has cost, or None — SPEC AI-8c.
+
+    A runner's own `peak_memory=` probe wins OUTRIGHT when it answers, because
+    it is a TRUE peak rather than a sample: MLX's `mx.get_peak_memory()` is
+    maintained by the allocator across the process's whole life, so it sees a
+    stage that came and went between two `/health` polls — exactly what the
+    RSS fallback below cannot. A probe that raises or answers nothing (a wheel
+    shipping neither `get_peak_memory` name) falls through to that fallback
+    rather than reporting an estimate.
+
+    The fallback is `_rss_peak`, the running max `resident_bytes()` has been
+    updating on every call — weaker (a sample, not a true peak) but still a
+    monotone bound rather than whatever RSS happened to be at the moment
+    someone last asked.
+
+    `None` when NEITHER has an answer yet — a worker `/health`ed before its
+    first `resident_bytes()` call, or one whose environment has no psutil and
+    no probe. Never a guess, the same rule `resident_bytes` follows.
+    """
+    if _measure_peak is not None:
+        try:
+            peak = _measure_peak()
+        except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+            peak = None
+        if isinstance(peak, int) and peak > 0:
+            return peak
+    return _rss_peak
 
 
 # --------------------------------------------------------- downloading weights
@@ -3737,7 +3798,11 @@ def _handler(generate, streaming):
                 # whatever it happened to cost before it had done anything.
                 health = snapshot()
                 if health.get("state") == "ready":
+                    # `resident_bytes()` FIRST: it is what feeds `_rss_peak`
+                    # (SPEC AI-8c), and `peak_resident_bytes()`'s RSS fallback
+                    # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
+                    health["peak_resident_bytes"] = peak_resident_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -3849,16 +3914,22 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
-def serve(download, load, generate, streaming=False, memory=None, argv=None):
+def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
+         argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
     there, because the supervisor waits on the process rather than on a health
     route, so a failure must not be swallowed into a status nobody reads.
+
+    `peak_memory` is `memory`'s sibling (SPEC AI-8c, D495) — a runner that can
+    answer "what did this cost at its WORST", not just "right now". See
+    `peak_resident_bytes` for what a runner without one gets instead.
     """
-    global JOB_ID, _measure
+    global JOB_ID, _measure, _measure_peak
 
     _measure = memory
+    _measure_peak = peak_memory
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

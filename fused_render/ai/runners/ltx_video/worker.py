@@ -385,6 +385,34 @@ def memory():
     return None
 
 
+def peak_memory():
+    """The HIGH-WATER mark of what MLX has allocated over this process's whole
+    life, in bytes — SPEC AI-8c, D495. Where `memory()` above answers "right
+    now", this answers "at its worst", which is the number `fit` (AI-16) needs
+    and `memory()` cannot supply: `DistilledPipeline(low_memory=True)` frees
+    the transformer and the Gemma text encoder BETWEEN stages, so the resident
+    figure at any moment `/health` happens to be polled is one stage's worth,
+    never a bound on the whole render.
+
+    `mx.get_peak_memory()` is maintained by MLX's own allocator across the
+    process's whole life — not a sample this process has to keep taking, the
+    allocator already knows. Probed through the same defensive getattr PAIR
+    `memory()` above uses for the active-memory reading: the spelling moved
+    from `mlx.core.metal` into `mlx.core` and the old one is deprecated, so a
+    version skew costs the better answer rather than raising inside `/health`.
+    """
+    import mlx.core as mx
+
+    for probe in (getattr(mx, "get_peak_memory", None),
+                  getattr(getattr(mx, "metal", None), "get_peak_memory", None)):
+        if probe is None:
+            continue
+        value = probe()
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -540,4 +568,4 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory)

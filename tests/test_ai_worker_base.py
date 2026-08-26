@@ -361,6 +361,27 @@ def test_health_reports_the_state_the_supervisor_polls_for(base):
         server.shutdown()
 
 
+def test_health_reports_peak_resident_bytes_only_once_ready(base):
+    """SPEC AI-8c: `peak_resident_bytes` rides beside `resident_bytes`, and
+    only once the model can answer — the same rule `resident_bytes` already
+    follows, for the same reason: a loading model has nothing settled to
+    report a high-water mark OF."""
+    base.TOKEN = "secret"
+    base.set_state(state="loading")
+    server = _serve(base, lambda body: {})
+    try:
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" not in health
+
+        base.set_state(state="ready")
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" in health
+    finally:
+        server.shutdown()
+
+
 def test_generating_before_the_model_is_ready_is_a_409(base):
     """`ready` is the ONLY state that means the model can answer. A worker that
     served a request while still loading would answer with an empty model."""
@@ -658,6 +679,93 @@ def test_report_or_cancel_raises_on_a_requested_cancel(base, monkeypatch):
 
     monkeypatch.setattr(base, "report", lambda job=None, **f: {"cancel_requested": False})
     assert base.report_or_cancel(job="sys:ai-image:x") == {"cancel_requested": False}
+
+
+# -- a runner's own PEAK-memory probe (SPEC AI-8c, D495) -------------------------
+
+
+def test_peak_resident_bytes_is_none_before_anything_has_been_measured(base):
+    assert base.peak_resident_bytes() is None
+
+
+def test_peak_resident_bytes_prefers_the_runners_own_probe(base):
+    """MLX's `mx.get_peak_memory()` is a TRUE peak, not a sample — it wins
+    outright over the RSS high-water fallback, even when the fallback would
+    answer too."""
+    base._measure_peak = lambda: 9_000_000_000
+    base._rss_peak = 1_000_000_000
+    assert base.peak_resident_bytes() == 9_000_000_000
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_the_probe_answers_nothing(base):
+    """A probe that raises, or a wheel shipping neither `get_peak_memory`
+    spelling (`_measure_peak` returning None): the RSS high-water mark is what
+    is left, never an invented estimate."""
+    base._measure_peak = lambda: None
+    base._rss_peak = 3_000_000_000
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+    def boom():
+        raise RuntimeError("mlx not built with metal")
+
+    base._measure_peak = boom
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_no_probe_was_supplied(base):
+    """`faster_whisper` and every torch-on-CPU runner never call
+    `serve(peak_memory=...)` at all — `_measure_peak` stays `None`, and the
+    RSS high-water mark is the only answer there ever is."""
+    assert base._measure_peak is None
+    base._rss_peak = 2_000_000_000
+    assert base.peak_resident_bytes() == 2_000_000_000
+
+
+def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base, monkeypatch):
+    """`resident_bytes()` is called on every `/health` poll — this is what
+    turns that sparse sampling into a MONOTONE bound, at the cost of one
+    module-level integer kept by the worker rather than by the supervisor."""
+    import types
+
+    readings = iter([1_000, 5_000, 2_000])  # a real dip: RSS can shrink, GC runs
+
+    class _FakeProcess:
+        def memory_info(self):
+            return types.SimpleNamespace(rss=next(readings))
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=lambda pid: _FakeProcess()))
+
+    assert base.resident_bytes() == 1_000
+    assert base._rss_peak == 1_000
+    assert base.resident_bytes() == 5_000
+    assert base._rss_peak == 5_000
+    # The THIRD reading is a real dip — resident_bytes() itself still reports
+    # it honestly (it is not the peak function) — but the high-water mark it
+    # is feeding must not go backwards with it.
+    assert base.resident_bytes() == 2_000
+    assert base._rss_peak == 5_000
+
+
+def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path):
+    """`serve(peak_memory=...)` has to actually reach `peak_resident_bytes()`,
+    not just be accepted and dropped — the same wiring `memory=` already gets
+    for `_measure`. `serve_forever` never returns on a real server, so this
+    stubs `build_server` to hand back a server that never actually blocks —
+    the assignment under test happens before that call either way."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, peak_memory=lambda: 7,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._measure_peak is not None and base._measure_peak() == 7
 
 
 # -- download progress, measured from the disk (AI-5b) --------------------------
@@ -1103,6 +1211,29 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
         assert "def memory(" in source, f"{code} has no memory probe — {why}"
         assert "memory=memory" in source, (
             f"{code} does not pass its probe to serve(), so /health reports RSS: {why}"
+        )
+
+
+def test_every_MLX_runner_supplies_a_true_peak_probe():
+    """SPEC AI-8c, D495: the MLX runners get a true peak "for free" —
+    `mx.get_peak_memory()` is maintained by the allocator across the whole
+    process life, so every runner that already has an active-memory probe
+    gets a peak one beside it. A `peak_memory=` nobody passes leaves `fit`
+    (AI-16) with only the weaker RSS-high-water fallback for a model whose
+    peak is otherwise measurable directly."""
+    from fused_render.ai import registry
+
+    for code in ("mlx-text", "mflux-image", "mlx-whisper", "mlx-embed", "ltx-video"):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = _runner_source(runner)
+        assert "def peak_memory(" in source, f"{code} has no peak_memory probe"
+        assert "get_peak_memory" in source, (
+            f"{code}'s peak_memory does not read mx.get_peak_memory"
+        )
+        assert "peak_memory=peak_memory" in source, (
+            f"{code} does not pass its peak probe to serve(), so /health "
+            "reports no peak_resident_bytes at all"
         )
 
 
