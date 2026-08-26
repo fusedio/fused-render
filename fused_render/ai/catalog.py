@@ -1235,12 +1235,18 @@ def _runner_for(capability: str) -> registry.Runner | None:
 
 
 def for_runner(code: str) -> list[dict]:
-    """The curated list for a runner, following the hardware-variant alias.
+    """The curated list for a runner, following the hardware-variant alias,
+    with the user's `~/.fused-render/models.json` overlay merged in
+    (`catalog_overlay.apply`, SPEC AI-25) — an overlay row whose `id`
+    matches a built-in one overrides it, a new `id` appends.
 
     A copy of the list, as it always was — callers append to it (the router's
     cached-repo union does) and must not be editing the curation.
     """
-    return list(SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(code, code), ()))
+    from fused_render.ai import catalog_overlay
+
+    builtin = SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(code, code), ())
+    return catalog_overlay.apply(code, list(builtin))
 
 
 def for_capability(capability: str) -> list[dict]:

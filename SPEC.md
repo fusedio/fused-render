@@ -8907,6 +8907,20 @@ an AI Models page that could say what was on disk but not what was *running*.
   `params x fit.quant_bytes_per_param(token)` -- the SAME table item 4's
   `download` rung uses, imported lazily so `formats.py`'s bare-module load
   path (a worker's interpreter) never pays for it.
+- **AI-25** **`~/.fused-render/models.json` overlays `catalog.SUGGESTIONS`,
+  keyed by runner code, mirroring `server/templates.py`'s registry idiom**
+  (D528). An overlay row whose `id` matches a built-in row's REPLACES it in
+  place (same list position); a new `id` APPENDS. Read fresh on every
+  `catalog.for_runner` call (`catalog_overlay.apply`) rather than cached, so
+  an edit applies on the next request with no restart -- the same reasoning
+  `server/templates.py::_load_registry`'s own docstring gives. Missing file:
+  clean no-op. Malformed file, or a runner's overlay value that is not a
+  list: degrades silently to "no overlay" -- a typo'd `models.json` must not
+  take the AI Models page down, the same standard a broken
+  `templates/registry.json` is already held to. A row with no `id` is
+  skipped rather than discarding the rest of an otherwise-valid file. Not
+  machine-scoped: a hand-curated model list is a statement about what the
+  user wants offered, not a fact about the machine that wrote it.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
