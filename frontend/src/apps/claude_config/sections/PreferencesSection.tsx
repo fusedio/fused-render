@@ -234,9 +234,20 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
                       <span
                         className="cc-row-hint"
                         title={d.control === "toggle" ? toggleUnsetLabel(d) : unsetLabel(d)}
-                        aria-hidden="true"
+                        // A select already restates this as its own selected
+                        // option text and a scalar as its own placeholder, so
+                        // the hint is a redundant second channel there and can
+                        // stay decorative. A toggle has NO such text — its
+                        // "inherited" state is a dashed border and nothing
+                        // else — so for that control the fact belongs to
+                        // screen readers and keyboard users too, not only to
+                        // a mouse hovering the tooltip.
+                        aria-hidden={d.control === "toggle" ? undefined : true}
                       >
                         <Icon name="info" />
+                        {d.control === "toggle" && (
+                          <span className="sr-only">{toggleUnsetLabel(d)}</span>
+                        )}
                       </span>
                     )}
                     {d.control === "toggle" && (
