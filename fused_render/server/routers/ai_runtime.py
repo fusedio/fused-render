@@ -856,16 +856,24 @@ def _catalog_with_downloads() -> list[dict]:
         ]
         row["models"] = curated + extra
         for entry in row["models"]:
-            # {verdict, basis, footprintBytes} or None — SPEC AI-16, AI-16c.
-            # `fit.py` owns the precedence ladder (measured > declared >
-            # download) and the headroom arithmetic; this route is a view
-            # over it, not a second copy of the judgement. `resident_gb` is a
-            # curator's optional, additive field (AI-11i/AI-11j's shape) — a
-            # cached entry never has one, `.get` answers None and the ladder
-            # falls straight through to `size_gb`.
+            # {verdict, basis, footprintBytes, score, runMode} or None —
+            # SPEC AI-16, AI-16c, AI-19. `fit.py` owns the precedence ladder
+            # (measured > declared > download) and the headroom arithmetic;
+            # this route is a view over it, not a second copy of the
+            # judgement. `resident_gb` is a curator's optional, additive
+            # field (AI-11i/AI-11j's shape) — a cached entry never has one,
+            # `.get` answers None and the ladder falls straight through to
+            # `size_gb`. `params`/`quantization` (SPEC AI-19 item 4) are the
+            # same shape: a curated entry's own free-text `catalog.py`
+            # fields, passed straight through — `fit.parse_params`/
+            # `fit._quant_key` are what turn them into a weight-size
+            # estimate, and a cached entry (neither field) falls straight
+            # through to `size_gb` exactly as it always has.
             entry["fit"] = fit.verdict(row["capability"], entry["id"],
                                        entry.get("size_gb"), entry.get("resident_gb"),
-                                       footprint_store=footprint_store)
+                                       footprint_store=footprint_store,
+                                       params=entry.get("params"),
+                                       quantization=entry.get("quantization"))
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo
             # with no edit variant is as unable to edit as a diffusers one and

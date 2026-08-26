@@ -8644,7 +8644,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   constant, a quantization-aware weight-size table, a KV-cache term, and
   VRAM-vs-RAM pool selection with a run-mode concept — and the old
   `EASY_FRACTION = 0.6` cliff is replaced by a continuous Gaussian fit
-  score** (D519). One coherent change confined to the `download` rung's
+  score** (D519, D520). One coherent change confined to the `download` rung's
   arithmetic: `measured` (**AI-16a**) and `declared` (a curator's
   `resident_gb`) are already real, observed numbers, so none of the four
   additions below touches either — only `download`, this module's one
@@ -8657,12 +8657,44 @@ an AI Models page that could say what was on disk but not what was *running*.
   GGUF-overhead-inclusive bytes-per-parameter, not `bits_per_weight / 8`,
   parsed out of `catalog.py`'s free-text `quantization` display string by
   `_quant_key`. `weight_bytes = params x bytes_per_param` once a real
-  parameter COUNT is known (nothing populates `params` yet — the field is
-  additive and a later builder wires a source in); `size_gb x GB_BYTES`
-  otherwise, unchanged. This is the fix for the bug class `catalog.py:52-58`
-  documents: an 18.6GB actual download hand-curated as 2.6GB for eighteen
-  months, because nothing had ever multiplied a real parameter count by a
-  real per-format byte cost.
+  parameter COUNT is known — parsed out of `catalog.py`'s own free-text
+  `params` field (`"1.2B"`, `"39M"`) by `parse_params`, which the caller
+  (`ai_runtime.describe_catalog`) passes straight off `entry.get("params")`
+  alongside `entry.get("quantization")`, so this rung is LIVE for every
+  curated row that has both, not a shape waiting for a future wiring pass.
+  Two of `catalog.py`'s `params` forms needed an explicit, documented
+  decision rather than a regex that happens to fire on them: `"8B (~1B
+  active)"` (an MoE row) parses the LEADING (total) figure, since resident
+  weight bytes scale with total parameters — inactive experts are ordinary
+  tensors on disk and in memory, per that row's own catalog.py note — while
+  the parenthetical active count is a compute/bandwidth figure this rung
+  does not need; `"4B effective"` (Gemma's MatFormer "E4B" naming) answers
+  `None` outright, since "effective" names a compute-quality-parity figure
+  with no total/raw count in the string to recover, and parsing it as a
+  literal 4B would be the wrong number (verified against real catalog rows,
+  below). `size_gb x GB_BYTES` otherwise (`params` absent or unparseable),
+  unchanged. This is the fix for the bug class `catalog.py:52-58` documents:
+  an 18.6GB actual download hand-curated as 2.6GB for eighteen months,
+  because nothing had ever multiplied a real parameter count by a real
+  per-format byte cost.
+
+  **Verified against real curated rows, not synthetic fixtures** — every
+  `catalog.py` row with both `params` and `quantization` was checked, and
+  `params x bytes_per_param` lands within a generous 60% band of the
+  curated `size_gb` for all but two, both explained rather than smoothed
+  into a wider band: `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary
+  2-bit", estimate 15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x
+  over) — ternary/BitNet quantization (~1.58 bits/weight nominal) has no
+  row in SPEC item 4's own table, so it falls to the ~4-bit-sized default;
+  and `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
+  2.32GB vs. 8.2GB, ~0.28x under) — `"int8 (torchao)"` matches no table
+  pattern either, AND `params: "4B"` counts only the diffusion transformer
+  while `size_gb` is (per that row's own comment) the whole multi-component
+  pipeline including an unquantized text encoder and VAE, a scope mismatch
+  `params x bpp` was never going to model correctly. Neither is a wrong
+  `size_gb` the catalog.py:52-58 way; both are reported, known limits of a
+  bytes-per-param table this narrow, locked by their own regression test
+  rather than invented table rows.
 
   **A KV-cache term**, `2 x n_kv_heads x head_dim x ctx x bytes_per_element
   x n_full_attention_layers`, at a fixed **8192-token** estimation context

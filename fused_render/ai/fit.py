@@ -1,5 +1,5 @@
 """Will this model FIT on this machine? — fused_render/ai/fit.py (SPEC AI-16,
-AI-16b, AI-16c, AI-19, D497, D519).
+AI-16b, AI-16c, AI-19, D497, D519, D520).
 
 `ai_runtime._fit_verdict` used to be handed `size_gb` and asked a memory
 question, which conflates two quantities that coincide only for a
@@ -60,6 +60,7 @@ import os
 import re
 import struct
 import sys
+from typing import Any
 
 from fused_render.ai import footprints, hw_detect
 
@@ -194,21 +195,99 @@ def quant_bytes_per_param(quantization: str | None) -> float:
     return QUANT_BYTES_PER_PARAM.get(key, DEFAULT_BYTES_PER_PARAM)
 
 
-def _weight_bytes(size_gb: float | None, params: float | None,
+#: `k`/`m`/`b`/`t` — the units actually spread across `catalog.py`'s
+#: `params` field (`grep -oP '"params": "[^"]*"' catalog.py | sort -u`:
+#: everything from `"39M"` to `"27B"`). No `k` or `t` row exists in the
+#: catalog TODAY, but the pattern costs nothing extra to make complete
+#: rather than silently failing the day a sub-1M embedding row or a
+#: trillion-param entry is added.
+_PARAMS_UNIT_MULTIPLIER: dict[str, float] = {"k": 1e3, "m": 1e6, "b": 1e9, "t": 1e12}
+
+#: The first `<number><unit>` token in a `catalog.py` `params` string —
+#: `"1.2B"`, `"39M"`, and (deliberately, see `parse_params`) the LEADING
+#: figure of `"8B (~1B active)"`. `\b` at the end so `"27Bxyz"` cannot
+#: match, though nothing in the catalog is shaped like that today.
+_PARAMS_VALUE_PATTERN = re.compile(r"([\d.]+)\s*([kmbt])\b", re.IGNORECASE)
+
+
+def parse_params(params: float | int | str | None) -> float | None:
+    """A raw parameter COUNT — the unit `_weight_bytes` multiplies by
+    bytes-per-param — out of whatever `params` actually is: a number
+    already (returned as-is, so a future caller that HAS a real count in
+    hand never has to stringify it first), or one of `catalog.py`'s
+    free-text `params` display strings (`"1.2B"`, `"39M"`, `"8B (~1B
+    active)"`, `"4B effective"`). `None` when nothing usable is in it —
+    the same "absence falls through" contract `_quant_key` gives
+    `quantization`, and `_weight_bytes` reads a `None` here exactly like a
+    `None` `params` argument: fall back to `size_gb`.
+
+    **Two qualifiers need an explicit decision, not a regex that happens to
+    fire on them:**
+
+    `"8B (~1B active)"` (SPEC-MoE rows — `LiquidAI/LFM2.5-8B-A1B-*`) states
+    BOTH a total parameter count and an active-per-token count. Those two
+    numbers mean genuinely different things for memory: an MoE checkpoint's
+    inactive experts are ordinary tensors on disk and in memory (the
+    catalog's own note on that row: "MoE experts are ordinary tensors...
+    the whole [checkpoint] is fetched and resident, and the win is
+    arithmetic per token, not bytes") — only COMPUTE and memory BANDWIDTH
+    scale with the active count, not resident weight bytes. A
+    footprint estimate is a memory question, so this parses the LEADING
+    (total) figure and drops the parenthetical deliberately — `_PARAMS_
+    VALUE_PATTERN.search` already returns the first match in the string,
+    which is the total by construction of how every MoE row here is
+    written (`"<total>B (~<active>B active)"`), so no special-casing is
+    needed to get the right one; this paragraph exists so that "which
+    number, and why" is written down rather than left as an accident of
+    regex ordering.
+
+    `"4B effective"` (`gemma-4-e4b-it-*` — Gemma's own "E4B" naming, a
+    MatFormer/nested-submodel scheme) is the OPPOSITE situation: the string
+    gives exactly one number, and that number is a compute-quality-parity
+    figure, not a parameter count — the checkpoint's real resident size is
+    measurably larger than a literal 4B (checked against this build's own
+    catalog rows: `gemma-4-e4b-it-4bit`'s curated `size_gb` is 5.2 at MLX
+    4-bit, `4e9 x 0.55 GB_BYTES = 2.2e9` bytes — under HALF the curated
+    figure, while treating the row as an ~8B checkpoint lands within
+    single-digit percent, see the verification below). Unlike the MoE form,
+    there is no second number in the string to fall back to — parsing "4B
+    effective" as a literal 4B would be exactly the wrong figure for a
+    resident-weight estimate, so this returns `None` for ANY string
+    containing "effective" rather than silently taking the one number that
+    happens to be there, and `_weight_bytes` falls back to the curated
+    `size_gb` honestly instead.
+    """
+    if isinstance(params, bool):
+        return None
+    if isinstance(params, (int, float)):
+        return float(params) if params > 0 else None
+    if not isinstance(params, str) or not params:
+        return None
+    lowered = params.lower()
+    if "effective" in lowered:
+        return None
+    match = _PARAMS_VALUE_PATTERN.search(lowered)
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value * _PARAMS_UNIT_MULTIPLIER[match.group(2).lower()]
+
+
+def _weight_bytes(size_gb: float | None, params: float | str | None,
                   quantization: str | None) -> float | None:
     """The `download` rung's weight-size estimate — `params x bytes-per-
-    param` when a real parameter COUNT is known, else the old plain
-    `size_gb x GB_BYTES` reading unchanged, so a curated row that has never
-    supplied `params` keeps exactly today's behaviour (SPEC item 4's own
-    closing line: "keep `size_gb` working as an override/fallback").
-
-    `params` is a raw parameter COUNT (e.g. `7_000_000_000` for a 7B model),
-    not billions — this module does no unit conversion. Nothing in this
-    build populates it yet (no catalog field, no harvested field carries a
-    total parameter count); a future caller wires it in, and the shape is
-    right waiting for that."""
-    if isinstance(params, (int, float)) and not isinstance(params, bool) and params > 0:
-        return params * quant_bytes_per_param(quantization)
+    param` when a real parameter COUNT is known (parsed out of a free-text
+    `params` string via `parse_params` when `params` is one), else the old
+    plain `size_gb x GB_BYTES` reading unchanged, so a curated row whose
+    `params` cannot be parsed (or was never supplied) keeps exactly today's
+    behaviour (SPEC item 4's own closing line: "keep `size_gb` working as an
+    override/fallback")."""
+    parsed = parse_params(params)
+    if parsed is not None and parsed > 0:
+        return parsed * quant_bytes_per_param(quantization)
     if isinstance(size_gb, (int, float)) and not isinstance(size_gb, bool) and size_gb > 0:
         return size_gb * GB_BYTES
     return None
@@ -317,7 +396,7 @@ def _kv_cache_bytes(*, num_hidden_layers: int | None = None,
     return 2 * n_kv_heads * resolved_head_dim * context_tokens * bytes_per_element * n_layers
 
 
-def _download_tier_bytes(size_gb: float | None, params: float | None,
+def _download_tier_bytes(size_gb: float | None, params: float | str | None,
                          quantization: str | None, *, kv_kwargs: dict) -> float | None:
     """The `download` rung's full estimate — weight size (SPEC item 4) plus
     the KV-cache term (SPEC item 5, `0.0` when the geometry to compute it is
@@ -350,20 +429,27 @@ def machine_ram_gb() -> float | None:
             return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1e9
     except (ValueError, OSError):
         pass
-    try:  # pragma: no cover - the Windows branch
-        class _MemoryStatus(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+    if sys.platform == "win32":  # pragma: no cover - the Windows branch
+        # A literal `sys.platform == "win32"` check, not a `hasattr`/try
+        # probe: pyright narrows `ctypes.windll` (only declared in typeshed
+        # under this exact guard) the same way `index/worker.py`'s own
+        # `GetProcessMemoryInfo` read already does — off Windows this whole
+        # branch is eliminated by static platform inference, so the
+        # attribute is never even type-checked, not just never executed.
+        try:
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
 
-        status = _MemoryStatus()
-        status.dwLength = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return status.ullTotalPhys / 1e9
-    except Exception:  # noqa: BLE001 - absent windll off Windows, and none of it is fatal
-        pass
+            status = _MemoryStatus()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullTotalPhys / 1e9
+        except Exception:  # noqa: BLE001 - a failed read must not be fatal
+            pass
     return None
 
 
@@ -455,14 +541,26 @@ def _wired_limit_bytes(ram_gb: float) -> float | None:
 #: (no file yet, a corrupt one, a different machine's) and that answer has to
 #: be usable AS a store (meaning "nothing measured") rather than being read as
 #: "go look it up yourself".
-_NOT_GIVEN = object()
+#:
+#: Typed `Any` rather than left inferred: `footprint_store`'s own parameter
+#: below is annotated `dict | None` (its REAL contract once past the `is
+#: _NOT_GIVEN` check), and an inferred-`object` default would otherwise
+#: widen that annotation to `dict | None | object` — the exact narrowing
+#: gap that made `peak_from_store(footprint_store, ...)` a type error
+#: (`object` is not `dict | None`) despite the `is` check right above it
+#: already ruling `_NOT_GIVEN` out at runtime. `Any` here is the same
+#: "trust the sentinel contract, not the inferred type" typing every
+#: sentinel-default parameter needs — pyright cannot see that `is
+#: _NOT_GIVEN` and `is dict-or-None` are the only two states this value
+#: ever holds without being told the parameter's real type directly.
+_NOT_GIVEN: Any = object()
 
 
 def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None,
                     resident_gb: float | None = None, *,
-                    footprint_store=_NOT_GIVEN,
+                    footprint_store: dict | None = _NOT_GIVEN,
                     quantization: str | None = None,
-                    params: float | None = None,
+                    params: float | str | None = None,
                     num_hidden_layers: int | None = None,
                     num_key_value_heads: int | None = None,
                     num_attention_heads: int | None = None,
@@ -489,18 +587,26 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
 
     Every keyword from `quantization` on is optional and additive, the same
     "a caller MAY answer, and absence falls through" shape `resident_gb`
-    already has: today's one caller (`ai_runtime.describe_catalog`) passes
-    none of them and gets exactly the pre-AI-19 `download` reading, plus the
-    flat overhead (SPEC item 3) that now applies to every `download`-rung
-    estimate regardless of how much else is known. `params`/`quantization`
-    feed the weight-size estimate (SPEC item 4); `num_hidden_layers` through
-    `kv_dtype` feed the KV-cache term (SPEC item 5) — see `_kv_cache_bytes`
-    for what each one means and what it falls back to. These are the same
-    field NAMES `hub_metadata.get()` returns (minus its `numHiddenLayers`-
-    style camelCase), so a future caller can pass that dict through with a
-    straight `**`-unpack once one is wired up to fetch it; `params` and
-    `quantization` are not harvested by that module and have to come from
-    somewhere else.
+    already has. `params`/`quantization` feed the weight-size estimate
+    (SPEC item 4) — `ai_runtime.describe_catalog` passes both straight off
+    a curated entry's `catalog.py` fields (`entry.get("params")`,
+    `entry.get("quantization")`), so this rung is LIVE for every curated
+    row that has one; a cached (uncurated) entry has neither and gets
+    exactly the pre-AI-19 `download` reading, plus the flat overhead (SPEC
+    item 3) that now applies to every `download`-rung estimate regardless
+    of how much else is known. `params` accepts `catalog.py`'s free-text
+    display string directly (`"1.2B"`, `"8B (~1B active)"`) — `parse_params`
+    is what turns it into a raw count, or answers `None` and falls back to
+    `size_gb` when it cannot (see that function's own docstring for the
+    two qualifier forms that need a deliberate decision, not a lucky
+    regex). `num_hidden_layers` through `kv_dtype` feed the KV-cache term
+    (SPEC item 5) — see `_kv_cache_bytes` for what each one means and what
+    it falls back to; nothing populates these yet (no catalog field, no
+    caller wiring — a later phase's job once `hub_metadata` is threaded
+    into a route). These are the same field NAMES `hub_metadata.get()`
+    returns (minus its `numHiddenLayers`-style camelCase), so a future
+    caller can pass that dict through with a straight `**`-unpack once one
+    is wired up to fetch it.
     """
     if footprint_store is _NOT_GIVEN:
         measured = footprints.read(capability, model_id)
@@ -634,9 +740,9 @@ def _fit_score(footprint: float, pool: float) -> float:
 
 def verdict(capability: str, model_id: str, size_gb: float | None = None,
            resident_gb: float | None = None, *,
-           footprint_store=_NOT_GIVEN,
+           footprint_store: dict | None = _NOT_GIVEN,
            quantization: str | None = None,
-           params: float | None = None,
+           params: float | str | None = None,
            num_hidden_layers: int | None = None,
            num_key_value_heads: int | None = None,
            num_attention_heads: int | None = None,

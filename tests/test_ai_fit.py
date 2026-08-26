@@ -37,12 +37,14 @@ def test_download_is_the_floor_when_nothing_else_is_known():
     every `download`-rung estimate, so this is `size_gb` plus
     `RUNTIME_OVERHEAD_BYTES` rather than `size_gb` alone."""
     result = fit.verdict("text-generation", "org/m", size_gb=4.0)
+    assert result is not None
     assert result["basis"] == "download"
     assert result["footprintBytes"] == 4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES
 
 
 def test_declared_wins_over_download():
     result = fit.verdict("text-generation", "org/m", size_gb=4.0, resident_gb=6.0)
+    assert result is not None
     assert result["basis"] == "declared"
     assert result["footprintBytes"] == 6.0 * 1e9
 
@@ -50,6 +52,7 @@ def test_declared_wins_over_download():
 def test_measured_wins_over_declared_and_download():
     footprints.record("text-generation", "org/m", 5_000_000_000)
     result = fit.verdict("text-generation", "org/m", size_gb=4.0, resident_gb=6.0)
+    assert result is not None
     assert result["basis"] == "measured"
     assert result["footprintBytes"] == 5_000_000_000
 
@@ -65,6 +68,7 @@ def test_a_measurement_for_a_DIFFERENT_capability_does_not_leak_in():
     different footprints since AI-11j."""
     footprints.record("image-to-text", "org/m", 9_000_000_000)
     result = fit.verdict("text-generation", "org/m", size_gb=4.0)
+    assert result is not None
     assert result["basis"] == "download"
 
 
@@ -74,18 +78,21 @@ def test_a_measurement_for_a_DIFFERENT_capability_does_not_leak_in():
 def test_easy_is_within_60_percent_of_the_usable_budget():
     # 32GB RAM, 8GB reserve -> 24GB usable, 60% of that is 14.4GB.
     result = fit.verdict("text-generation", "org/m", size_gb=14.0)
+    assert result is not None
     assert result["verdict"] == "easy"
 
 
 def test_tight_is_between_the_easy_fraction_and_the_usable_budget():
     # 24GB usable; 20GB is past 60% (14.4GB) but within the full 24GB.
     result = fit.verdict("text-generation", "org/m", size_gb=20.0)
+    assert result is not None
     assert result["verdict"] == "tight"
 
 
 def test_no_is_past_the_usable_budget():
     # 24GB usable; 30GB exceeds it even before any wired-limit gate.
     result = fit.verdict("text-generation", "org/m", size_gb=30.0)
+    assert result is not None
     assert result["verdict"] == "no"
 
 
@@ -95,6 +102,7 @@ def test_thresholds_scale_with_ram_not_a_flat_fraction(monkeypatch):
     monkeypatch.setattr(fit, "machine_ram_gb", lambda: 64.0)
     # 64GB - 8GB reserve = 56GB usable; 40GB is within it but past 60% (33.6GB).
     result = fit.verdict("text-generation", "org/m", size_gb=40.0)
+    assert result is not None
     assert result["verdict"] == "tight"
 
 
@@ -104,6 +112,7 @@ def test_a_measured_no_is_reachable_and_not_a_contradiction():
     not that the number is wrong."""
     footprints.record("text-generation", "org/m", 30_000_000_000)
     result = fit.verdict("text-generation", "org/m")
+    assert result is not None
     assert result["basis"] == "measured"
     assert result["verdict"] == "no"
 
@@ -118,6 +127,7 @@ def test_a_footprint_past_the_wired_limit_is_no_even_with_headroom_to_spare(monk
     # 12GB is comfortably "easy" by headroom (24GB usable, 60% = 14.4GB) but
     # past a 10,000 MiB (~10.5GB) wired ceiling.
     result = fit.verdict("text-generation", "org/m", size_gb=12.0)
+    assert result is not None
     assert result["verdict"] == "no"
 
 
@@ -129,6 +139,7 @@ def test_wired_limit_zero_means_the_apple_default_not_unset(monkeypatch):
     # gate too (past 24GB usable) so this exercises the wired branch is at
     # least as strict, not that it alone decided "no".
     result = fit.verdict("text-generation", "org/m", size_gb=26.0)
+    assert result is not None
     assert result["verdict"] == "no"
 
 
@@ -137,6 +148,7 @@ def test_an_unreadable_wired_limit_costs_the_gate_never_the_verdict(monkeypatch)
     only the headroom arithmetic decides in that case."""
     monkeypatch.setattr(fit, "_wired_limit_mb", lambda: None)
     result = fit.verdict("text-generation", "org/m", size_gb=14.0)
+    assert result is not None
     assert result["verdict"] == "easy"
 
 
@@ -209,6 +221,7 @@ def test_download_tier_derives_weight_size_from_params_and_quant():
     `params` is available to compute a better number."""
     result = fit.verdict("text-generation", "org/m", size_gb=999.0,
                         params=7_000_000_000, quantization="Q4_K_M")
+    assert result is not None
     weight = 7_000_000_000 * 0.58
     assert result["footprintBytes"] == pytest.approx(weight + fit.RUNTIME_OVERHEAD_BYTES)
 
@@ -217,7 +230,177 @@ def test_download_tier_falls_back_to_size_gb_when_params_are_absent():
     """SPEC item 4's closing line: `size_gb` keeps working as an override/
     fallback — an entry that has never supplied `params` must not regress."""
     result = fit.verdict("text-generation", "org/m", size_gb=4.0, quantization="Q4_K_M")
+    assert result is not None
     assert result["footprintBytes"] == pytest.approx(4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES)
+
+
+# -- SPEC AI-19 item 4b: parsing catalog.py's free-text `params` field -------------
+
+
+def test_parse_params_accepts_an_already_numeric_count():
+    """A caller that already has a real count in hand (a future non-string
+    source) must not have to stringify it first."""
+    assert fit.parse_params(7_000_000_000) == 7_000_000_000
+    assert fit.parse_params(7e9) == 7e9
+    assert fit.parse_params(0) is None
+    assert fit.parse_params(-1) is None
+    assert fit.parse_params(True) is None  # bool masquerading as a number
+
+
+@pytest.mark.parametrize("label,expected", [
+    # Every plain `<number><unit>` form actually present in catalog.py
+    # (`grep -oP '"params": "[^"]*"' fused_render/ai/catalog.py | sort -u`).
+    ("39M", 39_000_000), ("137M", 137_000_000), ("149M", 149_000_000),
+    ("244M", 244_000_000), ("375M", 375_000_000), ("809M", 809_000_000),
+    ("1.1B", 1_100_000_000), ("1.2B", 1_200_000_000), ("1.5B", 1_500_000_000),
+    ("4B", 4_000_000_000), ("9B", 9_000_000_000), ("22B", 22_000_000_000),
+    ("27B", 27_000_000_000),
+])
+def test_parse_params_covers_the_real_spread_of_catalog_forms(label, expected):
+    assert fit.parse_params(label) == pytest.approx(expected)
+
+
+def test_parse_params_moe_form_uses_the_total_not_the_active_count():
+    """`"8B (~1B active)"` (`LiquidAI/LFM2.5-8B-A1B-MLX-4bit`): the LEADING
+    figure is total resident parameters, which is what a memory footprint
+    scales with — inactive experts are ordinary tensors on disk and in
+    memory, per that row's own catalog.py note. The parenthetical active
+    count is a compute/bandwidth figure, deliberately dropped here."""
+    assert fit.parse_params("8B (~1B active)") == pytest.approx(8_000_000_000)
+
+
+def test_parse_params_effective_form_is_deliberately_unparseable():
+    """`"4B effective"` (Gemma's MatFormer "E4B" naming,
+    `mlx-community/gemma-4-e4b-it-4bit` / `gemma-4-E4B-it-Q4_K_M.gguf`) gives
+    exactly one number, and that number is a compute-quality-parity figure,
+    not a parameter count — there is no second (total) figure in the string
+    to fall back to the way the MoE form has one. Parsing it as a literal 4B
+    would be the WRONG figure (see the verification against real catalog
+    rows below); `None` is the honest answer, and the caller falls back to
+    the curated `size_gb`."""
+    assert fit.parse_params("4B effective") is None
+    assert fit.parse_params("Effective 4B") is None  # case- and order-insensitive
+
+
+def test_parse_params_is_none_for_garbage_or_absent_input():
+    for value in (None, "", "unknown", "N/A"):
+        assert fit.parse_params(value) is None
+
+
+# -- SPEC AI-19 item 4c: verified against real catalog.py rows ---------------------
+
+
+#: Two curated rows land WAY outside a sane `params x bpp` vs. `size_gb`
+#: band, for two DIFFERENT documented reasons — neither is "the parser is
+#: wrong" or "size_gb was wrong the catalog.py:52-58 way"; both are real,
+#: known limits of a table this narrow. Excluded from the strict band check
+#: below by id, not by ratio, so a FUTURE divergence on a DIFFERENT row
+#: still fails loudly rather than being silently swallowed by a wide band
+#: chosen to cover these two.
+#:
+#: `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", ratio ~2.57x):
+#: ternary/BitNet-style quantization is nominally ~1.58 bits/weight
+#: (log2(3)) — genuinely far below even `Q2_K`'s 0.37 bytes/param — and
+#: SPEC item 4's own table (the one this build was told to implement,
+#: `F32` down to `Q2_K` plus MLX/AWQ/GPTQ) has no ternary row at all, so
+#: `_quant_key` answers `None` and this falls to `DEFAULT_BYTES_PER_PARAM`
+#: (0.58, sized for ~4-bit quantization) — roughly 2.5x too high for a
+#: 2-bit-nominal scheme. catalog.py's own comment on this row independently
+#: confirms `size_gb` itself is trustworthy here ("6.1, not the 8.5 the
+#: Hub's file listing adds up to... this is what the completed download
+#: MEASURES on disk"), so the divergence is entirely the missing table
+#: entry, not a bad curated number. Extending `QUANT_BYTES_PER_PARAM` with
+#: a made-up ternary figure would be inventing a number SPEC item 4 did not
+#: ask for; the honest fix is a REPORTED gap, not a guessed row.
+#:
+#: `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", ratio ~0.28x):
+#: TWO compounding reasons. First, `"int8 (torchao)"` matches none of SPEC
+#: item 4's patterns either (`awq`/`gptq` are the only int8-shaped keys the
+#: table has, and this string names neither), so it falls to the same 0.58
+#: default rather than something int8-shaped (~1.0). Second, and more
+#: fundamentally: `params: "4B"` counts ONLY the diffusion transformer,
+#: while `size_gb: 8.2` is — per this exact row's own catalog.py comment —
+#: "the whole repo": the (unquantized) text encoder and VAE ride along in
+#: that byte count but are not counted in `params` at all. `params x bpp`
+#: models a SINGLE quantized checkpoint; a multi-component diffusion
+#: pipeline where `params` describes one component and `size_gb` describes
+#: the whole download is a scope mismatch this table was never going to
+#: get right, quant-table gap or not.
+_KNOWN_DIVERGENT_ROW_IDS = frozenset({
+    "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
+    "tonera/FLUX.2-klein-4B-int8-diffusers",
+})
+
+
+def test_params_times_bpp_is_within_reason_for_real_curated_rows():
+    """Not a synthetic fixture: every curated `catalog.py` row that has both
+    `params` and `quantization` (and whose `params` parses — the
+    "effective" rows are excluded on purpose, see `parse_params`'s own
+    docstring), checked that `parse_params(params) x quant_bytes_per_param
+    (quantization)` lands within a generous 60% relative band of the
+    curated `size_gb` — loose enough to allow for architecture overhead
+    (embeddings/lm_head/router — this table has no per-architecture term)
+    while still catching a WRONG bpp key or a badly wrong curated number,
+    which is what this test exists to catch, per the coordinator's request
+    that a large divergence be reported rather than smoothed over.
+
+    Two rows are known, explained exceptions — see
+    `_KNOWN_DIVERGENT_ROW_IDS`'s own comment — and are checked SEPARATELY
+    below by `test_the_two_known_divergent_rows_stay_exactly_as_documented`
+    rather than silently included in a band wide enough to hide them."""
+    from fused_render.ai import catalog
+
+    divergent = []
+    checked = 0
+    for models in catalog.SUGGESTIONS.values():
+        for entry in models:
+            if entry.get("id") in _KNOWN_DIVERGENT_ROW_IDS:
+                continue
+            params_str = entry.get("params")
+            quant = entry.get("quantization")
+            size_gb = entry.get("size_gb")
+            if not params_str or not quant or not size_gb:
+                continue
+            parsed = fit.parse_params(params_str)
+            if parsed is None:
+                continue
+            checked += 1
+            estimated_gb = parsed * fit.quant_bytes_per_param(quant) / fit.GB_BYTES
+            ratio = estimated_gb / size_gb
+            if not (0.4 <= ratio <= 1.6):
+                divergent.append((entry["id"], params_str, quant, size_gb,
+                                  estimated_gb, ratio))
+    assert checked >= 13, "expected the real catalog to have at least this many parseable rows"
+    assert not divergent, f"rows outside a sane band: {divergent}"
+
+
+def test_the_two_known_divergent_rows_stay_exactly_as_documented():
+    """Regression lock on the two findings `_KNOWN_DIVERGENT_ROW_IDS`
+    documents — if either ratio moves, the underlying catalog row or this
+    module's tables changed and the finding needs re-reading, not a wider
+    band."""
+    from fused_render.ai import catalog
+
+    by_id = {entry["id"]: entry
+            for models in catalog.SUGGESTIONS.values() for entry in models}
+
+    ternary = by_id["prism-ml/Ternary-Bonsai-27B-mlx-2bit"]
+    ternary_params = fit.parse_params(ternary["params"])
+    assert ternary_params is not None
+    ternary_estimate_gb = (ternary_params
+                           * fit.quant_bytes_per_param(ternary["quantization"])
+                           / fit.GB_BYTES)
+    assert ternary_estimate_gb == pytest.approx(15.66, abs=0.01)
+    assert ternary["size_gb"] == 6.1  # ~2.57x over — see the comment above
+
+    flux = by_id["tonera/FLUX.2-klein-4B-int8-diffusers"]
+    flux_params = fit.parse_params(flux["params"])
+    assert flux_params is not None
+    flux_estimate_gb = (flux_params
+                        * fit.quant_bytes_per_param(flux["quantization"])
+                        / fit.GB_BYTES)
+    assert flux_estimate_gb == pytest.approx(2.32, abs=0.01)
+    assert flux["size_gb"] == 8.2  # ~0.28x under — see the comment above
 
 
 # -- SPEC AI-19 item 5: KV cache term -----------------------------------------------
@@ -280,6 +463,7 @@ def test_verdict_includes_the_kv_cache_term_in_the_download_footprint():
     result = fit.verdict("text-generation", "org/m", size_gb=4.0,
                         num_hidden_layers=32, num_key_value_heads=8,
                         head_dim=128, num_attention_heads=32)
+    assert result is not None
     kv = 2 * 8 * 128 * 8192 * 2.0 * 32
     assert result["footprintBytes"] == pytest.approx(4.0 * 1e9 + kv + fit.RUNTIME_OVERHEAD_BYTES)
 
@@ -293,6 +477,7 @@ def test_run_mode_is_cpu_only_when_no_hardware_cache_exists():
     machine forever, but the safe default is the same "judge against RAM"
     behaviour this module has always had."""
     result = fit.verdict("text-generation", "org/m", size_gb=4.0)
+    assert result is not None
     assert result["runMode"] == "cpu-only"
 
 
@@ -302,6 +487,7 @@ def test_run_mode_is_gpu_when_the_footprint_fits_in_vram(monkeypatch):
         total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=0.0)
     monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
     result = fit.verdict("text-generation", "org/m", size_gb=10.0)
+    assert result is not None
     assert result["runMode"] == "gpu"
 
 
@@ -313,6 +499,7 @@ def test_run_mode_is_cpu_offload_when_the_footprint_exceeds_vram_but_fits_combin
     # 32GB RAM - 8GB reserve = 24GB usable; 8GB VRAM + 24GB usable = 32GB combined.
     # 20GB exceeds the 8GB VRAM alone but fits the combined pool.
     result = fit.verdict("text-generation", "org/m", size_gb=19.5)
+    assert result is not None
     assert result["runMode"] == "cpu-offload"
     assert result["verdict"] in ("easy", "tight")
 
@@ -326,6 +513,7 @@ def test_run_mode_is_gpu_for_a_non_apple_unified_memory_device(monkeypatch):
         total_vram_gb=32.0, bandwidth_gb_s=256.0, detected_at=0.0)
     monkeypatch.setattr(hw_detect, "cached_hardware", lambda: info)
     result = fit.verdict("text-generation", "org/m", size_gb=14.0)
+    assert result is not None
     assert result["runMode"] == "gpu"
 
 
@@ -341,6 +529,7 @@ def test_apple_pool_stays_system_ram_regardless_of_a_stale_hw_detect_cache(monke
     # Simulate being on Apple Silicon: a real (non-None) wired limit.
     monkeypatch.setattr(fit, "_wired_limit_mb", lambda: 0)  # Apple default, 0.75 * 32GB = 24GB
     result = fit.verdict("text-generation", "org/m", size_gb=14.0)
+    assert result is not None
     # Judged against the 24GB RAM-derived ceiling, NOT the bogus 1GB VRAM
     # figure a stray hw_detect cache reports.
     assert result["verdict"] == "easy"
@@ -379,17 +568,20 @@ def test_score_decreases_monotonically_with_utilization_past_comfort():
 def test_verdict_is_easy_iff_score_is_100():
     # 32GB RAM, 8GB reserve -> 24GB usable; 70% of that is 16.8GB.
     result = fit.verdict("text-generation", "org/m", size_gb=16.3)  # +0.5GB overhead = 16.8GB
+    assert result is not None
     assert result["score"] == 100.0
     assert result["verdict"] == "easy"
 
 
 def test_verdict_is_tight_when_score_is_between_zero_and_100():
     result = fit.verdict("text-generation", "org/m", size_gb=19.5)  # +0.5 = 20GB, ratio 0.833
+    assert result is not None
     assert 0 < result["score"] < 100
     assert result["verdict"] == "tight"
 
 
 def test_verdict_is_no_when_score_is_zero():
     result = fit.verdict("text-generation", "org/m", size_gb=30.0)
+    assert result is not None
     assert result["score"] == 0.0
     assert result["verdict"] == "no"
