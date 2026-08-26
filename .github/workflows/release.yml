@@ -460,12 +460,32 @@ jobs:
           # ai.html) must land before index.html itself — the && chain
           # short-circuits, so a failed dependency upload leaves the OLD page
           # live instead of publishing a new page with missing images/links.
+          #
+          # The assets sync runs once per file type. It used to be a single
+          # pass forcing --content-type image/jpeg on the whole tree, which
+          # mislabelled the .png/.gif/.mp4 files already in there (browsers
+          # sniff images, so it went unnoticed) and made a .js asset
+          # unusable outright — a script served as image/jpeg is refused.
+          # `sync` only uploads what changed, so the extra passes are cheap.
           if aws s3 cp "$RUNNER_TEMP/latest.json" "s3://${S3_BUCKET}/latest.json" \
                --content-type "application/json" --cache-control "max-age=300" \
              && aws s3 cp scripts/download_page/og-image.png "s3://${S3_BUCKET}/og-image.png" \
                --content-type "image/png" --cache-control "max-age=86400" \
              && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --exclude "*" --include "*.jpg" --include "*.jpeg" \
                --content-type "image/jpeg" --cache-control "max-age=86400" \
+             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --exclude "*" --include "*.png" \
+               --content-type "image/png" --cache-control "max-age=86400" \
+             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --exclude "*" --include "*.gif" \
+               --content-type "image/gif" --cache-control "max-age=86400" \
+             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --exclude "*" --include "*.mp4" \
+               --content-type "video/mp4" --cache-control "max-age=86400" \
+             && aws s3 sync scripts/download_page/assets "s3://${S3_BUCKET}/assets" \
+               --exclude "*" --include "*.js" \
+               --content-type "text/javascript; charset=utf-8" --cache-control "max-age=86400" \
              && aws s3 cp scripts/download_page/about.html "s3://${S3_BUCKET}/about.html" \
                --content-type "text/html; charset=utf-8" --cache-control "max-age=300" \
              && aws s3 cp scripts/download_page/ai.html "s3://${S3_BUCKET}/ai.html" \
