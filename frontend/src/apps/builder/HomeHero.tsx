@@ -451,7 +451,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
           {phase === "askName" ? (
             <div className="home-composer-name" role="group" aria-label="Name your app">
               <span className="home-composer-name-why">
-                Couldn't name it automatically — pick a name (kebab-case):
+                Couldn't name it automatically — pick a name:
               </span>
               <TextInput
                 ref={nameRef}
