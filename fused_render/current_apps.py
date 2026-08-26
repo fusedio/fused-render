@@ -140,7 +140,12 @@ def observe(rows: list[dict]) -> None:
     changed = False
     now = None
     live_keys: set[str] = set()
-    for row in rows:
+    # OLDEST activity first: `_task_rows` sorts newest first, and the table is
+    # added-order (the sidebar numbers the first entry lowest, so the last
+    # added lands on top). Walking the listing as given would seed a first-run
+    # desk — or any pass that adds several apps — oldest on top, inverted
+    # (Bugbot on #867).
+    for row in reversed(rows):
         key = str(row.get("key") or "")
         if not key:
             continue
