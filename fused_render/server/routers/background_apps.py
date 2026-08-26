@@ -1,4 +1,4 @@
-"""Background apps API (docs/BACKGROUND_APPS): enable/disable/stop/restart/status
+"""Background apps API (SPEC.md §46): enable/disable/stop/restart/status
 for a folder's declared background daemon (`fused_render/background_apps.py`'s
 manifest + enabled store), and `engine_host.ensure_background` for the actual
 bring-up.

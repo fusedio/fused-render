@@ -9514,3 +9514,90 @@ three platforms, one API, no field naming which one served you.
   `{available, reason}` and refusal sentences; it never learns which backend it
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
+
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D495, D496, D497, D498)
+
+A folder can declare a daemon that outlives any one page: `fused.app` (the
+browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
++ `server/routers/background_apps.py` (the server side) turn engine_host's
+existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
+general "keep this running" primitive, rather than a special case wired for
+one built-in template. The map viewer's tile daemon and a warm `/api/engine`
+worker are the two existing engine_host child kinds (template, app);
+background apps are the third.
+
+- **Manifest.** A folder opts in with `[tool.fused-render.app]` in its own
+  `pyproject.toml`: `kind = "background"` and `daemon = "<file>"`, a filename
+  resolved inside the folder — never a path that can climb out of it
+  (`background_apps.load_manifest`'s realpath containment check, the same
+  posture `registered_apps.py`'s folder guards already take). Nothing else
+  reads this table; it is greenfield.
+- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`
+  — same shape as the warm-worker's `app_engine_id`, a distinct prefix so the
+  two can never collide. `version_for(folder, interpreter)` digests the
+  manifest's own bytes, the daemon file's mtime/size, and the interpreter
+  path (D495) — any of the three changing retires the running child rather
+  than reusing it.
+- **The enabled store.** `<home_dir()>/background_apps.json` is the sticky
+  "keep this running" list (D497) — a folder path that opts in stays enabled
+  across restarts until explicitly disabled, independent of whether any page
+  for it is currently open. A folder that is temporarily missing or
+  unreadable drops out of `enabled_paths()`'s result (read-only) without
+  being removed from the store, so it reappears the moment it's readable
+  again.
+- **Bring-up.** `engine_host.ensure_background` is engine_host's third child
+  kind (D498): validated against the enabled store rather than a templates
+  root (an invariant check, the same stance `_validate`'s interpreter check
+  already documents — not a trust boundary, since the caller already resolved
+  `daemon` from the folder's own manifest), and reused/spawned with the same
+  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
+  child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
+  now gates on `kind == "app"`, not the `module` field's truthiness) —
+  sitting idle is the entire point of a background app, unlike a warm script
+  worker that idle-retires after `APP_IDLE_RETIRE_S`. Every managed child
+  (template, app, background) dies together on the server's ASGI shutdown
+  event (`engine_host.stop_all()`, already wired at `server/app.py`'s
+  `_shutdown_engines` and reached by the packaged macOS app's `quit_teardown`
+  server-drain step, which sets `should_exit` and lets uvicorn's own shutdown
+  sequence run the ASGI lifespan shutdown — no separate rung was needed).
+- **The API** (`server/routers/background_apps.py`) takes `html` — the
+  page's own path — on every endpoint, never a raw folder path, and resolves
+  the app folder from it server-side exactly as `/api/run`/`/api/engine`
+  resolve `py` (D496): this adds no code-execution surface and no
+  path-typed API to defend. `GET /status` reports `{enabled, running, pid,
+  version, engine_id}`; `POST /enable` persists then brings the daemon up
+  (409 if the folder's project venv isn't built yet — the same stance
+  `/api/engine` already takes, D496: building one inside a POST would block
+  for minutes, so opening the page once installs it first); `POST /stop`
+  kills the running daemon WITHOUT disabling it, so the startup hook (or a
+  later `enable`/`restart`) brings it back; `POST /disable` kills it AND
+  unpersists, so it stays down; `POST /restart` respawns the currently-enabled
+  daemon; `GET /running` is the cheap enabled-paths-with-a-live-child-boolean
+  read the `/apps` grid's badge uses (engine_host.current only, no folder
+  walk, no toml reads).
+- **Startup resurrection.** A daemon thread started from `server/app.py`'s
+  startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
+  the pre-bind path) walks `enabled_paths()` and brings each one up,
+  logging-and-skipping a folder whose manifest went dead or whose project
+  venv isn't built rather than letting one bad folder block the others or
+  delay server readiness.
+- **`fused.app`** (`static/runtime.js`) is the browser's control surface for
+  a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
+  variant of `runPython` for the PAGE's own script: `status()` / `enable()` /
+  `disable()` / `stop()` / `restart()` all send the page's own path as
+  `html`; `call(path, body)` reaches the daemon directly, proxied through the
+  same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
+  already rides (`engine_forward` is engine-kind-agnostic), resolving the
+  `engine_id` from a cached `status()` call. Local-only, like `fused.ai`,
+  `fused.capture` and the rest of the local-only surface named in the file
+  header — not available on hosted/exported pages.
+- **The `/apps` grid** decorates a card with a "running" badge
+  (`getBackgroundAppsRunning`, `apps/builder/Apps.tsx`) through
+  `AppPreviewCard`'s existing generic `badge` prop, using the same
+  decoration-only posture `useShowcaseSync`'s "cloned" badge already
+  established: one fetch, no polling, and a failure just means no badge — the
+  listing itself is unchanged.
+- **Sequenced-after, deliberately absent here**: an authoring skill covering
+  the manifest/daemon contract, the OpenWhisper port this feature exists to
+  support, tray controls, macOS start-at-login, and any widget surface for a
+  background app.

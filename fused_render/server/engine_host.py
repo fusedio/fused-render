@@ -473,7 +473,7 @@ def ensure_app(resolved_py: str, python: str,
         return child
 
 
-# --- background apps (background_apps.py, docs/BACKGROUND_APPS) ---------------
+# --- background apps (background_apps.py, SPEC.md §46) ------------------------
 
 
 def _validate_background(engine_id: str, python: str, daemon: str) -> None:

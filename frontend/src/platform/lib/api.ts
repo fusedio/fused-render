@@ -1891,6 +1891,14 @@ export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
 
+// Which enabled background apps (server/background_apps.py) currently have a
+// live daemon, keyed by folder path — feeds the /apps grid's "running" badge
+// (Apps.tsx). Cheap by design: the endpoint reads only engine_host.current,
+// no folder walk, no toml reads.
+export function getBackgroundAppsRunning(): Promise<{ running: Record<string, boolean> }> {
+  return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
