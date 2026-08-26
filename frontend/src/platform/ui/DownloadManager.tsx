@@ -426,6 +426,27 @@ export interface QueueSlot extends QueueCount {
   note?: ReactNode;
 }
 
+/**
+ * The repo-updates half of the card, handed in by the shell (RepoUpdatesDock.tsx)
+ * — a SECOND named slot beside `queue` (SPEC §36), not a generalisation to N: one
+ * more named slot is the smaller change, and this card was deliberately
+ * consolidated down to one plate (see the module docstring's "IT IS ONE CARD").
+ *
+ * Shaped like `QueueSlot` for the same reason: rendered nodes are opaque, so a
+ * `count` travels beside the rows rather than being read back out of them, and
+ * this card needs it for two things `queue`'s own counts already handle for that
+ * half — the empty-card gate, and (with the queue's own rows) whether the "no
+ * rows, no queue, no repo updates" state is genuinely empty.
+ */
+export interface RepoUpdatesSlot {
+  /** One row per repo with a known upstream update, already rendered. Each is
+   *  a `.q-row`, a sibling of the queue's own rows and the `.dl-row`s. */
+  rows: ReactNode;
+  /** How many rows — see the interface doc above for why this cannot be read
+   *  back out of `rows`. */
+  count: number;
+}
+
 // A successful job vanishes from this card entirely (PR #785 follow-up) —
 // EXCEPT a scheduled run's own outcome row (`sys:schedule:*`), which
 // deliberately survives one closing frame once folded (jobs.ts
@@ -457,11 +478,13 @@ function isVanishedOnSuccess(job: Job): boolean {
 export function DownloadManagerView({
   reported,
   queue,
+  repoUpdates,
   refresh,
   patch,
 }: {
   reported: Job[];
   queue?: QueueSlot;
+  repoUpdates?: RepoUpdatesSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
@@ -497,12 +520,14 @@ export function DownloadManagerView({
   const jobs = jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j));
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
+  const repoCount = repoUpdates?.count ?? 0;
 
   // Nothing to say — render nothing at all, no chrome. The card is a picture of
   // what is happening now, so an empty one is not an empty state with a header
-  // reading "nothing queued", it is no card. Both halves have to be empty: a
-  // queue row with no jobs is still work in progress worth a card.
-  if (jobs.length === 0 && queued === 0) return null;
+  // reading "nothing queued", it is no card. All three halves have to be empty: a
+  // queue row with no jobs is still work in progress worth a card, and so is a
+  // repo update with nothing else going on.
+  if (jobs.length === 0 && queued === 0 && repoCount === 0) return null;
 
   const overall = overallFraction(jobs);
   // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
@@ -588,9 +613,14 @@ export function DownloadManagerView({
           past due after a wake. Cancel all keeps its 2+ threshold precisely
           because of this: for a single row the row's own ✕ is reachable either
           way, and it is the same action with a better name on it. */}
-      {(shown.queue || listed.length > 0) && (
+      {(shown.queue || repoCount > 0 || listed.length > 0) && (
         <div className={"dl-rows" + (shown.jobs ? "" : " is-folded")}>
           {queue?.rows}
+          {/* Repo-update rows sit here, above the job rows and — like the
+              queue's own rows — outside the fold: `shown.jobs` only ever
+              caps the job rows below, never this. A card collapsed weeks ago
+              must not hide a live "origin has moved" action (SPEC §36). */}
+          {repoUpdates?.rows}
           {listed.map((job) => (
             <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
           ))}
@@ -603,7 +633,21 @@ export function DownloadManagerView({
   );
 }
 
-export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
+export default function DownloadManager({
+  queue,
+  repoUpdates,
+}: {
+  queue?: QueueSlot;
+  repoUpdates?: RepoUpdatesSlot;
+}) {
   const { jobs: reported, refresh, patch } = useJobs();
-  return <DownloadManagerView reported={reported} queue={queue} refresh={refresh} patch={patch} />;
+  return (
+    <DownloadManagerView
+      reported={reported}
+      queue={queue}
+      repoUpdates={repoUpdates}
+      refresh={refresh}
+      patch={patch}
+    />
+  );
 }

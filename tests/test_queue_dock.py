@@ -273,9 +273,10 @@ def test_a_refusal_is_spoken(dock):
 def test_an_empty_card_is_no_card(card):
     """Not an empty state, not a header saying "nothing queued": a picture of work
     in progress has nothing to draw when there is none. The rule is the CARD's now
-    and applies once — both halves have to be empty, because a queue row with no
-    jobs is still work worth a card, and a job with no queue row always was."""
-    assert "if (jobs.length === 0 && queued === 0) return null;" in card
+    and applies once — all three halves have to be empty, because a queue row with
+    no jobs is still work worth a card, a job with no queue row always was, and so
+    is a repo-update row with nothing else going on (SPEC §36)."""
+    assert "if (jobs.length === 0 && queued === 0 && repoCount === 0) return null;" in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -301,7 +302,7 @@ def test_the_fold_takes_the_job_rows_and_not_the_queue_s(card):
     it. The fold takes the job rows (the download history it was set to fold away);
     the queue's rows stay, in the same one list, with their controls."""
     assert "rowsShown(collapsed, count)" in card
-    assert "(shown.queue || listed.length > 0) &&" in card
+    assert "(shown.queue || repoCount > 0 || listed.length > 0) &&" in card
     assert "{queue?.rows}" in card, "the queue's rows must not sit behind the fold"
     # exactly one half is folded, and it is the jobs' — minus the one job row that
     # stands in for a missing queue row, which goes through the fold for the same
