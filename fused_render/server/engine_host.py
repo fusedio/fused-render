@@ -644,13 +644,27 @@ def reap_idle_app_workers(now: float | None = None) -> int:
     return len(stale)
 
 
-def restart(engine_id: str, failed: Child | None = None) -> Child:
+def restart(engine_id: str, failed: Child | None = None,
+           version: str | None = None) -> Child:
     """Kill and respawn the child, replaying its reinit requests.
 
     `failed` is the child the caller's request died against: when another
     request already replaced it, the fresh child is returned as-is instead of
     being restarted again — a broken viewport fails a whole burst of requests at
     once, and each of them calls here.
+
+    `version` overrides the respawned child's version digest; omitted (the
+    default), the existing child's own `version` carries over unchanged, the
+    original behavior every non-background caller (engine_forward.py's
+    heal-on-proxy) still wants — a healed child should keep answering to the
+    same version its caller already knows. `/api/apps/background/restart`
+    (D510, 2026-08-26 code review) passes the FRESHLY computed digest instead:
+    without this, a live child's restart rebuilt its replacement from
+    `existing.version` — the OLD digest — so `fused.daemon.restart()` right
+    after editing `daemon.py` respawned the new code tagged with the stale
+    version, and the next enable()/server-start resurrection would then see
+    its own fresh digest disagree with what's registered and tear the
+    just-restarted child down and spawn it a second time.
 
     The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose
@@ -670,7 +684,8 @@ def restart(engine_id: str, failed: Child | None = None) -> Child:
         _terminate(existing)
         child = Child(engine_id=engine_id, python=existing.python,
                       daemon=existing.daemon, cache=existing.cache,
-                      version=existing.version, module=existing.module,
+                      version=version if version is not None else existing.version,
+                      module=existing.module,
                       kind=existing.kind, folder=existing.folder)
         _spawn(child)
         _replay(child)
