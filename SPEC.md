@@ -8964,6 +8964,52 @@ an AI Models page that could say what was on disk but not what was *running*.
   evidence for an uncached repo whose id alone says nothing. `registry.py`
   stays dependency-light: neither function reads a filesystem or the
   network itself, taking whatever evidence the caller already has instead.
+- **AI-29** **Path-hardening audit of the download paths** (`runners/
+  worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
+  **(D532).** Findings:
+  - **`mirror.py` was already safe** -- `_safe_name` (repo-relative names:
+    rejects a leading `/`, a backslash, a colon, and any `.`/`..` path
+    segment), `_safe_filename` (a single URL path segment, a stricter
+    regex), and `_safe_etag` (hex-only) already cover every manifest field
+    this build's audit checked. Left alone.
+  - **`worker_base._resolve`/`_FileFetch` had NO equivalent check on the
+    HUB metadata path**, and this was a real gap: `_hub_file_meta`/
+    `HfApi.model_info`'s `rfilename`/etag were joined straight into
+    `os.path.join(self.snapshot, name)` (`_FileFetch.link`, the snapshot
+    symlink target) and `os.path.join(folder, "blobs", etag)`
+    (`_FileFetch.blob`) with no validation of either -- confirmed
+    exploitable by a failing test before the fix (`../../../../etc/
+    cronjob` as an `rfilename` was not refused). Fixed with
+    `_safe_repo_relative_name`/`_safe_blob_name` (restated, not imported --
+    `mirror.py` is loaded as a bare module with no `fused_render` package
+    reachable from a worker's interpreter), enforced once in
+    `_segmented_fetch`'s per-file loop, which is the SAME loop both the Hub
+    and the mirror path route every `_FileFetch` through.
+  - **`.part`/sidecar files opened without `O_EXCL`, and DELIBERATELY not
+    fixed with it** -- a `.part` file is sidecar-tracked and reopened
+    across process restarts to resume an interrupted download, so
+    `O_EXCL`/`create_new` (refuse if the path already exists) would break
+    every legitimate resume. `os.O_NOFOLLOW` is the compatible fix: it
+    blocks opening the path when it IS a symlink (the actual
+    symlink-planting attack this checklist item names) while a real,
+    previously-created `.part`/sidecar file -- never a symlink; nothing in
+    this module ever creates one there -- keeps resuming normally. Applied
+    to both `.part` opens (segmented and append-only) and the sidecar's
+    `.tmp` write.
+  - **No `subprocess`/shell-out of any kind exists in `worker_base.py`,
+    `mirror.py`, or gguf_sources.py/formats.py's new item-13/14 code** --
+    grep-confirmed. The `--`-before-untrusted-argument checklist item does
+    not apply; nothing to change.
+  - **Containment-by-canonicalization** (asserting a joined path resolves
+    under the intended cache dir via `os.path.realpath`) was considered as
+    an ADDITIONAL layer and not added: with `_safe_repo_relative_name`/
+    `_safe_blob_name` rejecting every character sequence that could
+    traverse (`..`, an absolute path, a backslash) before a join ever
+    happens, a canonicalization check afterward would compare two paths
+    that are already known to agree by construction -- real defence in
+    depth would be a SECOND, independent parser catching what the first
+    missed, and duplicating the same character-class logic a second way
+    is not that.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
