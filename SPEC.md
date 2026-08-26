@@ -8767,6 +8767,38 @@ an AI Models page that could say what was on disk but not what was *running*.
   new branch — only its header comment now says so, and
   `AiFitVerdict.score`/`.runMode` are optional additions on the TS side.
 
+- **AI-20** **`benchmark.py`'s `_memory_and_device` reading, taken once AFTER
+  a benchmark's timed pass finished, is replaced by `_PeakSampler` — a
+  background thread that samples `(model, capability)`'s resident bytes
+  every `_PEAK_SAMPLE_INTERVAL_S` (0.25s) DURING the pass and keeps the
+  running max, bracketing only the timed measurement (never the discarded
+  warm-up) and torn down unconditionally in the same `finally` that already
+  closes the measurement row.** (D522) Also gives `benchmark._total_memory_
+  bytes()` the `GlobalMemoryStatusEx` Windows fallback `fit.machine_ram_gb`
+  already carries, ported rather than shared since one returns decimal GB
+  cached forever and the other raw bytes, uncached, per `machine()` call.
+
+  A single post-pass reading misses exactly the two things a benchmark
+  exists to catch: a decode's own KV cache is still growing right up to the
+  LAST token (never freed mid-generation), so its true high-water mark sits
+  near the end of decode and can have already been superseded by whatever
+  the process does immediately after `run()` reads memory; and a diffusion
+  model's per-step cross-attention scratch is freed the instant the step
+  that allocated it returns, so a reading taken after the whole render has
+  finished sees none of it. Both are real, both are invisible to one
+  reading taken after the fact.
+
+  `_PeakSampler` always takes two samples independent of the background
+  thread's own cadence — one in `start()` before the pass, one in `stop()`
+  after — so a pass that finishes faster than one tick (every workload in
+  this codebase's fake-clock test suite; a fast real embed call) still gets
+  more than the old design's single reading, and the running max, never the
+  last value, is what is kept: a reading that peaks mid-pass and falls back
+  down before the pass ends must still win. `stop()` is idempotent — safe to
+  call twice, which `run()`'s structure requires (the success path collects
+  the result, the surrounding `finally` tears the thread down
+  unconditionally so a raise mid-pass cannot leak it).
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,

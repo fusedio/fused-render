@@ -551,6 +551,72 @@ def test_a_failing_unload_does_not_mask_the_measurement_error(bench, monkeypatch
     assert record["error"] == "out of memory"
 
 
+# -- _total_memory_bytes() Windows fallback (SPEC AI-20) ------------------------
+
+
+def test_total_memory_bytes_falls_back_to_globalmemorystatusex_on_windows(
+        monkeypatch):
+    """`fit.machine_ram_gb` already has this fallback (`os.sysconf` does not
+    exist on Windows); `benchmark._total_memory_bytes` did not, so `machine()`
+    recorded `totalMemoryBytes: null` on every Windows run. Driven the same
+    way `test_index_rank_concurrency.py` drives a Windows-only ctypes path on
+    non-Windows CI: force `sys.platform` and hand `ctypes.windll` a fake."""
+    class _MemoryStatus(benchmark.ctypes.Structure):
+        _fields_ = [("dwLength", benchmark.ctypes.c_ulong),
+                    ("dwMemoryLoad", benchmark.ctypes.c_ulong),
+                    ("ullTotalPhys", benchmark.ctypes.c_uint64),
+                    ("ullAvailPhys", benchmark.ctypes.c_uint64),
+                    ("ullTotalPageFile", benchmark.ctypes.c_uint64),
+                    ("ullAvailPageFile", benchmark.ctypes.c_uint64),
+                    ("ullTotalVirtual", benchmark.ctypes.c_uint64),
+                    ("ullAvailVirtual", benchmark.ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", benchmark.ctypes.c_uint64)]
+
+    class FakeKernel32:
+        def GlobalMemoryStatusEx(self, ref):
+            status = _MemoryStatus.from_address(benchmark.ctypes.addressof(ref._obj))
+            status.ullTotalPhys = 17_179_869_184  # 16 GiB
+            return 1
+
+    class FakeWindll:
+        kernel32 = FakeKernel32()
+
+    def raising_sysconf(name):
+        raise OSError("no such sysconf value on this fake platform")
+
+    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    monkeypatch.setattr(benchmark.sys, "platform", "win32")
+    monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
+    assert benchmark._total_memory_bytes() == 17_179_869_184
+
+
+def test_total_memory_bytes_is_none_when_the_windows_read_fails(monkeypatch):
+    class FailingKernel32:
+        def GlobalMemoryStatusEx(self, ref):
+            return 0  # falsy per the real API's own failure contract
+
+    class FakeWindll:
+        kernel32 = FailingKernel32()
+
+    def raising_sysconf(name):
+        raise OSError("no such sysconf value on this fake platform")
+
+    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    monkeypatch.setattr(benchmark.sys, "platform", "win32")
+    monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
+    assert benchmark._total_memory_bytes() is None
+
+
+def test_total_memory_bytes_is_none_off_windows_when_sysconf_is_unavailable(
+        monkeypatch):
+    def raising_sysconf(name):
+        raise OSError("no such sysconf value on this fake platform")
+
+    monkeypatch.setattr(benchmark.os, "sysconf", raising_sysconf)
+    monkeypatch.setattr(benchmark.sys, "platform", "some-future-os")
+    assert benchmark._total_memory_bytes() is None
+
+
 # -- memory, device and the record itself ---------------------------------------
 
 
@@ -574,6 +640,64 @@ def test_a_runner_that_reports_no_memory_leaves_it_null(bench, monkeypatch):
     record, _ = _text_run(bench, monkeypatch)
     assert record["peakResidentBytes"] is None
     assert record["device"] is None
+
+
+def test_peak_sampling_keeps_the_max_seen_not_the_last_reading(bench, monkeypatch):
+    """SPEC AI-20: the old design sampled ONCE, after the timed pass ended —
+    exactly the reading a mid-decode KV high-water mark or a diffusion
+    cross-attention spike has already been freed by the time it is taken.
+    `_PeakSampler` samples once when it starts (before the timed pass) and
+    once more when it stops (after) — a background thread additionally ticks
+    on a real-time cadence, but this test does not depend on that firing: the
+    fake-clock timed pass here completes in microseconds of REAL wall time, so
+    the only two samples guaranteed to land are the start-of-pass and
+    end-of-pass ones, and even those two are enough to prove the sampler keeps
+    the RUNNING MAX rather than the last reading it saw — a reading that FELL
+    between them (9GB, then back down to 2GB) must still win.
+    """
+    readings = [3_000_000_000, 9_000_000_000, 2_000_000_000]
+    calls = {"n": 0}
+
+    def describe():
+        i = min(calls["n"], len(readings) - 1)
+        calls["n"] += 1
+        return {"loaded": [
+            {"model": "some/text-model", "capability": ai_registry.TEXT_GENERATION,
+             "residentBytes": readings[i], "device": "mps"},
+        ]}
+
+    monkeypatch.setattr(benchmark.supervisor, "describe", describe)
+    record, _ = _text_run(bench, monkeypatch)
+    assert record["peakResidentBytes"] == 9_000_000_000
+    assert calls["n"] >= 2
+
+
+def test_peak_sampler_thread_is_stopped_and_joined_when_the_pass_ends(monkeypatch):
+    """A sampler thread that outlives `run()` would keep making `/health`
+    round trips (by way of `supervisor.describe()`) for a benchmark nobody is
+    watching any more — SPEC AI-20's own reason `stop()` is called from the
+    same `finally` that already closes the measurement row. Driven directly
+    against `_PeakSampler`, not through `run()`, because the property under
+    test — no live thread left behind — is about the class's own contract."""
+    monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": [
+        {"model": "m", "capability": ai_registry.TEXT_GENERATION,
+         "residentBytes": 1, "device": "cpu"},
+    ]})
+    sampler = benchmark._PeakSampler("m", ai_registry.TEXT_GENERATION)
+    sampler.start()
+    assert sampler._thread is not None
+    assert sampler._thread.is_alive()
+    peak, device = sampler.stop()
+    assert peak == 1
+    assert device == "cpu"
+    sampler._thread.join(timeout=1.0)
+    assert not sampler._thread.is_alive()
+    # Idempotent: a second stop() (the `run()` exception path's own `finally`
+    # calls it unconditionally even when the success path already did) must
+    # not raise or hang re-joining an already-finished thread.
+    peak2, device2 = sampler.stop()
+    assert peak2 == peak
+    assert device2 == device
 
 
 def test_the_record_carries_everything_needed_to_read_it_years_later(bench,
