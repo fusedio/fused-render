@@ -461,7 +461,11 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
                 value={nameDraft}
                 spellCheck={false}
                 autoComplete="off"
-                onChange={(e) => setNameDraft(e.target.value.toLowerCase())}
+                // Space types a hyphen: the field wants kebab-case, so the key
+                // a user reaches for between words produces the separator the
+                // name needs. Done on the value (not keydown) so a pasted
+                // "My App" lands as "my-app" too.
+                onChange={(e) => setNameDraft(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
