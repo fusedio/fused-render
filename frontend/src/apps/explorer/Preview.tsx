@@ -66,6 +66,7 @@ import {
   reconcileSideSearch,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
+import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
   activeRev,
   revFromHook,
@@ -846,7 +847,9 @@ function TemplatePreview({
   // Nothing about it is persisted anywhere. It rides the URL, so it survives the
   // shell's pushState navigation within this file, and a refresh — or an open of a
   // different file, which starts from a bare URL — lands on the default again.
-  const [sideReq, setSideReq] = useState<SideRequest>(() => parseSide(location.search));
+  const [sideReq, setSideReq] = useState<SideRequest>(() =>
+    parseSide(location.search, getSideHidden())
+  );
   // Same request/paint distinction as `mode` above, and here it is RESOLVED rather
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
@@ -916,7 +919,12 @@ function TemplatePreview({
   // than a deleted param now that absence means open — while choosing the
   // companion a bare URL would have opened deletes the param instead, so the
   // ordinary state keeps the clean URL (`sideParam`, lib/preview-side).
+  //
+  // Also the one place that records a close/reopen into the session's shared
+  // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
+  // the folder pane's later mounts too, same store either surface writes.
   const setSide = (next: string | null) => {
+    setSideHidden(next === null);
     // Written textually (`writeQueryParam`) so a click on the sidebar cannot
     // re-encode a template's own params on its way past them — LSN-2's verbatim
     // rule, and this runs on the first close of every auto-opened sidebar.

@@ -328,6 +328,17 @@ export interface SideRequest {
 // The state a bare URL asks for: open, at whatever this file offers first.
 const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
 
+// What a SILENT `_side` resolves to once the session's hidden flag
+// (`lib/side-hidden-store.ts`) is in the picture: the ordinary open-unchosen
+// request, unless the user shut the sidebar earlier this session, in which
+// case silence now means "stay shut" rather than "open at the default". Only
+// ever consulted where the URL itself said nothing — an explicit `_side`
+// (including `off`) or a legacy `_mode` always wins over this, same as a deep
+// link always wins over a stored preference.
+function unchosenOrHidden(hidden: boolean): SideRequest {
+  return hidden ? { open: false, mode: null } : OPEN_UNCHOSEN;
+}
+
 // LEGACY DEEP LINKS are the second branch. `?_mode=claude` is what every
 // bookmark, recent, saved session and shared URL from before the split says, and
 // it is still a perfectly clear request — "open this file's chat". It now means
@@ -338,14 +349,17 @@ const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
 // It is read only where `_side` is silent, and an explicit `_side=off` therefore
 // beats it: a URL that says both "shut" and "open the chat" was assembled from a
 // close click on top of an old link, and the click is the newer of the two.
-export function parseSide(search: string): SideRequest {
+// `hidden` defaults false so every existing call (including this file's own
+// tests) keeps behaving exactly as before; a caller that cares — Preview.tsx's
+// mount — passes `getSideHidden()` from `lib/side-hidden-store.ts` explicitly.
+export function parseSide(search: string, hidden = false): SideRequest {
   const params = new URLSearchParams(search);
   const raw = params.get("_side");
   if (raw === SIDE_OFF) return { open: false, mode: null };
   if (raw !== null && raw !== "") return { open: true, mode: raw };
   const legacy = params.get("_mode");
   if (legacy !== null && isSidebarMode(legacy)) return { open: true, mode: legacy };
-  return OPEN_UNCHOSEN;
+  return unchosenOrHidden(hidden);
 }
 
 // WHICH COMPANION IS ACTUALLY SHOWING, recomputed on every render — not stored,

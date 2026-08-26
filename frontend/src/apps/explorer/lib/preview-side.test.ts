@@ -342,6 +342,36 @@ describe("parseSide", () => {
   });
 });
 
+// THE SESSION'S HIDDEN FLAG (`lib/side-hidden-store.ts`), consulted only where
+// the URL itself is silent. `hidden` is a plain parameter here rather than an
+// import of the store, so the resolution rule stays pinnable with no store to
+// reset between cases — Preview.tsx is what reads the store and passes the
+// value in.
+describe("parseSide with the session's hidden flag", () => {
+  it("defaults to false, so every call above still opens", () => {
+    expect(parseSide("")).toEqual({ open: true, mode: null });
+  });
+
+  it("keeps a silent `_side` shut when the flag is set", () => {
+    expect(parseSide("", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?zoom=2", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?_side=", true)).toEqual({ open: false, mode: null });
+  });
+
+  it("lets an explicit `_side` win over the flag, either direction", () => {
+    // A deep link that says open beats a stale "I closed it earlier" flag...
+    expect(parseSide("?_side=git", true)).toEqual({ open: true, mode: "git" });
+    // ...and an explicit `off` is just as explicit whether or not the flag
+    // already agreed.
+    expect(parseSide("?_side=off", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?_side=off", false)).toEqual({ open: false, mode: null });
+  });
+
+  it("lets a legacy `?_mode=claude` deep link win over the flag too", () => {
+    expect(parseSide("?_mode=claude", true)).toEqual({ open: true, mode: "claude" });
+  });
+});
+
 // THE FILE'S OWN GATE, and the second flash `defaultSide` has to dodge. An own
 // conditional companion counts as SETTLED for the split's existence — that
 // asymmetry with the borrowed entry is deliberate and argued in the module header —

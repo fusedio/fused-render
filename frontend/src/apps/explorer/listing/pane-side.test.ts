@@ -78,6 +78,29 @@ describe("parsePaneSide", () => {
   });
 });
 
+// THE SESSION'S HIDDEN FLAG (`lib/side-hidden-store.ts`), the folder half of the
+// same rule `preview-side.test.ts` pins for the file view. `hidden` is a plain
+// parameter, not a store import — Listing.tsx is what reads the store.
+describe("parsePaneSide with the session's hidden flag", () => {
+  test("defaults to false, so every call above still opens", () => {
+    expect(parsePaneSide(null)).toEqual({ open: true, mode: null });
+  });
+
+  test("keeps a silent `_side` shut when the flag is set", () => {
+    expect(parsePaneSide(null, true)).toEqual({ open: false, mode: null });
+    // An unknown value is silent too — it already fell back to "no choice"
+    // above, so it falls the rest of the way to "shut" under the flag.
+    expect(parsePaneSide("notes", true)).toEqual({ open: false, mode: null });
+    expect(parsePaneSide("", true)).toEqual({ open: false, mode: null });
+  });
+
+  test("lets an explicit `_side` win over the flag, either direction", () => {
+    expect(parsePaneSide("git", true)).toEqual({ open: true, mode: "git" });
+    expect(parsePaneSide(PANE_SIDE_OFF, true)).toEqual({ open: false, mode: null });
+    expect(parsePaneSide(PANE_SIDE_OFF, false)).toEqual({ open: false, mode: null });
+  });
+});
+
 // Round-tripping, and which state gets the CLEAN url.
 describe("paneSideParam", () => {
   test("open with NO CHOICE writes nothing — the clean URL (PT-9)", () => {

@@ -78,6 +78,7 @@ import {
   type PaneSideChoice,
   type PaneSideState,
 } from "@apps/explorer/listing/pane-side";
+import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
@@ -301,7 +302,10 @@ export default function Listing({
   // not; and because the reopening half of the affordance has to render while
   // the pane does not exist at all (see the search row below).
   const [sideState, setSideState] = useState<PaneSideState>(() =>
-    parsePaneSide(paneEnabled ? new URLSearchParams(location.search).get("_side") : null)
+    parsePaneSide(
+      paneEnabled ? new URLSearchParams(location.search).get("_side") : null,
+      getSideHidden()
+    )
   );
   // Both companions' entries come from the OPEN FOLDER, resolved through the
   // ordinary stat + condition machinery (lib/dir-mode — which caches per
@@ -350,9 +354,15 @@ export default function Listing({
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
   // shell handed a column by something else (`paneEnabled` above), and neither
   // owns the address bar it happens to be inside of.
+  //
+  // Same gate on the session's hidden flag (`lib/side-hidden-store.ts`): a
+  // snapshot or panel pane is not the addressable folder view either, so a close
+  // inside one must not shut every OTHER open folder/file's sidebar for the rest
+  // of the session.
   const setSide = (next: PaneSideState) => {
     setSideState(next);
     if (!paneEnabled) return;
+    setSideHidden(!next.open);
     const params = new URLSearchParams(location.search);
     const v = paneSideParam(next);
     if (v === null) params.delete("_side");
