@@ -249,7 +249,13 @@ export default function ClaudeMdSection({
           {data.files.map((f) => (
         <ListRow
           key={f.path}
-          name={f.name}
+          // The filename is CLAUDE.md on nearly every row — leading with it
+          // twenty-five times over is noise, not information, so the common
+          // case omits it and leans on the "local"/"global" pills instead. It
+          // stays for anything ELSE a discovery engine might turn up under
+          // that name (CLAUDE.local.md today), where it IS the fact that
+          // distinguishes the row.
+          name={f.name === "CLAUDE.md" ? undefined : f.name}
           nameMono
           pills={
             <>
@@ -258,12 +264,12 @@ export default function ClaudeMdSection({
               {f.scope === "global" && <Pill tone="on">global</Pill>}
             </>
           }
-          // The directory is what distinguishes one CLAUDE.md from another —
-          // the filename is the same on nearly all of them — so it is the
-          // secondary text, ellipsized from the LEFT (.cc-lrow-sub-path) so the
-          // project tail survives rather than the /Users/... head everyone
-          // shares. <bdi dir="ltr"> keeps its own characters in logical order
-          // inside that rtl container.
+          // The directory is the row's real subject now (.cc-lrow-sub-path
+          // reads at primary weight on this tab, not muted) — it's the one
+          // thing telling one row from another. Ellipsized from the LEFT so
+          // the project tail survives rather than the /Users/... head
+          // everyone shares; <bdi dir="ltr"> keeps its own characters in
+          // logical order inside that rtl container.
           secondary={<bdi dir="ltr">{f.dir}</bdi>}
           secondaryTitle={f.path}
           secondaryMono
