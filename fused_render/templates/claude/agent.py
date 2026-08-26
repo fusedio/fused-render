@@ -43,7 +43,7 @@ Actions:
           "turn": <int, how many turns have finished on this run so far>}
   main(action="steer", run_id=..., message=...) -> {"steered": bool, "error": ...}
       a follow-up message for a run `poll` reported as "persistent" — see
-      `_steer` and D497. Refused (not queued here) for anything else: a
+      `_steer` and D499. Refused (not queued here) for anything else: a
       one-shot run, a dead run, or an unknown run_id.
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
@@ -1801,7 +1801,7 @@ def _persistent_ok() -> bool:
     turn, over a FIFO, instead of the one-shot `-p` process this template has
     always spawned.
 
-    Env-gated while this is new — D497 has the probe writeup this is built
+    Env-gated while this is new — D499 has the probe writeup this is built
     from, and the short version is: the CLI has NO true mid-turn message
     injection (a message written to a live process while a turn is running is
     QUEUED BY THE CLI, not spliced into what's in flight), but the process
@@ -2064,7 +2064,7 @@ def _start(file: str, message: str, session_id: str, model: str,
         # would exit the instant the first message's write-then-close ran
         # (exactly the one-shot behaviour this whole path exists to avoid).
         # Verified empirically against both a bare `cat` and the real `claude`
-        # CLI before this was built on — see D497.
+        # CLI before this was built on — see D499.
         fifo_path = os.path.join(run_dir, "stdin.fifo")
         os.mkfifo(fifo_path, 0o600)
         # mkfifo's mode is filtered by umask like any other create, so a loose
@@ -2286,7 +2286,7 @@ def _steer(run_id: str, message: str) -> dict:
     plain stdin pipe (see `_persistent_ok`).
 
     Not true mid-turn injection — nothing here claims that, because the CLI
-    does not offer it (D497). If the run is mid-turn when this lands, the CLI
+    does not offer it (D499). If the run is mid-turn when this lands, the CLI
     QUEUES the message itself and starts it as its own turn the moment the
     current one's `result` row lands. A successful delivery is recorded in
     the run dir's `steered` file (`_steered_count`), which is what lets
@@ -3282,7 +3282,7 @@ def _poll(run_id: str, file: str = "") -> dict:
     # time this response reaches the page, the process is either dead or
     # dying.
     #
-    # ACCEPTED COST, decided deliberately rather than left unstated (D497):
+    # ACCEPTED COST, decided deliberately rather than left unstated (D499):
     # this kills a persistent run's process even if it started a BACKGROUND
     # task that has not finished — the one thing `done`'s `idle` alone cannot
     # tell apart from "genuinely nothing more is coming" is "a hook will wake

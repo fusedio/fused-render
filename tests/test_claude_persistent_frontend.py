@@ -1,6 +1,6 @@
 """The composer's half of persistent sessions (template.html): send-immediately
 over `steer` instead of the browser-side queue, and the `submitChat` race this
-work also had to close (see agent.py's `_steer`/`_persistent_ok` and D497).
+work also had to close (see agent.py's `_steer`/`_persistent_ok` and D499).
 
 Runs the page's REAL `submitChat` and `steerMessage` functions under node,
 over a small stubbed DOM/runtime — the same siting as
@@ -110,7 +110,7 @@ def test_steer_message_sends_the_steer_action_with_the_live_run_id():
 def test_a_successful_steer_keeps_the_users_message_on_screen():
     """The regression this closes (found in review): the old code removed
     the dashed bubble the instant the call resolved, with nothing rendered
-    in its place (D497's cumulative rendering has no separate bubble for a
+    in its place (D499's cumulative rendering has no separate bubble for a
     second turn) — so a SUCCESSFUL steer made the user's own words vanish.
     The bubble must stay, tracked in `pendingSteerEls`, until `pollLoop`
     sweeps it once the run truly finishes."""

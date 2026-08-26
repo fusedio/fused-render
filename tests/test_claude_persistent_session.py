@@ -2,7 +2,7 @@
 turn, and the two new actions built on top of it (`steer`, and `_cancel`'s new
 interrupt branch).
 
-Background — see D497 for the full probe writeup. The stock `claude -p` CLI
+Background — see D499 for the full probe writeup. The stock `claude -p` CLI
 has no true mid-turn injection: a message written to a live process's stdin
 while a turn is running is QUEUED BY THE CLI ITSELF and starts as its own
 separate turn the moment the current one's `result` row lands. What IS real
@@ -454,7 +454,7 @@ def test_a_persistent_run_that_is_truly_idle_gets_reaped(agent, tmp_path):
 def test_poll_does_not_finish_while_a_steered_turn_is_still_outstanding(
         agent, tmp_path):
     """The other half of the same fix, and the one that keeps a steered
-    message from silently vanishing (D497): if `_steer` has been told a
+    message from silently vanishing (D499): if `_steer` has been told a
     SECOND turn is coming, `done` must not go True (and the process must not
     be reaped) on the FIRST turn's `result` alone — the page's poll loop
     would abandon the run one row too early and nothing would be left
