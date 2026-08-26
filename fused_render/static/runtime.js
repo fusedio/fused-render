@@ -2331,6 +2331,36 @@
     }
   }
 
+  // A page must not START a background daemon merely by being rendered
+  // (D507, SPEC.md §46) — a card thumbnail or hover peek mounts `entry_html`
+  // live in a sandboxed iframe with scripts running (AppPreviewCard.tsx), and
+  // an `enable()` in a page's boot path would install a permanent daemon on a
+  // scroll-by or a hover, no click required. This is checkable HERE because
+  // the flag reaches this exact frame reliably: `thumbFrame`/`withPreviewFlag`
+  // stamp `_preview=1` onto the `/render?path=...` URL that IS this frame's
+  // own `src` (fused_render/server/routers/render.py echoes it straight back
+  // as the served document's own location), and `IS_THUMBNAIL` above already
+  // climbs same-origin ancestors for the nested case. `enable()`/`restart()`
+  // obviously spawn; `call()` is in scope too — engine_forward.py's
+  // `_forward` heals a dead-but-enabled child back to life on ANY proxied
+  // call, so a preview render that calls `call()` against an app enabled in
+  // some other session can resurrect its daemon exactly like `enable()`
+  // would. `status()` is deliberately left open (read-only — and the
+  // pattern the rejection below points authors at); so are `stop()` and
+  // `disable()` — they only ever turn a daemon OFF, and gating them here
+  // would let a preview do the one thing worse than starting a daemon: kill
+  // a real user's daemon just because their card scrolled past.
+  function _daemonRejectPreview(method) {
+    return Promise.reject(new Error(
+      `fused.daemon.${method}: refused — this page is rendering as a preview ` +
+      "thumbnail (a card peek or hover, not a real open), and a page must " +
+      "never start a background daemon just by being displayed or hovered. " +
+      "Call fused.daemon.status() on load to read state, and call " +
+      "enable()/restart() only from an explicit user action, e.g. a " +
+      "button's click handler."
+    ));
+  }
+
   function _daemonPost(path, marksRunning) {
     return fetch(path, {
       method: "POST",
@@ -2367,6 +2397,7 @@
   }
 
   function daemonEnable() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("enable");
     return _daemonPost("/api/apps/background/enable", true);
   }
 
@@ -2379,10 +2410,12 @@
   }
 
   function daemonRestart() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("restart");
     return _daemonPost("/api/apps/background/restart", true);
   }
 
   function daemonCall(path, body) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
     const doCall = () =>
       fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
         method: "POST",

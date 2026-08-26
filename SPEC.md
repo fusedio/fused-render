@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9802,6 +9802,41 @@ background apps are the third.
   the server (a tray icon, a CLI) must go through `stop()`/`disable()` (the
   D505 client, from inside the daemon, is exactly this), not a direct
   process kill.
+- **A page must not spawn a daemon merely by being rendered (D507).**
+  `AppPreviewCard`'s live thumbnail (Home's app strip, the `/apps` hub — the
+  card mounts an app's own `entry_html` live and sandboxed
+  `allow-scripts allow-same-origin` whenever it has no `preview.png`, or on
+  hover for ANY app) is not an
+  "open"; `fused.daemon.enable()` unconditionally on page load used to fire
+  on every such peek regardless (the OpenWhisper bug this whole feature
+  documents in its skill). Enforced in `static/runtime.js` now, not just
+  documented: `thumbFrame`/`withPreviewFlag`
+  (`frontend/src/platform/lib/thumb-frame.ts`, `router.ts`'s `PREVIEW_PARAM`)
+  stamp `_preview=1` onto the `/render?path=...` URL that becomes the
+  thumbnail iframe's own `src`, and `GET /render` (`server/routers/render.py`)
+  serves the app's HTML at exactly that URL with no redirect — so the flag
+  lands in the rendered page's own `location.search`, reliably, not merely
+  inherited from an ancestor. `runtime.js` already computed this fact for the
+  focus contract (`IS_THUMBNAIL`, mirroring `router.IS_PREVIEW`/
+  `ancestorIsPreview`); `enable()`, `restart()`, and `call()` now check it
+  before making any request and reject with a named `Error` — no silent
+  no-op — pointing the author at `status()` on load and an explicit user
+  action for `enable()`/`restart()`. `call()` is in scope despite never
+  itself calling `ensure_background`: `engine_forward.py`'s heal-on-proxy
+  path (the D505 entry above, `_forward` at lines ~216-222) respawns a
+  dead-but-enabled child on ANY proxied call, so an unguarded `call()` from a
+  preview render could resurrect a daemon some other session had enabled.
+  `status()`, `stop()`, and `disable()` are deliberately NOT gated on the
+  flag: `status()` is read-only, and `stop()`/`disable()` only ever turn a
+  daemon off — a preview must never be able to turn a real user's daemon off
+  either, so leaving them reachable in preview is required, not an
+  oversight. This is a client-side guard, addressing a careless app (the
+  verified hazard), not a server-side one: the flag is confirmed to reach
+  the app's own frame directly, so the check belongs where the calls
+  themselves originate; a page willing to bypass `runtime.js` and call the
+  underlying `fetch("/api/apps/background/enable", ...)` directly was never
+  something this guard (or any single function-level guard) could stop, and
+  that bypass is unrelated to preview rendering specifically.
 - **Sequenced-after, deliberately absent here**: the OpenWhisper port this
   feature exists to support, macOS start-at-login, and any widget surface
   for a background app.
