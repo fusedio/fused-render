@@ -92,14 +92,26 @@ def install_argv() -> tuple:
 
 
 def update_argv(path: str) -> tuple:
-    """(argv, display) for `claude update` on an already-resolved binary.
+    """(cmd, display) for `claude update` on an already-resolved binary.
 
     Takes the resolved path rather than the bare name so this updates the CLI
     the app actually spawns — on a machine with two installs, `claude` on the
     PATH and the one we resolved are not always the same file, and updating the
     other one would leave the app on the old version reporting success.
+
+    THROUGH `_probe_cmd`, WHICH IS NOT A DETAIL ON WINDOWS. npm installs `claude`
+    as a `.cmd` shim, which `CreateProcess` cannot run — only cmd.exe can — and
+    npm is one of the two methods `update_plan` calls self-updating, so this is
+    precisely the install type the Update button is offered for. Spawning the
+    shim as a raw argv list raises OSError on every Windows npm install, i.e.
+    the button would be broken for the users it exists to serve. `claude_health`
+    already solved this for its own probes; reusing it is what keeps the spawn
+    and the probe agreeing about how to start the same file.
+
+    So `cmd` is an argv LIST normally and one command STRING behind a shim; the
+    caller passes `shell=` accordingly.
     """
-    return ([path, "update"], "claude update")
+    return (claude_health._probe_cmd(path, "update"), "claude update")
 
 
 # --- the single record --------------------------------------------------------
@@ -110,11 +122,13 @@ _state: dict = {"action": None, "state": "idle", "detail": "", "output": "",
                 "finished_at": None}
 
 
-def _publish(**fields) -> None:
-    """Update the record and mirror it into the job registry. Never raises."""
-    with _lock:
-        _state.update(fields)
-        snapshot = dict(_state)
+def _report(snapshot: dict) -> None:
+    """Mirror one record into the job registry. Never raises.
+
+    Takes an already-taken snapshot rather than reading `_state` itself, so it
+    can be called from inside and outside the lock — `start` claims the slot and
+    reports the claim it made, not whatever the record says a moment later.
+    """
     try:
         state = snapshot["state"]
         jobs.upsert({
@@ -129,6 +143,14 @@ def _publish(**fields) -> None:
         }, server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the work
         logger.debug("could not report the Claude Code %s job", snapshot["action"])
+
+
+def _publish(**fields) -> None:
+    """Update the record and mirror it into the job registry. Never raises."""
+    with _lock:
+        _state.update(fields)
+        snapshot = dict(_state)
+    _report(snapshot)
 
 
 def status() -> dict:
@@ -148,20 +170,39 @@ def running() -> bool:
         return _state["state"] == "running"
 
 
-def _run(action: str, argv, display: str) -> None:
-    """The worker body: spawn, drain, re-probe. Never raises out of the thread."""
+def _child_env() -> dict:
+    """The environment for the installer or updater.
+
+    Two edits to our own. **PYTHONHOME/PYTHONPATH are stripped**: the packaged
+    app runs a bundled interpreter and exports both, and a child that inherits
+    them and is not that interpreter dies before it starts. **PATH is
+    augmented** with the known install dirs, for the same reason every probe in
+    `claude_health` runs that way — the CLI is a program that has to find its own
+    runtime, and a GUI-launched app's stripped PATH is as short of `node` as it
+    is of `claude`.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONHOME", "PYTHONPATH")}
+    env["PATH"] = claude_health.augmented_path()
+    return env
+
+
+def _run(action: str, cmd, display: str) -> None:
+    """The worker body: spawn, drain, re-probe. Never raises out of the thread.
+
+    `cmd` is an argv list, or — behind a Windows `.cmd` shim — one command
+    string for the cmd.exe hop (see `update_argv`). `shell=` follows from which.
+    """
     tail: list = []
+    timed_out = threading.Event()
     try:
         proc = subprocess.Popen(
-            argv,
+            cmd,
+            shell=isinstance(cmd, str),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
-            # The installer needs the network and a HOME; it does NOT need this
-            # process's Python identity, which would follow a bundled
-            # interpreter into a child that is not it.
-            env={k: v for k, v in os.environ.items()
-                 if k not in ("PYTHONHOME", "PYTHONPATH")},
+            env=_child_env(),
             **claude_health.SUBPROCESS_KWARGS,
         )
     except (OSError, ValueError) as exc:
@@ -169,7 +210,24 @@ def _run(action: str, argv, display: str) -> None:
                  finished_at=time.time())
         return
 
-    deadline = time.time() + TIMEOUT_S
+    # A WATCHDOG, NOT A DEADLINE CHECKED BETWEEN LINES. The check used to live
+    # inside the drain loop, which meant it could only fire when the child said
+    # something — and `curl -fsSL` is silent by construction. A download that
+    # stalled produced no line, so the loop blocked in `read()` forever, the
+    # timeout never ran, and the record stayed `running` for the life of the
+    # process, refusing every later install and update. The kill has to come
+    # from a timer that is not waiting on the child's own output.
+    def _expire() -> None:
+        timed_out.set()
+        try:
+            proc.kill()  # unblocks the read below, which then sees EOF
+        except OSError:
+            pass
+
+    watchdog = threading.Timer(TIMEOUT_S, _expire)
+    watchdog.daemon = True
+    watchdog.start()
+
     try:
         for line in proc.stdout or ():
             line = line.rstrip("\n")
@@ -177,23 +235,21 @@ def _run(action: str, argv, display: str) -> None:
                 tail.append(line)
                 del tail[:-_OUTPUT_TAIL_LINES]
                 _publish(detail=line[:200], output="\n".join(tail))
-            if time.time() > deadline:
-                proc.kill()
-                _publish(state="error", finished_at=time.time(),
-                         output="\n".join(tail),
-                         error=f"the {action} took longer than {TIMEOUT_S // 60} minutes "
-                               "and was stopped")
-                return
-        code = proc.wait(timeout=max(1.0, deadline - time.time()))
+        code = proc.wait(timeout=30)
     except subprocess.TimeoutExpired:
-        proc.kill()
-        _publish(state="error", finished_at=time.time(), output="\n".join(tail),
-                 error=f"the {action} took longer than {TIMEOUT_S // 60} minutes "
-                       "and was stopped")
-        return
+        _expire()
+        code = -1
     except OSError as exc:
         _publish(state="error", finished_at=time.time(), output="\n".join(tail),
                  error=f"the {action} failed while running: {exc}")
+        return
+    finally:
+        watchdog.cancel()
+
+    if timed_out.is_set():
+        _publish(state="error", finished_at=time.time(), output="\n".join(tail),
+                 error=f"the {action} took longer than {TIMEOUT_S // 60} minutes "
+                       "and was stopped")
         return
 
     text = "\n".join(tail)
@@ -237,6 +293,7 @@ def start(action: str = "install") -> dict:
     """
     if action not in ACTIONS:
         raise InstallError(f"action must be one of {', '.join(ACTIONS)}")
+    # An early, friendly refusal. NOT the guard — see the claim below.
     with _lock:
         if _state["state"] == "running":
             raise InstallError(
@@ -265,11 +322,37 @@ def start(action: str = "install") -> dict:
                 + (f" Run `{plan['command']}` instead." if plan["command"] else ""))
         argv, display = update_argv(path)
 
-    _publish(action=action, state="running", detail="Starting…", output="",
-             error=None, command=display, started_at=time.time(), finished_at=None)
-    threading.Thread(target=_run, args=(action, argv, display), daemon=True,
+    # THE ACTUAL GUARD, and it has to be one operation. The check above releases
+    # the lock before the resolve/plan work above, so two concurrent
+    # POST /api/claude/install calls — which FastAPI runs on a threadpool, so
+    # genuinely at once — could both pass it and both spawn an installer over
+    # the same files. Re-testing the state in the SAME critical section that
+    # claims it is what makes "one at a time" true rather than likely.
+    with _lock:
+        if _state["state"] == "running":
+            raise InstallError(
+                f"a Claude Code {_state['action']} is already running")
+        _state.update(action=action, state="running", detail="Starting…",
+                      output="", error=None, command=display,
+                      started_at=time.time(), finished_at=None)
+        claimed = dict(_state)
+    _report(claimed)  # mirrored to the job registry outside the lock
+
+    # A CATCH-ALL AROUND THE WHOLE BODY. The slot is claimed now, so any escape
+    # from `_run` that did not publish a terminal state would leave the record
+    # `running` forever and refuse every later install — the same permanent
+    # wedge the watchdog exists to prevent, arriving by a different route.
+    def _guarded() -> None:
+        try:
+            _run(action, argv, display)
+        except BaseException as exc:  # noqa: BLE001 - a stuck record is worse
+            logger.exception("the Claude Code %s worker died", action)
+            _publish(state="error", finished_at=time.time(),
+                     error=f"the {action} stopped unexpectedly: {exc}")
+
+    threading.Thread(target=_guarded, daemon=True,
                      name=f"claude-{action}").start()
-    return status()
+    return claimed
 
 
 def reset() -> None:

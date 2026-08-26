@@ -10,11 +10,25 @@ boundary and the health re-probe is stubbed, so what is under test is the state
 machine and the guards, not the network.
 """
 import subprocess
+import threading
 import time
 
 import pytest
 
 from fused_render import claude_health, claude_install
+
+# Captured before any test can monkeypatch `claude_install.threading.Thread`
+# — that attribute lives on the SAME module object this file drives its own
+# threads with, so a fake installed there would swallow the test's threads too.
+_RealThread = threading.Thread
+
+
+def _FakeThread(**kw):
+    """A Thread stand-in that records the call and never runs anything."""
+    return type("T", (), {"start": lambda self: _FakeThread.calls.append(kw)})()
+
+
+_FakeThread.calls = []
 
 
 @pytest.fixture(autouse=True)
@@ -135,17 +149,19 @@ def test_update_is_refused_when_updates_are_switched_off(monkeypatch):
 
 
 def test_update_runs_on_a_native_install(monkeypatch):
-    started = []
+    planned = []
     monkeypatch.setattr(claude_health, "resolve",
                         lambda allow_shell=True: ("/home/u/.local/bin/claude", "candidate"))
     monkeypatch.setattr(claude_health, "executable", lambda p: True)
-    monkeypatch.setattr(claude_install.threading, "Thread",
-                        lambda **kw: type("T", (), {
-                            "start": lambda self: started.append(kw["args"])})())
+    real_update_argv = claude_install.update_argv
+    monkeypatch.setattr(claude_install, "update_argv",
+                        lambda path: planned.append(path) or real_update_argv(path))
+    monkeypatch.setattr(claude_install.threading, "Thread", _FakeThread)
     record = claude_install.start("update")
     assert record["state"] == "running"
     assert record["command"] == "claude update"
-    assert started[0][1] == ["/home/u/.local/bin/claude", "update"]
+    # Planned against the binary we RESOLVED, not a bare `claude` off the PATH.
+    assert planned == ["/home/u/.local/bin/claude"]
 
 
 def test_update_never_sources_the_login_shell(monkeypatch):
@@ -321,3 +337,142 @@ def test_doctor_endpoint_returns_the_parsed_report(monkeypatch):
     assert body["ok"] is True
     assert body["doctor"]["install_method"] == "native"
     assert body["doctor"]["warnings"][0]["fix"].startswith("Run: npm")
+
+
+# -- the four Bugbot findings on PR #879, each pinned ---------------------------
+
+
+def test_update_goes_through_the_cmd_hop_behind_a_windows_shim(monkeypatch):
+    """npm installs `claude` as a `.cmd` shim that CreateProcess cannot run, and
+    npm is one of the two methods `update_plan` calls self-updating — so this is
+    exactly the install type the Update button is offered for. A raw argv list
+    raised OSError on every Windows npm install, i.e. the button was broken for
+    the users it exists to serve."""
+    monkeypatch.setattr(claude_health.os, "name", "nt")
+    cmd, display = claude_install.update_argv(r"C:\Users\a\AppData\Roaming\npm\claude.cmd")
+    # A STRING, not a list: that is the cmd.exe hop, and `_run` passes shell=
+    # from exactly this distinction.
+    assert isinstance(cmd, str)
+    assert cmd == r'"C:\Users\a\AppData\Roaming\npm\claude.cmd" "update"'
+    assert display == "claude update"
+
+
+def test_update_stays_a_plain_argv_list_off_windows(monkeypatch):
+    monkeypatch.setattr(claude_health.os, "name", "posix")
+    cmd, _ = claude_install.update_argv("/home/u/.local/bin/claude")
+    assert cmd == ["/home/u/.local/bin/claude", "update"]
+
+
+def test_the_child_gets_the_augmented_path_so_it_can_find_its_own_runtime(monkeypatch):
+    """A GUI-launched app's stripped PATH is as short of `node` as it is of
+    `claude`, and the interpreter-identity vars must not follow a bundled Python
+    into a child that is not it."""
+    monkeypatch.setenv("PYTHONHOME", "/bundled")
+    monkeypatch.setenv("PYTHONPATH", "/bundled/lib")
+    env = claude_install._child_env()
+    assert "PYTHONHOME" not in env and "PYTHONPATH" not in env
+    assert env["PATH"] == claude_health.augmented_path()
+
+
+def test_a_silent_stall_is_killed_by_the_watchdog_not_left_running(monkeypatch):
+    """THE WEDGE THIS PREVENTS. The deadline used to be checked inside the drain
+    loop, so it could only fire when the child said something — and `curl -fsSL`
+    is silent by construction. A stalled download produced no line, the loop
+    blocked in read() forever, and the record stayed `running` for the life of
+    the process, refusing every later install and update."""
+    released = threading.Event()
+
+    class _SilentStall:
+        """Never yields a line until it is killed — a stalled download."""
+
+        def __init__(self):
+            self.killed = False
+            self.stdout = self
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            released.wait(5)
+            raise StopIteration
+
+        def wait(self, timeout=None):
+            return -9
+
+        def kill(self):
+            self.killed = True
+            released.set()
+
+    proc = _SilentStall()
+    monkeypatch.setattr(claude_install, "TIMEOUT_S", 0.2)
+    monkeypatch.setattr(claude_install.subprocess, "Popen", lambda *a, **k: proc)
+    monkeypatch.setattr(claude_health, "summary_refreshed", lambda: {"found": True})
+    claude_install._run("install", ["bash", "-c", "true"], "…")
+    rec = claude_install.status()
+    assert proc.killed is True
+    assert rec["state"] == "error"
+    assert "was stopped" in rec["error"]
+    # And crucially the slot is free again, so the next attempt is not refused.
+    assert claude_install.running() is False
+
+
+def test_two_concurrent_starts_only_ever_launch_one_worker(monkeypatch):
+    """`start` checked the state, released the lock, did the resolve/plan work,
+    and only then claimed the slot. FastAPI runs these on a threadpool, so two
+    overlapping POSTs could both pass the check and both spawn an installer over
+    the same files."""
+    spawned = []
+    at_the_gate = threading.Barrier(2, timeout=5)
+
+    def _slow_install_argv():
+        # Stand in for the resolve/plan work that used to happen with the lock
+        # released — both callers are inside this window at once.
+        at_the_gate.wait()
+        return ["bash", "-c", "true"], "…"
+
+    monkeypatch.setattr(claude_install, "install_argv", _slow_install_argv)
+    monkeypatch.setattr(claude_install.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: spawned.append(kw)})())
+
+    refused = []
+
+    def _go():
+        try:
+            claude_install.start("install")
+        except claude_install.InstallError:
+            refused.append(1)
+
+    threads = [_RealThread(target=_go) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert len(spawned) == 1
+    assert len(refused) == 1
+
+
+def test_a_worker_that_dies_unexpectedly_frees_the_slot(monkeypatch):
+    """The slot is claimed before the thread starts, so any escape from `_run`
+    that did not publish a terminal state would wedge the record `running`
+    forever — the same permanent block the watchdog exists to prevent, arriving
+    by a different route."""
+    captured = {}
+    monkeypatch.setattr(claude_install, "install_argv",
+                        lambda: (["bash", "-c", "true"], "…"))
+    monkeypatch.setattr(claude_install.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: captured.setdefault(
+                                "target", kw["target"])})())
+
+    def _explode(*a, **k):
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(claude_install, "_run", _explode)
+    claude_install.start("install")
+    assert claude_install.running() is True  # claimed
+    captured["target"]()                     # the worker body runs and dies
+    rec = claude_install.status()
+    assert rec["state"] == "error"
+    assert "stopped unexpectedly" in rec["error"]
+    assert claude_install.running() is False

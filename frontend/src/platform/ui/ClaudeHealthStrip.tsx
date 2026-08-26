@@ -266,6 +266,27 @@ export function ClaudeHealthStrip() {
     if (health?.doctor) setDoctor(health.doctor);
   }, [health]);
 
+  // RECOVER AN INSTALL THAT IS ALREADY RUNNING. The record lives on the server
+  // and outlives this component — Home and /apps both render the strip, and the
+  // shell tears one down on every navigation. Without this the remounted strip
+  // starts from `null`, never polls, shows no progress, and a second press of
+  // the button gets a 409 for an install the user cannot see.
+  //
+  // ONLY A RUNNING RECORD IS ADOPTED. A finished one from earlier in the
+  // session belongs to a problem that is already gone, and picking it up would
+  // render "Done" on a button whose issue is still on screen.
+  useEffect(() => {
+    getClaudeInstall().then(
+      (rec) => {
+        if (rec.state === "running") setInstall(rec);
+      },
+      () => {
+        /* Nothing to recover, or the server did not answer. Either way the
+           button still works — this is a recovery, not a prerequisite. */
+      },
+    );
+  }, []);
+
   // POLL ONLY WHILE SOMETHING IS RUNNING. An install outlives this component —
   // the user can navigate away and the download manager keeps showing it — so
   // the poll is tied to the record's state, not to the component's lifetime.

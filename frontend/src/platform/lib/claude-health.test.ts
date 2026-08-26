@@ -452,3 +452,15 @@ test("the strip polls only while an install is running, and re-probes when it en
 test("the strip discloses the command beside the button that runs it", () => {
   expect(STRIP).toContain("claude-health-action-cmd");
 });
+
+test("the strip recovers an install already running when it remounts", () => {
+  // Home and /apps both render this strip and the shell tears one down on every
+  // navigation. Starting from `null` with no fetch meant the remounted strip
+  // showed no progress and a second press got a 409 for an install the user
+  // could not see.
+  expect(STRIP).toContain("getClaudeInstall().then(");
+  // ONLY a running record is adopted: a finished one from earlier in the session
+  // belongs to a problem that is already gone, and picking it up would render
+  // "Done" on a button whose issue is still on screen.
+  expect(STRIP).toContain('if (rec.state === "running") setInstall(rec);');
+});
