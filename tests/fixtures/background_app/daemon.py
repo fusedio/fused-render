@@ -5,6 +5,15 @@ The contract reference for the authoring skill: stdlib-only, argv
 binds :0, publishes `{port, token}` to the status file, answers `/ping` with
 its version, and honors `/quit` for a graceful stop. Real background apps are
 free to serve whatever else they like on top of this.
+
+Also serves POST `/count` — a side-effecting endpoint (an in-memory counter)
+that is what `fused.app.call()` actually exercises: the runtime hardcodes
+POST, so a fixture with only `do_GET` (the original shape here) would answer
+every real `fused.app.call()` with a 501 and never actually get exercised by
+the JS API it is the reference implementation for. `/count`'s count is also
+what a retry-safety test reads: a re-sent POST (the exact failure a heal
+retrying an at-most-once call would cause) shows up as the counter advancing
+by more than the number of calls a test actually made.
 """
 import argparse
 import json
@@ -18,6 +27,13 @@ from urllib.parse import parse_qs, urlparse
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+
+#: Calls served by POST /count, process-wide (this fixture is single-process
+#: per spawn, so a plain module global plus a lock is enough — no need for the
+#: real thing's persistence).
+_count = 0
+_count_lock = threading.Lock()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -61,6 +77,29 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/quit":
             self._json(200, {"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
+            return
+        self._json(404, {"error": "not found"})
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if not self._authorized():
+            self._json(403, {"error": "forbidden"})
+            return
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length else b""
+        if path == "/count":
+            # The one side-effecting endpoint: fused.app.call("/count", body)
+            # hits this. Echoes the posted body back alongside the new count
+            # so a test can also confirm a POST body actually arrived intact.
+            global _count
+            with _count_lock:
+                _count += 1
+                count = _count
+            try:
+                echo = json.loads(raw) if raw else None
+            except ValueError:
+                echo = None
+            self._json(200, {"ok": True, "count": count, "echo": echo})
             return
         self._json(404, {"error": "not found"})
 

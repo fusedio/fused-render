@@ -11,6 +11,7 @@ import threading
 import time
 
 import pytest
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
 
 from fused_render import background_apps
@@ -555,8 +556,72 @@ def test_enable_through_the_api_reaches_the_fixture_daemon_via_proxy(
         assert proxied.status_code == 200
         assert proxied.json()["ok"] is True
 
+        # The documented client API (fused.app.call) hardcodes POST — this is
+        # what a real call from the runtime actually exercises, not just the
+        # GET path above. Code-review fix: the fixture used to answer every
+        # POST with a 501 (do_GET only), so this path was never under test.
+        called = client.post(f"/api/engines/{engine_id}/proxy/count",
+                             json={"n": 1}, headers=HDRS)
+        assert called.status_code == 200, called.text
+        body = called.json()
+        assert body["ok"] is True
+        assert body["count"] == 1
+        assert body["echo"] == {"n": 1}
+
         status = client.get("/api/apps/background/status", params={"html": html})
         assert status.json()["running"] is True
     finally:
         engine_host.stop(engine_id)
         background_apps.set_enabled(FIXTURE_APP, False)
+
+
+def test_proxy_marks_a_background_engine_at_most_once_on_post(client, monkeypatch):
+    # Code-review fix: a background app's proxied POST can run side-effecting
+    # daemon code (fused.app.call), the same shape as the warm /api/engine
+    # worker's own /call — which already guards a heal-restart from silently
+    # re-sending it via at_most_once=True. Pin the routing decision directly
+    # rather than relying on flaky real-network-failure simulation.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["at_most_once"] = at_most_once
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    bg_child = engine_host.Child(
+        engine_id="bg_pin", python=sys.executable, daemon="/d.py",
+        cache="c", version="v1", kind="background")
+    monkeypatch.setattr(engine_host, "current", lambda eid: bg_child)
+
+    resp = client.post("/api/engines/bg_pin/proxy/count", json={}, headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["at_most_once"] is True
+
+
+def test_proxy_does_not_mark_a_template_engine_at_most_once_on_post(client, monkeypatch):
+    # The other half of the same fix: a TEMPLATE daemon's POST traffic stays
+    # pooled/retry-friendly — the fix is scoped to background apps, not a
+    # blanket policy change for every engine kind.
+    from fused_render.server.routers import engines as engines_router_mod
+
+    captured = {}
+
+    async def fake_forward(engine_id, request, path, body, call_timeout=None,
+                           at_most_once=False):
+        captured["at_most_once"] = at_most_once
+        return Response(content=b"{}", status_code=200,
+                        media_type="application/json")
+
+    monkeypatch.setattr(engines_router_mod, "_forward", fake_forward)
+    template_child = engine_host.Child(
+        engine_id="map_tiles", python=sys.executable, daemon="/d.py",
+        cache="c", version="v1", kind="template")
+    monkeypatch.setattr(engine_host, "current", lambda eid: template_child)
+
+    resp = client.post("/api/engines/map_tiles/proxy/describe", json={}, headers=HDRS)
+    assert resp.status_code == 200
+    assert captured["at_most_once"] is False
