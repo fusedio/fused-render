@@ -1,5 +1,14 @@
 """CLAUDE.md explorer (claude-md.md).
 
+UI removed in the Claude config redesign's round 2 ("MD Files" tab deleted
+outright — frontend/src/apps/claude_config/ClaudeConfig.tsx no longer lists
+it, and api.ts's `claudeMd` wrapper is gone). This module and its
+server/routers/claude_config.py registration are kept live on purpose —
+deleting backend surface was judged beyond what that redesign asked for, and
+is a call for a human to make, not a follow-on cleanup. Its only exerciser
+now is tests/test_claude_config_api.py, calling `main()` directly; there is
+no `callModule("claude_md", ...)` left anywhere in frontend/src.
+
 Finds every CLAUDE.md-family file on the machine and lets the page preview,
 edit, and delete them. Discovery unions three sources, because no single one
 sees everything:
