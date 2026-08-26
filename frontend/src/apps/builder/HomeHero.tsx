@@ -366,6 +366,9 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
       if (alive.current) {
         setError((e as Error).message);
         setPhase(back);
+        // The row remounts on the way back; put the caret where it was so
+        // Escape / a corrected name work without a click first.
+        if (back === "askName") requestAnimationFrame(() => nameRef.current?.select());
       }
     }
   };
