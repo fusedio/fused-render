@@ -369,22 +369,28 @@
     font-weight: 620;
   }
 
-  /* format chips — one scrolling line beneath the panel, no tile */
-  .fmts {
-    display: flex; gap: 8px; margin-top: var(--s3);
-    overflow-x: auto; padding-bottom: 4px; scrollbar-width: none;
+  /* --- formats: a slow marquee band of extensions --- */
+  .fmt-band {
+    margin-top: var(--s3); padding: var(--s3) 0;
+    border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
   }
-  .fmts::-webkit-scrollbar { display: none; }
-  .fmts li {
-    flex: none;
-    font: var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 0.02em;
-    padding: 8px 11px;
-    border: 1px solid var(--rule);
-    border-radius: var(--r-sm);
-    color: var(--ink-2);
+  .fmt-track { display: flex; width: max-content; }
+  html.anim .fmt-track { animation: fmt-slide 48s linear infinite; }
+  .fmt-band:hover .fmt-track, .fmt-band:focus-within .fmt-track { animation-play-state: paused; }
+  @keyframes fmt-slide { to { transform: translateX(-50%); } }
+  .fmt-track ul { display: flex; align-items: center; }
+  .fmt-track li {
+    font: 500 var(--t-sm)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+    padding: 0 var(--s3); white-space: nowrap;
+    border-right: 1px solid var(--rule);
   }
-  .fmts .rest { border-color: transparent; color: var(--ink-4); padding-left: 2px; }
+  .fmt-track li.rest {
+    color: var(--ink-4); text-transform: none; letter-spacing: 0.04em;
+  }
 
   /* ---------- §2 : the model bento ---------- */
   .flow {
@@ -1416,11 +1422,22 @@
       </div>
     </div>
 
-    <ul class="fmts" aria-label="Some of the file types Fused Render previews">
-      <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
-      <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
-      <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
-    </ul>
+    <!-- Marquee: doubled in markup so the loop is seamless with no JS. The
+         second copy is hidden from assistive tech. -->
+    <div class="fmt-band" role="group" aria-label="Some of the file types Fused Render previews">
+      <div class="fmt-track">
+        <ul>
+          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
+        </ul>
+        <ul aria-hidden="true">
+          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
+        </ul>
+      </div>
+    </div>
   </section>
 
   <section id="apps" hidden>
@@ -1956,6 +1973,64 @@
       render(cur);
       requestAnimationFrame(tick);
     })();
+  })();
+
+  // Scroll-reactive marquee: the format band drifts on its own and leans
+  // into the scroll — flick the page and the strip surges with you, then
+  // settles back to its base speed. One rAF owns the transform so the two
+  // motions never fight; it only runs while the band is on screen.
+  (function () {
+    var band = document.querySelector(".fmt-band");
+    var track = band && band.querySelector(".fmt-track");
+    if (!track || !document.documentElement.classList.contains("anim")) return;
+    if (!("IntersectionObserver" in window)) return;
+
+    var owned = false;
+    function takeOver() {
+      if (owned) return;
+      owned = true;
+      track.style.animation = "none";
+    }
+
+    var half = 0, x = 0, base = 26, boost = 0, last = 0, raf = 0, hovered = false;
+    var lastScroll = window.scrollY;
+    function measureBand() { half = track.scrollWidth / 2; }
+    measureBand();
+    addEventListener("resize", measureBand, { passive: true });
+    addEventListener("load", measureBand);
+
+    addEventListener("scroll", function () {
+      var y = window.scrollY;
+      var d = y - lastScroll;
+      lastScroll = y;
+      boost = Math.max(-900, Math.min(900, boost + d * 9));
+    }, { passive: true });
+    band.addEventListener("pointerenter", function () { hovered = true; });
+    band.addEventListener("pointerleave", function () { hovered = false; });
+
+    function frame(t) {
+      raf = requestAnimationFrame(frame);
+      if (!last) { last = t; return; }
+      var dt = Math.min(0.05, (t - last) / 1000);
+      last = t;
+      boost *= Math.pow(0.0016, dt);
+      if (Math.abs(boost) < 0.5) boost = 0;
+      if (!half) { measureBand(); return; }
+      takeOver();
+      x -= (hovered ? 0 : base) * dt + boost * dt;
+      if (x <= -half) x += half;
+      if (x > 0) x -= half;
+      track.style.transform = "translate3d(" + x.toFixed(2) + "px,0,0)";
+    }
+    function start() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } }
+    function stop() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+    var io = new IntersectionObserver(function (e) {
+      e[0].isIntersecting && !document.hidden ? start() : stop();
+    }, { rootMargin: "120px 0px" });
+    io.observe(band);
+    document.addEventListener("visibilitychange", function () {
+      document.hidden ? stop() : (band.getBoundingClientRect().bottom > 0 && start());
+    });
   })();
 
   // Scroll fade-ins: sections drift up as they enter the viewport.
