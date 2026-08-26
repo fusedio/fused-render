@@ -293,92 +293,106 @@ def test_parse_params_is_none_for_garbage_or_absent_input():
 #: Two curated rows land WAY outside a sane `params x bpp` vs. `size_gb`
 #: band, for two DIFFERENT documented reasons — neither is "the parser is
 #: wrong" or "size_gb was wrong the catalog.py:52-58 way"; both are real,
-#: known limits of a table this narrow. Excluded from the strict band check
-#: below by id, not by ratio, so a FUTURE divergence on a DIFFERENT row
-#: still fails loudly rather than being silently swallowed by a wide band
-#: chosen to cover these two.
-#:
-#: `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", ratio ~2.57x):
-#: ternary/BitNet-style quantization is nominally ~1.58 bits/weight
-#: (log2(3)) — genuinely far below even `Q2_K`'s 0.37 bytes/param — and
-#: SPEC item 4's own table (the one this build was told to implement,
-#: `F32` down to `Q2_K` plus MLX/AWQ/GPTQ) has no ternary row at all, so
-#: `_quant_key` answers `None` and this falls to `DEFAULT_BYTES_PER_PARAM`
-#: (0.58, sized for ~4-bit quantization) — roughly 2.5x too high for a
-#: 2-bit-nominal scheme. catalog.py's own comment on this row independently
-#: confirms `size_gb` itself is trustworthy here ("6.1, not the 8.5 the
-#: Hub's file listing adds up to... this is what the completed download
-#: MEASURES on disk"), so the divergence is entirely the missing table
-#: entry, not a bad curated number. Extending `QUANT_BYTES_PER_PARAM` with
-#: a made-up ternary figure would be inventing a number SPEC item 4 did not
-#: ask for; the honest fix is a REPORTED gap, not a guessed row.
-#:
-#: `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", ratio ~0.28x):
-#: TWO compounding reasons. First, `"int8 (torchao)"` matches none of SPEC
-#: item 4's patterns either (`awq`/`gptq` are the only int8-shaped keys the
-#: table has, and this string names neither), so it falls to the same 0.58
-#: default rather than something int8-shaped (~1.0). Second, and more
-#: fundamentally: `params: "4B"` counts ONLY the diffusion transformer,
-#: while `size_gb: 8.2` is — per this exact row's own catalog.py comment —
-#: "the whole repo": the (unquantized) text encoder and VAE ride along in
-#: that byte count but are not counted in `params` at all. `params x bpp`
-#: models a SINGLE quantized checkpoint; a multi-component diffusion
-#: pipeline where `params` describes one component and `size_gb` describes
-#: the whole download is a scope mismatch this table was never going to
-#: get right, quant-table gap or not.
-_KNOWN_DIVERGENT_ROW_IDS = frozenset({
+#: Two curated rows had a `quantization` string the table has no row for
+#: ("Ternary 2-bit", "int8 (torchao)") — real, known gaps in
+#: `QUANT_BYTES_PER_PARAM` (see `_weight_bytes`'s own docstring for why
+#: neither gets a made-up bpp figure). `_weight_bytes` treats "quantization
+#: unrecognized" as a GENERAL property, not two special cases: an
+#: unrecognized row with a real `size_gb` uses it exactly rather than an
+#: unconditional (and, for these two, wildly wrong — 2.57x over and 0.28x
+#: under) `params x bpp` guess. The two ids below are referenced only to
+#: assert this build's own investigation stays true against a moving
+#: catalog, never to special-case them out of a check.
+_INVESTIGATED_UNRECOGNIZED_QUANT_ROW_IDS = frozenset({
     "prism-ml/Ternary-Bonsai-27B-mlx-2bit",
     "tonera/FLUX.2-klein-4B-int8-diffusers",
 })
 
 
-def test_params_times_bpp_is_within_reason_for_real_curated_rows():
-    """Not a synthetic fixture: every curated `catalog.py` row that has both
-    `params` and `quantization` (and whose `params` parses — the
-    "effective" rows are excluded on purpose, see `parse_params`'s own
-    docstring), checked that `parse_params(params) x quant_bytes_per_param
-    (quantization)` lands within a generous 60% relative band of the
-    curated `size_gb` — loose enough to allow for architecture overhead
-    (embeddings/lm_head/router — this table has no per-architecture term)
-    while still catching a WRONG bpp key or a badly wrong curated number,
-    which is what this test exists to catch, per the coordinator's request
-    that a large divergence be reported rather than smoothed over.
-
-    Two rows are known, explained exceptions — see
-    `_KNOWN_DIVERGENT_ROW_IDS`'s own comment — and are checked SEPARATELY
-    below by `test_the_two_known_divergent_rows_stay_exactly_as_documented`
-    rather than silently included in a band wide enough to hide them."""
+def _catalog_rows_with_params_quant_and_size():
     from fused_render.ai import catalog
 
-    divergent = []
-    checked = 0
     for models in catalog.SUGGESTIONS.values():
         for entry in models:
-            if entry.get("id") in _KNOWN_DIVERGENT_ROW_IDS:
-                continue
             params_str = entry.get("params")
             quant = entry.get("quantization")
             size_gb = entry.get("size_gb")
-            if not params_str or not quant or not size_gb:
-                continue
-            parsed = fit.parse_params(params_str)
-            if parsed is None:
-                continue
-            checked += 1
-            estimated_gb = parsed * fit.quant_bytes_per_param(quant) / fit.GB_BYTES
-            ratio = estimated_gb / size_gb
-            if not (0.4 <= ratio <= 1.6):
-                divergent.append((entry["id"], params_str, quant, size_gb,
-                                  estimated_gb, ratio))
-    assert checked >= 13, "expected the real catalog to have at least this many parseable rows"
-    assert not divergent, f"rows outside a sane band: {divergent}"
+            if params_str and quant and size_gb:
+                yield entry, params_str, quant, size_gb
 
 
-def test_the_two_known_divergent_rows_stay_exactly_as_documented():
-    """Regression lock on the two findings `_KNOWN_DIVERGENT_ROW_IDS`
-    documents — if either ratio moves, the underlying catalog row or this
-    module's tables changed and the finding needs re-reading, not a wider
-    band."""
+def test_a_recognized_quant_row_diverging_badly_fails_loudly():
+    """Not a synthetic fixture: every curated `catalog.py` row whose
+    `quantization` string IS RECOGNISED in `QUANT_BYTES_PER_PARAM` (and
+    whose `params` parses — the "effective" rows are excluded on purpose,
+    see `parse_params`'s own docstring) gets an INDEPENDENT `params x bpp`
+    estimate from `_weight_bytes`, checked here against a generous 60%
+    relative band of the curated `size_gb` — loose enough to allow for
+    architecture overhead (embeddings/lm_head/router — this table has no
+    per-architecture term) while still catching a WRONG bpp key or a badly
+    wrong curated number, which is what this test exists to catch, per the
+    coordinator's request that a large divergence be reported rather than
+    smoothed over.
+
+    An UNRECOGNIZED-quant row is deliberately not checked here: per
+    `_weight_bytes`'s own rule, such a row's estimate now IS `size_gb`
+    (see `test_an_unrecognized_quant_row_uses_size_gb_exactly` below), so
+    checking it against `size_gb` would trivially always pass and prove
+    nothing about the table."""
+    divergent = []
+    checked = 0
+    for entry, params_str, quant, size_gb in _catalog_rows_with_params_quant_and_size():
+        if fit._quant_key(quant) is None:
+            continue
+        parsed = fit.parse_params(params_str)
+        if parsed is None:
+            continue
+        checked += 1
+        weight_bytes = fit._weight_bytes(size_gb, params_str, quant)
+        assert weight_bytes is not None
+        ratio = (weight_bytes / fit.GB_BYTES) / size_gb
+        if not (0.4 <= ratio <= 1.6):
+            divergent.append((entry["id"], params_str, quant, size_gb, ratio))
+    assert checked >= 10, "expected the real catalog to have at least this many recognized-quant rows"
+    assert not divergent, f"recognized-quant rows outside a sane band: {divergent}"
+
+
+def test_an_unrecognized_quant_row_uses_size_gb_exactly():
+    """The general rule: a defaulted (unrecognized) `quantization` string
+    carries no evidentiary basis for a bytes-per-param figure, so
+    `_weight_bytes` must not let `params x DEFAULT_BYTES_PER_PARAM`
+    override a real, curated `size_gb` — this is a property of EVERY such
+    row, not two by-id special cases. Checked against every real curated
+    row with an unrecognized quant string and a `size_gb`, and asserted to
+    include (not just allow) the two rows this build's own investigation
+    found diverging under the old, unconditional rule."""
+    seen_investigated_ids = set()
+    checked = 0
+    for entry, params_str, quant, size_gb in _catalog_rows_with_params_quant_and_size():
+        if fit._quant_key(quant) is not None:
+            continue
+        checked += 1
+        weight_bytes = fit._weight_bytes(size_gb, params_str, quant)
+        assert weight_bytes == pytest.approx(size_gb * fit.GB_BYTES), (
+            f"{entry['id']}: an unrecognized quant string must fall back to "
+            f"size_gb exactly, not a defaulted params x bpp guess")
+        if entry["id"] in _INVESTIGATED_UNRECOGNIZED_QUANT_ROW_IDS:
+            seen_investigated_ids.add(entry["id"])
+    assert checked >= 5, "expected the real catalog to have at least this many unrecognized-quant rows"
+    assert seen_investigated_ids == _INVESTIGATED_UNRECOGNIZED_QUANT_ROW_IDS, (
+        "the two rows this build's investigation found diverging must still "
+        "be present in the catalog and still have an unrecognized quant "
+        "string — if this fails, the finding needs re-reading, not deleting")
+
+
+def test_the_two_investigated_rows_snap_back_to_their_curated_size():
+    """Regression lock, by NAME, on the two concrete before/after figures
+    the coordinator asked to see reported: `parse_params(params) x
+    quant_bytes_per_param(quantization)` (the OLD, unconditional formula)
+    still computes the wildly-wrong numbers this investigation found —
+    proving the gap is real and not an artifact of this test's own
+    arithmetic — while `_weight_bytes` (what `fit.verdict` actually calls)
+    now answers `size_gb` exactly for both."""
     from fused_render.ai import catalog
 
     by_id = {entry["id"]: entry
@@ -387,20 +401,20 @@ def test_the_two_known_divergent_rows_stay_exactly_as_documented():
     ternary = by_id["prism-ml/Ternary-Bonsai-27B-mlx-2bit"]
     ternary_params = fit.parse_params(ternary["params"])
     assert ternary_params is not None
-    ternary_estimate_gb = (ternary_params
-                           * fit.quant_bytes_per_param(ternary["quantization"])
-                           / fit.GB_BYTES)
-    assert ternary_estimate_gb == pytest.approx(15.66, abs=0.01)
-    assert ternary["size_gb"] == 6.1  # ~2.57x over — see the comment above
+    old_formula_gb = (ternary_params * fit.quant_bytes_per_param(ternary["quantization"])
+                      / fit.GB_BYTES)
+    assert old_formula_gb == pytest.approx(15.66, abs=0.01)  # ~2.57x over size_gb
+    fixed = fit._weight_bytes(ternary["size_gb"], ternary["params"], ternary["quantization"])
+    assert fixed == pytest.approx(6.1 * fit.GB_BYTES)  # == size_gb, not 15.66GB
 
     flux = by_id["tonera/FLUX.2-klein-4B-int8-diffusers"]
     flux_params = fit.parse_params(flux["params"])
     assert flux_params is not None
-    flux_estimate_gb = (flux_params
-                        * fit.quant_bytes_per_param(flux["quantization"])
-                        / fit.GB_BYTES)
-    assert flux_estimate_gb == pytest.approx(2.32, abs=0.01)
-    assert flux["size_gb"] == 8.2  # ~0.28x under — see the comment above
+    old_formula_gb = (flux_params * fit.quant_bytes_per_param(flux["quantization"])
+                      / fit.GB_BYTES)
+    assert old_formula_gb == pytest.approx(2.32, abs=0.01)  # ~0.28x under size_gb
+    fixed = fit._weight_bytes(flux["size_gb"], flux["params"], flux["quantization"])
+    assert fixed == pytest.approx(8.2 * fit.GB_BYTES)  # == size_gb, not 2.32GB
 
 
 # -- SPEC AI-19 item 5: KV cache term -----------------------------------------------

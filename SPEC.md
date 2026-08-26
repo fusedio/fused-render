@@ -8644,7 +8644,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   constant, a quantization-aware weight-size table, a KV-cache term, and
   VRAM-vs-RAM pool selection with a run-mode concept — and the old
   `EASY_FRACTION = 0.6` cliff is replaced by a continuous Gaussian fit
-  score** (D519, D520). One coherent change confined to the `download` rung's
+  score** (D519, D520, D521). One coherent change confined to the `download` rung's
   arithmetic: `measured` (**AI-16a**) and `declared` (a curator's
   `resident_gb`) are already real, observed numbers, so none of the four
   additions below touches either — only `download`, this module's one
@@ -8678,23 +8678,43 @@ an AI Models page that could say what was on disk but not what was *running*.
   because nothing had ever multiplied a real parameter count by a real
   per-format byte cost.
 
+  **A derived `params x bpp` estimate does not outrank a real `size_gb`
+  when the quantization string was NOT recognized** (D520 addendum): the
+  first version of this wiring let `params x bpp` win unconditionally, and
+  a real, curated `size_gb` was overridden by a bytes-per-param figure with
+  no evidentiary basis whenever `_quant_key` answered `None` and
+  `quant_bytes_per_param` silently substituted `DEFAULT_BYTES_PER_PARAM`.
+  `_weight_bytes` now prefers the derived estimate only when the
+  quantization string IS recognized in `QUANT_BYTES_PER_PARAM`; an
+  unrecognized string with a real `size_gb` uses it exactly, and a
+  defaulted guess is used only when there is no `size_gb` at all — a guess
+  still beats nothing, but never beats a real number. Same "measured beats
+  guessed" precedence this module's own `measured`/`declared`/`download`
+  ladder is already built on, one level down.
+
   **Verified against real curated rows, not synthetic fixtures** — every
-  `catalog.py` row with both `params` and `quantization` was checked, and
-  `params x bytes_per_param` lands within a generous 60% band of the
-  curated `size_gb` for all but two, both explained rather than smoothed
-  into a wider band: `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary
-  2-bit", estimate 15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x
-  over) — ternary/BitNet quantization (~1.58 bits/weight nominal) has no
-  row in SPEC item 4's own table, so it falls to the ~4-bit-sized default;
-  and `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
+  `catalog.py` row with both `params` and `quantization` was checked.
+  Before the fix above, `params x bytes_per_param` landed within a
+  generous 60% band of the curated `size_gb` for all but two:
+  `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", estimate
+  15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x over) —
+  ternary/BitNet quantization (~1.58 bits/weight nominal) has no row in
+  SPEC item 4's own table, so it fell to the ~4-bit-sized default; and
+  `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
   2.32GB vs. 8.2GB, ~0.28x under) — `"int8 (torchao)"` matches no table
   pattern either, AND `params: "4B"` counts only the diffusion transformer
   while `size_gb` is (per that row's own comment) the whole multi-component
-  pipeline including an unquantized text encoder and VAE, a scope mismatch
-  `params x bpp` was never going to model correctly. Neither is a wrong
-  `size_gb` the catalog.py:52-58 way; both are reported, known limits of a
-  bytes-per-param table this narrow, locked by their own regression test
-  rather than invented table rows.
+  pipeline including an unquantized text encoder and VAE. Neither is a
+  wrong `size_gb` the catalog.py:52-58 way — both are a defaulted-bpp
+  artifact of a table this narrow, not evidence about either checkpoint.
+  **After the precedence fix, both rows compute EXACTLY `size_gb`**
+  (`_weight_bytes` now returns `6.1GB` and `8.2GB` respectively, not
+  `15.66GB`/`2.32GB`), and the 10 recognized-quant rows that were already
+  within band are unaffected (their quant strings match the table, so
+  their precedence is unchanged). Neither divergence was a table row
+  invented after the fact; both are reported, known gaps, locked by a
+  regression test asserting the general rule (an unrecognized-quant row
+  uses `size_gb` exactly) rather than two by-id special cases.
 
   **A KV-cache term**, `2 x n_kv_heads x head_dim x ctx x bytes_per_element
   x n_full_attention_layers`, at a fixed **8192-token** estimation context

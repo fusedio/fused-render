@@ -1,5 +1,5 @@
 """Will this model FIT on this machine? — fused_render/ai/fit.py (SPEC AI-16,
-AI-16b, AI-16c, AI-19, D497, D519, D520).
+AI-16b, AI-16c, AI-19, D497, D519, D520, D521).
 
 `ai_runtime._fit_verdict` used to be handed `size_gb` and asked a memory
 question, which conflates two quantities that coincide only for a
@@ -279,17 +279,42 @@ def parse_params(params: float | int | str | None) -> float | None:
 def _weight_bytes(size_gb: float | None, params: float | str | None,
                   quantization: str | None) -> float | None:
     """The `download` rung's weight-size estimate — `params x bytes-per-
-    param` when a real parameter COUNT is known (parsed out of a free-text
-    `params` string via `parse_params` when `params` is one), else the old
-    plain `size_gb x GB_BYTES` reading unchanged, so a curated row whose
-    `params` cannot be parsed (or was never supplied) keeps exactly today's
-    behaviour (SPEC item 4's own closing line: "keep `size_gb` working as an
-    override/fallback")."""
+    param` when a real parameter COUNT is known AND the quantization string
+    was actually RECOGNISED in `QUANT_BYTES_PER_PARAM`, else the old plain
+    `size_gb x GB_BYTES` reading, so a curated row whose `params` cannot be
+    parsed (or was never supplied) keeps exactly today's behaviour (SPEC
+    item 4's own closing line: "keep `size_gb` working as an
+    override/fallback").
+
+    **A DEFAULTED bpp does not outrank a real `size_gb`.** `quant_bytes_per_
+    param` silently answers `DEFAULT_BYTES_PER_PARAM` for a quantization
+    string this table has no row for — a caller-facing convenience so the
+    function never returns nothing, but internally that default carries NO
+    evidentiary basis for what this specific checkpoint actually costs.
+    `size_gb`, when a curated row has one, is a REAL number (this build's
+    own verification confirmed it for both rows this rule was built to
+    catch — `prism-ml/Ternary-Bonsai-27B-mlx-2bit`'s catalog.py comment
+    states its 6.1GB is "what the completed download MEASURES on disk",
+    and `tonera/FLUX.2-klein-4B-int8-diffusers`'s is "the whole repo" per
+    Hub metadata). Preferring an unconditional `params x bpp` produced
+    15.66GB for the first (2.57x its real 6.1GB — pushes a machine's
+    verdict toward tight/no for a model that comfortably fits) and 2.32GB
+    for the second (0.28x its real 8.2GB — under-reports by 3.5x, the more
+    dangerous direction of the two). Both were a defaulted-bpp artifact,
+    not evidence about either checkpoint, and `size_gb` was right both
+    times — the same "measured beats guessed" precedence this module's own
+    `measured`/`declared`/`download` ladder is built on, one level down.
+
+    A defaulted guess is used ONLY when there is no `size_gb` to prefer —
+    a guess still beats nothing, but never beats a real number."""
+    valid_size_gb = size_gb if (isinstance(size_gb, (int, float))
+                                and not isinstance(size_gb, bool) and size_gb > 0) else None
     parsed = parse_params(params)
-    if parsed is not None and parsed > 0:
+    recognized = _quant_key(quantization) is not None
+    if parsed is not None and parsed > 0 and (recognized or valid_size_gb is None):
         return parsed * quant_bytes_per_param(quantization)
-    if isinstance(size_gb, (int, float)) and not isinstance(size_gb, bool) and size_gb > 0:
-        return size_gb * GB_BYTES
+    if valid_size_gb is not None:
+        return valid_size_gb * GB_BYTES
     return None
 
 
