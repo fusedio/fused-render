@@ -43,23 +43,40 @@
   flex-direction: column;
 }
 
+/* Tab strip on top, then the body — and THIS box is what scrolls, as one
+   page, header and tab strip included. USED TO be overflow:hidden with
+   .cc-main as the only scroll container underneath it (owner, 2026-08-26: "I
+   want the whole page to be scrollable" — .cc-main scrolled, the page did
+   not). It is still bounded to the viewport (flex:1 1 auto + min-height:0
+   inside #content, which chains up to #app's fixed 100vh — see base.css for
+   why #app itself never scrolls: overscroll-behavior-y on html/body exists
+   because an unconsumed wheel delta chaining to the DOCUMENT is what caused
+   the elastic-bounce lurch Akshil hit on 2026-08-20), so this is still an
+   INNER scroll region, not the literal document — just the outermost one
+   this route owns, matching how AI Models' own .cc-main already scrolls its
+   whole page (heading and tab strip included, AiModelsPage.tsx) rather than
+   only some inner pane. Reusing that same edge is what keeps this page
+   consistent with the rest of the shell instead of inventing a second way to
+   "make the document scroll" that fights base.css's own fix. */
 .cc-root {
   display: flex;
-  /* Tab strip on top, then the body — each of whose columns scrolls inside this
-     box rather than the page scrolling as a whole. */
   flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: var(--bg);
   font-size: 13px;
 }
 
+/* No longer its own bounded, clipped box: .cc-root is the scroll container
+   now, so this just lays .cc-main out and lets it grow to whatever height its
+   content needs — min-height:0/overflow:hidden here would do the opposite,
+   clipping content at exactly the viewport instead of letting the page
+   beneath it scroll to reach the rest. */
 .cc-body {
   display: flex;
   flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
 }
 
 /* -- header band ------------------------------------------------------------- */
@@ -248,37 +265,45 @@
 
 /* -- content column -------------------------------------------------------- */
 
-/* Single column, left-aligned, capped so a row never stretches across a wide
-   monitor (defect: full-bleed content at any window width). Not centred —
-   margin stays 0, matching the sidebar it sits beside rather than floating in
-   the middle of the remaining space. flex-basis 0 (not auto) so it grows to
-   fill .cc-body deterministically off its flex-grow alone. */
+/* Single column, left-aligned, full-bleed to whatever width .cc-body gives it.
+   USED TO be capped at 900px (.cc-main-capped) — gone (owner, 2026-08-26:
+   "what is that 900px thing? that is bad"). That cap already cost the AI
+   Models page once: it lives on this SHARED chassis class (AiModelsPage.tsx
+   stands on it too), and a 900px cap here squeezed the Playground tab into a
+   column with the page background showing all around it, which is what made
+   the cap an opt-in class in the first place rather than a property of
+   .cc-main itself. Removing the opt-in class is what the owner actually wants
+   gone, not a second attempt at picking a bigger number — every row on this
+   page already bounds its own measure where it needs to (.cc-row-meta's
+   100ch, .cc-lrow-sub's ellipsis), so the column has nothing left to protect
+   against by capping itself too.
+ *
+ * Not centred — margin stays 0, matching the sidebar it sits beside rather
+ * than floating in the middle of the remaining space. flex-basis 0 (not auto)
+ * so it grows to fill .cc-body deterministically off its flex-grow alone.
+ *
+ * No overflow-y here any more either — .cc-root is the scroll container now
+ * (below), so this box just grows to whatever height its content needs.
+ *
+ * overflow-x is `clip`, not `hidden` (code review, 2026-08-26): per the CSS
+ * overflow spec, a box with one axis non-visible computes ITS OTHER axis's
+ * `visible` to `auto` too — so `overflow-x: hidden` here silently made
+ * overflow-y `auto` as well, turning .cc-main back into a scroll container
+ * even though nothing sets overflow-y on it. That's invisible normally
+ * because .cc-main is height-bounded (flex:1 1 0% inside .cc-root's column)
+ * and so never actually grows a scrollbar — but .cc-toolbar's and .cc-index's
+ * `position: sticky` resolve against the nearest scroll container, which was
+ * silently THIS box instead of .cc-root, so they pinned against a box that
+ * happens to never scroll rather than against the page. `clip` keeps the same
+ * horizontal clamp without establishing a scrollport, so sticky escapes to
+ * .cc-root where the comment above already says it lives. */
 .cc-main {
   flex: 1 1 0%;
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: clip;
   padding: 24px 28px 40px;
-}
-
-/* The cap is Claude Config's, NOT .cc-main's: that class is the shared chassis
-   the AI Models page stands on too (AiModelsPage.tsx), and a 900px cap there
-   squeezed the Playground into a column with the page background showing all
-   around it (owner, 2026-08-26). So the cap is an opt-in class ClaudeConfig.tsx
-   puts on its own <main>. */
-.cc-main-capped {
-  max-width: 900px;
-}
-
-/* The list-bearing tabs (see WIDE_SECTIONS in ClaudeConfig.tsx) get more room
-   than Preferences: a 900px cap left roughly a third of a 1400px window
-   empty and more than half of a 2000px one. min() rather than a bare
-   1400px so a window narrower than that still just gets .cc-main's own
-   width:100% — this raises the ceiling, it doesn't set a floor. */
-.cc-main-wide {
-  max-width: min(1400px, 100%);
 }
 
 .cc-heading {
@@ -338,10 +363,14 @@
    controls travel together as one atomic flex item (.cc-toolbar-controls) and
    never break apart into a ragged stack — that was the defect (a filter input
    truncating its own placeholder as the row folded mid-control). */
-/* Sticky within .cc-main. .cc-index (Plugins' marketplace rail) is ALSO
-   sticky at top:0 in the same scroll container, offset below this box's
-   height — if this toolbar's height changes, that offset (.cc-index's
-   `top`) has to follow or the rail slides under this and disappears. */
+/* Sticky within .cc-root (the page's own scroll container — see .cc-root's
+   comment). top:0 still means what it always did: nothing else is sticky
+   above this on the page, so it pins to the very top of the scrollport once
+   the header and tab strip have scrolled past it, same as before .cc-root
+   became the scroller. .cc-index (Plugins' marketplace rail) is ALSO sticky
+   in the same scroll container, offset below this box's height — if this
+   toolbar's height changes, that offset (.cc-index's `top`) has to follow or
+   the rail slides under this and disappears. */
 .cc-toolbar {
   position: sticky;
   top: 0;
@@ -483,30 +512,9 @@
    of a machine's project groups — the single most destructive action on this
    page ended up its loudest and most repeated element. It is a plain
    .cc-iconbtn now (danger-tinted on hover, same as every other destructive
-   icon action in this app), and Commit (only rendered when the project has
-   drift to commit) joined it as a plain .cc-iconbtn too — both fade in the
-   same way .cc-lrow-actions' icons do: quiet at rest, reachable by keyboard
-   via :focus-within, visible outright with no hover to reveal them from.
-   Reveal-in-Finder alone stays permanently visible — it is informational,
-   not an act on the repo, so there's nothing to hide it FOR — which is why
-   this keys off :not(:first-child) rather than naming Clear and Commit each
-   by their own class: Reveal renders first unconditionally, so it is always
-   excluded regardless of which of the other two are present. */
-.cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
-}
-
-.cc-memgroup-head:hover .cc-memgroup-actions > .cc-iconbtn:not(:first-child),
-.cc-memgroup-head:focus-within .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-  opacity: 1;
-}
-
-@media (hover: none), (max-width: 640px) {
-  .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
-    opacity: 1;
-  }
-}
+   icon action in this app). It USED to fade in on hover as well; nothing on
+   this page does that any more (see .cc-lrow-actions), so a muted icon is what
+   keeps it quiet now. */
 
 /* A filesystem path is not a category name: it keeps its own casing and wraps. */
 .cc-group-path {
@@ -542,13 +550,30 @@
   border-bottom: 1px solid var(--border);
 }
 
-/* Label + doc, capped so a long documentation string stays a comfortable
-   measure rather than running the row's full width — the control column
-   below is what actually needs the row's remaining space. */
+/* Label + doc. USED TO be capped at 60ch on the theory that a long
+   documentation string should keep a comfortable reading measure and the
+   control column was what actually needed the row's remaining space — true
+   in isolation, but at full page width (the .cc-prefs wrapper that used to
+   bound this row is gone too, owner 2026-08-26: "make it use full width")
+   any fixed ch cap here stops growing before .cc-row-control's
+   right-anchored column (margin-left: auto) does, and that column's
+   auto-margin claims whatever gap is left over — so a cap doesn't just
+   shrink the void, it relocates it, at a width set by the cap rather than
+   by the viewport. Tried 100ch first: still a ~250px void at 1400px, the
+   width in question, because 100ch (~880px in this font) is well short of
+   the ~1050px actually available at that width once the row's own padding
+   and the control column are accounted for. No cap closes it at every
+   width without being unboundedly high, so it comes off entirely — meta now
+   grows to EXACTLY fill the row up to the control's left edge (the whole
+   point of it being the row's only growing flex item), zero void by
+   construction rather than by tuning a number to one width. Readability is
+   less at risk than a bare "no cap" reads: `doc` is refresh_catalog.py's
+   clean_doc output, already cut to one sentence, so there is no long-form
+   prose here to run edge-to-edge on an ultrawide monitor — verified live at
+   1400px and at the 640px stacked breakpoint below. */
 .cc-row-meta {
   flex: 1 1 auto;
   min-width: 0;
-  max-width: 60ch;
   padding-top: 3px;
 }
 
@@ -574,9 +599,28 @@
    <select>/<input> with no width of its own fill that second track; a
    fixed-size control (the switch) is pinned to the SAME left edge with
    justify-self below, rather than stretching or drifting to its own width. */
+
+/* margin-left: auto over .cc-row's own justify-content: space-between — this
+   is ONE child moving, not the row's whole justification, and space-between
+   would need a second opt-out the moment a row ever grew a third child (an
+   inline error, a badge) between meta and control, silently splitting them
+   apart instead of just sitting between two already-placed columns. Needed
+   once the 900px cap came off .cc-main (owner, 2026-08-26): capped, the row's
+   own width and .cc-row-meta's cap (60ch then, 100ch now — see that rule's
+   own comment) were close enough that this column landed near the right
+   edge anyway; uncapped, a wide row can still leave meta short of the row's
+   full width and this column stranded in the leftover space with no offset
+   in front of it. auto-margin still needs somewhere to draw that leftover FROM
+   — verified against the 640px block below, which switches the row to
+   column-flow and this control to width:100%: at that width the control
+   already fills the whole cross-axis track, so the auto margin would have
+   nothing left to pull from anyway. Reset explicitly there (`margin-left: 0`)
+   rather than leaning on that being incidentally true — a future edit to
+   this control's mobile width should not have to rediscover this. */
 .cc-row-control {
   flex: 0 0 240px;
   width: 240px;
+  margin-left: auto;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
@@ -668,6 +712,7 @@
 
   .cc-row-control {
     width: 100%;
+    margin-left: 0;
     grid-template-columns: 22px 1fr;
   }
 }
@@ -771,22 +816,25 @@
   gap: 1px;
   /* Sticks while the (much longer) list scrolls past it — offset below
      .cc-toolbar's own sticky top:0, not stacked on top of it. Both stick to
-     the SAME scroll container (.cc-main), so without this offset scrolling
-     slides this rail under the toolbar's opaque background and it vanishes.
-     70px = the toolbar's own height (32px .field-control/select, the
-     tallest thing it holds, + 10px top/bottom padding = 52) plus its 18px
-     margin-bottom before .cc-split begins. */
+     the SAME scroll container — .cc-root now (it used to be .cc-main; see
+     .cc-root's comment for why the scroller moved) — so without this offset
+     scrolling slides this rail under the toolbar's opaque background and it
+     vanishes. The number itself didn't move with the scroller: sticky offsets
+     are measured from the scrollport, not from the document, so this is still
+     just the toolbar's own rendered height regardless of which ancestor is
+     doing the scrolling. 70px = the toolbar's own height (32px
+     .field-control/select, the tallest thing it holds, + 10px top/bottom
+     padding = 52) plus its 18px margin-bottom before .cc-split begins. */
   position: sticky;
   top: 70px;
 }
 
-/* The header above the rail — same eyebrow weight as .cc-group-title, but
-   inline with a count on the right rather than standing alone above a group of
-   settings rows. */
+/* The header above the rail — the same eyebrow weight as .cc-group-title,
+   standing alone. It used to be a flex row with a count pushed to the right,
+   which gave it the exact silhouette of the clickable row beneath it (name
+   left, number right) and made a label look like a control. See the comment at
+   its call site for why the count went rather than the shape. */
 .cc-index-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 0 8px 6px;
   font-size: 11px;
   font-weight: 600;
@@ -852,49 +900,71 @@
   border-bottom: 1px solid var(--border);
 }
 
-/* A read-only marketplace's marker — see Icon's "lock" case for why this
-   replaced a Pill. Fixed-size and always visible (a fact, not an action), so
-   it can never be the thing that overflows the rail's 180px the way the pill
-   did. */
-.cc-index-lock {
+/* Add a marketplace: the action AFTER the list, not an entry in it. A .btn
+   here put a bordered box in a column whose whole premise is that it has no
+   borders and no surface (see .cc-index above), which made it the heaviest
+   thing on the rail — and sitting one 1px gap below the last marketplace, it
+   read as a sixth row that had somehow grown a border. Separated by space
+   rather than by a hairline: the rail already spends its one rule on the
+   divider under "All", and two rules in a 180px column is book-keeping.
+   It opens a DIALOG (the form never fitted the rail), so it has one label and
+   no open state — nothing here turns into a bare "Cancel" any more. */
+.cc-index-add {
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
   color: var(--fg-muted);
+  cursor: pointer;
 }
 
-.cc-index-lock .cc-icon {
-  width: 12px;
-  height: 12px;
+.cc-index-add:hover {
+  background: rgba(var(--tint), 0.06);
+  color: var(--fg);
 }
 
-/* Share/remove, per marketplace. Same fade-on-hover rule as .cc-lrow-actions —
-   quiet at rest, reachable by keyboard, visible outright on touch/narrow. */
-.cc-index-actions {
+.cc-index-add:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The row's one trailing slot, a fixed width whether its button is showing or
+   not. That constant is what puts the counts in a column: the filter button is
+   `flex: 1` beside it, so an equal trail means an equal button and one x for
+   every count down the rail. 26px is a single .cc-iconbtn — it held two of
+   them plus a lock before the row menu replaced all three, which cost the
+   names 32px of a 180px column. */
+.cc-index-trail {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 0 26px;
   align-items: center;
-  gap: 2px;
-  padding-right: 4px;
+  justify-content: flex-end;
 }
 
-.cc-index-actions > .cc-iconbtn {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
+/* Visible at rest like every other action on this page (see .cc-lrow-actions
+   for why nothing here fades in any more), and marked while ITS menu is open
+   so the row you are acting on stays identifiable once the pointer has left it
+   for the menu. */
+.cc-index-trail > .cc-iconbtn-on {
+  background: rgba(var(--tint), 0.1);
+  color: var(--fg);
 }
 
-.cc-index-item:hover .cc-index-actions > .cc-iconbtn,
-.cc-index-item:focus-within .cc-index-actions > .cc-iconbtn {
-  opacity: 1;
+/* The count is pushed to the right edge; the name is what gives way.
+   Lining figures, so the counts read as a column rather than as digits that
+   happen to be near each other. */
+.cc-index-filter .cc-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
-@media (hover: none), (max-width: 640px) {
-  .cc-index-actions > .cc-iconbtn {
-    opacity: 1;
-  }
-}
-
-/* The count is pushed to the right edge; the name is what gives way. */
 .cc-index-name {
   flex: 1 1 auto;
   min-width: 0;
@@ -946,7 +1016,9 @@
    free-floating rows on the page background. That boundary is what stops a
    row's content from reading as if it stopped halfway across the page: the
    card's own right edge is where the row is "supposed" to end, at any window
-   width up to .cc-main's 900px cap. */
+   width — .cc-main has no cap of its own (owner, 2026-08-26: "what is that
+   900px thing? that is bad" — it forced AI Models' Playground into a squeezed
+   column once already, see .cc-main's own comment). */
 .cc-list {
   width: 100%;
   box-sizing: border-box;
@@ -1111,36 +1183,29 @@
   margin-left: auto;
 }
 
-/* Fade in on hover/focus so a 20-row list of quiet icon buttons reads calmly
-   at rest — but ONLY discretionary icon actions (copy, reveal-in-Finder,
-   update): a state pill (History's "current"), a status word (Skills' "no
-   recorded source"), a primary text button that is a row's only affordance
-   (Discover's Install, History's Restore, a danger .btn like Remove/Delete)
-   and the disclosure chevron all stay visible outright, because hiding any of
-   those was the actual defect — a Discover list at rest offered no visible
-   way to install anything. Scoped to .cc-iconbtn specifically (never .btn,
-   never a Pill/span) and excludes .cc-lrow-chev, so nothing needs to opt in
-   or out per section — the class each element already carries decides it.
-   Never truly hidden either way: opacity, not display, so every action stays
-   in the tab order and :focus-within reveals it for a keyboard user. */
-.cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-  opacity: 0;
-  transition: opacity 120ms var(--ease-out);
+/* A row's icon actions used to fade in on hover, so that a long list of quiet
+   icon buttons read calmly at rest. Owner's call, 2026-08-26: "I don't like
+   things appearing on hover" — so they don't any more, anywhere on this page.
+   What the rule actually bought was a calm list; what it cost was a row that
+   showed a gap where its actions are and only admitted what lived there once
+   the pointer was already on it. The calm is now bought the honest way, by the
+   icons being muted (.cc-iconbtn is --fg-muted until hovered) rather than
+   absent — and it also retires the touch/narrow media query that existed only
+   because hover-to-discover cannot work on a device with no hover. */
+
+/* The plugin row's own icons, which ride in `meta` ahead of the version. */
+.cc-lrow-inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.cc-lrow:hover .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
-.cc-lrow:focus-within .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev),
-.cc-lrow.open .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-  opacity: 1;
-}
-
-/* No hover to fade in from (touch, or a narrow window where discovery-by-hover
-   isn't realistic) — stay visible outright rather than requiring a tap that
-   discovers nothing. */
-@media (hover: none), (max-width: 640px) {
-  .cc-lrow-actions > .cc-iconbtn:not(.cc-lrow-chev) {
-    opacity: 1;
-  }
+/* A column, not a label: versions run from "v1.0.0" to a 12-char commit sha,
+   and with the icons now sitting to their LEFT a ragged version means ragged
+   icons all the way down the list. */
+.cc-lrow-ver {
+  min-width: 92px;
+  text-align: right;
 }
 
 .cc-lrow.open .cc-lrow-chev .cc-icon {
@@ -1182,6 +1247,209 @@
   color: var(--fg);
   white-space: pre-line;
   overflow-wrap: anywhere;
+}
+
+/* A label BESIDE its control, in a dialog — not stacked above it. Three short
+   one-line fields (Name, Source kind, Repository/URL) each stacked their own
+   label over a full-width control with room between them, which is what made
+   a 420px add-marketplace dialog run ~350px tall to say three short things
+   (owner, 2026-08-26: "why is the modal so ugly and spaced out?").
+ *
+ * NOT .cc-row: that grid reserves a fixed 22px track for a reset button/
+ * default-value hint no field here has, and its own fixed column is the
+ * CONTROL's (240px, on the right, tuned for Preferences' full-page rows) —
+ * here it is the LABEL that wants the fixed, narrow column, with the control
+ * growing to fill a dialog that is a third that width. Two different shapes
+ * wearing the same "label plus control" idea, not one pattern reused. */
+.cc-modal-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.cc-modal-field:last-child {
+  margin-bottom: 0;
+}
+
+.cc-modal-field > label {
+  flex: 0 0 100px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-modal-field > input,
+.cc-modal-field > select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* -- a plugin's contents (Plugins > Installed, expanded) --------------------- */
+/* The one expanded row in this app that holds a LIST of things rather than a
+   paragraph and some key/value pairs: what a plugin puts in a session, which is
+   an INDEX — kinds, then named entries, then where the files are. It is styled
+   as one, because the first cut styled it as a stack of lines and read like a
+   dump: the blurb, the group heading, the entries and the install path all
+   shared one size, one colour and one rhythm, so the path read as one more
+   skill and nothing said which lines belonged to which heading.
+ *
+ * Three devices, all structural, none decorative:
+ *   1. a hairline SPINE down the left, so the whole block reads as subordinate
+ *      to the row that opened it (the same hairline vocabulary the rows
+ *      themselves are separated with);
+ *   2. an aligned name column per group, so descriptions start on ONE left
+ *      edge instead of wherever each name happened to end;
+ *   3. a rule above the install path, which is metadata about the plugin
+ *      rather than one of the things it gives you. */
+
+/* ONE grid for the whole panel, and every level between it and an entry
+   passes its two tracks down through subgrid. The tracks are shared on
+   purpose: sized per GROUP, each group found its own longest name, so the
+   description edge stepped sideways between Skills and Agents — a misalignment
+   of a few characters that reads as an accident rather than a decision. One
+   spine for the panel means one edge, whatever mix of kinds a plugin ships. */
+.cc-pcontents {
+  display: grid;
+  grid-template-columns: fit-content(16rem) 1fr;
+  align-content: start;
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 1px solid var(--border);
+}
+
+.cc-pgroup,
+.cc-pitems,
+.cc-pitems > li,
+.cc-pitem {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.cc-lrow-details .cc-pblurb,
+.cc-pgroup-title,
+.cc-pfiles {
+  grid-column: 1 / -1;
+}
+
+/* The plugin's own blurb — the only prose here, and marketing copy at that, so
+   it is measured for reading and then gets out of the way of the index.
+   Scoped under .cc-lrow-details to outrank that block's own `p { margin: 0 }`,
+   which silently ate this margin and left the first group heading sitting on
+   the last line of the paragraph. */
+.cc-lrow-details .cc-pblurb {
+  max-width: 68ch;
+  margin: 0 0 14px;
+}
+
+.cc-pgroup + .cc-pgroup {
+  margin-top: 14px;
+}
+
+/* The app's established eyebrow (.cc-index-header's size, weight, tracking and
+   case), because this is the same kind of label over the same kind of list. */
+.cc-pgroup-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0 0 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* The name column takes what the longest name in the PANEL needs and stops at
+   16rem — `fit-content` rather than `max-content` so one pathological name
+   cannot push every description off the right edge. */
+.cc-pitems {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cc-pitem {
+  gap: 12px;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cc-pitem:hover,
+.cc-pitem:focus-visible {
+  background: var(--row-bg-hover);
+}
+
+/* The name can outrun 16rem; it ellipsizes rather than breaking the column. */
+.cc-pitem-name,
+.cc-pitem-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-pitem-name {
+  color: var(--fg);
+}
+
+.cc-pitem-desc {
+  color: var(--fg-muted);
+}
+
+/* Where the files are. A rule above it, and its own label column — it is a
+   fact about the plugin, not an entry in any of the lists above. */
+.cc-pfiles {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cc-pfiles-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+/* NOT `direction: rtl`, the usual trick for ellipsizing a path from the left:
+   it reorders the string's own boundary punctuation, so an absolute path came
+   out as "Users/…/6d6d7ba7825d/" — leading slash moved to the end, on a value
+   whose whole job is to be a path you can read and copy. A tail that truncates
+   is a smaller loss than a path that lies. */
+.cc-pfiles-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-pfiles:hover .cc-pfiles-path,
+.cc-pfiles:focus-visible .cc-pfiles-path {
+  color: var(--fg);
+}
+
+/* The server's walk-budget notice (plugins.py's _WalkBudget) — a caveat about
+   the panel's own completeness, not the plugin's copy, so it reads like
+   .cc-unset's "this is not a stated fact" grammar rather than .cc-pblurb's
+   plain prose. Sits after .cc-pfiles, so it needs its own top margin rather
+   than the `.cc-lrow-details .cc-pblurb` rule's (that one assumes the blurb
+   opens the panel) — same specificity, so the more specific selector here
+   rather than !important is what wins it back. */
+.cc-lrow-details .cc-ptruncated {
+  margin: 10px 0 0;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
 }
 
 .cc-icon {
@@ -1620,18 +1888,22 @@
 }
 
 /* -- narrow windows -------------------------------------------------------- */
-/* Below ~900px the content and the preview pane don't fit side by side, so the
-   pane stacks under the content column instead. The tab strip needs no rule of
-   its own: it scrolls sideways at every width. What DOES go is the caption's
-   standing note — at this width the file the tab edits is the only half of that
-   row worth the space, and the note survives as the row's title=. */
+/* Used to also stack .cc-body's content column and its preview pane below
+   ~900px (`.cc-body { flex-direction: column; overflow-y: auto; }`) — dead
+   since the MD Files split-pane section that pane belonged to was removed
+   (round 2, see ClaudeConfig.tsx's header comment): .cc-body has exactly one
+   child now, so there is nothing left to stack. Worse than dead: that
+   `overflow-y: auto` re-created the "which box actually scrolls" bug below
+   900px width specifically (code review, 2026-08-26, same root cause as
+   .cc-main's own — see .cc-main's comment) by making .cc-body its own scroll
+   container instead of .cc-root, which strands .cc-toolbar's and .cc-index's
+   `position: sticky` against a narrower scrollport than the rest of the page
+   uses everywhere else. The tab strip needs no rule of its own: it scrolls
+   sideways at every width. What DOES go is the caption's standing note — at
+   this width the file the tab edits is the only half of that row worth the
+   space, and the note survives as the row's title=. */
 
 @media (max-width: 900px) {
-  .cc-body {
-    flex-direction: column;
-    overflow-y: auto;
-  }
-
   .cc-caption-note {
     display: none;
   }

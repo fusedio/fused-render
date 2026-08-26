@@ -163,6 +163,58 @@ def as_bool(v: Any) -> bool:
     return str(v).strip().lower() in ("true", "1", "yes", "on")
 
 
+def parse_frontmatter(text: str) -> dict:
+    """Extract the name/description scalars from a leading --- ... --- block.
+    Minimal line parser, no YAML dep (skills.md §3).
+
+    Lives HERE rather than in skills.py because two features read the same block
+    now: a local skill's SKILL.md, and every SKILL.md/agent/command markdown a
+    PLUGIN ships (plugins.contents). One parser, so a frontmatter quirk fixed
+    for one surface is fixed for the other — this function's whole history is
+    such a quirk. It read only the text on the key's OWN line, which is most of
+    YAML's ways of writing a string and not all of them: a description written
+    as a block scalar (`description: |`, which context-mode's eight skills all
+    use) put its text on the FOLLOWING lines and left "|" on the key's line, so
+    every one of them displayed as a bare pipe.
+
+    A continuation is any more-indented line under the key, and it is FOLDED
+    into one space-joined string whether the block said `|` or `>`. Both
+    callers put this in a one-line slot, so the distinction YAML draws between
+    them — whether newlines survive — has nothing to act on here."""
+    out = {"name": "", "description": ""}
+    if not text.startswith("---"):
+        return out
+    end = text.find("\n---", 3)
+    if end == -1:
+        return out
+    lines = text[3:end].split("\n")
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        key, sep, val = line.partition(":")
+        indent = len(key) - len(key.lstrip())
+        key = key.strip()
+        if not sep or key not in ("name", "description"):
+            continue
+        v = val.strip()
+        # A block indicator (with any chomping/indent modifier) or an empty
+        # value both mean "the value is on the lines below".
+        if v == "" or v[0] in "|>":
+            parts = []
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() and len(nxt) - len(nxt.lstrip()) <= indent:
+                    break  # back out to the key's own level: a new key.
+                parts.append(nxt.strip())
+                i += 1
+            v = " ".join(p for p in parts if p)
+        elif len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+            v = v[1:-1]
+        out[key] = v
+    return out
+
+
 def read_json(path: str, fallback: Any) -> Any:
     """Return `fallback` only when the file is ABSENT. Malformed JSON raises —
     corruption must surface, never be silently swallowed (config-store.md §3)."""

@@ -21,27 +21,6 @@ SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 SKILL_LOCK_PATH = os.path.join(lib.CLAUDE_DIR, "..", ".agents", ".skill-lock.json")
 
 
-def _parse_frontmatter(text: str) -> dict:
-    """Extract name/description scalars from a leading --- ... --- YAML block.
-    Minimal line parser, no YAML dep (skills.md §3)."""
-    out = {"name": "", "description": ""}
-    if not text.startswith("---"):
-        return out
-    end = text.find("\n---", 3)
-    if end == -1:
-        return out
-    for line in text[3:end].split("\n"):
-        key, sep, val = line.partition(":")
-        key = key.strip()
-        if not sep or key not in ("name", "description"):
-            continue
-        v = val.strip()
-        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
-            v = v[1:-1]
-        out[key] = v
-    return out
-
-
 def _skill_sources() -> dict:
     lock = lib.read_json(SKILL_LOCK_PATH, {})
     out = {}
@@ -67,7 +46,7 @@ def _list() -> dict:
         if not os.path.isfile(skill_md):  # dangling link or non-skill dir
             continue
         with open(skill_md, "r", encoding="utf-8") as f:
-            fm = _parse_frontmatter(f.read())
+            fm = lib.parse_frontmatter(f.read())
         source = sources.get(name)
         skills.append({
             "slug": name,
