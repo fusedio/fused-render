@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
 import type { TaskPulseTask } from "@platform/lib/api";
 import {
   appDirOf,
@@ -11,6 +12,8 @@ import {
   currentApps,
   isUnderDir,
   localAppsRoot,
+  orderedSlugs,
+  parseSavedOrder,
   slugFromAppPath,
   withAppPageTab,
   type AppOrder,
@@ -158,6 +161,60 @@ describe("the displayed order", () => {
   });
 });
 
+describe("the saved order", () => {
+  it("round-trips the display order through the store shape", () => {
+    const order: AppOrder = new Map();
+    reorderTo(order, ["b", "a", "c"]);
+    expect(orderedSlugs(order)).toEqual(["b", "a", "c"]);
+    const again: AppOrder = new Map();
+    reorderTo(again, parseSavedOrder(JSON.stringify(orderedSlugs(order))));
+    expect(orderedSlugs(again)).toEqual(["b", "a", "c"]);
+  });
+
+  it("holds a saved order against recency, and puts an unsaved app on top", () => {
+    const order: AppOrder = new Map();
+    reorderTo(order, parseSavedOrder('["app1","app3","app2"]'));
+    const apps = currentApps(
+      [
+        task("k1", ROOT + "app1", "done", 10),
+        task("k2", ROOT + "app2", "done", 99),
+        task("k3", ROOT + "app3", "done", 50),
+        task("k4", ROOT + "later", "done", 1),
+      ],
+      FUSED,
+    );
+    assignSequences(order, apps);
+    expect(bySequence(apps, order).map((a) => a.slug)).toEqual([
+      "later",
+      "app1",
+      "app3",
+      "app2",
+    ]);
+  });
+
+  it("prunes what the saved order remembers and the desk does not", () => {
+    const order: AppOrder = new Map();
+    reorderTo(order, parseSavedOrder('["gone","live"]'));
+    assignSequences(order, currentApps([task("k", ROOT + "live", "done", 5)], FUSED));
+    expect(orderedSlugs(order)).toEqual(["live"]);
+  });
+
+  it("degrades anything unreadable to no saved order", () => {
+    expect(parseSavedOrder(null)).toEqual([]);
+    expect(parseSavedOrder("")).toEqual([]);
+    expect(parseSavedOrder("not json")).toEqual([]);
+    expect(parseSavedOrder('{"a":1}')).toEqual([]);
+    expect(parseSavedOrder("[1,2,3]")).toEqual([]);
+  });
+
+  it("drops junk entries and collapses duplicates rather than sharing a sequence", () => {
+    expect(parseSavedOrder('["a",7,"",null,"b","a"]')).toEqual(["a", "b"]);
+    const order: AppOrder = new Map();
+    reorderTo(order, parseSavedOrder('["a","b","a"]'));
+    expect([...order.values()].length).toBe(new Set(order.values()).size);
+  });
+});
+
 describe("moveSlug", () => {
   const list = ["a", "b", "c"];
 
@@ -170,6 +227,45 @@ describe("moveSlug", () => {
   it("is a no-op for a drag onto itself or onto a slug it does not know", () => {
     expect(moveSlug(list, "a", "a", true)).toBe(list);
     expect(moveSlug(list, "a", "zz", true)).toBe(list);
+  });
+});
+
+describe("CurrentAppsSection's half of the saved order", () => {
+  const SECTION = readFileSync(
+    new URL("./CurrentAppsSection.tsx", import.meta.url),
+    "utf8",
+  );
+
+  it("touches localStorage only inside a try", () => {
+    // A blocked or full store costs the saved order, never the section — the
+    // same rule Scheduled.tsx's view memory and the sidebar's task dismissals
+    // follow. Pinned as source text because the alternative is mounting the
+    // shell with a throwing store.
+    expect(SECTION).toContain("localStorage.getItem(ORDER_KEY)");
+    expect(SECTION).toContain("localStorage.setItem(ORDER_KEY");
+    for (const call of ["localStorage.getItem", "localStorage.setItem"]) {
+      const before = SECTION.slice(0, SECTION.indexOf(call));
+      // Every touch is preceded by a `try {` that no `catch` has closed yet.
+      expect((before.match(/try \{/g) ?? []).length).toBeGreaterThan(
+        (before.match(/\} catch/g) ?? []).length,
+      );
+    }
+  });
+
+  it("hydrates the order at import, not in an effect", () => {
+    // A synchronous read at module scope is the whole reason localStorage was
+    // chosen over a server pref: the order is in hand before the first render,
+    // so recency never wins a race against what the user dragged.
+    const hydrate = SECTION.indexOf("reorderTo(appOrder, readSavedOrder())");
+    expect(hydrate).toBeGreaterThan(-1);
+    expect(hydrate).toBeLessThan(SECTION.indexOf("export default function"));
+  });
+
+  it("never saves an empty list over the order it is about to show", () => {
+    // The first render (and any moment the pulse has not answered) has no apps;
+    // writing that would erase the order — the same trap the sidebar's task
+    // dismissals fell into (sidebar-tasks.test.ts, 2026-08-18).
+    expect(SECTION).toContain("if (apps.length) saveOrder(orderedSlugs(appOrder))");
   });
 });
 

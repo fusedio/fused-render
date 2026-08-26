@@ -7,8 +7,9 @@
 // The ORDER is a sequence per app, not the recency it is seeded from
 // (current-apps-lib.ts): a row moves only when the user drags it, so new work in
 // an app already listed does not reshuffle the list under the cursor. The store
-// is the module-level `appOrder` below — in memory only, on the owner's
-// instruction, so a reload seeds from recency once and holds from there.
+// is the module-level `appOrder` below, hydrated from localStorage at import and
+// written back whenever the displayed order changes, so a drag survives a reload
+// and the next launch.
 //
 // Fed by the task pulse store (useTasksPulseRows) rather than a poll of its
 // own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
@@ -28,6 +29,8 @@ import {
   bySequence,
   currentApps,
   moveSlug,
+  orderedSlugs,
+  parseSavedOrder,
   reorderTo,
   slugFromAppPath,
   type AppOrder,
@@ -41,12 +44,37 @@ import {
 // FUSED_RENDER_DIR, and a root built from home would list nothing under it.
 let knownRoot = "";
 
-// The displayed order, kept for exactly as long as the page lives: the owner
-// asked for "in memory only", and module scope IS that lifetime — it outlives
-// the sidebar's per-navigation remount (pushState routing) and dies with a
-// reload, which is the "resets to recency once on reload" half of the ask.
-// Nothing persists it, so there is nothing to migrate or invalidate.
+export const ORDER_KEY = "fused-render:current-apps-order";
+
+// The displayed order: a module-level Map (it outlives the sidebar's
+// per-navigation remount — pushState routing) hydrated from localStorage at
+// import, so the order is already in hand before the first render and there is
+// no window where recency wins a race against what the user dragged.
+//
+// Every store touch sits inside a try: a blocked or full store costs the saved
+// order, not the section. Reading a JSON array of slugs (top first) rather than
+// the sequence numbers themselves keeps the stored shape the one thing that
+// matters — nothing on disk has to agree with a numbering scheme this module is
+// free to change.
 const appOrder: AppOrder = new Map();
+
+function readSavedOrder(): string[] {
+  try {
+    return parseSavedOrder(localStorage.getItem(ORDER_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function saveOrder(slugs: string[]): void {
+  try {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(slugs));
+  } catch {
+    // A blocked store just means the order lasts as long as the page does.
+  }
+}
+
+reorderTo(appOrder, readSavedOrder());
 
 function useFusedDir(): string {
   const [root, setRoot] = useState(knownRoot);
@@ -159,6 +187,14 @@ export default function CurrentAppsSection() {
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
   }, [rows, fusedDir, orderEpoch]);
+  // Write the order back after it settles — a drag, a new app, or an app that
+  // left. Guarded on a non-empty list for the same reason the prune is: the
+  // first render (and any moment the pulse has not loaded) has no apps, and
+  // saving that would erase the order it is about to display.
+  useEffect(() => {
+    if (apps.length) saveOrder(orderedSlugs(appOrder));
+  }, [apps]);
+
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
   const onSlug = slugFromAppPath(location.pathname);

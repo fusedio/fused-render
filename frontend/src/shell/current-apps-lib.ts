@@ -147,17 +147,23 @@ export function withAppPageTab(search: string, tab: AppPageTab): string {
 // user reads and points at, and a list that reshuffles itself under the cursor
 // every time an agent writes a line cannot be pointed at.
 //
-// The store is a plain Map held at MODULE level by the section — not state, not
-// localStorage: the owner asked for "in memory only", so a reload starts over
-// from recency by construction and there is nothing to migrate or expire. It
-// survives navigation because the shell routes by pushState (the sidebar
-// remounts, the module does not).
+// The store is a plain Map held at MODULE level by the section, hydrated from
+// and written back to localStorage (`ORDER_KEY` there) — so the order the user
+// dragged survives a reload and the next launch, per machine. It was in-memory
+// only for one commit; the owner asked for it on disk and picked localStorage
+// over a server-side pref, which buys most of the value for a fraction of the
+// work: a synchronous read means no load race against the pulse, and there is
+// no endpoint, no file format and no multi-window write conflict to arbitrate.
+// The cost is that it is per browser profile and does not follow the user to
+// another machine.
 //
 // An app that LEAVES the list (every task archived) loses its sequence, so if it
 // returns it returns as new, at the top. "Already exists in the list" is the
 // owner's own test for what must not move, and an app with nothing on the desk
 // is not in the list. The prune is guarded on a non-empty input so a pulse that
-// has not loaded yet cannot wipe the order.
+// has not loaded yet cannot wipe the order — and since the saved order is
+// pruned the same way, what is on disk stays bounded by what is on the desk
+// rather than growing a tail of every app ever opened.
 
 /** slug -> sequence. Higher sorts earlier. */
 export type AppOrder = Map<string, number>;
@@ -191,6 +197,38 @@ export function bySequence(apps: CurrentApp[], order: AppOrder): CurrentApp[] {
 export function reorderTo(order: AppOrder, slugs: string[]): void {
   let seq = slugs.length;
   for (const slug of slugs) order.set(slug, seq--);
+}
+
+/** The store as a display-ordered slug list — what gets saved, and the input
+ *  `reorderTo` takes back. */
+export function orderedSlugs(order: AppOrder): string[] {
+  return [...order.entries()].sort((a, b) => b[1] - a[1]).map(([slug]) => slug);
+}
+
+/** A saved order, read back. What came out of localStorage is a string written
+ *  by SOMEONE ELSE (an older build, a hand-edited devtools row), so anything
+ *  unreadable degrades to "no saved order" — the list seeds from recency, which
+ *  is exactly where it started — rather than throwing inside a render. Non-slug
+ *  entries are dropped and duplicates collapse to their first appearance: two
+ *  rows sharing a sequence would make the display order depend on sort
+ *  stability, and that is not a thing to leave to a corrupt row. */
+export function parseSavedOrder(raw: string | null): string[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const slug of parsed) {
+    if (typeof slug !== "string" || !slug || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push(slug);
+  }
+  return out;
 }
 
 /** `slugs` with `from` lifted out and re-inserted at `to`'s slot — the list a
