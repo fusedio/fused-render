@@ -38,7 +38,13 @@ Actions:
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
-          "mode": <the mode this run is RUNNING in, not the picker's>}
+          "mode": <the mode this run is RUNNING in, not the picker's>,
+          "persistent": <bool, can this run take a "steer">,
+          "turn": <int, how many turns have finished on this run so far>}
+  main(action="steer", run_id=..., message=...) -> {"steered": bool, "error": ...}
+      a follow-up message for a run `poll` reported as "persistent" — see
+      `_steer` and D496. Refused (not queued here) for anything else: a
+      one-shot run, a dead run, or an unknown run_id.
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
        custom=<json string, the "Other" text per question, AskUserQuestion only>,
@@ -61,6 +67,8 @@ Actions:
       -> {"ok": True, "action": "restore"|"delete",
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
+      stops the CURRENT TURN: an interrupt (session survives) on a persistent
+      run, a kill (session ends) on a one-shot one — see `_cancel`.
 """
 import json
 import os
@@ -1787,6 +1795,30 @@ _DETACH = (
 )
 
 
+def _persistent_ok() -> bool:
+    """Whether `_start` should keep this run's process alive past its first
+    turn, over a FIFO, instead of the one-shot `-p` process this template has
+    always spawned.
+
+    Env-gated while this is new — D496 has the probe writeup this is built
+    from, and the short version is: the CLI has NO true mid-turn message
+    injection (a message written to a live process while a turn is running is
+    QUEUED BY THE CLI, not spliced into what's in flight), but the process
+    genuinely does survive as long as its stdin never hits EOF, and the
+    control-protocol `interrupt` request genuinely does truncate a turn
+    without ending the process. That's the whole feature; nothing more was
+    verified to work, and nothing more is built on top of it.
+
+    POSIX-only, unconditionally: `os.mkfifo` — the mechanism `_start` uses to
+    keep stdin open — does not exist on Windows, and there is no named-pipe
+    port planned (see `_start`'s FIFO comment). This is checked LAST so an env
+    var flipped on a Windows machine (a synced dotfile, a copy-pasted README)
+    cannot be read as "try it anyway" — the one-shot path is Windows' only
+    path, full stop.
+    """
+    return os.environ.get("FUSED_RENDER_CLAUDE_PERSISTENT") == "1" and os.name != "nt"
+
+
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
@@ -1826,6 +1858,14 @@ def _start(file: str, message: str, session_id: str, model: str,
         else DEFAULT_PERMISSION_MODE
     cli_mode = PERMISSION_MODES[mode]
 
+    # Persistence forces stream-json stdin regardless of `message_via_stdin`:
+    # a process that is going to outlive this turn needs its stdin to be the
+    # channel every LATER message rides in on too (`_steer`), so there is no
+    # variant of a persistent run that puts the first message on argv. This
+    # also means a persistent run gets `message_via_stdin`'s argv-privacy
+    # property for free, whether the caller asked for it or not.
+    persistent = _persistent_ok()
+
     # `message_via_stdin` keeps the user's text out of argv entirely: the
     # message is written to a file in the run dir as one stream-json user
     # line, and the detached process reads it as its stdin (EOF after the one
@@ -1833,7 +1873,30 @@ def _start(file: str, message: str, session_id: str, model: str,
     # runs inside the server process, where argv is visible to every local
     # user via `ps`, unlike the template path where the message came from the
     # page's own runPython call.
-    if message_via_stdin:
+    fifo_fd = None
+    if persistent:
+        # A FIFO, not a plain pipe: `_start` returns as soon as it has
+        # spawned (it is called from a short-lived worker process — see
+        # executor.py/_child.py — so nothing here can hold a subprocess.PIPE
+        # open across calls the way an interactive session would). Opened
+        # O_RDWR rather than the O_RDONLY a reader would normally use: a FIFO
+        # only reaches EOF for its readers once EVERY writer has closed it,
+        # and an O_RDWR fd is simultaneously its OWN writer — so the read end
+        # the CHILD inherits as stdin never sees EOF even between turns, when
+        # nothing else has the FIFO open at all. Without this the process
+        # would exit the instant the first message's write-then-close ran
+        # (exactly the one-shot behaviour this whole path exists to avoid).
+        # Verified empirically against both a bare `cat` and the real `claude`
+        # CLI before this was built on — see D496.
+        fifo_path = os.path.join(run_dir, "stdin.fifo")
+        os.mkfifo(fifo_path, 0o600)
+        # mkfifo's mode is filtered by umask like any other create, so a loose
+        # umask can leave this group/world-readable — belt and braces next to
+        # the 0700 run dir, same reasoning as `_private_open`.
+        os.chmod(fifo_path, 0o600)
+        fifo_fd = os.open(fifo_path, os.O_RDWR)
+        message_argv = ["-p", "--input-format", "stream-json"]
+    elif message_via_stdin:
         with _private_open(os.path.join(run_dir, "stdin.jsonl")) as f:
             json.dump({"type": "user", "message": {
                 "role": "user",
@@ -1930,12 +1993,19 @@ def _start(file: str, message: str, session_id: str, model: str,
     # re-attaching page compares against the bubble on screen (which shows the
     # typed text only, so an unstripped copy silently stopped matching). Stripped
     # here, once, rather than at each of those three readers.
+    # `persistent` rides along so `_poll`/`_live_run` can tell a page whether
+    # this run's process can be `_steer`ed for a follow-up message or whether
+    # the next message has to spawn a fresh one-shot run the old way — the
+    # FIFO's mere presence on disk would say the same thing, but a stat call
+    # per poll is a worse way to ask a question meta.json already has to
+    # answer for `mode` right above.
     with _private_open(os.path.join(run_dir, "meta.json")) as f:
         json.dump({"file": file, "message": _strip_app_state(message),
-                   "resumed_from": session_id, "mode": mode}, f)
+                   "resumed_from": session_id, "mode": mode,
+                   "persistent": persistent}, f)
 
     stdin_path = os.path.join(run_dir, "stdin.jsonl")
-    stdin_fh = open(stdin_path, "rb") if message_via_stdin else None
+    stdin_fh = open(stdin_path, "rb") if message_via_stdin and not persistent else None
     # The session must not inherit an ambient FUSED_ENV from the server's own
     # process: the `fused` wrapper (fusedcli._wrapper_text) only DEFAULTS
     # FUSED_ENV when unset, so a value already present here — say the server
@@ -1973,17 +2043,89 @@ def _start(file: str, message: str, session_id: str, model: str,
             # _claude_argv), never git — checked by hand. The git spawn in this
             # file is the `git()` helper above, which resolves an absolute
             # argv[0] and passes close_fds=False like every other one.
+            #
+            # `fifo_fd` (persistent) beats `stdin_fh` (message_via_stdin) beats
+            # DEVNULL (the plain -p case): Popen dup2s whichever fd it's given
+            # onto the child's stdin, so the child ends up with its OWN open
+            # file description on the FIFO, independent of ours below.
             proc = subprocess.Popen(cmd, stdout=out, stderr=err,
                                     cwd=_workdir(file),
-                                    stdin=stdin_fh or subprocess.DEVNULL,
+                                    stdin=fifo_fd if fifo_fd is not None
+                                    else (stdin_fh or subprocess.DEVNULL),
                                     env=spawn_env,
                                     **_DETACH)
     finally:
         if stdin_fh is not None:
             stdin_fh.close()
+        if fifo_fd is not None:
+            # The FIRST message, written directly to our own copy of the fd
+            # before closing it — the child already has its own dup by now
+            # (Popen's dup2 happened inside the fork/exec above), so this
+            # never races the child's read of it. Every LATER message goes
+            # through `_steer`, which reopens the FIFO by path exactly the
+            # way this does, because by then this process (a short-lived
+            # worker, see _persistent_ok) is long gone and has nothing left
+            # to write through.
+            try:
+                os.write(fifo_fd, (json.dumps({"type": "user", "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": message}]}}) + "\n"
+                                   ).encode("utf-8"))
+            finally:
+                os.close(fifo_fd)
     with _private_open(os.path.join(run_dir, "pid")) as f:
         f.write(str(proc.pid))
     return {"run_id": run_id}
+
+
+def _steer(run_id: str, message: str) -> dict:
+    """Send ONE MORE user message into a live persistent run — the only way
+    this template gets a follow-up to a session without spawning a fresh
+    process for it, and the whole reason `_start` opens a FIFO instead of a
+    plain stdin pipe (see `_persistent_ok`).
+
+    Not true mid-turn injection — nothing here claims that, because the CLI
+    does not offer it (D496). If the run is mid-turn when this lands, the CLI
+    QUEUES the message itself and starts it as its own turn the moment the
+    current one's `result` row lands; `_poll`'s `turn` counter is what lets a
+    page tell "queued, not started yet" from "now running" without this
+    function knowing or caring which one just happened.
+
+    Refuses rather than blocking on anything: a run with no FIFO was never
+    persistent (or persistence is off entirely, or this is Windows), and a
+    dead run has nobody left holding the read end — `os.open(..., O_WRONLY)`
+    on a FIFO with no reader blocks forever without O_NONBLOCK, which would
+    hang this call on exactly the run this is trying to detect as gone.
+    """
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"steered": False, "error": "unknown run_id"}
+    if not message:
+        return {"steered": False, "error": "(empty message)"}
+    fifo_path = os.path.join(run_dir, "stdin.fifo")
+    if os.name == "nt" or not os.path.exists(fifo_path):
+        return {"steered": False, "error": "run is not persistent"}
+    # Liveness before the open, same ordering `_poll` uses and for the same
+    # reason: a process that died in the last instant is still readable as
+    # alive for one more caller, which just means this write is lost the way
+    # any write to a process that quit a moment ago would be — better than a
+    # false "run has ended" for one that is in fact still going.
+    if not _alive(run_dir):
+        return {"steered": False, "error": "run has ended"}
+    try:
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError as exc:
+        return {"steered": False, "error": str(exc)}
+    try:
+        os.write(fd, (json.dumps({"type": "user", "message": {
+            "role": "user",
+            "content": [{"type": "text", "text": message}]}}) + "\n"
+                     ).encode("utf-8"))
+    except OSError as exc:
+        return {"steered": False, "error": str(exc)}
+    finally:
+        os.close(fd)
+    return {"steered": True}
 
 
 def _app_dir_for(path: str) -> str:
@@ -2759,6 +2901,12 @@ def _poll(run_id: str, file: str = "") -> dict:
     saw_result = False   # at least one turn of this run has finished
     idle = False         # ...and nothing has been said since
     done = False
+    turn_count = 0       # how many `result` rows this run has produced so
+                          # far — a persistent run's page-side steer clock:
+                          # the page remembers the count at the moment it
+                          # steered, and watches for it to advance past that
+                          # value to tell a message the CLI is still QUEUING
+                          # (see _steer) from one that has actually started.
     error = ""
     tokens_done = 0      # output tokens of finished messages this turn
     tokens_current = 0   # cumulative usage of the in-flight message
@@ -2849,6 +2997,7 @@ def _poll(run_id: str, file: str = "") -> dict:
         elif t == "result":
             saw_result = True
             idle = True
+            turn_count += 1
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -3009,7 +3158,13 @@ def _poll(run_id: str, file: str = "") -> dict:
             # schedule.py) left this page reporting the kill as a crash. See
             # `_cancel`, which writes the marker.
             "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
-            "segments": _segments_from_rows(parsed)}
+            "segments": _segments_from_rows(parsed),
+            # Both new for persistent sessions (see `_persistent_ok`/`_steer`)
+            # and harmless everywhere else: a one-shot run's `meta.json` has
+            # no "persistent" key at all (older runs, or persistence off),
+            # which reads as False, and its `turn_count` never exceeds 1.
+            "persistent": bool(meta.get("persistent")),
+            "turn": turn_count}
 
 
 # ------------------------------------------------------- sessions & history
@@ -3709,6 +3864,33 @@ def _history(file: str, session_id: str) -> dict:
     return {"turns": turns, "transcript": stat}
 
 
+def _interrupt(fifo_path: str) -> bool:
+    """Write the control-protocol interrupt request into a live run's FIFO.
+
+    O_NONBLOCK on the open only: `_cancel` already checked `_alive` a moment
+    ago, so a reader is expected, but a process that exited in that instant
+    would otherwise make a plain O_WRONLY open block forever (nobody left to
+    open the other end) — the one call this function must never hang on is
+    the one meant to make something STOP. Returns False on any failure so
+    `_cancel` can fall through to the kill path rather than silently no-op a
+    stop request.
+    """
+    try:
+        fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    try:
+        os.write(fd, (json.dumps({
+            "type": "control_request",
+            "request_id": "cancel-" + os.urandom(4).hex(),
+            "request": {"subtype": "interrupt"}}) + "\n").encode("utf-8"))
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
 def _cancel(run_id: str) -> dict:
     run_dir = os.path.join(RUNS, run_id)
     # Same guard as _poll: run_id is joined into a path and drives a kill,
@@ -3739,6 +3921,26 @@ def _cancel(run_id: str) -> dict:
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
     _deny_pending(run_dir, "cancelled")
+
+    # STOP THE TURN, not necessarily the SESSION. A persistent run (FIFO
+    # present, process still alive) is stopped with the CLI's own
+    # control-protocol interrupt instead of a kill: the marker above is
+    # already written, so every existing reader of it (`_poll`'s "cancelled"
+    # field, `_history`'s `_stopped_last`) keeps reading a truncated turn
+    # exactly the way it always has — nothing downstream needed to change to
+    # keep meaning what it already meant. What's different is that the
+    # process itself lives on, so the user's next message reaches the SAME
+    # session (`_steer`) instead of forcing a brand new one.
+    #
+    # A one-shot run has no live channel to interrupt in the first place —
+    # Windows always (no FIFO ever exists there), and POSIX too whenever
+    # persistence was off for this run — so for it stopping the turn and
+    # ending the session are the same act, and the SIGTERM path below is
+    # exactly what it has always been.
+    fifo_path = os.path.join(run_dir, "stdin.fifo")
+    if os.path.exists(fifo_path) and _alive(run_dir) and _interrupt(fifo_path):
+        return {"cancelled": run_id}
+
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
@@ -3852,4 +4054,13 @@ def main(action: str = "start", file: str = "", message: str = "",
         return _terminal_command(file, session_id)
     if action == "cancel":
         return _cancel(run_id)
+    if action == "steer":
+        # A follow-up message for a run the page already knows is still
+        # going (`live_run`/`poll`'s "persistent" flag) — the persistent-run
+        # alternative to `start`, which would otherwise spawn a whole new
+        # process on top of one already sitting there able to take it. See
+        # `_steer` for why this is a queue, not true injection.
+        if not message:
+            return {"steered": False, "error": "(empty message)"}
+        return _steer(run_id, message)
     return {"error": f"unknown action: {action}"}
