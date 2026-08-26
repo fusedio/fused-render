@@ -354,3 +354,4 @@ One genuine gap, so nobody discovers it mid-migration: **relocating the index di
 - Binding a preview template to a file extension → **`fused-render-custom-templates`**.
 - Opening a view or driving the running app → **`fused-render-usage`**.
 - Calling an AI model, local models, or image generation → **`fused-render-ai`**.
+- A folder needs a long-running daemon that outlives its page and survives the warm worker's 15-minute idle-retire → **`fused-render-background-apps`**.

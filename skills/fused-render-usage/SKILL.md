@@ -54,3 +54,4 @@ View state (paging, sort, selection) lives in **URL params**, so any view is ref
 - Registering a custom preview template for a file extension → **`fused-render-custom-templates`**.
 - Calling an AI model from a page, driving local models, or generating an image → **`fused-render-ai`**.
 - Searching, counting, or aggregating files across the machine — the file index, a scan, `fused.fileIndex.*` → **`fused-render-index`**.
+- Giving a folder its own long-running daemon that survives its page closing and the warm worker's idle-retire → **`fused-render-background-apps`**.

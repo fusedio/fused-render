@@ -577,6 +577,8 @@ job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
 
 Escape hatch: because fused-render runs your own trusted code on your own machine, you *can* raise `DEFAULT_TIMEOUT` in `fused_render/executor.py` — but that's editing the package, applies globally, and lets any view hang a worker that long. Prefer the caching/chunking patterns; reach for the constant only for a deliberate, local one-off.
 
+None of the above holds state indefinitely: `fused.engine(py)`, the warm variant of `runPython` that keeps a worker's imports and globals alive between calls, still idle-retires that worker after 15 minutes with no calls. A folder that genuinely needs to keep running past that — a poll loop, a held connection, a tray/menu-bar presence — wants a resident daemon instead: see **`fused-render-background-apps`**.
+
 ## Pitfalls checklist
 
 - `fused.params.set("n", 5)` → **throws** (number). Use `String(5)`.
