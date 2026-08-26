@@ -247,98 +247,98 @@ export default function ClaudeMdSection({
       {data.files.length > 0 && (
         <List>
           {data.files.map((f) => (
-        <ListRow
-          key={f.path}
-          // The filename is CLAUDE.md on nearly every row — leading with it
-          // twenty-five times over is noise, not information, so the common
-          // case omits it and leans on the "local"/"global" pills instead. It
-          // stays for anything ELSE a discovery engine might turn up under
-          // that name (CLAUDE.local.md today), where it IS the fact that
-          // distinguishes the row.
-          name={f.name === "CLAUDE.md" ? undefined : f.name}
-          nameMono
-          pills={
-            <>
-              {f.empty && <Pill tone="err">empty</Pill>}
-              {f.name === "CLAUDE.local.md" && <Pill>local</Pill>}
-              {f.scope === "global" && <Pill tone="on">global</Pill>}
-            </>
-          }
-          // The directory is the row's real subject now (.cc-lrow-sub-path
-          // reads at primary weight on this tab, not muted) — it's the one
-          // thing telling one row from another. Ellipsized from the LEFT so
-          // the project tail survives rather than the /Users/... head
-          // everyone shares; <bdi dir="ltr"> keeps its own characters in
-          // logical order inside that rtl container.
-          secondary={<bdi dir="ltr">{f.dir}</bdi>}
-          secondaryTitle={f.path}
-          secondaryMono
-          secondaryClass="cc-lrow-sub-path"
-          // The snippet is the whole reason this tab is browsable: it is how
-          // you tell which CLAUDE.md is which without opening four of them. It
-          // moves into the panel rather than disappearing with the card.
-          details={
-            <>
-              {f.empty ? (
-                <p className="cc-unset">(empty file)</p>
-              ) : (
-                <pre className="cc-lrow-snippet cc-mono">{f.snippet}</pre>
-              )}
-              <dl className="cc-lrow-dl">
-                <dt className="cc-lrow-dt">Path</dt>
-                <dd className="cc-lrow-dd cc-mono">{f.path}</dd>
-                <dt className="cc-lrow-dt">File</dt>
-                <dd className="cc-lrow-dd">
-                  {formatSize(f.size)} · modified {new Date(f.mtime * 1000).toLocaleString()}
-                </dd>
-              </dl>
-            </>
-          }
-          actions={
-            <>
-              <button
-                type="button"
-                className="cc-iconbtn"
-                title="View / Edit"
-                aria-label={`View or edit ${f.path}`}
-                onClick={() => open(f)}
-              >
-                <Icon name="edit" />
-              </button>
-              {/* Preview is its OWN control, separate from the row's expansion:
-                  one opens the split pane on the right, the other opens the
-                  snippet underneath, and neither should fire the other. */}
-              <button
-                type="button"
-                className={"cc-iconbtn" + (preview === f.path ? " cc-btn-on" : "")}
-                title="Preview"
-                aria-label={`Preview ${f.path}`}
-                aria-pressed={preview === f.path}
-                onClick={() => onPreview(preview === f.path ? null : f.path)}
-              >
-                <Icon name="eye" />
-              </button>
-              <button
-                type="button"
-                className="cc-iconbtn"
-                title="Reveal in Finder"
-                aria-label={`Reveal ${f.path} in Finder`}
-                onClick={() => guard(cc.claudeMd.open(f.path))}
-              >
-                <Icon name="folder" />
-              </button>
-              <button
-                type="button"
-                className="cc-iconbtn cc-iconbtn-danger"
-                title="Delete"
-                aria-label={`Delete ${f.path}`}
-                onClick={() => remove(f)}
-              >
-                <Icon name="trash" />
-              </button>
-            </>
-          }
-        />
+            <ListRow
+              key={f.path}
+              // The filename is CLAUDE.md on nearly every row — leading with it
+              // twenty-five times over is noise, not information, so the common
+              // case omits it and leans on the "local"/"global" pills instead. It
+              // stays for anything ELSE a discovery engine might turn up under
+              // that name (CLAUDE.local.md today), where it IS the fact that
+              // distinguishes the row.
+              name={f.name === "CLAUDE.md" ? undefined : f.name}
+              nameMono
+              pills={
+                <>
+                  {f.empty && <Pill tone="err">empty</Pill>}
+                  {f.name === "CLAUDE.local.md" && <Pill>local</Pill>}
+                  {f.scope === "global" && <Pill tone="on">global</Pill>}
+                </>
+              }
+              // The directory is the row's real subject now (.cc-lrow-sub-path
+              // reads at primary weight on this tab, not muted) — it's the one
+              // thing telling one row from another. Ellipsized from the LEFT so
+              // the project tail survives rather than the /Users/... head
+              // everyone shares; <bdi dir="ltr"> keeps its own characters in
+              // logical order inside that rtl container.
+              secondary={<bdi dir="ltr">{f.dir}</bdi>}
+              secondaryTitle={f.path}
+              secondaryMono
+              secondaryClass="cc-lrow-sub-path"
+              // The snippet is the whole reason this tab is browsable: it is how
+              // you tell which CLAUDE.md is which without opening four of them. It
+              // moves into the panel rather than disappearing with the card.
+              details={
+                <>
+                  {f.empty ? (
+                    <p className="cc-unset">(empty file)</p>
+                  ) : (
+                    <pre className="cc-lrow-snippet cc-mono">{f.snippet}</pre>
+                  )}
+                  <dl className="cc-lrow-dl">
+                    <dt className="cc-lrow-dt">Path</dt>
+                    <dd className="cc-lrow-dd cc-mono">{f.path}</dd>
+                    <dt className="cc-lrow-dt">File</dt>
+                    <dd className="cc-lrow-dd">
+                      {formatSize(f.size)} · modified {new Date(f.mtime * 1000).toLocaleString()}
+                    </dd>
+                  </dl>
+                </>
+              }
+              actions={
+                <>
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    title="View / Edit"
+                    aria-label={`View or edit ${f.path}`}
+                    onClick={() => open(f)}
+                  >
+                    <Icon name="edit" />
+                  </button>
+                  {/* Preview is its OWN control, separate from the row's expansion:
+                      one opens the split pane on the right, the other opens the
+                      snippet underneath, and neither should fire the other. */}
+                  <button
+                    type="button"
+                    className={"cc-iconbtn" + (preview === f.path ? " cc-btn-on" : "")}
+                    title="Preview"
+                    aria-label={`Preview ${f.path}`}
+                    aria-pressed={preview === f.path}
+                    onClick={() => onPreview(preview === f.path ? null : f.path)}
+                  >
+                    <Icon name="eye" />
+                  </button>
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    title="Reveal in Finder"
+                    aria-label={`Reveal ${f.path} in Finder`}
+                    onClick={() => guard(cc.claudeMd.open(f.path))}
+                  >
+                    <Icon name="folder" />
+                  </button>
+                  <button
+                    type="button"
+                    className="cc-iconbtn cc-iconbtn-danger"
+                    title="Delete"
+                    aria-label={`Delete ${f.path}`}
+                    onClick={() => remove(f)}
+                  >
+                    <Icon name="trash" />
+                  </button>
+                </>
+              }
+            />
           ))}
         </List>
       )}

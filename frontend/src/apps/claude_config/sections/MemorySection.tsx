@@ -78,68 +78,68 @@ export default function MemorySection({ onChanged }: SectionProps) {
       {data.projects.length > 0 && (
         <List>
           {data.projects.map((p) => {
-        const dirty = p.changes.length;
-        const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
-        return (
-          <ListRow
-            key={p.project}
-            // The folder, when the server could confirm which one it is —
-            // mono, because it is a path. Otherwise the raw slug, NOT dressed
-            // up as a path: the encoding is lossy and a plausible-looking
-            // /Users/me/Work/fused/render that doesn't exist would be worse
-            // than the slug it came from.
-            name={p.path ?? p.project}
-            nameMono={p.pathConfirmed}
-            secondary={count}
-            // The file names ARE the content of this tab — which folder holds
-            // what — so they move from a `·`-joined line that ellipsized into
-            // nothing to the expanded panel, one per line. The slug rides along
-            // because it is what the folder is actually called on disk.
-            details={
-              <dl className="cc-lrow-dl">
-                {p.files.length > 0 && (
+            const dirty = p.changes.length;
+            const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
+            return (
+              <ListRow
+                key={p.project}
+                // The folder, when the server could confirm which one it is —
+                // mono, because it is a path. Otherwise the raw slug, NOT dressed
+                // up as a path: the encoding is lossy and a plausible-looking
+                // /Users/me/Work/fused/render that doesn't exist would be worse
+                // than the slug it came from.
+                name={p.path ?? p.project}
+                nameMono={p.pathConfirmed}
+                secondary={count}
+                // The file names ARE the content of this tab — which folder holds
+                // what — so they move from a `·`-joined line that ellipsized into
+                // nothing to the expanded panel, one per line. The slug rides along
+                // because it is what the folder is actually called on disk.
+                details={
+                  <dl className="cc-lrow-dl">
+                    {p.files.length > 0 && (
+                      <>
+                        <dt className="cc-lrow-dt">Files</dt>
+                        <dd className="cc-lrow-dd cc-mono">{p.files.join("\n")}</dd>
+                      </>
+                    )}
+                    <dt className="cc-lrow-dt">Folder</dt>
+                    <dd className="cc-lrow-dd cc-mono">
+                      {p.path ?? "unknown — no session transcript records this project's folder"}
+                    </dd>
+                    <dt className="cc-lrow-dt">Stored as</dt>
+                    <dd className="cc-lrow-dd cc-mono">projects/{p.project}/memory</dd>
+                  </dl>
+                }
+                meta={
+                  dirty > 0 ? <span className="cc-change">{dirty} uncommitted</span> : null
+                }
+                actions={
                   <>
-                    <dt className="cc-lrow-dt">Files</dt>
-                    <dd className="cc-lrow-dd cc-mono">{p.files.join("\n")}</dd>
+                    <button
+                      type="button"
+                      className="cc-iconbtn"
+                      title="Reveal in Finder"
+                      aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
+                      onClick={() => guard(cc.memory.open(p.project))}
+                    >
+                      <Icon name="folder" />
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={dirty === 0}
+                      onClick={() => commit(p.project)}
+                    >
+                      Commit
+                    </button>
+                    <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
+                      Clear
+                    </button>
                   </>
-                )}
-                <dt className="cc-lrow-dt">Folder</dt>
-                <dd className="cc-lrow-dd cc-mono">
-                  {p.path ?? "unknown — no session transcript records this project's folder"}
-                </dd>
-                <dt className="cc-lrow-dt">Stored as</dt>
-                <dd className="cc-lrow-dd cc-mono">projects/{p.project}/memory</dd>
-              </dl>
-            }
-            meta={
-              dirty > 0 ? <span className="cc-change">{dirty} uncommitted</span> : null
-            }
-            actions={
-              <>
-                <button
-                  type="button"
-                  className="cc-iconbtn"
-                  title="Reveal in Finder"
-                  aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
-                  onClick={() => guard(cc.memory.open(p.project))}
-                >
-                  <Icon name="folder" />
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={dirty === 0}
-                  onClick={() => commit(p.project)}
-                >
-                  Commit
-                </button>
-                <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
-                  Clear
-                </button>
-              </>
-            }
-          />
-        );
+                }
+              />
+            );
           })}
         </List>
       )}

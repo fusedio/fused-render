@@ -46,57 +46,57 @@ export default function SkillsSection() {
       {data.skills.length > 0 && (
         <List>
           {data.skills.map((s) => (
-        <ListRow
-          key={s.slug}
-          name={s.name}
-          pills={s.linked ? <Pill>linked</Pill> : null}
-          secondary={s.description}
-          secondaryTitle={s.description}
-          // A skill's description is its whole contract with the model and is
-          // routinely a paragraph — exactly the text a one-line row must not
-          // destroy, so it is repeated in full here along with where the folder
-          // came from.
-          details={
-            s.description || s.source ? (
-              <>
-                {s.description && <p>{s.description}</p>}
-                {s.source && (
-                  <dl className="cc-lrow-dl">
-                    <dt className="cc-lrow-dt">Source</dt>
-                    <dd className="cc-lrow-dd cc-mono">{s.source}</dd>
-                  </dl>
-                )}
-              </>
-            ) : null
-          }
-          actions={
-            <>
-              {!s.shareCommand && (
-                <span className="cc-unset">no recorded source</span>
-              )}
-              <button
-                type="button"
-                className="cc-iconbtn"
-                title="Reveal in Finder"
-                aria-label={`Reveal ${s.name} in Finder`}
-                onClick={() => guard(cc.skills.open(s.slug))}
-              >
-                <Icon name="folder" />
-              </button>
-              {s.shareCommand && (
-                <button
-                  type="button"
-                  className="cc-iconbtn"
-                  title={`Copy install command — ${s.shareCommand}`}
-                  aria-label={`Copy the install command for ${s.name}`}
-                  onClick={() => share(s.shareCommand as string)}
-                >
-                  <Icon name="copy" />
-                </button>
-              )}
-            </>
-          }
-        />
+            <ListRow
+              key={s.slug}
+              name={s.name}
+              pills={s.linked ? <Pill>linked</Pill> : null}
+              secondary={s.description}
+              secondaryTitle={s.description}
+              // A skill's description is its whole contract with the model and is
+              // routinely a paragraph — exactly the text a one-line row must not
+              // destroy, so it is repeated in full here along with where the folder
+              // came from.
+              details={
+                s.description || s.source ? (
+                  <>
+                    {s.description && <p>{s.description}</p>}
+                    {s.source && (
+                      <dl className="cc-lrow-dl">
+                        <dt className="cc-lrow-dt">Source</dt>
+                        <dd className="cc-lrow-dd cc-mono">{s.source}</dd>
+                      </dl>
+                    )}
+                  </>
+                ) : null
+              }
+              actions={
+                <>
+                  {!s.shareCommand && (
+                    <span className="cc-unset">no recorded source</span>
+                  )}
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    title="Reveal in Finder"
+                    aria-label={`Reveal ${s.name} in Finder`}
+                    onClick={() => guard(cc.skills.open(s.slug))}
+                  >
+                    <Icon name="folder" />
+                  </button>
+                  {s.shareCommand && (
+                    <button
+                      type="button"
+                      className="cc-iconbtn"
+                      title={`Copy install command — ${s.shareCommand}`}
+                      aria-label={`Copy the install command for ${s.name}`}
+                      onClick={() => share(s.shareCommand as string)}
+                    >
+                      <Icon name="copy" />
+                    </button>
+                  )}
+                </>
+              }
+            />
           ))}
         </List>
       )}
