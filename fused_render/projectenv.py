@@ -335,7 +335,31 @@ def project_root_for(path: str) -> str | None:
 
     app = app_dir_for(ap)
     if app:
-        return app
+        # A folder at or below the app dir, on the path up from `start`, may
+        # declare its own environment — a project nested inside the app's
+        # folder (SPEC D499's background-app case: the app dir itself is
+        # capped at exactly two levels under fused_dir(), but a real project
+        # can live deeper). When one does, it is the real boundary, not the
+        # app dir. Several qualifying folders on the way up follow the same
+        # rule as the ancestor walk below: the TOPMOST one wins, so an inner
+        # manifest cannot shadow an outer one it sits inside — here, "outer"
+        # bottoms out at the app dir itself, which still wins if it declares
+        # an environment. A folder with a `pyproject.toml` that declares no
+        # applicable dependency does not count (has_project_env, not a bare
+        # isfile check) — it must not become a boundary and start demanding
+        # an env `uv sync` would leave empty.
+        found = None
+        d = start
+        while True:
+            if has_project_env(d):
+                found = d
+            if d == app:
+                break
+            parent = os.path.dirname(d)
+            if parent == d:  # filesystem root — should not happen inside app
+                break
+            d = parent
+        return found or app
 
     for root in _template_roots():
         child = _immediate_child(root, ap)

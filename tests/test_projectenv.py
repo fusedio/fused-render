@@ -61,16 +61,49 @@ def test_app_dir_wins_however_deep_the_script_sits(home, tmp_path):
     assert projectenv.project_root_for(str(nested / "tiff.py")) == str(app)
 
 
-def test_nested_pyproject_inside_an_app_is_ignored(home, tmp_path):
-    """A stray manifest below the root must not shadow the app's own."""
+def test_nested_pyproject_with_no_applicable_deps_is_ignored(home, tmp_path):
+    """A stray manifest below the root that declares nothing installable must
+    not shadow the app's own — it is not a "real" project, just a `uv init`
+    scaffold or `[tool.*]`-only file, and must not start demanding an empty
+    venv."""
     app = tmp_path / "workspace" / "tag" / "my-app"
     _write_project(app, ["cowsay"])
     sub = app / "readers"
-    _write_project(sub, ["altair"])
+    _write_project(sub, [])
     (sub / "tiff.py").write_text("x = 1\n", encoding="utf-8")
 
     assert projectenv.project_root_for(str(sub / "tiff.py")) == str(app)
     assert projectenv.dependencies_of(str(app)) == ["cowsay"]
+
+
+def test_nested_project_with_real_deps_becomes_the_boundary(home, tmp_path):
+    """A folder nested below the app dir that genuinely declares its own
+    environment (a real `[project]` table plus an applicable dependency) is
+    the true boundary — not the app dir capped at <tag>/<name>. This is the
+    background-app-engine case: an app dir that is itself just a container
+    two levels deep, with the real project living one level further in."""
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    app.mkdir(parents=True)
+    sub = app / "OpenWhisper"
+    _write_project(sub, ["pyobjc"])
+    (sub / "menubar.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(sub / "menubar.py")) == str(sub)
+    assert projectenv.project_env_for(str(sub / "menubar.py")) == str(sub)
+
+
+def test_app_dir_still_wins_when_it_also_declares_an_env(home, tmp_path):
+    """When both the app dir and a nested folder declare real environments,
+    the TOPMOST one wins (the app dir), matching the ancestor-walk rule
+    further down this function: an inner manifest cannot shadow the outer
+    one it sits inside."""
+    app = tmp_path / "workspace" / "tag" / "my-app"
+    _write_project(app, ["cowsay"])
+    sub = app / "OpenWhisper"
+    _write_project(sub, ["pyobjc"])
+    (sub / "menubar.py").write_text("x = 1\n", encoding="utf-8")
+
+    assert projectenv.project_root_for(str(sub / "menubar.py")) == str(app)
 
 
 def test_app_dir_without_a_manifest_has_no_environment(home, tmp_path):
