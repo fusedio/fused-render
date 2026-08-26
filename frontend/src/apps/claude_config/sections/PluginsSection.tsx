@@ -22,13 +22,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { AvailablePlugin, AvailablePlugins, Plugin } from "../api";
 import {
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -236,7 +237,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading plugins" />;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />;
 
   const installed = data.plugins.filter((p) => matches(query, p.name, p.id));
   // Discover is only the plugins you do NOT have: what you already installed is
@@ -350,117 +351,124 @@ export default function PluginsSection({ onChanged }: SectionProps) {
             </div>
           )}
           {tab === "discover" && !avail && !availError && (
-            <SkeletonLines rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
+            <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
           )}
-          {tab === "installed" &&
-            rowsInstalled.map((p) => {
-              const enabled = flipped[p.id] ?? p.enabled;
-              return (
-                // No chevron here: `plugins list` reads settings.json and
-                // installed_plugins.json, neither of which carries a
-                // description — everything this row knows is already on the
-                // line. The catalog blurb lives on Discover, which is where it
-                // is fetched from.
-                <ListRow
-                  key={p.id}
-                  lead={
-                    <Toggle3
-                      label={`Enable ${p.name}`}
-                      value={enabled}
-                      onChange={(next) => toggle(p, next)}
-                    />
-                  }
-                  name={p.name}
-                  pills={!p.installed ? <Pill>not installed</Pill> : null}
-                  secondary={p.id}
-                  secondaryTitle={p.id}
-                  secondaryMono
-                  meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
-                  actions={
-                    <>
-                      {p.installed && (
+          {tab === "installed" && rowsInstalled.length > 0 && (
+            <List>
+              {rowsInstalled.map((p) => {
+                const enabled = flipped[p.id] ?? p.enabled;
+                return (
+                  // No chevron here: `plugins list` reads settings.json and
+                  // installed_plugins.json, neither of which carries a
+                  // description — everything this row knows is already on the
+                  // line. The catalog blurb lives on Discover, which is where
+                  // it is fetched from.
+                  <ListRow
+                    key={p.id}
+                    lead={
+                      <Toggle3
+                        label={`Enable ${p.name}`}
+                        value={enabled}
+                        onChange={(next) => toggle(p, next)}
+                      />
+                    }
+                    name={p.name}
+                    pills={!p.installed ? <Pill>not installed</Pill> : null}
+                    secondary={p.id}
+                    secondaryTitle={p.id}
+                    secondaryMono
+                    meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
+                    actions={
+                      <>
+                        {p.installed && (
+                          <button
+                            type="button"
+                            className="cc-iconbtn"
+                            disabled={busy === p.id}
+                            title={busy === p.id ? "Updating…" : "Update this plugin"}
+                            aria-label={`Update ${p.name}`}
+                            onClick={() => update(p)}
+                          >
+                            <Icon name="refresh" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="cc-iconbtn"
-                          disabled={busy === p.id}
-                          title={busy === p.id ? "Updating…" : "Update this plugin"}
-                          aria-label={`Update ${p.name}`}
-                          onClick={() => update(p)}
+                          title={`Copy install command — ${p.shareCommand}`}
+                          aria-label={`Copy the install command for ${p.name}`}
+                          onClick={() => share(p.shareCommand)}
                         >
-                          <Icon name="refresh" />
+                          <Icon name="copy" />
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
-                        title={`Copy install command — ${p.shareCommand}`}
-                        aria-label={`Copy the install command for ${p.name}`}
-                        onClick={() => share(p.shareCommand)}
-                      >
-                        <Icon name="copy" />
-                      </button>
+                      </>
+                    }
+                  />
+                );
+              })}
+            </List>
+          )}
+          {tab === "discover" && pagedDiscover.length > 0 && (
+            <List>
+              {pagedDiscover.map((p) => (
+                <ListRow
+                  key={p.id}
+                  name={p.name}
+                  secondary={p.description}
+                  secondaryTitle={p.description}
+                  // Deciding whether to install something is exactly when the
+                  // marketing copy matters, and a catalog description runs to
+                  // a paragraph — so the row shows as much as fits and the
+                  // panel shows all of it, with who wrote it and what it is
+                  // filed under.
+                  details={
+                    p.description || p.author || p.category || p.keywords.length ? (
+                      <>
+                        {p.description && <p>{p.description}</p>}
+                        <dl className="cc-lrow-dl">
+                          {p.author && (
+                            <>
+                              <dt className="cc-lrow-dt">Author</dt>
+                              <dd className="cc-lrow-dd">{p.author}</dd>
+                            </>
+                          )}
+                          {p.category && (
+                            <>
+                              <dt className="cc-lrow-dt">Category</dt>
+                              <dd className="cc-lrow-dd">{p.category}</dd>
+                            </>
+                          )}
+                          {p.keywords.length > 0 && (
+                            <>
+                              <dt className="cc-lrow-dt">Keywords</dt>
+                              <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
+                            </>
+                          )}
+                        </dl>
+                      </>
+                    ) : null
+                  }
+                  meta={
+                    <>
+                      {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
+                      <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
                     </>
                   }
+                  actions={
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy === p.id}
+                      title={`claude plugin install ${p.id}`}
+                      onClick={() => install(p)}
+                    >
+                      {busy === p.id ? "Installing…" : "Install"}
+                    </button>
+                  }
                 />
-              );
-            })}
-          {tab === "discover" &&
-            pagedDiscover.map((p) => (
-              <ListRow
-                key={p.id}
-                name={p.name}
-                secondary={p.description}
-                secondaryTitle={p.description}
-                // Deciding whether to install something is exactly when the
-                // marketing copy matters, and a catalog description runs to a
-                // paragraph — so the row shows as much as fits and the panel
-                // shows all of it, with who wrote it and what it is filed under.
-                details={
-                  p.description || p.author || p.category || p.keywords.length ? (
-                    <>
-                      {p.description && <p>{p.description}</p>}
-                      <dl className="cc-lrow-dl">
-                        {p.author && (
-                          <>
-                            <dt className="cc-lrow-dt">Author</dt>
-                            <dd className="cc-lrow-dd">{p.author}</dd>
-                          </>
-                        )}
-                        {p.category && (
-                          <>
-                            <dt className="cc-lrow-dt">Category</dt>
-                            <dd className="cc-lrow-dd">{p.category}</dd>
-                          </>
-                        )}
-                        {p.keywords.length > 0 && (
-                          <>
-                            <dt className="cc-lrow-dt">Keywords</dt>
-                            <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
-                          </>
-                        )}
-                      </dl>
-                    </>
-                  ) : null
-                }
-                meta={
-                  <>
-                    {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
-                    <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
-                  </>
-                }
-                actions={
-                  <button
-                    type="button"
-                    className="btn"
-                    disabled={busy === p.id}
-                    title={`claude plugin install ${p.id}`}
-                    onClick={() => install(p)}
-                  >
-                    {busy === p.id ? "Installing…" : "Install"}
-                  </button>
-                }
-              />
-            ))}
+              ))}
+            </List>
+          )}
           {tab === "discover" && (
             <Pager
               page={safePage}
