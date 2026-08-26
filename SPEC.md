@@ -8878,6 +8878,22 @@ an AI Models page that could say what was on disk but not what was *running*.
   test_no_single_stage_pipeline_entry_declares_a_resident_gb`) pins the
   absence, so a future edit has to make the same case in words rather than
   add a plausible-looking number by habit.
+- **AI-23** **`fused_render/ai/gguf_sources.py`'s `sources_for(repo_id)`
+  probes five known GGUF-quantizer namespaces (`unsloth`, `bartowski`,
+  `ggml-org`, `TheBloke`, `mradermacher`) for `{provider}/{basename}-GGUF`
+  and verifies a hit against the candidate's own `base_model` card tag,
+  falling back to +/-30% parameter-count similarity when no tag is
+  present** (D526). `catalog.COUNTERPART_IDS` was audited as this item's
+  migration target and turned out to answer a different question entirely
+  (a curated id's counterpart in a different EXPORT FORMAT — ONNX — for the
+  two ids the torch-runner removal orphaned; its own docstring disclaims
+  any broader use and it has never held a GGUF row), so nothing there was
+  touched — `gguf_sources` is new capability, not a migration of an
+  existing one. Cached at `~/.fused-render/ai_gguf_sources.json`, 7-day
+  TTL, in the `hub_metadata.py` store idiom (not machine-scoped, a corrupt
+  or missing file reads as empty, never raises). Network failure — a
+  timeout, a non-200, a malformed body, or a monkeypatched seam raising in
+  a test — degrades the whole probe to `()`, never into a route.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
