@@ -8949,6 +8949,21 @@ an AI Models page that could say what was on disk but not what was *running*.
   wrong Hub reading. Reuses `_embed_snapshot_dir`'s existing path-segment
   guard, so a hostile repo id answers False exactly as `has_vision_tower`
   already does.
+- **AI-28** **`registry.py` gains `tool-use`/`vision` TAGS on top of the
+  five existing capabilities -- never a reshape of them.**
+  `registry.supports_tool_use(repo_id, model_type=None, architecture=None)`
+  matches a KNOWN-FAMILY allowlist (`TOOL_USE_FAMILIES`: qwen3, qwen2.5,
+  command-r, hermes, llama-3+instruct, mistral+instruct, gemma-3/4+-it),
+  never a regex reverse-engineered over an arbitrary repo id.
+  `registry.capability_tags(...)` composes it with a caller-supplied
+  `has_vision` bool into `("tool-use", "vision")` (D531). Wired into
+  `ai_runtime.describe_catalog` as `entry["tags"]`, TEXT_GENERATION only,
+  via `_capability_tags` -- reusing `_accepts_image`'s exact cached-vs-
+  pre-download precedence (AI-17 item 17) for the vision half, and passing
+  `hub_metadata`'s harvested `modelType`/`architecture` as the family
+  evidence for an uncached repo whose id alone says nothing. `registry.py`
+  stays dependency-light: neither function reads a filesystem or the
+  network itself, taking whatever evidence the caller already has instead.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 

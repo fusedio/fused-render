@@ -5456,6 +5456,33 @@ def test_accepts_image_is_false_when_uncached_and_hub_metadata_has_nothing(hub, 
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/never-seen") is False
 
 
+# -- orthogonal capability tags: tool-use / vision (SPEC AI-28) --------------
+
+
+def test_capability_tags_is_empty_for_a_non_text_generation_capability(hub):
+    assert ai_runtime._capability_tags(registry.IMAGE_GENERATION, "org/whatever") == ()
+
+
+def test_capability_tags_tags_tool_use_from_the_repo_id_alone(hub):
+    assert "tool-use" in ai_runtime._capability_tags(
+        registry.TEXT_GENERATION, "Qwen/Qwen3-8B-Instruct")
+
+
+def test_capability_tags_tags_vision_from_a_cached_snapshot(hub):
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert "vision" in ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/vlm")
+
+
+def test_capability_tags_uses_hub_metadata_family_evidence_when_uncached(hub, monkeypatch):
+    """A repo id alone (`org/my-finetune`) is uninformative — the harvested
+    `modelType` from `hub_metadata` is what actually names the family."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
+                        lambda repo_id, **kw: {"modelType": "qwen3", "hasVisionTower": False})
+    tags = ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/my-finetune")
+    assert tags == ("tool-use",)
+
+
 def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeypatch):
     """The on-disk answer wins even when it disagrees with a stale/wrong Hub
     reading — a real cached snapshot with no vision tower must not be

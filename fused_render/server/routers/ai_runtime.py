@@ -896,6 +896,13 @@ def _catalog_with_downloads() -> list[dict]:
             # a picker filtering on absence would offer it anyway.
             entry["acceptsImage"] = _accepts_image(
                 row["capability"], row["runner"], entry["id"])
+            # Orthogonal tags (SPEC AI-28) — `tool-use`/`vision`, ON TOP OF
+            # the capability this row already dispatches by, never a
+            # replacement for it. Text generation only: tool-use is a
+            # chat-format property no other capability has, and the vision
+            # tag restates the same fact `acceptsImage` already gates on for
+            # this capability.
+            entry["tags"] = _capability_tags(row["capability"], entry["id"])
             # The embeddings pair (SPEC §40): whether this entry may be handed
             # image PATHS, and which retrieval prompt scheme its texts get.
             # Computed per entry on BOTH halves for `acceptsImage`'s reason — a
@@ -975,6 +982,38 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
         meta = hub_metadata.get(model_id)
         return bool(meta and meta.get("hasVisionTower"))
     return False
+
+
+def _capability_tags(capability: str, model_id: str) -> tuple[str, ...]:
+    """`registry.capability_tags` for `model_id` — `tool-use`/`vision`, per
+    SPEC AI-28, ON TOP OF the capability dispatch `row["capability"]` already
+    is. Text generation only, for the same reason `_accepts_image`'s own
+    TEXT_GENERATION branch is the one place a vision fact is meaningful here:
+    the other three capabilities (image, speech, embeddings) have no chat
+    format to call a tool in, and their own vision-alike question (whether an
+    embedding model reads image paths) is already answered by `_accepts_paths`
+    in this app's existing vocabulary rather than this tag.
+
+    Reuses the SAME cached-vs-pre-download precedence `_accepts_image` keeps
+    (`has_cached_snapshot` gates whether `has_vision_tower`'s on-disk reading
+    or `hub_metadata`'s Hub-harvested one applies), and the harvested
+    `modelType`/`architecture` back `registry.supports_tool_use`'s
+    known-family allowlist for an uncached repo whose id alone is
+    uninformative (a private fork, a renamed mirror).
+    """
+    if capability != registry.TEXT_GENERATION:
+        return ()
+    model_type = architecture = None
+    if has_cached_snapshot(model_id):
+        vision = has_vision_tower(model_id)
+    else:
+        meta = hub_metadata.get(model_id)
+        vision = bool(meta and meta.get("hasVisionTower"))
+        if meta:
+            model_type = meta.get("modelType")
+            architecture = meta.get("architecture")
+    return registry.capability_tags(model_id, model_type=model_type,
+                                    architecture=architecture, has_vision=vision)
 
 
 def _accepts_paths(capability: str, model_id: str) -> bool:
