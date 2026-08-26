@@ -3,9 +3,17 @@
 //
 // Contents are Claude's to author — nothing here edits a memory file. What the
 // UI adds is the lifecycle the files themselves can't express: which folders
-// have uncommitted drift, a path-limited commit per project, and a Clear that
-// deletes the .md files and commits the deletion (recoverable from History,
-// which is why Clear is a confirm and not a two-step).
+// have uncommitted drift, and a Clear that deletes the .md files and commits
+// the deletion (recoverable from History, which is why Clear is a confirm and
+// not a two-step).
+//
+// There used to be a per-project Commit button here too (round 2 removed it —
+// the "N uncommitted" drift marker stays as the fact, but the *act* of
+// committing belongs on History, the one page whose job is the whole repo's
+// commit log; this page's job is showing what memory exists). Only the UI
+// affordance and its api.ts wrapper (cc.memory.commit) went — the server's
+// `memory` module still has a path-limited `commit` action; History's own
+// commit path doesn't need it.
 //
 // A row is titled by the PROJECT FOLDER, not by the projects/ directory name:
 // that name is a munged cwd ("-Users-me-Work-fused-render") and reads as
@@ -36,13 +44,6 @@ export default function MemorySection({ onChanged }: SectionProps) {
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useChangePreview();
-
-  const commit = async (project: string) => {
-    if (!(await guard(cc.memory.commit(project)))) return;
-    toastOk("Committed");
-    onChanged();
-    reload();
-  };
 
   const clear = async (project: string) => {
     const ok = await ask<boolean>({
@@ -124,14 +125,6 @@ export default function MemorySection({ onChanged }: SectionProps) {
                       onClick={() => guard(cc.memory.open(p.project))}
                     >
                       <Icon name="folder" />
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={dirty === 0}
-                      onClick={() => commit(p.project)}
-                    >
-                      Commit
                     </button>
                     <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
                       Clear
