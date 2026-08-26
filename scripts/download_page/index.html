@@ -1044,8 +1044,14 @@
     color: var(--ink-3); text-decoration: none; padding: 6px 0;
     transition: color 0.2s var(--ease);
   }
-  /* every mark on the same optical size, so the row reads as one line */
-  footer nav a svg { width: 14px; height: 14px; flex: none; }
+  /* Optical, not geometric: uppercase mono has no descenders, so the words
+     ride high in their box and a box-centred mark reads low. Nudge the marks
+     up to the cap-height midline and size each one by how much ink it has. */
+  footer nav a svg { width: 14px; height: 14px; flex: none; transform: translateY(-1px); }
+  footer nav a .mk-github { width: 13.5px; height: 13.5px; }
+  footer nav a .mk-linkedin { width: 12.5px; height: 12.5px; }
+  footer nav a .mk-x { width: 12px; height: 12px; }
+  footer nav a .mk-discord { width: 15px; height: 15px; }
   footer .legal {
     position: relative;
     margin-top: var(--s3);
@@ -1181,7 +1187,7 @@
       Fused Render
     </a>
     <nav>
-      <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+      <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg class="mk mk-github" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
       <a class="navcta" href="#get">Get the app</a>
     </nav>
   </header>
@@ -1689,11 +1695,11 @@
         Fused Render
       </a>
       <nav>
-        <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+        <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg class="mk mk-github" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
         <a rel="noopener" href="https://www.fused.io">fused.io</a>
-        <a class="gh" rel="noopener" href="https://www.linkedin.com/company/fusedio/"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg>LinkedIn</a>
-        <a class="gh" rel="noopener" href="https://x.com/fused_io"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg>X</a>
-        <a class="gh" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg>Discord</a>
+        <a class="gh" rel="noopener" href="https://www.linkedin.com/company/fusedio/"><svg class="mk mk-linkedin" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg>LinkedIn</a>
+        <a class="gh" rel="noopener" href="https://x.com/fused_io"><svg class="mk mk-x" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg>X</a>
+        <a class="gh" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY"><svg class="mk mk-discord" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg>Discord</a>
       </nav>
     </div>
     <div class="legal">&copy; 2026 Fused Labs, Inc.</div>
