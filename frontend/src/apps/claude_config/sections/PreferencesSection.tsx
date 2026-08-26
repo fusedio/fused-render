@@ -176,6 +176,12 @@ export default function PreferencesSection({ onChanged }: SectionProps) {
   }
 
   return (
+    // Full width (owner, 2026-08-26, reversing the ~1000px .cc-prefs cap
+    // from the previous decision): no wrapper needed to bound the measure
+    // any more, so back to a fragment. The void that cap existed to close —
+    // .cc-row-meta's 60ch cap leaving .cc-row-control's right-anchored
+    // (margin-left: auto) column stranded far from its label — is handled
+    // at the row level now instead (see .cc-row-meta's own comment).
     <>
       {/* Two different acts, deliberately not merged: the icon re-reads
           settings.json (what every other tab's refresh does), while "Refresh

@@ -12,7 +12,7 @@
 //   ┌ cc-header ───────────────────────────────────────────── 49px ┐
 //   │ Claude config                          [● Clean / N uncommitted]│
 //   ├ cc-tabbar ──────────────────────────────────────────────────┤
-//   │ Preferences  Plugins  …                                      │
+//   │ Plugins  Memory  Skills  Statusline  MCP  Preferences         │
 //   ├ cc-body ──────────────────────────────────────────────────┤
 //   │ caption (the file this tab edits)                            │
 //   │ section content                                               │
@@ -60,8 +60,11 @@ import StatuslineSection from "./sections/StatuslineSection";
 // The tab strip, in order. `file` is the caption under the strip — it names the
 // file (or the git object) the section actually edits, which is the one thing a
 // settings UI over someone's dotfiles owes them.
+// Preferences sits LAST in the strip, not first: it's the tab people touch
+// once and leave, while Plugins/MCP are the ones worth landing on first. It
+// stays the routing default below regardless of its position here — the
+// strip's order is presentation, the default is a bookmark contract.
 const TABS = [
-  { id: "preferences", label: "Preferences", file: "settings.json" },
   {
     id: "plugins",
     label: "Plugins",
@@ -79,6 +82,7 @@ const TABS = [
     label: "MCP",
     file: "global MCP servers via the `claude mcp` CLI (not version-controlled)",
   },
+  { id: "preferences", label: "Preferences", file: "settings.json" },
 ] as const;
 
 // The History page: reachable by the strip's right-edge button, never a tab.
@@ -91,18 +95,6 @@ const HISTORY = {
 const PAGES = [...TABS, HISTORY];
 
 type SectionId = (typeof PAGES)[number]["id"];
-
-// The content column is capped at 900px by default (.cc-main-capped, this page only) —
-// right for Preferences, whose label+doc column is itself capped near 60ch
-// for readability and should not stretch just because the page has room.
-// Wrong for the list-bearing tabs: at 1400px a 900px cap left roughly a
-// third of the window empty, and at 2000px more than half. These are the
-// tabs whose content actually uses extra width — Plugins' list (the rail
-// stays a fixed 180px beside it), Skills' description column (fewer rows
-// hit the 2-line clamp), Memory/MCP/History's rows. Statusline is left out
-// on purpose: it is a script summary and an ANSI preview, not a list, and
-// nothing about it benefits from stretching past 900px.
-const WIDE_SECTIONS = new Set<SectionId>(["plugins", "memory", "skills", "mcp", "history"]);
 
 const SECTION_PARAM = "cctab";
 
@@ -178,6 +170,12 @@ export default function ClaudeConfig() {
       : isSectionId(raw)
         ? raw
         : "preferences";
+  // `active` is always a valid SectionId (isSectionId or one of the explicit
+  // redirects above), so this find always hits — the `??` is unreachable, not
+  // a real fallback. It stays PAGES[0] anyway rather than picking a
+  // preferences-flavored default: PAGES[0] is just "some page", used only if
+  // the two stay out of sync in the future, and it should fail obviously
+  // rather than quietly resolve to a section nobody asked for.
   const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
@@ -283,9 +281,7 @@ export default function ClaudeConfig() {
         </div>
       </div>
       <div className="cc-body">
-        {/* cc-main-capped: the 900px cap is this page's, not the chassis' —
-            AI Models shares .cc-main and must not inherit it. */}
-        <main className={"cc-main cc-main-capped" + (WIDE_SECTIONS.has(active) ? " cc-main-wide" : "")}>
+        <main className="cc-main">
           {/* title= on the ROW, not on the note: the note itself is hidden on a
               narrow window, and the sentence should still be reachable there. */}
           <div className="cc-caption-row" title={TAGLINE}>

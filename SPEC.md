@@ -3520,7 +3520,7 @@ view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
 
 **The community showcase clone (`~/Fused/showcase`) is a repo like any
-other from here** (D516-D518). It used to be managed on the app's behalf —
+other from here** (D517-D519). It used to be managed on the app's behalf —
 fetched and fast-forwarded on every server start — and is not any more:
 `fused_render/community.py` clones it once, if missing, and never touches it
 again. There is also no second, INSTALLED copy any more (`~/Fused/local/
@@ -4222,7 +4222,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   gate never offers the view (GT-4 / MD-11).
 
 - **GT-20** **A repo the user opens an app in gets a passive "origin has
-  moved" notice, opt-in from outside this view (D516-D519).** Every app open
+  moved" notice, opt-in from outside this view (D517-D520).** Every app open
   through `GET /render` (D301's own definition of "this app is being
   opened") triggers a throttled check — per repo ROOT, not per app, so
   several apps in one repo cost one fetch — of whether the remote's default
@@ -5145,7 +5145,7 @@ stop it short of quitting the app.
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
 - **BG-15** **A second named slot, `RepoUpdatesSlot`, for the repos GT-20's
-  background check has flagged** (D516-D519) — one row per repo with a known
+  background check has flagged** (D517-D520) — one row per repo with a known
   upstream update, above the job rows and, like the queue's own rows (BG-10),
   **outside the fold**: a card collapsed weeks ago must not hide a live
   "origin has moved" action any more than it may hide a queued message.

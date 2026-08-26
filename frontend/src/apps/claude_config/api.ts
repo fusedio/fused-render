@@ -166,6 +166,34 @@ export interface AvailablePlugins {
   skipped: string[];
 }
 
+// One thing a plugin contributes to a session — a skill, a command, an agent,
+// a hook event, an MCP server. `path` is the absolute file that declares it,
+// which is what makes the entry clickable: the panel opens it in FusedRender
+// rather than paraphrasing it.
+export interface PluginComponent {
+  name: string;
+  description: string;
+  path: string;
+}
+
+// What ONE installed plugin puts in a session. Read on demand, per row — see
+// plugins.py's `_contents` for why this is not folded into `list`.
+export interface PluginContents extends OkResult {
+  id?: string;
+  root?: string;
+  description?: string;
+  skills?: PluginComponent[];
+  commands?: PluginComponent[];
+  agents?: PluginComponent[];
+  hooks?: PluginComponent[];
+  mcpServers?: PluginComponent[];
+  // True once the server's per-read walk budget ran out (plugins.py's
+  // _WalkBudget) — the lists above may be missing components rather than the
+  // plugin genuinely shipping fewer, so the panel says so instead of reading
+  // as a complete inventory of a plugin that is just unusually large.
+  truncated?: boolean;
+}
+
 export interface UpdateResult extends OkResult {
   id?: string;
   stdout?: string;
@@ -180,6 +208,8 @@ export const plugins = {
       id,
       enabled,
     }),
+  contents: (id: string) =>
+    callModule<PluginContents>("plugins", { action: "contents", id }),
   update: (id: string) => callModule<UpdateResult>("plugins", { action: "update", id }),
   // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
   // the caller must show a busy state rather than assume a quick answer.
