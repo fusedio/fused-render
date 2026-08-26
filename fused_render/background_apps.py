@@ -215,17 +215,35 @@ def set_enabled(path: str, enabled: bool) -> None:
 
 
 def interpreter_for(folder: str) -> str:
-    """The interpreter a background app in *folder* runs on: the same
-    fused-vs-builtin dispatch `/api/engine` uses for its warm worker
-    (routers/app_engine.py) — the folder's own project venv python when the
-    fused engine is effective, else this app's own `sys.executable`. Does not
-    check the interpreter exists; callers do (the 409 stance, PY-17)."""
+    """The interpreter a background app in *folder* runs on: that folder's OWN
+    project venv python when it declares one AND the fused engine is
+    effective, else this app's own `sys.executable`. Does not check the
+    interpreter exists; callers do (the 409 stance, PY-17).
+
+    Deliberately does NOT reuse `projectenv.project_env_for`/`project_root_for`
+    the way the warm `/api/engine` worker does (routers/app_engine.py) — a
+    decision, not an oversight (D499, 2026-08-26 code review). Those walk
+    UPWARD from a `.py` FILE to find the enclosing project, which is correct
+    there: a script has no boundary of its own, so the nearest ancestor
+    `pyproject.toml` IS its project. A background app's FOLDER is already the
+    project boundary — it declares itself unambiguously via
+    `[tool.fused-render.app]` — so walking past it would silently adopt
+    whatever unrelated ancestor project happens to sit above it on disk
+    (measured: the shipped fixture, `tests/fixtures/background_app`, nested
+    inside this repo, resolved to the REPO'S OWN venv and 409'd because that
+    venv isn't in the project-venv store). `has_project_env(folder)` checks
+    ONLY the app's own manifest — a `[project]` table with at least one
+    applicable dependency — so a manifest-only app (no deps of its own, like
+    the fixture) runs on `sys.executable` per PY-17, full stop, regardless of
+    what any ancestor folder declares."""
     from fused_render import projectenv
     from fused_render.shell import prefs as shell_prefs
 
-    if shell_prefs.effective_engine() == "fused":
-        project = projectenv.project_env_for(folder)
-        return projectenv.interpreter_for(project)
+    if shell_prefs.effective_engine() != "fused":
+        return sys.executable
+    folder = os.path.abspath(folder)
+    if projectenv.has_project_env(folder):
+        return projectenv.interpreter_for(folder)
     return sys.executable
 
 

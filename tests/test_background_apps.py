@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import background_apps
 from fused_render.server import create_app, engine_host
+from fused_render.shell import prefs as shell_prefs
 
 FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
 HDRS = {"X-Fused": "1"}
@@ -218,6 +219,70 @@ def test_version_for_raises_on_missing_daemon_file(tmp_path):
     os.remove(folder / "daemon.py")
     with pytest.raises(OSError):
         background_apps.version_for(str(folder), "/usr/bin/python3")
+
+
+# --------------------------------------------------- interpreter resolution
+# D499 (2026-08-26 code review): interpreter_for must NOT walk past the app's
+# own folder looking for an ancestor project the way projectenv.project_env_for
+# does for a plain .py script — the app folder IS the project boundary.
+
+
+def test_interpreter_for_manifest_only_app_is_sys_executable(tmp_path, monkeypatch):
+    folder = _make_app(tmp_path)  # only [tool.fused-render.app], no [project]
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
+    assert background_apps.interpreter_for(str(folder)) == sys.executable
+
+
+def test_interpreter_for_builtin_engine_is_always_sys_executable(tmp_path, monkeypatch):
+    folder = _make_app(tmp_path)
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "builtin")
+    assert background_apps.interpreter_for(str(folder)) == sys.executable
+
+
+def test_interpreter_for_manifest_only_app_nested_in_a_dependency_declaring_parent(
+        tmp_path, monkeypatch):
+    # THE surprising case this decision exists for: a manifest-only app
+    # folder sitting inside some unrelated ancestor project must still run on
+    # sys.executable, never silently inherit that ancestor's venv — the
+    # exact bug the fixture app hit nested inside the fused-render repo
+    # itself (a 409, since that ancestor venv isn't in the project-venv
+    # store).
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "pyproject.toml").write_text(
+        '[project]\nname = "parent"\nversion = "0"\n'
+        'dependencies = ["requests"]\n')
+    app = parent / "app"
+    app.mkdir()
+    (app / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+    (app / "daemon.py").write_text("# daemon\n")
+
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
+    assert background_apps.interpreter_for(str(app)) == sys.executable
+
+
+def test_interpreter_for_app_declaring_its_own_deps_uses_its_own_venv(
+        tmp_path, monkeypatch):
+    # The other half: an app whose OWN pyproject.toml declares [project] deps
+    # (alongside its [tool.fused-render.app] table, same file) gets that
+    # folder's own venv — has_project_env checks only the folder handed to
+    # it, never an ancestor.
+    folder = tmp_path / "app_with_deps"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[project]\nname = "app_with_deps"\nversion = "0"\n'
+        'dependencies = ["requests"]\n\n'
+        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+
+    monkeypatch.setattr(shell_prefs, "effective_engine", lambda: "fused")
+    from fused_render import projectenv
+    monkeypatch.setattr(projectenv, "interpreter_for",
+                        lambda project_dir: f"venv-python-for:{project_dir}")
+
+    result = background_apps.interpreter_for(str(folder))
+    assert result == f"venv-python-for:{os.path.abspath(str(folder))}"
 
 
 # ------------------------------------------------------------- enabled store
