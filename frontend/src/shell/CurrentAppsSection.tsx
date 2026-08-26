@@ -83,11 +83,12 @@ function saveOrder(slugs: string[]): void {
   }
 }
 
-/** Take `slugs` as the whole order, replacing what this page held. Empty is
- *  NOT an order — a missing or cleared key must leave the live order alone
- *  rather than flattening it. A live app the incoming list does not mention
- *  ends up with no sequence and is therefore treated as new (top) on the next
- *  assignment; in practice both tabs read the same pulse, so the lists agree. */
+/** Take `slugs` as the whole order, replacing what this page held. Empty is NOT
+ *  an order — a missing or cleared key must leave the live order alone rather
+ *  than flattening it. A slug the incoming list does not mention is genuinely
+ *  news to the tab that wrote it, so it gets a fresh sequence and goes on top;
+ *  that resolves in ONE round, because assignment only ever adds (see
+ *  current-apps-lib.ts) and so the other tab's next read agrees. */
 function adoptSavedOrder(slugs: string[]): void {
   if (!slugs.length) return;
   appOrder.clear();
@@ -222,11 +223,12 @@ export default function CurrentAppsSection() {
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
   }, [rows, fusedDir, orderEpoch]);
-  // Write the order back after it settles — a drag, a new app, or an app that
-  // left. Guarded on a non-empty list for the same reason the prune is: the
-  // first render (and any moment the pulse has not loaded) has no apps, and
-  // saving that would erase the order it is about to display. `saveOrder`
-  // itself skips an unchanged order, so running this every pulse costs a read.
+  // Write the order back after it settles — a drag, or an app nothing had seen
+  // before. Guarded on a non-empty list for the same reason `assignSequences`
+  // is: the first render (and any moment the pulse has not loaded) has no apps,
+  // and saving from that state would write an order derived from nothing.
+  // `saveOrder` itself skips an unchanged order, so running this on every pulse
+  // costs one read.
   useEffect(() => {
     if (apps.length) saveOrder(orderedSlugs(appOrder));
   }, [apps]);

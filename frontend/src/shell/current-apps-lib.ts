@@ -157,31 +157,70 @@ export function withAppPageTab(search: string, tab: AppPageTab): string {
 // The cost is that it is per browser profile and does not follow the user to
 // another machine.
 //
-// An app that LEAVES the list (every task archived) loses its sequence, so if it
-// returns it returns as new, at the top. "Already exists in the list" is the
-// owner's own test for what must not move, and an app with nothing on the desk
-// is not in the list. The prune is guarded on a non-empty input so a pulse that
-// has not loaded yet cannot wipe the order — and since the saved order is
-// pruned the same way, what is on disk stays bounded by what is on the desk
-// rather than growing a tail of every app ever opened.
+// The order REMEMBERS an app once it has seen it, and the pruning happens on the
+// DISPLAY instead: `bySequence` is handed the live apps, so a remembered slug
+// with nothing on the desk is simply inert. An app that goes quiet and comes
+// back therefore keeps its slot rather than returning at the top.
+//
+// That is a deliberate reversal (Bugbot, 2026-08-26, on the first persisted
+// cut, which did prune the store). Pruning made assignment NON-MONOTONE, and
+// two tabs sharing one localStorage row cannot survive that: tab A sees
+// {a,b,c}, tab B has not polled since `c` appeared, so B writes {a,b}, A reads
+// that and re-adds `c`, B reads THAT and prunes it again — a tight write loop
+// for as long as the two pulses disagree, which after an in-tab poke is up to a
+// full poll interval. Add-only assignment cannot loop: every exchange either
+// teaches a tab a slug it did not have or changes nothing, so the two converge
+// in one round and the change-guard on the write then holds.
+//
+// Remembering is bounded by `REMEMBERED_LIMIT` rather than by liveness — the
+// oldest slots that are NOT currently on the desk are dropped first, and a live
+// app is never dropped.
 
 /** slug -> sequence. Higher sorts earlier. */
 export type AppOrder = Map<string, number>;
 
-/** Give every app in `apps` a sequence, and forget apps that are gone.
- *  `apps` must arrive in RECENCY order (what `currentApps` returns): fresh
- *  slugs are numbered from the oldest up, so the newest ends with the highest
- *  sequence and lands at the top. Idempotent — an app that already has a
- *  sequence keeps it, which is what makes this safe to call during a render. */
+/** How many slots the order remembers. Rows are one line and apps are folders a
+ *  person made by hand, so this is a runaway guard, not a policy — it exists so
+ *  a machine running for a year cannot grow an unbounded localStorage row. */
+export const REMEMBERED_LIMIT = 200;
+
+/** Give every app in `apps` a sequence it does not already have.
+ *  `apps` must arrive in RECENCY order (what `currentApps` returns): fresh slugs
+ *  are numbered from the oldest up, so the newest ends with the highest sequence
+ *  and lands at the top. ADD-ONLY, which is what keeps two tabs from fighting
+ *  over one saved order (see the header) — and idempotent, which is what makes
+ *  it safe to call during a render. */
 export function assignSequences(order: AppOrder, apps: CurrentApp[]): void {
   if (!apps.length) return;
-  const live = new Set(apps.map((a) => a.slug));
-  for (const slug of [...order.keys()]) if (!live.has(slug)) order.delete(slug);
   const fresh = apps.filter((a) => !order.has(a.slug));
-  if (!fresh.length) return;
-  let next = 0;
-  for (const seq of order.values()) next = Math.max(next, seq);
-  for (let i = fresh.length - 1; i >= 0; i--) order.set(fresh[i].slug, ++next);
+  if (fresh.length) {
+    let next = 0;
+    for (const seq of order.values()) next = Math.max(next, seq);
+    for (let i = fresh.length - 1; i >= 0; i--) order.set(fresh[i].slug, ++next);
+  }
+  trimRemembered(order, new Set(apps.map((a) => a.slug)));
+}
+
+/** Drop the oldest slots the desk is not currently using, until the order is
+ *  back inside `REMEMBERED_LIMIT`. A live app is never dropped, however low it
+ *  sits: it has a row on screen, and a row with no sequence would jump to the
+ *  top on the next assignment.
+ *
+ *  This is the one place assignment is not purely add-only, so it is worth
+ *  saying why it still cannot loop between two tabs: a slug this tab trims
+ *  because nothing here uses it, but which the OTHER tab has a row for, comes
+ *  back from that tab at `max + 1` — the top — and a slug at the top is no
+ *  longer in the tail this function takes from. The next trim reaches for a
+ *  different slug, and the exchange ends. */
+function trimRemembered(order: AppOrder, live: Set<string>): void {
+  if (order.size <= REMEMBERED_LIMIT) return;
+  const droppable = [...order.entries()]
+    .filter(([slug]) => !live.has(slug))
+    .sort((a, b) => a[1] - b[1]);
+  for (const [slug] of droppable) {
+    if (order.size <= REMEMBERED_LIMIT) return;
+    order.delete(slug);
+  }
 }
 
 /** `apps` in display order. Sequences are assumed assigned; an app without one
@@ -199,8 +238,11 @@ export function reorderTo(order: AppOrder, slugs: string[]): void {
   for (const slug of slugs) order.set(slug, seq--);
 }
 
-/** The store as a display-ordered slug list — what gets saved, and the input
- *  `reorderTo` takes back. */
+/** The store as an ordered slug list — what gets saved, and the input
+ *  `reorderTo` takes back. This is every slug the order REMEMBERS, not just the
+ *  ones with a row: the saved order has to survive an app going quiet, and a
+ *  writer that dropped what it could not currently see is exactly the loop the
+ *  header describes. */
 export function orderedSlugs(order: AppOrder): string[] {
   return [...order.entries()].sort((a, b) => b[1] - a[1]).map(([slug]) => slug);
 }

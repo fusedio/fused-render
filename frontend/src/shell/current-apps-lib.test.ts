@@ -14,6 +14,7 @@ import {
   localAppsRoot,
   orderedSlugs,
   parseSavedOrder,
+  REMEMBERED_LIMIT,
   slugFromAppPath,
   withAppPageTab,
   type AppOrder,
@@ -77,6 +78,13 @@ describe("currentApps", () => {
   });
 });
 
+// The apps a set of (slug, last_active) pairs adds up to, in recency order.
+const of = (...specs: [string, number][]) =>
+  currentApps(
+    specs.map(([slug, at]) => task("k-" + slug, ROOT + slug, "done", at)),
+    FUSED,
+  );
+
 // The displayed order (sequence per app). `shown` is what the section renders:
 // seed from whatever recency currently says, then sort by sequence.
 function shown(order: AppOrder, apps: ReturnType<typeof currentApps>): string[] {
@@ -85,12 +93,6 @@ function shown(order: AppOrder, apps: ReturnType<typeof currentApps>): string[] 
 }
 
 describe("the displayed order", () => {
-  const of = (...specs: [string, number][]) =>
-    currentApps(
-      specs.map(([slug, at]) => task("k-" + slug, ROOT + slug, "done", at)),
-      FUSED,
-    );
-
   it("seeds from recency, newest first", () => {
     const order: AppOrder = new Map();
     expect(shown(order, of(["app1", 10], ["app2", 20], ["app3", 30]))).toEqual([
@@ -144,13 +146,37 @@ describe("the displayed order", () => {
     ]);
   });
 
-  it("re-adds an app as new once it has left the list", () => {
+  it("remembers an app that leaves, and gives it its slot back", () => {
     const order: AppOrder = new Map();
     shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]));
-    // app3's tasks are all archived — it is off the desk, so it loses its slot.
+    // app3's tasks are all archived: no row, but the slot is remembered — the
+    // store is add-only so that two tabs cannot fight over it (see the lib
+    // header), and the display is what prunes.
     expect(shown(order, of(["app1", 30], ["app2", 20]))).toEqual(["app1", "app2"]);
-    expect(order.has("app3")).toBe(false);
-    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))[0]).toBe("app3");
+    expect(order.has("app3")).toBe(true);
+    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))).toEqual([
+      "app1",
+      "app2",
+      "app3",
+    ]);
+  });
+
+  it("forgets the oldest slots the desk is not using once past the limit", () => {
+    const order: AppOrder = new Map();
+    const many = Array.from({ length: REMEMBERED_LIMIT + 5 }, (_, i): [string, number] => [
+      "app" + i,
+      i,
+    ]);
+    shown(order, of(...many));
+    expect(order.size).toBe(REMEMBERED_LIMIT + 5); // every one is LIVE, none droppable
+    // Now only two are on the desk. The trim takes the lowest slots that have
+    // no row, and never one that has.
+    shown(order, of(["app0", 1], ["app1", 2]));
+    expect(order.size).toBe(REMEMBERED_LIMIT);
+    expect(order.has("app0")).toBe(true);
+    expect(order.has("app1")).toBe(true);
+    expect(order.has("app" + (REMEMBERED_LIMIT + 4))).toBe(true); // newest slot kept
+    expect(order.has("app2")).toBe(false); // oldest droppable slot went
   });
 
   it("holds the order through a pulse that has not loaded yet", () => {
@@ -192,11 +218,66 @@ describe("the saved order", () => {
     ]);
   });
 
-  it("prunes what the saved order remembers and the desk does not", () => {
+  it("keeps a slug the saved order remembers and the desk is not using", () => {
     const order: AppOrder = new Map();
     reorderTo(order, parseSavedOrder('["gone","live"]'));
     assignSequences(order, currentApps([task("k", ROOT + "live", "done", 5)], FUSED));
-    expect(orderedSlugs(order)).toEqual(["live"]);
+    expect(orderedSlugs(order)).toEqual(["gone", "live"]);
+  });
+
+  it("converges between two tabs whose pulses disagree", () => {
+    // Bugbot, 2026-08-26 (High): with a store that PRUNED, two tabs sharing one
+    // localStorage row could not settle. Tab A sees `c`; tab B has not polled
+    // since it appeared, so B writes {a,b}; A reads that and re-adds `c`; B
+    // reads THAT and prunes it again — a write loop for as long as the pulses
+    // disagree, which after an in-tab poke is up to a full poll interval.
+    // Add-only assignment makes each exchange either teach a tab something or
+    // change nothing, so it terminates.
+    const A: AppOrder = new Map();
+    const B: AppOrder = new Map();
+    const liveA = of(["a", 30], ["b", 20], ["c", 10]);
+    const liveB = of(["a", 30], ["b", 20]);
+    // A settles first and writes.
+    assignSequences(A, liveA);
+    let saved = orderedSlugs(A);
+    // Now the tabs take turns adopting and re-deriving. Two rounds is the bound.
+    const round = (order: AppOrder, live: typeof liveA) => {
+      order.clear();
+      reorderTo(order, parseSavedOrder(JSON.stringify(saved)));
+      assignSequences(order, live);
+      const next = orderedSlugs(order);
+      const wrote = JSON.stringify(next) !== JSON.stringify(saved);
+      saved = next;
+      return wrote;
+    };
+    expect(round(B, liveB)).toBe(false); // B has nothing to add, so it stays quiet
+    expect(round(A, liveA)).toBe(false); // and A already knew everything saved
+    // A wrote first from its own recency, so `c` is at the BOTTOM (oldest
+    // activity) — and it stays there. Under the old prune, B's write would have
+    // dropped it and A's next pass would have re-added it on top, forever.
+    expect(saved).toEqual(["a", "b", "c"]);
+  });
+
+  it("settles in one round when the tab that wrote first knew less", () => {
+    const A: AppOrder = new Map();
+    const B: AppOrder = new Map();
+    const liveA = of(["a", 30], ["b", 20], ["c", 10]);
+    const liveB = of(["a", 30], ["b", 20]);
+    // The tab that has NOT seen `c` writes first this time.
+    assignSequences(B, liveB);
+    let saved = orderedSlugs(B);
+    A.clear();
+    reorderTo(A, parseSavedOrder(JSON.stringify(saved)));
+    assignSequences(A, liveA);
+    // A teaches the row about `c`, once, and it goes on top: to that saved
+    // order it IS new.
+    expect(orderedSlugs(A)).toEqual(["c", "a", "b"]);
+    saved = orderedSlugs(A);
+    // B adopts and has nothing to add back — the exchange is over.
+    B.clear();
+    reorderTo(B, parseSavedOrder(JSON.stringify(saved)));
+    assignSequences(B, liveB);
+    expect(orderedSlugs(B)).toEqual(saved);
   });
 
   it("degrades anything unreadable to no saved order", () => {
