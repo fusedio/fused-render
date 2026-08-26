@@ -2114,7 +2114,10 @@
     if (!document.documentElement.classList.contains("anim")) return;
     if (!("IntersectionObserver" in window)) return;
     var els = Array.prototype.slice.call(
-      document.querySelectorAll(".wrap > section:not([hidden]):not(#how)"));
+      document.querySelectorAll(".wrap > section:not([hidden])"))
+      // A transform on the section breaks position:sticky inside it, so the
+      // scroll-pinned sections opt out of the fade entirely.
+      .filter(function (el) { return !el.querySelector(".eco-stage, .hero-stage, .get-stage"); });
     var io = new IntersectionObserver(function (entries) {
       entries.forEach(function (e) {
         if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
