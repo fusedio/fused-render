@@ -6,12 +6,13 @@
 import { useCallback } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import {
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -31,7 +32,7 @@ export default function SkillsSection() {
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <SkeletonLines rows={SKELETON_ROWS} label="Loading skills" />;
+  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />;
 
   const linked = data.skills.filter((s) => s.linked).length;
 
@@ -42,7 +43,9 @@ export default function SkillsSection() {
         onRefresh={reload}
       />
       {!data.skills.length && <Empty>No local skills under skills/*/SKILL.md.</Empty>}
-      {data.skills.map((s) => (
+      {data.skills.length > 0 && (
+        <List>
+          {data.skills.map((s) => (
         <ListRow
           key={s.slug}
           name={s.name}
@@ -94,7 +97,9 @@ export default function SkillsSection() {
             </>
           }
         />
-      ))}
+          ))}
+        </List>
+      )}
     </>
   );
 }
