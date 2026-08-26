@@ -29,7 +29,7 @@ def no_real_wake(monkeypatch):
 def spawned(monkeypatch):
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kw):
         calls.append({"target": target, "message": prompt,
                       "permission_mode": permission_mode,
                       "session_id": session_id})

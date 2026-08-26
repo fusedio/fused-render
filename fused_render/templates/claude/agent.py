@@ -1790,7 +1790,8 @@ _DETACH = (
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
-           has_pane: bool | None = None) -> dict:
+           has_pane: bool | None = None,
+           extra_read_dirs: list | None = None) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -1885,8 +1886,14 @@ def _start(file: str, message: str, session_id: str, model: str,
            #     prefix rule, so only a command that IS `fused ...` matches —
            #     compounds (`cd x && fused ...`) still card.
            "--allowed-tools",
+           #   extra_read_dirs — the caller's own attachment dirs, same rule
+           #     shape as SHOTS and for the same reason: the scheduler names
+           #     its task-shots dir here, whose images the user attached
+           #     deliberately in the New task form, and a headless run has
+           #     nobody at the screen to answer a card.
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
+                    + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different

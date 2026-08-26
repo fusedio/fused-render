@@ -1031,7 +1031,7 @@ def test_fix_lock_serializes_concurrent_spawn_attempts(harness, monkeypatch):
     recorder_release = threading.Event()
     calls = []
 
-    def _slow_spawn(target, prompt, mode, session_id=""):
+    def _slow_spawn(target, prompt, mode, session_id="", **kw):
         calls.append(1)
         entered.set()
         release.wait(5)
