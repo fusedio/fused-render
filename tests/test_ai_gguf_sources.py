@@ -154,3 +154,19 @@ def test_force_bypasses_the_ttl_cache(monkeypatch):
                         lambda repo_id: calls.append(repo_id) or fetch(repo_id))
     gguf_sources.sources_for("org/Qwen3-8B", force=True)
     assert calls
+
+
+def test_a_corrupt_fetchedat_never_raises_into_the_route(monkeypatch):
+    """`entry.get("fetchedAt", 0)` used to be handed straight to `time.time()
+    - ...`, which raises `TypeError` when the stored value is not a number —
+    a hand-edited or truncated write. This module's own docstring promises it
+    never raises into a route; a corrupt timestamp must read as "stale,
+    refetch" rather than crash the caller (code review)."""
+    monkeypatch.setattr(gguf_sources, "_fetch_model_info",
+                        lambda repo_id: _info(base_model="org/Qwen3-8B")
+                        if repo_id == "unsloth/Qwen3-8B-GGUF" else None)
+    store = gguf_sources._load()
+    store["repos"]["org/Qwen3-8B"] = {"sources": ["unsloth/Qwen3-8B-GGUF"],
+                                      "fetchedAt": "not-a-timestamp"}
+    gguf_sources._write(store)
+    assert gguf_sources.sources_for("org/Qwen3-8B") == ("unsloth/Qwen3-8B-GGUF",)

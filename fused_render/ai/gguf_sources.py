@@ -132,15 +132,29 @@ def _write(store: dict) -> None:
     storage.write_json(_path(), {"version": VERSION, "repos": store["repos"]})
 
 
+def _fetched_at(entry) -> float:
+    """`entry["fetchedAt"]` as a `float`, or `0.0` (the oldest possible
+    reading) for anything that is not one — a non-dict row, a missing key,
+    or a HAND-EDITED/truncated write that leaves a string or `None` where a
+    timestamp belongs. `isinstance` rather than a bare `.get(..., 0)`
+    (code review): the bare form let a corrupt `fetchedAt` reach
+    `time.time() - ...` and raise `TypeError` straight out of `sources_for`,
+    which this module's own docstring promises never happens. Booleans are
+    excluded explicitly — `isinstance(True, int)` is `True` in Python, and a
+    stray `"fetchedAt": true` must not be read as `1`."""
+    if not isinstance(entry, dict):
+        return 0.0
+    value = entry.get("fetchedAt")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return float(value)
+
+
 def _bounded(repos: dict) -> dict:
     if len(repos) <= MAX_REPOS:
         return repos
 
-    def _fetched_at(kv):
-        value = kv[1]
-        return value.get("fetchedAt", 0) if isinstance(value, dict) else 0
-
-    ordered = sorted(repos.items(), key=_fetched_at)
+    ordered = sorted(repos.items(), key=lambda kv: _fetched_at(kv[1]))
     return dict(ordered[len(ordered) - MAX_REPOS:])
 
 
@@ -234,7 +248,7 @@ def sources_for(repo_id: str, *, params: float | None = None,
     store = _load()
     entry = store["repos"].get(repo_id)
     fresh = (isinstance(entry, dict) and not force
-             and time.time() - entry.get("fetchedAt", 0) < TTL_SECONDS)
+             and time.time() - _fetched_at(entry) < TTL_SECONDS)
     if fresh:
         sources = entry.get("sources")
         return tuple(sources) if isinstance(sources, list) else ()
