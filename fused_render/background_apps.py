@@ -50,8 +50,11 @@ class Manifest:
 def load_manifest(folder: str) -> Manifest | None:
     """The folder's background-app manifest, or None when the folder does not
     declare one, declares a different kind, or its `daemon` does not resolve
-    to a file inside the folder. Never raises — a missing or corrupt
-    `pyproject.toml`, or an unreadable folder, simply reads as "no manifest"."""
+    to a FILE inside the folder. Never raises — a missing or corrupt
+    `pyproject.toml`, an unreadable folder, or a `daemon` naming a directory
+    (`daemon = "."` passes the containment check below on its own) all simply
+    read as "no manifest" rather than reaching engine_host as a `python
+    <folder>` bring-up that fails opaquely."""
     folder = os.path.abspath(folder)
     pyproject = os.path.join(folder, "pyproject.toml")
     try:
@@ -74,6 +77,14 @@ def load_manifest(folder: str) -> Manifest | None:
     real_folder = os.path.realpath(folder)
     real_daemon = os.path.realpath(daemon)
     if real_daemon != real_folder and not real_daemon.startswith(real_folder + os.sep):
+        return None
+    # A FILE, not merely a path inside the folder — `daemon = "."` (or any
+    # other directory) passes containment trivially (a folder is "inside"
+    # itself), and os.stat succeeds on a directory just as it does on a file,
+    # so version_for would not catch this either; bring-up would then run
+    # `python <folder>` and fail with an opaque bootstrap error instead of a
+    # clean manifest rejection here.
+    if not os.path.isfile(real_daemon):
         return None
     return Manifest(folder=folder, daemon=daemon)
 

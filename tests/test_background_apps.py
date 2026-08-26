@@ -87,6 +87,27 @@ def test_load_manifest_rejects_missing_daemon_key(tmp_path):
     assert background_apps.load_manifest(str(folder)) is None
 
 
+def test_load_manifest_rejects_daemon_naming_a_directory(tmp_path):
+    # Code-review fix: `daemon = "."` (or any other directory) passed
+    # containment trivially — a folder is "inside" itself — and os.stat
+    # succeeds on a directory just like a file, so nothing caught it before
+    # engine_host tried to spawn `python <folder>` and failed opaquely.
+    folder = tmp_path / "dir_daemon"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nkind = "background"\ndaemon = "."\n')
+    assert background_apps.load_manifest(str(folder)) is None
+
+
+def test_load_manifest_rejects_daemon_naming_a_subdirectory(tmp_path):
+    folder = tmp_path / "subdir_daemon"
+    folder.mkdir()
+    (folder / "notadaemon").mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nkind = "background"\ndaemon = "notadaemon"\n')
+    assert background_apps.load_manifest(str(folder)) is None
+
+
 # ------------------------------------------------------------- identity
 
 
