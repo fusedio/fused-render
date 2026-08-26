@@ -54,6 +54,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_show import router as git_show_router
+from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
@@ -564,6 +565,11 @@ def create_app(start_dir: str) -> FastAPI:
     # here while a frame carries `_rev`. Read-only, no guard; it refuses a
     # mount-backed path outright, like every other git call in the app.
     app.include_router(git_show_router)
+    # GET /api/git-upstream (routers/git_upstream.py): repos with a known
+    # upstream update, for the activity card's repo-update rows. Read-only —
+    # the check that populates it runs off GET /render (D301), throttled per
+    # repo root.
+    app.include_router(git_upstream_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
     # "AI Models" page (routers/ai_models.py). The reads are unguarded;
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
