@@ -305,11 +305,33 @@ class InsufficientDiskSpace(Exception):
 # ---------------------------------------------------------- SPEC AI-26 (D529)
 def _ensure_disk_space(total_bytes, folder):
     """Raise `InsufficientDiskSpace` when `folder`'s volume is already known
-    to have less free space than `total_bytes` — the fix for "no disk-space
-    precheck anywhere" (SPEC AI-26): a download that will not fit used to
-    fail as a mid-transfer `OSError: [Errno 28] No space left on device`,
-    after however many gigabytes it managed to write and with an error that
-    names a syscall rather than the gap.
+    to have less free space than the bytes THIS DOWNLOAD STILL HAS TO WRITE
+    — the fix for "no disk-space precheck anywhere" (SPEC AI-26): a download
+    that will not fit used to fail as a mid-transfer `OSError: [Errno 28] No
+    space left on device`, after however many gigabytes it managed to write
+    and with an error that names a syscall rather than the gap.
+
+    **`total_bytes` is the repo/file's FULL size in scope — a RESUME must be
+    judged against what remains, not the whole thing again** (code review
+    finding 2). Without this, a 30GB model interrupted at 28GB and retried
+    with 5GB free was refused ("needs 30.0 GB, only 5.0 GB is free") even
+    though only 2GB remained to fetch — defeating the entire `.part`/sidecar
+    resume machinery this module otherwise goes to considerable lengths to
+    provide. `bytes_on_disk(folder)` is the SAME figure the progress bar
+    already trusts for "how much of this repo is durably on disk right
+    now" — complete blobs plus a `.fusedpart`'s ALLOCATED-BLOCKS progress,
+    not its sparse `ftruncate`d length — so subtracting it here reuses one
+    notion of "already have" rather than inventing a second that could
+    drift from what the bar reports. `folder` may legitimately hold MORE
+    than what is in this fetch's own `allow_patterns` scope (an older
+    revision's blobs, a differently-scoped prior fetch); that makes the
+    subtraction a slight OVERESTIMATE of what has been durably written for
+    THIS scope, which is the safe direction for a precheck to be
+    imprecise in — the same "the bar can proceed on a guess" tolerance this
+    module's listing-failure fallback already accepts, and refusing a
+    resume that would actually have fit is a real regression while letting
+    one through that comes up a little short during the fetch is not: the
+    fetch itself still fails loudly if it genuinely runs out.
 
     `total_bytes=None` (a listing failure already degraded the progress bar
     to a guess, or a caller that never learned a total at all) is silently
@@ -318,7 +340,10 @@ def _ensure_disk_space(total_bytes, folder):
     and the existing `_fallback` degradation for a failed listing already
     treats "no total" as "proceed anyway, the bar just cannot be precise".
     This function makes the identical call for the SAME reason: an unknown
-    figure is not evidence of a shortfall.
+    figure is not evidence of a shortfall. A `remaining` of zero or less (a
+    complete or over-complete repo, the fast path above should normally have
+    already returned before this is ever called) is likewise skipped —
+    nothing left to check space for.
 
     Checked against the NEAREST EXISTING ancestor of `folder`, because the
     folder itself is usually the thing this download is ABOUT to create —
@@ -334,6 +359,10 @@ def _ensure_disk_space(total_bytes, folder):
     """
     if not total_bytes:
         return
+    already = bytes_on_disk(folder) or 0
+    remaining = total_bytes - already
+    if remaining <= 0:
+        return
     path = folder
     while path and not os.path.exists(path):
         parent = os.path.dirname(path)
@@ -346,9 +375,9 @@ def _ensure_disk_space(total_bytes, folder):
         usage = shutil.disk_usage(path)
     except OSError:
         return
-    if usage.free >= total_bytes:
+    if usage.free >= remaining:
         return
-    need_gb = total_bytes / GB_BYTES
+    need_gb = remaining / GB_BYTES
     free_gb = usage.free / GB_BYTES
     short_gb = need_gb - free_gb
     raise InsufficientDiskSpace(
