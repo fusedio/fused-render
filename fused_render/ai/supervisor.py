@@ -2347,8 +2347,23 @@ def refresh_memory() -> None:
             worker.resident_bytes = health["resident_bytes"]
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
-            footprints.record(worker.capability, worker.model,
-                              health["peak_resident_bytes"])
+            # Best-effort (code review): `describe()` calls this
+            # unconditionally on every `GET /api/ai/runtime`, and a footprint
+            # is a nice-to-have observation for a LATER fit verdict, not
+            # something worth 500ing a status route over. `footprints.record`
+            # writes through `storage.write_json`, which can raise `OSError`
+            # (a full disk, a permissions problem, a home directory that went
+            # away mid-session) — `worker.peak_resident_bytes` above is
+            # already set and is what this route actually exists to report,
+            # so that assignment must survive a write failure that comes
+            # after it.
+            try:
+                footprints.record(worker.capability, worker.model,
+                                  health["peak_resident_bytes"])
+            except OSError:
+                logger.exception(
+                    "failed to record the measured footprint for %r/%r",
+                    worker.capability, worker.model)
 
 
 def resident_models() -> set[str]:

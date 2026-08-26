@@ -2752,6 +2752,28 @@ def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, m
     assert footprints.read(registry.TEXT_GENERATION, "org/small") == 9999
 
 
+def test_a_footprint_write_failure_does_not_break_refresh_memory_or_describe(
+        fake_runner, monkeypatch):
+    """Code review: `footprints.record` calls `storage.write_json`, which can
+    raise `OSError` (a full disk, a permissions problem, a home directory that
+    went away mid-session). `describe()` calls `refresh_memory()`
+    unconditionally, and `describe()` backs `GET /api/ai/runtime` — a status
+    route with no business 500ing because a NICE-TO-HAVE observation (a peak
+    footprint, remembered for next time's fit verdict) failed to write. The
+    resident-bytes reading itself, which the route exists to report, must
+    still land."""
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(footprints, "record", _boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/small")
+    supervisor.refresh_memory()
+    assert worker.peak_resident_bytes == 9999
+    described = supervisor.describe()
+    assert described["loaded"][0]["model"] == "org/small"
+
+
 def test_loading_a_second_text_model_evicts_the_first(fake_runner):
     # The whole memory policy, in one test: an 8GB model and another 8GB model
     # on a 16GB machine is a swap storm, which reads to the user as a hang.
