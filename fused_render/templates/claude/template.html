@@ -11219,6 +11219,7 @@ document.getElementById("back").onclick = () => {
   // submit CANCELLED the run this button deliberately leaves running. The
   // loop's own finally repeats this cleanup harmlessly when it bails.
   activeRun = null;
+  activeRunPersistent = false;
   activeWorking = null;
   setRunningUi(false);
   // Parked follow-ups belong to the conversation being left. Their
@@ -13796,6 +13797,15 @@ async function answerAppState(list, run_id, working) {
 // the detached subprocess working on. pollLoop publishes the live run so the
 // button and Escape have something to aim at, which covers a re-attached run too.
 let activeRun = null;
+// Whether `activeRun`'s process can take a `steer` (a follow-up written
+// straight into its FIFO) instead of the composer having to park text in
+// `queuedMsgs` until the turn ends. Set from `poll`'s own "persistent" field
+// (agent.py, D496) — never guessed at here, since a page has no other way to
+// know whether the server actually kept this process alive past this turn.
+// Reset alongside `activeRun` in pollLoop's finally: it describes THIS run,
+// not a standing preference, so a later one-shot run (persistence flipped
+// off mid-session, or Windows) must not inherit an earlier run's "yes".
+let activeRunPersistent = false;
 let activeWorking = null;
 // The live turn's segment container, or null between turns. Published by pollLoop
 // once the segment path owns the bubble, and read by parkResolvedCard — which is
@@ -14105,6 +14115,60 @@ function queueMessage(text) {
   persistQueue();
 }
 
+// The persistent-session alternative to queueMessage: instead of PARKING the
+// text here until the live turn ends, hand it straight to the CLI's own
+// stdin (agent.py's `steer`) — this is the actual fix for "usually claude
+// code allows the user to queue new prompt at any point... we can't add
+// additional context for previous prompt". The dashed bubble is kept
+// (same look as a parked one) because the CLI has no true mid-turn
+// injection either (see D496): a message sent here while a turn is running
+// is QUEUED BY THE CLI ITSELF and starts as its own turn the instant the
+// current one ends, so there genuinely is a wait — the user just needed to
+// SEE that their message was accepted rather than silently held in this
+// tab, which is the whole point of the complaint.
+//
+// Unlike a queued entry there is no "×": once this call resolves `steered`,
+// the text has left the browser and is the CLI's problem, not this page's —
+// there is nothing left here to hand back to the composer.
+async function steerMessage(text) {
+  const d = document.createElement("div");
+  d.className = "turn queued";
+  const b = document.createElement("div");
+  b.className = "qbubble";
+  b.textContent = text;
+  const meta = document.createElement("div");
+  meta.className = "qmeta";
+  const lbl = document.createElement("span");
+  lbl.textContent = "sending to claude…";
+  meta.appendChild(lbl);
+  d.append(b, meta);
+  queueEl.appendChild(d);
+  scrollBottom();
+  const run_id = activeRun;
+  let steered = false, error = null;
+  try {
+    ({ steered, error } = await fused.runPython(AGENT,
+        { action: "steer", run_id, message: text }, { key: null }));
+  } catch (err) {
+    error = err.message;
+  }
+  d.remove();
+  if (!steered) {
+    // The run ended, or was never persistent to begin with (a race between
+    // the click and this call landing) — fall back to the ordinary browser
+    // queue rather than silently losing the message. `queueMessage` drains
+    // itself once the current run's loop notices `done` and there is
+    // nothing live to steer into any more.
+    console.warn("steer failed, queued instead:", error || "(no reason given)");
+    queueMessage(text);
+  }
+  // On success there is nothing further to do here: the next poll this
+  // run's own loop (or the standing live-run watch, once this tab's loop has
+  // already ended for the turn that was in flight) makes will start seeing
+  // the CLI's reply the moment it starts — the same path an unprompted
+  // background-task wake already takes (agent.py's `_poll`, D415).
+}
+
 // Fire the next queued message once nothing is live. Called from the tails of
 // sendMessage AND resumeRun — a message queued against a re-attached run has
 // to drain too. Draining after an errored turn is deliberate (the user queued
@@ -14191,6 +14255,10 @@ async function pollLoop(run_id, gen = logGen) {
     while (true) {
       const data = await fused.runPython(AGENT, { action: "poll", run_id, file: FILE }, { key: null });
       if (logGen !== gen) break;  // the reader left; the run continues without this page
+      // A run's persistence is fixed for its whole life (agent.py sets it once
+      // at spawn) — read every poll anyway rather than once, because the FIRST
+      // poll can race the run dir's meta.json write on a very fast turn.
+      activeRunPersistent = !!data.persistent;
       if (data.session_id) { fused.params.set("session_id", String(data.session_id)); showSession(); }
       // Not awaited, for the same reason the app-state answer below is not: a
       // strip of chips may never hold up the streaming reply by a single frame.
@@ -14302,6 +14370,7 @@ async function pollLoop(run_id, gen = logGen) {
     // Stop square and Escape target.
     if (loopSeq === seat) {
       activeRun = null;
+      activeRunPersistent = false;
       activeWorking = null;
       activeSegBody = null;
       setRunningUi(false);
@@ -15711,19 +15780,40 @@ function submitChat() {
   // most of what that pill cost to read. Scheduling is the calendar button beside
   // it now, and it navigates rather than sending anything.
   //
-  // A live run queues instead of refusing: the text is parked and fired when
-  // the turn ends. Gated on activeRun, NOT `sending` — `sending` is also held
-  // by loadHistory and resumeRun's probe, and a message typed while browsing
-  // an old session must not be parked with no run to drain it after.
+  // A live run queues instead of refusing — except on a PERSISTENT run,
+  // where "queue" means something better than parking text in this tab: the
+  // message goes straight to the CLI's own stdin (steerMessage) the instant
+  // it is typed, which is the actual fix for "we can't add additional
+  // context for previous prompt". A one-shot run (persistence off, or
+  // Windows) still gets the old browser-side park, fired when the turn ends.
+  // Gated on activeRun, NOT `sending` — `sending` is also held by
+  // loadHistory and resumeRun's probe, and a message typed while browsing an
+  // old session must not be parked with no run to drain it after.
   if (activeRun) {
     const message = box.value.trim();
     if (!message) return;  // text-only queue; annotation-only sends can't park
     box.value = "";
     growBox();
+    if (activeRunPersistent) steerMessage(message);
+    else queueMessage(message);
+    return;
+  }
+  // The gap `sending` alone used to leave open: a send already in flight
+  // (its `start` awaited, `activeRun` not set yet — see sendMessage) let a
+  // SECOND submit fall through both guards above and land here silently,
+  // where the box was cleared before the early return, so pressing Enter
+  // again during that window looked and felt like it did nothing at all.
+  // Parking it is what the `activeRun` branch above already does once a run
+  // id exists; this is the same park for the brief window before one does —
+  // never a `steerMessage`, because there is no run_id to steer into yet.
+  if (sending) {
+    const message = box.value.trim();
+    if (!message) return;
+    box.value = "";
+    growBox();
     queueMessage(message);
     return;
   }
-  if (sending) return;
   const message = box.value.trim();
   // notes alone are sendable, and so is a bare picture (captured, pasted or
   // dropped) with no words at all
