@@ -662,7 +662,8 @@ export function Icon({
     | "plus"
     | "undo"
     | "info"
-    | "lock";
+    | "lock"
+    | "check";
 }) {
   const paths: Record<string, ReactNode> = {
     // The Preferences unset-value hint (title= carries the actual text —
@@ -674,6 +675,9 @@ export function Icon({
         <line x1="12" y1="8" x2="12.01" y2="8" />
       </>
     ),
+    // Memory's per-project Commit — a plain checkmark, distinct from the
+    // trash (Clear) and folder (Reveal) glyphs beside it.
+    check: <polyline points="20 6 9 17 4 12" />,
     // A read-only marketplace, in the Plugins rail — a muted fact, not a
     // warning, so it is a quiet glyph rather than a coloured pill (round 2:
     // the pill overflowed the rail's fixed width and was tinted --warning,

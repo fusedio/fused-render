@@ -475,22 +475,27 @@
    of a machine's project groups — the single most destructive action on this
    page ended up its loudest and most repeated element. It is a plain
    .cc-iconbtn now (danger-tinted on hover, same as every other destructive
-   icon action in this app) and fades in the same way .cc-lrow-actions'
-   icons do — quiet at rest, reachable by keyboard via :focus-within, visible
-   outright with no hover to reveal it from. Reveal-in-Finder stays visible:
-   it is informational, not destructive, so there's nothing to hide it FOR. */
-.cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+   icon action in this app), and Commit (only rendered when the project has
+   drift to commit) joined it as a plain .cc-iconbtn too — both fade in the
+   same way .cc-lrow-actions' icons do: quiet at rest, reachable by keyboard
+   via :focus-within, visible outright with no hover to reveal them from.
+   Reveal-in-Finder alone stays permanently visible — it is informational,
+   not an act on the repo, so there's nothing to hide it FOR — which is why
+   this keys off :not(:first-child) rather than naming Clear and Commit each
+   by their own class: Reveal renders first unconditionally, so it is always
+   excluded regardless of which of the other two are present. */
+.cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
   opacity: 0;
   transition: opacity 120ms var(--ease-out);
 }
 
-.cc-memgroup-head:hover .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger,
-.cc-memgroup-head:focus-within .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+.cc-memgroup-head:hover .cc-memgroup-actions > .cc-iconbtn:not(:first-child),
+.cc-memgroup-head:focus-within .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
   opacity: 1;
 }
 
 @media (hover: none), (max-width: 640px) {
-  .cc-memgroup-actions > .cc-iconbtn.cc-iconbtn-danger {
+  .cc-memgroup-actions > .cc-iconbtn:not(:first-child) {
     opacity: 1;
   }
 }

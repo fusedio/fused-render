@@ -13,18 +13,22 @@
 //
 // Contents are Claude's to author — nothing here edits a memory file. What the
 // UI adds is the lifecycle the files themselves can't express: which folders
-// have uncommitted drift, and a Clear that deletes the .md files and commits
-// the deletion (recoverable from History, which is why Clear is a confirm and
-// not a two-step). Both live on the project GROUP, not on an individual file
-// row, because they act on the whole folder.
+// have uncommitted drift, a path-limited Commit per project, and a Clear that
+// deletes the .md files and commits the deletion (recoverable from History,
+// which is why Clear is a confirm and not a two-step). All three live on the
+// project GROUP, not on an individual file row, because they act on the
+// whole folder.
 //
-// There used to be a per-project Commit button here too (round 2 removed it —
-// the "N uncommitted" drift marker stays as the fact, but the *act* of
-// committing belongs on History, the one page whose job is the whole repo's
-// commit log; this page's job is showing what memory exists). Only the UI
-// affordance and its api.ts wrapper (cc.memory.commit) went — the server's
-// `memory` module still has a path-limited `commit` action; History's own
-// commit path doesn't need it.
+// Commit's history: round 2 first dropped it outright (argument: the drift
+// marker is the fact, the *act* of committing belongs on History) — then the
+// user asked for it back, smaller. It returns as a plain .cc-iconbtn beside
+// Reveal and Clear rather than the old always-visible, always-enabled .btn,
+// and it renders ONLY when this project actually has drift (`dirty > 0`)
+// instead of sitting there disabled with no indication of what it would do —
+// that ambiguity was the original complaint. Fading in on
+// hover/focus-within like Clear (see .cc-memgroup-actions in
+// claude-config.css); Reveal alone stays permanently visible, since it is
+// informational rather than an act on the repo.
 //
 // A group is titled by the PROJECT FOLDER, not by the projects/ directory
 // name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
@@ -55,6 +59,13 @@ export default function MemorySection({ onChanged }: SectionProps) {
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useChangePreview();
+
+  const commit = async (project: string) => {
+    if (!(await guard(cc.memory.commit(project)))) return;
+    toastOk("Committed");
+    onChanged();
+    reload();
+  };
 
   const clear = async (project: string) => {
     const ok = await ask<boolean>({
@@ -105,14 +116,14 @@ export default function MemorySection({ onChanged }: SectionProps) {
                 <span className="cc-memgroup-count">{count}</span>
                 {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
               </div>
-              {/* Reveal is informational; Clear is the most destructive act on
-                  this page. Round 1 made it a repeated, always-visible red
-                  outlined button on all eight groups — the loudest thing on
-                  the tab, eight times over. It is an icon now, fading in on
-                  hover/focus-within like every other row action in this app
-                  (cc-memgroup-head:hover/:focus-within below), reachable by
-                  keyboard and visible outright where hover doesn't apply. The
-                  confirm it opens is unchanged. */}
+              {/* Reveal is informational and stays visible outright. Commit
+                  and Clear are acts on the repo — Commit only exists to look
+                  at when there is drift to act on, and Clear is the most
+                  destructive thing on this page — so both fade in on
+                  hover/focus-within (cc-memgroup-head:hover/:focus-within
+                  below) rather than sitting there always, reachable by
+                  keyboard and visible outright where hover doesn't apply.
+                  Reveal being first is what the CSS rule keys off of. */}
               <div className="cc-memgroup-actions">
                 <button
                   type="button"
@@ -123,6 +134,17 @@ export default function MemorySection({ onChanged }: SectionProps) {
                 >
                   <Icon name="folder" />
                 </button>
+                {dirty > 0 && (
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    title="Commit this project's memory folder"
+                    aria-label={`Commit memory for ${p.path ?? p.project}`}
+                    onClick={() => commit(p.project)}
+                  >
+                    <Icon name="check" />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="cc-iconbtn cc-iconbtn-danger"

@@ -239,6 +239,8 @@ export interface MemoryProject {
 export const memory = {
   list: () => callModule<{ projects: MemoryProject[] }>("memory", { action: "list" }),
   open: (project: string) => callModule<OkResult>("memory", { action: "open", project }),
+  commit: (project: string) =>
+    callModule<OkResult & { committed?: string | null }>("memory", { action: "commit", project }),
   clear: (project: string) =>
     callModule<OkResult & { committed?: string | null }>("memory", { action: "clear", project }),
 };
