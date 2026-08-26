@@ -569,9 +569,27 @@
    <select>/<input> with no width of its own fill that second track; a
    fixed-size control (the switch) is pinned to the SAME left edge with
    justify-self below, rather than stretching or drifting to its own width. */
+
+/* margin-left: auto over .cc-row's own justify-content: space-between — this
+   is ONE child moving, not the row's whole justification, and space-between
+   would need a second opt-out the moment a row ever grew a third child (an
+   inline error, a badge) between meta and control, silently splitting them
+   apart instead of just sitting between two already-placed columns. Needed
+   once the 900px cap came off .cc-main (owner, 2026-08-26): capped, the row's
+   own width and .cc-row-meta's 60ch cap were close enough that this column
+   landed near the right edge anyway; uncapped, a wide row leaves meta capped
+   at 60ch and this column stranded in the leftover space with no offset in
+   front of it. auto-margin still needs somewhere to draw that leftover FROM
+   — verified against the 640px block below, which switches the row to
+   column-flow and this control to width:100%: at that width the control
+   already fills the whole cross-axis track, so the auto margin would have
+   nothing left to pull from anyway. Reset explicitly there (`margin-left: 0`)
+   rather than leaning on that being incidentally true — a future edit to
+   this control's mobile width should not have to rediscover this. */
 .cc-row-control {
   flex: 0 0 240px;
   width: 240px;
+  margin-left: auto;
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
@@ -663,6 +681,7 @@
 
   .cc-row-control {
     width: 100%;
+    margin-left: 0;
     grid-template-columns: 22px 1fr;
   }
 }
