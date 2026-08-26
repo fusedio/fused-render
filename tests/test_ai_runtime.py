@@ -5439,20 +5439,35 @@ def test_accepts_image_is_false_with_no_runner_resolved(hub):
 # stale or wrong Hub-metadata reading can never override a real measurement.
 
 
+def test_ai_runtime_module_only_reads_hub_metadatas_cache_never_the_fetch(hub):
+    """Source-level guard (code review finding 1), the same shape `test_ai_
+    hw_detect.py::test_fit_module_only_reads_the_cache_never_the_probe`
+    already pins for `hw_detect`/`fit.py`: this route must never call
+    `hub_metadata.get` (a synchronous, network-backed, 8-second-timeout
+    fetch) — only `hub_metadata.cached` (a plain disk read). A future edit
+    that reintroduces `hub_metadata.get(...)` here is caught by reading the
+    source, not only by a test that happens to monkeypatch it away."""
+    import inspect
+
+    source = inspect.getsource(ai_runtime)
+    assert "hub_metadata.get(" not in source
+    assert "hub_metadata.cached(" in source
+
+
 def test_accepts_image_falls_back_to_hub_metadata_when_nothing_is_cached(hub, monkeypatch):
-    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
-                        lambda repo_id, **kw: {"hasVisionTower": True})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": True})
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-vlm") is True
 
 
 def test_accepts_image_is_false_when_uncached_and_hub_metadata_says_no_tower(hub, monkeypatch):
-    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
-                        lambda repo_id, **kw: {"hasVisionTower": False})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": False})
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-chat") is False
 
 
 def test_accepts_image_is_false_when_uncached_and_hub_metadata_has_nothing(hub, monkeypatch):
-    monkeypatch.setattr(ai_runtime.hub_metadata, "get", lambda repo_id, **kw: None)
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda repo_id: None)
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/never-seen") is False
 
 
@@ -5477,8 +5492,8 @@ def test_capability_tags_tags_vision_from_a_cached_snapshot(hub):
 def test_capability_tags_uses_hub_metadata_family_evidence_when_uncached(hub, monkeypatch):
     """A repo id alone (`org/my-finetune`) is uninformative — the harvested
     `modelType` from `hub_metadata` is what actually names the family."""
-    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
-                        lambda repo_id, **kw: {"modelType": "qwen3", "hasVisionTower": False})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"modelType": "qwen3", "hasVisionTower": False})
     tags = ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/my-finetune")
     assert tags == ("tool-use",)
 
@@ -5489,8 +5504,8 @@ def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeyp
     overridden by `hub_metadata` claiming otherwise."""
     _cached_repo(hub, "org/plain-chat", files=("model.safetensors",),
                 config={"model_type": "llama"})
-    monkeypatch.setattr(ai_runtime.hub_metadata, "get",
-                        lambda repo_id, **kw: {"hasVisionTower": True})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": True})
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/plain-chat") is False
 
 

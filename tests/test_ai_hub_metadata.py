@@ -262,3 +262,74 @@ def test_a_corrupt_store_reads_as_no_metadata(monkeypatch):
     with open(path, "w") as f:
         f.write("{not json")
     assert hub_metadata.get("org/m") is None
+
+
+# -- cached(): the pure disk read, for a request path that must never block --
+#
+# `hw_detect.cached_hardware()` draws the identical split for the identical
+# reason: a probe that can block on the network/a subprocess belongs off the
+# route a picker polls, and this is `hub_metadata`'s half of the same shape
+# (code review finding 1) — `ai_runtime._accepts_image`/`_capability_tags`
+# now call THIS, never `get()`, from the catalog route.
+
+
+def test_cached_reads_a_fresh_positive_entry_with_no_network(monkeypatch):
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    hub_metadata.get("org/m")
+
+    def _boom(repo_id):
+        raise AssertionError("cached() must never touch the network seam")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
+    meta = hub_metadata.cached("org/m")
+    assert meta is not None
+    assert meta["modelType"] == "qwen3"
+
+
+def test_cached_reads_a_stale_entry_too_with_no_refetch(monkeypatch):
+    """Unlike `get()`, `cached()` never checks the TTL — it is a plain read
+    of whatever the background refresh has already written, exactly like
+    `hw_detect.cached_hardware()` never re-probes."""
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: _raw(CONFIG))
+    hub_metadata.get("org/m")
+    store = hub_metadata._load()
+    store["repos"]["org/m"]["fetchedAt"] = 0.0
+    hub_metadata._write(store)
+
+    def _boom(repo_id):
+        raise AssertionError("cached() must never touch the network seam")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
+    assert hub_metadata.cached("org/m")["modelType"] == "qwen3"
+
+
+def test_cached_answers_none_for_an_unknown_repo_with_no_network(monkeypatch):
+    def _boom(repo_id):
+        raise AssertionError("cached() must never touch the network seam")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
+    assert hub_metadata.cached("org/never-asked") is None
+
+
+def test_cached_answers_none_for_a_negative_entry(monkeypatch):
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", lambda repo_id: None)
+    assert hub_metadata.get("org/no-config") is None
+
+    def _boom(repo_id):
+        raise AssertionError("cached() must never touch the network seam")
+
+    monkeypatch.setattr(hub_metadata, "_fetch_raw", _boom)
+    assert hub_metadata.cached("org/no-config") is None
+
+
+def test_cached_never_raises_over_socket_use_source_grep():
+    """A source-level guard, the same shape `test_ai_hw_detect.py`'s
+    `test_fit_module_only_reads_the_cache_never_the_probe` already pins for
+    `hw_detect.py` — `cached`'s own function body must not name the network
+    seam at all, so a future edit that reintroduces a fetch there is caught
+    by reading the source, not only by a test that happens to monkeypatch it
+    away."""
+    import inspect
+
+    source = inspect.getsource(hub_metadata.cached)
+    assert "_fetch_raw" not in source

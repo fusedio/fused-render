@@ -954,13 +954,18 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
       cached snapshot's own `config.json` with no model load involved — the
       MEASURED answer, when there is a snapshot to measure. Only when
       `hub_cache.has_cached_snapshot` says there is NOTHING on disk yet does
-      this fall back to `hub_metadata.get(model_id)`'s `hasVisionTower` — the
-      Hub's OWN `config.json`, harvested ahead of any download (AI-17) — so a
-      search result still classifies before the user fetches a single byte.
-      A cached snapshot that genuinely has no tower is never second-guessed
-      by a stale Hub reading: "cannot tell" (no snapshot, no harvested
-      metadata either) answers False rather than guessing True, same as
-      before.
+      this fall back to `hub_metadata.cached(model_id)`'s `hasVisionTower` —
+      the Hub's OWN `config.json`, harvested ahead of any download (AI-17)
+      — so a search result still classifies before the user fetches a
+      single byte. `cached()`, never `get()` (code review finding 1): this
+      is a route the picker polls, and `get()` is a synchronous `urllib`
+      fetch with an 8-second timeout — `supervisor.start_hub_metadata_
+      refresh`'s background sweep is the only thing that ever calls `get()`
+      now, so this route only ever reads what that sweep already wrote,
+      with no network access of its own. A cached snapshot that genuinely
+      has no tower is never second-guessed by a stale Hub reading: "cannot
+      tell" (no snapshot, no harvested metadata either) answers False
+      rather than guessing True, same as before.
     - Every other capability: False. `engine_options` is an exception list
       for the image route alone, so treating "refuses nothing" as evidence
       would have every non-image, non-mlx-text model in the payload claiming
@@ -979,7 +984,7 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
     if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
         if has_cached_snapshot(model_id):
             return has_vision_tower(model_id)
-        meta = hub_metadata.get(model_id)
+        meta = hub_metadata.cached(model_id)
         return bool(meta and meta.get("hasVisionTower"))
     return False
 
@@ -1007,7 +1012,7 @@ def _capability_tags(capability: str, model_id: str) -> tuple[str, ...]:
     if has_cached_snapshot(model_id):
         vision = has_vision_tower(model_id)
     else:
-        meta = hub_metadata.get(model_id)
+        meta = hub_metadata.cached(model_id)
         vision = bool(meta and meta.get("hasVisionTower"))
         if meta:
             model_type = meta.get("modelType")

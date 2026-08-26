@@ -436,6 +436,20 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.start_hardware_refresh()
 
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
+    # `ai_runtime._accepts_image`/`_capability_tags` used to call
+    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
+    # 8-second timeout — straight from `describe_catalog`, a route the AI
+    # Models picker polls. They now read `hub_metadata.cached()` only (a
+    # plain disk read), and this background thread is the sole writer,
+    # mirroring the hardware-refresh hook immediately above for the
+    # identical reason.
+    @app.on_event("startup")
+    async def _startup_ai_hub_metadata_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_metadata_refresh()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.

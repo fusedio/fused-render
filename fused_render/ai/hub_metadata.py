@@ -303,6 +303,44 @@ def get(repo_id: str, *, force: bool = False) -> dict[str, object] | None:
     return None
 
 
+def cached(repo_id: str) -> dict[str, object] | None:
+    """The harvested metadata for `repo_id` if this store already holds ANY
+    entry for it — fresh, stale, or negative — with NO network access,
+    period. `get()`'s own TTL question is not asked here at all.
+
+    **The request-path half of the same split `hw_detect.py` already
+    draws** (code review finding 1): `hw_detect.cached_hardware()` is a
+    plain `storage.read_json` and the only function `fit.py`/`speed.py` may
+    call, because `detect_hardware()`/`refresh_hardware()` are a slow
+    subprocess probe that must never sit on a route the picker polls. This
+    module's own `get()` is the equivalent slow path here — a synchronous
+    `urllib` GET with an 8-second timeout — and until this function existed,
+    `ai_runtime._accepts_image`/`_capability_tags` called `get()` directly
+    from `describe_catalog`, which is exactly a route the picker polls. A
+    `llamacpp-text` catalog (five curated GGUF repos, none of which
+    publishes a `config.json`) turned one catalog request into up to five
+    back-to-back 8-second-timeout fetches when offline or behind a captive
+    portal, plus an outbound huggingface.co request per uncached row for a
+    model the user never asked to download.
+
+    `cached()` is that route's ONLY legal way to read this store now — a
+    background refresh (`supervisor.start_hub_metadata_refresh`, mirroring
+    `start_hardware_refresh`'s shape exactly) is the sole caller of `get()`
+    outside this module's own tests, so the network fetch happens on a
+    ticking thread and the request path only ever reads what that thread
+    already wrote.
+
+    A NEGATIVE entry (`get()`'s own `{"meta": None, "negative": True}`) is
+    indistinguishable here from "never asked" — both answer `None` — which
+    is correct: a caller of `cached()` only ever wants the harvested meta or
+    nothing, the same contract `get()` itself already keeps for its return
+    value (the `negative` flag is `get()`'s own internal TTL bookkeeping,
+    never part of its public answer either).
+    """
+    entry = _load()["repos"].get(repo_id)
+    return entry.get("meta") if isinstance(entry, dict) else None
+
+
 def clear() -> None:
     """Forget every harvested repo — mirrors `footprints.clear`/`bench_store.
     clear`'s shape for the same reason: a caller wiping AI state should not

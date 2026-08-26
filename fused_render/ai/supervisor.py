@@ -54,7 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import fit, footprints, hw_detect, registry
+from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -1877,6 +1877,79 @@ def start_hardware_refresh() -> None:
     _hardware_refresh_thread = threading.Thread(
         target=run, name="ai-hardware-refresh", daemon=True)
     _hardware_refresh_thread.start()
+
+
+#: How often the background Hub-metadata-warming thread re-sweeps the
+#: curated id list (code review finding 1). Deliberately much shorter than
+#: `_HARDWARE_REFRESH_INTERVAL_S`: unlike VRAM, `hub_metadata`'s own TTLs
+#: (13 days positive, `NEGATIVE_TTL_SECONDS` — 1 hour — negative) are what
+#: actually bound the network cost of a sweep, so a tight tick here costs
+#: nothing extra for an already-fresh entry (`hub_metadata.get` returns
+#: instantly without touching the network) while keeping a newly-expired
+#: negative entry from sitting un-refreshed for hours. 20 minutes: shorter
+#: than the negative TTL (so a repo that started publishing a `config.json`
+#: is noticed inside one negative-TTL window) and long enough that a sweep
+#: of the curated list is a rare event on the wire, not a busy loop.
+_HUB_METADATA_REFRESH_INTERVAL_S = 20 * 60  # 20 minutes
+
+_hub_metadata_refresh_thread: threading.Thread | None = None
+
+
+def _hub_metadata_refresh_tick() -> None:
+    """One sweep of `catalog.all_suggested_ids()` through `hub_metadata.get`
+    — split out for the same testability reason `_hardware_refresh_tick` is
+    (a test drives this directly, `hub_metadata.get` monkeypatched, without
+    ever starting the thread).
+
+    Every curated id, not only `text-generation` ones: `hub_metadata.get`
+    is cheap to call for an id whose harvest nothing currently reads (a
+    future caller — item 5's KV-cache term threading `hub_metadata` in, per
+    that module's own docstring — should not need a second sweep wired up
+    to start reading it), and the alternative (importing `registry`'s
+    capability constants here to filter) buys nothing this module needs
+    today. One repo's failure (a `get()` call that raises past its own
+    `except Exception` — should not happen, but this loop must survive it
+    regardless) is logged and does not stop the sweep for the rest.
+    """
+    for repo_id in catalog.all_suggested_ids():
+        try:
+            hub_metadata.get(repo_id)
+        except Exception:  # noqa: BLE001 - one repo's failure must not stop the sweep
+            logger.exception("hub-metadata refresh failed for %s", repo_id)
+
+
+def start_hub_metadata_refresh() -> None:
+    """Start the background Hub-metadata-warming thread, once per process —
+    the request-path half of code review finding 1's fix.
+
+    `ai_runtime._accepts_image`/`_capability_tags` used to call
+    `hub_metadata.get(model_id)` directly from `describe_catalog`, which
+    `hub_metadata.py`'s own module docstring is explicit is the wrong side
+    of exactly the split `hw_detect.py` already drew for the identical
+    reason: `get()` is a synchronous `urllib` GET with an 8-second timeout,
+    and `describe_catalog` backs a route the picker polls. This mirrors
+    `start_hardware_refresh`'s shape exactly — idempotent via a module-level
+    thread handle, one sweep fires immediately so the first catalog request
+    after startup already has warm entries rather than waiting a full
+    interval, then the thread sleeps and re-sweeps forever. `ai_runtime.py`
+    now calls `hub_metadata.cached()` only, which is a plain disk read and
+    never touches the network — this thread is the only writer.
+    """
+    global _hub_metadata_refresh_thread
+    if _hub_metadata_refresh_thread is not None and _hub_metadata_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hub_metadata_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hub-metadata refresh tick failed")
+            time.sleep(_HUB_METADATA_REFRESH_INTERVAL_S)
+
+    _hub_metadata_refresh_thread = threading.Thread(
+        target=run, name="ai-hub-metadata-refresh", daemon=True)
+    _hub_metadata_refresh_thread.start()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to

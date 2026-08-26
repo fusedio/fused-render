@@ -605,6 +605,30 @@ def _no_ai_hardware_refresh_thread(monkeypatch):
     monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_ai_hub_metadata_refresh_thread(monkeypatch):
+    """`create_app` starts the background Hub-metadata-warming thread
+    (`supervisor.start_hub_metadata_refresh`, code review finding 1 on top
+    of SPEC AI-17); no test may let it run.
+
+    Same hazard, same fix, as `_no_ai_hardware_refresh_thread` immediately
+    above: the thread fires one sweep of `catalog.all_suggested_ids()`
+    immediately, and each id can be a REAL `urllib` fetch to
+    `huggingface.co` (`hub_metadata._fetch_raw`, unmonkeypatched here) under
+    whatever `FUSED_RENDER_HOME` happens to be current when the daemon
+    thread gets scheduled — the identical race the two fixtures above
+    already demonstrate, and here it would also mean this whole SUITE
+    reaching the real network once per `TestClient` construction.
+
+    No test asserts `start_hub_metadata_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_metadata_refresh.py`)
+    drives `_hub_metadata_refresh_tick()` directly, never the thread —
+    matching how the reaper/hardware-refresh siblings are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.
