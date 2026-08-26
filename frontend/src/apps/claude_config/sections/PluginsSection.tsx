@@ -817,7 +817,11 @@ export default function PluginsSection({ onChanged }: SectionProps) {
           title="Add a marketplace"
           onClose={() => setAddingMkt(false)}
           busy={mktBusy}
-          width={420}
+          // Narrower than the 420px this used to be: with the label beside its
+          // control (see .cc-modal-field) three one-line fields no longer need
+          // that much width, and 420px next to a 100px label column left the
+          // controls with an odd, over-wide measure for "owner/repo".
+          width={360}
           footer={
             <>
               <button

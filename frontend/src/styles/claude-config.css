@@ -1177,14 +1177,23 @@
   overflow-wrap: anywhere;
 }
 
-/* A label over its control, in a dialog. The modal chassis brings the shared
-   form vocabulary with it (fields.css via .deploy-body), so this only has to
-   say how a field STACKS. */
+/* A label BESIDE its control, in a dialog — not stacked above it. Three short
+   one-line fields (Name, Source kind, Repository/URL) each stacked their own
+   label over a full-width control with room between them, which is what made
+   a 420px add-marketplace dialog run ~350px tall to say three short things
+   (owner, 2026-08-26: "why is the modal so ugly and spaced out?").
+ *
+ * NOT .cc-row: that grid reserves a fixed 22px track for a reset button/
+ * default-value hint no field here has, and its own fixed column is the
+ * CONTROL's (240px, on the right, tuned for Preferences' full-page rows) —
+ * here it is the LABEL that wants the fixed, narrow column, with the control
+ * growing to fill a dialog that is a third that width. Two different shapes
+ * wearing the same "label plus control" idea, not one pattern reused. */
 .cc-modal-field {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-bottom: 14px;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
 .cc-modal-field:last-child {
@@ -1192,8 +1201,15 @@
 }
 
 .cc-modal-field > label {
+  flex: 0 0 100px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+.cc-modal-field > input,
+.cc-modal-field > select {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* -- a plugin's contents (Plugins > Installed, expanded) --------------------- */
