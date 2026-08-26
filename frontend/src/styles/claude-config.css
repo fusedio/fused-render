@@ -1048,9 +1048,27 @@
   flex: 0 0 168px;
   width: 168px;
   overflow: hidden;
+  padding-top: 1px;
+}
+
+/* The name box's own content: skill name, then (only for the rare skill
+   that isn't `linked`) a "not linked" pill stacked under it — both still
+   inside the fixed 168px column, so neither can push the description's
+   start x the way the pill used to when it rode beside the name instead. The
+   ellipsis that used to live on .cc-lrow-name moves to just the text line. */
+.cc-skills-namebox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.cc-skills-namebox-text {
+  max-width: 100%;
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-top: 1px;
 }
 
 .cc-skills-list .cc-lrow-meta {

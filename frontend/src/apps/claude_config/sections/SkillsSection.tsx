@@ -28,6 +28,14 @@
 // shared with Memory's file rows so the two tabs agree); and at a narrow
 // width the description was the thing that disappeared while the source
 // (lower-value, repetitive across a marketplace) stayed — inverted below.
+//
+// A SECOND follow-up: the "not linked" badge rode as a `pills` sibling of the
+// name inside the row's flex flow, so on cocoindex — the one row that has it
+// — it pushed the description's start x rightward, the exact same class of
+// defect the fixed name column had just fixed for the other nine. It moves
+// into the name box itself now (stacked under the name, `.cc-skills-namebox`
+// below), so it can never again be the thing that breaks the shared left
+// edge, no matter how many rows end up carrying it.
 import { useCallback } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -69,8 +77,12 @@ export default function SkillsSection() {
             {data.skills.map((s) => (
               <ListRow
                 key={s.slug}
-                name={s.name}
-                pills={!s.linked ? <Pill>not linked</Pill> : null}
+                name={
+                  <span className="cc-skills-namebox">
+                    <span className="cc-skills-namebox-text">{s.name}</span>
+                    {!s.linked && <Pill>not linked</Pill>}
+                  </span>
+                }
                 secondary={s.description || undefined}
                 secondaryClass="cc-lrow-sub-clamp2"
                 secondaryTitle={s.description || undefined}
