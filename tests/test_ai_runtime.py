@@ -5233,6 +5233,36 @@ def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
     assert entry["fit"]["basis"] == "download"
 
 
+def test_speed_estimate_is_present_on_a_text_generation_entry_with_a_known_size(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """SPEC AI-21: `entry["speedEstimate"]` is wired for `text-generation`
+    only, and it is `fit.weight_bytes` (not a bare `size_gb`) that feeds it —
+    proven by giving a recognized quantization a real params count."""
+    monkeypatch.setattr(fit.hw_detect, "cached_hardware", lambda: None)
+    monkeypatch.setattr(fit, "is_apple_silicon", lambda: False)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/speedy", "label": "Speedy", "size_gb": 4.0,
+         "params": "4B", "quantization": "GGUF Q4_K_M", "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    speed_estimate = entry["speedEstimate"]
+    assert speed_estimate is not None
+    assert speed_estimate["method"] == "backend-constant"
+    assert speed_estimate["tokensPerSecond"] > 0
+    assert speed_estimate["contextTokens"] == fit.KV_CACHE_CONTEXT_TOKENS
+
+
+def test_speed_estimate_is_null_on_a_non_text_generation_capability(
+        client, fake_image_runner, fixed_fit_machine, monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/img", "label": "Image", "size_gb": 4.0, "note": ""},
+    ])
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.IMAGE_GENERATION)
+    entry = row["models"][0]
+    assert entry["speedEstimate"] is None
+
+
 def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
         client, fake_runner, fixed_fit_machine, monkeypatch):
     """Code review on AI-16: the route used to call `fit.verdict` per catalog

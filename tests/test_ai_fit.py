@@ -29,6 +29,38 @@ def _isolated_footprints(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
 
 
+# -- public surface for SPEC AI-21 (speed.py) --------------------------------------
+
+
+def test_is_apple_silicon_reads_the_wired_limit_probe(monkeypatch):
+    """SPEC AI-21: `speed.py`'s backend inference needs the identical "is
+    this Apple Silicon" fact `_select_pool`'s own `is_apple_unified`
+    parameter already encodes inside `verdict()` — exposed as its own public
+    function so a second module does not re-derive it from a fresh sysctl
+    probe or platform-name guesswork that could drift from this one."""
+    monkeypatch.setattr(fit, "_wired_limit_mb", lambda: None)
+    assert fit.is_apple_silicon() is False
+    monkeypatch.setattr(fit, "_wired_limit_mb", lambda: 0)
+    assert fit.is_apple_silicon() is True
+    monkeypatch.setattr(fit, "_wired_limit_mb", lambda: 16_000)
+    assert fit.is_apple_silicon() is True
+
+
+def test_weight_bytes_is_the_download_rungs_own_weight_size_figure():
+    """A public wrapper over `_weight_bytes` — the same weight-size figure
+    the `download` rung's own arithmetic already uses, exposed so `speed.py`
+    (SPEC AI-21) can turn it into a tok/s estimate without depending on a
+    private name or recomputing the precedence rule (recognized-quant
+    `params x bpp` vs. a real `size_gb`) a second time."""
+    # A recognized quant with parseable params: params x bpp wins.
+    assert fit.weight_bytes(4.0, "1.2B", "MLX 4-bit") == pytest.approx(
+        1.2e9 * fit.QUANT_BYTES_PER_PARAM["mlx_4bit"])
+    # An unrecognized quant with a real size_gb: size_gb wins (D521's rule).
+    assert fit.weight_bytes(6.1, "27B", "Ternary 2-bit") == 6.1 * fit.GB_BYTES
+    # Nothing at all: None, same as `_weight_bytes` itself.
+    assert fit.weight_bytes(None, None, None) is None
+
+
 # -- the precedence ladder ---------------------------------------------------------
 
 

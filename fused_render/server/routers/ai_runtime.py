@@ -43,7 +43,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, footprints, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, speed, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
@@ -874,6 +874,21 @@ def _catalog_with_downloads() -> list[dict]:
                                        footprint_store=footprint_store,
                                        params=entry.get("params"),
                                        quantization=entry.get("quantization"))
+            # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
+            # calibrated, calibrationFactor} or None — SPEC AI-21. Text
+            # generation only: `speed.py`'s formula is a tok/s figure, and
+            # that unit means nothing for `secondsPerStep`/`realtimeFactor`/
+            # `textsPerSecond`, the metrics the other three capabilities
+            # actually report (`benchmark.WORKLOADS`) — offering a bare
+            # number under a name that reads as tokens/second on an image or
+            # speech row would be actively misleading, not merely
+            # unavailable. Reads `hw_detect.cached_hardware()` only (by way
+            # of `speed.py`), the same verdict-path-safe boundary `fit.
+            # verdict` above already keeps.
+            entry["speedEstimate"] = (
+                speed.estimate_tok_s(entry.get("size_gb"), params=entry.get("params"),
+                                     quantization=entry.get("quantization"))
+                if row["capability"] == registry.TEXT_GENERATION else None)
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo
             # with no edit variant is as unable to edit as a diffusers one and

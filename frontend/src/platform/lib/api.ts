@@ -2811,6 +2811,37 @@ export interface AiFitVerdict {
   runMode?: "gpu" | "cpu-offload" | "cpu-only";
 }
 
+/** A tok/s speed estimate for a TEXT GENERATION catalog entry, with its own
+ *  basis — SPEC AI-21. `null` when even the weight size is unknown (no
+ *  `size_gb`, no `params`), mirroring `AiFitVerdict`'s own "unknown is a
+ *  dash, never a guess" contract. Server-side only for `text-generation`
+ *  entries (`ai_runtime.describe_catalog`) — the formula is a tok/s figure,
+ *  and every OTHER capability reports a differently-shaped throughput metric
+ *  (`secondsPerStep`, `realtimeFactor`, `textsPerSecond`), so this field is
+ *  always `null` there rather than a number under a misleading unit. */
+export interface AiSpeedEstimate {
+  tokensPerSecond: number;
+  /** `"bandwidth"` when this machine's cached hardware reported a real
+   *  memory-bandwidth figure for its device; `"backend-constant"` when it
+   *  fell back to a flat per-backend guess (`bandwidthGbS` is then `null`). */
+  method: "bandwidth" | "backend-constant";
+  /** Which backend bucket this machine was judged as — inferred from cached
+   *  hardware/platform, not from the runner that will actually load this
+   *  specific model (no caller threads one through yet). */
+  backend: "cuda" | "metal-mlx" | "metal-other" | "rocm" | "sycl" | "cpu-arm" | "cpu-x86";
+  /** The bandwidth figure actually used, or `null` on the `backend-constant`
+   *  path. */
+  bandwidthGbS: number | null;
+  /** The context length this whole family of estimates assumes — the SAME
+   *  constant `fit.py`'s own KV-cache term uses (8192), stated here because
+   *  this formula does not otherwise model context-length pressure at all. */
+  contextTokens: number;
+  /** Whether this machine's own measured benchmark history adjusted the raw
+   *  formula. */
+  calibrated: boolean;
+  calibrationFactor: number | null;
+}
+
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
  *  the server's catalog is the curation, and what is on this disk is the cache
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
@@ -2858,6 +2889,11 @@ export interface AiCatalogModel {
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
    *  follows. */
   fit?: AiFitVerdict | null;
+  /** A tok/s speed estimate — see `AiSpeedEstimate`. Only ever non-null on a
+   *  `text-generation` entry; `null` on every other capability and wherever
+   *  the weight size itself is unknown. Optional so an older cached response
+   *  shape (a test literal, a stale client) does not have to carry it. */
+  speedEstimate?: AiSpeedEstimate | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;

@@ -421,6 +421,34 @@ def _kv_cache_bytes(*, num_hidden_layers: int | None = None,
     return 2 * n_kv_heads * resolved_head_dim * context_tokens * bytes_per_element * n_layers
 
 
+def weight_bytes(size_gb: float | None, params: float | str | None,
+                 quantization: str | None) -> float | None:
+    """Public wrapper over `_weight_bytes` — the same weight-size figure the
+    `download` rung's own arithmetic uses (SPEC item 4, and D521's "measured
+    beats guessed" precedence over it), exposed so a caller OUTSIDE this
+    module can read a weight-size estimate without depending on a private
+    name or re-deriving the recognized-quant-vs-real-`size_gb` precedence a
+    second time. `speed.py` (SPEC AI-21) is the first such caller — a tok/s
+    estimate needs the bytes actually moved per token, which is the WEIGHT
+    size alone, not `footprint_bytes`'s full figure (which also adds the KV
+    term and the flat runtime overhead — real memory the model occupies, but
+    not bandwidth the decode loop repeatedly reads through)."""
+    return _weight_bytes(size_gb, params, quantization)
+
+
+def is_apple_silicon() -> bool:
+    """Whether the Apple-Silicon wired-memory ceiling is readable on this
+    machine — the exact fact `verdict()` already computes as `is_apple =
+    wired_limit is not None` before selecting a pool. Exposed as its own
+    public function so a second module (`speed.py`, SPEC AI-21's backend
+    inference) reads the SAME probe this module already trusts, rather than
+    re-deriving "is this Apple Silicon" from a fresh sysctl call or a
+    `platform.machine() == "arm64"` guess that could disagree with it — an
+    Intel Mac, for instance, has no wired limit to read and must answer
+    `False` here exactly as `verdict()` already treats it."""
+    return _wired_limit_mb() is not None
+
+
 def _download_tier_bytes(size_gb: float | None, params: float | str | None,
                          quantization: str | None, *, kv_kwargs: dict) -> float | None:
     """The `download` rung's full estimate — weight size (SPEC item 4) plus

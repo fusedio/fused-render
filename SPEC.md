@@ -8799,6 +8799,51 @@ an AI Models page that could say what was on disk but not what was *running*.
   the result, the surrounding `finally` tears the thread down
   unconditionally so a raise mid-pass cannot leak it).
 
+- **AI-21** **A tok/s speed estimate, `fused_render/ai/speed.py`
+  (`estimate_tok_s`), plus this machine's own local calibration of it —
+  `tok/s ~= bandwidth_GB_s / weight_gb x 0.55`, falling back to a
+  per-backend constant (`CUDA=220, Metal+MLX=250, Metal(other)=160,
+  ROCm=180, SYCL=100, CPU-ARM=90, CPU-x86=70`) when this machine's cached
+  `hw_detect` hardware reports no bandwidth for its device. `weight_gb` is
+  `fit.weight_bytes` (new public wrapper over `fit._weight_bytes`) — the
+  same weight-size figure the `download` rung's own arithmetic already
+  computes, never the fuller footprint (which also carries the KV term
+  and flat overhead — real memory the model occupies, not bandwidth the
+  decode loop repeatedly reads through). Every estimate records its own
+  basis (`method`, `backend`, `bandwidthGbS`, `contextTokens`,
+  `calibrated`, `calibrationFactor`) rather than a bare number. Wired into
+  `ai_runtime.describe_catalog` as `entry["speedEstimate"]`, `text-
+  generation` entries only.** (D523, D524) A local calibration factor —
+  `median(measured_tok_s / uncalibrated_estimate_tok_s)` over this
+  machine's own `bench_store.py` `text-generation` runs, anchored only on
+  `params_b >= 1.0 and not is_moe` (the comparative study's own anchor
+  rule), clamped to `[0.05, 3.0]`, persisted at `~/.fused-render/
+  ai_speed_calibration.json` — is applied to every estimate once one
+  exists. **Idempotent by construction**: every ratio `recalibrate`
+  computes is against the raw, UNCALIBRATED formula, never against
+  `estimate_tok_s`'s own (possibly already-calibrated) output, so the
+  currently-stored factor never feeds into the computation of its
+  replacement — calling `recalibrate()` twice over identical evidence
+  yields the identical factor both times rather than compounding.
+
+  **Backend inference is machine-level, not runner-aware** — no caller in
+  this codebase threads an actual runner code through to this module, so
+  `backend_bucket` infers a bucket from what `hw_detect.cached_hardware()`
+  already knows: Apple unified memory is unconditionally `metal-mlx`
+  (every Apple-Silicon runner this codebase resolves to ahead of anything
+  else, D416); off Apple, the primary GPU's name decides NVIDIA vs. AMD;
+  no GPU, or an unrecognized name, falls to CPU architecture. Two of the
+  seven backend-constant rows are consequently unreachable by this
+  inference alone — `sycl` (no Intel GPU probe exists in `hw_detect.py`
+  at all) and `metal-other` (this codebase has no non-MLX Metal runner to
+  select, per D416) — and stay in the table regardless, for a future
+  caller that DOES know the real runner. A documented, known gap, not an
+  oversight.
+
+  **Reads only `hw_detect.cached_hardware()`, the same verdict-path-safe
+  boundary `fit.py` keeps** — a third reader of that cache, never a second
+  prober.
+
 - **AI-22** **The `declared` rung of `fit.py`'s precedence ladder — plumbed
   since AI-16 (`resident_gb`, `fit.footprint_bytes`, `ai_runtime.describe_
   catalog`) but set by NOTHING — is populated for the two `ltx-video`
