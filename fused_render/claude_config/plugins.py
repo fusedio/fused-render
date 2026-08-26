@@ -8,6 +8,9 @@ plugins/known_marketplaces.json. shareCommand strings are computed here
 main(action=...):
   list      -> {plugins: [...]}
   available -> {plugins: [...], skipped: [...]}   the marketplace CATALOGS
+  contents  -> {ok, id, root, skills, commands, agents, hooks, mcpServers}
+                                                 params: id   what one INSTALLED
+                                                 plugin puts in a session
   toggle    -> {ok, id, enabled}   params: id, enabled ("true"/"false")
   update    -> {ok, id, stdout} | {ok:False, error}  best-effort `claude` CLI
   install   -> {ok, id, stdout} | {ok:False, error}  best-effort `claude` CLI
@@ -164,12 +167,284 @@ def _available() -> dict:
     return {"plugins": plugins, "skipped": skipped}
 
 
+# --- what a plugin PUTS IN A SESSION ---------------------------------------
+# `list` and `available` describe a plugin from the outside — its id, its
+# version, whether it is on. Neither answers the question you actually have in
+# front of a list of twelve of them: what does this one give a session? That
+# answer is on disk and nowhere else. installed_plugins.json records an
+# `installPath` per plugin, and under it the components sit at conventional
+# paths (skills/, commands/, agents/, hooks/hooks.json, .mcp.json) that
+# .claude-plugin/plugin.json may relocate.
+#
+# Read-only, and READ ON DEMAND — one plugin per call, when its row is
+# expanded. Reading all twelve up front would walk a dozen trees (context-mode
+# ships node_modules) to fill in a panel most visits never open.
+
+# The conventional home of each component, used when the manifest names none.
+_DEFAULT_DIRS = {"skills": "skills", "commands": "commands", "agents": "agents"}
+
+# Walk caps. A plugin root is third-party content of unbounded size, and this
+# runs on a UI request: a component dir that is somehow enormous (or a symlink
+# loop) must cost a bounded panel, not a hung request.
+_MAX_DEPTH = 4
+_MAX_ENTRIES = 200
+
+# Directories that never hold a component and can hold a hundred thousand
+# files. Skipped by name rather than by size — cheaper, and it is the same list
+# every tool that walks a package tree keeps.
+_SKIP_DIRS = {"node_modules", "__pycache__", ".git", "dist", "build"}
+
+
+def _within(root: str, path: str) -> bool:
+    """Lexical containment, matching lib.safe_subdir's boundary. A manifest is
+    third-party content and its path values become directories we walk, so
+    `"skills": "../../../.."` must resolve to nothing rather than to a tour of
+    the user's disk."""
+    root = os.path.normpath(root)
+    return path == root or path.startswith(root + os.sep)
+
+
+def _manifest_dirs(manifest: dict, key: str, root: str) -> list:
+    """The dirs a manifest names for `key`, else the conventional one.
+
+    The value is a string or a list of strings, each relative to the plugin
+    root and free to spell it as ${CLAUDE_PLUGIN_ROOT} — the same substitution
+    the CLI does when it reads these paths."""
+    val = manifest.get(key)
+    if isinstance(val, str):
+        raw = [val]
+    elif isinstance(val, list):
+        raw = [v for v in val if isinstance(v, str)]
+    else:
+        raw = [_DEFAULT_DIRS[key]]
+    out = []
+    for v in raw:
+        v = v.replace("${CLAUDE_PLUGIN_ROOT}", root)
+        p = os.path.normpath(v if os.path.isabs(v) else os.path.join(root, v))
+        if _within(root, p) and p not in out:
+            out.append(p)
+    return out
+
+
+def _walk(top: str):
+    """Depth- and count-bounded os.walk over one component dir, skipping the
+    dirs that never hold components. Yields (dirpath, filenames)."""
+    if not os.path.isdir(top):
+        return
+    seen = 0
+    base_depth = top.rstrip(os.sep).count(os.sep)
+    for dirpath, dirnames, filenames in os.walk(top):
+        dirnames[:] = [
+            d for d in sorted(dirnames) if d not in _SKIP_DIRS and not d.startswith(".")
+        ]
+        if dirpath.count(os.sep) - base_depth >= _MAX_DEPTH:
+            dirnames[:] = []
+        yield dirpath, sorted(filenames)
+        seen += 1
+        if seen >= _MAX_ENTRIES:
+            return
+
+
+def _read_frontmatter(path: str) -> dict:
+    """Frontmatter, or empty on any read failure. A component whose file cannot
+    be read is still a component the plugin ships — it keeps its row (and its
+    path, which is what makes the row clickable) and simply says nothing."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            # The block is at the top; a skill body can run to tens of KB and
+            # none of it is frontmatter.
+            return lib.parse_frontmatter(f.read(4096))
+    except OSError:
+        return {}
+
+
+def _skills(root: str, manifest: dict) -> list:
+    """A skill is a directory with a SKILL.md in it (D490's rule, applied to a
+    plugin's tree rather than the repo's). Nested, because a plugin is free to
+    group them in subdirectories."""
+    out = []
+    for top in _manifest_dirs(manifest, "skills", root):
+        # `_walk` yields `top` itself first, so a manifest pointing at ONE skill
+        # rather than at a dir of them needs no special case.
+        for dirpath, filenames in _walk(top):
+            if "SKILL.md" not in filenames:
+                continue
+            path = os.path.join(dirpath, "SKILL.md")
+            fm = _read_frontmatter(path)
+            out.append({
+                "name": fm.get("name") or os.path.basename(dirpath),
+                "description": fm.get("description") or "",
+                "path": path,
+            })
+    return out
+
+
+def _markdown(root: str, manifest: dict, key: str) -> list:
+    """Commands and agents are both "every .md under a dir", differing only in
+    what names them: an agent declares its own `name` in frontmatter, while a
+    command is INVOKED by its path (`/plugin:sub:name`), so the path is the
+    honest label and a frontmatter `name` would be a second one."""
+    out = []
+    for top in _manifest_dirs(manifest, key, root):
+        for dirpath, filenames in _walk(top):
+            for fn in filenames:
+                if not fn.endswith(".md"):
+                    continue
+                path = os.path.join(dirpath, fn)
+                rel = os.path.relpath(path, top)[: -len(".md")].replace(os.sep, ":")
+                fm = _read_frontmatter(path)
+                name = rel if key == "commands" else (fm.get("name") or rel)
+                out.append({
+                    "name": name,
+                    "description": fm.get("description") or "",
+                    "path": path,
+                })
+    return out
+
+
+def _hooks(root: str, manifest: dict) -> list:
+    """One row per EVENT, not per hook command: what a reader wants from a hook
+    listing is "this plugin runs something on SessionStart", and the command
+    itself is a ${CLAUDE_PLUGIN_ROOT} string that says nothing on one line.
+
+    `hooks` in the manifest is a path to the json; the conventional
+    hooks/hooks.json is used when it names none. An INLINE hooks object is also
+    accepted — the file it lives in is then plugin.json, which is where the
+    click lands."""
+    val = manifest.get("hooks")
+    path, config = None, None
+    if isinstance(val, dict):
+        path, config = os.path.join(root, ".claude-plugin", "plugin.json"), val
+    else:
+        candidates = []
+        if isinstance(val, str):
+            v = val.replace("${CLAUDE_PLUGIN_ROOT}", root)
+            candidates = [os.path.normpath(v if os.path.isabs(v) else os.path.join(root, v))]
+        else:
+            candidates = [os.path.join(root, "hooks", "hooks.json")]
+        for cand in candidates:
+            if _within(root, cand) and os.path.isfile(cand):
+                path = cand
+                try:
+                    with open(cand, "r", encoding="utf-8") as f:
+                        config = json.load(f)
+                except (OSError, ValueError):
+                    # A hooks.json we cannot parse is still a hooks.json the
+                    # plugin ships: the row stays, says so, and opens the file
+                    # that needs fixing.
+                    return [{"name": "hooks.json", "description": "could not be read",
+                             "path": cand}]
+                break
+    if not isinstance(config, dict):
+        return []
+    events = config.get("hooks") if isinstance(config.get("hooks"), dict) else config
+    out = []
+    for event, entries in (events or {}).items():
+        if not isinstance(event, str) or not isinstance(entries, list):
+            continue
+        matchers = [
+            e.get("matcher") for e in entries
+            if isinstance(e, dict) and isinstance(e.get("matcher"), str) and e.get("matcher")
+        ]
+        n = sum(len(e.get("hooks") or []) for e in entries if isinstance(e, dict))
+        desc = f"{n} hook{'' if n == 1 else 's'}"
+        if matchers:
+            desc += " on " + ", ".join(matchers)
+        out.append({"name": event, "description": desc, "path": path})
+    return out
+
+
+def _mcp_servers(root: str, manifest: dict) -> list:
+    """Declared inline in plugin.json (sentry, context-mode) or in a sibling
+    .mcp.json (github, circleback) — both are in the wild, so both are read.
+    The description is the transport, because that is the one fact about an MCP
+    server that changes what you expect of it: a URL is remote, a command is a
+    process this machine will spawn."""
+    sources = []
+    val = manifest.get("mcpServers")
+    if isinstance(val, dict):
+        sources.append((os.path.join(root, ".claude-plugin", "plugin.json"), val))
+    elif isinstance(val, str):
+        v = val.replace("${CLAUDE_PLUGIN_ROOT}", root)
+        p = os.path.normpath(v if os.path.isabs(v) else os.path.join(root, v))
+        if _within(root, p):
+            sources.append((p, None))
+    else:
+        sources.append((os.path.join(root, ".mcp.json"), None))
+    out = []
+    for path, servers in sources:
+        if servers is None:
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    doc = json.load(f)
+            except (OSError, ValueError):
+                continue
+            servers = doc.get("mcpServers") if isinstance(doc, dict) else None
+        if not isinstance(servers, dict):
+            continue
+        for name, cfg in servers.items():
+            if not isinstance(name, str):
+                continue
+            desc = ""
+            if isinstance(cfg, dict):
+                desc = cfg.get("url") or cfg.get("command") or cfg.get("type") or ""
+            out.append({"name": name, "description": str(desc), "path": path})
+    return out
+
+
+def _contents(pid: str) -> dict:
+    """Everything one INSTALLED plugin contributes to a session.
+
+    Keyed by the plugin id rather than by a path from the browser: the path is
+    resolved here, out of installed_plugins.json, so this action cannot be
+    pointed at an arbitrary directory. An id that is not installed has no
+    installPath and is refused, which is the same membership guard `update`
+    applies for the same reason."""
+    if not pid:
+        return {"ok": False, "error": "id required"}
+    installed = lib.read_json(lib.INSTALLED_PLUGINS_PATH, {}).get("plugins") or {}
+    rec = installed.get(pid)
+    if not rec:
+        return {"ok": False, "error": "plugin is not installed"}
+    root = (rec[0] or {}).get("installPath") if isinstance(rec, list) and rec else None
+    if not root or not os.path.isdir(root):
+        return {"ok": False, "error": "plugin files are missing — reinstall it"}
+    root = os.path.normpath(root)
+    # Tolerant, unlike lib.read_json: that helper lets malformed JSON raise
+    # because the user's OWN config being corrupt must surface. A plugin's
+    # manifest is somebody else's file, and a broken one costs this panel its
+    # non-default paths — not a 500 on a row the user merely expanded.
+    try:
+        with open(os.path.join(root, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+    except (OSError, ValueError):
+        manifest = {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    return {
+        "ok": True,
+        "id": pid,
+        "root": root,
+        "description": manifest.get("description") or "",
+        "skills": _skills(root, manifest),
+        "commands": _markdown(root, manifest, "commands"),
+        "agents": _markdown(root, manifest, "agents"),
+        "hooks": _hooks(root, manifest),
+        "mcpServers": _mcp_servers(root, manifest),
+    }
+
+
 def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
     if action == "list":
         return _list()
 
     if action == "available":
         return _available()
+
+    if action == "contents":
+        return _contents(id)
 
     if action == "toggle":
         if not id:

@@ -26,9 +26,17 @@
 // optimistic value.
 import { useCallback, useEffect, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
+import { urlForFsPath } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
-import type { AvailablePlugin, AvailablePlugins, MarketplaceKind, Plugin } from "../api";
+import type {
+  AvailablePlugin,
+  AvailablePlugins,
+  MarketplaceKind,
+  Plugin,
+  PluginComponent,
+  PluginContents,
+} from "../api";
 import {
   Card,
   CardActions,
@@ -119,6 +127,98 @@ function Pager({
         Next
       </button>
     </nav>
+  );
+}
+
+// The five kinds of thing a plugin can put in a session, in the order a reader
+// cares about them: what it can DO for you first (skills, commands, agents),
+// then what it does on its own (hooks, MCP servers). A group with nothing in it
+// renders nothing at all — an empty "Commands 0" heading is a row of chrome
+// saying a plugin does not have something, which is most plugins for most
+// kinds.
+const GROUPS: { key: keyof PluginContents; label: string }[] = [
+  { key: "skills", label: "Skills" },
+  { key: "commands", label: "Commands" },
+  { key: "agents", label: "Agents" },
+  { key: "hooks", label: "Hooks" },
+  { key: "mcpServers", label: "MCP servers" },
+];
+
+// What one installed plugin actually contributes, under its expanded row.
+//
+// Mounted ONLY when the row is open (ListRow renders `details` behind `open`),
+// which is what makes the per-plugin read affordable: expanding one plugin
+// walks one plugin's tree, and a page you never expand reads nothing at all.
+// Hence a component with its own fetch rather than data threaded down from the
+// section — the mount IS the trigger.
+function PluginContentsPanel({ id }: { id: string }) {
+  const load = useCallback(() => cc.plugins.contents(id), [id]);
+  const { data, error } = useModuleData(load);
+
+  if (error) return <ErrorBanner>{error}</ErrorBanner>;
+  if (!data) return <p>Reading plugin files…</p>;
+  if (!data.ok) return <p>{data.error || "Could not read this plugin."}</p>;
+
+  const groups = GROUPS.map((g) => ({
+    ...g,
+    items: (data[g.key] as PluginComponent[] | undefined) ?? [],
+  })).filter((g) => g.items.length > 0);
+
+  return (
+    <>
+      {data.description && <p>{data.description}</p>}
+      {groups.length === 0 && (
+        <p>This plugin ships no skills, commands, agents, hooks or MCP servers.</p>
+      )}
+      {groups.map((g) => (
+        <div className="cc-pgroup" key={String(g.key)}>
+          <div className="cc-pgroup-title">
+            {g.label}
+            <span className="cc-count">{g.items.length}</span>
+          </div>
+          <ul className="cc-pitems">
+            {g.items.map((it) => (
+              // A real anchor, not a click handler: the entry IS a file, so it
+              // gets the file's affordances for free — middle-click, cmd-click,
+              // a copyable target in the context menu. A new tab because this
+              // page is a config editor with unsaved-ish state (an open filter,
+              // a half-typed marketplace form); navigating it away to read a
+              // SKILL.md would lose all of it.
+              <li key={it.path + it.name}>
+                <a
+                  className="cc-pitem"
+                  href={urlForFsPath(it.path)}
+                  target="_blank"
+                  rel="noopener"
+                  title={it.path}
+                >
+                  <span className="cc-pitem-name">{it.name}</span>
+                  {it.description && (
+                    <span className="cc-pitem-desc">{it.description}</span>
+                  )}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {data.root && (
+        <dl className="cc-lrow-dl">
+          <dt className="cc-lrow-dt">Files</dt>
+          <dd className="cc-lrow-dd">
+            <a
+              className="cc-plink"
+              href={urlForFsPath(data.root)}
+              target="_blank"
+              rel="noopener"
+              title={data.root}
+            >
+              {data.root}
+            </a>
+          </dd>
+        </dl>
+      )}
+    </>
   );
 }
 
@@ -534,11 +634,14 @@ export default function PluginsSection({ onChanged }: SectionProps) {
               {rowsInstalled.map((p) => {
                 const enabled = flipped[p.id] ?? p.enabled;
                 return (
-                  // No chevron here: `plugins list` reads settings.json and
-                  // installed_plugins.json, neither of which carries a
-                  // description — everything this row knows is already on the
-                  // line. The catalog blurb lives on Discover, which is where
-                  // it is fetched from.
+                  // The chevron opens what the plugin CONTAINS — its skills,
+                  // commands, agents, hooks and MCP servers, read off disk on
+                  // expand. Nothing in `plugins list` (settings.json +
+                  // installed_plugins.json) knows any of that, which is why
+                  // this row had no chevron at all before: everything those two
+                  // files hold was already on the line. A plugin that is
+                  // recorded but not installed has no files to read, so it
+                  // keeps the flat row.
                   <ListRow
                     key={p.id}
                     lead={
@@ -553,6 +656,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                     secondary={p.id}
                     secondaryTitle={p.id}
                     secondaryMono
+                    details={p.installed ? <PluginContentsPanel id={p.id} /> : null}
                     meta={p.version ? <span className="cc-lrow-meta">v{p.version}</span> : null}
                     actions={
                       <>

@@ -1176,6 +1176,82 @@
   overflow-wrap: anywhere;
 }
 
+/* -- a plugin's contents (Plugins > Installed, expanded) --------------------- */
+/* The one place in this app where an expanded row holds a LIST of things rather
+   than a paragraph and some key/value pairs: what a plugin puts in a session.
+   Grouped by kind, each entry a link to the file that declares it — so the
+   panel is a table of contents, and reading the actual skill is one click away
+   rather than something this page tries to paraphrase. */
+
+.cc-pgroup {
+  margin-top: 8px;
+}
+
+.cc-pgroup-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.cc-pitems {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Name and description on ONE line, the description ellipsizing — the same
+   scan-twenty-of-these rule the rows above obey, applied one level in. The
+   full text is in title=, and the file itself is one click away. */
+.cc-pitem {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 6px;
+  margin-left: -6px;
+  border-radius: 4px;
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.cc-pitem:hover,
+.cc-pitem:focus-visible {
+  background: var(--row-bg-hover);
+  color: var(--fg);
+}
+
+.cc-pitem-name {
+  flex: 0 0 auto;
+  color: var(--fg);
+}
+
+.cc-pitem-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
+/* The install path at the foot of the panel: a link, but a quiet one — it is
+   where the files are, not one of the things the plugin gives you. */
+.cc-plink {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-plink:hover,
+.cc-plink:focus-visible {
+  color: var(--fg);
+  border-bottom-color: currentColor;
+}
+
 .cc-icon {
   flex: 0 0 auto;
   width: 13px;

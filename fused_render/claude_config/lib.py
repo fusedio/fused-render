@@ -163,6 +163,32 @@ def as_bool(v: Any) -> bool:
     return str(v).strip().lower() in ("true", "1", "yes", "on")
 
 
+def parse_frontmatter(text: str) -> dict:
+    """Extract name/description scalars from a leading --- ... --- YAML block.
+    Minimal line parser, no YAML dep (skills.md §3).
+
+    Lives HERE rather than in skills.py because two features read the same block
+    now: a local skill's SKILL.md, and every SKILL.md/agent/command markdown a
+    PLUGIN ships (plugins.contents). One parser, so a frontmatter quirk fixed
+    for one surface is fixed for the other."""
+    out = {"name": "", "description": ""}
+    if not text.startswith("---"):
+        return out
+    end = text.find("\n---", 3)
+    if end == -1:
+        return out
+    for line in text[3:end].split("\n"):
+        key, sep, val = line.partition(":")
+        key = key.strip()
+        if not sep or key not in ("name", "description"):
+            continue
+        v = val.strip()
+        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+            v = v[1:-1]
+        out[key] = v
+    return out
+
+
 def read_json(path: str, fallback: Any) -> Any:
     """Return `fallback` only when the file is ABSENT. Malformed JSON raises —
     corruption must surface, never be silently swallowed (config-store.md §3)."""
