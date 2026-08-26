@@ -49,7 +49,7 @@
 // That is why nothing here tries to cache across a section change: a section
 // switch IS a fresh mount, and each section refetches exactly as the original
 // app re-rendered.
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
 import ClaudeMdSection from "./sections/ClaudeMdSection";
@@ -133,7 +133,35 @@ export default function ClaudeConfig() {
   }, []);
   // One status read per epoch, for the dot alone — the History page fetches its
   // own drift when you get there.
-  const { status } = useGitStatus(badgeEpoch);
+  const { status, failed } = useGitStatus(badgeEpoch);
+
+  // The tab strip's trailing fade mask is only honest while there's more to
+  // scroll to — scrolled all the way to the end, "there's more here" is a
+  // lie, and it was rendering the LAST tab's own label semi-transparent for
+  // no reason. Tracked here (not pure CSS: there's no selector for "this
+  // element's scrollLeft equals its scrollWidth minus its clientWidth") and
+  // re-measured on scroll, on resize, and whenever the strip's own content
+  // box changes size (a ResizeObserver catches a font/label reflow that
+  // neither event would).
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const [tabsAtEnd, setTabsAtEnd] = useState(true);
+  useEffect(() => {
+    const el = tablistRef.current;
+    if (!el) return;
+    const check = () => {
+      setTabsAtEnd(el.scrollWidth - el.scrollLeft - el.clientWidth <= 1);
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", check);
+      window.removeEventListener("resize", check);
+      ro.disconnect();
+    };
+  }, []);
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
   // `?cctab=profiles` was a tab of its own until Profiles became a block of the
@@ -190,23 +218,39 @@ export default function ClaudeConfig() {
           fighting the tabs for room. */}
       <div className="cc-header">
         <span className="cc-header-title">Claude config</span>
+        {/* Three states, not two: the chip states drift POSITIVELY ("Clean"),
+            so it must never say that from a null status — during the first
+            fetch, or forever if cc.gitOps.status() keeps failing. The old
+            nav badge just stayed absent in that case; this is its
+            replacement's one chance to be equally honest. */}
         <button
           type="button"
           aria-current={active === HISTORY.id ? "page" : undefined}
           className={
             "cc-gitchip" +
             (status?.dirty ? " dirty" : "") +
+            (!status || failed ? " unknown" : "") +
             (active === HISTORY.id ? " active" : "")
           }
           title={
-            status?.dirty
-              ? `${status.files.length} uncommitted change(s) — review and commit them in History`
-              : "Commits, profiles and uncommitted changes"
+            failed
+              ? "Git status unavailable — could not be reached"
+              : !status
+                ? "Checking git status…"
+                : status.dirty
+                  ? `${status.files.length} uncommitted change(s) — review and commit them in History`
+                  : "Commits, profiles and uncommitted changes"
           }
           onClick={() => setActive(HISTORY.id)}
         >
           <span className="cc-gitchip-dot" aria-hidden="true" />
-          {status?.dirty ? `${status.files.length} uncommitted` : "Clean"}
+          {failed
+            ? "Status unknown"
+            : !status
+              ? "Checking…"
+              : status.dirty
+                ? `${status.files.length} uncommitted`
+                : "Clean"}
           <Icon name="clock" />
         </button>
       </div>
@@ -218,7 +262,12 @@ export default function ClaudeConfig() {
             edge-pinned History button was what clipped the last tab's label
             under it at a narrow width. The strip now scrolls sideways under a
             fade mask with nothing else sharing its row to collide with. */}
-        <div className="cc-tablist" role="tablist" aria-label="Claude config sections">
+        <div
+          ref={tablistRef}
+          className={"cc-tablist" + (tabsAtEnd ? " at-end" : "")}
+          role="tablist"
+          aria-label="Claude config sections"
+        >
           {TABS.map((s) => (
             <button
               key={s.id}
