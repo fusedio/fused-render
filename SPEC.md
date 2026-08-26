@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9734,17 +9734,34 @@ background apps are the third.
   page's own path — on every endpoint, never a raw folder path, and resolves
   the app folder from it server-side exactly as `/api/run`/`/api/engine`
   resolve `py` (D500): this adds no code-execution surface and no
-  path-typed API to defend. `GET /status` reports `{enabled, running, pid,
-  version, engine_id}`; `POST /enable` persists then brings the daemon up
-  (409 if the folder's project venv isn't built yet — the same stance
-  `/api/engine` already takes, D500: building one inside a POST would block
-  for minutes, so opening the page once installs it first); `POST /stop`
-  kills the running daemon WITHOUT disabling it, so the startup hook (or a
-  later `enable`/`restart`) brings it back; `POST /disable` kills it AND
-  unpersists, so it stays down; `POST /restart` respawns the currently-enabled
-  daemon; `GET /running` is the cheap enabled-paths-with-a-live-child-boolean
-  read the `/apps` grid's badge uses (engine_host.current only, no folder
-  walk, no toml reads).
+  path-typed API to defend. `_folder_for` REALPATH's the resolved folder
+  (D509, 2026-08-26 code review — it used to only `abspath` it): folder
+  identity across every endpoint now agrees with `engine_id_for`'s own
+  realpath-based hash, so a folder reached through a symlink alias can no
+  longer make `enabled` (compared against the abspath-only `enabled_paths()`)
+  and `running` (keyed off `engine_id_for`) disagree about the same app, and
+  `enable()`/`disable()` through different aliases of one folder can no
+  longer write/remove two separate store entries for it. `GET /status`
+  reports `{enabled, running, pid, version, engine_id}`; `POST /enable`
+  persists then brings the daemon up (409 if the folder's project venv isn't
+  built yet — the same stance `/api/engine` already takes, D500: building
+  one inside a POST would block for minutes, so opening the page once
+  installs it first); `POST /stop` kills the running daemon WITHOUT
+  disabling it, so the startup hook (or a later `enable`/`restart`) brings
+  it back; `POST /disable` kills it AND unpersists, so it stays down;
+  `POST /restart` respawns the currently-enabled daemon, always against a
+  FRESHLY computed version digest (D510, 2026-08-26 code review — the
+  live-child branch used to call `engine_host.restart(engine_id)` bare,
+  which rebuilt the replacement `Child` from `existing.version`, the OLD
+  digest; a restart right after editing `daemon.py` would then respawn the
+  new code tagged with the stale version, and the next enable()/server-start
+  resurrection's own fresh digest would disagree with it and tear the
+  just-restarted child down for a second respawn — `engine_host.restart` now
+  takes an optional `version` override, defaulting to the existing child's
+  version for every other caller, i.e. engine_forward.py's heal-on-proxy,
+  which is unchanged); `GET /running` is the cheap
+  enabled-paths-with-a-live-child-boolean read the `/apps` grid's badge uses
+  (engine_host.current only, no folder walk, no toml reads).
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `enabled_paths()` and brings each one up,
@@ -9826,11 +9843,15 @@ background apps are the third.
   path (the D505 entry above, `_forward` at lines ~216-222) respawns a
   dead-but-enabled child on ANY proxied call, so an unguarded `call()` from a
   preview render could resurrect a daemon some other session had enabled.
-  `status()`, `stop()`, and `disable()` are deliberately NOT gated on the
-  flag: `status()` is read-only, and `stop()`/`disable()` only ever turn a
-  daemon off — a preview must never be able to turn a real user's daemon off
-  either, so leaving them reachable in preview is required, not an
-  oversight. This is a client-side guard, addressing a careless app (the
+  `stop()` and `disable()` are gated the same way as `enable()`/`restart()`/
+  `call()` (D508, 2026-08-26 code review — the original text here had this
+  inverted): a card thumbnail mounts an app's own `entry_html` live and
+  sandboxed with `allow-scripts`, so an app whose init path calls
+  `fused.daemon.disable()` would un-persist a running daemon just because
+  its card scrolled past or was hovered — worse than the `enable()` hazard
+  this guard exists for in the first place, because `disable()` survives a
+  server restart. `status()` is the one method deliberately left open: it is
+  read-only. This is a client-side guard, addressing a careless app (the
   verified hazard), not a server-side one: the flag is confirmed to reach
   the app's own frame directly, so the check belongs where the calls
   themselves originate; a page willing to bypass `runtime.js` and call the
