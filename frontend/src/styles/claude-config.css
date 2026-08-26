@@ -264,6 +264,15 @@
   padding: 24px 28px 40px;
 }
 
+/* The list-bearing tabs (see WIDE_SECTIONS in ClaudeConfig.tsx) get more room
+   than Preferences: a 900px cap left roughly a third of a 1400px window
+   empty and more than half of a 2000px one. min() rather than a bare
+   1400px so a window narrower than that still just gets .cc-main's own
+   width:100% — this raises the ceiling, it doesn't set a floor. */
+.cc-main-wide {
+  max-width: min(1400px, 100%);
+}
+
 .cc-heading {
   margin: 0 0 2px;
   font-size: 20px;
