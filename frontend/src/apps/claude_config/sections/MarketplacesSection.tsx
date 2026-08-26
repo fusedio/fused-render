@@ -9,7 +9,6 @@
 import { useCallback, useId, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { MarketplaceKind } from "../api";
 import {
@@ -19,7 +18,9 @@ import {
   DisclosureButton,
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -143,7 +144,7 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
         </div>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
-      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading marketplaces" />}
+      {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading marketplaces" />}
       {data?.marketplaces.length === 0 && (
         <Empty
           action={
@@ -158,39 +159,47 @@ export default function MarketplacesSection({ onChanged }: SectionProps) {
       )}
       {/* No chevron: a marketplace IS its name and its source, and both are on
           the line. There is nothing an expanded panel could add. */}
-      {data?.marketplaces.map((m) => {
-        const source = m.source.repo || m.source.url || "";
-        return (
-          <ListRow
-            key={m.name}
-            name={m.name}
-            pills={!m.editable ? <Pill tone="ro">read-only</Pill> : null}
-            secondary={source}
-            secondaryTitle={source}
-            secondaryMono
-            actions={
-              <>
-                {m.shareCommand && (
-                  <button
-                    type="button"
-                    className="cc-iconbtn"
-                    title={`Copy install command — ${m.shareCommand}`}
-                    aria-label={`Copy the install command for ${m.name}`}
-                    onClick={() => share(m.shareCommand as string)}
-                  >
-                    <Icon name="copy" />
-                  </button>
-                )}
-                {m.editable && (
-                  <button type="button" className="btn btn-danger" onClick={() => remove(m.name)}>
-                    Remove
-                  </button>
-                )}
-              </>
-            }
-          />
-        );
-      })}
+      {data && data.marketplaces.length > 0 && (
+        <List>
+          {data.marketplaces.map((m) => {
+            const source = m.source.repo || m.source.url || "";
+            return (
+              <ListRow
+                key={m.name}
+                name={m.name}
+                pills={!m.editable ? <Pill tone="ro">read-only</Pill> : null}
+                secondary={source}
+                secondaryTitle={source}
+                secondaryMono
+                actions={
+                  <>
+                    {m.shareCommand && (
+                      <button
+                        type="button"
+                        className="cc-iconbtn"
+                        title={`Copy install command — ${m.shareCommand}`}
+                        aria-label={`Copy the install command for ${m.name}`}
+                        onClick={() => share(m.shareCommand as string)}
+                      >
+                        <Icon name="copy" />
+                      </button>
+                    )}
+                    {m.editable && (
+                      <button
+                        type="button"
+                        className="btn btn-danger"
+                        onClick={() => remove(m.name)}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </>
+                }
+              />
+            );
+          })}
+        </List>
+      )}
     </>
   );
 }
