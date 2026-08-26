@@ -43,7 +43,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
@@ -786,6 +786,15 @@ def _catalog_with_downloads() -> list[dict]:
         recipe = formats.GGUF_RECIPES.get(entry_id)
         return recipe["repo"] if recipe else entry_id
 
+    # Loaded ONCE for the whole request — `footprints.load_store()` is a
+    # `storage.read_json` open, a JSON parse and a `benchmark.machine()`
+    # identity check, and this route computes `fit.verdict` per catalog
+    # entry below (curated plus cached, across every capability): a curated
+    # shortlist plus a machine's own cache is easily dozens of entries per
+    # `GET /api/ai/catalog`, and this is a route the AI Models page's picker
+    # polls (code review on AI-16). Passed straight through to every
+    # `fit.verdict` call so none of them repeats the load.
+    footprint_store = footprints.load_store()
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
@@ -855,7 +864,8 @@ def _catalog_with_downloads() -> list[dict]:
             # cached entry never has one, `.get` answers None and the ladder
             # falls straight through to `size_gb`.
             entry["fit"] = fit.verdict(row["capability"], entry["id"],
-                                       entry.get("size_gb"), entry.get("resident_gb"))
+                                       entry.get("size_gb"), entry.get("resident_gb"),
+                                       footprint_store=footprint_store)
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo
             # with no edit variant is as unable to edit as a diffusers one and

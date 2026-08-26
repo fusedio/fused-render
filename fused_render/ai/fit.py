@@ -105,6 +105,34 @@ def machine_ram_gb() -> float | None:
     return None
 
 
+@functools.lru_cache(maxsize=1)
+def _libc():
+    """The C library handle, bound ONCE and reused for the life of the
+    process — never a fresh `ctypes.CDLL(...)` per call.
+
+    Code review caught what the docstring below originally elided: the ~2µs
+    round trip was measured against an ALREADY-BOUND handle exactly like this
+    one, not against `ctypes.util.find_library("c")` plus a fresh `CDLL(...)`
+    per call, which is a real `dlopen` and is not free — a curated catalog
+    plus cached repos is dozens of catalog entries per `GET /api/ai/catalog`,
+    which the picker polls, so "cheap per call" only holds once the handle
+    itself is not being re-resolved on every one of them.
+
+    `None` off Darwin or if the library cannot be found — `_wired_limit_mb`
+    degrades to "unreadable" exactly as it already does for every other
+    failure mode, and that must cost the GATE, never the verdict.
+    """
+    if sys.platform != "darwin":
+        return None
+    path = ctypes.util.find_library("c")
+    if not path:
+        return None
+    try:
+        return ctypes.CDLL(path, use_errno=True)
+    except OSError:
+        return None
+
+
 def _wired_limit_mb() -> int | None:
     """`iogpu.wired_limit_mb`, read via `ctypes.sysctlbyname` — None off
     Darwin, or if the read fails for any reason (SPEC AI-16b).
@@ -112,10 +140,15 @@ def _wired_limit_mb() -> int | None:
     **A `ctypes` libc call, not a subprocess.** AI-6 refuses `nvidia-smi`/
     `rocminfo` on this same per-catalog-request path because a cold spawn is
     50-500ms; measured directly on this machine (2026-08-26, Apple Silicon,
-    `ctypes.CDLL(...).sysctlbyname`), one read-the-size-then-read-the-value
-    round trip is ~2µs — a `sysctl` subprocess was never actually necessary
-    here, which is worth writing down since the spec that asked for this probe
-    expected one.
+    against an already-bound handle — see `_libc`), one read-the-size-then-
+    read-the-value round trip is ~2µs — a `sysctl` subprocess was never
+    actually necessary here, which is worth writing down since the spec that
+    asked for this probe expected one. The VALUE itself is read fresh on
+    every call rather than cached (unlike the handle): `iogpu.wired_limit_mb`
+    can change on a running machine, and AI-6's rule for a device probe
+    applies just as well to a memory ceiling — a cached refusal or a cached
+    stale reading that outlives a real change is the wrong direction to
+    optimise in, and at ~2µs a call this one costs nothing to keep fresh.
 
     `0` is a REAL answer, Apple's own documented meaning of "no explicit
     limit — the kernel enforces its default, roughly 75% of RAM" — not
@@ -124,10 +157,10 @@ def _wired_limit_mb() -> int | None:
     below, never the verdict — an unreadable wired limit is not evidence a
     model does not fit.
     """
-    if sys.platform != "darwin":
+    libc = _libc()
+    if libc is None:
         return None
     try:
-        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
         name = b"iogpu.wired_limit_mb"
         size = ctypes.c_size_t(0)
         if libc.sysctlbyname(name, None, ctypes.byref(size), None, 0) != 0:
@@ -155,8 +188,17 @@ def _wired_limit_bytes(ram_gb: float) -> float | None:
     return limit_mb * 1024 * 1024
 
 
+#: What "the caller did not pass a footprint store" looks like — distinct
+#: from `None`, because `footprints.load_store()` legitimately returns `None`
+#: (no file yet, a corrupt one, a different machine's) and that answer has to
+#: be usable AS a store (meaning "nothing measured") rather than being read as
+#: "go look it up yourself".
+_NOT_GIVEN = object()
+
+
 def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None,
-                    resident_gb: float | None = None) -> tuple[float | None, str | None]:
+                    resident_gb: float | None = None, *,
+                    footprint_store=_NOT_GIVEN) -> tuple[float | None, str | None]:
     """The best footprint available for `<capability>/<model_id>`, and which
     rung of the ladder it came from — `(bytes, basis)`, or `(None, None)`.
 
@@ -165,8 +207,17 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
     that answers wins outright — this is NOT an average or a "prefer the
     largest", because a measured number is strictly better evidence than a
     guess about the same model, whichever guess is bigger.
+
+    `footprint_store` — from `footprints.load_store()` — lets a caller
+    answering MANY entries in one request (SPEC AI-16, code review) skip a
+    fresh disk read and machine-identity check per entry. Left unpassed (the
+    default), this does its own single `footprints.read` — correct for a
+    one-off lookup, and what every test and single-verdict caller still gets.
     """
-    measured = footprints.read(capability, model_id)
+    if footprint_store is _NOT_GIVEN:
+        measured = footprints.read(capability, model_id)
+    else:
+        measured = footprints.peak_from_store(footprint_store, capability, model_id)
     if measured is not None:
         return measured, "measured"
     if isinstance(resident_gb, (int, float)) and not isinstance(resident_gb, bool) and resident_gb > 0:
@@ -177,7 +228,8 @@ def footprint_bytes(capability: str, model_id: str, size_gb: float | None = None
 
 
 def verdict(capability: str, model_id: str, size_gb: float | None = None,
-           resident_gb: float | None = None) -> dict | None:
+           resident_gb: float | None = None, *,
+           footprint_store=_NOT_GIVEN) -> dict | None:
     """`{verdict, basis, footprintBytes}`, or `None` when nothing is known —
     SPEC AI-16, AI-16c.
 
@@ -192,8 +244,12 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
     left after the reserve, so a model measured above it ran while nothing
     else was competing for memory. `basis` is what lets a reader (AI-16c)
     tell that apart from a guess.
+
+    `footprint_store` is threaded straight through to `footprint_bytes` — see
+    its own docstring for the batch-request reason it exists.
     """
-    footprint, basis = footprint_bytes(capability, model_id, size_gb, resident_gb)
+    footprint, basis = footprint_bytes(capability, model_id, size_gb, resident_gb,
+                                       footprint_store=footprint_store)
     if footprint is None:
         return None
     ram_gb = machine_ram_gb()

@@ -152,11 +152,24 @@ def _bounded(models: dict) -> dict:
     return dict(keep)
 
 
-def read(capability: str, model_id: str) -> int | None:
-    """The measured peak footprint in bytes for `<capability>/<model_id>` on
-    THIS machine, or None — never a figure measured on a different one.
+def load_store() -> dict | None:
+    """The whole validated store, or None — the shape `_load` returns,
+    exposed for a caller that needs to answer MANY `<capability>/<model_id>`
+    lookups in one request (SPEC AI-16, `fit.py`, and code review: the AI
+    Models page's catalog route was calling `read()` once PER ENTRY — dozens
+    of `storage.read_json` opens, JSON parses and `benchmark.machine()`
+    identity checks per `GET /api/ai/catalog`, a route the picker polls).
+    Load this ONCE per request and answer every entry from it through
+    `peak_from_store` instead.
     """
-    store = _load()
+    return _load()
+
+
+def peak_from_store(store: dict | None, capability: str, model_id: str) -> int | None:
+    """`read()`'s answer, but over an already-loaded `store` (from
+    `load_store()`) rather than a fresh disk read — the batch half of the
+    contract `read()` restates below for a single, standalone lookup.
+    """
     if store is None:
         return None
     entry = store["models"].get(_key(capability, model_id))
@@ -164,6 +177,17 @@ def read(capability: str, model_id: str) -> int | None:
         return None
     peak = entry.get("peakBytes")
     return peak if isinstance(peak, int) and peak > 0 else None
+
+
+def read(capability: str, model_id: str) -> int | None:
+    """The measured peak footprint in bytes for `<capability>/<model_id>` on
+    THIS machine, or None — never a figure measured on a different one.
+
+    A single fresh load per call — correct for a one-off lookup (a load
+    completing, a benchmark run), and exactly the cost `peak_from_store`
+    exists to let a BATCH of lookups avoid paying once per entry.
+    """
+    return peak_from_store(_load(), capability, model_id)
 
 
 def record(capability: str, model_id: str, peak_bytes: int) -> None:

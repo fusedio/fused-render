@@ -5206,6 +5206,36 @@ def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
     assert entry["fit"]["basis"] == "download"
 
 
+def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review on AI-16: the route used to call `fit.verdict` per catalog
+    entry, and each of THOSE did its own fresh `footprints.read` — a
+    `storage.read_json` open, a JSON parse and a `benchmark.machine()`
+    identity check per entry, for a route (`GET /api/ai/catalog`) the picker
+    polls. `footprints.load_store()` now happens ONCE per request and every
+    entry's `fit.verdict` reads off that same in-memory store — a multi-entry
+    catalog (several suggested models under one capability) must not cost
+    more than a single `load_store()` call regardless of how many entries it
+    answers for."""
+    calls = []
+    real_load_store = footprints.load_store
+
+    def _counting_load_store():
+        calls.append(1)
+        return real_load_store()
+
+    monkeypatch.setattr(footprints, "load_store", _counting_load_store)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
+        {"id": "org/two", "label": "Two", "size_gb": 8.0, "note": ""},
+        {"id": "org/three", "label": "Three", "size_gb": 12.0, "note": ""},
+    ])
+    row = _fit_text_row(client)
+    assert len(row["models"]) >= 3
+    assert all(m["fit"] is not None for m in row["models"])
+    assert len(calls) == 1
+
+
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
 #
 # The Playground's image composer draws its attach affordance off this flag, so
