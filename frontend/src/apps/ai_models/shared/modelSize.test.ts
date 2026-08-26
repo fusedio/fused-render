@@ -161,6 +161,27 @@ describe("a \"download\"-scoped total (SPEC AI-5n, D496)", () => {
       modelSizeHint(CATALOG_GB, job({ total: SMALLER_TOTAL, total_scope: "download" }))?.approx,
     ).toBe(false);
   });
+
+  it("does not let a PHASE total win just because the row once said \"download\"", () => {
+    // Code review: `total_scope` is STICKY on the job row (the backend only
+    // overwrites it when a tick's body names it), and a multi-repo download
+    // interleaves two tickers — `download_plan`'s own, beating
+    // `total_scope="download"` with the GRAND total, and each phase's
+    // `fetch_with_progress`, ticking every second with that phase's own
+    // (smaller) total. This module has no memory across ticks — it only ever
+    // sees the row's CURRENT snapshot — so it can only be correct here if the
+    // row it is handed already carries the RIGHT scope for its OWN total.
+    // `worker_base.fetch_with_progress` fixes this at the source: every one
+    // of its ticks asserts `total_scope="phase"` explicitly, so a phase
+    // total is never left sitting under a leftover "download" claim from the
+    // previous ticker. This test is the contract that fix depends on: a row
+    // correctly scoped "phase" keeps the never-understate behaviour even
+    // though nothing here can tell that another tick, a moment earlier,
+    // claimed "download" about a different total.
+    expect(
+      modelSizeLabel(CATALOG_GB, job({ total: SMALLER_TOTAL, total_scope: "phase" })),
+    ).toBe(formatSize(catalogSizeBytes(CATALOG_GB) as number));
+  });
 });
 
 describe("modelSizeHint", () => {

@@ -1320,6 +1320,31 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
     assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
 
 
+def test_fetch_with_progress_declares_its_own_total_scope_every_tick(base, monkeypatch):
+    """Code review on AI-5n/D496: `total_scope` is STICKY on the job row
+    (`jobs.py` only updates it when a tick's body carries the field) —
+    written once by whichever tick last mentioned it. `download_plan` wraps a
+    multi-phase download with its OWN ticker beating `total_scope="download"`
+    on `_PLAN_TICK_S`, while each PHASE runs through this function's own
+    one-second ticks, reporting that phase's own (smaller) total. If this
+    function's ticks left `total_scope` unset, one of them landing right
+    after a `download_plan` beat would leave the row saying
+    `total_scope="download"` with a PHASE total sitting under it — exactly
+    the 19.1GB-shown-for-a-28.5GB-download defect `modelSize.ts` was built to
+    avoid. So every tick this function sends must say `total_scope="phase"`
+    explicitly, regardless of what a caller a level up last claimed."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.fetch_with_progress("u/x", lambda: "/f", total=2_600_000_000)
+
+    assert ticks, "expected at least the initial and closing ticks"
+    assert all(t.get("total_scope") == "phase" for t in ticks), ticks
+
+
 # The image recipe's own patterns moved to tests/test_ai_diffusers_worker.py,
 # where they are asserted against a frozen listing of the real repo instead of
 # by grepping the source for a pattern string. That grep was the reason a recipe

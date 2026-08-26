@@ -2800,7 +2800,21 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
-    identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+    # `total_scope` explicit on EVERY tick, not left for the row's default or
+    # a caller a level up to have set (code review, SPEC AI-5n/D496):
+    # `total_scope` is STICKY on the job row (`jobs.py` only overwrites it
+    # when a tick's body names it), and `download_plan` wraps a multi-phase
+    # download with its own ticker beating `total_scope="download"` on a
+    # tighter cadence than this function's own one-second ticks. Without this,
+    # a tick from THIS phase landing right after one of `download_plan`'s
+    # beats would leave the row saying `total_scope="download"` under a total
+    # that is only this phase's own (smaller) figure — `modelSize.ts` would
+    # then let a partial phase total win outright over the catalog's constant,
+    # showing e.g. 19.1GB for a 28.5GB download at the phase boundary. `total`
+    # here is always THIS call's own phase total (`download_plan` prices the
+    # WHOLE download separately, through its own `_tick`), so `"phase"` is
+    # unconditionally correct for every tick this function sends.
+    identity = {**(row or {}), "kind": "download", "unit": "bytes", "total_scope": "phase"}
     # A notice left over from a PREVIOUS fetch is not about this one. It cannot
     # happen in a download-only worker (one process, one download), but a
     # resident worker fetches component models during requests, and a fetch that
