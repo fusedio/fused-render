@@ -335,6 +335,17 @@ def project_root_for(path: str) -> str | None:
 
     app = app_dir_for(ap)
     if app:
+        # `app_dir_for` is not always a directory: for a loose script sitting
+        # directly in a tag folder (`<fused_dir>/<tag>/script.py`, no <name>
+        # level) it returns the FILE itself as a stand-in "app dir". There is
+        # nothing below such a path to walk, and `start` (the tag folder) is
+        # not even an ancestor of it — `d == app` would never be reached, so
+        # the loop below would run past the ceiling to the filesystem root.
+        # Preserve prior behavior for this edge case: return it as-is, same
+        # as before this nested-env walk existed.
+        if not os.path.isdir(app):
+            return app
+
         # A folder at or below the app dir, on the path up from `start`, may
         # declare its own environment — a project nested inside the app's
         # folder (SPEC D499's background-app case: the app dir itself is
@@ -348,15 +359,24 @@ def project_root_for(path: str) -> str | None:
         # applicable dependency does not count (has_project_env, not a bare
         # isfile check) — it must not become a boundary and start demanding
         # an env `uv sync` would leave empty.
+        #
+        # Bounded the same way as the ancestor walk below: `d == ceiling`
+        # stops it, defense-in-depth against ever reaching a stray manifest
+        # above `~` even though `app` (now known to be a real directory
+        # containing `start`, by construction of `app_dir_for`) should always
+        # be reached first.
+        ceiling = _ceiling()
         found = None
         d = start
         while True:
+            if d == ceiling:
+                break
             if has_project_env(d):
                 found = d
             if d == app:
                 break
             parent = os.path.dirname(d)
-            if parent == d:  # filesystem root — should not happen inside app
+            if parent == d:  # filesystem root
                 break
             d = parent
         return found or app

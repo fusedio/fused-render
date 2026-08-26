@@ -197,6 +197,30 @@ def test_walk_stops_below_the_home_dirs_parent(home, tmp_path):
     assert projectenv.project_root_for(str(d / "a.py")) is None
 
 
+def test_stray_pyproject_at_the_ceiling_is_not_the_boundary_for_a_loose_script(home, tmp_path):
+    """A script sitting directly in a tag folder — `<workspace>/<tag>/script.py`,
+    no <name> level below it — makes `app_dir_for` return the FILE itself as a
+    stand-in "app dir" rather than a directory. `start` (the tag folder) is
+    then not even an ancestor of `app`, so the nested-env walk in
+    `project_root_for` must not try to climb from it up to `app`: `d == app`
+    would never fire, and without a ceiling check the walk would run past the
+    ceiling to the filesystem root — exactly the failure `_ceiling()` exists
+    to prevent, applied to a stray manifest at the shell home's parent.
+    """
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='stray'\nversion='0.1'\ndependencies=['numpy']\n",
+        encoding="utf-8",
+    )
+    loose = tmp_path / "workspace" / "tag" / "loose.py"
+    loose.parent.mkdir(parents=True)
+    loose.write_text("x = 1\n", encoding="utf-8")
+
+    # Preserving prior (pre-nested-walk) behavior for this edge case: the
+    # bogus file-as-app-dir is returned as-is, not the ceiling directory.
+    assert projectenv.project_root_for(str(loose)) == str(loose)
+    assert projectenv.project_env_for(str(loose)) is None
+
+
 def _use_branch(monkeypatch, ref):
     """Activate a branch ref. `_branch` caches the ref on first read per process,
     so the env var alone does nothing once anything has resolved it."""
