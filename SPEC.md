@@ -3519,6 +3519,16 @@ this page, scoped by the same pathspec the working-tree lists use, and its
 view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
 
+**The community showcase clone (`~/Fused/showcase`) is a repo like any
+other from here** (D501-D503). It used to be managed on the app's behalf —
+fetched and fast-forwarded on every server start — and is not any more:
+`fused_render/community.py` clones it once, if missing, and never touches it
+again. There is also no second, INSTALLED copy any more (`~/Fused/local/
+<slug>`); an app opened from the showcase IS the copy, edited in place. Both
+changes make the showcase an ordinary git work tree with an ordinary
+`origin`, which is precisely what GT-20 below needs to be true for its
+"every app opened" check to say anything useful about it.
+
 - **GT-1** An ordinary view template (`fused_render/templates/git/`) —
   `template.html`, `log.py` (the reader), `ops.py` (the mutations),
   `condition.py` (the gate) and `icon.svg`. No shell or server code: everything
@@ -3938,16 +3948,23 @@ caller that wants the log on purpose.
   quotes, backticks, a `$(...)` — because there is no shell anywhere in the
   module for it to mean something to. A successful commit returns the new short
   sha and subject.
-- **GT-15** **No history rewriting, and no path to it.** No `--amend`, no
-  `reset --hard`, no rebase, no force push, no `branch -D`. `branch_delete` is
+- **GT-15** **No history rewriting the view decided FOR you, and no path to
+  it.** No `--amend`, no `reset --hard`, no force push, no `branch -D`, no
+  `--interactive`/`--onto` rebase. `branch_delete` is
   **`-d` only** — git refuses a branch whose commits are reachable from nowhere
   else, and that refusal is surfaced **verbatim**, because it *is* the safety
   property: the one thing a GUI must not make easy is throwing away commits.
-  `pull` is **`--ff-only`**, and a non-fast-forward is a **refusal pointing at a
-  terminal**, never an automatic merge or rebase — a divergence is a decision,
-  and both automatic answers take it on the user's behalf (a merge writes a
-  commit they did not ask for, a rebase rewrites commits they already have).
-  `push` never forces. `discard`'s untracked half is `git clean -fd` and
+  `pull` is **`--ff-only`**, and a non-fast-forward is a **refusal**, never an
+  automatic merge — a divergence is a decision, and an automatic merge takes it
+  on the user's behalf (it writes a commit nobody asked for). It is not a
+  refusal pointing bare at a terminal any more, though (GT-20): `rebase` is now
+  a **named, confirmed op** (`DESTRUCTIVE_OPS`) reachable from exactly this
+  refusal's own wording, and it is the one narrow exception to "no rebase"
+  above — it rebases onto exactly one target, the remote's tracked DEFAULT
+  branch, never a user-chosen ref, never `--interactive`/`--onto`, and never
+  silently: it is offered, confirmed, and can conflict, which is why it needed
+  a confirmation step at all rather than being folded into `pull`. `push`
+  never forces. `discard`'s untracked half is `git clean -fd` and
   **`-x` is forbidden**: an ignored path is where a `.env`, a virtualenv and a
   build tree live, a scale of loss completely unlike "throw away the edit I just
   made", and one no confirmation could meaningfully warn about because those
@@ -4203,6 +4220,52 @@ caller that wants the log on purpose.
   only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
   targets never reach any of it: `_locate` refuses a mount in both modules and the
   gate never offers the view (GT-4 / MD-11).
+
+- **GT-20** **A repo the user opens an app in gets a passive "origin has
+  moved" notice, opt-in from outside this view (D501-D504).** Every app open
+  through `GET /render` (D301's own definition of "this app is being
+  opened") triggers a throttled check — per repo ROOT, not per app, so
+  several apps in one repo cost one fetch — of whether the remote's default
+  branch has moved: fetch that ONE ref, count `HEAD..origin/<default>`.
+  Never on a timer, never at server start, never from a plain directory
+  listing (`/api/fs/list`'s own hook, `note_folder_opened`, is gated on the
+  unrelated file-indexing preference and fires once per LISTING; borrowing it
+  would put a git notification behind an unrelated switch). Silence on an
+  unreachable remote is deliberate — a background check that nagged about a
+  misconfigured remote would be worse than one that says nothing, and this
+  view remains where a fetch error is visible. A mount-backed repo is refused
+  before any subprocess, the same rule GT-4 states for this view's own reads
+  and writes.
+
+  **The check and its two mutations live server-side, in a NEW module
+  (`fused_render/git_upstream.py`), not in `ops.py`.** `ops.py` is reached
+  only as `fused.runPython("./ops.py")` from inside THIS view's own iframe
+  (GT-1) — the activity card (§36) that shows the result has no route to it.
+  So the server-side module MIRRORS `ops.py`'s git plumbing and mount refusal
+  (GT-1's own reason: a template exec'd standalone must not be imported), and
+  `ops.py` gains the matching `rebase` op in lockstep — the same op, twice,
+  so this view can do from inside an open repo what the card's refusal
+  message tells the user is available. `update`/`rebase` each check
+  `status --porcelain` FIRST and refuse a dirty tree with a structured
+  reason the card renders, matching GT-16's confirmation rule for the same
+  class of act.
+
+  **The action offered is BRANCH-shaped, not count-shaped.** On the repo's
+  default branch: **Update**, primary — an `--ff-only` pull, which can never
+  conflict, matching this view's own `pull` (GT-15). Off the default branch:
+  informational text naming how far behind, with **Rebase**, secondary — the
+  GT-15/GT-20 exception, onto the tracked default branch only. A conflict
+  from either is left exactly where a conflicting `stash apply` already
+  leaves one, mid-operation, for this view's existing conflict reader and
+  `resolve` op (GT-19) to pick up — never aborted, which would silently
+  discard a decision the button just took on the user's behalf. A refusal
+  that is not a conflict (most commonly `dirty`) instead offers **Fix with
+  Claude** (§36), which navigates to the repo and hands a Claude-capable
+  surface there the same class of prompt GT-19's operation-error case builds
+  — the error, the branch, ahead/behind, the dirty flag, the repo root — but
+  through a staged cross-navigation ask rather than
+  `window._fusedAskClaude`, because no surface for that repo may be mounted
+  yet.
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
@@ -5081,6 +5144,24 @@ stop it short of quitting the app.
   written against it needs no hosted-only branch. **This is an obligation on a
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
+- **BG-15** **A second named slot, `RepoUpdatesSlot`, for the repos GT-20's
+  background check has flagged** (D501-D504) — one row per repo with a known
+  upstream update, above the job rows and, like the queue's own rows (BG-10),
+  **outside the fold**: a card collapsed weeks ago must not hide a live
+  "origin has moved" action any more than it may hide a queued message.
+  **Rejected: generalising `QueueSlot` to N slots.** One more named slot is
+  the smaller change — this card was deliberately consolidated down to ONE
+  plate (BG-10's own history), and a slot mechanism built for an unbounded
+  count would be solving a problem this feature does not have. **Rejected:
+  modeling a repo row on the job registry.** `fused_render/jobs.py` models
+  `queued → running → finished`, a progress fraction, a cancel-request and a
+  `Clear` sweep; a standing CONDITION with an action fits none of those, and
+  `clearFinishedJobs` would sweep it the moment it next ran. `shell/
+  RepoUpdatesDock.tsx` therefore polls its own endpoint (`GET
+  /api/git-upstream`) the same way `QueueDock.tsx` polls its own, and — since
+  `QueueDock` is the one place `<DownloadManager>` is instantiated — hands
+  its slot to `QueueDock` to render in the SAME instance, rather than a
+  second top-level card composed elsewhere.
 
 ---
 
