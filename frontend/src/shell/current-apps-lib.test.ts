@@ -47,13 +47,21 @@ describe("currentApps", () => {
     expect(apps[1].running).toBe(false);
   });
 
-  it("caps the list at five", () => {
+  it("renders every app, uncapped, newest first", () => {
     const tasks = Array.from({ length: 8 }, (_, i) =>
       task(`k${i}`, `${ROOT}app${i}`, "done", i),
     );
     const apps = currentApps(tasks, FUSED);
-    expect(apps.length).toBe(5);
-    expect(apps[0].slug).toBe("app7");
+    expect(apps.map((a) => a.slug)).toEqual([
+      "app7",
+      "app6",
+      "app5",
+      "app4",
+      "app3",
+      "app2",
+      "app1",
+      "app0",
+    ]);
   });
 
   it("is empty until the workspace root is known", () => {

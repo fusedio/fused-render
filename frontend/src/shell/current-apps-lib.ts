@@ -9,13 +9,13 @@
 // owner's instruction: an app elsewhere on disk is a project, not one of the
 // apps this shell made.
 //
-// Ordering is by the newest task activity per app, capped at five — the sidebar
-// is a shortlist, and the Tasks page is where the long tail lives. The cap and
-// the order are this module's assumptions, not the owner's words; recorded so a
-// later change knows it is free to move them.
+// EVERY such app is rendered — the list is not capped. It was capped at five
+// (the owner's own "render 5 max"), and the owner lifted that on 2026-08-26:
+// the section is the answer to "which apps are on my desk", and a shortlist
+// that silently hides the sixth answers it wrong. Ordering — newest task
+// activity per app, slug as the tiebreak — is this module's assumption rather
+// than the owner's words; recorded so a later change knows it may move it.
 import type { TaskPulseTask } from "@platform/lib/api";
-
-export const CURRENT_APPS_LIMIT = 5;
 
 export interface CurrentApp {
   /** The folder name under <fused_dir>/local — the row's label. */
@@ -59,11 +59,7 @@ export function isUnderDir(project: string, dir: string): boolean {
   return project === dir || project.startsWith(dir + "/");
 }
 
-export function currentApps(
-  tasks: TaskPulseTask[],
-  fusedDir: string,
-  limit: number = CURRENT_APPS_LIMIT,
-): CurrentApp[] {
+export function currentApps(tasks: TaskPulseTask[], fusedDir: string): CurrentApp[] {
   if (!fusedDir) return [];
   const root = localAppsRoot(fusedDir);
   const byDir = new Map<string, CurrentApp>();
@@ -80,9 +76,9 @@ export function currentApps(
     app.lastActive = Math.max(app.lastActive, t.last_active || 0);
     if (t.status === "in_progress") app.running = true;
   }
-  return [...byDir.values()]
-    .sort((a, b) => b.lastActive - a.lastActive || a.slug.localeCompare(b.slug))
-    .slice(0, limit);
+  return [...byDir.values()].sort(
+    (a, b) => b.lastActive - a.lastActive || a.slug.localeCompare(b.slug),
+  );
 }
 
 // ---- the app page's address (D488) ------------------------------------------

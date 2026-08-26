@@ -1,6 +1,6 @@
-// "Current apps" — the sidebar section above Bookmarks (D487): the workspace
-// apps (<fused_dir>/local/<slug>) that still have a task not filed away, at
-// most five, newest activity first. A row opens the app's PAGE (`/apps/<slug>`,
+// "Current apps" — the sidebar section above Bookmarks (D487): EVERY workspace
+// app (<fused_dir>/local/<slug>) that still has a task not filed away, newest
+// activity first, uncapped. A row opens the app's PAGE (`/apps/<slug>`,
 // shell/AppPage.tsx, D488) — the one door that page has; its cross archives
 // every task under it, which is the one gesture that takes an app off this list.
 //
