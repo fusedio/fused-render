@@ -92,7 +92,7 @@ const PAGES = [...TABS, HISTORY];
 
 type SectionId = (typeof PAGES)[number]["id"];
 
-// The content column is capped at 900px everywhere by default (.cc-main) —
+// The content column is capped at 900px by default (.cc-main-capped, this page only) —
 // right for Preferences, whose label+doc column is itself capped near 60ch
 // for readability and should not stretch just because the page has room.
 // Wrong for the list-bearing tabs: at 1400px a 900px cap left roughly a
@@ -283,7 +283,9 @@ export default function ClaudeConfig() {
         </div>
       </div>
       <div className="cc-body">
-        <main className={"cc-main" + (WIDE_SECTIONS.has(active) ? " cc-main-wide" : "")}>
+        {/* cc-main-capped: the 900px cap is this page's, not the chassis' —
+            AI Models shares .cc-main and must not inherit it. */}
+        <main className={"cc-main cc-main-capped" + (WIDE_SECTIONS.has(active) ? " cc-main-wide" : "")}>
           {/* title= on the ROW, not on the note: the note itself is hidden on a
               narrow window, and the sentence should still be reachable there. */}
           <div className="cc-caption-row" title={TAGLINE}>
