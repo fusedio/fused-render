@@ -5183,8 +5183,13 @@ def test_fit_basis_download_from_size_gb_alone(client, fake_runner, fixed_fit_ma
         {"id": "org/only-size", "label": "Only size", "size_gb": 4.0, "note": ""},
     ])
     entry = _fit_text_row(client)["models"][0]
-    assert entry["fit"] == {"verdict": "easy", "basis": "download",
-                            "footprintBytes": 4.0 * 1e9}
+    # SPEC AI-19 item 3: the flat runtime-overhead constant now lands on
+    # every `download`-rung estimate, and `score`/`runMode` are new fields
+    # on every verdict — `fit.py`'s own tests cover their arithmetic in
+    # full; this route-level test only needs the shape to still be right.
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["verdict"] == "easy"
+    assert entry["fit"]["footprintBytes"] == 4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES
 
 
 def test_fit_basis_declared_wins_over_download(client, fake_runner, fixed_fit_machine,
