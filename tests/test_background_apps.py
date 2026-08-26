@@ -20,6 +20,11 @@ from fused_render.server import create_app, engine_host
 from fused_render.shell import prefs as shell_prefs
 
 FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
+#: Same fixture daemon, but declared with a NESTED daemon path
+#: (`daemon = "src/daemon.py"`) — the shape `_validate_background` used to
+#: mishandle by re-deriving the folder as `os.path.dirname(daemon)`.
+FIXTURE_APP_NESTED = os.path.join(
+    os.path.dirname(__file__), "fixtures", "background_app_nested")
 HDRS = {"X-Fused": "1"}
 
 
@@ -432,6 +437,36 @@ def test_ensure_background_rejects_daemon_not_matching_its_own_folders_manifest(
         engine_host.ensure_background(
             "bg_wrongdaemon", sys.executable, str(wrong),
             str(tmp_path / "cache"), "v1")
+
+
+def test_ensure_background_validates_against_the_callers_folder_not_dirname(tmp_path):
+    # Regression: `_validate_background` used to re-derive the declaring
+    # folder as `os.path.dirname(daemon)` instead of using the folder the
+    # caller already resolved. `load_manifest` only enforces containment
+    # (not flatness), so `daemon = "src/daemon.py"` is a legal manifest —
+    # and `dirname(daemon)` is `<folder>/src`, which has no pyproject.toml
+    # of its own. That made `ensure_background` refuse to ever start an app
+    # whose manifest names a nested daemon, unconditionally. Uses the real,
+    # spawnable nested fixture daemon (like the flat-layout success test
+    # above) so this exercises the actual `ensure_background` bring-up, not
+    # just `_validate_background` in isolation.
+    manifest = background_apps.load_manifest(FIXTURE_APP_NESTED)
+    assert manifest is not None
+    # Sanity: the hazard is real — the daemon's own dirname has no manifest.
+    assert background_apps.load_manifest(os.path.dirname(manifest.daemon)) is None
+
+    engine_id = background_apps.engine_id_for(FIXTURE_APP_NESTED)
+    version = background_apps.version_for(FIXTURE_APP_NESTED, sys.executable)
+    cache = os.path.join(os.environ["FUSED_RENDER_HOME"], "apps", engine_id)
+
+    child = engine_host.ensure_background(
+        engine_id, sys.executable, manifest.daemon, cache, version,
+        FIXTURE_APP_NESTED)
+    try:
+        assert child.kind == "background"
+        assert engine_host._ping(child)
+    finally:
+        engine_host.stop(engine_id)
 
 
 def test_ensure_background_succeeds_for_a_valid_manifest_without_autostart():

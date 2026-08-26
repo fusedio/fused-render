@@ -9685,7 +9685,7 @@ three platforms, one API, no field naming which one served you.
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
 
-## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512)
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D499, D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513)
 
 A folder can declare a daemon that outlives any one page: `fused.daemon` (the
 browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
@@ -9737,13 +9737,19 @@ background apps are the third.
   kind (D502): validated against the daemon's OWN folder manifest, not the
   autostart store (D511 — walking the autostart store here used to make
   `start()` refuse to spawn any app not opted into autostart, backwards once
-  autostart is opt-in; `_validate_background` now derives the folder from
-  `os.path.dirname(daemon)` and checks THAT folder's manifest declares
-  exactly this daemon file — an invariant check, the same stance
+  autostart is opt-in; `_validate_background` checks THAT folder's manifest
+  declares exactly this daemon file — an invariant check, the same stance
   `_validate`'s interpreter check already documents, not a trust boundary,
   since the caller already resolved `daemon` from the folder's own
-  manifest), and reused/spawned with the same double-checked dance
-  `ensure`/`ensure_app` already use. A `kind="background"`
+  manifest). The declaring folder is the one the caller resolved and passes
+  as `ensure_background`'s `folder` argument (falling back to
+  `os.path.dirname(daemon)` only when a direct caller omits it), NOT
+  re-derived from `daemon`'s dirname unconditionally (D513) — a manifest's
+  `daemon` may legally name a nested path (`daemon = "src/daemon.py"`;
+  `background_apps.load_manifest` enforces containment, not flatness), and
+  such a daemon's own dirname has no `pyproject.toml` of its own, so
+  re-deriving would refuse to ever start it. Reused/spawned with the same
+  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
   child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
   now gates on `kind == "app"`, not the `module` field's truthiness) —
   sitting idle is the entire point of a background app, unlike a warm script

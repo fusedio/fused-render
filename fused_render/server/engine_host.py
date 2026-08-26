@@ -515,7 +515,8 @@ def ensure_app(resolved_py: str, python: str,
 # --- background apps (background_apps.py, SPEC.md §46) ------------------------
 
 
-def _validate_background(engine_id: str, python: str, daemon: str) -> None:
+def _validate_background(engine_id: str, python: str, daemon: str,
+                         folder: str = "") -> None:
     """Same invariant-check stance as `_validate`/`_validate_interpreter`: the
     caller (the start/restart endpoints, the startup resurrection hook)
     already resolved `daemon` from the folder's own manifest, so this is not
@@ -528,17 +529,29 @@ def _validate_background(engine_id: str, python: str, daemon: str) -> None:
     which meant `ensure_background` would refuse to spawn any app that
     wasn't opted into autostart — exactly backwards now that autostart is a
     separate, opt-in flag and `start()` must work whether or not it is set.
-    Instead, `daemon`'s own containing folder is asked for ITS manifest
+    Instead, the declaring folder is asked for ITS manifest
     (`background_apps.load_manifest`, self-contained — no store lookup) and
     the check is simply "does that folder's manifest declare exactly this
-    daemon file", which needs nothing but the daemon path itself."""
+    daemon file", which needs nothing but the daemon path itself.
+
+    `folder` is the caller's own resolved declaring folder — the same one
+    `ensure_background` threads onto `Child.folder` — used here instead of
+    `os.path.dirname(daemon)` (D513): `load_manifest` only enforces
+    containment, not flatness, so a manifest's `daemon` naming a NESTED path
+    (`daemon = "src/daemon.py"`) is legal, and `dirname(daemon)` for such an
+    app is a subfolder with no `pyproject.toml` of its own — re-deriving the
+    folder that way made every such app un-startable (see `Child.folder`'s
+    docstring, which already called this hazard out). Falls back to
+    `os.path.dirname(daemon)` when `folder` is empty, preserving today's
+    behavior for flat layouts and for the few direct callers (tests only —
+    every production call site passes `folder`) that still don't pass one."""
     from fused_render import background_apps
 
     if not _ENGINE_ID.match(engine_id):
         raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
     _validate_interpreter(python)
     target = os.path.realpath(daemon)
-    folder = os.path.dirname(daemon)
+    folder = folder or os.path.dirname(daemon)
     manifest = background_apps.load_manifest(folder)
     if manifest is not None and os.path.realpath(manifest.daemon) == target:
         return
@@ -551,16 +564,19 @@ def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
                       version: str, folder: str = "") -> Child:
     """A live child for a background app's engine_id, reusing the current one
     when it matches and answers — the same double-checked reuse/spawn dance as
-    `ensure`, but for a `kind="background"` child and validated against the
-    enabled store rather than a templates root.
+    `ensure`, but for a `kind="background"` child, validated against its own
+    declaring folder's manifest rather than the (now-autostart-only) store.
 
     `folder` is the manifest's declaring folder (every caller already has it
     in scope, the same way it already has `cache`/`version`) — stored on the
-    `Child` so `_spawn_env` can export `FUSED_RENDER_APP_DIR` to the daemon.
-    Optional (defaults to `""`, meaning "no self-addressing env var") only so
+    `Child` so `_spawn_env` can export `FUSED_RENDER_APP_DIR` to the daemon,
+    and passed to `_validate_background` so it validates `daemon` against the
+    manifest of the folder that actually declared it, not a re-derived one
+    (D513 — re-deriving via `os.path.dirname(daemon)` breaks any manifest
+    whose `daemon` names a nested path). Optional (defaults to `""`) only so
     existing direct callers that don't care about it need not pass one; every
     production call site does."""
-    _validate_background(engine_id, python, daemon)
+    _validate_background(engine_id, python, daemon, folder)
     existing = _children.get(engine_id)
     if (existing is not None and existing.kind == "background"
             and _matches(existing, python, daemon, cache, version)
