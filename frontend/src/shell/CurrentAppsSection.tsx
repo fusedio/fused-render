@@ -180,17 +180,22 @@ function CurrentAppRow({
   onRemoved: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const href = appPageUrl(app.path);
+  // The destination keeps the TAB the user is on (owner, 2026-08-26): switching
+  // apps from the Files tab lands on the next app's Files tab, so the sidebar
+  // reads as "same view, other app". Only `_tab` rides along — a tab's own
+  // params (`?file=`, `?view=`) name things inside ONE app and are dropped.
+  // Off an app page the default tab it is. Read at render: the sidebar
+  // remounts on every navigation (App.tsx), so the href cannot go stale.
+  const onAppPage = appPathFromPath(location.pathname) !== null;
+  const tab = onAppPage ? appPageTabFromSearch(location.search) : undefined;
+  const href = appPageUrl(app.path, tab);
   const onOpen = (e: React.MouseEvent<HTMLAnchorElement>) => {
     // Middle/modified clicks keep the browser's own new-tab gesture on the href.
     if (opensElsewhere(e)) return;
     e.preventDefault();
-    // `active` is folder-only (the row lights up on either tab); the
-    // destination is the OVERVIEW, so from the Tasks tab the click still goes —
-    // it is how the sidebar gets back to the running app. Only a click that
-    // would land exactly where the page already is stays a no-op.
-    if (!active || appPageTabFromSearch(location.search) !== "overview")
-      navigateUrl(href);
+    // The row for the page already on screen, on the tab it already shows, is
+    // a no-op; the tab's own params would be the only thing the click cleared.
+    if (!active) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();
