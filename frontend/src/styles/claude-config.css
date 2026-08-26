@@ -62,14 +62,9 @@
   overflow: hidden;
 }
 
-/* -- section tab strip ----------------------------------------------------- */
-/* Horizontal, full width, pinned above the content. The TABS scroll sideways
-   rather than wrapping when the window is narrow: a wrapped strip changes the
-   page's header height as you resize, which moves the content under the
-   pointer. The scroll lives on .cc-tablist, not on the bar, so the History
-   button at the far edge stays put while the tabs slide under it. */
-
-/* The height is not a look, it is an ALIGNMENT: this bar's bottom border and
+/* -- header band ------------------------------------------------------------- */
+/* The page name on the left, the git chip — the signature element — on the
+   right. 49px is not a look, it is an ALIGNMENT: this bar's bottom border and
    the global sidebar's brand-row border are two halves of one line across the
    window, and at 44px against 49px they read as two rules a few pixels apart.
  *
@@ -85,29 +80,120 @@
  * one has to meet is the sidebar's, so it matches the sidebar's, and raising
  * the shared token to paper over it is a shell decision this page doesn't get
  * to make. box-sizing so the border is inside the 49 rather than a 50th pixel. */
-.cc-tabbar {
+.cc-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex: 0 0 auto;
-  gap: 8px;
+  gap: 12px;
   height: 49px;
   box-sizing: border-box;
-  padding: 8px 12px;
+  padding: 0 14px 0 16px;
   background: var(--bg-alt);
   border-bottom: 1px solid var(--border);
+}
+
+.cc-header-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* -- the git chip (signature element) ---------------------------------------- */
+/* The one thing this page always states: Clean, or N uncommitted. It is the
+   page's ONE loud element besides the active tab marker — tinted --warning
+   the moment the repo drifts, quiet grey otherwise — and it opens History,
+   which is where the drift it names gets dealt with. */
+.cc-gitchip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  transition: border-color 120ms var(--ease-out), color 120ms var(--ease-out);
+}
+
+.cc-gitchip:hover {
+  color: var(--fg);
+  border-color: color-mix(in srgb, var(--fg-muted) 60%, var(--border));
+}
+
+.cc-gitchip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cc-gitchip.active {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+
+.cc-gitchip-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+
+/* Dirty state is the whole point of the chip, so it is the whole point of the
+   colour too — --warning, the same hue the old nav badge used, so "there is
+   drift" keeps one meaning across the app. */
+.cc-gitchip.dirty {
+  color: var(--warning-strong);
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+}
+
+.cc-gitchip.dirty .cc-gitchip-dot {
+  background: var(--warning);
+}
+
+/* -- section tab strip ----------------------------------------------------- */
+/* A quiet underline strip, not a bar of its own surface — it sits directly on
+   the page background under the header. The tabs scroll sideways rather than
+   wrapping when the window is narrow: a wrapped strip changes the page's
+   content height as you resize, which moves the content under the pointer.
+   A fade mask at the trailing edge is the "there is more here" affordance a
+   plain overflow:auto can't give — nothing is EVER clipped or hidden under
+   another control, which is the defect this replaces. */
+.cc-tabbar {
+  flex: 0 0 auto;
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 
 .cc-tablist {
   display: flex;
   align-items: center;
-  flex: 1 1 auto;
   min-width: 0;
-  gap: 2px;
+  gap: 4px;
+  padding: 0 16px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent 100%);
+}
+
+.cc-tablist::-webkit-scrollbar {
+  display: none;
 }
 
 .cc-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -115,52 +201,44 @@
   font: inherit;
   font-size: 12.5px;
   white-space: nowrap;
-  padding: 5px 10px;
+  padding: 9px 10px 8px;
   border: none;
-  border-radius: 6px;
+  border-bottom: 2px solid transparent;
   background: none;
   color: var(--fg-muted);
   cursor: pointer;
 }
 
 .cc-tab:hover {
-  background: rgba(var(--tint), 0.06);
   color: var(--fg);
 }
 
+/* The lime accent's other spend (with the primary form action): the active
+   tab's underline, and nothing else about an inactive or hovered tab. */
 .cc-tab.active {
-  background: rgba(var(--tint), 0.08);
   color: var(--fg);
   font-weight: 600;
+  border-bottom-color: var(--accent);
 }
 
 .cc-tab:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* History is not one of the sections — it is the page you go to about the repo
-   itself, so it sits alone at the far edge with a hairline of its own. */
-.cc-tab-history {
-  margin-left: auto;
-  border: 1px solid var(--border);
-}
-
-/* The dirty signal the nav's git badge used to carry, reduced to a dot: on any
-   tab you still learn the config has uncommitted drift. Same --warning hue the
-   badge used, so "there is drift" keeps one colour across the app. */
-.cc-tab-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warning);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 
 /* -- content column -------------------------------------------------------- */
 
+/* Single column, left-aligned, capped so a row never stretches across a wide
+   monitor (defect: full-bleed content at any window width). Not centred —
+   margin stays 0, matching the sidebar it sits beside rather than floating in
+   the middle of the remaining space. */
 .cc-main {
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 900px;
+  box-sizing: border-box;
+  overflow-x: hidden;
   overflow-y: auto;
   padding: 24px 28px 40px;
 }
@@ -215,26 +293,80 @@
   gap: 16px;
 }
 
+/* Sticky, so a long list scrolls under the one row that names it, filters it
+   and refreshes it — summary · controls · refresh, per the design brief.
+   Flex-wrap is deliberate but constrained: the SUMMARY is the item allowed to
+   drop to its own line (flex-basis 100% below its min width), while the
+   controls travel together as one atomic flex item (.cc-toolbar-controls) and
+   never break apart into a ragged stack — that was the defect (a filter input
+   truncating its own placeholder as the row folded mid-control). */
 .cc-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-/* The count/summary text pushes the toolbar's actions to the right edge. */
-.cc-toolbar > :first-child {
-  margin-right: auto;
+  row-gap: 8px;
+  column-gap: 10px;
+  margin: 0 0 18px;
+  padding: 10px 0;
+  background: var(--bg);
 }
 
 /* What you are looking at, as a fact: "12 marketplaces", "4 servers · 3
    connected". Not italic — .cc-unset's italic means "this value is absent", and
-   a count is not absent. */
+   a count is not absent. Allowed to shrink to nothing and ellipsize before the
+   controls give up their own width — the fact is disposable, the controls are
+   not. */
 .cc-summary {
+  flex: 1 1 160px;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 12px;
   color: var(--fg-muted);
-  overflow-wrap: anywhere;
+}
+
+/* Every control after the summary, as ONE flex item pinned to the row's right
+   edge. It never wraps internally — a filter input, a segmented switch and a
+   refresh icon breaking onto separate lines is the "ragged stack" defect —
+   so at a width where it and the summary can't share a line, the summary
+   folds first (its own 100% basis) and this group keeps its single row. Falls
+   back to its own horizontal scroll only in the extreme case that the controls
+   alone still don't fit. */
+.cc-toolbar-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin-left: auto;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+@media (max-width: 640px) {
+  /* Below ~640px the summary's own line is claimed every time, so the
+     controls get the row to themselves and can use its full width. */
+  .cc-summary {
+    flex-basis: 100%;
+  }
+
+  .cc-toolbar-controls {
+    width: 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+
+  /* The filter input is the one control that needs real width to be useful;
+     everything else (segmented switch, refresh icon) is fixed-size, so the
+     input is the one allowed to grow into whatever the row has left. */
+  .cc-toolbar-controls .cc-scalar {
+    flex: 1 1 140px;
+    min-width: 120px;
+  }
 }
 
 .cc-group {
@@ -278,15 +410,20 @@
 
 .cc-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
   padding: 10px 0;
   border-bottom: 1px solid var(--border);
 }
 
+/* Label + doc, capped so a long documentation string stays a comfortable
+   measure rather than running the row's full width — the control column
+   below is what actually needs the row's remaining space. */
 .cc-row-meta {
   flex: 1 1 auto;
   min-width: 0;
+  max-width: 60ch;
+  padding-top: 3px;
 }
 
 .cc-row-label {
@@ -299,11 +436,17 @@
   color: var(--fg-muted);
 }
 
+/* The fixed column every control lines up against, down the whole page — the
+   defect this replaces was every row's select/input starting at a different
+   x. Right-aligned within its own 240px so a short control (a switch) and a
+   long one (a select) both meet the row's right edge. */
 .cc-row-control {
-  flex: 0 0 auto;
+  flex: 0 0 240px;
+  width: 240px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 /* "using Claude's default" — italic and muted so it never reads as a value. */
@@ -311,29 +454,59 @@
   font-size: 12px;
   font-style: italic;
   color: var(--fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.cc-reset {
-  font: inherit;
-  font-size: 12px;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.cc-reset:hover {
-  color: var(--fg);
+/* The reset affordance: a small ghost icon button at the row's right edge,
+   rendered only once a value actually differs from the default — replacing
+   the bare "reset" word that used to float mid-row with nothing marking it as
+   a control. Reuses .cc-iconbtn (the same quiet icon-button vocabulary every
+   other tab's row actions use) at a slightly smaller box, since it shares a
+   240px column with the control itself. */
+.cc-iconbtn.cc-reset {
+  width: 22px;
+  height: 22px;
 }
 
 .cc-scalar {
-  min-width: 220px;
+  min-width: 140px;
+}
+
+/* Inside the Preferences control column specifically: fill the fixed 240px
+   rather than sizing to content, so a short number field and a long select
+   both reach the column's right edge the same as the switch does. */
+.cc-row-control .cc-scalar {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
 }
 
 .cc-grow {
   flex: 1 1 auto;
-  min-width: 220px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  /* Stacked label-then-control rather than a 240px column crushed down to
+     illegible width — the column only makes sense once there is room for it. */
+  .cc-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+
+  .cc-row-meta {
+    max-width: none;
+    padding-top: 0;
+  }
+
+  .cc-row-control {
+    flex: 1 1 auto;
+    width: 100%;
+    justify-content: space-between;
+  }
 }
 
 /* -- cards ----------------------------------------------------------------- */
@@ -508,6 +681,34 @@
  * A row that has more to say than fits opens .cc-lrow-details underneath, which
  * is where the text an ellipsis would have destroyed actually lives. */
 
+/* -- the list card ----------------------------------------------------------- */
+/* One bordered card per list, rows inside it separated by hairlines — not
+   free-floating rows on the page background. That boundary is what stops a
+   row's content from reading as if it stopped halfway across the page: the
+   card's own right edge is where the row is "supposed" to end, at any window
+   width up to .cc-main's 900px cap. */
+.cc-list {
+  margin-bottom: 10px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.cc-list .cc-lrow-line {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.cc-list .cc-lrow-details {
+  padding-left: 34px;
+  padding-right: 14px;
+}
+
+.cc-list .cc-lrow:last-child {
+  border-bottom: none;
+}
+
 .cc-lrow {
   border-bottom: 1px solid var(--border);
 }
@@ -518,6 +719,18 @@
   gap: 10px;
   padding: 7px 0;
   white-space: nowrap;
+}
+
+/* A fixed lead slot — a checkbox/switch/nothing — rather than whatever width
+   that control happens to want. Keeping it narrow is what stops the row's
+   loudest visual weight from landing on the LEAD control (a toggle) instead
+   of on the name you're actually scanning the list for. */
+.cc-lrow-lead {
+  flex: 0 0 auto;
+  min-width: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* The row body is the disclosure's big click target where the row expands, and
@@ -583,6 +796,27 @@
   align-items: center;
   gap: 2px;
   margin-left: auto;
+  /* Fade in on hover/focus so a 20-row list reads calmly at rest — but never
+     truly hidden: opacity, not display, so the buttons stay in the tab order
+     and a keyboard user tabbing into one makes it (and its siblings) visible
+     via :focus-within. */
+  opacity: 0;
+  transition: opacity 120ms var(--ease-out);
+}
+
+.cc-lrow:hover .cc-lrow-actions,
+.cc-lrow:focus-within .cc-lrow-actions,
+.cc-lrow.open .cc-lrow-actions {
+  opacity: 1;
+}
+
+/* No hover to fade in from (touch, or a narrow window where discovery-by-hover
+   isn't realistic) — stay visible outright rather than requiring a tap that
+   discovers nothing. */
+@media (hover: none), (max-width: 640px) {
+  .cc-lrow-actions {
+    opacity: 1;
+  }
 }
 
 .cc-lrow.open .cc-lrow-chev .cc-icon {
@@ -799,12 +1033,18 @@
    work. `indeterminate` is the third state: unset, i.e. using Claude's own
    default, which must never render as an explicit "off". */
 
+/* Deliberately quiet: the toggle used to be the loudest thing in a plugin row
+   (a large accent-filled slab) for the least interesting datum on the line —
+   whether a row is enabled is the reason it's on the list at all, not a fact
+   that needs to out-shout the name. --accent is spent elsewhere (the active
+   tab marker, a form's primary action); ON here is stated in weight (a filled
+   neutral track) rather than in colour. */
 .cc-switch {
   position: relative;
   display: inline-block;
   flex: 0 0 auto;
-  width: 38px;
-  height: 22px;
+  width: 30px;
+  height: 17px;
 }
 
 .cc-switch input {
@@ -833,20 +1073,22 @@
   position: absolute;
   top: 3px;
   left: 3px;
-  width: 16px;
-  height: 16px;
+  width: 11px;
+  height: 11px;
   background: var(--fg);
   border-radius: 50%;
   transition: transform var(--dur-med) var(--ease-out);
 }
 
+/* ON is a filled neutral track (weight), not the accent — see the note on
+   .cc-switch above for why. */
 .cc-switch input:checked + .cc-slider {
-  background: var(--accent);
+  background: var(--fg-muted);
 }
 
 .cc-switch input:checked + .cc-slider::before {
-  transform: translateX(16px);
-  background: var(--on-accent);
+  transform: translateX(13px);
+  background: var(--bg-alt);
 }
 
 /* Unset with no known default: muted, dashed, knob centred — neither on nor
@@ -857,7 +1099,7 @@
 }
 
 .cc-switch input:indeterminate + .cc-slider::before {
-  transform: translateX(8px);
+  transform: translateX(7px);
   background: var(--fg-muted);
 }
 
