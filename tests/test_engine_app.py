@@ -177,3 +177,53 @@ def test_warm_target_rejects_non_json_result(tmp_path):
     out = ew._Target(str(mod)).call({})
     assert out["ok"] is False
     assert out["error"]["type"] == "TypeError"
+
+
+# --- _spawn_env: PYTHONHOME survival keyed on interpreter, not kind ----------
+# 2026-08-26 code-review fix: the old condition (`child.module and child.python
+# == sys.executable`) only preserved the packaged interpreter's own env for an
+# app warm worker (`module` is that kind's marker), so a background daemon —
+# or a template daemon — running on `sys.executable` was silently stripped of
+# PYTHONHOME and died at bootstrap in the packaged app. Pinning all four kinds
+# here so the fix can't regress by kind again.
+
+def test_spawn_env_strips_for_a_venv_interpreter(monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/should/be/stripped")
+    child = engine_host.Child(
+        engine_id="templ_venv", python="/some/venv/bin/python",
+        daemon="/t/daemon.py", cache="c", version="v1", kind="template")
+    env = engine_host._spawn_env(child)
+    assert "PYTHONHOME" not in env
+
+
+def test_spawn_env_keeps_pythonhome_for_an_app_worker_on_sys_executable(monkeypatch):
+    monkeypatch.setenv("PYTHONHOME", "/keep/me")
+    child = engine_host.Child(
+        engine_id="app_x", python=sys.executable, daemon=engine_host.APP_WORKER,
+        cache="c", version="v1", module="/m.py", kind="app")
+    env = engine_host._spawn_env(child)
+    assert env.get("PYTHONHOME") == "/keep/me"
+
+
+def test_spawn_env_keeps_pythonhome_for_a_background_daemon_on_sys_executable(monkeypatch):
+    # The blocker this whole block exists to pin: a background app on the
+    # packaged interpreter (background_apps.interpreter_for's builtin-engine
+    # fallback) must not lose PYTHONHOME.
+    monkeypatch.setenv("PYTHONHOME", "/keep/me")
+    child = engine_host.Child(
+        engine_id="bg_x", python=sys.executable, daemon="/t/daemon.py",
+        cache="c", version="v1", kind="background")
+    env = engine_host._spawn_env(child)
+    assert env.get("PYTHONHOME") == "/keep/me"
+
+
+def test_spawn_env_keeps_pythonhome_for_a_template_daemon_on_sys_executable(monkeypatch):
+    # A deliberate widening from the old module-gated condition: a template
+    # daemon with no project venv (running on this app's own interpreter)
+    # needs PYTHONHOME for the identical reason an app worker does.
+    monkeypatch.setenv("PYTHONHOME", "/keep/me")
+    child = engine_host.Child(
+        engine_id="templ_own", python=sys.executable, daemon="/t/daemon.py",
+        cache="c", version="v1", kind="template")
+    env = engine_host._spawn_env(child)
+    assert env.get("PYTHONHOME") == "/keep/me"

@@ -270,20 +270,45 @@ def _tail(path: str, limit: int = 2000) -> str:
         return ""
 
 
+def _spawn_env(child: Child) -> dict:
+    """The environment to launch *child* with.
+
+    A venv-based child must not inherit this app's own Python env (it would
+    break the venv's hermeticity), so PYTHONHOME/PYTHONPATH/PYTHONEXECUTABLE/
+    PYTHONSTARTUP are stripped — UNLESS the child runs on this app's own
+    `sys.executable`, in which case they are left intact: like the built-in
+    executor (which spawns [sys.executable, _child.py] with the environment
+    intact), a packaged/bundled interpreter needs PYTHONHOME to locate its own
+    runtime at all, and that is a fact about the INTERPRETER, not about which
+    engine_host child kind is asking.
+
+    Keyed on `child.python == sys.executable`, deliberately not on
+    `child.module` (2026-08-26 fix): the old `child.module and child.python ==
+    sys.executable` condition only preserved the environment for an app warm
+    worker, since `module` is that kind's own marker — every OTHER child
+    running on `sys.executable`, background apps included, took the strip
+    branch. In the packaged app, where the fused engine is unavailable,
+    `background_apps.interpreter_for` always resolves to `sys.executable`, so
+    a background daemon lost PYTHONHOME and died at bootstrap on every
+    packaged install; a dev checkout never sees it because `fused` being
+    importable there takes the venv path instead. A template daemon running
+    on `sys.executable` (no project venv declared) picks up the same
+    preservation now, by the same reasoning the comment already gave for the
+    app-worker case — this is a deliberate widening, not a side effect: the
+    "needs PYTHONHOME" fact was never actually specific to app workers."""
+    env = dict(os.environ)
+    if child.python != sys.executable:
+        for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
+            env.pop(name, None)
+    return env
+
+
 def _spawn(child: Child) -> None:
     """Start the daemon and wait for it to publish its port and answer /ping."""
     os.makedirs(child.cache, exist_ok=True)
     status = os.path.join(child.cache, f"engine-{child.uid}.json")
     log = os.path.join(child.cache, "daemon.log")
-    env = dict(os.environ)
-    # A venv-based child must not inherit the app's Python env (it would break
-    # the venv's hermeticity). An app warm worker running on the app's OWN
-    # sys.executable is the exception: like the built-in executor (which spawns
-    # [sys.executable, _child.py] with the environment intact), a packaged /
-    # bundled interpreter needs PYTHONHOME to locate its runtime, so leave it be.
-    if not (child.module and child.python == sys.executable):
-        for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
-            env.pop(name, None)
+    env = _spawn_env(child)
     argv = [child.python, child.daemon,
             "--status", status, "--cache", child.cache, "--version", child.version]
     # A warm app worker is told which module to serve; a template daemon isn't.
