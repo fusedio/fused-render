@@ -33,7 +33,6 @@ the app.
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import secrets
@@ -44,7 +43,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai import catalog, fit, registry, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
@@ -848,7 +847,15 @@ def _catalog_with_downloads() -> list[dict]:
         ]
         row["models"] = curated + extra
         for entry in row["models"]:
-            entry["fit"] = _fit_verdict(entry.get("size_gb"))
+            # {verdict, basis, footprintBytes} or None — SPEC AI-16, AI-16c.
+            # `fit.py` owns the precedence ladder (measured > declared >
+            # download) and the headroom arithmetic; this route is a view
+            # over it, not a second copy of the judgement. `resident_gb` is a
+            # curator's optional, additive field (AI-11i/AI-11j's shape) — a
+            # cached entry never has one, `.get` answers None and the ladder
+            # falls straight through to `size_gb`.
+            entry["fit"] = fit.verdict(row["capability"], entry["id"],
+                                       entry.get("size_gb"), entry.get("resident_gb"))
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo
             # with no edit variant is as unable to edit as a diffusers one and
@@ -867,62 +874,11 @@ def _catalog_with_downloads() -> list[dict]:
     return rows
 
 
-@functools.lru_cache(maxsize=1)
-def _machine_ram_gb() -> float | None:
-    """Total physical memory in decimal GB, or None where it cannot be read.
-
-    Stdlib only — psutil lives in the runner venvs, not this one (AI-2's rule:
-    the server's environment stays a file explorer's). `sysconf` covers macOS
-    and Linux; Windows answers through GlobalMemoryStatusEx. Cached forever:
-    the machine's RAM does not change under a running server, and this is read
-    per catalog request.
-    """
-    try:
-        if hasattr(os, "sysconf") and os.sysconf_names.get("SC_PHYS_PAGES"):
-            return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE") / 1e9
-    except (ValueError, OSError):
-        pass
-    try:  # pragma: no cover - the Windows branch
-        import ctypes
-
-        class _MemoryStatus(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
-                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
-                        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
-                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
-
-        status = _MemoryStatus()
-        status.dwLength = ctypes.sizeof(status)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return status.ullTotalPhys / 1e9
-    except Exception:  # noqa: BLE001 - absent windll off Windows, and none of it is fatal
-        pass
-    return None
-
-
-def _fit_verdict(size_gb: float | None) -> str | None:
-    """Will this model sit comfortably on THIS machine — "easy", "tight" or "no".
-
-    The question a newcomer is actually asking of the size figure, answered
-    with the size figure's own crude honesty: the download is roughly what the
-    weights occupy resident (every curated entry is quantized), and a model
-    whose weights take over half the machine's memory shares the rest with the
-    OS, the browser and this server — a swap storm read as "the app hung"
-    (AI-4's arithmetic). Under a quarter is comfortable; between the two is
-    real but tight. A judgement, not a measurement — the page words it as one.
-
-    None when either half is unknown: a verdict invented over a missing size
-    is the same lie the "—" size cell exists to avoid.
-    """
-    ram = _machine_ram_gb()
-    if size_gb is None or ram is None or ram <= 0:
-        return None
-    if size_gb <= ram * 0.25:
-        return "easy"
-    if size_gb <= ram * 0.5:
-        return "tight"
-    return "no"
+#: `_machine_ram_gb` and `_fit_verdict` moved to `fused_render/ai/fit.py`
+#: (SPEC AI-16, AI-16b, D495) — the verdict is now computed over a
+#: FOOTPRINT, not `size_gb` alone, on a precedence ladder this router does
+#: not own. `fit.machine_ram_gb()` is the same stdlib RAM reading, cached
+#: forever, moved rather than duplicated.
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
@@ -1042,7 +998,7 @@ def api_ai_catalog():
     return {"capabilities": _catalog_with_downloads(),
             # Everything else on this disk, with the reason it is not above.
             "unsupported": _unsupported_downloads(),
-            "ramGb": _machine_ram_gb()}
+            "ramGb": fit.machine_ram_gb()}
 
 
 def _engine_gap_refusal(model: str):

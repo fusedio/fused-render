@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import jobs
-from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, supervisor
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
@@ -5124,6 +5124,86 @@ def test_editing_a_model_WITH_an_edit_recipe_still_opens_a_job(
         json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
         headers={"X-Fused": "1"}).json()
     _wait_job(started["jobId"])
+
+
+# -- the fit verdict: measured > declared > download (SPEC AI-16, AI-16c, D495) -
+
+
+def _fit_text_row(client):
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    return next(row for row in rows if row["capability"] == registry.TEXT_GENERATION)
+
+
+@pytest.fixture()
+def fixed_fit_machine(monkeypatch):
+    """A pinned 32GB machine with no Apple-Silicon wired ceiling in play, so
+    the threshold arithmetic these tests reach for is deterministic on any
+    host the suite runs on. `fit.py`'s OWN threshold arithmetic is tested
+    directly in `tests/test_ai_fit.py`; this fixture is only what lets the
+    route-level tests below assert a STABLE verdict word."""
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+    monkeypatch.setattr(fit, "_wired_limit_mb", lambda: None)
+
+
+def test_fit_is_null_when_nothing_is_known(client, fake_runner, fixed_fit_machine,
+                                           monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/unknown-size", "label": "Unknown", "size_gb": None, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/unknown-size"
+    assert entry["fit"] is None
+
+
+def test_fit_basis_download_from_size_gb_alone(client, fake_runner, fixed_fit_machine,
+                                               monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/only-size", "label": "Only size", "size_gb": 4.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"] == {"verdict": "easy", "basis": "download",
+                            "footprintBytes": 4.0 * 1e9}
+
+
+def test_fit_basis_declared_wins_over_download(client, fake_runner, fixed_fit_machine,
+                                               monkeypatch):
+    """A curator's optional `resident_gb` — the shape AI-11i/AI-11j already
+    established for `recommended`/`acceptsImage` — outranks the download
+    figure, the same way LTX-2.3's `low_memory=True` peak is smaller than its
+    two-repo download total."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/declared", "label": "Declared", "size_gb": 28.5,
+         "resident_gb": 12.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "declared"
+    assert entry["fit"]["footprintBytes"] == 12.0 * 1e9
+    assert entry["fit"]["verdict"] == "easy"
+
+
+def test_fit_basis_measured_wins_over_declared_and_download(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """SPEC AI-16a: a model that has actually RUN here beats a guess about it,
+    whichever guess — the download's byte count or a curator's estimate."""
+    footprints.record(registry.TEXT_GENERATION, "org/measured", 5_000_000_000)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/measured", "label": "Measured", "size_gb": 28.5,
+         "resident_gb": 12.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "measured"
+    assert entry["fit"]["footprintBytes"] == 5_000_000_000
+
+
+def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    footprints.record(registry.IMAGE_GENERATION, "org/cross-cap", 9_000_000_000)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/cross-cap", "label": "Cross capability", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "download"
 
 
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
