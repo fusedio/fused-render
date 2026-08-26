@@ -105,12 +105,12 @@ export function currentApps(
 // across a tab switch untouched.
 
 export const APP_PAGE_PREFIX = "/apps/";
-export type AppPageTab = "overview" | "tasks";
-/** Tab-strip order; the first is the default. */
-export const APP_PAGE_TABS: readonly AppPageTab[] = [
-  "overview",
-  "tasks",
-] as const;
+/** Tab-strip order; the first is the default. THE list: the type below is
+ *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
+ *  so adding a tab is one string here plus one entry there — the compiler
+ *  refuses the second being forgotten. */
+export const APP_PAGE_TABS = ["overview", "tasks"] as const;
+export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
 /** The page URL for an app slug and tab. */

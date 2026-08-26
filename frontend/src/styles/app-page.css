@@ -82,17 +82,17 @@
   color: inherit;
 }
 
-/* The two panels. Overview is kept MOUNTED behind Tasks (display:none, not
-   unmount) so the running app keeps its state across a tab switch. */
-.app-page-overview,
-.app-page-tasks {
+/* The panels (one per APP_PAGE_TABS entry, class `app-page-<id>` beside this).
+   A `keepMounted` panel — the Overview — stays behind the active one as
+   display:none, not unmounted, so the running app keeps its state. */
+.app-page-panel {
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.app-page-overview.is-hidden {
+.app-page-panel.is-hidden {
   display: none;
 }
 

@@ -22,16 +22,23 @@
 // app state, and a tab switch — a navigation, since the tab is in the path —
 // must not reload it. The frame stays mounted behind the Tasks tab for the
 // same reason (display:none, not unmount).
-import { useEffect, useMemo, useState, type MouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from "react";
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { AppWindow, ListTodo } from "lucide-react";
+import { AppWindow, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
+  APP_PAGE_TABS,
   appPageTabFromPath,
   appPageUrl,
   localAppsRoot,
@@ -39,13 +46,56 @@ import {
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
 
-// The tab strip's rows: shadcn Tabs (line variant) with a lucide icon each, in
-// the page's gutter frame under the header — the header names the app and the
-// folder, and nothing else (owner's redesign, 2026-08-26).
-const TABS: { id: AppPageTab; label: string; Icon: typeof AppWindow }[] = [
-  { id: "overview", label: "Overview", Icon: AppWindow },
-  { id: "tasks", label: "Tasks", Icon: ListTodo },
-];
+// ---- the tabs, as ONE registry -----------------------------------------------
+//
+// Adding a tab: one string in APP_PAGE_TABS (current-apps-lib.ts, which is
+// also the route) and one entry below. `Record<AppPageTab, …>` is what makes
+// the second half compulsory. The strip and the panels are both mapped from
+// this, so there is no JSX to touch.
+//
+// `keepMounted`: the panel stays in the tree behind the other tabs (hidden, not
+// unmounted). The Overview needs it — the frame holds live app state and a tab
+// switch must not reload it. Nothing else should want it: a hidden panel still
+// polls and paints.
+type TabCtx = {
+  slug: string;
+  dir: string;
+  entry: string | null;
+  folderHref: string;
+};
+
+type TabDef = {
+  label: string;
+  Icon: LucideIcon;
+  keepMounted?: boolean;
+  render: (ctx: TabCtx) => ReactNode;
+};
+
+const TAB_DEFS: Record<AppPageTab, TabDef> = {
+  overview: {
+    label: "Overview",
+    Icon: AppWindow,
+    keepMounted: true,
+    render: ({ slug, entry, folderHref }) =>
+      entry ? (
+        <iframe
+          className="app-page-frame"
+          src={`/render?path=${encodeURIComponent(entry)}`}
+          title={`App: ${slug}`}
+        />
+      ) : (
+        <p className="app-page-empty">
+          This folder has no entry page yet.{" "}
+          <a href={folderHref}>Open the folder</a> to see what is there.
+        </p>
+      ),
+  },
+  tasks: {
+    label: "Tasks",
+    Icon: ListTodo,
+    render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
+  },
+};
 
 // What the folder turned out to be. `undefined` = still asking.
 type Resolved =
@@ -140,22 +190,25 @@ export default function AppPage({
             aria-label="App page"
             className="h-auto w-full justify-start rounded-none border-b border-border p-0 pb-1"
           >
-            {TABS.map((t) => (
-              <TabsTrigger
-                key={t.id}
-                value={t.id}
-                className="flex-none px-2 py-1.5"
-                render={
-                  <a
-                    href={appPageUrl(slug, t.id) + location.search}
-                    onClick={(e) => pickTab(e, t.id)}
-                  />
-                }
-              >
-                <t.Icon data-icon="inline-start" />
-                {t.label}
-              </TabsTrigger>
-            ))}
+            {APP_PAGE_TABS.map((id) => {
+              const { label, Icon } = TAB_DEFS[id];
+              return (
+                <TabsTrigger
+                  key={id}
+                  value={id}
+                  className="flex-none px-2 py-1.5"
+                  render={
+                    <a
+                      href={appPageUrl(slug, id) + location.search}
+                      onClick={(e) => pickTab(e, id)}
+                    />
+                  }
+                >
+                  <Icon data-icon="inline-start" />
+                  {label}
+                </TabsTrigger>
+              );
+            })}
           </TabsList>
         </Tabs>
 
@@ -174,37 +227,24 @@ export default function AppPage({
           </ErrorBanner>
         )}
 
-        {resolved?.kind === "app" && (
-          <>
-            {/* Overview stays MOUNTED behind the Tasks tab (hidden, not gone) so
-              the running app keeps its state across a tab switch. */}
-            <section
-              className={
-                "app-page-overview" + (tab === "overview" ? "" : " is-hidden")
-              }
-              role="tabpanel"
-              aria-hidden={tab !== "overview"}
-            >
-              {entry ? (
-                <iframe
-                  className="app-page-frame"
-                  src={`/render?path=${encodeURIComponent(entry)}`}
-                  title={`App: ${slug}`}
-                />
-              ) : (
-                <p className="app-page-empty">
-                  This folder has no entry page yet.{" "}
-                  <a href={folderHref}>Open the folder</a> to see what is there.
-                </p>
-              )}
-            </section>
-            {tab === "tasks" && (
-              <section className="app-page-tasks" role="tabpanel">
-                <Scheduled scope={{ project: dir }} />
+        {resolved?.kind === "app" &&
+          APP_PAGE_TABS.map((id) => {
+            const def = TAB_DEFS[id];
+            const active = tab === id;
+            if (!active && !def.keepMounted) return null;
+            return (
+              <section
+                key={id}
+                className={
+                  "app-page-panel app-page-" + id + (active ? "" : " is-hidden")
+                }
+                role="tabpanel"
+                aria-hidden={!active}
+              >
+                {def.render({ slug, dir, entry, folderHref })}
               </section>
-            )}
-          </>
-        )}
+            );
+          })}
       </div>
     </div>
   );
