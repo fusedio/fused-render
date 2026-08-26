@@ -1907,6 +1907,51 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   );
 }
 
+// Compile/deploy an app as a dedicated Fused Canvas. The backend emits only
+// ordinary canvas.toml + UDF sources and pushes them through the fused CLI.
+export interface WorkbenchAppPlan {
+  canvas_name: string;
+  digest: string;
+  shell_slug: string;
+  entrypoints: Record<string, string>;
+  assets: Record<string, string>;
+  generated_files: string[];
+  generated_bytes: number;
+  warnings: string[];
+}
+
+export interface WorkbenchAppDeployment {
+  page: string;
+  canvas_name: string;
+  digest: string;
+  shell_slug: string;
+  environment: string;
+  deployed_at: number;
+  generated_bytes: number;
+  workbench_url: string;
+  share_url: string | null;
+  app_url: string | null;
+  shared: boolean;
+  warnings: string[];
+}
+
+export interface WorkbenchAppRequest {
+  page: string;
+  canvas_name: string;
+  cache_max_age: string;
+  share?: boolean;
+}
+
+export function planWorkbenchApp(body: WorkbenchAppRequest): Promise<WorkbenchAppPlan> {
+  return postJson<WorkbenchAppPlan>("/api/apps/workbench/plan", body);
+}
+
+export function deployWorkbenchApp(
+  body: WorkbenchAppRequest,
+): Promise<WorkbenchAppDeployment> {
+  return postJson<WorkbenchAppDeployment>("/api/apps/workbench/deploy", body);
+}
+
 // ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
 //
 // A store of its own since 2026-08-26: a new task adds its app, nothing removes

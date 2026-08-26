@@ -58,6 +58,55 @@
   text-decoration: underline;
 }
 
+.app-page-deploy {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+
+.workbench-deploy-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.workbench-deploy-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.workbench-deploy-check input {
+  margin: 0;
+}
+
+.workbench-deploy-plan,
+.workbench-deploy-warnings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  padding: 10px;
+  font-size: 12px;
+}
+
+.workbench-deploy-warnings {
+  color: var(--fg-muted);
+}
+
+.workbench-deploy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.workbench-deploy-link {
+  text-decoration: none;
+}
+
 /* The gutter frame — the same width story as the playground's .pg-frame
    (ai-playground.css): one centered column, capped, with gutters either side
    below the cap. The tab strip, the app frame and the Tasks page all share it,

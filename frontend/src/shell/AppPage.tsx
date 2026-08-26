@@ -38,7 +38,7 @@ import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
+import { AppWindow, CloudUpload, Files, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -52,6 +52,7 @@ import {
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
+import DeployWorkbenchModal from "./DeployWorkbenchModal";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -129,6 +130,7 @@ export default function AppPage({
 }) {
   const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
+  const [deployOpen, setDeployOpen] = useState(false);
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   useUrlVersion();
@@ -227,6 +229,16 @@ export default function AppPage({
             {tildePath(dir, home)}
           </a>
         </div>
+        <button
+          type="button"
+          className="btn btn-secondary app-page-deploy"
+          disabled={!entry}
+          onClick={() => setDeployOpen(true)}
+          title={entry ? "Deploy this app as a Fused Canvas" : "This app has no entry page"}
+        >
+          <CloudUpload size={14} />
+          Deploy to Workbench
+        </button>
       </header>
 
       <div className="app-page-body">
@@ -299,6 +311,9 @@ export default function AppPage({
             );
           })}
       </div>
+      {deployOpen && entry && (
+        <DeployWorkbenchModal page={entry} appName={slug} onClose={() => setDeployOpen(false)} />
+      )}
     </div>
   );
 }

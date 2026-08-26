@@ -71,6 +71,7 @@ from fused_render.server.routers.shell import router as shell_router
 from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
+from fused_render.server.routers.workbench_apps import router as workbench_apps_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
 # (tests repoint it at a staged copy before calling create_app, and
 # core_templates staging is the reason it can move at all), and a by-value
@@ -533,6 +534,9 @@ def create_app(start_dir: str) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # Compile a fused-render app into ordinary Canvas UDFs and push it through
+    # the existing Workbench CLI. This deliberately bypasses openfused_server.
+    app.include_router(workbench_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
