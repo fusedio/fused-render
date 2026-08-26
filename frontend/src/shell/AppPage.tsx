@@ -1,6 +1,6 @@
 // The app page — `/apps/<slug>` (D488): one workspace app, <fused_dir>/local/<slug>,
-// as a place rather than as a folder. Two tabs, one path each
-// (`/apps/<slug>/overview`, `/apps/<slug>/tasks` — current-apps-lib):
+// as a place rather than as a folder. Three tabs, one path each
+// (`/apps/<slug>/overview`, `/tasks`, `/files` — current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -9,14 +9,18 @@
 //   Tasks     the Tasks page (shell/Scheduled.tsx) scoped to this folder —
 //             the same List / Board / Calendar, the same modal, a new task
 //             prefilled with this app.
+//   Files     the folder's files as a tree, each rendered in one of its own
+//             templates (shell/AppFiles.tsx) — "what is in this app and what
+//             does each piece look like", without leaving the page.
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
 // always have. That is why this file adds no link to itself anywhere.
 //
 // Not the explorer. The explorer answers "what is in this folder"; this page
-// answers "how is this app going" — the app and its work side by side. The
-// folder is one caption-click away for when the files are the question.
+// answers "how is this app going" — the app, its work and its pieces side by
+// side. The folder is one caption-click away for the operations (rename, move,
+// new file) this page deliberately does not offer.
 //
 // Mounted per SLUG, not per nav epoch (App.tsx): the Overview frame holds live
 // app state, and a tab switch — a navigation, since the tab is in the path —
@@ -32,7 +36,7 @@ import {
 import { getAppEntry, statPath, type Config } from "@platform/lib/api";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
-import { AppWindow, ListTodo, type LucideIcon } from "lucide-react";
+import { AppWindow, Files, ListTodo, type LucideIcon } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -45,6 +49,7 @@ import {
   type AppPageTab,
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
+import AppFiles from "./AppFiles";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -94,6 +99,15 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     label: "Tasks",
     Icon: ListTodo,
     render: ({ dir }) => <Scheduled scope={{ project: dir }} />,
+  },
+  files: {
+    label: "Files",
+    Icon: Files,
+    // Not keepMounted: the selection is in the URL, so a return costs one walk
+    // and one stat — cheaper than a hidden frame that keeps running.
+    render: ({ dir, entry, folderHref }) => (
+      <AppFiles dir={dir} entry={entry} folderHref={folderHref} />
+    ),
   },
 };
 

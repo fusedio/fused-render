@@ -90,7 +90,12 @@ def test_the_app_page_survives_a_refresh(client):
     cannot see it, the same blind spot the canvases workspace has. Requested by
     hand: both tabs, and the bare slug the client rewrites to the default tab.
     Three levels stays a 404: the page has no third."""
-    for path in ("/apps/some-app", "/apps/some-app/overview", "/apps/some-app/tasks"):
+    for path in (
+        "/apps/some-app",
+        "/apps/some-app/overview",
+        "/apps/some-app/tasks",
+        "/apps/some-app/files",
+    ):
         res = client.get(path)
         assert res.status_code == 200, (path, res.status_code)
         assert res.headers["content-type"].startswith("text/html")
