@@ -10,11 +10,13 @@ import sys
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from fused_render import background_apps
-from fused_render.server import engine_host
+from fused_render.server import create_app, engine_host
 
 FIXTURE_APP = os.path.join(os.path.dirname(__file__), "fixtures", "background_app")
+HDRS = {"X-Fused": "1"}
 
 
 @pytest.fixture(autouse=True)
@@ -249,3 +251,196 @@ def test_ensure_background_spawns_and_reuses_the_fixture_daemon():
     finally:
         engine_host.stop(engine_id)
         background_apps.set_enabled(FIXTURE_APP, False)
+
+
+# ------------------------------------------------- router: enable/disable/etc
+
+
+@pytest.fixture()
+def workspace(tmp_path, monkeypatch):
+    fdir = tmp_path / "Fused"
+    fdir.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(fdir))
+    return fdir
+
+
+@pytest.fixture()
+def client(tmp_path, workspace):
+    return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def _bg_folder(tmp_path, name="app"):
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(
+        '[tool.fused-render.app]\nkind = "background"\ndaemon = "daemon.py"\n')
+    (folder / "daemon.py").write_text("# daemon\n")
+    (folder / "index.html").write_text("<html></html>")
+    return folder
+
+
+def test_api_enable_persists_and_calls_ensure_background(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+
+    calls = []
+    fake_child = engine_host.Child(
+        engine_id="bg_fake", python=sys.executable, daemon=str(folder / "daemon.py"),
+        cache="c", version="v1", kind="background", pid=4242)
+
+    def fake_ensure(engine_id, python, daemon, cache, version):
+        calls.append((engine_id, python, daemon, cache, version))
+        return fake_child
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["pid"] == 4242
+    assert len(calls) == 1
+    assert calls[0][2] == str(folder / "daemon.py")
+    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+
+
+def test_api_enable_requires_x_fused_header(client, tmp_path):
+    folder = _bg_folder(tmp_path)
+    resp = client.post("/api/apps/background/enable",
+                       json={"html": str(folder / "index.html")})
+    assert resp.status_code == 403
+    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+
+
+def test_api_enable_409_when_project_venv_not_built(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    monkeypatch.setattr(background_apps, "interpreter_for",
+                        lambda f: "/definitely/not/a/real/python")
+
+    resp = client.post("/api/apps/background/enable", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 409
+    # A 409 must not persist — the app is not enabled until it can actually start.
+    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+
+
+def test_api_disable_stops_and_unpersists(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    background_apps.set_enabled(str(folder), True)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    stopped = []
+    monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
+
+    resp = client.post("/api/apps/background/disable", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert stopped == [engine_id]
+    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+
+
+def test_api_stop_kills_without_disabling(client, tmp_path, monkeypatch):
+    # The whole point of the stop/disable split: stop must kill the process
+    # but leave the folder enabled, so the startup hook brings it back.
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    background_apps.set_enabled(str(folder), True)
+    engine_id = background_apps.engine_id_for(str(folder))
+
+    stopped = []
+    monkeypatch.setattr(engine_host, "stop", lambda eid: stopped.append(eid))
+
+    resp = client.post("/api/apps/background/stop", json={"html": html}, headers=HDRS)
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert stopped == [engine_id]
+    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+
+
+def test_api_stop_vs_disable_distinguished(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    background_apps.set_enabled(str(folder), True)
+    monkeypatch.setattr(engine_host, "stop", lambda eid: None)
+
+    client.post("/api/apps/background/stop", json={"html": html}, headers=HDRS)
+    assert os.path.abspath(str(folder)) in background_apps.enabled_paths()
+
+    client.post("/api/apps/background/disable", json={"html": html}, headers=HDRS)
+    assert os.path.abspath(str(folder)) not in background_apps.enabled_paths()
+
+
+def test_api_status_reflects_a_faked_live_child(client, tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    html = str(folder / "index.html")
+    engine_id = background_apps.engine_id_for(str(folder))
+    background_apps.set_enabled(str(folder), True)
+
+    fake_child = engine_host.Child(
+        engine_id=engine_id, python=sys.executable, daemon="d", cache="c",
+        version="v9", kind="background", pid=555)
+    monkeypatch.setattr(engine_host, "current",
+                        lambda eid: fake_child if eid == engine_id else None)
+    monkeypatch.setattr(engine_host, "_alive", lambda c: True)
+
+    resp = client.get("/api/apps/background/status", params={"html": html})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["running"] is True
+    assert body["pid"] == 555
+    assert body["version"] == "v9"
+    assert body["engine_id"] == engine_id
+
+
+def test_api_status_not_running_when_no_live_child(client, tmp_path):
+    folder = _bg_folder(tmp_path)
+    resp = client.get("/api/apps/background/status",
+                      params={"html": str(folder / "index.html")})
+    body = resp.json()
+    assert body["enabled"] is False
+    assert body["running"] is False
+    assert body["pid"] is None
+
+
+# ---------------------------------------------------------------- resurrection
+
+
+def test_resurrect_enabled_starts_every_app_and_survives_one_raising(tmp_path, monkeypatch):
+    good = _bg_folder(tmp_path, "good")
+    bad = _bg_folder(tmp_path, "bad")
+    background_apps.set_enabled(str(good), True)
+    background_apps.set_enabled(str(bad), True)
+
+    monkeypatch.setattr(background_apps, "interpreter_for", lambda f: sys.executable)
+
+    started = []
+
+    def fake_ensure(engine_id, python, daemon, cache, version):
+        if "bad" in daemon:
+            raise engine_host.EngineError("boom")
+        started.append(engine_id)
+        return engine_host.Child(engine_id=engine_id, python=python, daemon=daemon,
+                                 cache=cache, version=version, kind="background")
+
+    monkeypatch.setattr(engine_host, "ensure_background", fake_ensure)
+
+    background_apps.resurrect_enabled()  # must not raise despite "bad" failing
+
+    assert started == [background_apps.engine_id_for(str(good))]
+
+
+def test_resurrect_enabled_skips_a_folder_with_no_venv_built(tmp_path, monkeypatch):
+    folder = _bg_folder(tmp_path)
+    background_apps.set_enabled(str(folder), True)
+    monkeypatch.setattr(background_apps, "interpreter_for",
+                        lambda f: "/definitely/not/a/real/python")
+    started = []
+    monkeypatch.setattr(engine_host, "ensure_background",
+                        lambda *a, **k: started.append(a) or None)
+
+    background_apps.resurrect_enabled()
+
+    assert started == []

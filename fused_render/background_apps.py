@@ -23,12 +23,16 @@ rewrites the store.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import sys
 import tomllib
 from dataclasses import dataclass
 
 from fused_render.index.ignore import MountGuard
 from fused_render.shell import storage
+
+logger = logging.getLogger(__name__)
 
 #: engine_id prefix for a background app; the rest is a hash of the folder's
 #: realpath (engine_host.py's `_ENGINE_ID` requires a bare identifier).
@@ -154,3 +158,60 @@ def set_enabled(path: str, enabled: bool) -> None:
     if enabled:
         current.append(path)
     storage.write_json(_store_path(), {"enabled": current})
+
+
+# --------------------------------------------------------- bring-up helpers
+
+
+def interpreter_for(folder: str) -> str:
+    """The interpreter a background app in *folder* runs on: the same
+    fused-vs-builtin dispatch `/api/engine` uses for its warm worker
+    (routers/app_engine.py) — the folder's own project venv python when the
+    fused engine is effective, else this app's own `sys.executable`. Does not
+    check the interpreter exists; callers do (the 409 stance, PY-17)."""
+    from fused_render import projectenv
+    from fused_render.shell import prefs as shell_prefs
+
+    if shell_prefs.effective_engine() == "fused":
+        project = projectenv.project_env_for(folder)
+        return projectenv.interpreter_for(project)
+    return sys.executable
+
+
+def cache_dir_for(engine_id: str) -> str:
+    """Where a background app's status/log files live — mirrors
+    engine_host._app_cache_dir's "under the home dir, never beside the user's
+    code" stance (MD-7)."""
+    return os.path.join(storage.home_dir(), "apps", engine_id)
+
+
+def resurrect_enabled() -> None:
+    """Start every enabled app's daemon, best-effort: a folder that fails
+    (dead manifest, project venv not built, a spawn error) is logged and
+    skipped, never allowed to stop the rest. Meant to run on a daemon thread
+    from the server's startup event (app.py) — never on the pre-bind path
+    (D228): each bring-up is a subprocess spawn plus a bootstrap wait."""
+    from fused_render.server import engine_host
+
+    for folder in enabled_paths():
+        try:
+            manifest = load_manifest(folder)
+            if manifest is None:
+                logger.warning(
+                    "background app %s: no valid manifest at startup, skipping",
+                    folder)
+                continue
+            interpreter = interpreter_for(folder)
+            if not os.path.isfile(interpreter):
+                logger.warning(
+                    "background app %s: project environment not built yet, "
+                    "skipping (open it once to install it)", folder)
+                continue
+            version = version_for(folder, interpreter)
+            engine_id = engine_id_for(folder)
+            engine_host.ensure_background(
+                engine_id, interpreter, manifest.daemon,
+                cache_dir_for(engine_id), version)
+        except Exception:  # noqa: BLE001 — one folder's failure must not skip the rest
+            logger.exception(
+                "background app %s failed to start at startup", folder)
