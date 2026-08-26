@@ -8,8 +8,8 @@
 // (current-apps-lib.ts): a row moves only when the user drags it, so new work in
 // an app already listed does not reshuffle the list under the cursor. The store
 // is the module-level `appOrder` below, hydrated from localStorage at import and
-// written back whenever the displayed order changes, so a drag survives a reload
-// and the next launch.
+// written back BY A DRAG AND ONLY BY A DRAG, so an arrangement survives a reload
+// and the next launch without a poll ever having an opinion about it.
 //
 // Fed by the task pulse store (useTasksPulseRows) rather than a poll of its
 // own: the sidebar and the Tasks page already share ONE /api/tasks(/pulse)
@@ -66,13 +66,16 @@ function readSavedOrder(): string[] {
   }
 }
 
-// Write only a CHANGED order. The effect that calls this runs on every pulse
-// (the store hands out a fresh `rows` array each poll, so the memo rebuilds),
-// and an unconditional write there is what made a second tab dangerous: it
-// would re-save its own pre-drag order over the one this tab just dragged, on
-// its next tick (Bugbot, 2026-08-26). With the guard, a tab that has adopted
-// the new order writes nothing, which is also what stops the adopt below from
-// ping-ponging between two tabs forever.
+// Called from the DROP HANDLER and nowhere else — that placement is the whole
+// cross-tab design, so it is worth stating plainly. A persist effect keyed on
+// the app list looks equivalent and is not: the store hands out a fresh `rows`
+// array every poll, so such an effect fires per tick, and two tabs then take
+// turns saving their own view of a world they briefly disagree about (Bugbot
+// twice, 2026-08-26 — first a second tab clobbering a drag, then an outright
+// write loop). A drag is one user gesture. There is no second writer to race.
+//
+// The equality guard is belt-and-braces on top of that: re-dragging a row back
+// where it was writes nothing.
 function saveOrder(slugs: string[]): void {
   try {
     const next = JSON.stringify(slugs);
@@ -85,10 +88,10 @@ function saveOrder(slugs: string[]): void {
 
 /** Take `slugs` as the whole order, replacing what this page held. Empty is NOT
  *  an order — a missing or cleared key must leave the live order alone rather
- *  than flattening it. A slug the incoming list does not mention is genuinely
- *  news to the tab that wrote it, so it gets a fresh sequence and goes on top;
- *  that resolves in ONE round, because assignment only ever adds (see
- *  current-apps-lib.ts) and so the other tab's next read agrees. */
+ *  than flattening it. A live slug the incoming list does not mention gets a
+ *  fresh sequence and goes on top, which is correct: the tab that dragged did
+ *  not have that app, so its arrangement has nothing to say about where it
+ *  belongs. Nothing answers back — adopting never writes. */
 function adoptSavedOrder(slugs: string[]): void {
   if (!slugs.length) return;
   appOrder.clear();
@@ -223,15 +226,11 @@ export default function CurrentAppsSection() {
     return bySequence(found, appOrder);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- orderEpoch is the drag signal
   }, [rows, fusedDir, orderEpoch]);
-  // Write the order back after it settles — a drag, or an app nothing had seen
-  // before. Guarded on a non-empty list for the same reason `assignSequences`
-  // is: the first render (and any moment the pulse has not loaded) has no apps,
-  // and saving from that state would write an order derived from nothing.
-  // `saveOrder` itself skips an unchanged order, so running this on every pulse
-  // costs one read.
-  useEffect(() => {
-    if (apps.length) saveOrder(orderedSlugs(appOrder));
-  }, [apps]);
+  // NOTHING is saved here. A new app, an archived one, a pulse landing — all of
+  // those move rows on screen and write nothing to the store; the saved order is
+  // an arrangement the user made, and only they can change it. That is what
+  // keeps two tabs from arguing (see `saveOrder`), and it is also why a list
+  // nobody has dragged simply seeds from recency again on the next reload.
 
   // Repaint when another tab drags. The adopt already happened at the module
   // listener; this is only the render half of it.
@@ -293,8 +292,15 @@ export default function CurrentAppsSection() {
       clearDrag();
       if (from === null || from === slug) return;
       e.preventDefault();
-      const order = apps.map((a) => a.slug);
-      reorderTo(appOrder, moveSlug(order, from, slug, isBelow(e)));
+      // Moved within the WHOLE store, not the visible run. They are the same
+      // list — the store is pruned to the desk on every assignment — and taking
+      // it from the store is what keeps them the same: renumbering a subset
+      // would leave anything outside it on a stale sequence, free to sort in
+      // above the arrangement the user just made (Bugbot, 2026-08-26, against a
+      // version that did remember non-live slugs).
+      const next = moveSlug(orderedSlugs(appOrder), from, slug, isBelow(e));
+      reorderTo(appOrder, next);
+      saveOrder(next);
       setOrderEpoch((n) => n + 1);
     },
     onDragEnd: () => {

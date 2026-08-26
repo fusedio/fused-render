@@ -14,7 +14,6 @@ import {
   localAppsRoot,
   orderedSlugs,
   parseSavedOrder,
-  REMEMBERED_LIMIT,
   slugFromAppPath,
   withAppPageTab,
   type AppOrder,
@@ -146,37 +145,23 @@ describe("the displayed order", () => {
     ]);
   });
 
-  it("remembers an app that leaves, and gives it its slot back", () => {
+  it("forgets an app that leaves, so it comes back on top", () => {
     const order: AppOrder = new Map();
     shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]));
-    // app3's tasks are all archived: no row, but the slot is remembered — the
-    // store is add-only so that two tabs cannot fight over it (see the lib
-    // header), and the display is what prunes.
+    // app3's tasks are all archived — off the desk, so the slot goes with it.
+    // Nothing removed is remembered (owner, 2026-08-26).
     expect(shown(order, of(["app1", 30], ["app2", 20]))).toEqual(["app1", "app2"]);
-    expect(order.has("app3")).toBe(true);
-    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))).toEqual([
-      "app1",
-      "app2",
-      "app3",
-    ]);
+    expect(order.has("app3")).toBe(false);
+    expect(shown(order, of(["app1", 30], ["app2", 20], ["app3", 10]))[0]).toBe("app3");
   });
 
-  it("forgets the oldest slots the desk is not using once past the limit", () => {
+  it("holds nothing but the desk, so the store needs no size limit", () => {
     const order: AppOrder = new Map();
-    const many = Array.from({ length: REMEMBERED_LIMIT + 5 }, (_, i): [string, number] => [
-      "app" + i,
-      i,
-    ]);
+    const many = Array.from({ length: 50 }, (_, i): [string, number] => ["app" + i, i]);
     shown(order, of(...many));
-    expect(order.size).toBe(REMEMBERED_LIMIT + 5); // every one is LIVE, none droppable
-    // Now only two are on the desk. The trim takes the lowest slots that have
-    // no row, and never one that has.
+    expect(order.size).toBe(50);
     shown(order, of(["app0", 1], ["app1", 2]));
-    expect(order.size).toBe(REMEMBERED_LIMIT);
-    expect(order.has("app0")).toBe(true);
-    expect(order.has("app1")).toBe(true);
-    expect(order.has("app" + (REMEMBERED_LIMIT + 4))).toBe(true); // newest slot kept
-    expect(order.has("app2")).toBe(false); // oldest droppable slot went
+    expect(orderedSlugs(order)).toEqual(["app1", "app0"]);
   });
 
   it("holds the order through a pulse that has not loaded yet", () => {
@@ -218,82 +203,30 @@ describe("the saved order", () => {
     ]);
   });
 
-  it("keeps a slug the saved order remembers and the desk is not using", () => {
+  it("drops a saved slug the desk is no longer using", () => {
     const order: AppOrder = new Map();
     reorderTo(order, parseSavedOrder('["gone","live"]'));
     assignSequences(order, currentApps([task("k", ROOT + "live", "done", 5)], FUSED));
-    expect(orderedSlugs(order)).toEqual(["gone", "live"]);
+    expect(orderedSlugs(order)).toEqual(["live"]);
   });
 
-  it("converges between two tabs whose pulses disagree", () => {
-    // Bugbot, 2026-08-26 (High): with a store that PRUNED, two tabs sharing one
-    // localStorage row could not settle. Tab A sees `c`; tab B has not polled
-    // since it appeared, so B writes {a,b}; A reads that and re-adds `c`; B
-    // reads THAT and prunes it again — a write loop for as long as the pulses
-    // disagree, which after an in-tab poke is up to a full poll interval.
-    // Add-only assignment makes each exchange either teach a tab something or
-    // change nothing, so it terminates.
-    const A: AppOrder = new Map();
-    const B: AppOrder = new Map();
-    const liveA = of(["a", 30], ["b", 20], ["c", 10]);
-    const liveB = of(["a", 30], ["b", 20]);
-    // A settles first and writes.
-    assignSequences(A, liveA);
-    let saved = orderedSlugs(A);
-    // Now the tabs take turns adopting and re-deriving. Two rounds is the bound.
-    const round = (order: AppOrder, live: typeof liveA) => {
-      order.clear();
-      reorderTo(order, parseSavedOrder(JSON.stringify(saved)));
-      assignSequences(order, live);
-      const next = orderedSlugs(order);
-      const wrote = JSON.stringify(next) !== JSON.stringify(saved);
-      saved = next;
-      return wrote;
-    };
-    expect(round(B, liveB)).toBe(false); // B has nothing to add, so it stays quiet
-    expect(round(A, liveA)).toBe(false); // and A already knew everything saved
-    // A wrote first from its own recency, so `c` is at the BOTTOM (oldest
-    // activity) — and it stays there. Under the old prune, B's write would have
-    // dropped it and A's next pass would have re-added it on top, forever.
-    expect(saved).toEqual(["a", "b", "c"]);
-  });
-
-  it("settles in one round when the tab that wrote first knew less", () => {
-    const A: AppOrder = new Map();
-    const B: AppOrder = new Map();
-    const liveA = of(["a", 30], ["b", 20], ["c", 10]);
-    const liveB = of(["a", 30], ["b", 20]);
-    // The tab that has NOT seen `c` writes first this time.
-    assignSequences(B, liveB);
-    let saved = orderedSlugs(B);
-    A.clear();
-    reorderTo(A, parseSavedOrder(JSON.stringify(saved)));
-    assignSequences(A, liveA);
-    // A teaches the row about `c`, once, and it goes on top: to that saved
-    // order it IS new.
-    expect(orderedSlugs(A)).toEqual(["c", "a", "b"]);
-    saved = orderedSlugs(A);
-    // B adopts and has nothing to add back — the exchange is over.
-    B.clear();
-    reorderTo(B, parseSavedOrder(JSON.stringify(saved)));
-    assignSequences(B, liveB);
-    expect(orderedSlugs(B)).toEqual(saved);
-  });
-
-  it("degrades anything unreadable to no saved order", () => {
-    expect(parseSavedOrder(null)).toEqual([]);
-    expect(parseSavedOrder("")).toEqual([]);
-    expect(parseSavedOrder("not json")).toEqual([]);
-    expect(parseSavedOrder('{"a":1}')).toEqual([]);
-    expect(parseSavedOrder("[1,2,3]")).toEqual([]);
-  });
-
-  it("drops junk entries and collapses duplicates rather than sharing a sequence", () => {
-    expect(parseSavedOrder('["a",7,"",null,"b","a"]')).toEqual(["a", "b"]);
+  it("saves exactly the rows on screen, with no remembered tail to interleave", () => {
+    // Bugbot, 2026-08-26 (High): a middle version remembered non-live slugs
+    // while a drop renumbered only the visible run, so a remembered slug kept a
+    // stale sequence and could sort above the rows the user had just arranged.
+    // The prune is what removes the whole class of bug — after an assignment the
+    // store IS the display.
     const order: AppOrder = new Map();
-    reorderTo(order, parseSavedOrder('["a","b","a"]'));
-    expect([...order.values()].length).toBe(new Set(order.values()).size);
+    reorderTo(order, parseSavedOrder('["old1","a","old2","b"]'));
+    const live = of(["a", 20], ["b", 10]);
+    assignSequences(order, live);
+    expect(orderedSlugs(order)).toEqual(bySequence(live, order).map((x) => x.slug));
+    // And a drag over that list writes a contiguous arrangement, top to bottom.
+    reorderTo(order, moveSlug(orderedSlugs(order), "b", "a", false));
+    expect(orderedSlugs(order)).toEqual(["b", "a"]);
+    expect([...order.values()].sort((x, y) => x - y)).toEqual([1, 2]);
   });
+
 });
 
 describe("moveSlug", () => {
@@ -366,11 +299,21 @@ describe("CurrentAppsSection's half of the saved order", () => {
     expect(SECTION.slice(adopt, end)).toContain("appOrder.clear()");
   });
 
-  it("never saves an empty list over the order it is about to show", () => {
-    // The first render (and any moment the pulse has not answered) has no apps;
-    // writing that would erase the order — the same trap the sidebar's task
-    // dismissals fell into (sidebar-tasks.test.ts, 2026-08-18).
-    expect(SECTION).toContain("if (apps.length) saveOrder(orderedSlugs(appOrder))");
+  it("writes ONLY from the drop handler", () => {
+    // The whole cross-tab design, pinned. Bugbot twice on 2026-08-26: a persist
+    // effect keyed on the app list fires on every pulse (the store hands out a
+    // fresh `rows` array per poll), and two tabs then take turns saving their
+    // own view of a world they briefly disagree about — first a second tab
+    // clobbering a drag, then an outright write loop. A drag is one user
+    // gesture, so there is no second writer. Anything that saves on derived
+    // state reopens both bugs.
+    const calls = SECTION.split("saveOrder(").length - 1;
+    expect(calls).toBe(2); // the declaration, and the one call
+    const drop = SECTION.indexOf("onDrop: (e) => {");
+    const dropEnd = SECTION.indexOf("onDragEnd:", drop);
+    expect(SECTION.slice(drop, dropEnd)).toContain("saveOrder(next)");
+    // And no effect may quietly become a second writer.
+    expect(SECTION).not.toContain("saveOrder(orderedSlugs(appOrder))");
   });
 });
 
