@@ -1036,13 +1036,16 @@
     user-select: none;
   }
   footer .mark-bg .spark { color: var(--accent-fill); opacity: 0.65; }
-  footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  footer nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
   footer nav a {
+    display: inline-flex; align-items: center; gap: 8px;
     font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     text-transform: uppercase; letter-spacing: 0.11em;
     color: var(--ink-3); text-decoration: none; padding: 6px 0;
     transition: color 0.2s var(--ease);
   }
+  /* every mark on the same optical size, so the row reads as one line */
+  footer nav a svg { width: 14px; height: 14px; flex: none; }
   footer .legal {
     position: relative;
     margin-top: var(--s3);
