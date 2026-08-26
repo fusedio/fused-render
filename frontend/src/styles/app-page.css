@@ -65,7 +65,9 @@
 .app-page-body {
   flex: 1 1 auto;
   min-height: 0;
-  width: min(1200px, calc(100% - 48px));
+  /* 1050px: the Tasks page's own column cap (schedule.css), so the two pages
+     line up. tests/test_schedule_css.py reads that file's literal, not this. */
+  width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
   display: flex;
   flex-direction: column;
