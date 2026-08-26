@@ -232,9 +232,12 @@
 /* Single column, left-aligned, capped so a row never stretches across a wide
    monitor (defect: full-bleed content at any window width). Not centred —
    margin stays 0, matching the sidebar it sits beside rather than floating in
-   the middle of the remaining space. */
+   the middle of the remaining space. flex-basis 0 (not auto) so it grows to
+   fill .cc-body deterministically off its flex-grow alone, rather than off a
+   content-based hypothetical size .cc-preview's presence/absence could shift. */
 .cc-main {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
+  width: 100%;
   min-width: 0;
   max-width: 900px;
   box-sizing: border-box;
@@ -436,20 +439,40 @@
   color: var(--fg-muted);
 }
 
-/* The fixed column every control lines up against, down the whole page — the
-   defect this replaces was every row's select/input starting at a different
-   x. Right-aligned within its own 240px so a short control (a switch) and a
-   long one (a select) both meet the row's right edge. */
+/* The fixed column every control lines up against, down the whole page. A
+   GRID, not a packed flex row — the earlier flex version had the reset
+   button/hint and the control travel as one right-anchored group, so the
+   CONTROL's own left edge drifted with whatever text sat in front of it (a
+   select showing "opus" sat at a different x than one showing "auto"). Two
+   fixed tracks fix that: column 1 is always 22px (reset or the unset hint,
+   or nothing), column 2 is everything left of the row's right edge — so
+   every control, whatever its own content, starts and ends at the same x
+   down the page. Grid's default stretch is what makes a <select>/<input>
+   with no width of its own fill that second track; a fixed-size control
+   (the switch) opts out with justify-self: end below. */
 .cc-row-control {
   flex: 0 0 240px;
   width: 240px;
-  display: flex;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
+  column-gap: 6px;
 }
 
-/* "using Claude's default" — italic and muted so it never reads as a value. */
+.cc-row-control select.field-control,
+.cc-row-control input.field-control {
+  width: 100%;
+  min-width: 0;
+}
+
+.cc-row-control .cc-switch {
+  justify-self: end;
+}
+
+/* "using Claude's default" — italic and muted so it never reads as a value.
+   Still used elsewhere (Skills' "no recorded source", the import picker's
+   "Select all", an empty CLAUDE.md's placeholder) — just not in the
+   Preferences control column any more (see .cc-row-hint below). */
 .cc-unset {
   font-size: 12px;
   font-style: italic;
@@ -459,28 +482,39 @@
   white-space: nowrap;
 }
 
-/* The reset affordance: a small ghost icon button at the row's right edge,
-   rendered only once a value actually differs from the default — replacing
-   the bare "reset" word that used to float mid-row with nothing marking it as
-   a control. Reuses .cc-iconbtn (the same quiet icon-button vocabulary every
-   other tab's row actions use) at a slightly smaller box, since it shares a
-   240px column with the control itself. */
-.cc-iconbtn.cc-reset {
+/* Column 1 of the control grid, in its two states: the reset button once a
+   value actually differs from its default, or — when it doesn't — a quiet
+   hint carrying the SAME fact ("Claude default", or the documented default
+   value) as a title= tooltip instead of as text. Text was the earlier
+   attempt: "Claude default"/"default: …" is unbounded in length (a catalog
+   entry's default can be an object), and at a fixed 22-64px width that meant
+   it silently ellipsized into "Claude …" — worse than not showing it, since
+   it now LOOKED like a value rather than read as absent. A fixed icon has no
+   such failure mode, and the fact is not exclusively carried here anyway: a
+   toggle already sits at its default position, and a select/scalar control
+   already shows its default as its own placeholder/option text. */
+.cc-iconbtn.cc-reset,
+.cc-row-hint {
   width: 22px;
   height: 22px;
 }
 
-.cc-scalar {
-  min-width: 140px;
+.cc-row-hint {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+  opacity: 0.7;
+  cursor: default;
 }
 
-/* Inside the Preferences control column specifically: fill the fixed 240px
-   rather than sizing to content, so a short number field and a long select
-   both reach the column's right edge the same as the switch does. */
-.cc-row-control .cc-scalar {
-  flex: 1 1 auto;
-  width: 100%;
-  min-width: 0;
+.cc-row-hint .cc-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.cc-scalar {
+  min-width: 140px;
 }
 
 .cc-grow {
@@ -503,9 +537,8 @@
   }
 
   .cc-row-control {
-    flex: 1 1 auto;
     width: 100%;
-    justify-content: space-between;
+    grid-template-columns: 22px 1fr;
   }
 }
 
@@ -597,6 +630,7 @@
   display: flex;
   align-items: flex-start;
   gap: 20px;
+  width: 100%;
 }
 
 .cc-index {
@@ -650,9 +684,16 @@
   white-space: nowrap;
 }
 
+/* flex-basis 0%, not auto: an `auto` basis sizes off this column's own
+   (essentially unbounded) content before flex-grow ever runs, and that
+   hypothetical size is what silently won over flex-grow's fill — the list
+   card inside it was shrink-wrapping to content instead of spanning the
+   column. 0% removes the content dependency entirely: the item starts at
+   nothing and flex-grow:1 is the ONLY thing deciding its final width. */
 .cc-rows {
-  flex: 1 1 auto;
+  flex: 1 1 0%;
   min-width: 0;
+  width: 100%;
 }
 
 /* -- pager (Discover) ------------------------------------------------------ */
@@ -688,6 +729,8 @@
    card's own right edge is where the row is "supposed" to end, at any window
    width up to .cc-main's 900px cap. */
 .cc-list {
+  width: 100%;
+  box-sizing: border-box;
   margin-bottom: 10px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -779,9 +822,15 @@
    project tail stays visible rather than the /Users/... head every path
    shares. NOT unicode-bidi:plaintext: plaintext re-detects the string as LTR
    and moves the ellipsis back to the right end. */
+/* On MD Files this is the row's real subject, not a muted secondary — the
+   name column is empty on nearly every row (CLAUDE.md is CLAUDE.md), so the
+   directory is the one thing telling one row from another and reads at
+   primary weight instead of --fg-muted. */
 .cc-lrow-sub-path {
   direction: rtl;
   text-align: left;
+  color: var(--fg);
+  font-weight: 500;
 }
 
 .cc-lrow-meta {
@@ -1421,9 +1470,17 @@ textarea.cc-textbox {
     text-overflow: ellipsis;
   }
 
-  /* The marketplace filter column would leave the list ~120px at this width. */
+  /* The marketplace filter column would leave the list ~120px at this width.
+     align-items MUST be overridden back to stretch here: the base rule's
+     flex-start is for the ROW layout (so the sticky filter rail doesn't
+     stretch to the list's full height) and in a COLUMN flex container that
+     same value governs the opposite axis — it was shrink-wrapping .cc-index
+     and .cc-rows (and the .cc-list card inside it) to their own content width
+     instead of letting them span the column, which is defect 2 restated at a
+     narrow viewport. */
   .cc-split {
     flex-direction: column;
+    align-items: stretch;
   }
 
   .cc-index {
