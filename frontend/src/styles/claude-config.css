@@ -407,6 +407,47 @@
   color: var(--fg-muted);
 }
 
+/* -- memory: one card per project, files inside as rows --------------------- */
+/* Memory (round 2) groups its ListRows by project — a project is not itself a
+   row, so it gets a plain header (folder/slug + count + drift) with the two
+   folder-level actions (Reveal, Clear) on the right, then a .cc-list card of
+   its files underneath. */
+.cc-memgroup {
+  margin-bottom: 22px;
+}
+
+.cc-memgroup-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.cc-memgroup-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.cc-memgroup-count {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.cc-memgroup-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
 /* A filesystem path is not a category name: it keeps its own casing and wraps. */
 .cc-group-path {
   text-transform: none;

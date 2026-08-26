@@ -1,11 +1,22 @@
 // Memory section: a read-only viewer of Claude Code's persistent memory under
 // projects/*/memory/, with the per-folder git lifecycle beside it.
 //
+// Round 2 redesign: the memory FILE is the row now, not the project. Before
+// this, a row was a project folder and the files hid inside an expanded <dl>
+// as one newline-joined blob — the files ARE the content of this tab (which
+// lesson lives where), so they earn a row each, grouped under the project
+// that owns them. Each file's row shows its name and the one-line
+// `description` from its own YAML frontmatter (claude_config/memory.py parses
+// it; falls back to nothing shown when the frontmatter is missing or
+// malformed — the row's own filename already carries the fallback, so there
+// is no separate "untitled" state to invent).
+//
 // Contents are Claude's to author — nothing here edits a memory file. What the
 // UI adds is the lifecycle the files themselves can't express: which folders
 // have uncommitted drift, and a Clear that deletes the .md files and commits
 // the deletion (recoverable from History, which is why Clear is a confirm and
-// not a two-step).
+// not a two-step). Both live on the project GROUP, not on an individual file
+// row, because they act on the whole folder.
 //
 // There used to be a per-project Commit button here too (round 2 removed it —
 // the "N uncommitted" drift marker stays as the fact, but the *act* of
@@ -15,11 +26,11 @@
 // `memory` module still has a path-limited `commit` action; History's own
 // commit path doesn't need it.
 //
-// A row is titled by the PROJECT FOLDER, not by the projects/ directory name:
-// that name is a munged cwd ("-Users-me-Work-fused-render") and reads as
-// nothing. The server resolves it — from a session transcript's recorded cwd,
-// else against the filesystem — and sends null when it cannot, in which case
-// this shows the slug rather than a path that might not exist. See
+// A group is titled by the PROJECT FOLDER, not by the projects/ directory
+// name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
+// as nothing. The server resolves it — from a session transcript's recorded
+// cwd, else against the filesystem — and sends null when it cannot, in which
+// case this shows the slug rather than a path that might not exist. See
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
 import { useCallback } from "react";
@@ -64,78 +75,65 @@ export default function MemorySection({ onChanged }: SectionProps) {
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />;
 
-  const files = data.projects.reduce((n, p) => n + p.files.length, 0);
+  const fileCount = data.projects.reduce((n, p) => n + p.files.length, 0);
 
   return (
     <>
       {modal}
       <SectionToolbar
-        summary={`${data.projects.length} project(s) · ${files} file(s)`}
+        summary={`${data.projects.length} project(s) · ${fileCount} file(s)`}
         onRefresh={reload}
       />
       {!data.projects.length && (
         <Empty>No persistent memory found under projects/*/memory/.</Empty>
       )}
-      {data.projects.length > 0 && (
-        <List>
-          {data.projects.map((p) => {
-            const dirty = p.changes.length;
-            const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
-            return (
-              <ListRow
-                key={p.project}
-                // The folder, when the server could confirm which one it is —
-                // mono, because it is a path. Otherwise the raw slug, NOT dressed
-                // up as a path: the encoding is lossy and a plausible-looking
-                // /Users/me/Work/fused/render that doesn't exist would be worse
-                // than the slug it came from.
-                name={p.path ?? p.project}
-                nameMono={p.pathConfirmed}
-                secondary={count}
-                // The file names ARE the content of this tab — which folder holds
-                // what — so they move from a `·`-joined line that ellipsized into
-                // nothing to the expanded panel, one per line. The slug rides along
-                // because it is what the folder is actually called on disk.
-                details={
-                  <dl className="cc-lrow-dl">
-                    {p.files.length > 0 && (
-                      <>
-                        <dt className="cc-lrow-dt">Files</dt>
-                        <dd className="cc-lrow-dd cc-mono">{p.files.join("\n")}</dd>
-                      </>
-                    )}
-                    <dt className="cc-lrow-dt">Folder</dt>
-                    <dd className="cc-lrow-dd cc-mono">
-                      {p.path ?? "unknown — no session transcript records this project's folder"}
-                    </dd>
-                    <dt className="cc-lrow-dt">Stored as</dt>
-                    <dd className="cc-lrow-dd cc-mono">projects/{p.project}/memory</dd>
-                  </dl>
-                }
-                meta={
-                  dirty > 0 ? <span className="cc-change">{dirty} uncommitted</span> : null
-                }
-                actions={
-                  <>
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      title="Reveal in Finder"
-                      aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
-                      onClick={() => guard(cc.memory.open(p.project))}
-                    >
-                      <Icon name="folder" />
-                    </button>
-                    <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
-                      Clear
-                    </button>
-                  </>
-                }
-              />
-            );
-          })}
-        </List>
-      )}
+      {data.projects.map((p) => {
+        const dirty = p.changes.length;
+        const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
+        return (
+          <div className="cc-memgroup" key={p.project}>
+            <div className="cc-memgroup-head">
+              <div className="cc-memgroup-title">
+                {/* The folder, when the server could confirm which one it is —
+                    mono, because it is a path. Otherwise the raw slug, NOT
+                    dressed up as a path: the encoding is lossy and a
+                    plausible-looking /Users/me/Work/fused/render that doesn't
+                    exist would be worse than the slug it came from. */}
+                <span className={p.pathConfirmed ? "cc-mono" : undefined} title={p.path ?? undefined}>
+                  {p.path ?? p.project}
+                </span>
+                <span className="cc-memgroup-count">{count}</span>
+                {dirty > 0 && <span className="cc-change">{dirty} uncommitted</span>}
+              </div>
+              <div className="cc-memgroup-actions">
+                <button
+                  type="button"
+                  className="cc-iconbtn"
+                  title="Reveal in Finder"
+                  aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
+                  onClick={() => guard(cc.memory.open(p.project))}
+                >
+                  <Icon name="folder" />
+                </button>
+                <button type="button" className="btn btn-danger" onClick={() => clear(p.project)}>
+                  Clear
+                </button>
+              </div>
+            </div>
+            <List>
+              {p.files.map((f) => (
+                <ListRow
+                  key={f.name}
+                  name={f.name}
+                  nameMono
+                  secondary={f.description ?? undefined}
+                  secondaryTitle={f.description ?? undefined}
+                />
+              ))}
+            </List>
+          </div>
+        );
+      })}
     </>
   );
 }

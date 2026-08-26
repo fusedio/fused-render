@@ -408,6 +408,86 @@ def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir
     assert p["pathConfirmed"] is False
 
 
+# -- memory: per-file frontmatter description ---------------------------------
+# Round 2 of the Claude config redesign makes the memory FILE the row (grouped
+# by project), not the project — so `files` carries a {name, description} pair
+# per file instead of a bare name. `description` comes from the file's YAML
+# frontmatter, the same shape Claude Code itself writes:
+#
+#   ---
+#   name: some-slug
+#   description: "one line about what this memory covers"
+#   metadata: ...
+#   ---
+
+
+def _write_memory_file(claude_dir, slug, name, body, subdir="memory"):
+    d = claude_dir / "projects" / slug / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(body, encoding="utf-8")
+
+
+def test_memory_list_reads_the_description_from_frontmatter(client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "some-lesson.md",
+        '---\nname: some-lesson\ndescription: "one line about the lesson"\n'
+        'metadata: \n  node_type: memory\n---\n\nBody text here.\n',
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["name"] == "some-lesson.md"
+    assert f["description"] == "one line about the lesson"
+
+
+def test_memory_list_falls_back_to_the_filename_when_frontmatter_is_missing(
+        client, claude_dir):
+    # A file with no --- delimiter at all — MEMORY.md, the plain index, looks
+    # like this.
+    _write_memory_file(claude_dir, "-proj", "MEMORY.md", "- [a lesson](a.md) — summary\n")
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["name"] == "MEMORY.md"
+    assert f["description"] is None
+
+
+def test_memory_list_falls_back_when_frontmatter_has_no_description_key(client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "no-desc.md",
+        "---\nname: no-desc\nmetadata: \n  node_type: memory\n---\n\nBody.\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
+
+
+def test_memory_list_falls_back_when_frontmatter_never_closes(client, claude_dir):
+    # A malformed file — the opening delimiter with no closing one — must not
+    # be read as if the whole body were frontmatter, and must not blow up.
+    _write_memory_file(
+        claude_dir, "-proj", "unterminated.md",
+        "---\nname: unterminated\ndescription: never actually closes\n\nrest of the file\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
+
+
+def test_memory_list_never_invents_a_description_from_an_unquoted_blank_value(
+        client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "blank-desc.md",
+        "---\nname: blank-desc\ndescription:\nmetadata: \n---\n\nBody.\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
+
+
 # -- plugins: the marketplace catalogs + guarded install ---------------------
 
 

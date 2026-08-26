@@ -214,6 +214,14 @@ export const marketplaces = {
 
 // -- memory -------------------------------------------------------------------
 
+// A memory FILE within a project — round 2's unit for this tab. `description`
+// is the file's own YAML frontmatter `description:` value; null when the
+// file has none, or it didn't parse (never guessed at from content).
+export interface MemoryFile {
+  name: string;
+  description: string | null;
+}
+
 export interface MemoryProject {
   // The projects/ directory name — a munged cwd. Still the IDENTIFIER every
   // other memory action is keyed on (the server path-guards on it), which is
@@ -224,7 +232,7 @@ export interface MemoryProject {
   // The munge is lossy, so a null here means "we refuse to guess", not "none".
   path: string | null;
   pathConfirmed: boolean;
-  files: string[];
+  files: MemoryFile[];
   changes: FileDelta[];
 }
 
