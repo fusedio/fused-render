@@ -38,12 +38,19 @@ def test_fit_module_only_reads_the_cache_never_the_probe():
 
 
 def test_nvidia_smi_csv_is_parsed_into_gpu_devices():
+    """`nvidia-smi ... memory.total` reports MEBIBYTES, and `GpuDevice.
+    vram_gb`'s own docstring promises decimal GB (matching `fit.GB_BYTES`) —
+    so a 24564 MiB reading must land at ~25.77 decimal GB, not the 23.99
+    a bare `/1024` (treating the field as if it were already GB) would give.
+    `fit._select_pool` multiplies `total_vram_gb` by `GB_BYTES` (1e9); the two
+    conversions have to agree or every discrete-NVIDIA verdict silently
+    under-reports the pool by ~7.4%."""
     csv = "NVIDIA GeForce RTX 4090, 24564\nNVIDIA GeForce RTX 4090, 24564\n"
     gpus = hw_detect._parse_nvidia_smi(csv)
     assert gpus is not None
     assert len(gpus) == 2
     assert gpus[0].name == "NVIDIA GeForce RTX 4090"
-    assert gpus[0].vram_gb == pytest.approx(24564 / 1024, rel=1e-3)
+    assert gpus[0].vram_gb == pytest.approx(24564 * 1024 * 1024 / 1e9, rel=1e-6)
 
 
 def test_nvidia_smi_blank_output_is_no_gpus():
@@ -95,10 +102,12 @@ def test_registry_qwmemorysize_overrides_a_capped_reading(monkeypatch):
     monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None:
                          "NVIDIA GeForce RTX 4080|4294901760\n")
     monkeypatch.setattr(hw_detect, "_windows_registry_vram",
-                         lambda: {"NVIDIA GeForce RTX 4080": 17179869184})  # 16 GiB
+                         lambda: {"NVIDIA GeForce RTX 4080": 17179869184})  # ~16 GiB
     gpus = hw_detect._windows_gpus()
     assert gpus is not None
-    assert gpus[0].vram_gb == pytest.approx(17179869184 / 1024 ** 3, rel=1e-3)
+    # Decimal GB, matching GpuDevice.vram_gb's own unit promise — NOT
+    # `/1024**3` (binary GiB), which under-reports a real card by ~7.4%.
+    assert gpus[0].vram_gb == pytest.approx(17179869184 / 1e9, rel=1e-6)
 
 
 def test_an_uncapped_reading_is_kept_even_when_the_registry_disagrees(monkeypatch):
@@ -107,7 +116,7 @@ def test_an_uncapped_reading_is_kept_even_when_the_registry_disagrees(monkeypatc
     monkeypatch.setattr(hw_detect, "_windows_registry_vram", lambda: {})
     gpus = hw_detect._windows_gpus()
     assert gpus is not None
-    assert gpus[0].vram_gb == pytest.approx(3221225472 / 1024 ** 3, rel=1e-3)
+    assert gpus[0].vram_gb == pytest.approx(3221225472 / 1e9, rel=1e-6)
 
 
 # -- unified-memory APU overrides -------------------------------------------------
@@ -134,6 +143,38 @@ def test_a_discrete_gpu_is_not_overridden():
                                       ram_gb=64.0)
     assert device.vram_gb == 24.0
     assert device.unified_memory is False
+
+
+# -- every parser must agree on GpuDevice.vram_gb's unit (decimal GB) ------------
+
+
+def test_every_parser_reports_the_same_decimal_gb_for_the_same_real_card(monkeypatch):
+    """A real 24GB (decimal) RTX 4090 reports itself three different ways
+    depending on which probe answered — `nvidia-smi` in MEBIBYTES,
+    `rocm-smi`/the registry correction in raw BYTES, Windows' capped
+    `AdapterRAM` also in bytes. All three parsers must land at the SAME
+    decimal-GB figure for the same physical card; a parser that silently
+    treats its input as already being the output unit (the bug this test
+    guards against: `_parse_nvidia_smi` did `mib / 1024`, `_windows_gpus`
+    did `bytes / 1024**3` — both binary-GiB math against a field documented
+    as decimal GB) under-reports VRAM by ~7.4%, which is enough to flip a
+    borderline model from `gpu` to `cpu-offload` in `fit._select_pool`."""
+    target_gb = 24.0
+    target_bytes = target_gb * 1e9
+
+    nvidia = hw_detect._parse_nvidia_smi(
+        f"NVIDIA GeForce RTX 4090, {target_bytes / (1024 * 1024)}\n")
+    rocm = hw_detect._parse_rocm_smi(
+        json.dumps({"card0": {"Card series": "NVIDIA GeForce RTX 4090",
+                              "VRAM Total Memory (B)": str(int(target_bytes))}}))
+    monkeypatch.setattr(hw_detect, "_run", lambda args, timeout=None:
+                        f"NVIDIA GeForce RTX 4090|{int(target_bytes)}\n")
+    monkeypatch.setattr(hw_detect, "_windows_registry_vram", lambda: {})
+    windows = hw_detect._windows_gpus()
+
+    assert nvidia is not None and rocm is not None and windows is not None
+    for gpus in (nvidia, rocm, windows):
+        assert gpus[0].vram_gb == pytest.approx(target_gb, rel=1e-6)
 
 
 # -- multi-GPU aggregation --------------------------------------------------------

@@ -146,7 +146,17 @@ def _parse_nvidia_smi(csv: str) -> list[GpuDevice] | None:
     """`nvidia-smi --query-gpu=name,memory.total --format=csv,noheader,
     nounits` output, one `name, mebibytes` row per card, into `GpuDevice`s —
     or None when there is nothing to parse (no GPUs, or the command failed
-    upstream and handed this an empty string)."""
+    upstream and handed this an empty string).
+
+    **`memory.total` is MEBIBYTES (2**20 bytes), and `GpuDevice.vram_gb` is
+    decimal GB** (its own docstring; matches `fit.GB_BYTES`, which
+    `_select_pool` multiplies `total_vram_gb` by). `mib / 1024` would answer
+    in binary GiB while claiming decimal GB — a real 24564 MiB (24GB) RTX
+    4090 would report 23.99 instead of ~25.77, a silent ~7.4% under-report
+    that survives all the way to a fit verdict. Caught by code review
+    (`test_every_parser_reports_the_same_decimal_gb_for_the_same_real_card`
+    pins it going forward, driving all three parsers on the same card so
+    they cannot drift apart again)."""
     gpus = []
     for line in csv.splitlines():
         line = line.strip()
@@ -159,7 +169,7 @@ def _parse_nvidia_smi(csv: str) -> list[GpuDevice] | None:
             mib = float(parts[1])
         except ValueError:
             continue
-        gpus.append(GpuDevice(name=parts[0], vram_gb=mib / 1024))
+        gpus.append(GpuDevice(name=parts[0], vram_gb=mib * 1024 * 1024 / 1e9))
     return gpus or None
 
 
@@ -283,7 +293,12 @@ def _windows_gpus() -> list[GpuDevice] | None:
             corrected = registry.get(name)
             if isinstance(corrected, int) and corrected > byte_value:
                 byte_value = corrected
-        gpus.append(GpuDevice(name=name, vram_gb=byte_value / 1024 ** 3))
+        # Decimal GB (`GpuDevice.vram_gb`'s own unit — see `_parse_nvidia_
+        # smi`'s docstring for the full reasoning), NOT `/1024**3`: both
+        # `AdapterRAM` and the registry's `qwMemorySize` are raw bytes, and
+        # binary-GiB math here was the other half of the same under-report
+        # `_parse_nvidia_smi` had.
+        gpus.append(GpuDevice(name=name, vram_gb=byte_value / 1e9))
     return gpus or None
 
 
