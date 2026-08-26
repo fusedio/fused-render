@@ -1036,35 +1036,36 @@
     user-select: none;
   }
   footer .mark-bg .spark { color: var(--accent-fill); opacity: 0.65; }
-  footer nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
-  footer nav a {
-    display: inline-flex; align-items: center; gap: 8px;
+  footer .foot-left { display: flex; flex-direction: column; gap: 8px; }
+  footer .legal {
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.06em; color: var(--ink-4);
+  }
+  footer .foot-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  footer .foot-link {
+    display: inline-flex; align-items: center; height: 34px; padding: 0 14px;
+    border: 1px solid var(--rule); border-radius: 99px;
     font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     text-transform: uppercase; letter-spacing: 0.11em;
-    color: var(--ink-3); text-decoration: none; padding: 6px 0;
-    transition: color 0.2s var(--ease);
+    color: var(--ink-2); text-decoration: none;
+    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
   }
-  /* Optical, not geometric: uppercase mono has no descenders, so the words
-     ride high in their box and a box-centred mark reads low. Nudge the marks
-     up to the cap-height midline and size each one by how much ink it has. */
-  footer nav a svg { width: 14px; height: 14px; flex: none; transform: translateY(-1px); }
-  footer nav a .mk-github { width: 13.5px; height: 13.5px; }
-  footer nav a .mk-linkedin { width: 12.5px; height: 12.5px; }
-  footer nav a .mk-x { width: 12px; height: 12px; }
-  footer nav a .mk-discord { width: 15px; height: 15px; }
-  footer .legal {
-    position: relative;
-    margin-top: var(--s3);
-    padding-top: var(--s3);
-    border-top: 1px solid var(--rule);
-    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    letter-spacing: 0.03em;
-    color: var(--ink-4);
+  footer .foot-sep { width: 1px; height: 18px; background: var(--rule); margin: 0 6px; }
+  footer .foot-ic {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center;
+    border: 1px solid var(--rule); color: var(--ink-2);
+    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
+  }
+  footer .foot-ic svg { width: 14px; height: 14px; }
+  footer .foot-link:hover, footer .foot-ic:hover { border-color: var(--rule-hi); color: var(--ink); }
+  @media (max-width: 620px) {
+    footer .inner { flex-direction: column; align-items: flex-start; }
   }
 
   /* ---------- hovers ---------- */
   @media (hover: hover) {
-    .top nav a:hover, footer nav a:hover { color: var(--ink); }
+    .top nav a:hover { color: var(--ink); }
     .btn:hover { transform: translateY(-2px); }
     .link-plain:hover { border-color: var(--ink-3); }
     .tile.hoverable:hover { border-color: var(--rule-hi); }
@@ -1690,19 +1691,22 @@
   <footer>
     <div class="mark-bg" aria-hidden="true"><span class="spark">&#10022;</span><span class="word">FUSED</span></div>
     <div class="inner">
-      <a class="brand" href="index.html">
-        <span class="spark" aria-hidden="true">&#10022;</span>
-        Fused Render
-      </a>
-      <nav>
-        <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg class="mk mk-github" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
-        <a rel="noopener" href="https://www.fused.io">fused.io</a>
-        <a class="gh" rel="noopener" href="https://www.linkedin.com/company/fusedio/"><svg class="mk mk-linkedin" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg>LinkedIn</a>
-        <a class="gh" rel="noopener" href="https://x.com/fused_io"><svg class="mk mk-x" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg>X</a>
-        <a class="gh" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY"><svg class="mk mk-discord" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg>Discord</a>
+      <div class="foot-left">
+        <a class="brand" href="index.html">
+          <span class="spark" aria-hidden="true">&#10022;</span>
+          Fused Render
+        </a>
+        <span class="legal">&copy; 2026 Fused Labs, Inc.</span>
+      </div>
+      <nav class="foot-nav" aria-label="Links">
+        <a class="foot-link" rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
+        <a class="foot-link" rel="noopener" href="https://www.fused.io">fused.io</a>
+        <span class="foot-sep" aria-hidden="true"></span>
+        <a class="foot-ic" rel="noopener" href="https://www.linkedin.com/company/fusedio/" aria-label="Fused on LinkedIn"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg></a>
+        <a class="foot-ic" rel="noopener" href="https://x.com/fused_io" aria-label="Fused on X"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <a class="foot-ic" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY" aria-label="Fused on Discord"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg></a>
       </nav>
     </div>
-    <div class="legal">&copy; 2026 Fused Labs, Inc.</div>
   </footer>
 </div>
 
