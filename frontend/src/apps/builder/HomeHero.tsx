@@ -58,10 +58,19 @@ function kebabName(text: string): string {
 // the composer holding its own names to the standard the model is asked for.
 const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
+// The refusal token. Asked for explicitly so a request that is not an app
+// description gets a deterministic answer the code can act on (ask the user)
+// instead of an invented brand — Haiku, given nothing concrete, will happily
+// produce "flux-name-bot" and that passes every syntactic check.
+const NAME_NONE = "none";
+
 const NAME_SYSTEM_PROMPT =
   "You name software projects. Given a description of an app, reply with a " +
   "short kebab-case name for it: 2-4 lowercase words joined by hyphens, " +
-  "letters and digits only. Reply with ONLY the name — no quotes, no prose.";
+  "letters and digits only. Use only words that appear in the description or " +
+  "plainly describe what the app does — never invented brand words. If the " +
+  "text is not a description of an app to build, reply with exactly: " +
+  NAME_NONE + ". Reply with ONLY the name — no quotes, no prose.";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
 // (haiku, the server default — cheap and fast). null when the relay is down or
@@ -75,6 +84,7 @@ async function suggestAppName(prompt: string): Promise<string | null> {
     // prose instead (common even with "no prose" in the ask), `text` won't be
     // pure lowercase-and-hyphens. Taking the first token then would name the
     // folder after whatever word led the prose (e.g. "sure").
+    if (text.toLowerCase().replace(/[.\s]+$/, "") === NAME_NONE) return null;
     if (KEBAB_RE.test(text)) {
       const name = kebabName(text);
       if (name) return name;
