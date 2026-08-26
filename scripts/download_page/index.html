@@ -184,16 +184,26 @@
     line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
     text-align: left; margin: 0;
   }
-  .herobg { display: flex; align-items: center; }
+  .hero-stage { display: flex; align-items: center; }
   .herobg .hero-left { flex: 0 0 36%; order: -1; position: relative; z-index: 1; }
-  .herobg .hero-media { flex: 1; min-width: 0; position: relative; }
+  .herobg .hero-media { flex: 1; min-width: 0; position: relative; transform-origin: right center; }
+  /* Scrolling expands the video across the full measure while the text
+     lifts away; then the section releases and scrolls off normally. */
+  @media (min-width: 861px) {
+    html.anim .hero-scroll { height: 175vh; }
+    html.anim .hero-stage {
+      position: sticky; top: 0; height: 100vh;
+    }
+    html.anim .hero-left { will-change: transform, opacity; }
+    html.anim .hero-media { will-change: transform; }
+  }
   .herobg .hero-media video {
     display: block; width: 100%; height: auto;
     -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
     mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
   }
   @media (max-width: 860px) {
-    .herobg { display: block; }
+    .hero-stage { display: block; }
     .herobg .hero-media { margin-top: 24px; }
   }
   .vid-toggle {
@@ -1164,6 +1174,8 @@
 
   <!-- ============ HERO ============ -->
   <section class="hero herobg">
+    <div class="hero-scroll" id="hero-scroll">
+      <div class="hero-stage" id="hero-stage">
     <div class="hero-media">
       <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
              aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
@@ -1188,6 +1200,8 @@
         <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
       </div>
       <p class="fine">No account needed.<br>Native support for macOS<br>limited support on Windows &amp; Linux.</p>
+    </div>
+      </div>
     </div>
   </section>
 
@@ -2055,6 +2069,43 @@
     document.addEventListener("visibilitychange", function () {
       document.hidden ? stop() : (band.getBoundingClientRect().bottom > 0 && start());
     });
+  })();
+
+  // Hero: scrolling expands the video to the full measure while the text
+  // lifts away, then the pinned stage releases into normal scrolling.
+  (function () {
+    var scroller = document.getElementById("hero-scroll");
+    if (!scroller || !document.documentElement.classList.contains("anim")) return;
+    if (matchMedia("(max-width: 860px)").matches) return;
+    var stage = document.getElementById("hero-stage");
+    var media = stage.querySelector(".hero-media");
+    var left = stage.querySelector(".hero-left");
+    var target = 0, cur = 0, smax = 1;
+    function measure() {
+      var r = scroller.getBoundingClientRect();
+      var span = r.height - innerHeight;
+      target = span > 0 ? Math.max(0, Math.min(1, -r.top / span)) : 0;
+      var mw = media.offsetWidth;
+      smax = mw > 0 ? stage.clientWidth / mw : 1;
+    }
+    addEventListener("scroll", measure, { passive: true });
+    addEventListener("resize", measure, { passive: true });
+    measure();
+    function render(p) {
+      var e = Math.min(1, p / 0.72);
+      e = 1 - Math.pow(1 - e, 2);
+      media.style.transform = "scale(" + (1 + (smax - 1) * e) + ")";
+      var lift = Math.min(1, p / 0.5);
+      left.style.opacity = 1 - lift;
+      left.style.transform = "translateY(" + (-70 * lift) + "px)";
+      left.style.pointerEvents = lift > 0.6 ? "none" : "";
+    }
+    (function tick() {
+      cur += (target - cur) * 0.16;
+      if (Math.abs(target - cur) < 0.0005) cur = target;
+      render(cur);
+      requestAnimationFrame(tick);
+    })();
   })();
 
   // Scroll fade-ins: sections drift up as they enter the viewport.
