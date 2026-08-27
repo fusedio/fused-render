@@ -9662,7 +9662,16 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
   `uv.lock` ships. Skipped: dotted names (`.git`, `.claude`, `.venv`, `.env`),
   `node_modules`, `__pycache__`, symlinks, and `CLAUDE.md` (the authoring
-  contract stays home). Budgets 4000 files / 512 MB; loud `AppFileError`s.
+  contract stays home) — and whatever git IGNORES: inside a work tree (the
+  app's own repo, or a subfolder of a bigger one) the rules cascade from the
+  toplevel via `git check-ignore` (`server/gitignore._IgnoreOracle`), so
+  `.git/info/exclude` and the global excludesfile count too; with no repo,
+  the nearest `.gitignore` in the app folder or any ancestor is grafted and
+  cascades down. Tracked files matching a pattern still ship (git's view).
+  An ignored ENTRY page or a check-ignore that stops answering mid-walk is a
+  loud `AppFileError`, never a half-filtered artifact; no git / no rules at
+  all filters nothing. Budgets 4000 files / 512 MB are measured AFTER the
+  filter; loud `AppFileError`s.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
 - **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
