@@ -49,6 +49,19 @@ function findAll(node: ReactTestRendererJSON | null, className: string): ReactTe
   return hits;
 }
 
+/** All rendered text in a subtree, flattened — for assertions about what the
+ *  row SAYS rather than which element says it. Added with D598, which moved
+ *  the amount onto `.dl-status`: "no failure line" can no longer be checked by
+ *  the element's absence, because a row with byte counts and no phase text
+ *  legitimately draws one. */
+function text(node: ReactTestRendererJSON | string | null): string {
+  if (node === null) return "";
+  if (typeof node === "string") return node;
+  return (node.children ?? [])
+    .map((c) => text(c as ReactTestRendererJSON | string))
+    .join("");
+}
+
 function renderRow(job: Job): ReactTestRendererJSON {
   const tree = create(<JobRow job={job} onChanged={() => {}} onPatch={() => {}} />).toJSON();
   if (tree === null || Array.isArray(tree)) throw new Error("JobRow did not render a single root node");
@@ -136,9 +149,10 @@ function pressButton(root: ReactTestRendererJSON, className: string): Promise<vo
 test("a rejected Cancel surfaces a failure message instead of going silent", async () => {
   const cancelFn = () => Promise.reject(new Error("network down"));
   const tree = create(
-    // `detail: ""` — BASE's own detail text would otherwise draw a
-    // `.dl-status` line before any click, muddying the "nothing to say yet"
-    // check below.
+    // `detail: ""` so no PHASE text competes with the assertions below. The
+    // line is still present before any click, because D598 moved the amount
+    // (`jobAmount`) onto it and BASE carries one — so what this checks is that
+    // it says nothing about a FAILURE yet, not that it is absent.
     <JobRow
       job={{ ...BASE, cancellable: true, state: "running", detail: "" }}
       onChanged={() => {}}
@@ -147,7 +161,7 @@ test("a rejected Cancel surfaces a failure message instead of going silent", asy
     />,
   );
   const before = tree.toJSON() as ReactTestRendererJSON;
-  expect(findAll(before, "dl-status")).toHaveLength(0); // nothing to say yet
+  expect(text(before)).not.toContain("Could not cancel"); // nothing to say yet
 
   await pressButton(before, "dl-row-cancel");
 
@@ -199,6 +213,10 @@ test("a successful Cancel shows no failure line", async () => {
 
   await pressButton(before, "dl-row-cancel");
 
+  // Asserted as the ABSENCE OF FAILURE TEXT, not as the absence of the line:
+  // D598 moved the amount onto `.dl-status`, so a row with byte counts and no
+  // phase text legitimately draws one. Checking for the element would make
+  // this test fail for the right behaviour.
   const after = tree.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "dl-status")).toHaveLength(0);
+  expect(text(after)).not.toContain("Could not cancel");
 });

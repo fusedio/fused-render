@@ -364,6 +364,29 @@ export function JobRow({
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
   const status = jobStatusLine(job);
+  // THE PROGRESS FACTS TOGETHER, dot-joined (D598, user: "why isn't the step
+  // count next to denoising?"). `0 / 4` is a progress fact, so it belongs with
+  // the other progress facts rather than up beside the title, where it was a
+  // number with no context while the status line carried context with no
+  // number. The line already speaks this idiom — it rendered `Denoising · ~4s
+  // left` before this round — so `Denoising · 0/4` reads as one sentence.
+  //
+  // COMPOSED, NOT CONCATENATED BEHIND THE OLD GUARD: `amount` and `status` are
+  // independently present or absent. A download row can carry `4.2 GB / 10 GB`
+  // with NO phase text, and a task row a phase with no amount, so the old
+  // `(failure ?? status) &&` gate would have silently dropped a download row's
+  // byte counts entirely — a straight regression, and worse than what this
+  // fixes. Hence: render whenever ANY part exists, and join only the parts
+  // that do.
+  //
+  // A FAILURE TAKES THE LINE OVER and gets NO amount appended (the precedence
+  // the comment below has always stated): it is about the button the user just
+  // pressed, and " · 0/4" after "Could not cancel" would read as progress on
+  // the failure itself.
+  // `??` once, not twice: `join` returns "" rather than null for an empty
+  // list, so a second `??` would be dead — the `&&` at the render site is what
+  // handles the all-absent case.
+  const statusLine = failure ?? [status, amount].filter(Boolean).join(" · ");
 
   // Two controls, one meaning each — because "stop this" and "take it off my
   // screen" read as the same gesture when both hide behind an identical ✕, and
@@ -432,7 +455,6 @@ export function JobRow({
         <span className="dl-title" title={job.page || undefined}>
           {job.title}
         </span>
-        {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
@@ -487,7 +509,7 @@ export function JobRow({
           very button the user just pressed. `status` (the server's report)
           comes back once a later poll succeeds or the row's own next action
           clears `failure`. */}
-      {(failure ?? status) && <div className="dl-status">{failure ?? status}</div>}
+      {statusLine && <div className="dl-status">{statusLine}</div>}
     </div>
   );
 }

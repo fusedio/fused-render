@@ -22,7 +22,7 @@ import { describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { DownloadManagerView, type QueueSlot } from "@platform/ui/DownloadManager";
-import type { Job } from "@platform/lib/jobs";
+import { jobAmount, type Job } from "@platform/lib/jobs";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -589,6 +589,79 @@ test("re-collapsing while the same ids are still present sets no dot either", ()
 // which now share the job of giving way (`.dl-title`, `.dl-model`) both carry
 // the full shrink-to-ellipsis contract, not that a browser renders it inside
 // the width. The real geometry was verified against a running dev server.
+// D598 (user: "why isn't the step count next to denoising?"): the amount is a
+// PROGRESS fact, so it joins the other progress facts on the status line
+// instead of sitting up beside the title as a number with no context. The three
+// shapes below are the ones that can actually occur, and the middle one is the
+// regression this had to avoid — amount and status are INDEPENDENTLY present,
+// so a download row with no phase text must not lose its byte counts.
+
+test("a task row reads its phase and step count as one sentence", () => {
+  const denoising: Job = {
+    ...BASE,
+    id: "sys:ai-image:flux",
+    title: "make it anime styled",
+    detail: "Denoising",
+    state: "running",
+    stalled: false,
+    done: 0,
+    total: 4,
+    unit: "",
+  };
+  const tree = renderCard([denoising]);
+  const row = findAll(tree, "dl-row")[0];
+  expect(text(findAll(row, "dl-status")[0])).toBe("Denoising · 0 / 4");
+  // The amount is no longer its own element on the head line...
+  expect(findAll(findAll(row, "dl-row-head")[0], "dl-amount")).toHaveLength(0);
+  // ...but the percentage STAYS there, glanceable and aligned down the list.
+  expect(text(findAll(findAll(row, "dl-row-head")[0], "dl-pct")[0])).toBe("0%");
+});
+
+test("a download row with NO phase text still shows its byte counts", () => {
+  // The regression guard: the old `(failure ?? status) &&` gate would have
+  // dropped this row's amount entirely, which is worse than the problem D598
+  // set out to fix.
+  const download: Job = {
+    ...BASE,
+    id: "sys:ai-download:x",
+    title: "Qwen3-8B",
+    detail: "",
+    state: "running",
+    stalled: false,
+    done: 4.2e9,
+    total: 10e9,
+    unit: "bytes",
+  };
+  const tree = renderCard([download]);
+  const status = findAll(findAll(tree, "dl-row")[0], "dl-status");
+  expect(status).toHaveLength(1);
+  // Bare amount, no leading separator — `filter(Boolean)` drops the empty part
+  // rather than joining onto nothing.
+  expect(text(status[0])).toBe(jobAmount(download));
+  expect(text(status[0]).startsWith(" · ")).toBe(false);
+});
+
+test("a failure takes the whole line and gets no amount appended", () => {
+  // Precedence unchanged: the sentence is about the button the user just
+  // pressed, and " · 0 / 4" after it would read as progress on the failure.
+  const failed: Job = {
+    ...BASE,
+    id: "sys:ai-image:boom",
+    title: "make it anime styled",
+    detail: "Denoising",
+    state: "error",
+    message: "GDAL ran out of memory",
+    done: 0,
+    total: 4,
+  };
+  const tree = renderCard([failed]);
+  // An `error` row is re-routed to Notifications (D586), so it draws no row
+  // here at all — the failure PRECEDENCE is exercised by JobRow.test.tsx's own
+  // rejected-cancel tests, which drive `failure` (the local action's) rather
+  // than `job.state`.
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+});
+
 describe("the row uses LINES, not a shrink ladder (D596)", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs");
   const { join } = require("node:path") as typeof import("node:path");
