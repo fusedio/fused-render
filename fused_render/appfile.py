@@ -140,40 +140,52 @@ class _IgnoreRoots:
 
         self._Oracle = _IgnoreOracle
         self._oracles: dict[str, object] = {}
-        self.root: str | None = None      # abs dir the current oracle sits at
-        self.in_repo = False
-        if shell_mounts.is_mount_backed(app_dir):
-            return
-        top = _repo_toplevel(app_dir)
-        if top is not None:
-            self.in_repo = True
-            self.root = top
-            return
-        d = app_dir
-        while True:
-            if os.path.isfile(os.path.join(d, ".gitignore")):
-                self.root = d
-                return
-            parent = os.path.dirname(d)
-            if parent == d:
-                return
-            d = parent
+        # dirpath -> (oracle root or None, inside a real repo). Resolved for
+        # every directory the walk enters FROM ITS PARENT's entry, so a
+        # nested repo's oracle scopes to that subtree only: os.walk is
+        # depth-first, and a single mutable "current root" would leak the
+        # nested repo onto the siblings walked after it (they would then
+        # fail the `..` guard below and ship parent-ignored files).
+        self._by_dir: dict[str, tuple[str | None, bool]] = {}
+        root: str | None = None
+        in_repo = False
+        if not shell_mounts.is_mount_backed(app_dir):
+            top = _repo_toplevel(app_dir)
+            if top is not None:
+                root, in_repo = top, True
+            else:
+                d = app_dir
+                while True:
+                    if os.path.isfile(os.path.join(d, ".gitignore")):
+                        root = d
+                        break
+                    parent = os.path.dirname(d)
+                    if parent == d:
+                        break
+                    d = parent
+        self._by_dir[app_dir] = (root, in_repo)
 
-    def reroot(self, dirpath: str, names: set[str]) -> None:
-        if ".git" in names and dirpath != self.root:
-            self.root, self.in_repo = dirpath, True
-        elif not self.in_repo and ".gitignore" in names and self.root is None:
-            self.root = dirpath
+    def enter(self, dirpath: str, names: set[str]) -> None:
+        """Decide `dirpath`'s oracle: the parent's, unless this dir starts a
+        nested repo (or, with no repo in scope, a nested `.gitignore`)."""
+        parent = self._by_dir.get(dirpath) or self._by_dir.get(
+            os.path.dirname(dirpath), (None, False))
+        root, in_repo = parent
+        if ".git" in names and dirpath != root:
+            root, in_repo = dirpath, True
+        elif not in_repo and root is None and ".gitignore" in names:
+            root = dirpath
+        self._by_dir[dirpath] = (root, in_repo)
 
     def ignored(self, dirpath: str, names: list[str]) -> set[str]:
         """Subset of `names` (children of `dirpath`) git ignores."""
-        if self.root is None or not names:
+        root, _ = self._by_dir.get(dirpath, (None, False))
+        if root is None or not names:
             return set()
-        oracle = self._oracles.get(self.root)
+        oracle = self._oracles.get(root)
         if oracle is None:
-            oracle = self._oracles[self.root] = self._Oracle(self.root)
-        rel = os.path.relpath(os.path.realpath(dirpath),
-                              os.path.realpath(self.root))
+            oracle = self._oracles[root] = self._Oracle(root)
+        rel = os.path.relpath(os.path.realpath(dirpath), os.path.realpath(root))
         if rel.startswith(".."):
             # Two spellings of the same place that realpath could not
             # reconcile: fail OPEN for this dir rather than mis-query git.
@@ -207,7 +219,7 @@ def _iter_app_files(app_dir: str):
     roots = _IgnoreRoots(app_dir)
     try:
         for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
-            roots.reroot(dirpath, set(dirnames) | set(filenames))
+            roots.enter(dirpath, set(dirnames) | set(filenames))
             dirnames[:] = sorted(
                 d
                 for d in dirnames
