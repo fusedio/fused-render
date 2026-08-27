@@ -214,6 +214,8 @@ def _after_move(app_dir: str, recorded: str) -> None:
     # held it, the folder moved again before it ended). Those hops already
     # carried the idle transcripts to their intermediate path, so a search
     # from the origin alone would never see them again.
+    # The same copy-vs-move test applies to each of them: an intermediate
+    # folder that still exists is a copy of it, and its sessions stay there.
     sources = [recorded] + [m["to"] for m in migrations
                             if isinstance(m, dict) and m.get("pending")
                             and isinstance(m.get("to"), str)]
@@ -221,15 +223,25 @@ def _after_move(app_dir: str, recorded: str) -> None:
     for source in dict.fromkeys(sources):
         if os.path.normcase(os.path.abspath(source)) == os.path.normcase(new):
             continue
+        if os.path.isdir(source):
+            continue
         result = claude_session_move.relocate(source, new)
         moved += result["moved"]
         pending += result["pending"]
+    # An open that finds this hop already recorded (a live session is still
+    # holding it) updates that entry rather than appending another.
+    prior = next((m for m in migrations if isinstance(m, dict) and m.get("pending")
+                  and isinstance(m.get("to"), str)
+                  and os.path.normcase(os.path.abspath(m["to"])) == os.path.normcase(new)),
+                 None)
     entry = {
         "from": recorded,
         "to": new,
         "at": datetime.now(timezone.utc).isoformat(),
-        "sessions": len(moved),
+        "sessions": len(moved) + (prior.get("sessions", 0) if prior else 0),
     }
+    if prior is not None:
+        migrations.remove(prior)
     if pending:
         # Recorded so the next hop knows to look here too; `app_dir` stays
         # at the origin so the witness keeps firing until this is settled.

@@ -247,11 +247,23 @@ def test_a_second_move_before_the_live_session_ends_loses_nothing(app, claude_st
     (sessions / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": "live-2"}))
 
     assert app_fused_dir.ensure(str(app)) is True   # hop 1: incomplete
+    assert app_fused_dir.ensure(str(app)) is True   # every render re-opens; one hop, not two
     mid = os.path.abspath(str(app))
     assert (projects / munge(mid) / "idle-1.jsonl").exists()
     m = json.loads((app / ".fused" / "meta.json").read_text())
     assert m["app_dir"] == old
+    assert len(m["migrations"]) == 1
     assert m["migrations"][0]["pending"] == ["live-2"]
+    assert m["migrations"][0]["sessions"] == 1
+
+    # A COPY of the half-moved app must not steal the sessions hop 1 carried.
+    import shutil
+    copy = app.parent / "copy"
+    shutil.copytree(app, copy)
+    assert app_fused_dir.ensure(str(copy)) is True
+    assert (projects / munge(mid) / "idle-1.jsonl").exists()
+    assert not (projects / munge(str(copy))).exists()
+    shutil.rmtree(copy)
 
     (sessions / "1.json").unlink()                 # session ends...
     final = app.parent / "final"
