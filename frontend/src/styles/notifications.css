@@ -485,9 +485,20 @@
   margin-bottom: 5px;
 }
 
+/* `min-width: 15ch`, NOT `0` (D577, user: "the UI is not readable") — the
+   floor is the whole fix. D571 made this the element that gives way so
+   `Cancel` could never be pushed out of the panel; that goal was right and is
+   kept, but with a `0` floor and every OTHER element refusing to shrink at
+   all, "gives way" meant the title surrendered EVERYTHING before anything
+   else surrendered anything: it rendered as `Downloa…` — seven characters —
+   beside a byte count at full intrinsic width. A partial model name is
+   useful; `Downloa…` is not. 15ch still ellipsizes under real pressure, it
+   just stops at a length that carries information. `flex-shrink` stays `1`,
+   the LOWEST of the three flexible elements now (`.dl-amount` 9999,
+   `.dl-model` 999, below), so the title is still the last thing asked. */
 .dl-title {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 15ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -539,12 +550,35 @@
   color: var(--fg-muted);
 }
 
-/* PROTECTED — never `flex-shrink`, per the fix above: the row's title (and,
-   now, its model suffix) are the only things allowed to give way. These
-   four (`.dl-amount`, `.dl-pct` here; `.dl-row-cancel`, `.dl-x` further
-   down) keep their intrinsic width unconditionally, which is what makes a
-   running row's Cancel button reachable rather than pushed off the edge. */
-.dl-amount,
+/* SHRINKS FIRST, ahead of even the model suffix (D577): `flex-shrink: 9999`
+   against `.dl-model`'s 999 and `.dl-title`'s 1. This used to sit in the
+   PROTECTED group below with `flex: 0 0 auto`, and that was the actual cause
+   of the unreadable row — the amount held its full intrinsic width
+   (`2.0 / 4.3 GB`, or a bare byte pair when a reporter sends no `unit`) while
+   the title collapsed to nothing beside it. It is also the most REDUNDANT
+   thing in the row: the progress bar and `.dl-pct` each already say how far
+   along the job is, so the amount is the third telling of it and the right
+   thing to lose. Ellipsized rather than hidden outright: `.dl-panel`'s width
+   is `min(340px, 100vw - 32px)`, i.e. fixed at 340px for any viewport wider
+   than 372px, so a width-threshold `display: none` would essentially never
+   fire — the variable here is CONTENT length, not panel width, and only
+   shrink priority answers that. */
+.dl-amount {
+  flex: 0 9999 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* PROTECTED — never `flex-shrink`: `.dl-pct` here, `.dl-row-cancel` and
+   `.dl-x` further down, keep their intrinsic width unconditionally, which is
+   what makes a running row's Cancel button reachable rather than pushed off
+   the edge (D571's goal, unchanged — `.dl-amount` moved OUT of this group in
+   D577, `.dl-pct` did not). */
 .dl-pct {
   flex: 0 0 auto;
   font-size: 11px;

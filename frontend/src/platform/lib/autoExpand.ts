@@ -38,9 +38,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { trackSeenIds } from "@platform/lib/jobs";
 
 export interface AutoExpandState {
-  /** An unacknowledged arrival — drawn as the chip's quiet `.dl-new-dot`. It
-   *  covers what `autoOpen` cannot: a second item landing after the user has
-   *  dismissed the auto-opened panel, so the news does not vanish silently. */
+  /** An unacknowledged arrival the user cannot currently SEE — drawn as the
+   *  chip's quiet `.dl-new-dot`. Suppressed while this section's panel is
+   *  showing the arrival itself (D577): a dot beside an open panel listing
+   *  the very thing it is pointing at announces news the user is already
+   *  looking at. Its real case is an arrival that never got a panel. */
   hasNew: boolean;
   /** Transient, NEVER persisted (see this file's header): true from the moment
    *  a new id lands while the section is collapsed until the panel is
@@ -120,5 +122,9 @@ export function useAutoExpandOnNew(
     setAutoOpen(false);
   }, []);
 
-  return { hasNew, autoOpen, acknowledge };
+  // The dot and the auto-opened panel are never shown together (D577 defect 2:
+  // `Activity 1  46% ●` with the panel already open). Suppressed rather than
+  // never set, so dismissing the panel (`acknowledge`, which clears both) does
+  // not leave a dot behind for something the user just chose to close.
+  return { hasNew: hasNew && !autoOpen, autoOpen, acknowledge };
 }

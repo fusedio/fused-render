@@ -637,7 +637,15 @@ export function DownloadManagerView({
   // the old early return.
   const idle = jobs.length === 0 && queued === 0;
 
-  const overall = overallFraction(jobs);
+  // ONE RUNNING JOB ONLY (D577, user: "if there are multiple activities, what
+  // does the percentages mean?"). With two or more the aggregate is an
+  // unweighted mean of incommensurable work and reads as a confident lie —
+  // `overallFraction`'s own doc now carries the full argument, including why
+  // byte-weighting was rejected rather than attempted. The chip falls back to
+  // the bare count (`Activity 2`), and the panel's per-row percentages are
+  // where real per-job progress lives; those were always correct.
+  const runningJobs = jobs.filter(isRunning).length;
+  const overall = runningJobs === 1 ? overallFraction(jobs) : null;
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
   // used to count here too; that silently orphaned live work behind the
