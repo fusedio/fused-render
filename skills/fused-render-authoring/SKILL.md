@@ -34,7 +34,7 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <meta name="fused-app" />
 ```
 
-**Optional app icon: `icon.svg`.** Drop an `icon.svg` (that exact lowercase name) next to the entry page and the shell picks it up with no registration: it becomes the app's glyph in the sidebar's Projects list and the browser-tab favicon on the app's page (`/apps/<folder>`) and on any of its files opened in the explorer. Skip it and the generic mark is used. Keep it a single flat shape, legible at 14–16 px, no text. In the sidebar it is drawn as a **mask** — only the shape's alpha matters and the colour comes from the theme — so draw solid shapes on a transparent background (any fill colour works; a filled background rectangle would render as a solid square). The favicon shows the file as authored.
+**Optional app icon: `icon.svg`.** Drop an `icon.svg` (that exact lowercase name) next to the entry page and the shell picks it up with no registration: it becomes the app's glyph in the sidebar's Projects list and the browser-tab favicon on the app's page (`/apps/<folder>`) and on any of its files opened in the explorer. Skip it and the generic mark is used. Keep it a single flat shape, legible at 14–16 px, no text. Both places use it as a **mask** — only the shape's alpha matters; the sidebar colours it from the theme, the tab icon paints it yellow on the black rounded square of the fused mark — so draw solid shapes on a transparent background (any fill colour works; a filled background rectangle would render as a solid square).
 
 Three primitives — `runPython`, `params`, and the file IO helpers — are the core API; the table below has the rest. Everything else is ordinary HTML/CSS/JS: no framework, no build step, ES2020 fine.
 

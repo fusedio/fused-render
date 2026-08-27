@@ -143,24 +143,96 @@ export function useDocumentTitle(label: string | null | undefined): void {
 // unless an app supplies its optional icon.svg.
 const DEFAULT_FAVICON = "/favicon.ico";
 
-// Tab icon: swap the shell's `<link rel="icon">` for an app's own icon.svg
-// while a route inside that app is on screen, and put the default back when
-// the route leaves (cleanup) or the href goes null (no icon for this app).
-// One writer at a time by construction — the callers (AppPage, StatView) are
-// mutually exclusive mounts — so there is no arbitration, only the restore.
-// The `type` attribute is set only for the svg and removed on restore: the
-// .ico link in index.html carries none, and a stale `image/svg+xml` on it
-// makes some browsers refuse the default.
+// The fused-render mark's own two colours (frontend/public/favicon.ico: the
+// #1b1d21 rounded square, the #e5ff44 glyph). An app's favicon is composed in
+// the same livery so every fused tab reads as one family.
+const FAVICON_BG = "#1b1d21";
+const FAVICON_FG = "#e5ff44";
+
+// Set the tab icon by REPLACING the `<link rel="icon">` node, never by editing
+// its href: browsers (Chrome at least) do not reliably refetch when an existing
+// link's href flips back to a URL it showed before, which left the previous
+// app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
+// node is a fresh icon request every time.
+function setFaviconHref(href: string): void {
+  const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  const link = document.createElement("link");
+  link.rel = "icon";
+  link.href = href;
+  if (href === DEFAULT_FAVICON) link.setAttribute("sizes", "any");
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
+}
+
+// An app's icon.svg as a favicon in the fused livery: the svg's alpha as a
+// yellow glyph, inset on a black rounded square — mirroring the shell's own
+// mark (owner, 2026-08-27). Composed on a canvas: the svg is drawn to an
+// offscreen layer and recoloured with `source-in` (its shape, our colour — the
+// same alpha-mask idea the sidebar uses via CSS mask), then laid over the
+// square. Resolves to a PNG data URL, or null when the svg fails to load or
+// the canvas is unavailable — callers then leave the default icon in place.
+async function composeFavicon(src: string): Promise<string | null> {
+  const img = new Image();
+  const loaded = new Promise<boolean>((resolve) => {
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+  });
+  img.src = src;
+  if (!(await loaded)) return null;
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  // The square: radius and inset in the ico's own proportions (a soft corner
+  // and a glyph that fills the middle ~56%).
+  const r = size * 0.22;
+  ctx.fillStyle = FAVICON_BG;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, size, size, r);
+  ctx.fill();
+  // The glyph, recoloured on its own layer so the fill cannot bleed onto the
+  // square. Drawn with its aspect kept inside the inset box.
+  const layer = document.createElement("canvas");
+  layer.width = layer.height = size;
+  const lc = layer.getContext("2d");
+  if (!lc) return null;
+  const inset = size * 0.22;
+  const box = size - inset * 2;
+  const iw = img.naturalWidth || box;
+  const ih = img.naturalHeight || box;
+  const scale = Math.min(box / iw, box / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  lc.drawImage(img, (size - dw) / 2, (size - dh) / 2, dw, dh);
+  lc.globalCompositeOperation = "source-in";
+  lc.fillStyle = FAVICON_FG;
+  lc.fillRect(0, 0, size, size);
+  ctx.drawImage(layer, 0, 0);
+  try {
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+// Tab icon: while a route inside an app is on screen, its optional icon.svg
+// (composed in the fused livery, above) replaces the shell's own; the default
+// comes back when the route leaves (cleanup) or the href goes null (no icon
+// for this app). One writer at a time by construction — the callers (AppPage,
+// StatView) are mutually exclusive mounts — so there is no arbitration, only
+// the restore. Composition is async, so a `live` flag stops a slow icon from
+// landing after the route moved on.
 export function useFavicon(href: string | null): void {
   useEffect(() => {
     if (!href) return;
-    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (!link) return;
-    link.href = href;
-    link.type = "image/svg+xml";
+    let live = true;
+    composeFavicon(href).then((dataUrl) => {
+      if (live && dataUrl) setFaviconHref(dataUrl);
+    });
     return () => {
-      link.href = DEFAULT_FAVICON;
-      link.removeAttribute("type");
+      live = false;
+      setFaviconHref(DEFAULT_FAVICON);
     };
   }, [href]);
 }
