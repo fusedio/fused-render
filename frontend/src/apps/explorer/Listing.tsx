@@ -82,7 +82,11 @@ import {
 import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady } from "@apps/explorer/lib/claude-ask";
-import { takePendingClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
+import {
+  pendingClaudeAskVersion,
+  subscribePendingClaudeAsk,
+  takePendingClaudeAsk,
+} from "@apps/explorer/lib/pending-claude-ask";
 import { SideToggleButton, paneSideIcon } from "@apps/explorer/SideChrome";
 import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
@@ -1032,11 +1036,24 @@ export default function Listing({
   // copy of this same pull for the file sidebar; both must fire independently
   // (the "Lockstep" this pair is, per its own module comment) or a folder
   // opened one way silently drops the prompt the other way would have shown.
+  //
+  // `askVersion` (finding 17b, code review 2026-08-27) covers the case
+  // `[fsPath, claudeReady]` alone misses: a SECOND stage for the SAME path
+  // while this pane never left it (the common case — the user is usually
+  // already looking at the repo whose card just failed) changes neither dep,
+  // so without it this effect would never re-run and the prompt would sit
+  // unseen until it expires. `pending-claude-ask.ts`'s own header has the
+  // full reasoning.
+  const askVersion = useSyncExternalStore(
+    subscribePendingClaudeAsk,
+    pendingClaudeAskVersion,
+    pendingClaudeAskVersion,
+  );
   useEffect(() => {
     if (!claudeReady) return;
     const prompt = takePendingClaudeAsk(fsPath);
     if (prompt) claudeAskActionRef.current(prompt);
-  }, [fsPath, claudeReady]);
+  }, [fsPath, claudeReady, askVersion]);
 
   // Drag-to-move. The selection is passed in RENDERED order (selectedRows), so
   // dragging a row that is part of it carries the whole thing top-to-bottom.

@@ -395,6 +395,83 @@ def test_rebase_still_refuses_a_detached_head(tmp_path):
     assert res["reason"] == "detached"
 
 
+def test_switch_successful_recheck_updates_the_stale_branch_and_on_default(tmp_path):
+    # Bugbot finding (17a): a re-check that SUCCEEDS after switch has always
+    # replaced the row wholesale via check_repo's own fresh result — this
+    # pins that the success path still does, now that a FAILED re-check
+    # (below) takes a different one.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "feature", "default_branch": "main",
+                          "on_default": False, "ahead": 0, "behind": 2, "checked_at": 0.0})
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    row = git_upstream._state.get(root)
+    assert row is not None
+    assert row["branch"] == "main"
+    assert row["on_default"] is True
+    # A real check_repo ran and found this repo still behind post-switch —
+    # this is the "legitimately comes back as Update" row the fix exists
+    # for, not a stale pre-mutation number.
+    assert row["behind"] == 2
+    assert row["checked_at"] > 0.0
+
+
+def test_switch_failed_recheck_keeps_the_row_instead_of_dropping_it(tmp_path, monkeypatch):
+    # Bugbot finding (17a): switch's own checkout already succeeded by the
+    # time `_refresh_after_mutation` runs — a re-check that then fails
+    # (network blip) must not delete the row the way update/rebase's own
+    # failed re-check correctly does (see
+    # test_a_successful_update_clears_a_stale_row_even_if_the_recheck_fails).
+    # Deleting it here drops the follow-up "you're on main now, and it's
+    # behind" Update row a user would otherwise see once they retry.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "feature", "default_branch": "main",
+                          "on_default": False, "ahead": 0, "behind": 2, "checked_at": 0.0})
+
+    monkeypatch.setattr(git_upstream, "check_repo", lambda r: None)
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    row = git_upstream._state.get(root)
+    assert row is not None, "a failed re-check after switch must not drop the row"
+    # branch/on_default are known LOCALLY the moment the checkout succeeds —
+    # no network round trip needed to know these two fields are stale.
+    assert row["branch"] == "main"
+    assert row["on_default"] is True
+    # No fresh ahead/behind was available (the re-check itself is what
+    # failed); the pre-mutation numbers survive rather than being guessed.
+    assert row["behind"] == 2
+
+
+def test_update_failed_recheck_still_drops_the_row(tmp_path, monkeypatch):
+    # Symmetric control for rebase_repo, mirroring the existing update_repo
+    # pin (test_a_successful_update_clears_a_stale_row_even_if_the_recheck_
+    # fails) — confirms rebase's own drop-on-failure posture is unchanged by
+    # the switch-only `keep_on_failure` fix.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    write(local, "c.txt", "mine\n")
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "local work")
+    root = os.path.realpath(local)
+    git_upstream._record({"root": root, "branch": "feature", "default_branch": "main",
+                          "on_default": False, "ahead": 1, "behind": 2, "checked_at": 0.0})
+
+    monkeypatch.setattr(git_upstream, "check_repo", lambda r: None)
+
+    res = git_upstream.rebase_repo(local)
+
+    assert res["ok"] is True, res
+    assert git_upstream._state.get(root) is None
+
+
 def test_switch_checkout_argument_order_does_not_read_the_branch_as_a_pathspec(tmp_path):
     # `git checkout -- <branch>` (`--` BEFORE the branch) makes git read the
     # branch name as a PATHSPEC — "restore this path from the index" — not a

@@ -55,7 +55,11 @@ import {
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
-import { takePendingClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
+import {
+  pendingClaudeAskVersion,
+  subscribePendingClaudeAsk,
+  takePendingClaudeAsk,
+} from "@apps/explorer/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -1112,12 +1116,27 @@ function TemplatePreview({
   // the staged ask itself, `void setMode("claude")`-ing over the folder
   // listing wholesale instead of leaving it to whichever installer the
   // Lockstep contract actually intends for a directory target.
+  // `askVersion` (finding 17b, code review 2026-08-27): the case
+  // `[fsPath, claudeAskRoute, suppressForListing]` alone misses is a SECOND
+  // stage for the SAME path while this surface never left it — the common
+  // one, since the user is usually already looking at the very repo whose
+  // card just failed. None of those three deps change, so without this the
+  // effect would never re-run and the prompt would sit unseen until it
+  // expires. `pending-claude-ask.ts`'s own header has the full reasoning;
+  // Listing.tsx's copy of this hook does the identical thing, independently
+  // (the "Lockstep" its own comment names) — this file's own subscription
+  // must not be merged into that one.
+  const askVersion = useSyncExternalStore(
+    subscribePendingClaudeAsk,
+    pendingClaudeAskVersion,
+    pendingClaudeAskVersion,
+  );
   useEffect(() => {
     if (suppressForListing) return;
     if (!claudeAskRoute) return;
     const prompt = takePendingClaudeAsk(fsPath);
     if (prompt) claudeAskActionRef.current(prompt);
-  }, [fsPath, claudeAskRoute, suppressForListing]);
+  }, [fsPath, claudeAskRoute, suppressForListing, askVersion]);
 
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a

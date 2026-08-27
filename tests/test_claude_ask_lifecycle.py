@@ -123,7 +123,11 @@ def test_previews_cross_navigation_pull_stands_down_for_the_folder_peek(preview)
     and consume the staged ask itself instead of leaving the folder-target
     case to the installer the Lockstep contract actually intends."""
     fn = preview[preview.index("// The other side of a \"Fix with Claude\" staged"):]
-    fn = fn[:fn.index("}, [fsPath, claudeAskRoute, suppressForListing]);") + 1]
+    # `askVersion` (finding 17b) joined the dependency array alongside the
+    # three this test originally pinned — a re-stage while this surface
+    # never left `fsPath` changes none of the other three, and without it
+    # the effect would never re-run. See pending-claude-ask.ts's own header.
+    fn = fn[:fn.index("}, [fsPath, claudeAskRoute, suppressForListing, askVersion]);") + 1]
     assert "if (suppressForListing) return;" in fn
 
 

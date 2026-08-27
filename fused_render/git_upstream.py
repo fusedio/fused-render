@@ -410,18 +410,44 @@ def _record(result):
             _state[result["root"]] = result
 
 
-def _refresh_after_mutation(root):
+def _refresh_after_mutation(root, *, keep_on_failure=False, known_update=None):
     """Re-check `root` right after a successful `update`/`rebase`/`switch`,
-    so its row clears (or updates) without waiting out CHECK_TTL_S. Unlike the
-    throttled background path (`_background_check`), a re-check that fails
-    here must NOT leave the pre-mutation entry standing — a stale `behind >
-    0` with an Update button, after the mutation that button ran already
-    succeeded — so a failed re-check drops the entry outright rather than
-    trusting a second git call the mutation's own success never depended
-    on."""
+    so its row clears (or updates) without waiting out CHECK_TTL_S. On
+    SUCCESS the row is always replaced wholesale with `check_repo`'s fresh
+    result, for all three mutations alike.
+
+    On FAILURE the three diverge (Bugbot finding, code review 2026-08-27).
+    `update_repo`/`rebase_repo` (default, `keep_on_failure=False`) drop the
+    entry outright: those mutations only succeed by fast-forwarding onto (or
+    replaying onto) `origin/<default>`, so once one has actually succeeded a
+    stale `behind > 0` row with an Update/Rebase button standing is a LIE —
+    the very commits it claims are still missing already landed — and that
+    lie is worse than the row briefly vanishing until the next background
+    check restores it correctly.
+
+    `switch_repo` passes `keep_on_failure=True` because that lie does not
+    apply to it: a checkout never claims to have caught the branch up, and
+    landing on the default branch is EXPECTED to still be behind — that is
+    the very reason the row offered Switch in the first place. Dropping the
+    row here doesn't correct a lie, it just makes the follow-up "you're on
+    the default branch now, and it's still behind — Update" row silently
+    fail to appear after a transient network blip on an already-successful
+    switch. So the row survives, patched with `known_update` — fields the
+    CALLER already knows locally, from the checkout that just succeeded,
+    without needing the network round trip that just failed (`switch_repo`
+    passes `branch`/`on_default`, since it just changed HEAD itself). Ahead/
+    behind/checked_at are deliberately left at their pre-mutation values:
+    no fresher numbers exist yet, and guessing would be its own kind of lie.
+    Silently does nothing if the root had no prior entry (nothing to patch)."""
     result = check_repo(root)
     if result is not None:
         _record(result)
+        return
+    if keep_on_failure:
+        with _state_lock:
+            existing = _state.get(root)
+            if existing is not None and known_update:
+                _state[root] = {**existing, **known_update}
         return
     with _state_lock:
         _state.pop(root, None)
@@ -574,7 +600,13 @@ def switch_repo(root):
                 "check out the same branch twice. Rebase is the action "
                 "that works from here instead.")
         return _refuse("git-failed", brief or "git checkout failed.")
-    _refresh_after_mutation(root)
+    # `keep_on_failure=True` + `known_update`: see `_refresh_after_mutation`'s
+    # own docstring for why switch alone survives a failed re-check, and why
+    # these two fields (not ahead/behind) are what it patches in that case —
+    # they're known locally the instant the checkout above succeeds.
+    _refresh_after_mutation(
+        root, keep_on_failure=True,
+        known_update={"branch": default_branch, "on_default": True})
     return {"ok": True, "op": "switch", "root": root,
             "message": f"Switched to {default_branch}."}
 

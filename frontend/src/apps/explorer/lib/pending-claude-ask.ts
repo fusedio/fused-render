@@ -45,8 +45,41 @@ const PENDING_TTL_MS = 60_000;
 
 let pending: { path: string; prompt: string; stagedAt: number } | null = null;
 
+// A stage NOTIFIES, on top of writing `pending` (Bugbot finding 17b, code
+// review 2026-08-27). Both consumers of this module — Listing.tsx and
+// Preview.tsx — used to pull the staged prompt from an effect keyed only on
+// `[fsPath, claudeReady]` (or Preview's `[fsPath, claudeAskRoute,
+// suppressForListing]`). That misses the COMMON case: the user is usually
+// looking at the very repo whose card just failed, so the explorer is
+// already sitting on `path` with Claude already ready when the second stage
+// lands. `navigate(path)` is then a no-op — neither dep changes — so the
+// effect never re-runs and the prompt sits in `pending` until it expires,
+// unseen. `stagedVersion` is a monotonic counter every stage bumps
+// (including a second stage for the SAME path), and `subscribePendingClaudeAsk`
+// lets each consumer's `useSyncExternalStore` add it to their own dependency
+// array alongside their existing deps — so a stage while already mounted
+// re-runs the effect even when nothing else changed. This does not replace
+// path-matching: `takePendingClaudeAsk` below is still what decides whether
+// THIS surface's path is the one being asked for; the version only decides
+// WHEN to check again.
+let stagedVersion = 0;
+const listeners = new Set<() => void>();
+
+export function subscribePendingClaudeAsk(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+export function pendingClaudeAskVersion(): number {
+  return stagedVersion;
+}
+
 export function stageClaudeAsk(path: string, prompt: string): void {
   pending = { path, prompt, stagedAt: Date.now() };
+  stagedVersion += 1;
+  for (const listener of listeners) listener();
 }
 
 function liveOrExpired(): { path: string; prompt: string } | null {
