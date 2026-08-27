@@ -90,7 +90,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import current_apps, schedule, tasks_store
+from fused_render import current_apps, schedule, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -158,6 +158,7 @@ def reset_cache() -> None:
     _FULL.clear()
     _WINDOW.clear()
     tasks_store.reset_cache()
+    tasks_watch.reset()
 
 
 # --------------------------------------------------------------- transcripts
@@ -1245,6 +1246,22 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
         mtime = os.path.getmtime(path)
     except OSError:
         return False, 0.0
+    # The live registry (tasks_watch) knows what a running `claude` SAYS it is
+    # doing, which beats inferring it from the file: `busy` is running whatever
+    # the tail's timestamps add up to, and `idle` is not, even if housekeeping
+    # touched the file a second ago. Its last-active stamp is used only when it
+    # is newer than the transcript's — a registry row is rewritten on status
+    # changes, not on every message, so the file can know the later moment.
+    from_registry = tasks_watch.live_from_registry(
+        os.path.splitext(os.path.basename(path))[0], mtime)
+    if from_registry is not None:
+        running, active = from_registry
+        if now - mtime <= sessions._STALE_TAIL_SEC:
+            _activity, last = sessions._tail(path, mtime)
+            file_active = last.timestamp() if last is not None else mtime
+        else:
+            file_active = mtime
+        return running, max(active, file_active)
     if now - mtime > sessions._STALE_TAIL_SEC:
         return False, mtime
     activity, last = sessions._tail(path, mtime)
@@ -1494,18 +1511,26 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
-def _task_rows() -> list[dict]:
+def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     """Build the authoritative task rows shared by the two listing shapes.
 
     Keeping collection here makes the compact sidebar endpoint a projection of
     exactly the same status, unread and activity decisions as the Tasks page.
     FastAPI serializes only the projection returned by that endpoint, so the
     large titles, descriptions and message bodies never cross the wire there.
+
+    `only` narrows the answer to those task keys — the changes endpoint's
+    shape. Collection still runs over everything (it is a glob and a store
+    read, and a task's key can depend on entries filed under another), but rows
+    are built for the named keys alone, and the day-one read initialisation is
+    left to the full listing, which is the only caller that knows every count.
     """
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    if only is not None:
+        tasks = {key: task for key, task in tasks.items() if key in only}
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
     busy = schedule.busy_sessions(schedule.list_entries())
@@ -1538,17 +1563,20 @@ def _task_rows() -> list[dict]:
     # counts the rows just produced, because this is the only place that knows
     # them — and done after the rows are built rather than before, so it costs
     # one extra pass on exactly one request in the store's lifetime.
-    if not tasks_store.initialized(read):
+    if only is None and not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=lambda r: r["last_active"], reverse=True)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
     # written costs an app on the sidebar, never the listing.
-    try:
-        current_apps.observe(rows)
-    except OSError:
-        pass
+    # Not from a partial listing: `observe` reads its argument as EVERY live
+    # task and prunes what it does not see (bugbot, PR #892).
+    if only is None:
+        try:
+            current_apps.observe(rows)
+        except OSError:
+            pass
     return rows
 
 
@@ -1562,7 +1590,43 @@ def api_tasks():
     run — see `_is_task`. That is an absence of a task, not a filter hiding one.
     """
     rows = _task_rows()
-    return {"tasks": rows}
+    return {"tasks": rows, "generation": tasks_watch.generation()}
+
+
+@router.get("/api/tasks/changes")
+def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
+    """What moved since generation `since` — the Tasks page's fast lane.
+
+    Long-poll: answers the moment the watcher (tasks_watch) sees a session
+    start, resume, take a prompt or grow its transcript, and otherwise after
+    `wait` seconds with nothing. The answer is the full rows for exactly the
+    tasks that changed (`rows`), plus the keys that changed but are no longer
+    listed (`gone` — archived-into-silence, deleted, or a pending message
+    whose session id it has just been rekeyed under). A client further behind
+    than the watcher remembers gets `full: true` and reloads the listing.
+
+    The 20-second full listing stays the truth; this only makes the page hear
+    about a change without waiting for it."""
+    gen, keys = tasks_watch.wait(since, wait)
+    if keys is None:
+        return {"generation": gen, "full": True}
+    if not keys:
+        return {"generation": gen, "rows": [], "gone": []}
+    rows = _task_rows(only=keys)
+    listed = {row["key"] for row in rows}
+    gone = {key for key in keys if key not in listed}
+    # A pending message that has just RUN is now filed under its session id
+    # (§5): the watcher names the session, the session is listed, and the
+    # `pending:<entry>` row the client still shows is nobody's key. Name it
+    # gone, or two rows stand for one task until the full poll (bugbot #892).
+    tasks = _collect()
+    for key in listed:
+        task = tasks.get(key)
+        for entry in (task or {}).get("entries", ()):
+            pending = tasks_store.pending_key(str(entry.get("id") or ""))
+            if pending != key:
+                gone.add(pending)
+    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the
@@ -1856,6 +1920,7 @@ def api_task_archive(patch: ArchivePatch):
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
     cancelled, filed = archive_task(task)
+    tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
 
@@ -1936,6 +2001,7 @@ def api_task_unarchive(patch: UnarchivePatch):
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
+    tasks_watch.notify({key})
     return {"ok": True, "key": key, "unfiled": unfiled,
             "status": row["status"]}
 
@@ -2013,6 +2079,7 @@ def api_task_delete(patch: DeletePatch):
             cancelled += 1
 
     tasks_store.mark_deleted(key)
+    tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
 

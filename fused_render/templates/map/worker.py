@@ -106,7 +106,7 @@ def _declared_packages() -> list[str]:
         return []
     try:
         import tomllib
-    except ImportError:  # Python 3.10 and older have no tomllib.
+    except ImportError:  # unreachable on the >=3.11 floor; fails closed anyway.
         declared = _dependencies_without_tomllib(text)
     else:
         try:

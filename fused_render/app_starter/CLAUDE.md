@@ -19,6 +19,47 @@ the full contract for `.html` views and `.py` data files: the `fused` bridge,
 params-as-state wiring, file IO, theming, and debugging blank views /
 traceback overlays.
 
+## Where this app keeps its stuff: `.fused/`
+
+Every app folder gets a hidden `.fused/` at its root, created for you:
+
+```
+.fused/
+  data/       state the app owns and cannot rebuild
+  cache/      derived bytes the app can rebuild — deletable at any time
+  meta.json   {"version": 1, "app_dir": "<absolute path>", "created_at": "<iso>"}
+```
+
+**Write persistent state to `.fused/data/`, and nowhere else.** Not a JSON file
+beside `index.html` (that is authored content, and it lands in git history),
+not a folder under the user's home, not the system temp dir. Reach it from a
+`.py` as `os.path.join(os.path.dirname(__file__), ".fused", "data")` — relative
+paths in a `.py` resolve next to that file, so a script at the app root can
+just use `./.fused/data/`. From the page, go through a `.py`.
+
+**Cache anything slow into `.fused/cache/`, and cache more than feels
+necessary.** Every `fused.runPython` call is a fresh subprocess: no globals
+survive, no import cost is amortised, and a 60 s timeout is waiting for
+anything that recomputes work it already did. A network fetch, a parsed large
+file, a rendered tile, a model response, an expensive aggregation — key it by a
+hash of its inputs, write the result under `.fused/cache/`, and return the
+cached copy on the next call. Nothing sweeps this folder automatically, so if a
+cache can grow without bound, give it your own cap or TTL.
+
+The split between the two folders is a promise, not a naming preference:
+**everything in `cache/` must be reconstructible from `data/` plus the outside
+world.** Deleting `cache/` entirely must cost the user nothing but time. If it
+would lose something, it is data.
+
+`meta.json` records where the app was set up. Nothing rewrites it, so if its
+`app_dir` no longer matches where the app actually is, the folder was moved or
+copied — the moment to distrust anything you keyed by absolute path. What to do
+about that is the app's call; there is no automatic repair.
+
+`.fused/` is machine-local. It is gitignored, and it is not included when the
+app is exported as a `.fused` app file — so never put anything there that the
+app needs in order to work on a fresh machine.
+
 ## Version control
 
 This folder is a local git repository (initialised at creation with the

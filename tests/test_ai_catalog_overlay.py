@@ -1,0 +1,161 @@
+"""Tests for the `~/.fused-render/models.json` catalog overlay (SPEC AI-25,
+D529).
+
+Mirrors `server/templates.py`'s registry idiom (SPEC CT-5/CT-6, D73): read
+per call (a tiny local file, edits apply on the next request with no
+restart), a missing file is a clean no-op, a malformed one degrades to "no
+overlay" rather than taking the page down, and — the one rule that is this
+module's whole point — an entry whose `id` matches a built-in row OVERRIDES
+it in place, a new `id` APPENDS.
+"""
+import pytest
+
+from fused_render.ai import catalog, catalog_overlay
+
+
+@pytest.fixture(autouse=True)
+def _isolated_store(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+
+
+def _write(monkeypatch, data):
+    import json
+    import os
+
+    from fused_render.shell import storage
+
+    path = catalog_overlay._path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def test_no_file_is_a_clean_no_op():
+    builtin = [{"id": "a/b", "size_gb": 1.0}]
+    assert catalog_overlay.apply("some-runner", builtin) == builtin
+
+
+def test_a_matching_id_overrides_the_built_in_row(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0}, {"id": "c/d", "size_gb": 2.0}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert result[0] == {"id": "a/b", "size_gb": 9.0}
+    assert result[1] == {"id": "c/d", "size_gb": 2.0}
+    # Position of the overridden row is preserved, not moved to the end.
+    assert [r["id"] for r in result] == ["a/b", "c/d"]
+
+
+def test_a_matching_id_shallow_merges_rather_than_replacing_wholesale(monkeypatch):
+    """Code review finding 4: an overlay row overriding ONE field (the
+    docstring's own motivating example, `size_gb`) must not drop every
+    other field the built-in row carried — `label`/`note`/`params`/
+    `quantization`/`recommended` feed `fit.verdict`/`speed.estimate_tok_s`,
+    and losing `params`/`quantization` silently degrades the very estimate
+    the override was meant to improve."""
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0, "label": "A/B", "params": "7B",
+               "quantization": "Q4_K_M", "note": "a note", "recommended": True}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert result[0] == {"id": "a/b", "size_gb": 9.0, "label": "A/B", "params": "7B",
+                         "quantization": "Q4_K_M", "note": "a note", "recommended": True}
+
+
+def test_an_overlay_row_can_still_override_every_field_it_names(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0, "label": "New label"}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0, "label": "Old label", "note": "kept"}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert result[0] == {"id": "a/b", "size_gb": 9.0, "label": "New label", "note": "kept"}
+
+
+def test_a_new_id_appends(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"id": "new/model", "size_gb": 3.0}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert [r["id"] for r in result] == ["a/b", "new/model"]
+
+
+def test_a_runner_with_no_overlay_entries_is_untouched(monkeypatch):
+    _write(monkeypatch, {"other-runner": [{"id": "x/y"}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0}]
+    assert catalog_overlay.apply("llamacpp-text", builtin) == builtin
+
+
+def test_malformed_json_degrades_to_no_overlay(monkeypatch):
+    import os
+
+    path = catalog_overlay._path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("{not json")
+    builtin = [{"id": "a/b", "size_gb": 1.0}]
+    assert catalog_overlay.apply("llamacpp-text", builtin) == builtin
+
+
+def test_a_row_with_no_id_is_ignored(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"size_gb": 3.0}, {"id": "ok/row"}]})
+    builtin = [{"id": "a/b"}]
+    result = catalog_overlay.apply("llamacpp-text", builtin)
+    assert [r["id"] for r in result] == ["a/b", "ok/row"]
+
+
+def test_the_overlay_is_not_a_list_degrades_gracefully(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": "not-a-list"})
+    builtin = [{"id": "a/b"}]
+    assert catalog_overlay.apply("llamacpp-text", builtin) == builtin
+
+
+def test_the_whole_file_is_not_a_dict_degrades_gracefully(monkeypatch):
+    import os
+
+    path = catalog_overlay._path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("[1, 2, 3]")
+    builtin = [{"id": "a/b"}]
+    assert catalog_overlay.apply("llamacpp-text", builtin) == builtin
+
+
+def test_the_builtin_list_passed_in_is_not_mutated(monkeypatch):
+    _write(monkeypatch, {"llamacpp-text": [{"id": "a/b", "size_gb": 9.0}]})
+    builtin = [{"id": "a/b", "size_gb": 1.0}]
+    catalog_overlay.apply("llamacpp-text", builtin)
+    assert builtin[0]["size_gb"] == 1.0
+
+
+def test_for_runner_applies_the_overlay_live(monkeypatch):
+    """`catalog.for_runner` is the one production call site — the overlay
+    must be visible there without any restart or rebuild."""
+    code = next(iter(catalog.SUGGESTIONS))
+    existing = catalog.SUGGESTIONS[code][0]["id"]
+    _write(monkeypatch, {code: [{"id": existing, "note": "overlaid"}]})
+    result = catalog.for_runner(code)
+    assert result[0]["id"] == existing
+    assert result[0]["note"] == "overlaid"
+
+
+def test_for_runner_applies_the_overlay_on_a_hardware_variant_runner(monkeypatch):
+    """Code review finding 3: `for_runner("llamacpp-text-vulkan")` reads the
+    BUILT-IN `llamacpp-text` list (`_SHARED_SUGGESTIONS`'s alias), so the
+    overlay lookup has to be keyed by that same resolved name — not the raw
+    variant code — or an overlay entry silently never applies on a Vulkan/
+    CUDA/ROCm/DirectML machine, exactly the example `catalog_overlay.py`'s
+    own module docstring gives as the motivating case."""
+    canonical = catalog._SHARED_SUGGESTIONS["llamacpp-text-vulkan"]
+    assert canonical == "llamacpp-text"
+    existing = catalog.SUGGESTIONS[canonical][0]["id"]
+    _write(monkeypatch, {canonical: [{"id": existing, "note": "overlaid"}]})
+    result = catalog.for_runner("llamacpp-text-vulkan")
+    assert result[0]["id"] == existing
+    assert result[0]["note"] == "overlaid"
+
+
+def test_for_runner_overlay_keyed_by_the_raw_variant_code_does_nothing(monkeypatch):
+    """The overlay file is keyed by the CANONICAL runner name — an entry
+    filed under the raw hardware-variant code (a plausible mistake for a
+    user who copied the code straight off a runner listing) is silently
+    inert, same as any other runner code the built-in list has no rows
+    under. Documents the boundary rather than asserting a crash."""
+    existing = catalog.SUGGESTIONS["llamacpp-text"][0]["id"]
+    _write(monkeypatch, {"llamacpp-text-vulkan": [{"id": existing, "note": "overlaid"}]})
+    result = catalog.for_runner("llamacpp-text-vulkan")
+    assert result[0].get("note") != "overlaid"

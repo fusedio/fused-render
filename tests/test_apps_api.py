@@ -286,6 +286,60 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     assert apps[0]["tag"] == "local"
 
 
+def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
+    """D548 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
+    boilerplate commit never sees it — assert both halves: the layout is there,
+    and the `.gitignore` git init just wrote already excludes it."""
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
+    client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
+
+    dest = workspace / "local" / "demo"
+    assert (dest / ".fused" / "data").is_dir()
+    assert (dest / ".fused" / "cache").is_dir()
+    meta = json.loads((dest / ".fused" / "meta.json").read_text())
+    assert meta["app_dir"] == os.path.abspath(str(dest))
+    assert ".fused/" in (dest / ".gitignore").read_text()
+
+
+def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):
+    """The convention has to hold for apps that predate it, which is most of
+    them — so creation hangs off the OPEN (record_app_open, reached from GET
+    /render whenever a marker-carrying page is served), not off scaffolding."""
+    d = _app_dir(workspace, "old-app")
+    assert not (d / ".fused").exists()
+
+    assert apps_mod.record_app_open(str(d)) is True
+
+    assert (d / ".fused" / "data").is_dir()
+    assert (d / ".fused" / "cache").is_dir()
+    assert json.loads((d / ".fused" / "meta.json").read_text())["app_dir"] == \
+        os.path.abspath(str(d))
+
+
+def test_a_dot_fused_that_cannot_be_made_never_fails_the_open(client, workspace):
+    """`record_app_open` is on the render path, and its answer is about
+    RECENCY — the state folder is a side effect that may not influence it. A
+    plain FILE at `.fused` is the cheapest way to make creation genuinely
+    impossible without touching permissions."""
+    d = _app_dir(workspace, "old-app")
+    (d / ".fused").write_text("in the way")
+
+    assert apps_mod.record_app_open(str(d)) is True
+    assert (d / ".fused").is_file()  # untouched, not clobbered
+
+
+def test_a_folder_that_is_not_an_app_gets_no_dot_fused(client, workspace):
+    """The gate is `app_listing.app_entry` (D301's marker), not "this function
+    was reached" — the legacy open endpoint takes an arbitrary path."""
+    d = workspace / "local" / "notanapp"
+    d.mkdir(parents=True)
+    (d / "page.html").write_text("<html><body>no marker</body></html>")
+
+    apps_mod.record_app_open(str(d))
+
+    assert not (d / ".fused").exists()
+
+
 def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
     client, workspace, tmp_path, monkeypatch
 ):
@@ -1120,3 +1174,51 @@ def test_rendering_an_external_marked_page_registers_the_folder(
     # ...and the folder now lists on the hub under the reserved tag.
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     assert apps["myapp"]["tag"] == registered_apps.REGISTERED_TAG
+
+
+# ------------------------------------------------------------ set preview
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+def test_set_preview_writes_and_then_replaces_preview_png(client, workspace):
+    """The path-bar's "Set Current View as Preview": first call creates the
+    file under the one name the card reads, second call replaces it and says
+    so — the client's confirm-before-overwrite reads `replaced`."""
+    d = _app_dir(workspace, "lens")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"path": str(d / "preview.png"), "replaced": False}
+    assert (d / "preview.png").read_bytes() == _PNG
+    assert app_listing.app_preview_image(str(d)) == str(d / "preview.png")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG + b"\x01", "image/png")})
+    assert r.json()["replaced"] is True
+    assert (d / "preview.png").read_bytes() == _PNG + b"\x01"
+    # No temp file left behind.
+    assert sorted(os.listdir(d)) == ["index.html", "preview.png"]
+
+
+def test_set_preview_refuses_non_apps_non_pngs_and_unguarded_calls(client, workspace, tmp_path):
+    d = _app_dir(workspace, "lens")
+    png = {"preview": ("preview.png", _PNG, "image/png")}
+    # A folder with no tagged page is not an app; nothing would read the file.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<html></html>")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(plain)}, files=png)
+    assert r.status_code == 400 and "not an app" in r.json()["error"]
+    assert not (plain / "preview.png").exists()
+    # Not a PNG.
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)},
+                    files={"preview": ("preview.png", b"GIF89a....", "image/gif")})
+    assert r.status_code == 400 and "PNG" in r.json()["error"]
+    # Missing file, relative path, missing folder.
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)}).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": "rel"}, files=png).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                       data={"path": str(tmp_path / "gone")}, files=png).status_code == 404
+    # A write route: the X-Fused guard applies.
+    assert client.post("/api/apps/preview", data={"path": str(d)}, files=png).status_code != 200
+    assert not (d / "preview.png").exists()

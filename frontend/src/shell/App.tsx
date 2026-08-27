@@ -24,6 +24,8 @@ import {
 } from "@platform/lib/router";
 import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import {
+  appIconUrl,
+  getAppIcon,
   statPath,
   getMounts,
   reconnectMount,
@@ -34,6 +36,7 @@ import {
 import {
   useNavEpoch,
   useDocumentTitle,
+  useFavicon,
   useRefreshOnReturn,
 } from "@platform/lib/hooks";
 import { useMountHealth } from "@platform/lib/mountHealth";
@@ -334,6 +337,26 @@ function StatView({
   // not on a `_mode` switch within the same file — TemplatePreview owns that.
   const [renderedTitle, setRenderedTitle] = useState<string | null>(null);
   useDocumentTitle(fsPath === "/" ? null : renderedTitle || basename(fsPath));
+  // Tab favicon: a path inside an app (the folder itself, or a page such as
+  // its index.html) wears that app's optional icon.svg — `/api/apps/icon`
+  // applies the server's ownership rule, so this agrees with the Projects row
+  // and the app page. Null (the shell's own icon) everywhere else. Guarded so
+  // a fast navigation cannot paint the previous path's answer.
+  const [iconHref, setIconHref] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setIconHref(null);
+    if (fsPath === "/") return;
+    getAppIcon(fsPath)
+      .then((r) => {
+        if (live) setIconHref(r.icon ? appIconUrl(r.icon, r.mtime) : null);
+      })
+      .catch(() => live && setIconHref(null));
+    return () => {
+      live = false;
+    };
+  }, [fsPath]);
+  useFavicon(iconHref);
   // Recents: the explorer's own store, gated on a confirmed FILE, so a
   // directory never lands there. The app
   // builder's parallel (tag, name) store went with its route — nothing displays

@@ -292,3 +292,136 @@
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
+
+/* -- Claude Code setup: the repair actions ---------------------------------
+ *
+ * The strip stopped being a notice and became a repair (D-claude-repair): where
+ * the app can apply the fix itself, the row carries a button. These styles are
+ * for that button, for what it discloses, and for the two kinds of verbatim
+ * output it can produce — the installer's, and `claude doctor`'s.
+ */
+
+.claude-health-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+/* The one affirmative control in the strip, so it takes the accent fill while
+   "Check again" stays a quiet link-button. Only ever rendered where pressing it
+   actually does something — an update that would no-op renders no button at
+   all, only the command that would work. */
+.claude-health-action {
+  font: inherit;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+  cursor: pointer;
+}
+
+.claude-health-action:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.claude-health-action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* What the button will run, beside the button. Disclosure, not decoration: this
+   pipes a remote script into a shell, and doing that quietly behind a friendly
+   label is the part that would not be OK. */
+.claude-health-action-cmd {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 7px;
+  overflow-wrap: anywhere;
+}
+
+.claude-health-progress {
+  margin: 0 0 8px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.claude-health-error {
+  margin: 0 0 8px;
+  color: var(--warning-strong);
+  overflow-wrap: anywhere;
+}
+
+/* Verbatim child output. Scrolls rather than truncating — the tail is where the
+   cause is, and a clamped "curl: (22) The requested URL returned error: 403" is
+   worth nothing to the person who has to search for it. */
+.claude-health-output {
+  margin: 0 0 8px;
+}
+
+.claude-health-output-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warning-strong);
+  margin-bottom: 4px;
+}
+
+.claude-health-output pre {
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.claude-health-doctor {
+  margin: 0 0 8px;
+}
+
+.claude-health-doctor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.claude-health-doctor-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.claude-health-doctor-problem {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* The CLI's own suggested fix, kept visually subordinate to the problem it
+   answers — it is advice from Claude Code about Claude Code, not from us. */
+.claude-health-doctor-fix {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}

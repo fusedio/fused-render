@@ -179,6 +179,7 @@ describe("app page codec", () => {
     expect(appPageUrl("/Users/me/a", "tasks", "?_tab=files&file=x")).toBe(
       "/apps/Users/me/a?_tab=tasks&file=x",
     );
+    expect(appPageUrl("/Users/me/a", "api")).toBe("/apps/Users/me/a?_tab=api");
   });
 
   it("carries a Windows drive as the explorer does", () => {
@@ -201,6 +202,7 @@ describe("app page codec", () => {
 
   it("reads the tab from the query, falling back to the overview", () => {
     expect(appPageTabFromSearch("?_tab=files")).toBe("files");
+    expect(appPageTabFromSearch("?_tab=api")).toBe("api");
     expect(appPageTabFromSearch("?view=board")).toBe("overview");
     expect(appPageTabFromSearch("?_tab=bogus")).toBe("overview");
     expect(appPageTabFromSearch("")).toBe("overview");

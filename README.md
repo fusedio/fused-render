@@ -35,7 +35,7 @@ notes for its URL): `pip install <wheel-url>`. From a source checkout:
 pip install -e .
 ```
 
-Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
+Requires Python 3.11+. Installs FastAPI, uvicorn, and pyarrow (used by the
 built-in parquet preview).
 
 Building from source and the local dev loop live in

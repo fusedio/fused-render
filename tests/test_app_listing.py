@@ -831,3 +831,29 @@ def test_the_marker_is_only_read_from_the_head_bytes(tmp_path):
     q.write_text('<html><head><meta NAME="fused-app"></head></html>',
                  encoding="utf-8")
     assert app_listing.has_fused_meta(str(q))
+
+
+# ----------------------------------------------- listed "path" is realpath'd
+
+
+def test_a_symlinked_app_folder_lists_at_its_realpath(tmp_path):
+    """Code review (2026-08-26): a listed app's `path` used to be abspath'd
+    only, which diverges from `background_apps.engine_id_for`'s realpath-based
+    identity (D509/D512) through a symlinked folder alias — the /apps grid's
+    running badge (`runningPaths.has(app.path)`) could never match a
+    background daemon's actual (realpath) folder for such an app. `path` must
+    come back already resolved to the same identity `engine_id_for` would
+    compute, so the two sides agree without the frontend needing to know
+    anything about symlinks."""
+    real = tmp_path / "outside" / "app"
+    real.mkdir(parents=True)
+    (real / "index.html").write_text(TAGGED, encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    link = root / "linked"
+    os.symlink(str(real), str(link))
+
+    apps = app_listing.workspace_apps(str(root))
+    assert len(apps) == 1
+    assert apps[0]["path"] == os.path.realpath(str(link))
+    assert apps[0]["path"] == os.path.realpath(str(real))

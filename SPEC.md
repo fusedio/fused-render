@@ -8571,6 +8571,480 @@ an AI Models page that could say what was on disk but not what was *running*.
   "Measured on this machine" or "Judged against this machine's memory" — because
   the whole complaint this item answers is a reader who could not tell which of
   those two the badge meant.
+- **AI-17** **A model's `config.json` is harvested from the Hub and cached with
+  a TTL, so `fit`'s KV-cache/vision estimates and a picker's "does this take
+  images?" question can be answered for a repo the user has not downloaded a
+  single byte of** (D518). `fused_render/ai/hub_metadata.py`'s `get(repo_id)`
+  fetches `huggingface.co/{repo}/resolve/main/config.json` — a few KB, no
+  weights — and harvests `model_type`, `architectures[0]`, `num_hidden_layers`,
+  `num_key_value_heads`, `num_attention_heads`, `head_dim`, `hidden_size`,
+  `max_position_embeddings`, whether a `vision_config`/`image_token_id`
+  declares a vision tower, `quantization_config.quant_method`, and (for
+  hybrid/Mamba configs) which layers are real attention under `layer_types` /
+  `layers_block_type`.
+
+  `hub_cache.has_vision_tower` answers the same question but can only read a
+  snapshot already ON DISK — a Hub *search* result has no snapshot yet. This
+  is the missing "before a download exists" half.
+
+  Cached at `~/.fused-render/ai_hub_metadata.json`, in the `bench_store.py`/
+  `footprints.py` shape (a private `_path()` over `storage.home_dir()`, then
+  `storage.read_json`/`storage.write_json`), but **not machine-scoped**:
+  `config.json` describes the MODEL, not the machine that asked, so there is
+  no `_same_machine`-style identity check the way **AI-16a**'s store has one —
+  a home directory carried onto a new laptop keeps a warm cache. 13-day TTL,
+  matching the analogous cache in the comparative study this build derives
+  from. A refetch past the TTL that FAILS serves the stale entry rather than
+  discarding it — going blank on a transient network hiccup for a repo
+  answered two weeks ago would regress a page that used to render a fact into
+  one that renders nothing. Only a repo with no prior entry and a failed first
+  fetch answers `None`. Every network or parse failure — DNS, timeout, a
+  non-200, a truncated or non-JSON body — is caught and answered as "no
+  metadata", never raised into the route this feeds.
+- **AI-18** **VRAM, a device name, multi-GPU aggregation, and a
+  name -> memory-bandwidth table, kept off the verdict path the same way
+  **AI-16b**'s wired-limit read already is** (D519). `fit.py` judges a
+  footprint against system RAM only, which is correct for CPU and
+  Apple-Silicon unified-memory loads and silently wrong on a discrete
+  CUDA/ROCm box, where the pool that actually holds the weights is VRAM — a
+  different, usually much smaller number. `fused_render/ai/hw_detect.py` is
+  the missing half.
+
+  Detection is a subprocess probe (`nvidia-smi`, `rocm-smi`, a PowerShell
+  WMI/registry query, `sysctl`) — 50-500ms cold, the same cost
+  `fit._wired_limit_mb`'s own docstring refuses on a route the picker polls.
+  So the split mirrors that function's: `detect_hardware()`/
+  `refresh_hardware()` do the probing and persist
+  `~/.fused-render/ai_hardware.json`; `cached_hardware()` is a plain
+  `storage.read_json` and is the ONLY function `fit.py` or `benchmark.py` may
+  call. A source-grep test (`test_fit_module_only_reads_the_cache_never_the_
+  probe`) pins that boundary so it stays true after a later phase wires
+  either module up to read it, not just by accident today.
+
+  Three traps, each with its own test: Windows' `Win32_VideoController.
+  AdapterRAM` is a 32-bit field that caps a 16GB card's reading at ~4GB — the
+  fix is the display driver's own registry key
+  (`HardwareInformation.qwMemorySize`, a 64-bit `REG_QWORD`), not a bigger
+  read of the same WMI field, and NOT `Win32_PhysicalMemory` (total system
+  RAM, a different number used only for the next trap). Unified-memory APUs
+  (AMD Ryzen AI Max/"Strix Halo", NVIDIA Grace/DGX Spark parts) report a tiny
+  BIOS-assigned carveout as their "VRAM"; detected by name and overridden to
+  system RAM, exactly like Apple Silicon already is. And a cold spawn must
+  never read as "no GPU": every probe degrades to `None` on any failure and
+  `detect_hardware` composes them with `or`, so one vendor's absence falls
+  through to the next.
+
+  The bandwidth table (device-name substring, matched on word boundaries, ->
+  GB/s) covers Apple M1-M5, NVIDIA RTX 30/40/50 plus A100/H100, and AMD
+  RDNA/CDNA — manufacturer-published figures, not measured on our own
+  hardware, for a future speed-estimate feature to consume; an unlisted name
+  answers `None` rather than a guess.
+- **AI-19** **`fit.py`'s `download` rung stops being a bare `size_gb` reading
+  and becomes a physics-grounded estimate — a flat runtime-overhead
+  constant, a quantization-aware weight-size table, a KV-cache term, and
+  VRAM-vs-RAM pool selection with a run-mode concept — and the old
+  `EASY_FRACTION = 0.6` cliff is replaced by a continuous Gaussian fit
+  score** (D520, D521, D522). One coherent change confined to the `download` rung's
+  arithmetic: `measured` (**AI-16a**) and `declared` (a curator's
+  `resident_gb`) are already real, observed numbers, so none of the four
+  additions below touches either — only `download`, this module's one
+  rung that has ever had to GUESS, gets a better guess.
+
+  **A flat 0.5GB `RUNTIME_OVERHEAD_BYTES`** — CUDA/Metal context, allocator
+  scratch, a hybrid model's fixed recurrent state — added to every
+  `download`-rung estimate. **A real-world `QUANT_BYTES_PER_PARAM` table**
+  (`F32=4.0` down to `Q2_K=0.37`, plus MLX/AWQ/GPTQ rows, default `0.58`) —
+  GGUF-overhead-inclusive bytes-per-parameter, not `bits_per_weight / 8`,
+  parsed out of `catalog.py`'s free-text `quantization` display string by
+  `_quant_key`. `weight_bytes = params x bytes_per_param` once a real
+  parameter COUNT is known — parsed out of `catalog.py`'s own free-text
+  `params` field (`"1.2B"`, `"39M"`) by `parse_params`, which the caller
+  (`ai_runtime.describe_catalog`) passes straight off `entry.get("params")`
+  alongside `entry.get("quantization")`, so this rung is LIVE for every
+  curated row that has both, not a shape waiting for a future wiring pass.
+  Two of `catalog.py`'s `params` forms needed an explicit, documented
+  decision rather than a regex that happens to fire on them: `"8B (~1B
+  active)"` (an MoE row) parses the LEADING (total) figure, since resident
+  weight bytes scale with total parameters — inactive experts are ordinary
+  tensors on disk and in memory, per that row's own catalog.py note — while
+  the parenthetical active count is a compute/bandwidth figure this rung
+  does not need; `"4B effective"` (Gemma's MatFormer "E4B" naming) answers
+  `None` outright, since "effective" names a compute-quality-parity figure
+  with no total/raw count in the string to recover, and parsing it as a
+  literal 4B would be the wrong number (verified against real catalog rows,
+  below). `size_gb x GB_BYTES` otherwise (`params` absent or unparseable),
+  unchanged. This is the fix for the bug class `catalog.py:52-58` documents:
+  an 18.6GB actual download hand-curated as 2.6GB for eighteen months,
+  because nothing had ever multiplied a real parameter count by a real
+  per-format byte cost.
+
+  **A derived `params x bpp` estimate does not outrank a real `size_gb`
+  when the quantization string was NOT recognized** (D521 addendum): the
+  first version of this wiring let `params x bpp` win unconditionally, and
+  a real, curated `size_gb` was overridden by a bytes-per-param figure with
+  no evidentiary basis whenever `_quant_key` answered `None` and
+  `quant_bytes_per_param` silently substituted `DEFAULT_BYTES_PER_PARAM`.
+  `_weight_bytes` now prefers the derived estimate only when the
+  quantization string IS recognized in `QUANT_BYTES_PER_PARAM`; an
+  unrecognized string with a real `size_gb` uses it exactly, and a
+  defaulted guess is used only when there is no `size_gb` at all — a guess
+  still beats nothing, but never beats a real number. Same "measured beats
+  guessed" precedence this module's own `measured`/`declared`/`download`
+  ladder is already built on, one level down.
+
+  **Verified against real curated rows, not synthetic fixtures** — every
+  `catalog.py` row with both `params` and `quantization` was checked.
+  Before the fix above, `params x bytes_per_param` landed within a
+  generous 60% band of the curated `size_gb` for all but two:
+  `prism-ml/Ternary-Bonsai-27B-mlx-2bit` ("Ternary 2-bit", estimate
+  15.66GB vs. a catalog-confirmed-accurate 6.1GB, ~2.57x over) —
+  ternary/BitNet quantization (~1.58 bits/weight nominal) has no row in
+  SPEC item 4's own table, so it fell to the ~4-bit-sized default; and
+  `tonera/FLUX.2-klein-4B-int8-diffusers` ("int8 (torchao)", estimate
+  2.32GB vs. 8.2GB, ~0.28x under) — `"int8 (torchao)"` matches no table
+  pattern either, AND `params: "4B"` counts only the diffusion transformer
+  while `size_gb` is (per that row's own comment) the whole multi-component
+  pipeline including an unquantized text encoder and VAE. Neither is a
+  wrong `size_gb` the catalog.py:52-58 way — both are a defaulted-bpp
+  artifact of a table this narrow, not evidence about either checkpoint.
+  **After the precedence fix, both rows compute EXACTLY `size_gb`**
+  (`_weight_bytes` now returns `6.1GB` and `8.2GB` respectively, not
+  `15.66GB`/`2.32GB`), and the 10 recognized-quant rows that were already
+  within band are unaffected (their quant strings match the table, so
+  their precedence is unchanged). Neither divergence was a table row
+  invented after the fact; both are reported, known gaps, locked by a
+  regression test asserting the general rule (an unrecognized-quant row
+  uses `size_gb` exactly) rather than two by-id special cases.
+
+  **A KV-cache term**, `2 x n_kv_heads x head_dim x ctx x bytes_per_element
+  x n_full_attention_layers`, at a fixed **8192-token** estimation context
+  (a model's *advertised* maximum context routinely overestimates by 10-30x;
+  llama.cpp/Ollama's own default is 8192) — `0.0`, never guessed, when the
+  geometry (`head_dim` and a full-attention layer count) is not known.
+  `num_key_value_heads` falls back to `num_attention_heads` then a flat `8`.
+  `head_dim`, absent from the Hub (**AI-17**'s `headDim` reads `None` rather
+  than guessing), is DERIVED here as `hidden_size / num_attention_heads` —
+  the derivation **AI-17**'s own text assigns to this module rather than to
+  the harvest. A hybrid/Mamba config's `layer_types` counts only entries
+  `_is_full_attention_layer` recognises as real attention (Mamba/SSM/
+  linear-attention/short-conv layers hold fixed recurrent state, not a
+  context-scaled KV cache, per **AI-17**'s own note); a sliding-window
+  attention layer still counts, since it still caches real, if
+  window-bounded, K/V.
+
+  **Pool selection + run mode.** `_select_pool` judges a footprint against
+  whichever pool would actually hold it: Apple Silicon's pool stays SYSTEM
+  RAM unconditionally (unified memory has no separate VRAM to select
+  between, and the **AI-16b** wired-limit hard ceiling — checked FIRST,
+  entirely independent of pool selection — is the machine-specific cap that
+  already governs there; this property must not regress, and the comparative
+  study this build derives from detects an Apple VRAM-alike figure and then
+  never actually uses it as a ceiling, which this codebase does not repeat).
+  Off Apple, **AI-18**'s `hw_detect.cached_hardware()` (the only `hw_detect`
+  function this module may call) answers whether a discrete GPU exists: no
+  cache yet, no GPU, or `0` VRAM all judge against RAM (`"cpu-only"`, the
+  safe default on "we don't know"); a non-Apple UNIFIED-memory device
+  (Strix Halo, Grace/DGX Spark) draws from system RAM exactly like Apple
+  Silicon (`"gpu"`, pool stays RAM); a discrete GPU's pool is its VRAM alone
+  when the footprint fits (`"gpu"`), or VRAM plus usable RAM when it does
+  not but the COMBINED pool would (`"cpu-offload"` — a real, commonly-used
+  offloading path, not folded into a plain "no").
+
+  **The Gaussian fit score** (`ratio = footprint / pool`, `COMFORT = 0.70`,
+  `SIGMA = 0.20`, `z = max(0, (ratio - COMFORT) / SIGMA)`,
+  `score = 100 * exp(-0.5 * z**2)`, floored to exactly `0` when `footprint >
+  pool` rather than left to the exponential's own never-quite-zero tail)
+  replaces `EASY_FRACTION`'s step function, which scored every ratio under
+  60% identically and every ratio from 60-100% identically — a discontinuity
+  ("79% scored 100, 81% scored 70" in the comparative study's own words for
+  its analogous old rule) a UI progress bar cannot render honestly. The
+  three-way `verdict` is now DERIVED from `score` (`score == 100` is "easy",
+  `0 < score < 100` is "tight", `score == 0` is "no") rather than computed
+  by a separate check, and `score` itself is exposed on the response
+  alongside `runMode` so a future bar-style rendering has both to draw from.
+  `frontend/src/apps/ai_models/shared/fitNote.ts`'s copy table is keyed on
+  `basis` + `verdict`, neither of which gained a new value, so it needed no
+  new branch — only its header comment now says so, and
+  `AiFitVerdict.score`/`.runMode` are optional additions on the TS side.
+
+- **AI-20** **`benchmark.py`'s `_memory_and_device` reading, taken once AFTER
+  a benchmark's timed pass finished, is replaced by `_PeakSampler` — a
+  background thread that samples `(model, capability)`'s resident bytes
+  every `_PEAK_SAMPLE_INTERVAL_S` (0.25s) DURING the pass and keeps the
+  running max, bracketing only the timed measurement (never the discarded
+  warm-up) and torn down unconditionally in the same `finally` that already
+  closes the measurement row.** (D523) Also gives `benchmark._total_memory_
+  bytes()` the `GlobalMemoryStatusEx` Windows fallback `fit.machine_ram_gb`
+  already carries, ported rather than shared since one returns decimal GB
+  cached forever and the other raw bytes, uncached, per `machine()` call.
+
+  A single post-pass reading misses exactly the two things a benchmark
+  exists to catch: a decode's own KV cache is still growing right up to the
+  LAST token (never freed mid-generation), so its true high-water mark sits
+  near the end of decode and can have already been superseded by whatever
+  the process does immediately after `run()` reads memory; and a diffusion
+  model's per-step cross-attention scratch is freed the instant the step
+  that allocated it returns, so a reading taken after the whole render has
+  finished sees none of it. Both are real, both are invisible to one
+  reading taken after the fact.
+
+  `_PeakSampler` always takes two samples independent of the background
+  thread's own cadence — one in `start()` before the pass, one in `stop()`
+  after — so a pass that finishes faster than one tick (every workload in
+  this codebase's fake-clock test suite; a fast real embed call) still gets
+  more than the old design's single reading, and the running max, never the
+  last value, is what is kept: a reading that peaks mid-pass and falls back
+  down before the pass ends must still win. `stop()` is idempotent — safe to
+  call twice, which `run()`'s structure requires (the success path collects
+  the result, the surrounding `finally` tears the thread down
+  unconditionally so a raise mid-pass cannot leak it).
+
+- **AI-21** **A tok/s speed estimate, `fused_render/ai/speed.py`
+  (`estimate_tok_s`), plus this machine's own local calibration of it —
+  `tok/s ~= bandwidth_GB_s / weight_gb x 0.55`, falling back to a
+  per-backend constant (`CUDA=220, Metal+MLX=250, Metal(other)=160,
+  ROCm=180, SYCL=100, CPU-ARM=90, CPU-x86=70`) when this machine's cached
+  `hw_detect` hardware reports no bandwidth for its device. `weight_gb` is
+  `fit.weight_bytes` (new public wrapper over `fit._weight_bytes`) — the
+  same weight-size figure the `download` rung's own arithmetic already
+  computes, never the fuller footprint (which also carries the KV term
+  and flat overhead — real memory the model occupies, not bandwidth the
+  decode loop repeatedly reads through). Every estimate records its own
+  basis (`method`, `backend`, `bandwidthGbS`, `contextTokens`,
+  `calibrated`, `calibrationFactor`) rather than a bare number. Wired into
+  `ai_runtime.describe_catalog` as `entry["speedEstimate"]`, `text-
+  generation` entries only.** (D524, D525) A local calibration factor —
+  `median(measured_tok_s / uncalibrated_estimate_tok_s)` over this
+  machine's own `bench_store.py` `text-generation` runs, anchored only on
+  `params_b >= 1.0 and not is_moe` (the comparative study's own anchor
+  rule), clamped to `[0.05, 3.0]`, persisted at `~/.fused-render/
+  ai_speed_calibration.json` — is applied to every estimate once one
+  exists. **Idempotent by construction**: every ratio `recalibrate`
+  computes is against the raw, UNCALIBRATED formula, never against
+  `estimate_tok_s`'s own (possibly already-calibrated) output, so the
+  currently-stored factor never feeds into the computation of its
+  replacement — calling `recalibrate()` twice over identical evidence
+  yields the identical factor both times rather than compounding.
+
+  **Backend inference is machine-level, not runner-aware** — no caller in
+  this codebase threads an actual runner code through to this module, so
+  `backend_bucket` infers a bucket from what `hw_detect.cached_hardware()`
+  already knows: Apple unified memory is unconditionally `metal-mlx`
+  (every Apple-Silicon runner this codebase resolves to ahead of anything
+  else, D416); off Apple, the primary GPU's name decides NVIDIA vs. AMD;
+  no GPU, or an unrecognized name, falls to CPU architecture. Two of the
+  seven backend-constant rows are consequently unreachable by this
+  inference alone — `sycl` (no Intel GPU probe exists in `hw_detect.py`
+  at all) and `metal-other` (this codebase has no non-MLX Metal runner to
+  select, per D416) — and stay in the table regardless, for a future
+  caller that DOES know the real runner. A documented, known gap, not an
+  oversight.
+
+  **Reads only `hw_detect.cached_hardware()`, the same verdict-path-safe
+  boundary `fit.py` keeps** — a third reader of that cache, never a second
+  prober.
+
+- **AI-22** **The `declared` rung of `fit.py`'s precedence ladder — plumbed
+  since AI-16 (`resident_gb`, `fit.footprint_bytes`, `ai_runtime.describe_
+  catalog`) but set by NOTHING — is populated for the two `ltx-video`
+  rows, `dgrauet/ltx-2.3-mlx-q4` (`resident_gb: 20.5`) and `dgrauet/
+  ltx-2.3-mlx-q8` (`resident_gb: 29.8`), and deliberately left absent on
+  every other curated row.** (D526) `ltx-video` is the row `fit.py`'s own
+  module docstring names as the reason `resident_gb` exists at all:
+  `DistilledPipeline(low_memory=True)` frees the transformer and the
+  Gemma-3 text encoder between stages, so the true resident peak is one
+  stage, not the sum `size_gb` correctly reports as the download. The two
+  seeded values are `max(weights bytes, gemma bytes) / 1e9`, computed from
+  the exact Hub-measured byte counts `catalog.py`'s own comment above
+  these rows already states (2026-08-23) — real evidence derived from
+  numbers already curated in the file, not a fresh estimate invented for
+  this rung.
+
+  **Every other curated row is left alone, on purpose.** A row whose
+  pipeline holds every component resident together for the whole run (every
+  Diffusers/mflux/GGUF/mlx text, image and embedding entry in the file) has
+  `size_gb` already equal to its true resident footprint — seeding
+  `resident_gb` there would not be BETTER evidence than `size_gb`, only a
+  second copy of the same number that can drift out of sync with the first
+  the next time either is edited. `params x bpp + KV + overhead` (the
+  `download` rung's own arithmetic, AI-19) was considered as a source for
+  every row and rejected for the same reason: computing it once here and
+  writing the result into `catalog.py` as a static `resident_gb` would not
+  add information the `download` rung does not already compute live — it
+  would only go stale the next time `fit.py`'s constants improve, while
+  wearing the `declared` label's implicit "a curator confirmed this"
+  claim it would not have earned. A regression test
+  (`tests/test_ai_catalog_resident_gb.py::
+  test_no_single_stage_pipeline_entry_declares_a_resident_gb`) pins the
+  absence, so a future edit has to make the same case in words rather than
+  add a plausible-looking number by habit.
+- **AI-23** **`fused_render/ai/gguf_sources.py`'s `sources_for(repo_id)`
+  probes five known GGUF-quantizer namespaces (`unsloth`, `bartowski`,
+  `ggml-org`, `TheBloke`, `mradermacher`) for `{provider}/{basename}-GGUF`
+  and verifies a hit against the candidate's own `base_model` card tag,
+  falling back to +/-30% parameter-count similarity when no tag is
+  present** (D527). `catalog.COUNTERPART_IDS` was audited as this item's
+  migration target and turned out to answer a different question entirely
+  (a curated id's counterpart in a different EXPORT FORMAT — ONNX — for the
+  two ids the torch-runner removal orphaned; its own docstring disclaims
+  any broader use and it has never held a GGUF row), so nothing there was
+  touched — `gguf_sources` is new capability, not a migration of an
+  existing one. Cached at `~/.fused-render/ai_gguf_sources.json`, 7-day
+  TTL, in the `hub_metadata.py` store idiom (not machine-scoped, a corrupt
+  or missing file reads as empty, never raises). Network failure — a
+  timeout, a non-200, a malformed body, or a monkeypatched seam raising in
+  a test — degrades the whole probe to `()`, never into a route.
+- **AI-24** **`formats.select_gguf_recipe(files, budget_bytes, params=None)`
+  picks the best-quality GGUF file a repo's own listing offers that still
+  fits a known budget -- `GGUF_QUALITY_ORDER`'s full top-to-bottom ladder
+  (`Q8_0` down to `IQ1_M`), a SEPARATE table from `GGUF_SUFFIX_PRIORITY`'s
+  hardware-blind default** (D528). A multi-part shard set collapses into
+  ONE candidate at the summed size before ranking, so a 3-shard model
+  cannot look like it fits by judging one part alone. `pick_gguf_file`
+  (D412) is untouched -- this is a new, opt-in entry point for a caller that
+  already has a budget, not a replacement for the id-resolution default
+  every bare repo id still gets. A file with no known size is estimated as
+  `params x fit.quant_bytes_per_param(token)` -- the SAME table item 4's
+  `download` rung uses, imported lazily so `formats.py`'s bare-module load
+  path (a worker's interpreter) never pays for it.
+- **AI-25** **`~/.fused-render/models.json` overlays `catalog.SUGGESTIONS`,
+  keyed by runner code, mirroring `server/templates.py`'s registry idiom**
+  (D529). An overlay row whose `id` matches a built-in row's REPLACES it in
+  place (same list position); a new `id` APPENDS. Read fresh on every
+  `catalog.for_runner` call (`catalog_overlay.apply`) rather than cached, so
+  an edit applies on the next request with no restart -- the same reasoning
+  `server/templates.py::_load_registry`'s own docstring gives. Missing file:
+  clean no-op. Malformed file, or a runner's overlay value that is not a
+  list: degrades silently to "no overlay" -- a typo'd `models.json` must not
+  take the AI Models page down, the same standard a broken
+  `templates/registry.json` is already held to. A row with no `id` is
+  skipped rather than discarding the rest of an otherwise-valid file. Not
+  machine-scoped: a hand-curated model list is a statement about what the
+  user wants offered, not a fact about the machine that wrote it.
+- **AI-26** **`worker_base._ensure_disk_space(total_bytes, folder)` fails a
+  download BEFORE it starts when the target volume's free space is already
+  known to be less than the listing's own total** (D530). Wired into
+  `download_snapshot` and `download_file`, right after each function's
+  existing repo listing (which already computes the total the progress bar
+  uses) and before either one opens a connection. Checked against the
+  nearest EXISTING ancestor of the cache folder, since the folder itself is
+  usually created lazily by the first byte written. `total_bytes=None` (a
+  listing failure already degraded the bar to a guess) and a
+  `shutil.disk_usage` probe failure both skip the check silently rather than
+  blocking a download over a figure this function cannot verify -- the same
+  "cannot confirm, so proceed" rule the surrounding fallback logic already
+  applies to a failed Hub listing. Raises `InsufficientDiskSpace`, a
+  distinct exception so `describe_failure`'s chain-walk prints the shortfall
+  in GB at the top rather than whatever call happened to be running when a
+  mid-download `ENOSPC` used to surface.
+- **AI-27** **`ai_runtime._accepts_image`'s TEXT_GENERATION branch gains a
+  pre-download fallback: `hub_cache.has_vision_tower` stays the
+  higher-precedence source when a snapshot IS cached
+  (`hub_cache.has_cached_snapshot`), and only when nothing is cached does it
+  fall back to `hub_metadata.get(model_id)["hasVisionTower"]`** (D531). The
+  new `has_cached_snapshot` splits `has_vision_tower`'s two different
+  "False" cases apart -- "this checkpoint really has no tower" and "there is
+  nothing on disk to read a tower off of" -- so the fallback only fires for
+  the second, never overriding a real on-disk measurement with a stale or
+  wrong Hub reading. Reuses `_embed_snapshot_dir`'s existing path-segment
+  guard, so a hostile repo id answers False exactly as `has_vision_tower`
+  already does.
+- **AI-28** **`registry.py` gains `tool-use`/`vision` TAGS on top of the
+  five existing capabilities -- never a reshape of them.**
+  `registry.supports_tool_use(repo_id, model_type=None, architecture=None)`
+  matches a KNOWN-FAMILY allowlist (`TOOL_USE_FAMILIES`: qwen3, qwen2.5,
+  command-r, hermes, llama-3+instruct, mistral+instruct, gemma-3/4+-it),
+  never a regex reverse-engineered over an arbitrary repo id.
+  `registry.capability_tags(...)` composes it with a caller-supplied
+  `has_vision` bool into `("tool-use", "vision")` (D532). Wired into
+  `ai_runtime.describe_catalog` as `entry["tags"]`, TEXT_GENERATION only,
+  via `_capability_tags` -- reusing `_accepts_image`'s exact cached-vs-
+  pre-download precedence (AI-17 item 17) for the vision half, and passing
+  `hub_metadata`'s harvested `modelType`/`architecture` as the family
+  evidence for an uncached repo whose id alone says nothing. `registry.py`
+  stays dependency-light: neither function reads a filesystem or the
+  network itself, taking whatever evidence the caller already has instead.
+- **AI-29** **Path-hardening audit of the download paths** (`runners/
+  worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
+  **(D533).** Findings:
+  - **`mirror.py` was already safe** -- `_safe_name` (repo-relative names:
+    rejects a leading `/`, a backslash, a colon, and any `.`/`..` path
+    segment), `_safe_filename` (a single URL path segment, a stricter
+    regex), and `_safe_etag` (hex-only) already cover every manifest field
+    this build's audit checked. Left alone.
+  - **`worker_base._resolve`/`_FileFetch` had NO equivalent check on the
+    HUB metadata path**, and this was a real gap: `_hub_file_meta`/
+    `HfApi.model_info`'s `rfilename`/etag were joined straight into
+    `os.path.join(self.snapshot, name)` (`_FileFetch.link`, the snapshot
+    symlink target) and `os.path.join(folder, "blobs", etag)`
+    (`_FileFetch.blob`) with no validation of either -- confirmed
+    exploitable by a failing test before the fix (`../../../../etc/
+    cronjob` as an `rfilename` was not refused). Fixed with
+    `_safe_repo_relative_name`/`_safe_blob_name` (restated, not imported --
+    `mirror.py` is loaded as a bare module with no `fused_render` package
+    reachable from a worker's interpreter), enforced once in
+    `_segmented_fetch`'s per-file loop, which is the SAME loop both the Hub
+    and the mirror path route every `_FileFetch` through.
+  - **`.part`/sidecar files opened without `O_EXCL`, and DELIBERATELY not
+    fixed with it** -- a `.part` file is sidecar-tracked and reopened
+    across process restarts to resume an interrupted download, so
+    `O_EXCL`/`create_new` (refuse if the path already exists) would break
+    every legitimate resume. `os.O_NOFOLLOW` is the compatible fix: it
+    blocks opening the path when it IS a symlink (the actual
+    symlink-planting attack this checklist item names) while a real,
+    previously-created `.part`/sidecar file -- never a symlink; nothing in
+    this module ever creates one there -- keeps resuming normally. Applied
+    to both `.part` opens (segmented and append-only) and the sidecar's
+    `.tmp` write.
+  - **No `subprocess`/shell-out of any kind exists in `worker_base.py`,
+    `mirror.py`, or gguf_sources.py/formats.py's new item-13/14 code** --
+    grep-confirmed. The `--`-before-untrusted-argument checklist item does
+    not apply; nothing to change.
+  - **Containment-by-canonicalization** (asserting a joined path resolves
+    under the intended cache dir via `os.path.realpath`) was considered as
+    an ADDITIONAL layer and not added: with `_safe_repo_relative_name`/
+    `_safe_blob_name` rejecting every character sequence that could
+    traverse (`..`, an absolute path, a backslash) before a join ever
+    happens, a canonicalization check afterward would compare two paths
+    that are already known to agree by construction -- real defence in
+    depth would be a SECOND, independent parser catching what the first
+    missed, and duplicating the same character-class logic a second way
+    is not that.
+
+- **AI-30** **Item 14 wired for real: the CURATED GGUF download path
+  (`llama_text._resolve_model_id` -> `_resolve_curated_recipe`) now picks
+  by budget rather than always trusting `formats.GGUF_RECIPES`' hard-coded
+  filename** (code review 2026-08-27 -- "wire it for real"). The curated
+  recipe is the unconditional FLOOR/DEFAULT: `fit.available_budget_bytes()`
+  is computed SERVER-side (a worker's bare-module interpreter cannot
+  import `fit`/`hw_detect`) and threaded across the process boundary as
+  `FUSED_AI_MEMORY_BUDGET_BYTES` (`supervisor._child_env`, the same
+  per-spawn mechanism `FUSED_MODEL_MIRROR_OK` already established). When
+  the curated file's own REAL size (from a listing of its repo -- local
+  cache first via `_local_gguf_sizes`, else one Hub call via `_remote_
+  gguf_sizes`) already fits that budget, NOTHING changes: same file, same
+  bytes, same identity every other `GGUF_RECIPES` reader assumes. Only
+  when it does not fit does `formats.select_gguf_recipe` pick the
+  best-quality alternative from the SAME repo that does; if nothing fits
+  either, the curated file is still returned, relying on `_offload_
+  schedule`'s existing CPU-offload backoff rather than refusing the
+  download outright.
+
+  **Known, accepted gap, reported rather than hidden**: a downgraded pick
+  downloads under the SAME curated `model_id`, but `hub_cache.is_
+  downloaded`/the catalog's checkmark/the displayed `size_gb` have no
+  network access on the polled catalog route (code review finding 1) and
+  do not know the actual file differs -- the checkmark can under-report
+  "downloaded" for a budget-downgraded model. Worst case is a redundant,
+  harmless re-check (the local-cache-first branch answers instantly), not
+  data loss.
+
+  **`gguf_sources` (item 13) remains genuinely unwired** -- it answers a
+  different question (a cross-namespace GGUF COUNTERPART for a model
+  curated elsewhere) than `_resolve_curated_recipe` (picking a file
+  WITHIN one already-curated repo's own listing), and wiring it here would
+  not be an honest caller, only a way to make it non-inert. It stays ready
+  for a future UI that offers alternate quantizer conversions.
 
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
@@ -9103,6 +9577,40 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   repair that held.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
+  **Two commands now**, one per platform: the strip attached the macOS/Linux
+  `curl … | bash` line to every not-found card regardless of platform, so a
+  Windows user with no Claude Code was handed a command their shell cannot run
+  and the PowerShell one was reachable only through the help link. The server
+  states `platform` and `install_command` on the health snapshot and the UI
+  stops guessing (D517).
+- **TR-12** **Where the app can apply the fix, it applies it** (D517). Three of
+  the setup findings are mechanisable and are mechanised: a missing install runs
+  the native installer as a background job, an install that will not report its
+  version runs `claude doctor` and shows its warning/fix pairs in the CLI's own
+  words, and an outdated CLI runs `claude update`. The strip stops being a place
+  that describes a fix and becomes the place that performs one.
+- **TR-13** **An update is offered only where updating would do something.**
+  Homebrew, WinGet, apt, dnf and apk own their own binary and answer
+  `claude update` with "Claude is up to date!" while changing nothing, so those
+  installs get the owning manager's real upgrade line and NO button;
+  `DISABLE_UPDATES` withholds it too. The refusal is enforced server-side as a
+  409 naming the command that would work, so it holds even against a caller that
+  ignores the flag. **An unknown install method still gets the offer** — the
+  same rule TR-2 makes about sign-in, from the other side: only an authoritative
+  negative may withhold an offer, and not knowing is not a negative.
+- **TR-14** **`claude doctor` is the diagnosis, not us.** A resolved, runnable
+  binary that will not report a version was measured all along and said nothing,
+  which was right — one failed probe is not a cause — and left the user with a
+  dead app and no sentence anywhere. Doctor is read-only, starts no session, and
+  names the cause itself, so the card quotes it rather than inferring. It is
+  gated to the broken and outdated cases: a ~1.2s spawn is worth paying for a
+  card that renders while something is wrong, and is not worth paying on every
+  health read of a machine that is fine.
+- **TR-15** **The one fix deliberately left as a sentence** is a dead
+  `FUSED_RENDER_CLAUDE_BIN`. It lives in a shell profile or a launchd plist the
+  app cannot durably edit, and `adopt()` already refuses to overwrite a setting
+  the user made on purpose. A button that silently does nothing is worse than
+  the sentence it would replace.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
   path it says how to find it.** TR-8's degradation is right for the report — a
   person reading a paste does not need labels with nothing after them — but it
@@ -9154,7 +9662,16 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   per-page dependency scan: every page, `.py`, asset and `pyproject.toml`/
   `uv.lock` ships. Skipped: dotted names (`.git`, `.claude`, `.venv`, `.env`),
   `node_modules`, `__pycache__`, symlinks, and `CLAUDE.md` (the authoring
-  contract stays home). Budgets 4000 files / 512 MB; loud `AppFileError`s.
+  contract stays home) — and whatever git IGNORES: inside a work tree (the
+  app's own repo, or a subfolder of a bigger one) the rules cascade from the
+  toplevel via `git check-ignore` (`server/gitignore._IgnoreOracle`), so
+  `.git/info/exclude` and the global excludesfile count too; with no repo,
+  the nearest `.gitignore` in the app folder or any ancestor is grafted and
+  cascades down. Tracked files matching a pattern still ship (git's view).
+  An ignored ENTRY page or a check-ignore that stops answering mid-walk is a
+  loud `AppFileError`, never a half-filtered artifact; no git / no rules at
+  all filters nothing. Budgets 4000 files / 512 MB are measured AFTER the
+  filter; loud `AppFileError`s.
 - **AF-2** A folder with no marker-carrying page is not exportable — a
   `.fused` must have an entry to open (the marker is the only signal, D301).
 - **AF-3** `fused.ai()` SHIPS, unlike the hosted exporter (RH-11 does not
@@ -9228,10 +9745,12 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   never extract fresh, never rebuild, never record recency; the entry iframe
   carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
   thumb — a peek must not be the first run of a stranger's pages.
-  Export can BAKE one in: `exportAppFile` captures a tab screenshot
-  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
-  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
-  when and only when the folder has no authored `preview.png`. The crop
+  Export can BAKE one in: `exportAppFile` takes a NATIVE screen shot of
+  the app's on-screen rect (`POST /api/capture/shot-region`, the §45 still
+  behind `fused.capture.screenshot()` pointed at a browser-measured rect,
+  PNG bytes back and no file in `<home>/recordings`; chosen over DOM
+  serialization because canvas/WebGL apps rasterize blank) when and only
+  when the folder has no authored `preview.png`. The crop
   source is the card's own thumbnail when it is on screen AND HAS PAINTED
   the app — a card without a preview.png renders the live app there, so
   nothing navigates or flashes, but only two card previews start at a time
@@ -9241,18 +9760,21 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   (`data-capture-ready`, set on the body iframe's load) because the surface
   that opens the context menu is not the one holding that state; the
   full-viewport stage is the fallback for a missing, off-screen or unpainted
-  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
-  before anything is awaited: `getDisplayMedia` spends the click's transient
-  user activation, which expires seconds later, so asking after a stage
-  iframe's load-and-settle wait would lose the prompt for every app slower
-  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
-  stream is continuous, so the stage mounts and settles against a stream
-  already running. The prompt itself cannot be silenced — that is
-  getDisplayMedia's contract. The
+  thumb, sized so its shot lands under the width cap at this DPR (so nothing
+  downscales). The browser reports the rect in its screen units
+  (`screenX` + chrome + the element's box) plus `devicePixelRatio`; the
+  backend's `locate` hook maps that onto ONE display in its own units
+  (points on macOS, physical pixels on Windows/Linux) and REFUSES a rect that
+  is not entirely on one display rather than clipping it — a sliver baked
+  in is a valid PNG nothing later can catch. No share prompt and nothing
+  hinging on the click's transient user activation (the earlier tab-capture
+  version's whole ordering problem); on a Mac without Screen Recording
+  granted the first shot raises the TCC dialog and that export ships plain.
+  The
   X-Fused `POST /api/appfile/export` variant writes it as
   `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, prompt dismissed, blank,
-  over-cap — exports plain: the route drops a too-big screenshot rather than
+  wins; every capture failure — unsupported, permission denied, off-display,
+  blank, over-cap — exports plain: the route drops a too-big screenshot rather than
   failing the download, where `export_app_file` itself still raises for a
   caller that meant to supply a still). An injected preview extracts as a
   real file in the app's read-only extract dir like any other member.
@@ -9497,6 +10019,27 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
+- **MC-12** **The registration entry's `command` is the resolved `fused`
+  path, VERBATIM — including the bare `fused.cmd` `inspect_app._fused_cli()`
+  reports on Windows — never routed through a `cmd.exe /c` hop we add
+  ourselves (D549).** A `.cmd` cannot be handed to `CreateProcess` directly,
+  which reads as an obvious bug to a reader who has not checked how the MCP
+  host actually spawns it — the fix a `cmd.exe` hop resembles is real for a
+  process THIS codebase spawns itself, and wrong here: the MCP TS SDK's
+  stdio transport spawns via `cross-spawn` with `shell: false`, and
+  cross-spawn decides whether to build its OWN safe `cmd.exe /c` hop by
+  reading the command's file extension (only `.com`/`.exe` skip it) — naming
+  `cmd.exe` ourselves makes that check see an `.exe` and skip the hop
+  cross-spawn would otherwise have applied correctly, which is a regression,
+  not a fix, under that theory, and still not reliably safer under the
+  alternative one (a spaced path breaks a hand-rolled `cmd.exe /c` too, once
+  both the wrapper path and the served path need their own quoting). Neither
+  host theory has been verified against a real Windows Claude Code install —
+  D549 names the check that would. Extracted into a pure
+  `registrationDefinition(fused, path)` function specifically so
+  `tests/test_mcp_panel.py` can pin the shape (no `cmd.exe`, no `/c`, for
+  both a POSIX- and a Windows-shaped `fused` path) and turn a well-meaning
+  revert of this decision into a loud, specific test failure.
 
 ## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
 
@@ -9684,3 +10227,324 @@ three platforms, one API, no field naming which one served you.
   `{available, reason}` and refusal sentences; it never learns which backend it
   got, and `tests/test_capture.py` fails if any of the three leaks.
   Local only — a hosted/exported page has no capture (docs/EXPORT.md).
+
+## 46. Background Apps — A Folder's Own Long-Running Daemon (D500, D501, D502, D505, D506, D507, D508, D509, D510, D511, D512, D513, D514, D515)
+
+A folder can declare a daemon that outlives any one page: `fused.daemon` (the
+browser control surface, `static/runtime.js`) and `fused_render/background_apps.py`
++ `server/routers/background_apps.py` (the server side) turn engine_host's
+existing template-daemon machinery (`docs/ENGINE_HOST_DESIGN.md`) into a
+general "keep this running" primitive, rather than a special case wired for
+one built-in template. The map viewer's tile daemon and a warm `/api/engine`
+worker are the two existing engine_host child kinds (template, app);
+background apps are the third.
+
+- **Manifest.** A folder opts in with `[tool.fused-render.app]` in its own
+  `pyproject.toml`: `kind = "background"` and `daemon = "<file>"`, a filename
+  resolved inside the folder — never a path that can climb out of it
+  (`background_apps.load_manifest`'s realpath containment check, the same
+  posture `registered_apps.py`'s folder guards already take). Nothing else
+  reads this table; it is greenfield.
+- **Identity.** `engine_id_for(folder)` is `"bg_" + sha1(realpath(folder))[:12]`
+  — same shape as the warm-worker's `app_engine_id`, a distinct prefix so the
+  two can never collide. `version_for(folder, interpreter)` digests the
+  manifest's own bytes, the daemon file's mtime/size, and the interpreter
+  path (D514) — any of the three changing retires the running child rather
+  than reusing it.
+- **Run state and autostart are independent (D511).** Whether the daemon is
+  alive right now (`engine_host`'s own live-child bookkeeping) and whether
+  the server should bring it up at every launch (a persisted opt-in flag)
+  used to be one conflated "enabled" concept — `enable()` started the daemon
+  AND persisted "keep this running"; `disable()` stopped it AND un-persisted.
+  Nothing could change either fact alone, and the user-visible symptom was
+  the OpenWhisper tray's "Quit" and "Turn Off" looking identical when
+  clicked (both just made the app vanish), differing only invisibly at the
+  next server start. They are now two orthogonal facts: `POST /start` spawns
+  now, `POST /stop` kills now, `POST /restart` respawns — none of the three
+  touch autostart — and `POST /autostart` (body `{"html", "autostart": bool}`)
+  is the ONLY thing that persists it. **Autostart is opt-in**: `start()`
+  alone never sets it, so a "just try it once" call never silently installs
+  a daemon that survives a server restart.
+- **The autostart store.** `<home_dir()>/background_apps.json` (unchanged
+  filename; its `"enabled"` key is now `"autostart"`) is the sticky "bring
+  this back at every launch" list (D501) — a folder that opts in comes back
+  across restarts until autostart is explicitly turned off, independent of
+  whether any page for it is currently open OR whether the daemon happens to
+  be running right now. A folder that is temporarily missing or unreadable
+  drops out of `autostart_paths()`'s result (read-only) without being
+  removed from the store, so it reappears the moment it's readable again.
+  Paths are realpath-normalized (D512, the half of D509's fix that decision
+  deferred), matching `engine_id_for`'s identity everywhere the store is
+  read or written.
+- **Bring-up.** `engine_host.ensure_background` is engine_host's third child
+  kind (D502): validated against the daemon's OWN folder manifest, not the
+  autostart store (D511 — walking the autostart store here used to make
+  `start()` refuse to spawn any app not opted into autostart, backwards once
+  autostart is opt-in; `_validate_background` checks THAT folder's manifest
+  declares exactly this daemon file — an invariant check, the same stance
+  `_validate`'s interpreter check already documents, not a trust boundary,
+  since the caller already resolved `daemon` from the folder's own
+  manifest). The declaring folder is the one the caller resolved and passes
+  as `ensure_background`'s `folder` argument (falling back to
+  `os.path.dirname(daemon)` only when a direct caller omits it), NOT
+  re-derived from `daemon`'s dirname unconditionally (D513) — a manifest's
+  `daemon` may legally name a nested path (`daemon = "src/daemon.py"`;
+  `background_apps.load_manifest` enforces containment, not flatness), and
+  such a daemon's own dirname has no `pyproject.toml` of its own, so
+  re-deriving would refuse to ever start it. Reused/spawned with the same
+  double-checked dance `ensure`/`ensure_app` already use. A `kind="background"`
+  child is explicitly exempt from the warm-app idle reaper (`reap_idle_app_workers`
+  now gates on `kind == "app"`, not the `module` field's truthiness) —
+  sitting idle is the entire point of a background app, unlike a warm script
+  worker that idle-retires after `APP_IDLE_RETIRE_S`. Every managed child
+  (template, app, background) dies together on the server's ASGI shutdown
+  event (`engine_host.stop_all()`, already wired at `server/app.py`'s
+  `_shutdown_engines` and reached by the packaged macOS app's `quit_teardown`
+  server-drain step, which sets `should_exit` and lets uvicorn's own shutdown
+  sequence run the ASGI lifespan shutdown — no separate rung was needed).
+- **The API** (`server/routers/background_apps.py`) takes `html` — the
+  page's own path — on every endpoint, never a raw folder path, and resolves
+  the app folder from it server-side exactly as `/api/run`/`/api/engine`
+  resolve `py` (D500): this adds no code-execution surface and no
+  path-typed API to defend. `_folder_for` REALPATH's the resolved folder
+  (D509, 2026-08-26 code review — it used to only `abspath` it): folder
+  identity across every endpoint now agrees with `engine_id_for`'s own
+  realpath-based hash, so a folder reached through a symlink alias can no
+  longer make `autostart` (compared against the realpath-normalized
+  `autostart_paths()`, D512) and `running` (keyed off `engine_id_for`)
+  disagree about the same app, and `autostart` calls through different
+  aliases of one folder can no longer write/remove two separate store
+  entries for it. `enable`/`disable` are gone — no back-compat aliases
+  (D511; this feature was unmerged when the split landed). `GET /status`
+  reports `{running, autostart, pid, version, engine_id}` as two independent
+  facts; `POST /start` spawns the daemon now WITHOUT touching autostart
+  (409 if the folder's project venv isn't built yet — the same stance
+  `/api/engine` already takes, D500: building one inside a POST would block
+  for minutes, so opening the page once installs it first); `POST /stop`
+  kills the running daemon, also without touching autostart — if it's on,
+  the startup hook (or a later `start`/`restart`) brings it back; if it's
+  off (the default), it stays down until an explicit `start`; `POST
+  /autostart` (body `{"html", "autostart": bool}`) ONLY sets the persisted
+  flag, starting and stopping nothing; `POST /restart` respawns, also
+  autostart-neutral, always against a FRESHLY computed version digest
+  (D510, 2026-08-26 code review — the live-child branch used to call
+  `engine_host.restart(engine_id)` bare, which rebuilt the replacement
+  `Child` from `existing.version`, the OLD digest; a restart right after
+  editing `daemon.py` would then respawn the new code tagged with the stale
+  version, and the next start()/server-start resurrection's own fresh
+  digest would disagree with it and tear the just-restarted child down for
+  a second respawn — `engine_host.restart` now takes an optional `version`
+  override, defaulting to the existing child's version for every other
+  caller, i.e. engine_forward.py's heal-on-proxy, which is unchanged);
+  `GET /running` is the cheap set of app folders with a live background
+  child RIGHT NOW, for the `/apps` grid's badge (2026-08-26 code review —
+  it used to read `autostart_paths()`, which went stale the moment D511
+  split run state from autostart: `start()` no longer persists anything, so
+  a daemon started without opting into autostart — now the DEFAULT path —
+  had no row there and the badge stayed off for it even while genuinely
+  running). `engine_host.background_running_folders()` enumerates the
+  in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
+  `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
+- **Startup resurrection.** A daemon thread started from `server/app.py`'s
+  startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
+  the pre-bind path) walks `autostart_paths()` and brings each one up,
+  logging-and-skipping a folder whose manifest went dead or whose project
+  venv isn't built rather than letting one bad folder block the others or
+  delay server readiness. Only paths explicitly present in the autostart
+  store ever come back here — a folder that was only `start()`ed, with
+  autostart never turned on, does not.
+- **`fused.daemon`** (`static/runtime.js`) is the browser's control surface for
+  a FOLDER's declared daemon, distinct from `fused.engine`'s warm-worker
+  variant of `runPython` for the PAGE's own script: `status()` / `start()` /
+  `stop()` / `restart()` / `setAutostart(bool)` all send the page's own path
+  as `html`; `call(path, body)` reaches the daemon directly, proxied through the
+  same stable-origin `/api/engines/<id>/proxy` a template daemon's traffic
+  already rides (`engine_forward` is engine-kind-agnostic), resolving the
+  `engine_id` from a cached `status()` call. `watch(callback)` (D515) is the
+  push-shaped wrapper over `status()` a page needs to learn its daemon's
+  state changed for a reason OUTSIDE its own control (another tab, the
+  server's own resurrection, or — the case that motivated it — a native
+  tray's Quit): it calls back on the initial read and again whenever
+  `{running, autostart, pid, version}` differs from the last-seen status,
+  polling only while `document.visibilityState === "visible"` and
+  refreshing immediately on `visibilitychange`→visible and window `focus`,
+  returning an unsubscribe function. In a preview thumbnail it does one
+  `status()` read and returns a no-op unsubscribe — no timer, no listeners
+  — the same posture `status()` itself already has there (the one
+  `fused.daemon` method left ungated by D507/D508, since `watch()` is
+  exactly that method with a diffing wrapper, not a new capability). Local-only, like `fused.ai`,
+  `fused.capture` and the rest of the local-only surface named in the file
+  header — not available on hosted/exported pages. Named `fused.app` through
+  D505; renamed to `fused.daemon` (D506) to resolve a three-way collision on
+  "app" (an app-tagged folder, `ensure_app`'s warm worker, the `/apps` hub) —
+  the HTTP endpoints (`/api/apps/background/*`) and the Python modules
+  (`background_apps.py`, `background_app.py`) deliberately kept their
+  "background" naming; only the author-facing JS name changed.
+- **The `/apps` grid** decorates a card with a "running" badge
+  (`getBackgroundAppsRunning`, `apps/builder/Apps.tsx`) through
+  `AppPreviewCard`'s existing generic `badge` prop, using the same
+  decoration-only posture `useShowcaseSync`'s "cloned" badge already
+  established: one fetch, no polling, and a failure just means no badge — the
+  listing itself is unchanged. Matched against `runningPaths.has(app.path)`,
+  and `app.path` (`app_listing.app_dict`) is now REALPATH'd, not just
+  abspath'd (2026-08-26 code review) — matching `engine_id_for`'s identity
+  the same way D509 already fixed the router's own `_folder_for`, so a
+  symlinked app folder's badge no longer silently fails to match its
+  daemon's (realpath-keyed) running folder.
+- **A daemon addressing itself (D505).** `engine_host._spawn_env` exports
+  `FUSED_RENDER_APP_DIR` (the manifest's declaring folder, carried on
+  `Child.folder`) into a `kind="background"` child's environment only — the
+  one affordance the API above doesn't otherwise offer, since every endpoint
+  keys off a page's `html` path and a daemon has none. `templates/shared/background_app.py`
+  is the stdlib-only client that reads it: `status()`/`stop()`/`set_autostart(bool)`/`restart()`
+  against the calling daemon's own app, resolving the origin the same ladder
+  `fused_ai.resolve_origin` does, `X-Fused: 1` on every POST, and a typed
+  `NotUnderEngine` when the env var is absent (not running as an
+  engine-spawned background daemon at all). `engine_host.restart()` carries
+  `folder` over onto its replacement `Child` the same as `python`/`daemon`/
+  `cache`/`version`/`kind` — a healed or manually-restarted background
+  child keeps `FUSED_RENDER_APP_DIR` across the respawn, not just its first
+  bring-up.
+- **Resurrection has three triggers, not one, and they are not equally
+  strong — and D511 makes the FIRST of the three conditional on autostart.**
+  Server start (the resurrection hook) only brings a folder back if it is in
+  the autostart store; a page's `start()`/`restart()` is unconditional
+  (deliberate — that's what it's for) but never itself sets autostart. The
+  third, undocumented until D505, is heal-on-proxy: `stop()` pops the
+  `Child` out of `engine_host._children` before killing it
+  (`engine_host.stop`), so a proxied call afterward finds nothing registered
+  and returns 409 rather than reviving anything — this trigger is entirely
+  about run state and has nothing to do with autostart. A process ended any
+  OTHER way — killed externally, crashed, or `terminate:`d by native code
+  that never called the server's API — leaves the `Child` registered, and
+  the next proxied request (`engine_forward.py:216-222`) heals by respawning
+  it. This makes a raw external kill the WEAKEST way to end a background
+  app: weaker than `stop()`, because it skips the one piece of bookkeeping
+  that prevents an accidental revival. Anything that wants "stop it and
+  don't come back automatically" from outside the server (a tray icon, a
+  CLI) must go through `stop()` (the D505 client, from inside the daemon, is
+  exactly this) AND confirm autostart is off (or never call `autostart` in
+  the first place — it's off by default) — not a direct process kill.
+- **A page must not spawn a daemon (or persist autostart) merely by being
+  rendered (D507).**
+  `AppPreviewCard`'s live thumbnail (Home's app strip, the `/apps` hub — the
+  card mounts an app's own `entry_html` live and sandboxed
+  `allow-scripts allow-same-origin` whenever it has no `preview.png`, or on
+  hover for ANY app) is not an
+  "open"; `fused.daemon.enable()` unconditionally on page load used to fire
+  on every such peek regardless (the OpenWhisper bug this whole feature
+  documents in its skill). Enforced in `static/runtime.js` now, not just
+  documented: `thumbFrame`/`withPreviewFlag`
+  (`frontend/src/platform/lib/thumb-frame.ts`, `router.ts`'s `PREVIEW_PARAM`)
+  stamp `_preview=1` onto the `/render?path=...` URL that becomes the
+  thumbnail iframe's own `src`, and `GET /render` (`server/routers/render.py`)
+  serves the app's HTML at exactly that URL with no redirect — so the flag
+  lands in the rendered page's own `location.search`, reliably, not merely
+  inherited from an ancestor. `runtime.js` already computed this fact for the
+  focus contract (`IS_THUMBNAIL`, mirroring `router.IS_PREVIEW`/
+  `ancestorIsPreview`); `start()`, `restart()`, and `call()` now check it
+  before making any request and reject with a named `Error` — no silent
+  no-op — pointing the author at `status()` on load and an explicit user
+  action for `start()`/`restart()`. `call()` is in scope despite never
+  itself calling `ensure_background`: `engine_forward.py`'s heal-on-proxy
+  path (the D505 entry above, `_forward` at lines ~216-222) respawns a
+  dead-but-running child on ANY proxied call, so an unguarded `call()` from a
+  preview render could resurrect a daemon some other session had started.
+  `stop()` and `setAutostart()` are gated the same way as `start()`/
+  `restart()`/`call()` (D508, 2026-08-26 code review — the original text
+  here had this inverted): a card thumbnail mounts an app's own `entry_html`
+  live and sandboxed with `allow-scripts`, so an app whose init path calls
+  `fused.daemon.setAutostart(true)` would persist a "come back forever"
+  flag just because its card scrolled past or was hovered — worse than the
+  old `enable()` hazard this guard exists for in the first place, because
+  it survives a server restart. `status()` is the one method deliberately
+  left open: it is read-only. This is a client-side guard, addressing a
+  careless app (the verified hazard), not a server-side one: the flag is
+  confirmed to reach the app's own frame directly, so the check belongs
+  where the calls themselves originate; a page willing to bypass
+  `runtime.js` and call the underlying
+  `fetch("/api/apps/background/start", ...)` directly was never something
+  this guard (or any single function-level guard) could stop, and that
+  bypass is unrelated to preview rendering specifically.
+- **Sequenced-after, deliberately absent here**: the OpenWhisper port this
+  feature exists to support, macOS start-at-login, and any widget surface
+  for a background app.
+
+## 47. The `.fused/` Folder — An App's Own Data, Cache and Identity (D548)
+
+An app folder is authored content: its entry `.html`, its `.py` data files, its
+assets. Anything the app *accumulates while running* had no home, and pages
+invented one each time — a JSON file dropped beside `index.html`, a scratch dir
+under the workspace, `~/.myapp`. Every one of those is wrong the same way: the
+bytes are not authored content, they are not portable, and nothing else in the
+system knows to leave them alone. §47 is one hidden folder at the app root and
+the rules around it.
+
+```
+<app>/.fused/
+    data/       state the app owns and cannot rebuild
+    cache/      derived bytes the app can rebuild — deletable at any time
+    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>"}
+```
+
+- **`data` vs `cache` is a promise, not a naming preference.** Everything under
+  `cache/` must be reconstructible from `data/` plus the outside world, so a
+  sweep of it — by the user, by us, by a disk cleaner — can never destroy
+  something the app cannot get back. Anything failing that test is data. The
+  app owns the size of both: nothing sweeps `cache/` automatically, so an
+  unbounded cache needs the app's own cap or TTL.
+- **The server creates it, not the app.** `app_fused_dir.ensure(folder)` is
+  called from `record_app_open` (`server/routers/apps.py`), i.e. from GET
+  /render whenever a page carrying the fused-app marker is served (D301) —
+  so the convention holds for every app authored before it existed, which is
+  most of them, and an app never has to `makedirs` before its first write.
+  It is gated on `app_listing.app_entry` — the D301 marker, not "this code was
+  reached" — so a `.fused/` is made for APP folders and nothing else; /render
+  has already established the marker by then, and the gate exists for the
+  legacy `POST /api/apps/recents/open`, whose path is arbitrary.
+  `POST /api/apps/new` also calls it directly, before `app_git.init_repo`, so
+  the boilerplate commit never captures the folder. It is additive and
+  idempotent; existing directories are left as they are.
+- **`meta.json` is a witness, never a lookup key.** Every path is resolved from
+  the live folder, so the recorded `app_dir` exists only to be *compared*
+  against it: a mismatch means the folder was moved or copied since its state
+  was created — the one fact an app cannot otherwise learn about itself, and
+  exactly when a path-keyed cache entry or an absolute path stored in `data/`
+  has gone stale. `ensure` therefore NEVER rewrites the field (rewriting on
+  sight erases the evidence); it logs at INFO and leaves it. What a move MEANS
+  is the app's call — a photo index repoints, a scratchpad does not care.
+- **A `.fused/meta.json` that exists but does not parse is left alone.** It is
+  a user-writable file in the user's folder; overwriting it would destroy
+  whatever they (or a future version) put there, and nothing here needs it.
+  Creation is `open(..., "x")` rather than check-then-write, so two concurrent
+  renders of the same app cannot race — losing is a normal outcome, the winner
+  wrote the same three fields.
+- **Mount-backed folders are refused outright.** A remote mount is not an app's
+  private disk, `makedirs` on one is a network round trip on the render path,
+  and this codebase has repeatedly killed a mount with exactly this shape of
+  access. The check is a string prefix test, so the local case pays nothing.
+- **Machine-local, in all four places that would otherwise carry it away.**
+  `.fused/` is in `app_git._GITIGNORE` (so new repos ignore it) and in the
+  `.git/info/exclude` sweeps of `app_git._ensure_excludes` and
+  `templates/claude/agent.py` (so repos predating this do too, and a Claude
+  turn's `add -A` cannot commit a cache). It is dropped from a `.fused` app
+  file by `appfile._iter_app_files`' existing hidden-name rule — the exported
+  artifact carries the app, not the machine's copy of its state. And `.fused`
+  is in `index/ignore.DEFAULT_IGNORE_NAMES`: `~/Fused` is indexed, an app cache
+  has no size bound, and one page caching tiles could spend the whole
+  200k-row corpus on rows nobody searches for.
+- **No API surface, deliberately.** There is no `fused.dataDir`, no
+  `fused.cacheDir`, and no shared Python helper for apps: the paths are three
+  string joins off the app root, and every helper added here would be a second
+  thing to keep in step with the convention. `fused_render/app_fused_dir.py`
+  exists for the SERVER's use; apps build the paths themselves, which the
+  authoring skill and the starter `CLAUDE.md` both show.
+- **Naming.** The folder shares its name with the `.fused` app-file extension
+  (§43) and collides with neither: the index records `ext` for files only, and
+  `os.path.splitext(".fused")` yields no extension anyway, so no `.fused/`
+  directory can ever surface as a phantom exported-app card. The `.fused/`
+  gitignore pattern carries a trailing slash for the same separation — an
+  exported `<name>.fused` file stays tracked like any other artifact.
+- **Sequenced-after, deliberately absent here**: any cache eviction the app
+  does not write itself, any UI that shows or clears an app's `.fused/`, and
+  any `window.fused` accessor for the paths.

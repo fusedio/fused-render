@@ -75,8 +75,8 @@ export function appCardMenu(
             label: "Export App File",
             icon: MenuIcons.download,
             onClick: () => {
-              // exportAppFile also captures a tab screenshot into the file's
-              // preview.png when the folder has no authored one (D396).
+              // exportAppFile also bakes a native screen shot in as the
+              // file's preview.png when the folder has no authored one (D396).
               exportAppFile(app, captureEl).catch((e: Error) =>
                 pushToast({
                   msg: "Could not export " + app.name + ": " + e.message,

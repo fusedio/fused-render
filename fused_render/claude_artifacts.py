@@ -89,7 +89,9 @@ def _epoch(value) -> float | None:
     """A transcript's ISO-8601 timestamp as an epoch float, or None.
 
     The trailing "Z" is rewritten rather than passed through: `fromisoformat`
-    only learned to accept it in 3.11, and this package still runs on 3.10. A
+    only learned to accept it in 3.11, which is now the floor — so the rewrite is
+    no longer required, and is kept only because it is harmless and this parsing
+    is not what the floor bump is about. A
     timestamp with no zone at all is read as UTC — every writer of these records
     emits UTC, and guessing local time would silently shift an artifact's
     position in a listing sorted by time.

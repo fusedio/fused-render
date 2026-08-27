@@ -969,3 +969,53 @@ def test_the_two_running_marks_are_one_rule(template):
     assert "  #topbar .tb-run,\n  .chat-row .row-run {" in template
     assert "body.running #topbar .tb-run { display: inline-block; }" in template
     assert ".chat-row.is-running .row-run { display: inline-block; }" in template
+
+
+# ------------------------------------------------- the registry's running mark
+
+def _registry_row(agent, sid, cwd, status="busy", pid=None, name="p"):
+    d = os.path.join(agent.CLAUDE_DIR, "sessions")
+    os.makedirs(d, exist_ok=True)
+    row = {"pid": os.getpid() if pid is None else pid, "sessionId": sid, "cwd": cwd}
+    if status is not None:
+        row["status"] = status
+    with open(os.path.join(d, name + ".json"), "w", encoding="utf-8") as f:
+        json.dump(row, f)
+
+
+def test_a_terminal_session_this_folder_holds_is_running(agent, target):
+    """Claude Code's own registry (~/.claude/sessions/<pid>.json) knows about a
+    `claude` started in a terminal, which `_live_sessions` — this app's own
+    runs — never will. busy/shell: running. idle/waiting: not. No status at
+    all: a headless `claude -p` that is alive, running while its file exists.
+    Another folder's session and a dead pid count for nothing."""
+    _file, workdir = target
+    _registry_row(agent, "s-busy", workdir, "busy", name="a")
+    _registry_row(agent, "s-shell", workdir, "shell", name="b")
+    _registry_row(agent, "s-idle", workdir, "idle", name="c")
+    _registry_row(agent, "s-waiting", workdir, "waiting", name="d")
+    _registry_row(agent, "s-headless", workdir, None, name="e")
+    _registry_row(agent, "s-elsewhere", workdir + "-other", "busy", name="f")
+    _registry_row(agent, "s-dead", workdir, "busy", pid=2 ** 22 + 4321, name="g")
+    assert agent._registry_running(workdir) == {"s-busy", "s-shell", "s-headless"}
+
+
+def test_registry_running_survives_a_missing_or_broken_registry(agent, target):
+    _file, workdir = target
+    assert agent._registry_running(workdir) == set()  # no sessions dir at all
+    d = os.path.join(agent.CLAUDE_DIR, "sessions")
+    os.makedirs(d)
+    with open(os.path.join(d, "half.json"), "w") as f:
+        f.write("{not json")
+    with open(os.path.join(d, "list.json"), "w") as f:
+        f.write("[]")
+    assert agent._registry_running(workdir) == set()
+
+
+def test_cli_sessions_read_running_off_the_registry_too(agent, target):
+    _file, workdir = target  # the FOLDER lists every chat in its project dir
+    sid = "11111111-1111-1111-1111-111111111111"
+    _cli_transcript(agent, workdir, sid, [_said("hello", workdir)])
+    assert [s["running"] for s in agent._cli_sessions(workdir)] == [False]
+    _registry_row(agent, sid, workdir, "busy")
+    assert [s["running"] for s in agent._cli_sessions(workdir)] == [True]

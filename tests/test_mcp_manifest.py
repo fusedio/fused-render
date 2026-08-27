@@ -57,56 +57,7 @@ def app(tmp_path):
     return str(folder)
 
 
-# --------------------------------------------------- the parser on 3.10 vs 3.11
-
-
-@pytest.fixture
-def hidden_tomllib(monkeypatch):
-    """Count the `tomli` requests the modules make with `tomllib` unavailable.
-
-    `requires-python` is >=3.10 and `tomllib` is 3.11+ stdlib, so on the 3.10
-    lane these modules genuinely get `tomli` (a dependency declared for
-    `python_version < "3.11"`), while on 3.11+ that branch is otherwise never
-    executed. This fixture makes ONE test cover both, which is the only honest
-    shape: the thing being tested is the fallback, so the version where the
-    fallback is REAL must not be the version where the test errors.
-
-    * **On 3.11+** it simulates: `tomllib` is denied and `tomli` is answered
-      with the stdlib module standing in for it (this interpreter has no reason
-      to carry the real one).
-    * **On 3.10** there is nothing to simulate — `tomllib` does not exist and
-      `tomli` is installed — so the real one answers and only the counting is
-      added.
-
-    The stand-in is resolved BEFORE the patch either way: resolving it inside
-    `deny` would re-enter the patch. And note the first version of this fixture
-    was itself the bug it was written to prevent — a bare `import tomllib` at
-    setup, which errored on the one lane that mattered.
-    """
-    import builtins
-
-    try:
-        import tomllib as stand_in
-    except ImportError:  # 3.10: no simulation needed, the real tomli answers
-        # importorskip, not a bare import: on 3.10 `tomli` is a declared
-        # dependency and present in CI, but a hand-made 3.10 venv without it has
-        # nothing for this test to exercise — a skip says that, an ImportError
-        # would read as a failure of the code under test.
-        stand_in = pytest.importorskip("tomli")
-
-    real_import = builtins.__import__
-    calls = []
-
-    def deny(name, *args, **kwargs):
-        if name == "tomllib":
-            raise ImportError("no tomllib on 3.10")
-        if name == "tomli":
-            calls.append(name)
-            return stand_in
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", deny)
-    return calls
+# ------------------------------------------- the parser, and its absence
 
 
 @pytest.fixture
@@ -134,13 +85,13 @@ _ONE = [{
 
 
 def _read_toml(app):
-    # Same two-name lookup the modules under test do: `tomllib` is 3.11+ stdlib
-    # and this repo supports 3.10, where the `tomli` dependency supplies it. An
-    # unconditional `import tomllib` here is what turned the whole file into
-    # collection errors on the 3.10 lane.
+    # Same two-name lookup the modules under test do. `tomllib` is 3.11+ stdlib
+    # and the floor is >=3.11 now, so the second arm is unreachable — kept
+    # because an unconditional `import tomllib` here is what turned the whole
+    # file into collection errors back when 3.10 was supported.
     try:
         import tomllib as toml
-    except ImportError:  # pragma: no cover — 3.10 only
+    except ImportError:  # pragma: no cover — no supported interpreter lacks it
         import tomli as toml
 
     with open(os.path.join(app, "mcp.toml"), "rb") as fh:
@@ -439,19 +390,6 @@ def test_the_two_signature_formatters_agree(manifest, tmp_path):
         assert manifest._signature("main", fn) == inspect_app._signature("main", fn), source
 
 
-def test_tomli_serves_where_tomllib_does_not_exist(manifest, app, hidden_tomllib):
-    written = manifest.main(action="write", path=app, tools=_ONE)
-    back = manifest.main(action="read", path=app)
-
-    assert written["ok"] is True
-    assert back["ok"] is True
-    assert [t["name"] for t in back["tools"]] == ["send_email"]
-    # ...and it really went through the fallback rather than the stdlib. Twice:
-    # the write's verify-by-reparse, and the read. (The write's own pre-read
-    # needs no parser here — there was no manifest yet to preserve.)
-    assert hidden_tomllib == ["tomli", "tomli"]
-
-
 def test_no_parser_at_all_refuses_instead_of_raising(manifest, app, monkeypatch):
     # A manifest that EXISTS is the case that needs a parser — an absent one is
     # answered without parsing anything.
@@ -471,7 +409,7 @@ def test_no_parser_at_all_refuses_instead_of_raising(manifest, app, monkeypatch)
 
     read = manifest.main(action="read", path=app)
     assert read["ok"] is False and read["reason"] == "bad_manifest"
-    assert "tomli" in read["message"]
+    assert "tomllib" in read["message"]
 
     write = manifest.main(action="write", path=app, tools=_ONE)
     assert write["ok"] is False

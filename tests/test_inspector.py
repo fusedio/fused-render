@@ -1,7 +1,6 @@
 """Tests for the api/template.html inspector (static AST parsing only)."""
 import importlib.util
 import os
-import sys
 
 import pytest
 
@@ -71,9 +70,6 @@ def _declare(tmp_path, deps='"pyarrow", "requests"'):
     )
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
-)
 def test_fused_engine_reports_the_projects_dependencies(tmp_path):
     """The FOLDER declares them (SPEC PY-16), so that is what the form shows."""
     _declare(tmp_path)
@@ -83,9 +79,6 @@ def test_fused_engine_reports_the_projects_dependencies(tmp_path):
     assert info["project"] == str(tmp_path)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
-)
 def test_a_script_header_is_no_longer_reported_as_dependencies(tmp_path):
     """Headers are not read any more — reporting them would describe an
     environment that will never be built."""
@@ -120,9 +113,6 @@ def test_a_malformed_manifest_yields_no_dependencies(tmp_path):
     assert info["function"]["name"] == "main"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="reading pyproject.toml needs tomllib (Python 3.11+)"
-)
 def test_a_nested_manifest_is_reported_as_ignored(tmp_path):
     """An inert file that looks correct is the exact failure D177 warns about.
 

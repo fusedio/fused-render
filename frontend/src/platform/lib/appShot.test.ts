@@ -1,12 +1,15 @@
-// The two things about the export capture that no screenshot and no unit call
-// can show, because both are about ORDER and about a promise made across files.
+// The one thing about the export capture that no screenshot and no unit call
+// can show, because it is a promise made across files: the crop source must
+// be PAINTED pixels. (The capture is a native screen shot now — an earlier
+// tab-capture version also pinned prompt ORDER here, against the click's
+// transient user activation; a native shot raises no prompt, so that
+// constraint and its tests are gone.)
 //
 // Source assertions, like ClaudeHealthStrip's in claude-health.test.ts and the
 // card's in tests/test_pane_no_autofocus.py: `bun test` has no DOM, so there is
-// no getDisplayMedia to stub and no iframe to load — but both failures below
-// are silent in the product (a share prompt that never appears; a thumbnail
-// that is a grey box) and permanent in the artifact, so they are worth pinning
-// where a refactor has to walk past them.
+// no screen to shoot and no iframe to load — but the failure below is silent
+// in the product (a thumbnail that is a grey box) and permanent in the
+// artifact, so it is worth pinning where a refactor has to walk past it.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -21,44 +24,6 @@ const SHOT = read("appShot.ts");
 const CARD = read("..", "ui", "AppPreviewCard.tsx");
 const APPS = read("..", "..", "apps", "builder", "Apps.tsx");
 const PREVIEW = read("..", "..", "apps", "explorer", "Preview.tsx");
-
-// -- the prompt rides the click's activation ---------------------------------
-
-// getDisplayMedia needs transient user activation, which Chrome expires a few
-// seconds after the click. The stage waits for an iframe load (up to 10s) and
-// then settles (1.5s), so asking for the stream after that wait loses the
-// prompt for every app slower than a beat — silently, since a dismissed or
-// refused prompt and an expired one are the same rejection and the same
-// export-plain fallback. The stream is continuous, so the fix costs nothing:
-// ask first, mount the stage against a stream already running.
-test("getDisplayMedia is called before the stage is mounted or awaited", () => {
-  const prompt = SHOT.indexOf("getDisplayMedia({");
-  const mount = SHOT.indexOf("document.body.appendChild(stage)");
-  const settle = SHOT.indexOf("setTimeout(res, SETTLE_MS)");
-  expect(prompt).toBeGreaterThan(-1);
-  expect(mount).toBeGreaterThan(-1);
-  expect(settle).toBeGreaterThan(-1);
-  expect(prompt).toBeLessThan(mount);
-  expect(prompt).toBeLessThan(settle);
-});
-
-test("nothing is awaited between entering the capture and the prompt", () => {
-  // The body from the support check up to (not including) the prompt's own
-  // statement: a single `await` in there is the whole bug, whatever it awaits.
-  const start = SHOT.indexOf(
-    "if (!navigator.mediaDevices?.getDisplayMedia) return undefined;",
-  );
-  const promptStmt = SHOT.indexOf("stream = await navigator.mediaDevices");
-  expect(start).toBeGreaterThan(-1);
-  expect(promptStmt).toBeGreaterThan(start);
-  // Comments stripped: the prose in here says "awaited", and the assertion is
-  // about code.
-  const code = SHOT.slice(start, promptStmt)
-    .split("\n")
-    .filter((l) => !l.trim().startsWith("//"))
-    .join("\n");
-  expect(code).not.toContain("await");
-});
 
 // -- the crop source must be painted pixels ---------------------------------
 

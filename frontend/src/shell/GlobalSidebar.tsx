@@ -17,6 +17,7 @@ import UpdateBadge from "@platform/ui/UpdateBadge";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
+import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { TOURS, startTour } from "@platform/lib/tours";
 import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
@@ -231,6 +232,7 @@ function PrefsRow({
   open,
   showIcon,
   onActivate,
+  onClose,
 }: {
   entry: PrefsMenuEntry;
   /** This row's flyout is showing — the same `open` tint a submenu parent gets
@@ -238,22 +240,25 @@ function PrefsRow({
   open: boolean;
   showIcon: boolean;
   onActivate: () => void;
+  /** Closes the whole popover — passed straight through so a real link (below)
+      can close it even on a gesture the browser owns, one that never reaches
+      `onActivate` because navigation itself is left to the anchor. */
+  onClose: () => void;
 }) {
   const hasSub = !!entry.submenu;
-  return (
-    <div
-      role="menuitem"
-      aria-haspopup={hasSub ? "menu" : undefined}
-      aria-expanded={hasSub ? open : undefined}
-      className={
-        "context-menu-item" +
-        (hasSub ? " has-submenu" : "") +
-        (open ? " open" : "") +
-        // A flyout parent is never "the page you are on": it has no page.
-        (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "")
-      }
-      onClick={onActivate}
-    >
+  // A row with neither a flyout nor an in-place action actually GOES
+  // somewhere — that's the only shape a real `<a href>` makes sense for.
+  // A flyout parent has no page, and a tour's onPick replays in place, so
+  // both stay plain <div>s with nothing for the browser to open elsewhere.
+  const isLink = !hasSub && !entry.onPick;
+  const className =
+    "context-menu-item" +
+    (hasSub ? " has-submenu" : "") +
+    (open ? " open" : "") +
+    // A flyout parent is never "the page you are on": it has no page.
+    (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
+  const content = (
+    <>
       {showIcon && (
         <span className="context-menu-icon" aria-hidden="true">
           {entry.icon}
@@ -262,6 +267,48 @@ function PrefsRow({
       <span className="context-menu-label">{entry.label}</span>
       {entry.extra}
       {hasSub && <span className="context-menu-arrow">›</span>}
+    </>
+  );
+  if (isLink) {
+    return (
+      <a
+        href={entry.href}
+        role="menuitem"
+        className={className}
+        onClick={(e) => {
+          // Picking a real destination closes the popover either way. A
+          // plain left click also hijacks the navigation into the SPA's own
+          // route via onActivate (pick → navigateUrl); anything the browser
+          // already owns (middle-click, ctrl/cmd/shift/alt-click) is left
+          // alone so "open in new tab" and friends work on the real href
+          // (see appEntry.isBrowserHandledClick).
+          onClose();
+          if (isBrowserHandledClick(e)) return;
+          e.preventDefault();
+          onActivate();
+        }}
+        // Middle-click never fires `click` in modern browsers — it fires
+        // `auxclick` instead — so the close above would otherwise never run
+        // for that gesture. `auxclick` also covers right-click, though, which
+        // must reach the native context menu (copy link, open in new tab)
+        // undisturbed — button 1 singles out the middle button.
+        onAuxClick={(e) => {
+          if (e.button === 1) onClose();
+        }}
+      >
+        {content}
+      </a>
+    );
+  }
+  return (
+    <div
+      role="menuitem"
+      aria-haspopup={hasSub ? "menu" : undefined}
+      aria-expanded={hasSub ? open : undefined}
+      className={className}
+      onClick={onActivate}
+    >
+      {content}
     </div>
   );
 }
@@ -328,6 +375,7 @@ function PreferencesPopover({
                   ? setOpenSub(openSub === entry.href ? null : entry.href)
                   : pick(entry)
               }
+              onClose={onClose}
             />
             {entry.submenu && openSub === entry.href && (
               <div className="context-menu context-submenu placed" role="menu">
@@ -338,6 +386,7 @@ function PreferencesPopover({
                     open={false}
                     showIcon={groupHasIcon(entry.submenu ?? [])}
                     onActivate={() => pick(sub)}
+                    onClose={onClose}
                   />
                 ))}
               </div>

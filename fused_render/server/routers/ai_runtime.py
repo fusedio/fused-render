@@ -43,7 +43,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, fit, footprints, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
@@ -57,9 +57,10 @@ from fused_render.server.common import _error, _require_fused
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
 from fused_render.ai.hub_cache import (
-    CachedModel, cached_capability, cached_models, embed_family, has_vision_tower,
-    is_downloaded,
+    CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
+    has_vision_tower, is_downloaded,
 )
+from fused_render.ai import hub_metadata
 
 router = APIRouter()
 
@@ -795,6 +796,16 @@ def _catalog_with_downloads() -> list[dict]:
     # polls (code review on AI-16). Passed straight through to every
     # `fit.verdict` call so none of them repeats the load.
     footprint_store = footprints.load_store()
+    # Same reasoning, same fix, for `hw_detect.cached_hardware()` (code
+    # review on AI-19): `fit._select_pool` used to call it itself on every
+    # `fit.verdict` invocation, re-opening and re-parsing `ai_hardware.json`
+    # once per catalog entry. Read once here and threaded through every
+    # `fit.verdict` call below — `fit.verdict`'s own docstring explains why
+    # this is a per-request reading, not a process-wide cache: `hw_detect.
+    # start_hardware_refresh()` rewrites that file on a 6-hour tick (an
+    # eGPU plugged in mid-session), and a permanently memoized reading
+    # would never see that.
+    hardware = hw_detect.cached_hardware()
     for row in rows:
         curated = [
             dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
@@ -856,22 +867,59 @@ def _catalog_with_downloads() -> list[dict]:
         ]
         row["models"] = curated + extra
         for entry in row["models"]:
-            # {verdict, basis, footprintBytes} or None — SPEC AI-16, AI-16c.
-            # `fit.py` owns the precedence ladder (measured > declared >
-            # download) and the headroom arithmetic; this route is a view
-            # over it, not a second copy of the judgement. `resident_gb` is a
-            # curator's optional, additive field (AI-11i/AI-11j's shape) — a
-            # cached entry never has one, `.get` answers None and the ladder
-            # falls straight through to `size_gb`.
+            # {verdict, basis, footprintBytes, score, runMode} or None —
+            # SPEC AI-16, AI-16c, AI-19. `fit.py` owns the precedence ladder
+            # (measured > declared > download) and the headroom arithmetic;
+            # this route is a view over it, not a second copy of the
+            # judgement. `resident_gb` is a curator's optional, additive
+            # field (AI-11i/AI-11j's shape) — a cached entry never has one,
+            # `.get` answers None and the ladder falls straight through to
+            # `size_gb`. `params`/`quantization` (SPEC AI-19 item 4) are the
+            # same shape: a curated entry's own free-text `catalog.py`
+            # fields, passed straight through — `fit.parse_params`/
+            # `fit._quant_key` are what turn them into a weight-size
+            # estimate, and a cached entry (neither field) falls straight
+            # through to `size_gb` exactly as it always has.
             entry["fit"] = fit.verdict(row["capability"], entry["id"],
                                        entry.get("size_gb"), entry.get("resident_gb"),
-                                       footprint_store=footprint_store)
+                                       footprint_store=footprint_store,
+                                       hardware=hardware,
+                                       params=entry.get("params"),
+                                       quantization=entry.get("quantization"),
+                                       **_kv_geometry_kwargs(entry["id"]))
+            # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
+            # calibrated, calibrationFactor} or None — SPEC AI-21. Text
+            # generation only: `speed.py`'s formula is a tok/s figure, and
+            # that unit means nothing for `secondsPerStep`/`realtimeFactor`/
+            # `textsPerSecond`, the metrics the other three capabilities
+            # actually report (`benchmark.WORKLOADS`) — offering a bare
+            # number under a name that reads as tokens/second on an image or
+            # speech row would be actively misleading, not merely
+            # unavailable. Reads `hw_detect.cached_hardware()` only (by way
+            # of `speed.py`), the same verdict-path-safe boundary `fit.
+            # verdict` above already keeps — and, like `fit.verdict` above,
+            # is handed the SAME per-request `hardware` reading rather than
+            # doing its own (code review: `speed.estimate_tok_s` had the
+            # identical N-reads-per-row bug `fit.verdict` was already fixed
+            # for, on a call path that got missed the first time round).
+            entry["speedEstimate"] = (
+                speed.estimate_tok_s(entry.get("size_gb"), params=entry.get("params"),
+                                     quantization=entry.get("quantization"),
+                                     hardware=hardware)
+                if row["capability"] == registry.TEXT_GENERATION else None)
             # Whether this one can be handed a base image to EDIT (AI-9f) —
             # computed per entry on BOTH halves, because a cached mflux repo
             # with no edit variant is as unable to edit as a diffusers one and
             # a picker filtering on absence would offer it anyway.
             entry["acceptsImage"] = _accepts_image(
                 row["capability"], row["runner"], entry["id"])
+            # Orthogonal tags (SPEC AI-28) — `tool-use`/`vision`, ON TOP OF
+            # the capability this row already dispatches by, never a
+            # replacement for it. Text generation only: tool-use is a
+            # chat-format property no other capability has, and the vision
+            # tag restates the same fact `acceptsImage` already gates on for
+            # this capability.
+            entry["tags"] = _capability_tags(row["capability"], entry["id"])
             # The embeddings pair (SPEC §40): whether this entry may be handed
             # image PATHS, and which retrieval prompt scheme its texts get.
             # Computed per entry on BOTH halves for `acceptsImage`'s reason — a
@@ -889,6 +937,46 @@ def _catalog_with_downloads() -> list[dict]:
 #: FOOTPRINT, not `size_gb` alone, on a precedence ladder this router does
 #: not own. `fit.machine_ram_gb()` is the same stdlib RAM reading, cached
 #: forever, moved rather than duplicated.
+
+
+#: `hub_metadata.cached()`'s camelCase field names, mapped to the snake_case
+#: keyword `fit.footprint_bytes`'s KV-cache term reads (its own docstring:
+#: "the same field NAMES `hub_metadata` returns (minus its
+#: `numHiddenLayers`-style camelCase)"). `kv_dtype` has no harvested
+#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype — so
+#: it is left for `fit.py`'s own quantization-based default.
+_KV_GEOMETRY_FIELDS = {
+    "numHiddenLayers": "num_hidden_layers",
+    "numKeyValueHeads": "num_key_value_heads",
+    "numAttentionHeads": "num_attention_heads",
+    "headDim": "head_dim",
+    "hiddenSize": "hidden_size",
+    "layerTypes": "layer_types",
+}
+
+
+def _kv_geometry_kwargs(model_id: str) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`layer_types` kwargs for
+    `model_id`, read straight off `hub_metadata.cached()` — NO network call
+    (code review finding 1's same constraint `_accepts_image`/
+    `_capability_tags` already keep on this polled route). Without this, the
+    KV-cache term in `fit.footprint_bytes` is silently 0 for every catalog
+    row: the geometry `hub_metadata.cached()` already holds on disk (and
+    that this same request already reads for the vision/tool-use tags) was
+    never forwarded to `fit.verdict`.
+
+    Absent for an uncached repo, same as every other optional geometry
+    kwarg — the ladder just falls through to the params-only weight
+    estimate, exactly as before this existed.
+    """
+    meta = hub_metadata.cached(model_id)
+    if not meta:
+        return {}
+    return {
+        snake: meta[camel]
+        for camel, snake in _KV_GEOMETRY_FIELDS.items()
+        if meta.get(camel) is not None
+    }
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
@@ -917,12 +1005,24 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
     - TEXT_GENERATION — True only when the resolved runner is `mlx-text` (the
       one runner here that reads a checkpoint through mlx-vlm at all — a
       llama.cpp GGUF text model has no vision tower to speak of and must come
-      back False the same as before) AND `hub_cache.has_vision_tower` finds a
-      `vision_config`/`image_token_id` in the cached checkpoint's own
-      `config.json`. Read straight off disk, with no model load involved —
-      an attach button whose request then 400s is exactly the failure this
-      field exists to prevent, so "cannot tell" answers False rather than
-      guessing True.
+      back False the same as before) AND the checkpoint has a vision tower.
+      **Two sources, in precedence order (SPEC AI-17 item 17):**
+      `hub_cache.has_vision_tower` first, reading straight off an already-
+      cached snapshot's own `config.json` with no model load involved — the
+      MEASURED answer, when there is a snapshot to measure. Only when
+      `hub_cache.has_cached_snapshot` says there is NOTHING on disk yet does
+      this fall back to `hub_metadata.cached(model_id)`'s `hasVisionTower` —
+      the Hub's OWN `config.json`, harvested ahead of any download (AI-17)
+      — so a search result still classifies before the user fetches a
+      single byte. `cached()`, never `get()` (code review finding 1): this
+      is a route the picker polls, and `get()` is a synchronous `urllib`
+      fetch with an 8-second timeout — `supervisor.start_hub_metadata_
+      refresh`'s background sweep is the only thing that ever calls `get()`
+      now, so this route only ever reads what that sweep already wrote,
+      with no network access of its own. A cached snapshot that genuinely
+      has no tower is never second-guessed by a stale Hub reading: "cannot
+      tell" (no snapshot, no harvested metadata either) answers False
+      rather than guessing True, same as before.
     - Every other capability: False. `engine_options` is an exception list
       for the image route alone, so treating "refuses nothing" as evidence
       would have every non-image, non-mlx-text model in the payload claiming
@@ -939,8 +1039,43 @@ def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> b
             return formats.mflux_edit_recipe(model_id) is not None
         return True
     if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
-        return has_vision_tower(model_id)
+        if has_cached_snapshot(model_id):
+            return has_vision_tower(model_id)
+        meta = hub_metadata.cached(model_id)
+        return bool(meta and meta.get("hasVisionTower"))
     return False
+
+
+def _capability_tags(capability: str, model_id: str) -> tuple[str, ...]:
+    """`registry.capability_tags` for `model_id` — `tool-use`/`vision`, per
+    SPEC AI-28, ON TOP OF the capability dispatch `row["capability"]` already
+    is. Text generation only, for the same reason `_accepts_image`'s own
+    TEXT_GENERATION branch is the one place a vision fact is meaningful here:
+    the other three capabilities (image, speech, embeddings) have no chat
+    format to call a tool in, and their own vision-alike question (whether an
+    embedding model reads image paths) is already answered by `_accepts_paths`
+    in this app's existing vocabulary rather than this tag.
+
+    Reuses the SAME cached-vs-pre-download precedence `_accepts_image` keeps
+    (`has_cached_snapshot` gates whether `has_vision_tower`'s on-disk reading
+    or `hub_metadata`'s Hub-harvested one applies), and the harvested
+    `modelType`/`architecture` back `registry.supports_tool_use`'s
+    known-family allowlist for an uncached repo whose id alone is
+    uninformative (a private fork, a renamed mirror).
+    """
+    if capability != registry.TEXT_GENERATION:
+        return ()
+    model_type = architecture = None
+    if has_cached_snapshot(model_id):
+        vision = has_vision_tower(model_id)
+    else:
+        meta = hub_metadata.cached(model_id)
+        vision = bool(meta and meta.get("hasVisionTower"))
+        if meta:
+            model_type = meta.get("modelType")
+            architecture = meta.get("architecture")
+    return registry.capability_tags(model_id, model_type=model_type,
+                                    architecture=architecture, has_vision=vision)
 
 
 def _accepts_paths(capability: str, model_id: str) -> bool:

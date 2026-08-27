@@ -10,12 +10,11 @@ readme = "README.md"
 # license: intentionally unset pending the public-launch licensing decision —
 # add it (plus the matching classifier and a LICENSE file) before any PyPI
 # publish.
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 keywords = ["file-explorer", "preview", "data-viz", "duckdb", "geospatial", "html"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -52,14 +51,6 @@ dependencies = [
     # `_login._save_oauth_token` (persisting it with its refresh token) are what
     # routers/hf_auth.py drives.
     "huggingface_hub>=1.28,<2",
-    # Reading a project's `pyproject.toml` (projectenv._load_manifest). tomllib is
-    # 3.11+ stdlib and requires-python is >=3.10, so on 3.10 this supplies it.
-    # Still core rather than an extra, and now more so than when it was added for
-    # PEP 723 headers: a folder's manifest is how a project declares deps the app
-    # doesn't ship (PY-16), and the parser runs on every /api/run under either
-    # engine. Without it every declaration reads as absent and every project
-    # silently falls back to the app interpreter.
-    "tomli>=2.0; python_version < '3.11'",
     # PEP 508 requirement/specifier parsing, for deciding whether the app
     # interpreter already satisfies a script's PEP 723 header (engine.app_satisfies
     # — a header it already meets runs with no venv at all). Core rather than an
@@ -68,7 +59,7 @@ dependencies = [
     # fused-render` had it by luck — and D276 then removed all four, which is
     # what "borrowed" always eventually means. Without it every header silently
     # falls back to building its own venv — a permanent slowdown with no failing
-    # test, which is exactly the shape of the `httpx`/`tomli` mistakes above.
+    # test, which is exactly the shape of the `httpx` mistake above.
     "packaging>=22",
     # AppKit, for the macOS half of the OS clipboard bridge
     # (shell/pasteboard/_darwin.py reads and writes NSPasteboard file URLs).

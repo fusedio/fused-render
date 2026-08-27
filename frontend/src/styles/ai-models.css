@@ -605,18 +605,15 @@
   border-radius: 3px;
 }
 
-/* -- the caption line: what it costs, then which repo it is -----------------
-   Directly under the name, cost first. The figure spent an hour in the head
-   beside the name, matching the recommendation cards drawn next to these — but
-   those cards have no second line to put it on, so matching them there bought
-   consistency with a card that had no choice and cost this one the arrangement
-   that actually reads as a caption.
-
-   No `margin-left: auto` on the figure any more either: the (i) claims the
-   head's free space now. Tabular, so a column of cards lines its figures up
-   even though each card sizes itself. */
+/* -- the caption line: which repo it is, then what it costs -----------------
+   Directly under the name. The figure is pinned to the card's RIGHT edge
+   (`margin-left: auto`) so a column of cards lines its figures up against a
+   shared margin — tabular for the same reason — while the id continues the
+   name it sits under (Akshil, 2026-08-27: "move the size all the way to the
+   right in the card"). */
 .am-card-size {
   flex: 0 0 auto;
+  margin-left: auto;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;

@@ -149,12 +149,17 @@ function ModelCard({
           from the cached card drawn next to it in the same row — "why are they
           not the same? at least the name, the mlx-community thing and the size
           should be same".
-          Cost first, then the address of the thing it is the cost of. */}
-      <div className="am-card-sub" data-hint={slug}>
+          Id first, figure pinned to the right edge (2026-08-27: "move the size
+          all the way to the right in the card"). */}
+      {/* THE HINT IS ON THE ID, not the line (Akshil, 2026-08-27: "this tooltip
+          should only appear when I'm hovering on the ... model name text, not on
+          the empty space between model and size"). The line spans the card, so
+          a hint on it fired over the gap the figure's right-pin opened up. */}
+      <div className="am-card-sub">
+        <span className="am-card-slug cc-mono" data-hint={slug}>{slug}</span>
         <span className="am-card-size" data-hint={size.title}>
           {size.text}
         </span>
-        <span className="am-card-slug cc-mono">{slug}</span>
       </div>
       {what && <div className="am-card-what">{what}</div>}
       {progress}

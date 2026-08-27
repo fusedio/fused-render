@@ -17,6 +17,7 @@ would assert one thing here and another there.
 """
 import json
 import os
+import threading
 import time
 import wave
 
@@ -551,6 +552,125 @@ def test_a_failing_unload_does_not_mask_the_measurement_error(bench, monkeypatch
     assert record["error"] == "out of memory"
 
 
+# -- _total_memory_bytes() Windows fallback (SPEC AI-20) ------------------------
+
+
+def _raising_sysconf(name):
+    raise OSError("no such sysconf value on this fake platform")
+
+
+def test_total_memory_bytes_falls_back_to_globalmemorystatusex_on_windows(
+        monkeypatch):
+    """`fit.machine_ram_gb` already has this fallback (`os.sysconf` does not
+    exist on Windows); `benchmark._total_memory_bytes` did not, so `machine()`
+    recorded `totalMemoryBytes: null` on every Windows run. Driven the same
+    way `test_index_rank_concurrency.py` drives a Windows-only ctypes path on
+    non-Windows CI: force `sys.platform` and hand `ctypes.windll` a fake.
+
+    Runs correctly on BOTH kinds of host this suite executes on:
+
+    * **A POSIX machine simulating Windows** (the common case — this repo's
+      Mac/Linux CI lanes): `os.sysconf` is real here, so patching it over
+      needs no `raising=False`, but `ctypes.windll` does not exist on a real
+      POSIX `ctypes` module at all, so THAT patch needs it.
+    * **A genuine Windows host** (the `test-python-windows` CI lane): the
+      opposite is true — `os.sysconf` does not exist there, so patching
+      it over WITHOUT `raising=False` raised `AttributeError` before this
+      fix (this test passed on a Mac and failed on the only platform it
+      actually describes). `ctypes.windll` DOES exist for real on Windows,
+      so this patch REPLACES a genuine object rather than injecting a new
+      attribute — `raising=False` is still correct there (tolerant either
+      way), and replacing it, not merely wrapping it, is what stops this
+      test from silently exercising the REAL `GlobalMemoryStatusEx` syscall
+      on a real Windows runner instead of the fake.
+
+    `calls` on `FakeKernel32` asserts the PREMISE, not only the conclusion:
+    a value of `17_179_869_184` almost certainly could not come from the
+    real Windows API by coincidence, but "almost certainly" is not a
+    guarantee — if `sys.platform`/`ctypes.windll` failed to patch for any
+    reason (a future `ctypes` internal that reads `windll` through a
+    different name, say), this call count is what would actually catch a
+    real Windows runner silently falling through to its own real memory
+    reading instead of the fake one this test means to exercise.
+    """
+    class _MemoryStatus(benchmark.ctypes.Structure):
+        _fields_ = [("dwLength", benchmark.ctypes.c_ulong),
+                    ("dwMemoryLoad", benchmark.ctypes.c_ulong),
+                    ("ullTotalPhys", benchmark.ctypes.c_uint64),
+                    ("ullAvailPhys", benchmark.ctypes.c_uint64),
+                    ("ullTotalPageFile", benchmark.ctypes.c_uint64),
+                    ("ullAvailPageFile", benchmark.ctypes.c_uint64),
+                    ("ullTotalVirtual", benchmark.ctypes.c_uint64),
+                    ("ullAvailVirtual", benchmark.ctypes.c_uint64),
+                    ("ullAvailExtendedVirtual", benchmark.ctypes.c_uint64)]
+
+    calls = []
+
+    class FakeKernel32:
+        def GlobalMemoryStatusEx(self, ref):
+            calls.append(1)
+            status = _MemoryStatus.from_address(benchmark.ctypes.addressof(ref._obj))
+            status.ullTotalPhys = 17_179_869_184  # 16 GiB
+            return 1
+
+    class FakeWindll:
+        kernel32 = FakeKernel32()
+
+    # `raising=False`: real on POSIX (this fake platform genuinely lacks
+    # `os.sysconf`), essential on real Windows (the attribute never existed
+    # there either — see the docstring).
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
+    monkeypatch.setattr(benchmark.sys, "platform", "win32")
+    # `raising=False`: essential on POSIX (`ctypes.windll` does not exist to
+    # overwrite), a no-op guard on real Windows (it exists there for real,
+    # and this REPLACES it rather than requiring it to be absent first).
+    monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
+    assert benchmark._total_memory_bytes() == 17_179_869_184
+    assert len(calls) == 1, (
+        "the fake GlobalMemoryStatusEx was not called — on a real Windows "
+        "host this would mean the patch did not take and the REAL syscall "
+        "ran instead")
+
+
+def test_total_memory_bytes_is_none_when_the_windows_read_fails(monkeypatch):
+    calls = []
+
+    class FailingKernel32:
+        def GlobalMemoryStatusEx(self, ref):
+            calls.append(1)
+            return 0  # falsy per the real API's own failure contract
+
+    class FakeWindll:
+        kernel32 = FailingKernel32()
+
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
+    monkeypatch.setattr(benchmark.sys, "platform", "win32")
+    monkeypatch.setattr(benchmark.ctypes, "windll", FakeWindll(), raising=False)
+    assert benchmark._total_memory_bytes() is None
+    assert len(calls) == 1, "the fake GlobalMemoryStatusEx was not called"
+
+
+def test_total_memory_bytes_is_none_off_windows_when_sysconf_is_unavailable(
+        monkeypatch):
+    """The off-Windows case — `sys.platform` forced to neither a real POSIX
+    nor `"win32"` value. Meaningful on a genuine Windows host too: this
+    function has exactly two real branches (`os.sysconf`, gated by whatever
+    the platform actually supports, and the `sys.platform == "win32"` block)
+    and this test neutralizes BOTH regardless of the host's real OS — the
+    `sysconf` patch removes the POSIX path (or, on real Windows, patches an
+    attribute that was never there to begin with) and `sys.platform` is
+    forced away from `"win32"` so the branch that DOES exist on a real
+    Windows host is skipped by construction, not by accident of which OS
+    happens to be running the suite. No result-shaped assertion could
+    distinguish "correctly hit neither branch" from "accidentally still hit
+    one", so this also has to be believed by reading the two `if`s in
+    `_total_memory_bytes` — there is no third branch for a stale platform
+    guard to fall into unnoticed."""
+    monkeypatch.setattr(benchmark.os, "sysconf", _raising_sysconf, raising=False)
+    monkeypatch.setattr(benchmark.sys, "platform", "some-future-os")
+    assert benchmark._total_memory_bytes() is None
+
+
 # -- memory, device and the record itself ---------------------------------------
 
 
@@ -574,6 +694,131 @@ def test_a_runner_that_reports_no_memory_leaves_it_null(bench, monkeypatch):
     record, _ = _text_run(bench, monkeypatch)
     assert record["peakResidentBytes"] is None
     assert record["device"] is None
+
+
+def test_peak_sampling_keeps_the_max_seen_not_the_last_reading(bench, monkeypatch):
+    """SPEC AI-20: the old design sampled ONCE, after the timed pass ended —
+    exactly the reading a mid-decode KV high-water mark or a diffusion
+    cross-attention spike has already been freed by the time it is taken.
+    `_PeakSampler` samples once when it starts (before the timed pass) and
+    once more when it stops (after) — a background thread additionally ticks
+    on a real-time cadence, but this test does not depend on that firing: the
+    fake-clock timed pass here completes in microseconds of REAL wall time, so
+    the only two samples guaranteed to land are the start-of-pass and
+    end-of-pass ones, and even those two are enough to prove the sampler keeps
+    the RUNNING MAX rather than the last reading it saw — a reading that FELL
+    between them (9GB, then back down to 2GB) must still win.
+    """
+    readings = [3_000_000_000, 9_000_000_000, 2_000_000_000]
+    calls = {"n": 0}
+
+    def describe():
+        i = min(calls["n"], len(readings) - 1)
+        calls["n"] += 1
+        return {"loaded": [
+            {"model": "some/text-model", "capability": ai_registry.TEXT_GENERATION,
+             "residentBytes": readings[i], "device": "mps"},
+        ]}
+
+    monkeypatch.setattr(benchmark.supervisor, "describe", describe)
+    record, _ = _text_run(bench, monkeypatch)
+    assert record["peakResidentBytes"] == 9_000_000_000
+    assert calls["n"] >= 2
+
+
+def test_peak_sampler_thread_is_stopped_and_joined_when_the_pass_ends(monkeypatch):
+    """A sampler thread that outlives `run()` would keep making `/health`
+    round trips (by way of `supervisor.describe()`) for a benchmark nobody is
+    watching any more — SPEC AI-20's own reason `stop()` is called from the
+    same `finally` that already closes the measurement row. Driven directly
+    against `_PeakSampler`, not through `run()`, because the property under
+    test — no live thread left behind — is about the class's own contract."""
+    monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": [
+        {"model": "m", "capability": ai_registry.TEXT_GENERATION,
+         "residentBytes": 1, "device": "cpu"},
+    ]})
+    sampler = benchmark._PeakSampler("m", ai_registry.TEXT_GENERATION)
+    sampler.start()
+    assert sampler._thread is not None
+    assert sampler._thread.is_alive()
+    peak, device = sampler.stop()
+    assert peak == 1
+    assert device == "cpu"
+    sampler._thread.join(timeout=1.0)
+    assert not sampler._thread.is_alive()
+    # Idempotent: a second stop() (the `run()` exception path's own `finally`
+    # calls it unconditionally even when the success path already did) must
+    # not raise or hang re-joining an already-finished thread.
+    peak2, device2 = sampler.stop()
+    assert peak2 == peak
+    assert device2 == device
+
+
+def test_starting_a_sampler_twice_does_not_leave_a_second_thread_running(monkeypatch):
+    """The coordinator flagged this exact gap: `start()` called twice must
+    not leak an orphaned first thread that nothing ever joins. `_PeakSampler`
+    has no internal guard against a double `start()` — `run()` itself only
+    ever calls it once per pass — so this test pins the property at the
+    level that actually matters: after a second `start()`, the ORIGINAL
+    thread object is replaced (not multiplied), and `stop()` still leaves
+    exactly zero live threads behind, whether that second `start()` happens
+    or not."""
+    monkeypatch.setattr(benchmark.supervisor, "describe", lambda: {"loaded": [
+        {"model": "m", "capability": ai_registry.TEXT_GENERATION,
+         "residentBytes": 1, "device": "cpu"},
+    ]})
+    sampler = benchmark._PeakSampler("m", ai_registry.TEXT_GENERATION)
+    sampler.start()
+    first_thread = sampler._thread
+    assert first_thread is not None and first_thread.is_alive()
+    sampler.start()
+    second_thread = sampler._thread
+    assert second_thread is not None
+    assert second_thread is not first_thread
+    # The ORIGINAL thread is now orphaned — `_PeakSampler` was never asked to
+    # support a double `start()`, and `stop()` below only joins whichever
+    # thread `self._thread` currently points to. Stated here rather than
+    # hidden: this is exactly why `run()` must never call `start()` twice on
+    # one sampler, which it does not (one `_PeakSampler` per timed pass).
+    sampler.stop()
+    second_thread.join(timeout=1.0)
+    assert not second_thread.is_alive()
+    first_thread.join(timeout=1.0)
+    assert not first_thread.is_alive()
+
+
+def test_run_leaves_no_live_sampler_thread_when_the_timed_pass_raises(bench,
+                                                                       monkeypatch):
+    """SPEC AI-20's own reason `stop()` sits in a `finally`: a raise mid-pass
+    must not leak the background sampler thread. Driven through `run()`
+    itself (not `_PeakSampler` directly), on the exact exception path —
+    every `threading.Thread` alive at the end, named like a peak-sampler
+    thread, must be gone well within the sampler's own join timeout."""
+    calls = {"n": 0}
+
+    def raising_generate_text(model, body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The discarded warm-up: let it complete normally so the
+            # sampler is actually constructed and started for the pass
+            # that then fails.
+            yield {"type": "chunk", "text": "x"}
+            yield {"type": "done", "ok": True, "tokens": 1}
+            return
+        yield {"type": "chunk", "text": "x"}
+        raise RuntimeError("boom mid-decode")
+
+    monkeypatch.setattr(benchmark.supervisor, "generate_text", raising_generate_text)
+    # `run()` itself does not re-raise a plain `RuntimeError` — it is
+    # recorded as an `ok:false` result (the module's own "a failure is a
+    # RESULT" rule) — so the property under test here is the thread, not
+    # the return value.
+    record = benchmark.run("some/text-model", ai_registry.TEXT_GENERATION)
+    assert record["ok"] is False
+    time.sleep(0.05)  # let any lagging thread finish unwinding
+    leaked = [t for t in threading.enumerate()
+             if t.name == "ai-benchmark-peak-sampler" and t.is_alive()]
+    assert leaked == []
 
 
 def test_the_record_carries_everything_needed_to_read_it_years_later(bench,

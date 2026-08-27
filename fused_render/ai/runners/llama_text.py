@@ -339,6 +339,159 @@ def _resolve_uncurated_repo(model_id):
     return model_id, {"repo": model_id, "file": chosen}
 
 
+#: Set by `supervisor._child_env` on every worker spawn (SPEC AI-24 item 14's
+#: real wiring) — `fit.available_budget_bytes()`, computed SERVER-side
+#: because this worker's bare-module interpreter cannot import
+#: `fused_render.ai.fit`/`hw_detect` (see the top of this file: `formats`
+#: and `worker_base` are found off `sys.path`, not the `fused_render`
+#: package). Read fresh, never cached at import time, so a stale value from
+#: an earlier process cannot linger — there is exactly one reader
+#: (`_memory_budget_bytes` below) and it reads the environment every call.
+_MEMORY_BUDGET_ENV = "FUSED_AI_MEMORY_BUDGET_BYTES"
+
+
+def _memory_budget_bytes():
+    """`os.environ[_MEMORY_BUDGET_ENV]` as a `float`, or `None` — absent,
+    unparseable, or non-positive all read the same way: "budget unknown",
+    which is what makes every caller below fall back to the CURATED file
+    unchanged rather than guessing. A corrupt or hand-edited environment
+    value must degrade exactly like a missing one, never raise into a
+    download.
+    """
+    raw = os.environ.get(_MEMORY_BUDGET_ENV)
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _local_gguf_sizes(repo_id):
+    """`{filename: size_bytes}` for every root-level `.gguf` `repo_id`
+    already has ON DISK — real, measured sizes (`os.path.getsize`), no
+    network. Reuses `_locally_cached_gguf_files` (the same local-cache-first
+    fast path `_resolve_uncurated_repo` already keeps) and `worker_base.
+    _cached_file` (the read-only lookup that turns a bare filename into a
+    real blob path) rather than re-deriving either. Empty when nothing is
+    cached, never raises — a stat failure on one file (removed between the
+    listing and the stat) drops that one entry rather than the whole
+    picture.
+    """
+    sizes = {}
+    for name in _locally_cached_gguf_files(repo_id):
+        path = worker_base._cached_file(repo_id, name)
+        if not path:
+            continue
+        try:
+            sizes[name] = os.path.getsize(path)
+        except OSError:
+            continue
+    return sizes
+
+
+def _remote_gguf_sizes(repo_id):
+    """`{filename: size_bytes}` for `repo_id`'s own Hub listing — ONE
+    metadata call (`worker_base._repo_files`, the identical listing
+    `download_snapshot`/`download_file` already make for their own progress
+    totals), real per-file sizes rather than a guess. Empty on ANY failure
+    (network, a repo that has vanished, a malformed response) — the same
+    "cannot verify, proceed on the curated default" degradation every other
+    budget-aware check in this build keeps, never a raise into a download
+    the user did not ask to fail this way.
+    """
+    try:
+        _sha, files = worker_base._repo_files(repo_id)
+    except Exception:  # noqa: BLE001 - a listing failure here must fall
+        # back to the curated recipe, never abort the download outright.
+        return {}
+    # An unsized entry is kept as `None`, never dropped (code review): a
+    # missing key here reads as "this file does not exist", while
+    # `formats.select_gguf_recipe`'s partial-shard estimate needs the key
+    # present with `size=None` to average it from its known siblings —
+    # dropping it instead undercounts a partially-sized shard set exactly
+    # the way that function's own docstring says its estimate must not.
+    return {name: size if isinstance(size, int) else None for name, size in files}
+
+
+def _resolve_curated_recipe(model_id, recipe):
+    """`(key, recipe)` for a CURATED `model_id` — budget-aware (SPEC AI-24
+    item 14's real production wiring), with the curated recipe as the
+    unconditional FLOOR/DEFAULT rather than a suggestion a picker can
+    overrule freely.
+
+    **Three ways this returns the curated recipe UNCHANGED, and each is a
+    deliberate "do not guess" branch:**
+
+    1. No budget known (`_memory_budget_bytes()` is `None` — an older
+       supervisor, or `fit.available_budget_bytes()` itself answered `None`
+       because RAM could not be read). Nothing to judge against.
+    2. No listing could be obtained at all (nothing cached locally AND the
+       Hub listing failed). Nothing to pick FROM.
+    3. **The curated file's own size, from that SAME listing, already fits
+       the budget.** This is the floor/default guarantee in code: a machine
+       for which the curated recipe was always going to work sees ZERO
+       behaviour change — the exact file, the exact bytes, the exact
+       identity every other reader of `GGUF_RECIPES` (the catalog's
+       `size_gb` promise, `hub_cache.is_downloaded`'s cache check,
+       `catalog.mirror_id`) already assumes. Budget-awareness only ever
+       ENGAGES when the curated default is already known not to fit.
+
+    When the curated file genuinely does not fit, `formats.select_gguf_
+    recipe` picks the best-quality file from the SAME repo's own listing
+    that does — real, measured sizes throughout (never `params x bpp`; this
+    caller never passes `params`, so a group with no known size is simply
+    excluded, per that function's own "no evidence, no guess" rule). If
+    NOTHING in the repo fits either, the curated recipe is returned anyway
+    — `llama_text._offload_schedule`'s existing CPU-offload backoff is what
+    makes proceeding affordable (a load that is slower rather than a
+    download that is refused), the identical reasoning `formats.py`'s own
+    module note gives for `pick_gguf_file` staying hardware-blind.
+
+    **Known, accepted gap — reported, not hidden:** a downgraded pick is
+    fetched under the SAME curated `model_id`, but nothing server-side
+    (`hub_cache.is_downloaded`, the catalog's checkmark, the displayed
+    `size_gb`) knows the actual file differs from the curated one — those
+    readers have no network access on the polled catalog route (by design,
+    code review finding 1) and cannot re-derive this pick without one. The
+    checkmark may therefore under-report "downloaded" for a budget-
+    downgraded model; the worst case is a redundant but harmless re-check
+    (this function's own local-cache-first branch answers instantly, no
+    second network call), never data loss or a crash.
+    """
+    budget = _memory_budget_bytes()
+    if budget is None:
+        return model_id, recipe
+
+    # A local listing is only trustworthy STANDING IN for the full remote
+    # one when it already includes the curated file's own size (code
+    # review): a leftover smaller quant from a prior downgraded pick, still
+    # on disk, is a NON-EMPTY listing that says nothing about whether the
+    # curated file itself fits — treating it as complete skipped the floor
+    # check below (curated_size stayed None) and asked `select_gguf_recipe`
+    # to choose from evidence about ONE file when the repo may offer many.
+    # Only once the curated file's real size is locally known does the
+    # local-cache-first fast path (`_locally_cached_gguf_files`'s own
+    # reasoning) apply without a network call.
+    local_sizes = _local_gguf_sizes(recipe["repo"])
+    sizes = local_sizes if recipe["file"] in local_sizes else _remote_gguf_sizes(recipe["repo"])
+    if not sizes:
+        return model_id, recipe
+
+    curated_size = sizes.get(recipe["file"])
+    if curated_size is not None and curated_size <= budget:
+        return model_id, recipe
+
+    chosen = formats.select_gguf_recipe(sizes, budget)
+    if chosen is None:
+        return model_id, recipe
+    name, _total = chosen
+    if name == recipe["file"]:
+        return model_id, recipe
+    return model_id, {"repo": recipe["repo"], "file": name}
+
+
 def _resolve_model_id(model_id):
     """`(key, recipe)` for whatever `model_id` actually means, or raise.
 
@@ -364,7 +517,7 @@ def _resolve_model_id(model_id):
     it is a multi-gigabyte download of the WRONG quantization.
     """
     if model_id in _GGUF_RECIPES:
-        return model_id, _GGUF_RECIPES[model_id]
+        return _resolve_curated_recipe(model_id, _GGUF_RECIPES[model_id])
 
     candidates = _recipes_for_repo(model_id)
     if not candidates:

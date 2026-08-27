@@ -92,6 +92,32 @@ def test_export_skips_machinery_and_hidden(tmp_path):
     )
 
 
+def test_export_fails_open_on_a_git_dir_git_rejects(tmp_path):
+    """A `.git` whose HEAD git will not read (a stub, a half-copied checkout)
+    is not a repository, and must not become the ignore oracle's root: every
+    check-ignore against it answers 128, which read as "git stopped
+    answering" and refused the whole export (main was red on this from
+    #886). The marker fails open — the folder exports as a plain folder
+    would, the stub itself dropped by the hidden-name rule — while a REAL
+    ancestor .gitignore keeps being honored, because the parent's oracle
+    stays in force below the stub."""
+    root = tmp_path / "site"
+    root.mkdir()
+    (root / ".gitignore").write_text("*.log\n")
+    app = make_app(root)
+    (app / ".git").mkdir()
+    (app / ".git" / "HEAD").write_text("ref")  # not a ref git accepts
+    (app / "run.log").write_text("noise")
+    (app / "keep.txt").write_text("data")
+    out = tmp_path / "demo.fused"
+    appfile.export_app_file(str(app), str(out))
+    with zipfile.ZipFile(out) as zf:
+        names = set(zf.namelist())
+    assert "files/keep.txt" in names
+    assert "files/run.log" not in names
+    assert not any(".git" in n for n in names)
+
+
 def test_export_refuses_non_app_folder(tmp_path):
     d = tmp_path / "plain"
     d.mkdir()

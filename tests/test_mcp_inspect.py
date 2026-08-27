@@ -233,10 +233,11 @@ def _fake_cli(app, monkeypatch, name="fused"):
     """A `fused` wrapper in a dir exported the way the SERVER exports it (D334)."""
     bin_dir = os.path.join(app, "bin")
     os.makedirs(bin_dir, exist_ok=True)
-    # inspect_app.py itself looks for "<name>.exe" on Windows (that's how a pip/uv
-    # console-script install names the launcher there) — match that filename, or
-    # the file this fixture writes never matches what main() goes looking for.
-    filename = name + ".exe" if os.name == "nt" else name
+    # The filename has to match what fusedcli.export_fused_cli_env() actually
+    # writes — "<name>.cmd" on Windows, since the wrapper's content is a batch
+    # script that only a .cmd/.bat extension executes — or this fixture writes
+    # a file inspect_app._fused_cli() never goes looking for.
+    filename = name + ".cmd" if os.name == "nt" else name
     path = os.path.join(bin_dir, filename)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("#!/bin/sh\n")
@@ -277,6 +278,48 @@ def test_an_exported_dir_with_no_wrapper_in_it_is_an_empty_string(
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "empty"))
 
     assert inspect_app.main(path=app)["fused"] == ""
+
+
+@pytest.mark.parametrize("nt", [False, True])
+def test_the_reader_finds_exactly_what_the_writer_names(
+    inspect_app, app, monkeypatch, tmp_path, nt
+):
+    """`inspect_app._fused_cli()` must look for the exact filename
+    `fusedcli.export_fused_cli_env()` writes, for BOTH `os.name` values — not
+    just the one this test machine happens to run under.
+
+    This is the pin `_fused_cli()`'s docstring and `appenv.canvases_root()`
+    promise: the reader cannot import `fusedcli` (SPEC PY-15 — templates are
+    stdlib-only), so it duplicates the writer's filename rule instead, and a
+    test has to fail the moment the two copies disagree. They did: the writer
+    named the wrapper `fused.cmd` on Windows (batch content only a `.cmd`/
+    `.bat` extension executes) while the reader went looking for `fused.exe`,
+    so `os.path.isfile` never found it and registration silently disabled
+    itself. A POSIX-only run can't see this — both sides agree on the bare
+    name `fused` there — so this test forces the Windows branch explicitly
+    via `nt`, exercising the real writer (`fusedcli.export_fused_cli_env`)
+    rather than a copy of its filename string.
+    """
+    from fused_render import fusedcli
+
+    monkeypatch.setattr(os, "name", "nt" if nt else "posix")
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv(fusedcli.CLI_DIR_ENV, raising=False)
+    monkeypatch.delenv("PATH", raising=False)
+    stub = fusedcli.FusedCli(command=["/opt/stub/fused-real"], external=True)
+    monkeypatch.setattr(fusedcli, "fused_cli", lambda: stub)
+
+    bin_dir = fusedcli.export_fused_cli_env()
+    assert bin_dir is not None  # premise: the writer actually wrote a wrapper
+
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", bin_dir)
+
+    found = inspect_app.main(path=app)["fused"]
+    assert found != "", (
+        f"reader could not find the wrapper the writer wrote in {bin_dir} "
+        f"(os.name={os.name!r})"
+    )
+    assert os.path.dirname(found) == bin_dir
 
 
 # ------------------------------------------------------------------------ drift
@@ -402,9 +445,10 @@ def test_a_manifest_that_is_not_utf8_is_reported_not_raised(inspect_app, app):
 
 
 def test_no_toml_parser_is_reported_on_the_manifest_not_raised(inspect_app, app, monkeypatch):
-    # 3.10 without `tomli` (a project venv declares its own dependencies, SPEC
-    # PY-16): the app SURFACE is still readable and still worth drawing, so this
-    # is an error on the manifest sub-object rather than a failed report.
+    # An interpreter with no TOML parser at all. Unreachable on the >=3.11 floor
+    # (it described 3.10 without `tomli`), but the degradation is the property
+    # under test: the app SURFACE is still readable and still worth drawing, so
+    # this is an error on the manifest sub-object rather than a failed report.
     import builtins
 
     real_import = builtins.__import__
@@ -421,7 +465,7 @@ def test_no_toml_parser_is_reported_on_the_manifest_not_raised(inspect_app, app,
     report = inspect_app.main(path=app)
 
     assert report["ok"] is True
-    assert "tomli" in report["manifest"]["error"]
+    assert "tomllib" in report["manifest"]["error"]
     assert report["drift"] == []
     assert [f["file"] for f in report["files"]] == ["mail.py", "stats.py"]
 

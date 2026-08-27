@@ -662,7 +662,7 @@ export function Icon({
     | "plus"
     | "undo"
     | "info"
-    | "lock"
+    | "kebab"
     | "check";
 }) {
   const paths: Record<string, ReactNode> = {
@@ -678,14 +678,15 @@ export function Icon({
     // Memory's per-project Commit — a plain checkmark, distinct from the
     // trash (Clear) and folder (Reveal) glyphs beside it.
     check: <polyline points="20 6 9 17 4 12" />,
-    // A read-only marketplace, in the Plugins rail — a muted fact, not a
-    // warning, so it is a quiet glyph rather than a coloured pill (round 2:
-    // the pill overflowed the rail's fixed width and was tinted --warning,
-    // a hue this app reserves for uncommitted git state).
-    lock: (
+    // Per-marketplace menu, in the Plugins rail. One trailing slot for every
+    // action a row has, in place of the two icon buttons and the read-only
+    // lock that used to sit there — three glyphs' worth of a 180px column,
+    // spent on a row whose main job is to show a name and a count.
+    kebab: (
       <>
-        <rect x="5" y="11" width="14" height="9" rx="2" />
-        <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        <circle cx="12" cy="5" r="1.4" />
+        <circle cx="12" cy="12" r="1.4" />
+        <circle cx="12" cy="19" r="1.4" />
       </>
     ),
     // The Preferences "reset to default" ghost icon button — a corner-arrow

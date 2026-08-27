@@ -367,3 +367,49 @@ def test_registration_is_null_guarded_independently_of_the_button():
     toggle = panel[panel.index("async function toggleRegistration()"):]
     guard = toggle[:toggle.index("await guard(")]
     assert "!report || !report.ok || !report.fused" in guard
+
+
+# ------------------------------------------------------------ registration
+#
+# The {command, args} shape written into the user's GLOBAL ~/.claude.json on
+# Register. Pinned here, run for real (not just grepped), because the failure
+# mode this guards against is a well-intentioned "fix": a reader sees a bare
+# `.cmd` path in `command` and reroutes it through a `cmd.exe /c` hop — which
+# was investigated and rejected (see registrationDefinition's own comment in
+# template.html for the evidence and its limits). `os.name` on the machine
+# running THIS test is irrelevant — the panel is JS with no platform branch of
+# its own, so the two cases below are two shapes of `report.fused` the Python
+# side can hand it for either `os.name` value, not two runs of this test.
+
+
+def test_registration_command_is_the_bare_resolved_fused_path_posix():
+    [definition] = run_cases([{
+        "fn": "registrationDefinition",
+        "fused": "/Users/anna/.fused-render/branches/main/fused-bin/fused",
+        "path": "/Users/anna/my app",
+    }])
+    assert definition == {
+        "command": "/Users/anna/.fused-render/branches/main/fused-bin/fused",
+        "args": ["app", "serve", "/Users/anna/my app"],
+    }
+
+
+def test_registration_command_is_the_bare_resolved_fused_cmd_path_windows():
+    """The Windows shape `inspect_app._fused_cli()` reports: an absolute
+    `fused.cmd` path, verbatim as `command` -- no `cmd.exe`, no `/c`, no
+    wrapping of any kind, even though the path (a spaced username, the common
+    case that makes this whole question hard) is exactly the one a "fix"
+    would target."""
+    [definition] = run_cases([{
+        "fn": "registrationDefinition",
+        "fused": r"C:\Users\Anna Smith\.fused-render\branches\main\fused-bin\fused.cmd",
+        "path": r"C:\Users\Anna Smith\my app",
+    }])
+    assert definition == {
+        "command": r"C:\Users\Anna Smith\.fused-render\branches\main\fused-bin\fused.cmd",
+        "args": ["app", "serve", r"C:\Users\Anna Smith\my app"],
+    }
+    # The specific regression this guards: nothing about a `.cmd` extension or
+    # a space triggers a `cmd.exe` hop.
+    assert "cmd.exe" not in json.dumps(definition)
+    assert "/c" not in definition["args"]

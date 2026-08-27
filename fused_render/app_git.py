@@ -88,7 +88,12 @@ _IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
 # would sweep tens of thousands of files into the app's history. `pyproject.toml`
 # and `uv.lock` are deliberately NOT ignored: those are source and belong in the
 # repo — they are what makes the folder reproduce on another machine.
-_GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
+# `.fused/` is the app's own state folder (D548): machine-local by
+# definition — a cache that can be deleted at any time, and data keyed to
+# THIS machine's absolute paths — so it is never app history. The trailing
+# slash matters: it matches the directory only, leaving an exported
+# `<name>.fused` app file (SPEC §43) tracked like any other artifact.
+_GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
 
 
 def _git(app_dir: str, *args: str) -> subprocess.CompletedProcess:

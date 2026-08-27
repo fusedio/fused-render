@@ -25,6 +25,7 @@ import {
 import type { Config, RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
+import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
 import { describeRepeats, describeRule, repeatChoicesFor } from "./schedule-lib";
 import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
 // This card's own rules live in styles/new-task.css, imported from the
@@ -3023,11 +3024,39 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
+            {/* THE HOTKEY, ON THE BUTTON (Akshil, 2026-08-27: "show that hotkey
+                on the schedule button as well"). ⌘↩ from any field submits —
+                see the form's onKeyDown — and a shortcut nobody is told about
+                is one nobody uses. Hidden while busy: the button is disabled
+                then and a live-looking hotkey on a dead button is a lie. */}
+            {!busy && (
+              <kbd className="schedule-save-key" aria-hidden>
+                <span>{MOD_LABEL}</span>
+                <span className="schedule-save-key-plus">+</span>
+                <span>{ENTER_LABEL}</span>
+              </kbd>
+            )}
           </button>
         </>
       }
     >
-      <div className="schedule-form">
+      <div
+        className="schedule-form"
+        // ⌘↩ / Ctrl+Enter SUBMITS, from any field (Akshil, 2026-08-27). Plain
+        // Enter has a job in every box here — next line in the ask, next field
+        // from the title, a pick in the recents list — so the commit needs the
+        // modifier, and the modifier is the one every composer on the machine
+        // already uses for "send". Goes through trySubmit, not submit, so a form
+        // that cannot be saved answers the same way the button does: says which
+        // field, moves the caret. Left alone inside the folder explorer, whose
+        // own Enter picks a row, and while a save is already in flight.
+        onKeyDown={(e) => {
+          if (e.key !== "Enter" || !isMod(e) || busy) return;
+          if ((e.target as HTMLElement).closest(".schedule-explorer")) return;
+          e.preventDefault();
+          trySubmit();
+        }}
+      >
         {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
             image): the title and the description share a single borderless
             area running from the header rule to the rows below it, the title
@@ -3090,6 +3119,22 @@ export default function NewJobModal({
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            // ENTER MOVES DOWN, into the instructions (Akshil, 2026-08-27: "when
+            // I am typing in the title, when I click enter, it should go to
+            // additional instructions"). The two fields are one message and the
+            // title is its first line, so Enter at the end of the first line
+            // means what it means in any editor: start the next one. It does
+            // NOT submit — a single-line field that fires Save on Enter would
+            // create a task on the way to describing it. An IME composition's
+            // Enter commits the candidate, not the line, and is left alone.
+            // A MODIFIED Enter is not this field's: ⌘↩ / Ctrl+Enter is the
+            // form's Save chord (the wrap's onKeyDown), and it must bubble there
+            // untouched rather than also walk the caret down (Bugbot).
+            onKeyDown={(e) => {
+              if (e.key !== "Enter" || e.nativeEvent.isComposing || isMod(e)) return;
+              e.preventDefault();
+              askRef.current?.focus();
+            }}
             autoFocus
           />
 

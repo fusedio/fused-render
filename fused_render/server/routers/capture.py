@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import (APIRouter, Body, Header, WebSocket,
+from fastapi import (APIRouter, Body, Header, Response, WebSocket,
                      WebSocketDisconnect)
 
 from fused_render import capture
@@ -101,6 +101,32 @@ def api_capture_screenshot(body: dict = Body(...),
         return _error(str(e), status=409)
     except Exception as e:                      # noqa: BLE001
         return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+
+
+@router.post("/api/capture/shot-region")
+def api_capture_shot_region(body: dict = Body(...),
+                            x_fused: str | None = Header(default=None)):
+    """The pixels under a browser-measured screen rect, as a PNG body.
+
+    The shell's export capture (SPEC AF-11): `{rect: [x, y, w, h], dpr}` in
+    the browser's own screen units, bytes back — no file in `<home>/recordings`
+    and no `fused.capture` surface, because the caller is the shell baking a
+    thumbnail into a `.fused`, not a page keeping a still. Errors are the
+    ordinary JSON `_error` shape, so a caller branches on `res.ok` alone.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        png = capture.shot_region(body)
+    except capture.CaptureError as e:
+        return _error(str(e), status=400)
+    except capture.Unsupported as e:
+        return _error(str(e), status=409)
+    except Exception as e:                      # noqa: BLE001
+        return _error(f"{e.__class__.__name__}: {e}".rstrip(": "), status=500)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "no-store"})
 
 
 @router.websocket("/api/capture/{cid}/stream")

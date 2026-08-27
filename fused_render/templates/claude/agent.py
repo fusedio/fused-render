@@ -141,9 +141,12 @@ SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 # reading a path out of one turn's message, so a crop stops mattering when its
 # conversation does. The TTL is generously longer than a session anyone would
 # keep scrolling back through, and the count is the backstop for a machine that
-# never idles long enough for the TTL to fire.
-SHOTS_TTL = 12 * 3600
-SHOTS_KEEP = 200
+# never idles long enough for the TTL to fire. Was 12h / 200: a restored turn
+# re-reads its shots through /api/fs/raw, and a picture gone from a week-old
+# conversation reads as a bug, so both were raised (2026-08-27) to 30 days /
+# 1000 files — still bounded, no longer visible in ordinary use.
+SHOTS_TTL = 30 * 24 * 3600
+SHOTS_KEEP = 1000
 
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
@@ -2044,11 +2047,14 @@ def _commit_turn(file: str, message: str) -> None:
             encoding="utf-8", errors="replace")
 
     try:
-        # Legacy defense: nothing writes these files any more — the sidecar
-        # they belonged to is deleted outright (D359), and it had already moved
-        # out of the app dir before that (D83-reversal, D205) — but a repo from
-        # either era may still have one sitting in its tree, and this sweep's
-        # add -A would commit it into app history. Mirror
+        # The two sidecar patterns are a LEGACY defense: nothing writes those
+        # files any more — the sidecar they belonged to is deleted outright
+        # (D359), and it had already moved out of the app dir before that
+        # (D83-reversal, D205) — but a repo from either era may still have one
+        # sitting in its tree, and this sweep's add -A would commit it into app
+        # history. `.fused/` is the LIVE one: the app's own state folder (D548)
+        # is written continuously by the running app, so a turn's add -A would
+        # otherwise sweep a whole cache into the commit. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
@@ -2059,7 +2065,8 @@ def _commit_turn(file: str, message: str) -> None:
                     have = {ln.strip() for ln in fh}
             except OSError:
                 have = set()
-            missing = [p for p in ("*.html.json", ".claude-split.json")
+            missing = [p for p in ("*.html.json", ".claude-split.json",
+                                   ".fused/")
                        if p not in have]
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
@@ -2123,6 +2130,52 @@ def _session_from_out(run_dir: str) -> str:
 # 60 later ones. The cap is what keeps this O(1)-ish on a machine that has been
 # chatting for weeks, since nothing prunes RUNS.
 _LIVE_SCAN_LIMIT = 60
+
+
+def _registry_running(workdir: str) -> set:
+    """Session ids in `workdir` that a `claude` process on this machine holds
+    RIGHT NOW — per Claude Code's own registry, `~/.claude/sessions/<pid>.json`,
+    one file per running process (sessionId, cwd, status), deleted on exit.
+
+    `_live_sessions` above knows only the runs THIS app spawned. A session
+    resumed in a terminal, or started there, is invisible to it and read as
+    idle on the Recent chats list while it is plainly generating. The registry
+    is the same source the Tasks page reads (fused_render/tasks_watch.py), so
+    the two lists agree on who is running.
+
+    `busy`/`shell` is running; `idle`/`waiting` is not; a row with NO status is
+    a headless `claude -p` that is alive, which is running for as long as the
+    file exists. A dead pid (a crash left the file behind) counts for nothing.
+    Best-effort throughout: an unreadable registry is an empty answer."""
+    want = os.path.abspath(workdir)
+    try:
+        names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
+    except OSError:
+        return set()
+    out = set()
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(CLAUDE_DIR, "sessions", name), encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("sessionId")
+        cwd = row.get("cwd")
+        if not isinstance(sid, str) or not isinstance(cwd, str):
+            continue
+        if os.path.abspath(cwd) != want:
+            continue
+        status = row.get("status")
+        if isinstance(status, str) and status and status not in ("busy", "shell"):
+            continue
+        if not _pid_alive(str(row.get("pid") or "")):
+            continue
+        out.add(sid)
+    return out
 
 
 def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
@@ -3266,7 +3319,7 @@ def _cli_sessions(file: str) -> list:
     want = "" if os.path.isdir(file) else os.path.abspath(file)
     # One scan for the whole list — see `_live_sessions` for why this is not
     # `_live_run` asked once per row.
-    live = _live_sessions(file)
+    live = _live_sessions(file) | _registry_running(_workdir(file))
     proj = os.path.join(PROJECTS, _munge(workdir))
     try:
         names = os.listdir(proj)

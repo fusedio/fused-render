@@ -213,7 +213,59 @@ export interface ClaudeHealth {
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
   config_dir: string;
+  /** `sys.platform`. Here so the UI never guesses which install line to show —
+      it used to, and it guessed wrong on Windows. */
+  platform: string;
+  /** The native install line for THIS platform, stated by the server rather
+      than reconstructed here. */
+  install_command: string;
+  /** Found, and runnable-looking, but it would not report its own version.
+      Silent before this existed; `doctor` is what makes it sayable. */
+  broken: boolean;
+  /** "native" | "npm" | "brew" | "winget" | "system" | … , or null when we
+      could not tell. Only ever set from `claude doctor` or, failing that, the
+      shape of the resolved path. */
+  install_method: string | null;
+  /** Whether `claude update` would actually change anything.
+      `false` means it is a documented no-op here — a package manager owns the
+      binary, or updates are switched off — and the UI must NOT offer to run it.
+      `null` means we could not tell, which is not evidence against it. */
+  updatable: boolean | null;
+  /** What to actually run: `claude update`, or the owning manager's own upgrade
+      line. null when we know the CLI cannot update itself and cannot name the
+      command that would. */
+  update_command: string | null;
+  update_manager: string | null;
+  /** Why an update would not work, in a sentence, when `updatable` is false. */
+  update_blocked_reason: string | null;
+  /** `claude doctor`'s own report, when it was run. Only measured while
+      something already looks wrong — a healthy machine never pays for it. */
+  doctor: ClaudeDoctor | null;
   checked_at: number;
+}
+
+/** What `claude doctor` said about its own installation. */
+export interface ClaudeDoctor {
+  install_method: string | null;
+  /** The CLI's own problem/fix pairs, verbatim. Better than anything we could
+      infer, and the reason the broken-install card has something to show. */
+  warnings: { problem: string; fix: string }[];
+  text: string;
+}
+
+/** One run of the installer or of `claude update`, as the server holds it. */
+export interface ClaudeInstallStatus {
+  action: "install" | "update" | null;
+  state: "idle" | "running" | "done" | "error";
+  detail: string;
+  /** The child's own output, verbatim — a 403 from downloads.claude.ai and a
+      proxy eating the TLS handshake are different problems with different
+      fixes, and a reworded message throws both away. */
+  output: string;
+  error: string | null;
+  command: string | null;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export function getClaudeHealth(): Promise<ClaudeHealth> {
@@ -224,6 +276,29 @@ export function getClaudeHealth(): Promise<ClaudeHealth> {
     gone and installed or signed into something. */
 export function refreshClaudeHealth(): Promise<ClaudeHealth> {
   return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
+}
+
+/** Run the native installer, or `claude update`, on this machine.
+    Rejects with the server's own sentence when it refuses — an update that
+    would no-op comes back as a 409 naming the command that would work. */
+export function startClaudeInstall(
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>("/api/claude/install", { action });
+}
+
+export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** `claude doctor` on demand — what the CLI thinks of its own installation. */
+export function runClaudeDoctor(): Promise<{
+  ok: boolean;
+  doctor: ClaudeDoctor | null;
+  path?: string;
+  error?: string;
+}> {
+  return postJson("/api/claude/doctor", {});
 }
 
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
@@ -642,6 +717,67 @@ export async function searchFiles(
   const data = await res.json();
   if (!res.ok) throw httpError(data, res.status);
   return data as SearchFilesResult;
+}
+
+// ---- the app page's API tab (routers/app_api.py) ----------------------------
+//
+// One .py described the way the `api` template describes it (inspector.py's
+// shape, plus `rel`/`path`): the module docstring, the project's declared
+// dependencies (fused engine only), and the entrypoint the ACTIVE engine would
+// call — `@fused.udf` or `main()` under fused, `main()` alone under builtin. A
+// file with no function but a top-level `result = …` is a parameterless run
+// under the fused engine (`static_result`).
+export interface PyParam {
+  name: string;
+  annotation: string | null;
+  has_default: boolean;
+  default: unknown;
+  /** Source of a non-literal default (a call, a name) — shown, never evaluated. */
+  default_repr: string | null;
+}
+
+export interface PyEndpoint {
+  rel: string;
+  path: string;
+  /** The file's fault: a syntax error, a null byte. */
+  parse_error: string | null;
+  /** The filesystem's fault: permissions, a vanished file. Not a syntax error. */
+  read_error?: string | null;
+  /** Which rule picked the entrypoint — a `@fused.udf` may itself be named
+   *  `main`, so the function's name cannot say. null = nothing to run. */
+  entrypoint?: "udf" | "main" | "result" | null;
+  module_docstring?: string | null;
+  dependencies?: string[];
+  project?: string | null;
+  ignored_manifests?: string[];
+  function?: { name: string; docstring: string | null; params: PyParam[] } | null;
+  static_result?: boolean;
+}
+
+export interface AppPyResult {
+  engine: "fused" | "builtin";
+  endpoints: PyEndpoint[];
+  truncated: boolean;
+}
+
+export function getAppPy(dir: string): Promise<AppPyResult> {
+  return getJson<AppPyResult>(`/api/apps/py?path=${encodeURIComponent(dir)}`);
+}
+
+// POST /api/run's wire shape (D69/§20): the same for both engines. A failed run
+// is a 200 with `ok:false` — the traceback is the payload, not an HTTP error.
+export interface RunResult {
+  ok: boolean;
+  result?: unknown;
+  error?: { type?: string; message?: string; traceback?: string };
+  stdout?: string;
+  stderr?: string;
+  duration_ms?: number;
+  resolved_py?: string;
+}
+
+export function runPy(py: string, params: Record<string, unknown>): Promise<RunResult> {
+  return postJson<RunResult>("/api/run", { py, params });
 }
 
 // `signal` matters for callers that stat on a user's behalf and then navigate:
@@ -1898,9 +2034,38 @@ export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
 
+// Which enabled background apps (server/background_apps.py) currently have a
+// live daemon, keyed by folder path — feeds the /apps grid's "running" badge
+// (Apps.tsx). Cheap by design: the endpoint reads only engine_host.current,
+// no folder walk, no toml reads.
+export function getBackgroundAppsRunning(): Promise<{ running: Record<string, boolean> }> {
+  return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
+// Write (or replace) an app folder's authored still, `preview.png`, from a
+// capture of what the preview frame is showing (appShot.captureAppPreview).
+// The path-bar's "Set Current View as Preview". `replaced` says which verb it
+// was; the caller asks before the overwrite, not after.
+export async function setAppPreview(
+  dir: string,
+  preview: Blob,
+): Promise<{ path: string; replaced: boolean }> {
+  const form = new FormData();
+  form.set("path", dir);
+  form.set("preview", preview, "preview.png");
+  const res = await fetch("/api/apps/preview", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; path?: string; replaced?: boolean };
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return { path: body.path ?? dir + "/preview.png", replaced: !!body.replaced };
+}
+
 export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   return getJson<{ entry: string | null }>(
     `/api/apps/entry?path=${encodeURIComponent(path)}`,
@@ -1965,11 +2130,32 @@ export interface CurrentAppEntry {
   kind: "workspace" | "linked";
   entry: string | null;
   exists: boolean;
+  /** The app's optional `icon.svg` (canonical path) and its mtime — the
+   *  Projects row glyph and the tab favicon. Null when the file is absent. */
+  icon?: string | null;
+  icon_mtime?: number | null;
   added_at: number | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
+ *  or any file inside it — the server's ownership rule), or `icon: null`. */
+export interface AppIconResult {
+  icon: string | null;
+  mtime?: number | null;
+}
+
+export function getAppIcon(fsPath: string): Promise<AppIconResult> {
+  return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
+}
+
+/** The URL to draw an app icon from: the raw file, with its mtime as a cache
+ *  key so an edited icon.svg shows up without a hard reload. */
+export function appIconUrl(icon: string, mtime?: number | null): string {
+  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
@@ -2224,8 +2410,32 @@ export interface Task {
 // live tasks by the workspace app they belong to off this same poll.
 export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
 
-export function getTasks(): Promise<{ tasks: Task[] }> {
-  return getJson<{ tasks: Task[] }>("/api/tasks");
+export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
+  return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
+}
+
+/** What `/api/tasks/changes` answers: the rows that moved since a generation,
+ *  the keys that moved and are no longer listed, or `full` when the server no
+ *  longer remembers that far back and the page should reload the listing. */
+export interface TaskChanges {
+  generation: number;
+  rows?: Task[];
+  gone?: string[];
+  full?: boolean;
+}
+
+/** Long-poll for task changes since `since`. Resolves the moment the server's
+ *  watcher sees a session start, resume, take a prompt or grow — or after
+ *  `wait` seconds with `rows: []`. */
+export function getTaskChanges(
+  since: number,
+  wait = 25,
+  signal?: AbortSignal,
+): Promise<TaskChanges> {
+  return getJson<TaskChanges>(
+    `/api/tasks/changes?since=${encodeURIComponent(since)}&wait=${encodeURIComponent(wait)}`,
+    { signal },
+  );
 }
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
@@ -2833,6 +3043,50 @@ export interface AiFitVerdict {
   verdict: "easy" | "tight" | "no";
   basis: "measured" | "declared" | "download";
   footprintBytes: number;
+  /** 0-100, SPEC AI-19: the continuous Gaussian fit score `verdict` is now
+   *  DERIVED from — 100 at or under a comfortable utilization, easing down
+   *  smoothly past it, 0 once the footprint exceeds the selected pool
+   *  outright. Optional so an object built by hand (a test literal, an
+   *  older cached response shape) does not have to carry it. */
+  score?: number;
+  /** How the footprint would run, over whichever pool (VRAM, a combined
+   *  VRAM+RAM offload budget, or system RAM) it was judged against — SPEC
+   *  AI-19 item 6. `"gpu"` also covers Apple Silicon's unified memory and a
+   *  non-Apple unified-memory APU, both of which draw from system RAM
+   *  rather than a separate VRAM carveout. Optional for the same reason
+   *  `score` is. */
+  runMode?: "gpu" | "cpu-offload" | "cpu-only";
+}
+
+/** A tok/s speed estimate for a TEXT GENERATION catalog entry, with its own
+ *  basis — SPEC AI-21. `null` when even the weight size is unknown (no
+ *  `size_gb`, no `params`), mirroring `AiFitVerdict`'s own "unknown is a
+ *  dash, never a guess" contract. Server-side only for `text-generation`
+ *  entries (`ai_runtime.describe_catalog`) — the formula is a tok/s figure,
+ *  and every OTHER capability reports a differently-shaped throughput metric
+ *  (`secondsPerStep`, `realtimeFactor`, `textsPerSecond`), so this field is
+ *  always `null` there rather than a number under a misleading unit. */
+export interface AiSpeedEstimate {
+  tokensPerSecond: number;
+  /** `"bandwidth"` when this machine's cached hardware reported a real
+   *  memory-bandwidth figure for its device; `"backend-constant"` when it
+   *  fell back to a flat per-backend guess (`bandwidthGbS` is then `null`). */
+  method: "bandwidth" | "backend-constant";
+  /** Which backend bucket this machine was judged as — inferred from cached
+   *  hardware/platform, not from the runner that will actually load this
+   *  specific model (no caller threads one through yet). */
+  backend: "cuda" | "metal-mlx" | "metal-other" | "rocm" | "sycl" | "cpu-arm" | "cpu-x86";
+  /** The bandwidth figure actually used, or `null` on the `backend-constant`
+   *  path. */
+  bandwidthGbS: number | null;
+  /** The context length this whole family of estimates assumes — the SAME
+   *  constant `fit.py`'s own KV-cache term uses (8192), stated here because
+   *  this formula does not otherwise model context-length pressure at all. */
+  contextTokens: number;
+  /** Whether this machine's own measured benchmark history adjusted the raw
+   *  formula. */
+  calibrated: boolean;
+  calibrationFactor: number | null;
 }
 
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
@@ -2882,6 +3136,11 @@ export interface AiCatalogModel {
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
    *  follows. */
   fit?: AiFitVerdict | null;
+  /** A tok/s speed estimate — see `AiSpeedEstimate`. Only ever non-null on a
+   *  `text-generation` entry; `null` on every other capability and wherever
+   *  the weight size itself is unknown. Optional so an older cached response
+   *  shape (a test literal, a stale client) does not have to carry it. */
+  speedEstimate?: AiSpeedEstimate | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
@@ -2952,6 +3211,22 @@ export interface AiCatalogModel {
    *  change nothing about the vectors. So a control drawn off the truthiness of
    *  this field and the route's own refusal are keyed on the same fact. */
   promptScheme?: string | null;
+  /** Orthogonal capability tags — `"tool-use"` / `"vision"` (SPEC AI-28) — ON
+   *  TOP OF `capability`, never a replacement for it: a model can be
+   *  `text-generation` AND carry either or both tags. `"tool-use"` comes off a
+   *  known-family allowlist (`registry.TOOL_USE_FAMILIES` — Qwen3, Qwen2.5,
+   *  Command R, Hermes, Llama 3/Mistral instruct, Gemma 3/4 `-it`), never a
+   *  regex over the repo id. `"vision"` restates the same fact `acceptsImage`
+   *  already gates on for a `text-generation` row (a cached checkpoint's own
+   *  `has_vision_tower`, or `hub_metadata`'s pre-download reading when nothing
+   *  is cached yet) as a tag rather than a permission. Always an array — empty
+   *  rather than absent when neither applies, and always `[]` on every
+   *  non-`text-generation` capability, so a consumer can test membership
+   *  (`tags?.includes("tool-use")`). Optional, matching every other field
+   *  added to this interface (`score`/`runMode`/`speedEstimate`): a stale
+   *  client, a test literal, or an older cached response shape does not have
+   *  to carry it. */
+  tags?: string[];
 }
 
 export interface AiCatalogCapability {

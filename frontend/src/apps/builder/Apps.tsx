@@ -12,7 +12,7 @@
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { getApps, getHomeApps } from "@platform/lib/api";
+import { getApps, getBackgroundAppsRunning, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
@@ -111,6 +111,29 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
   return slugs;
+}
+
+// Folder paths (keys of GET /api/apps/background/running) whose background
+// daemon is currently live — feeds the "running" badge on background-app
+// cards. Same decoration-only posture as useShowcaseSync above: one fetch per
+// mount, no polling (a stale badge just means "reload to see it flip"), and a
+// failure yields an empty set rather than a card-breaking error — failures
+// just mean no badges.
+function useRunningBackgroundApps(): Set<string> {
+  const [running, setRunning] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    getBackgroundAppsRunning()
+      .then(({ running: byPath }) => {
+        if (!alive) return;
+        setRunning(new Set(Object.keys(byPath).filter((path) => byPath[path])));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return running;
 }
 
 export default function Apps({ config }: { config: Config }) {
@@ -252,6 +275,7 @@ export default function Apps({ config }: { config: Config }) {
     [all],
   );
   const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
+  const runningPaths = useRunningBackgroundApps();
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
@@ -380,7 +404,11 @@ export default function Apps({ config }: { config: Config }) {
                     app={app}
                     onContextMenu={openCardMenu}
                     badge={
-                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name) ? "cloned" : undefined
+                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name)
+                        ? "cloned"
+                        : runningPaths.has(app.path)
+                          ? "running"
+                          : undefined
                     }
                   />
                 ))}

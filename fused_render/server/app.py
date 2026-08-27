@@ -18,6 +18,7 @@ missing).
 import asyncio
 import json
 import os
+import threading
 import time
 
 from fastapi import FastAPI
@@ -40,6 +41,8 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.app_api import router as app_api_router
+from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_health import router as claude_health_router
@@ -336,6 +339,40 @@ def create_app(start_dir: str) -> FastAPI:
 
         engine.warm_unless_forced_builtin()
 
+    # Background apps (background_apps.py): resurrect every autostart-opted-in
+    # app's daemon at server startup. A daemon thread, not the create_app body
+    # or an unthreaded await here — same D228 rationale as
+    # _startup_sync_user_plugin below: each bring-up is a subprocess spawn
+    # plus a bootstrap wait (BOOTSTRAP_TIMEOUT_S), nowhere near cheap enough
+    # for the pre-bind path, and one folder's failure (dead manifest, project
+    # venv not built, a spawn error) must never delay server readiness or the
+    # other apps' bring-up — `resurrect_autostart` already logs-and-skips
+    # those itself. Autostart is opt-in (D511): only paths explicitly present
+    # in the autostart store come back here — a `start()` with no `autostart`
+    # call never persisted anything and does NOT return at the next launch.
+    #
+    # `_background_apps_shutdown` is a per-app-instance Event (a local here,
+    # not a module global): a bring-up only registers its child once `_spawn`
+    # returns, up to BOOTSTRAP_TIMEOUT_S (120s) later, so a shutdown landing
+    # mid-spawn would otherwise have `engine_host.stop_all()` walk a
+    # `_children` that does not hold it yet, and the child would start
+    # running unowned right after `stop_all()` already finished. Setting this
+    # on shutdown lets `resurrect_autostart`'s own thread catch that — see its
+    # docstring — for exactly the race a code review caught (2026-08-26).
+    _background_apps_shutdown = threading.Event()
+
+    @app.on_event("startup")
+    async def _startup_resurrect_background_apps():
+        from fused_render import background_apps
+
+        threading.Thread(target=background_apps.resurrect_autostart,
+                         args=(_background_apps_shutdown,),
+                         name="background-apps-resurrect", daemon=True).start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_background_apps_resurrection():
+        _background_apps_shutdown.set()
+
     # The published `fusedio/fused-render` plugin, installed or refreshed in
     # the user's own Claude config (user_plugin.py, D492) — for sessions
     # fused-render did NOT launch, the user's own `claude` in a terminal or
@@ -369,6 +406,17 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
+    # Claude Code's live-session registry, prompt history and live transcripts.
+    # A startup event for the same reason as `_startup_schedule`: it is a
+    # thread for the life of the process that reads the user's real ~/.claude,
+    # and tests build apps without lifespan.
+    @app.on_event("startup")
+    async def _startup_tasks_watch():
+        from fused_render import tasks_watch
+
+        tasks_watch.start()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -384,6 +432,36 @@ def create_app(start_dir: str) -> FastAPI:
         from fused_render.ai import supervisor
 
         supervisor.start_reaper()
+
+    # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
+    # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
+    # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
+    # per-request verdict path, which is why `fit.py`/`speed.py` only ever
+    # read `hw_detect.cached_hardware()`. Without this hook nothing ever
+    # calls the probe, and both modules take their no-GPU-known branch
+    # forever (code review, 2026-08-27) — a background daemon thread, same
+    # shape as the idle reaper above, not the create_app body: it fires one
+    # probe immediately and then re-probes every few hours for the rest of
+    # the process's life.
+    @app.on_event("startup")
+    async def _startup_ai_hardware_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hardware_refresh()
+
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
+    # `ai_runtime._accepts_image`/`_capability_tags` used to call
+    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
+    # 8-second timeout — straight from `describe_catalog`, a route the AI
+    # Models picker polls. They now read `hub_metadata.cached()` only (a
+    # plain disk read), and this background thread is the sole writer,
+    # mirroring the hardware-refresh hook immediately above for the
+    # identical reason.
+    @app.on_event("startup")
+    async def _startup_ai_hub_metadata_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_metadata_refresh()
 
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
@@ -537,6 +615,14 @@ def create_app(start_dir: str) -> FastAPI:
     # Compile a fused-render app into ordinary Canvas UDFs and push it through
     # the existing Workbench CLI. This deliberately bypasses openfused_server.
     app.include_router(workbench_apps_router)
+    # The app page's API tab (routers/app_api.py): every .py in one app folder
+    # described by the api template's inspector, one request per folder.
+    app.include_router(app_api_router)
+    # Background apps (routers/background_apps.py): enable/disable/stop/
+    # restart/status for a folder's declared long-running daemon, backed by
+    # engine_host's "background" child kind + background_apps.py's enabled
+    # store. See the startup resurrection hook below.
+    app.include_router(background_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)

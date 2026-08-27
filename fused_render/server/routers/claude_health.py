@@ -13,11 +13,11 @@ works — this endpoint is that claim.
 """
 import logging
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Body, Header
 from fastapi.concurrency import run_in_threadpool
 
 from fused_render import claude_health
-from fused_render.server.common import _require_fused
+from fused_render.server.common import _error, _require_fused
 
 logger = logging.getLogger(__name__)
 
@@ -48,3 +48,76 @@ async def api_claude_health_refresh(x_fused: str | None = Header(default=None)):
     if guard is not None:
         return guard
     return await run_in_threadpool(claude_health.summary_refreshed)
+
+
+# --- repairing what the report found -----------------------------------------
+#
+# Everything above establishes what is wrong. These three apply the fix, and they
+# exist because the alternative — which is what shipped first — was a card that
+# knew the answer and asked the user to go and type it in a terminal.
+
+
+@router.post("/api/claude/install")
+async def api_claude_install(body: dict = Body(default=None),
+                             x_fused: str | None = Header(default=None)):
+    """Run the native installer, or `claude update`, in the background.
+
+    The X-Fused guard is not a formality here: this spawns a process that
+    downloads and writes an executable into the user's home, which is the last
+    thing a blind cross-origin POST may be allowed to start.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_install
+
+    action = (body or {}).get("action", "install")
+    try:
+        return await run_in_threadpool(claude_install.start, action)
+    except claude_install.InstallError as e:
+        # A refusal with a sentence the strip can show as-is — an update that
+        # would no-op says which command WOULD work, and that text is the whole
+        # value of the refusal.
+        return _error(str(e), status=409)
+
+
+@router.get("/api/claude/install")
+async def api_claude_install_status():
+    """The current install/update record. A read — no guard, no spawn."""
+    from fused_render import claude_install
+
+    return claude_install.status()
+
+
+@router.post("/api/claude/doctor")
+async def api_claude_doctor(x_fused: str | None = Header(default=None)):
+    """`claude doctor` on demand — the answer to "the install is broken".
+
+    The health snapshot already carries doctor's report whenever it ran one, but
+    it only runs one when something looked wrong. This is the explicit "tell me
+    what the CLI thinks of itself" action, so it always spawns.
+
+    Guarded despite being read-only: it is a POST that spawns a subprocess, the
+    same line every other probe endpoint here draws.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import claude_health as health
+
+    def _run():
+        path, _source = health.resolve(allow_shell=False)
+        if not path or not health.executable(path):
+            return {"ok": False, "doctor": None,
+                    "error": "there is no Claude Code on this machine to diagnose"}
+        report = health._doctor(path)
+        if report is None:
+            # Doctor could not be asked. That is itself the finding — two probes
+            # have now failed to get a word out of this binary — so it is
+            # reported as one rather than dressed up as a diagnosis.
+            return {"ok": False, "doctor": None, "path": path,
+                    "error": f"Claude Code is installed at {path} but would not "
+                             "run its own diagnostics"}
+        return {"ok": True, "doctor": report, "path": path}
+
+    return await run_in_threadpool(_run)

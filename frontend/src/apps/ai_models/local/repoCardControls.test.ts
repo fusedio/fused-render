@@ -253,20 +253,22 @@ describe("what the card's face keeps, and what the (i) takes", () => {
     // that tells them apart, and the name itself then ellipsises. The owner is
     // not lost — it leads the line directly below.
     expect(CARD).toContain("{modelName(repo.id)}");
-    expect(CARD).toContain('<div className="am-card-sub" data-hint={repo.id}>');
-    expect(CARD).toContain('<span className="am-card-slug cc-mono">{repo.id}</span>');
-    // The FIGURE leads that line and is NOT in the head: cost first, then the
-    // address of the thing it is the cost of (Akshil, 2026-08-25: "the size
-    // should not be after the model name checkmark, it should be right below
-    // it"). It sat in the head for an hour, matching the recommendation cards —
-    // which have no second line to put it on, so that was consistency with a
-    // card that had no choice.
+    // The hint rides the ID, not the whole line: the line spans the card, and a
+    // hint on it fired over the empty space between id and size.
+    expect(CARD).toContain('<div className="am-card-sub">');
+    expect(CARD).toContain('<span className="am-card-slug cc-mono" data-hint={repo.id}>{repo.id}</span>');
+    // The FIGURE ends that line, pinned to the card's right edge, and is NOT
+    // in the head (Akshil, 2026-08-25: "the size should not be after the model
+    // name checkmark, it should be right below it"; 2026-08-27: "move the size
+    // all the way to the right in the card"). The id leads, continuing the
+    // name above it; `margin-left: auto` does the pinning.
     const head = CARD.slice(CARD.indexOf('<div className="cc-mdcard-head">'));
     expect(head.slice(0, head.indexOf('<div className="am-card-sub"'))).not.toContain(
       "{formatSize(repo.size)}",
     );
     const sub = CARD.slice(CARD.indexOf('<div className="am-card-sub"'));
-    expect(sub.indexOf("{formatSize(repo.size)}")).toBeLessThan(sub.indexOf("am-card-slug"));
+    expect(sub.indexOf("am-card-slug")).toBeLessThan(sub.indexOf("{formatSize(repo.size)}"));
+    expect(CSS).toMatch(/\.am-card-size\s*{[^}]*margin-left:\s*auto/);
     // And no separator between them — the middot was invisible at 11px on a
     // card wash.
     expect(CSS).not.toContain(".am-card-sub .am-card-size::after");
@@ -378,9 +380,10 @@ describe("every card on the page has the same bones", () => {
 
   it("name, then a caption line of size + repo id, in that order", () => {
     // The shared skeleton draws it once for both of the not-on-disk cards.
-    expect(REC).toContain('<div className="am-card-sub" data-hint={slug}>');
+    expect(REC).toContain('<div className="am-card-sub">');
+    expect(REC).toContain('<span className="am-card-slug cc-mono" data-hint={slug}>{slug}</span>');
     const sub = REC.slice(REC.indexOf('<div className="am-card-sub"'));
-    expect(sub.indexOf("{size.text}")).toBeLessThan(sub.indexOf("am-card-slug"));
+    expect(sub.indexOf("am-card-slug")).toBeLessThan(sub.indexOf("{size.text}"));
     // Both callers hand it the same two things the disk card shows.
     expect(REC.match(/slug=\{model\.id\}/g)?.length).toBe(2);
     // The Hub result shows the model half of the id up top, like the others.

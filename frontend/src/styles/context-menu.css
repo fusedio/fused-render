@@ -57,6 +57,14 @@
   white-space: nowrap;
 }
 
+/* The Settings popover's rows are real <a href> now (so middle-click/ctrl-click
+   "open in new tab" work), while this class is shared with plain <div> action
+   rows elsewhere (ContextMenu.tsx) that aren't links — scope the anchor reset
+   to `a.context-menu-item` rather than the bare class. */
+a.context-menu-item {
+  text-decoration: none;
+}
+
 .context-menu-item:hover:not(.disabled),
 .context-menu-item.open {
   background: rgba(var(--tint), 0.08);

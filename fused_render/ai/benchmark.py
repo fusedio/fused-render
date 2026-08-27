@@ -1,4 +1,5 @@
-"""The fixed per-capability workloads a benchmark run executes (SPEC AI-14).
+"""The fixed per-capability workloads a benchmark run executes (SPEC AI-14,
+AI-20, D523).
 
 A benchmark answers "how fast is this model, on this machine, in this app
 version" — and the only thing that makes two such answers comparable is that
@@ -52,12 +53,14 @@ as "this runner does not say", which is the truth.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
 import math
 import os
 import platform
 import secrets
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -216,16 +219,47 @@ WORKLOADS: Mapping[str, Workload] = MappingProxyType({
 
 
 def _total_memory_bytes() -> int | None:
-    """Physical RAM, or `None` where the stdlib will not say.
+    """Physical RAM, or `None` where nothing here can say — SPEC AI-20.
 
-    `os.sysconf` covers macOS and Linux; Windows has no stdlib equivalent that
-    does not go through `ctypes`, so it reports `None` rather than a guess —
-    the null-over-estimate rule applies to the machine block too.
+    `os.sysconf` covers macOS and Linux. Windows has no stdlib equivalent —
+    this used to report `None` there unconditionally, which meant `machine()`
+    recorded `totalMemoryBytes: null` on every Windows benchmark run, and
+    `footprints.py`'s own machine-identity check (`platform`/`arch`/
+    `totalMemoryBytes`) could never actually confirm "same machine" for one.
+    `fit.machine_ram_gb` already carries this exact `GlobalMemoryStatusEx`
+    fallback (its own docstring: `sysconf` covers macOS/Linux, Windows
+    answers through `GlobalMemoryStatusEx`) — ported here rather than
+    imported, because `fit.py` returns decimal GB (its own unit, `GB_BYTES`)
+    cached forever via `functools.lru_cache`, and this function returns raw
+    bytes, uncached, every call (`machine()` is stamped fresh per run — see
+    that function's own docstring for why a benchmark record's machine block
+    must not be a cached snapshot from an earlier run).
     """
     try:
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (AttributeError, ValueError, OSError):
-        return None
+        pass
+    if sys.platform == "win32":  # pragma: no cover - the Windows branch
+        # A literal `sys.platform == "win32"` check, not a `hasattr`/try
+        # probe — see `fit.machine_ram_gb`'s own comment: pyright only
+        # declares `ctypes.windll` under exactly this guard, so off Windows
+        # this whole branch is eliminated by static platform inference and
+        # the attribute is never even type-checked.
+        try:
+            class _MemoryStatus(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                            ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+                            ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                            ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+            status = _MemoryStatus()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.ullTotalPhys
+        except Exception:  # noqa: BLE001 - a failed read must not be fatal
+            pass
+    return None
 
 
 def machine() -> dict:
@@ -1088,16 +1122,12 @@ def _load_to_ready(model: str, capability: str) -> float | None:
 
 
 def _memory_and_device(model: str, capability: str) -> tuple[int | None, str | None]:
-    """Resident bytes and the device the weights landed on, off `describe()`.
-
-    Sampled AFTER the timed pass rather than continuously: `resident_bytes()`
-    already reconciles RSS against a runner's own allocator figure and is
-    GPU-pool aware on Apple Silicon (runners/worker_base.py), which is a much
-    better number than anything sampled from here — and a polling thread
-    reaching into a worker mid-generation would be a request waiting on a GPU
-    call for no reason. The cost, stated rather than hidden: a transient spike
-    during generation is missed, so this is a resident figure and a
-    second-order number, not a true peak of the whole run.
+    """Resident bytes and the device the weights landed on, off `describe()`
+    — ONE reading, taken whenever this is called. `_PeakSampler` (SPEC AI-20)
+    is what turns repeated calls to this into a true peak; this function
+    itself stays a plain single sample so `_PeakSampler` and any future
+    one-shot caller share the identical read rather than two copies of the
+    same `describe()` walk drifting apart.
     """
     for row in supervisor.describe().get("loaded") or []:
         if row.get("model") == model and row.get("capability") == capability:
@@ -1105,6 +1135,103 @@ def _memory_and_device(model: str, capability: str) -> tuple[int | None, str | N
             return (resident if isinstance(resident, int) else None,
                     row.get("device") or None)
     return None, None
+
+
+# --------------------------------------------------------------- SPEC AI-20
+#: How often, DURING the timed pass, the background sampler below re-reads
+#: this model's resident bytes. `_memory_and_device`'s own former docstring
+#: is why this used to be sampled once, after the pass ended: a poll reaching
+#: into a live worker was a request waiting on a GPU call for no reason. SPEC
+#: item 8 accepts that cost deliberately — a single post-pass reading misses
+#: a mid-decode KV cache high-water mark (llama.cpp/MLX both grow the cache as
+#: decode proceeds and it is never freed mid-generation, so the TRUE peak is
+#: near the END of decode, not necessarily still resident once generation
+#: settles back down) or a diffusion model's mid-step cross-attention scratch
+#: spike (freed the moment the step that allocated it returns) — both real,
+#: both invisible to a reading taken only once decode/denoising has already
+#: finished. A quarter of a second is coarse enough that the sampler's own
+#: `/health` round trips (by way of `supervisor.describe()` ->
+#: `refresh_memory()`) cost a small fraction of any workload's total runtime
+#: — even `_measure_embed`'s single-call workload, the shortest one this
+#: module has, is not typically sub-second on real hardware — so the number
+#: this reports describes the model, not the sampler polling it.
+_PEAK_SAMPLE_INTERVAL_S = 0.25
+
+
+class _PeakSampler:
+    """Samples `(model, capability)`'s resident bytes on a cadence, on its
+    own background thread, and keeps the running MAX and the last-seen
+    device — SPEC AI-20's fix for `_memory_and_device`'s single post-pass
+    reading, which reports a resident figure sampled after generation has
+    already settled rather than a true peak of the run.
+
+    **Runs only across the TIMED pass**, never the discarded warm-up (`run`'s
+    own docstring: a warm-up's own timing is thrown away, and sampling
+    memory during it would cost real HTTP round trips for a number nobody
+    reads) — `run()` constructs one right before the timed `measure(...)`
+    call and stops it in the SAME `finally` that already guarantees the
+    measurement row closes, so a raise mid-pass cannot leak the thread.
+
+    **Two samples are always taken, independent of the background thread's
+    own cadence**: one in `start()`, before the pass, and one in `stop()`,
+    after it — so a pass that finishes faster than `_PEAK_SAMPLE_INTERVAL_S`
+    (every workload in a test suite driven by a fake clock; a real embed
+    call on fast hardware) still gets more than the single reading the old
+    design took, and `stop()`'s own reading catches a peak that landed in
+    the gap between the last background tick and the pass actually ending.
+
+    **`stop()` is idempotent** — safe to call twice, which `run()`'s own
+    structure requires: the success path calls it once to collect the
+    result, and the surrounding `finally` (shared with the measurement row's
+    own cleanup) calls it again unconditionally so a raise mid-pass still
+    tears the thread down. A second call re-joins an already-finished thread
+    (a no-op) and takes one more sample rather than raising or blocking.
+    """
+
+    def __init__(self, model: str, capability: str) -> None:
+        self._model = model
+        self._capability = capability
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._peak: int | None = None
+        self._device: str | None = None
+
+    def _sample_once(self) -> None:
+        """One `_memory_and_device` read, folded into the running peak. Never
+        lets a SHRINKING reading (memory freed as the run winds down) pull
+        the recorded peak back down, and never lets a `None` reading (a
+        runner that does not report resident bytes at all) overwrite a real
+        one recorded earlier — `_memory_and_device` itself already turns
+        "no such row" and "row present but `residentBytes` is `None`" into
+        the same `None`, so this is the one place that decides a missing
+        reading must not erase a real one."""
+        resident, device = _memory_and_device(self._model, self._capability)
+        with self._lock:
+            if device is not None:
+                self._device = device
+            if isinstance(resident, int) and (self._peak is None or resident > self._peak):
+                self._peak = resident
+
+    def start(self) -> None:
+        self._sample_once()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="ai-benchmark-peak-sampler")
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(_PEAK_SAMPLE_INTERVAL_S):
+            self._sample_once()
+
+    def stop(self) -> tuple[int | None, str | None]:
+        """Stop sampling and return `(peak_resident_bytes, device)` — see the
+        class docstring for why this is safe to call more than once."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._sample_once()
+        with self._lock:
+            return self._peak, self._device
 
 
 def run(model: str, capability: str) -> dict:
@@ -1228,11 +1355,21 @@ def run(model: str, capability: str) -> dict:
                 # timed pass, which gets the row so its own progress and its ✕
                 # both reach somewhere real.
                 measure(model, workload, timed=False)
-                record["metrics"] = measure(model, workload, timed=True, row=row)
-
-                record["peakResidentBytes"], record["device"] = _memory_and_device(
-                    model, capability)
-                record["ok"] = True
+                # SPEC AI-20: a background sampler brackets ONLY the timed
+                # pass — started right before it, stopped in the `finally`
+                # directly below (which runs whether the pass succeeds,
+                # raises, or is cancelled), so `peakResidentBytes` is a true
+                # peak of the timed work and the thread never outlives it.
+                peak_sampler = _PeakSampler(model, capability)
+                peak_sampler.start()
+                try:
+                    record["metrics"] = measure(
+                        model, workload, timed=True, row=row)
+                    record["peakResidentBytes"], record["device"] = \
+                        peak_sampler.stop()
+                    record["ok"] = True
+                finally:
+                    peak_sampler.stop()
             finally:
                 # D446: a benchmark that had to COLD-LOAD the model tears it back
                 # down when it is done — success, a failed workload, a timeout, or

@@ -111,6 +111,22 @@ def _fused_cli() -> str:
     shim, another project's venv), the panel would bake that unvetted binary into
     a GLOBAL `~/.claude.json` entry, where it runs with no FUSED_ENV and fails
     somewhere the user cannot see. Absent means registration is not offered.
+
+    The wrapper's filename is a DUPLICATED rule, not an import — this file
+    cannot `import fused_render` (SPEC PY-15, templates are stdlib-only) — and
+    must stay character-for-character what `fusedcli.export_fused_cli_env()`
+    writes: `fused.cmd` on Windows (the wrapper's content is a batch script,
+    which only a `.cmd`/`.bat` extension executes — `.exe` was a past bug
+    here, guarded against by
+    `tests/test_mcp_inspect.py::test_the_reader_finds_exactly_what_the_writer_names`,
+    which pins the two sides together), `fused` everywhere else.
+
+    This returns the bare `.cmd` path on purpose — the caller (`template.html`'s
+    registration entry) does NOT route it through a `cmd.exe /c` hop
+    (DECISIONS.md D549, SPEC.md MC-12). See the comment at that call site for
+    why a hop was investigated and rejected (cross-spawn's own
+    extension-based dispatch, and the unresolved-either-way quoting risk for
+    a spaced path); it is intentionally not repeated here.
     """
     cli_dir = _shared_import("appenv", "fused_cli_dir")
     if cli_dir is None:
@@ -118,34 +134,31 @@ def _fused_cli() -> str:
     directory = cli_dir()
     if not directory:
         return ""
-    candidate = os.path.join(directory, "fused.exe" if os.name == "nt" else "fused")
+    candidate = os.path.join(directory, "fused.cmd" if os.name == "nt" else "fused")
     return candidate if os.path.isfile(candidate) else ""
 
 
 def _toml():
-    """The TOML parser, or None: stdlib `tomllib` on 3.11+, else `tomli`.
+    """The TOML parser, or None if this interpreter has no `tomllib`.
 
-    `requires-python` is >=3.10 and `tomllib` only became stdlib in 3.11, so on
-    3.10 the `tomli` dependency supplies it — the same two-name lookup
-    `fused_render/projectenv.py::_load_manifest` does, and for the same reason a
-    template cannot just import the package's copy (SPEC PY-15).
+    `requires-python` is >=3.11, where `tomllib` is stdlib, so this normally just
+    succeeds. The `tomli` fallback that used to sit here is GONE, and not merely
+    because it became unreachable: `tests/test_engine_requirements.py` forbids a
+    template importing a distribution no packaged app ships, and dropping the
+    `tomli` dependency turned that import into exactly such a violation. A
+    template cannot import the package's own copy either (SPEC PY-15).
 
-    None rather than a raise, because a template backend may also be running in a
-    PROJECT venv (SPEC PY-16), which declares its own dependencies and need not
-    carry `tomli`. Every caller has a payload for "no parser" — the module's
-    contract is that no exception escapes `main`.
+    None rather than a raise, because a template backend may be running in a
+    PROJECT venv (SPEC PY-16) or some interpreter this file did not choose. Every
+    caller has a payload for "no parser" — the module's contract is that no
+    exception escapes `main`.
     """
     try:
         import tomllib
 
         return tomllib
     except ImportError:
-        try:
-            import tomli
-
-            return tomli
-        except ImportError:
-            return None
+        return None
 
 
 def _refuse(reason: str, message: str) -> dict:
@@ -389,7 +402,7 @@ def _page_report(folder: str) -> dict:
 def _manifest_report(folder: str) -> dict:
     """The current `mcp.toml`'s `[[tool]]` tables, or the reason there are none.
 
-    Read with the stdlib TOML parser (or `tomli` on 3.10) — the same parser the
+    Read with the stdlib TOML parser — the same parser the
     server uses — so the panel's idea
     of what is curated cannot diverge from what `fused app serve` will load. An
     unparseable manifest is reported as an error on this sub-object rather than
@@ -402,8 +415,8 @@ def _manifest_report(folder: str) -> dict:
         return out
     toml = _toml()
     if toml is None:
-        out["error"] = ("no TOML parser is available: tomllib needs Python 3.11+, "
-                        "and tomli is not installed in this folder's environment")
+        out["error"] = ("no TOML parser is available: reading this manifest needs "
+                        "tomllib, which is stdlib from Python 3.11")
         return out
     try:
         with open(path, "rb") as fh:

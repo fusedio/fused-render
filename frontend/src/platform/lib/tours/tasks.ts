@@ -76,6 +76,22 @@ export const tasksTour: Tour = {
       trigger: ".schedule-save",
       steps: () => [
         {
+          // List, and BEFORE the row step: that one's action opens the task
+          // and leaves the page, so anything about reading the list has to be
+          // said first. The ring is the page's whole read-state vocabulary —
+          // there is no separate unread mark (tasks.css "Unread") — and a
+          // first-time reader has no way to know a hollow ring is a claim
+          // (Akshil, 2026-08-27: "if the status ring has a dot in between,
+          // that means it is unread ... add that to the tour").
+          element: ".tasks-row .tasks-rowmark .schedule-ring",
+          popover: {
+            title: "Read or unread",
+            // ONE phrase (Akshil, screenshot, 2026-08-27: "too much wording ...
+            // one line max").
+            description: "A dot in the ring means unread; hollow means read.",
+          },
+        },
+        {
           // List. ROW ONE, not "the new one": rows sort by lane and then time
           // (tasks-lib.sortByLane), so an Upcoming task already on the page can
           // outrank the fresh one. The copy is true of whichever row this is.

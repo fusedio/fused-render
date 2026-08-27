@@ -122,6 +122,87 @@ EMBEDDINGS = "embeddings"
 #: `catalog()` reports `default: null` for it there.
 VIDEO_GENERATION = "text-to-video"
 
+# --------------------------------------------------------------- SPEC AI-28
+#: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
+#: TEXT_GENERATION checkpoint's own abilities, and neither is a runner
+#: dispatch key the way the five constants above are. **Do not add a row
+#: here for a use case; the five capabilities stay a five-way dispatch
+#: table, and item 18's own text is explicit that reshaping them into a
+#: six-way (or more) enum is out of scope** — a model that both generates
+#: text AND calls tools is still one `text-generation` entry, tagged.
+TOOL_USE_TAG = "tool-use"
+VISION_TAG = "vision"
+
+#: A KNOWN-FAMILY allowlist for tool-use support, not a regex reverse-
+#: engineered over an arbitrary repo id — the comparative study this build
+#: derives from (llmfit) keys tool-use off exactly these families, and this
+#: table restates its list rather than inventing a broader pattern that
+#: would confidently tag a checkpoint nobody has actually verified calls
+#: tools reliably. Each row is a tuple of substrings that must ALL appear in
+#: the (normalized) evidence for a match — most rows are a single family
+#: name, but `llama-3`/`mistral`/`gemma-3`/`gemma-4` additionally require an
+#: instruction-tuning qualifier, because the base (non-instruct) checkpoint
+#: of each is not trained on a tool-calling format the way its `-instruct`/
+#: `-it` sibling is.
+TOOL_USE_FAMILIES: tuple[tuple[str, ...], ...] = (
+    ("qwen3",),
+    ("qwen2.5",),
+    ("command-r",),
+    ("hermes",),
+    ("llama-3", "instruct"),
+    ("mistral", "instruct"),
+    ("gemma-3", "-it"),
+    ("gemma-4", "-it"),
+)
+
+
+def _tag_haystack(*values: str | None) -> str:
+    """Every non-empty string in `values`, lowercased and with underscores
+    normalized to hyphens — the Hub spells the same family both ways
+    (`llama_3` and `llama-3` both appear in the wild) and `TOOL_USE_
+    FAMILIES` is written in the hyphenated form throughout, so normalizing
+    ONE separator here is cheaper and less error-prone than doubling every
+    row in the table to cover both spellings."""
+    parts = [v for v in values if isinstance(v, str) and v]
+    return "|".join(parts).lower().replace("_", "-")
+
+
+def supports_tool_use(repo_id: str, *, model_type: str | None = None,
+                      architecture: str | None = None) -> bool:
+    """Does `repo_id` (optionally backed by `hub_metadata`'s harvested
+    `model_type`/`architecture`) belong to a family `TOOL_USE_FAMILIES`
+    lists?
+
+    Dependency-light BY DESIGN: `registry.py` reads no filesystem or network
+    beyond its own runner-folder discovery, so this takes whatever family
+    evidence a caller already has rather than fetching `hub_metadata.get`
+    itself — the caller (`ai_runtime.describe_catalog`) already holds that
+    result for the KV-cache/vision questions and can pass it straight
+    through.
+    """
+    haystack = _tag_haystack(repo_id, model_type, architecture)
+    return any(all(token in haystack for token in family)
+              for family in TOOL_USE_FAMILIES)
+
+
+def capability_tags(repo_id: str, *, model_type: str | None = None,
+                    architecture: str | None = None,
+                    has_vision: bool = False) -> tuple[str, ...]:
+    """The orthogonal tags `repo_id` carries — `TOOL_USE_TAG` per
+    `supports_tool_use`, `VISION_TAG` when `has_vision` (the caller's own
+    answer, from `hub_cache.has_vision_tower`/`hub_metadata`'s
+    `hasVisionTower` — this module does not compute that itself, for the
+    same dependency-light reason `supports_tool_use` takes its evidence as
+    arguments). Empty when neither applies — never a placeholder value, so
+    a caller can test `"tool-use" in capability_tags(...)` directly."""
+    tags = []
+    if supports_tool_use(repo_id, model_type=model_type, architecture=architecture):
+        tags.append(TOOL_USE_TAG)
+    if has_vision:
+        tags.append(VISION_TAG)
+    return tuple(tags)
+
+
 RUNNERS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runners")
 
 

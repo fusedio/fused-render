@@ -20,8 +20,11 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 22px 0;
-  border-bottom: 1px solid var(--border);
+  /* Same column as .app-page-body below, so the heading lines up with the
+     tab strip and the frame instead of hugging the window edge. */
+  width: min(1050px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 14px 0 0;
 }
 
 .app-page-title {
@@ -151,6 +154,16 @@
   display: none;
 }
 
+/* The frame plus the button floating over it. The wrap takes the frame's flex
+   share so the iframe can fill it, and anchors the absolute button. */
+.app-page-frame-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .app-page-frame {
   flex: 1 1 auto;
   min-height: 0;
@@ -158,6 +171,35 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
+}
+
+/* Full-screen door in the frame's top-right corner: quiet until hovered,
+   over whatever the app draws there, so it must bring its own backdrop. */
+.app-page-fullscreen {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: background 120ms, border-color 120ms;
+}
+
+.app-page-fullscreen:hover {
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
+  border-color: var(--fg-muted);
+}
+
+.app-page-fullscreen svg {
+  width: 18px;
+  height: 18px;
 }
 
 /* The nested Tasks page brings its own 22px page padding and a 1050px column
@@ -180,7 +222,8 @@
 
 /* ---- the Files tab (shell/AppFiles.tsx) ------------------------------------
    ONE bordered surface, the way an editor's workbench is one window: a tree
-   column on a quieter plate, a single rule, then the view. The frame inside
+   column, a single rule, then the view — both on the same ground, so the rule
+   alone divides them. The frame inside
    the view is flush — the surface carries the radius, so nothing is boxed
    inside a box. Two rows of chrome at the same height (the tree's eyebrow, the
    view's header) so the rule between the columns reads as one line across.
@@ -201,7 +244,7 @@
   min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg-alt);
+  background: var(--bg);
   border-right: 1px solid var(--border);
 }
 
@@ -269,15 +312,22 @@
 }
 
 .app-files-row:hover {
-  background: var(--row-bg-hover);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
 }
 
 .app-files-row.is-selected {
-  background: var(--row-bg-active);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
 }
 
-/* The selected file wears the accent as a bar, the way the tab strip wears it
-   as an underline — one vocabulary for "this one, right now". */
+.app-files-row.is-selected:hover {
+  background: color-mix(in srgb, var(--fg) 11%, transparent);
+}
+
+/* Selection is a neutral tint, not the accent wash: a file list is read, not
+   acted on, so the loud colour would fight the view beside it. The accent
+   survives only as the 2px bar, the same mark the tab strip uses for "this
+   one, right now". */
 .app-files-row.is-selected::before {
   content: "";
   position: absolute;

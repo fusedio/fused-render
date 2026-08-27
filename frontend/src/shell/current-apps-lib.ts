@@ -47,6 +47,9 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
+  /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
+   *  null — the glyph slot falls back to the generic mark. */
+  iconUrl: string | null;
 }
 
 /** Is `project` this app's folder or somewhere inside it — the scope test the
@@ -70,7 +73,18 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
+    iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
+}
+
+/** api.ts `appIconUrl` restated (raw file + mtime cache key) — that module is
+ *  not importable here for the same DOM-free reason as the codec above. */
+function iconUrlFor(icon: string, mtime?: number | null): string {
+  return (
+    "/api/fs/raw?path=" +
+    encodeURIComponent(icon) +
+    (mtime ? "&v=" + Math.floor(mtime) : "")
+  );
 }
 
 // ---- the app page's address (D488) ------------------------------------------
@@ -92,8 +106,10 @@ export const APP_PAGE_PREFIX = "/apps/";
 /** Tab-strip order; the first is the default. THE list: the type below is
  *  derived from it, and AppPage.tsx's `TAB_DEFS` is a `Record` over that type,
  *  so adding a tab is one string here plus one entry there — the compiler
- *  refuses the second being forgotten. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files"] as const;
+ *  refuses the second being forgotten. Not every tab is offered on every
+ *  folder: `git` shows only inside a work tree (AppPage's `visibleTabs`), so
+ *  the ROUTE knows six tabs while the strip may draw five. */
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "mcp", "git"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 

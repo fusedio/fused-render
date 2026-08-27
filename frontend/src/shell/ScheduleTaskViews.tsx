@@ -1464,6 +1464,15 @@ export function TaskList({
           reason. */}
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
       <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+      {/* THE FRAME IS INSIDE THE SCROLLER, not the scroller itself. When the
+          bordered box was the thing that scrolled, its bar stood INSIDE the
+          border: a 10px column between the last row's edge and the frame, so
+          every hairline stopped short of the box it was meant to reach and the
+          rows read as cut off (Akshil, screenshot, 2026-08-27: "the scroll cuts
+          the item ... move the scroll UI outside"). Now the bar stands beside
+          the frame, and the frame scrolls with its rows like any other
+          content. */}
+      <div className="tasks-list-frame">
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
           In Progress, Failed, Done, Archive — rank order, and inside each rank
           the time the rows themselves print (newest first; Upcoming soonest
@@ -1501,6 +1510,7 @@ export function TaskList({
           onSettleAll={settleAll}
         />
       ))}
+      </div>
       </div>
     </>
   );
@@ -2219,6 +2229,35 @@ function TaskNode({
             className="tasks-row-file"
             data-hint={tildePath(taskFile_, home)}
             aria-label={`This task is about ${basename(taskFile_)}`}
+            // A PRESS HERE IS A PRESS ON THE ROW (Akshil, 2026-08-27: "when I
+            // click on the whole task list item anywhere ... it opens the task
+            // for me, but when I click on the file icon, it does not"). The
+            // mark sits above the stretched link (`z-index: 2`, for its
+            // tooltip), which is exactly what made it the one dead pixel-run
+            // on the row. So it spends the same gesture the link spends — a
+            // modified press goes to a new tab, a plain one to `activate` —
+            // and nothing on the row has a private meaning.
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            // Middle-click never reaches onClick (it is `auxclick`), and on the
+            // <a> it is the browser's own new-tab; the mark owes the same
+            // (Bugbot, 2026-08-27).
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            // …and the default a middle press STARTS is autoscroll, which the
+            // <a> never triggers and this span otherwise would (Bugbot).
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
           >
             {ICON_FILE}
           </span>

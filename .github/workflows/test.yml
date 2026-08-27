@@ -156,7 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -254,7 +254,7 @@ jobs:
   # which genuinely has to work across every Python this package supports),
   # the only Python that ever runs fused-render on a real Windows machine is
   # the one build_windows_installer.ps1 bundles into the installer — pinned
-  # there via `uv python install 3.12`. Testing 3.10/3.11/3.13 here would be
+  # there via `uv python install 3.12`. Testing 3.11/3.13 here would be
   # covering interpreters no Windows user's install ever runs.
   #
   # A required check like every other platform job: continue-on-error is gone
@@ -322,11 +322,12 @@ jobs:
   # about it — the param-binding divergence and the missing script-venv
   # dependencies fixed in D167/D170 would all have been caught here.
   #
-  # A separate job rather than adding the extra to the matrix above, for two
-  # reasons: the matrix must keep exercising the *built-in* engine (still the
-  # default per PY-12), and the extra can't be added blanket anyway — it is
-  # marked `python_version >= "3.11"`, so on the matrix's 3.10 entry it installs
-  # nothing at all and the job would silently prove nothing.
+  # A separate job rather than adding the extra to the matrix above, because the
+  # matrix must keep exercising the *built-in* engine (still the default per
+  # PY-12). D171 gave a second reason that no longer applies: the extra's wheel
+  # is marked `python_version >= "3.11"`, so it installed nothing on the 3.10
+  # matrix entry — and that entry is gone. The first reason is on its own
+  # sufficient, so the job stays separate.
   fused-engine:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'

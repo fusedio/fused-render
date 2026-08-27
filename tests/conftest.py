@@ -294,7 +294,7 @@ def _pin_the_script_interpreter_resolution():
     built from, and its answer depends on TWO things a test has no business
     depending on: the version of Python running the suite, and whether uv's managed
     registry happens to hold a 3.12 on this machine. Left alone, the whole suite
-    would behave differently per interpreter — CI runs the matrix on 3.10/3.11/3.13,
+    would behave differently per interpreter — CI runs the matrix on 3.11/3.13,
     where the resolution goes to "no 3.12 yet", and `is_installed` then answers False
     for every requirement set, so tests about markers, probes and rebuild budgets
     would fail for a reason unrelated to what they assert.
@@ -368,6 +368,22 @@ def _no_schedule_loop_thread(monkeypatch):
     from fused_render import schedule
 
     monkeypatch.setattr(schedule, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_tasks_watch_thread(monkeypatch):
+    """No test may start the Tasks change-watcher thread.
+
+    `tasks_watch.start()` runs from the app's STARTUP event like the schedule
+    loop above, and would likewise outlive the test: a daemon that stats the
+    DEVELOPER'S real ~/.claude/sessions every second and pushes their live
+    sessions into a registry the tasks router then consults — so a test's
+    transcript-only fixture could be told a session is `busy` by a claude the
+    developer happens to be running. Tests that are about the watcher call
+    `tasks_watch.tick()` themselves against a tmp dir."""
+    from fused_render import tasks_watch
+
+    monkeypatch.setattr(tasks_watch, "start", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -574,6 +590,59 @@ def _no_ai_idle_reaper_thread(monkeypatch):
     from fused_render.ai import supervisor
 
     monkeypatch.setattr(supervisor, "start_reaper", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hardware_refresh_thread(monkeypatch):
+    """`create_app` starts the background GPU/VRAM-detection thread
+    (`supervisor.start_hardware_refresh`, SPEC AI-18, D519); no test may let
+    it run.
+
+    Same hazard, same fix, as `_no_ai_idle_reaper_thread` immediately above:
+    the thread fires one probe immediately and then sleeps
+    `_HARDWARE_REFRESH_INTERVAL_S` (hours) — the immediate probe alone is
+    enough to matter here, since `hw_detect.detect_hardware` spawns REAL
+    subprocesses (`nvidia-smi`, `rocm-smi`, `powershell`, `sysctl`) and
+    writes `~/.fused-render/ai_hardware.json` under whatever
+    `FUSED_RENDER_HOME` happens to be current when the daemon thread gets
+    scheduled — not necessarily the tmp home of the test that triggered
+    `create_app`, for the identical race the reaper fixture's docstring
+    demonstrates. A suite that let this run would also be spawning a real
+    `nvidia-smi`/`rocm-smi`/`powershell` process per `TestClient` on any
+    machine that has one, which is both slow and a false positive waiting to
+    happen in CI.
+
+    No test asserts `start_hardware_refresh` spawns a thread; the test that
+    is ABOUT the probe cycle (`tests/test_ai_supervisor_hardware_refresh.py`)
+    drives `_hardware_refresh_tick()` directly, never the thread — matching
+    how `reap_idle`/`idle_workers` are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hub_metadata_refresh_thread(monkeypatch):
+    """`create_app` starts the background Hub-metadata-warming thread
+    (`supervisor.start_hub_metadata_refresh`, code review finding 1 on top
+    of SPEC AI-17); no test may let it run.
+
+    Same hazard, same fix, as `_no_ai_hardware_refresh_thread` immediately
+    above: the thread fires one sweep of `catalog.all_suggested_ids()`
+    immediately, and each id can be a REAL `urllib` fetch to
+    `huggingface.co` (`hub_metadata._fetch_raw`, unmonkeypatched here) under
+    whatever `FUSED_RENDER_HOME` happens to be current when the daemon
+    thread gets scheduled — the identical race the two fixtures above
+    already demonstrate, and here it would also mean this whole SUITE
+    reaching the real network once per `TestClient` construction.
+
+    No test asserts `start_hub_metadata_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_metadata_refresh.py`)
+    drives `_hub_metadata_refresh_tick()` directly, never the thread —
+    matching how the reaper/hardware-refresh siblings are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: None)
 
 
 @pytest.fixture(scope="session", autouse=True)

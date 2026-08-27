@@ -3220,3 +3220,18 @@ export function pulseTitle(pulse: TasksPulse): string {
   if (pulse.doneUnread > 0) parts.push(`${pulse.doneUnread} finished, not read`);
   return parts.join(" · ");
 }
+
+/**
+ * Fold a `/api/tasks/changes` answer into the rows on screen: rows in `upserts`
+ * replace (or join) the row with the same key, keys in `gone` leave, and the
+ * result keeps the one ordering promise this client makes — the server's
+ * `last_active` descending — so a session that just woke up rises to the top
+ * the same way it would on the next full poll.
+ */
+export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[]): Task[] {
+  const drop = new Set(gone);
+  const byKey = new Map<string, Task>();
+  for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
+  for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
+  return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
+}

@@ -289,6 +289,109 @@ class Cancelled(Exception):
     """
 
 
+class InsufficientDiskSpace(Exception):
+    """Raised BEFORE a download starts, by `_ensure_disk_space`, when the
+    target volume's free space is already known to be less than the total
+    this fetch is about to write.
+
+    Distinct from a bare `OSError` so `describe_failure`'s chain-walk prints
+    THIS message at the top rather than whatever library call happened to be
+    running when a mid-download `ENOSPC` finally surfaced — the whole point
+    of checking early is a sentence that names the actual shortfall, not a
+    syscall a user cannot act on.
+    """
+
+
+# ---------------------------------------------------------- SPEC AI-26 (D530)
+def _ensure_disk_space(total_bytes, folder):
+    """Raise `InsufficientDiskSpace` when `folder`'s volume is already known
+    to have less free space than the bytes THIS DOWNLOAD STILL HAS TO WRITE
+    — the fix for "no disk-space precheck anywhere" (SPEC AI-26): a download
+    that will not fit used to fail as a mid-transfer `OSError: [Errno 28] No
+    space left on device`, after however many gigabytes it managed to write
+    and with an error that names a syscall rather than the gap.
+
+    **`total_bytes` is the repo/file's FULL size in scope — a RESUME must be
+    judged against what remains, not the whole thing again** (code review
+    finding 2). Without this, a 30GB model interrupted at 28GB and retried
+    with 5GB free was refused ("needs 30.0 GB, only 5.0 GB is free") even
+    though only 2GB remained to fetch — defeating the entire `.part`/sidecar
+    resume machinery this module otherwise goes to considerable lengths to
+    provide. `bytes_on_disk(folder)` is the SAME figure the progress bar
+    already trusts for "how much of this repo is durably on disk right
+    now" — complete blobs plus a `.fusedpart`'s ALLOCATED-BLOCKS progress,
+    not its sparse `ftruncate`d length — so subtracting it here reuses one
+    notion of "already have" rather than inventing a second that could
+    drift from what the bar reports. `folder` may legitimately hold MORE
+    than what is in this fetch's own `allow_patterns` scope (an older
+    revision's blobs, a differently-scoped prior fetch); that makes the
+    subtraction a slight OVERESTIMATE of what has been durably written for
+    THIS scope, which is the safe direction for a precheck to be
+    imprecise in — the same "the bar can proceed on a guess" tolerance this
+    module's listing-failure fallback already accepts, and refusing a
+    resume that would actually have fit is a real regression while letting
+    one through that comes up a little short during the fetch is not: the
+    fetch itself still fails loudly if it genuinely runs out.
+
+    `total_bytes=None` (a listing failure already degraded the progress bar
+    to a guess, or a caller that never learned a total at all) is silently
+    skipped — checking against an unknown total would mean either refusing
+    every such download outright or checking against a size that IS a guess,
+    and the existing `_fallback` degradation for a failed listing already
+    treats "no total" as "proceed anyway, the bar just cannot be precise".
+    This function makes the identical call for the SAME reason: an unknown
+    figure is not evidence of a shortfall. A `remaining` of zero or less (a
+    complete or over-complete repo, the fast path above should normally have
+    already returned before this is ever called) is likewise skipped —
+    nothing left to check space for.
+
+    Checked against the NEAREST EXISTING ancestor of `folder`, because the
+    folder itself is usually the thing this download is ABOUT to create —
+    `os.statvfs` (what `shutil.disk_usage` calls) needs a path that already
+    exists, and a repo's cache folder is created lazily by the first byte
+    written into it.
+
+    `shutil.disk_usage` itself failing (an unmounted volume, a path
+    `statvfs` cannot reach) degrades to "proceed" rather than blocking a
+    download over a filesystem question this function cannot actually
+    answer — the same "cannot verify, so do not refuse" rule `_fallback`'s
+    own callers already apply to a failed Hub listing.
+    """
+    if not total_bytes:
+        return
+    already = bytes_on_disk(folder) or 0
+    remaining = total_bytes - already
+    if remaining <= 0:
+        return
+    path = folder
+    while path and not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+    if not path:
+        return
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return
+    if usage.free >= remaining:
+        return
+    need_gb = remaining / GB_BYTES
+    free_gb = usage.free / GB_BYTES
+    short_gb = need_gb - free_gb
+    raise InsufficientDiskSpace(
+        f"Not enough disk space: this download needs {need_gb:.1f} GB, "
+        f"only {free_gb:.1f} GB is free — {short_gb:.1f} GB short.")
+
+
+#: `shutil.disk_usage`/`_ensure_disk_space`'s own unit — a decimal gigabyte,
+#: matching every other byte->GB reading in this app (`fit.py`'s own
+#: `GB_BYTES`, restated here rather than imported: this module is
+#: stdlib-only and `fit.py` is not, see the module docstring).
+GB_BYTES = 1e9
+
+
 # ------------------------------------------------------- reporting to the app
 
 
@@ -680,6 +783,19 @@ PART_SUFFIX = ".fusedpart"
 #: flag matters, so before `_appends_only` no `os.open` in this file had ever
 #: written a byte there. Windows CI found it the first time one did.
 _BINARY = getattr(os, "O_BINARY", 0)
+#: SPEC AI-29 (D533) — refuses to open a `.part` path that is a SYMLINK,
+#: rather than a regular file, without rejecting a legitimate RESUME (the
+#: whole reason `O_EXCL`/`create_new` cannot be used here, unlike a one-shot
+#: temp file: a `.part` file is deliberately reopened across process
+#: restarts, sidecar-tracked, so "already exists" cannot mean "reject" the
+#: way it would for a throwaway file). `O_NOFOLLOW` blocks exactly the attack
+#: this item's checklist names — a symlink pre-planted at the `.part` path
+#: to redirect writes elsewhere — while a real, previously-created `.part`
+#: file (never a symlink; nothing in this module ever creates one there)
+#: keeps opening normally. Absent on Windows (`getattr` default 0, the same
+#: pattern `_BINARY` above already uses), where `os.open` has no symlink to
+#: follow in the same sense and the flag does not exist.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
@@ -776,6 +892,52 @@ class _Unsegmentable(Exception):
     fetches on a single append-only stream instead (`_appends_only`), which is
     the same guarantee by a different route rather than a weakened one.
     """
+
+
+# ---------------------------------------------------------- SPEC AI-29 (D533)
+#: `mirror.py`'s manifest reader already refuses `..`, an absolute path and a
+#: Windows separator in a repo-relative NAME (`_safe_name`, that module's own
+#: docstring gives the identical reasoning) — because a CDN manifest is
+#: untrusted-origin by construction. The Hub metadata path
+#: (`_hub_file_meta`/`HfApi.model_info`) had NO equivalent check before this:
+#: `_FileFetch.link` joins `name` straight into `os.path.join(self.snapshot,
+#: name)` and `os.symlink`s (or copies) a blob there, so a repo publishing a
+#: sibling `rfilename` of `../../../../some/path` — the Hub is not proven to
+#: reject that server-side, and this code should not rely on it doing so even
+#: if it currently does — would write outside the snapshot directory
+#: entirely. Restated here, verbatim in spirit, rather than imported: `mirror.
+#: py` is loaded as a bare module by a runner's OWN interpreter with no
+#: `fused_render` package on `sys.path` (see its own top-of-file note), so a
+#: cross-import in either direction is not available.
+def _safe_repo_relative_name(name) -> bool:
+    """Whether `name` is a repo-relative path safe to join under a snapshot
+    directory and write to — the identical rule `mirror._safe_name` states
+    for the identical reason, applied to Hub-reported filenames too."""
+    if not isinstance(name, str) or not name or len(name) > 512:
+        return False
+    if name.startswith("/") or "\\" in name or ":" in name:
+        return False
+    parts = name.split("/")
+    return all(part and part not in (".", "..") for part in parts)
+
+
+#: A blob is named by its etag and joined as ONE path segment
+#: (`os.path.join(folder, "blobs", etag)`) — never repo-relative, so this is
+#: stricter than `_safe_repo_relative_name` the same way `mirror._safe_
+#: filename` is stricter than `mirror._safe_name` (a `/` here addresses a
+#: different location inside the cache dir entirely, not a deeper file within
+#: one). Not restricted to hex (a caller-supplied `meta` — the model mirror —
+#: already validates its own etag as hex via `mirror._safe_etag` before this
+#: function ever sees it; requiring hex again here would refuse a legitimate
+#: git blob sha1/sha256 the Hub itself reports in some non-lowercase or
+#: differently-shaped form this code has not audited every corner of), only
+#: that it cannot be a path.
+def _safe_blob_name(etag) -> bool:
+    if not isinstance(etag, str) or not etag or len(etag) > 256:
+        return False
+    if "/" in etag or "\\" in etag or etag in (".", ".."):
+        return False
+    return True
 
 
 def repo_folder(model_id, repo_type="model"):
@@ -1623,7 +1785,7 @@ class _FileFetch:
                 self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
-        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _BINARY, 0o644)
+        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _BINARY, 0o644)
         os.ftruncate(self.fd, self.size)
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
@@ -1676,7 +1838,7 @@ class _FileFetch:
             _remove(self.part)
             _remove(self.sidecar)
         self.fd = os.open(self.part,
-                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | _BINARY,
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | _NOFOLLOW | _BINARY,
                           0o644)
         os.ftruncate(self.fd, self.segments[0]["done"])
         self.flush(force=True)
@@ -1811,7 +1973,16 @@ class _FileFetch:
             if self.fd is not None:
                 os.fsync(self.fd)
             tmp = self.sidecar + ".tmp"
-            with open(tmp, "w") as handle:
+            # SPEC AI-29 (D533): `os.open` with `_NOFOLLOW` rather than a
+            # plain `open(tmp, "w")` — the same symlink-planting defence the
+            # `.part` file opens above already apply, extended to the
+            # sidecar's own write-then-`os.replace` (an atomic rename does
+            # not follow a symlink AT the destination, but writing the `.tmp`
+            # source through a pre-planted symlink first would still hand an
+            # attacker the CONTENT, and a subsequent `os.replace` would then
+            # make `self.sidecar` itself become that symlink).
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _BINARY, 0o644)
+            with os.fdopen(fd, "w") as handle:
                 json.dump(state, handle)
             os.replace(tmp, self.sidecar)
 
@@ -2328,6 +2499,15 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
             # naming the Hub for a mirror manifest sends a reader to the wrong
             # place.
             raise _Unsegmentable(f"{name}: no size, etag or commit was reported")
+        # SPEC AI-29 (D533): a `name`/`etag` that would escape the snapshot
+        # or blobs directory is refused here, before a `_FileFetch` is ever
+        # constructed — falling back to hf's own downloader (which does its
+        # own, independently-maintained path handling) rather than joining
+        # either into a cache path this module controls.
+        if not _safe_repo_relative_name(name):
+            raise _Unsegmentable(f"{name}: not a safe repo-relative path")
+        if not _safe_blob_name(info["etag"]):
+            raise _Unsegmentable(f"{name}: etag is not a safe blob name")
         already = by_etag.get(info["etag"])
         if already is not None:
             # One etag is one blob, and a repo really does publish the same
@@ -3404,6 +3584,12 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
 
+    # Fail BEFORE a byte moves, when the listing gave us a real total (SPEC
+    # AI-26) — deliberately after the listing (so this never runs for a
+    # cached/mirrored fast-path return above) and before either fetch path
+    # below opens a connection.
+    _ensure_disk_space(total, repo_folder(model_id))
+
     def hub(revision=None):
         from huggingface_hub import snapshot_download
 
@@ -3683,6 +3869,10 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(repo_id, error)
+
+    # See `download_snapshot`'s identical call (SPEC AI-26) — after the
+    # listing, before either fetch path below.
+    _ensure_disk_space(total, repo_folder(repo_id))
 
     def hub():
         from huggingface_hub import hf_hub_download

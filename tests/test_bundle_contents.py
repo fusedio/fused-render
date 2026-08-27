@@ -533,18 +533,14 @@ def test_excluded_distributions_are_not_forced_into_the_bundle():
 # must exist, which is itself asserted: a renamed anchor must break loudly
 # rather than silently narrow the section to nothing.
 #
-# One list now. There used to be three: `core_apps/learn/check_libs.py`'s
-# SUPPORTED (the one that RAN, and so the source of truth), the Learn page's
-# static table, and the skill's bullets — and this test pinned the copies to
-# SUPPORTED. The learn content left the app for the community catalog, so the
-# skill's list is what remains in the repo, and it is pinned directly to what
-# the bundle ships.
+# One list: the authoring skill's bullets, pinned directly to what the bundle
+# ships.
 _DOC_LIBRARY_LISTS = [
     # The authoring skill's list — what an agent writing a page reads.
     (
         os.path.join("skills", "fused-render-authoring", "SKILL.md"),
         "### Available Python libraries",
-        "Anything outside this set",
+        "Anything else",
         r"(?m)^- \*\*([^:*]+):\*\* (.*)$",
     ),
 ]
@@ -597,22 +593,19 @@ def test_the_documented_library_list_only_promises_what_ships(relpath, start, en
     )
 
 
-def test_no_doc_claims_a_shipped_package_was_removed():
-    """The other half of the promise: what a doc says is GONE must be gone.
+def test_no_doc_sends_a_shipped_package_to_a_folder_manifest():
+    """The other half of the promise: what a doc says is ABSENT must be absent.
 
-    `test_the_documented_library_list_matches_check_libs` pins the positive
-    list — what the app has. Nothing pinned the negative one, and that is
-    exactly where this rotted: two docs went on saying `fpdf2` had left
-    `[bundled]` after the removal was reversed, including
-    `fused-render-authoring`, which is what an agent reads to decide what it may
-    import. The consequence is not a broken build but a worse one — an agent
-    steered away from a package that is right there, or into declaring a folder
-    manifest it does not need, which is the precise outcome the reversal existed
-    to prevent.
+    `test_the_documented_library_list_only_promises_what_ships` pins the
+    positive list — what the app has. This pins the negative one: the sentence
+    naming what a page must declare in a folder `pyproject.toml` must not name
+    something the app already ships. Getting that wrong does not break a build;
+    it steers an agent away from a package that is right there, into a folder
+    manifest the page does not need and a first-run install the user waits
+    through.
 
-    Scanned as a set of names rather than by parsing prose: any distribution
-    `[bundled]` or the core dependencies actually ship must not appear in a
-    sentence claiming things were removed. Cheap, and it would have caught this.
+    Scanned as a set of names rather than by parsing prose: cheap, and it
+    catches the drift the moment a distribution moves between the two lists.
     """
     import re
 
@@ -620,7 +613,7 @@ def test_no_doc_claims_a_shipped_package_was_removed():
     offenders = {}
     for relpath, marker in [
         (os.path.join("skills", "fused-render-authoring", "SKILL.md"),
-         "no longer does:"),
+         "Anything else"),
     ]:
         with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
             text = f.read()
@@ -633,10 +626,10 @@ def test_no_doc_claims_a_shipped_package_was_removed():
         if wrong:
             offenders[relpath] = wrong
     assert not offenders, (
-        f"{offenders} are named as REMOVED but `[bundled]`/the core dependencies "
-        "still ship them, so the doc tells a reader (or an authoring agent) a "
-        "package is unavailable when it is importable with no declaration and no "
-        "install. Fix the doc, or remove the package for real."
+        f"{offenders} are named as needing a folder manifest, but `[bundled]`/the "
+        "core dependencies ship them — so the doc tells a reader (or an authoring "
+        "agent) a package is unavailable when it is importable with no declaration "
+        "and no install. Fix the doc, or drop the package for real."
     )
 
 
@@ -758,7 +751,7 @@ def test_the_bundle_ships_the_whole_importable_stdlib():
 
 #: Excluded names CPython has since REMOVED, and the version that removed them.
 #: The DMG is built on 3.12 (`envinstall.SCRIPT_PYTHON_VERSION`), while this
-#: suite runs on 3.10–3.13, so an entry can be perfectly valid for the build
+#: suite runs on 3.11–3.13, so an entry can be perfectly valid for the build
 #: interpreter and absent from the one asserting about it — `lib2to3` is gone in
 #: 3.13. Listed rather than waved through so a typo is still caught: an
 #: exclusion has to be a real module on SOME version we know about.

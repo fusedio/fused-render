@@ -86,7 +86,19 @@ async def api_engine_proxy(engine_id: str, path: str, request: Request,
     if request.method == "POST" and (error := _require_fused(x_fused)) is not None:
         return error
     body = await request.body() if request.method == "POST" else b""
-    response = await _forward(engine_id, request, "/" + path, body)
+    # Per-kind retry policy on a POST: a background app's proxied POST
+    # (fused.daemon.call) can run arbitrary side-effecting daemon code, the same
+    # shape as the warm /api/engine worker's own /call — which already passes
+    # at_most_once=True so a heal-restart surfaces the failure instead of
+    # silently re-sending it. A template daemon's POST traffic (e.g. a
+    # "describe" request) stays pooled/retry-friendly by default, since most
+    # of it is safely re-runnable and a blanket at_most_once here would give
+    # up that resilience for no reason tied to background apps.
+    child = engine_host.current(engine_id)
+    at_most_once = (request.method == "POST"
+                    and child is not None and child.kind == "background")
+    response = await _forward(engine_id, request, "/" + path, body,
+                              at_most_once=at_most_once)
     # A POST the caller marks replayable (X-Engine-Reinit: <key>) that the child
     # accepted is recorded here, atomically with the request — so a restart
     # re-runs it and the registration can never be lost to a separate call. The

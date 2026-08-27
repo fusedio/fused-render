@@ -94,6 +94,19 @@ class Child:
     #: The module a warm app worker serves; "" for a template daemon. When set,
     #: `_spawn` passes `--module <this>`.
     module: str = ""
+    #: One of "template", "app", "background" — which bring-up path owns this
+    #: child. Explicit rather than inferred (e.g. from `module` truthiness) so
+    #: reap eligibility and other kind-specific behavior can never drift onto a
+    #: child by accident when a new kind is added.
+    kind: str = "template"
+    #: The declaring folder, `kind="background"` only — `""` for every other
+    #: kind. Threaded through the same way `cache`/`version` already are
+    #: (the caller resolved it from the manifest; re-deriving it from
+    #: `daemon`'s dirname would be wrong whenever the manifest's `daemon`
+    #: names a nested path). `_spawn_env` exports it as `FUSED_RENDER_APP_DIR`
+    #: so a background daemon can address the background-apps API about
+    #: itself without knowing its own page's `html` path.
+    folder: str = ""
     #: Unique per spawn so two bring-ups never share a status file (the same
     #: overlap the AI workers hit — see ai/supervisor.Worker.uid).
     uid: str = field(default_factory=lambda: secrets.token_hex(4))
@@ -265,20 +278,51 @@ def _tail(path: str, limit: int = 2000) -> str:
         return ""
 
 
+def _spawn_env(child: Child) -> dict:
+    """The environment to launch *child* with.
+
+    A venv-based child must not inherit this app's own Python env (it would
+    break the venv's hermeticity), so PYTHONHOME/PYTHONPATH/PYTHONEXECUTABLE/
+    PYTHONSTARTUP are stripped — UNLESS the child runs on this app's own
+    `sys.executable`, in which case they are left intact: like the built-in
+    executor (which spawns [sys.executable, _child.py] with the environment
+    intact), a packaged/bundled interpreter needs PYTHONHOME to locate its own
+    runtime at all, and that is a fact about the INTERPRETER, not about which
+    engine_host child kind is asking.
+
+    Keyed on `child.python == sys.executable`, deliberately not on
+    `child.module` (2026-08-26 fix): the old `child.module and child.python ==
+    sys.executable` condition only preserved the environment for an app warm
+    worker, since `module` is that kind's own marker — every OTHER child
+    running on `sys.executable`, background apps included, took the strip
+    branch. In the packaged app, where the fused engine is unavailable,
+    `background_apps.interpreter_for` always resolves to `sys.executable`, so
+    a background daemon lost PYTHONHOME and died at bootstrap on every
+    packaged install; a dev checkout never sees it because `fused` being
+    importable there takes the venv path instead. A template daemon running
+    on `sys.executable` (no project venv declared) picks up the same
+    preservation now, by the same reasoning the comment already gave for the
+    app-worker case — this is a deliberate widening, not a side effect: the
+    "needs PYTHONHOME" fact was never actually specific to app workers."""
+    env = dict(os.environ)
+    if child.python != sys.executable:
+        for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
+            env.pop(name, None)
+    # A background daemon otherwise has no way to learn its own app folder —
+    # the background-apps API keys every endpoint off the page's `html` path
+    # (see routers/background_apps.py), which the daemon never sees. Only
+    # `kind="background"` children carry `folder` at all (see Child.folder).
+    if child.kind == "background" and child.folder:
+        env["FUSED_RENDER_APP_DIR"] = child.folder
+    return env
+
+
 def _spawn(child: Child) -> None:
     """Start the daemon and wait for it to publish its port and answer /ping."""
     os.makedirs(child.cache, exist_ok=True)
     status = os.path.join(child.cache, f"engine-{child.uid}.json")
     log = os.path.join(child.cache, "daemon.log")
-    env = dict(os.environ)
-    # A venv-based child must not inherit the app's Python env (it would break
-    # the venv's hermeticity). An app warm worker running on the app's OWN
-    # sys.executable is the exception: like the built-in executor (which spawns
-    # [sys.executable, _child.py] with the environment intact), a packaged /
-    # bundled interpreter needs PYTHONHOME to locate its runtime, so leave it be.
-    if not (child.module and child.python == sys.executable):
-        for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
-            env.pop(name, None)
+    env = _spawn_env(child)
     argv = [child.python, child.daemon,
             "--status", status, "--cache", child.cache, "--version", child.version]
     # A warm app worker is told which module to serve; a template daemon isn't.
@@ -460,12 +504,115 @@ def ensure_app(resolved_py: str, python: str,
         if existing is not None:
             _terminate(existing)
         child = Child(engine_id=engine_id, python=python, daemon=APP_WORKER,
-                      cache=cache, version=version, module=module)
+                      cache=cache, version=version, module=module, kind="app")
         _spawn(child)
         child.last_used = time.monotonic()
         with _lock:
             _children[engine_id] = child
         return child
+
+
+# --- background apps (background_apps.py, SPEC.md §46) ------------------------
+
+
+def _validate_background(engine_id: str, python: str, daemon: str,
+                         folder: str = "") -> None:
+    """Same invariant-check stance as `_validate`/`_validate_interpreter`: the
+    caller (the start/restart endpoints, the startup resurrection hook)
+    already resolved `daemon` from the folder's own manifest, so this is not
+    the trust boundary either — it is a check that the caller did not hand
+    over a daemon belonging to some folder whose OWN manifest does not
+    declare it.
+
+    Deliberately independent of the autostart store (D511, code review):
+    this used to walk `background_apps.enabled_paths()` looking for a match,
+    which meant `ensure_background` would refuse to spawn any app that
+    wasn't opted into autostart — exactly backwards now that autostart is a
+    separate, opt-in flag and `start()` must work whether or not it is set.
+    Instead, the declaring folder is asked for ITS manifest
+    (`background_apps.load_manifest`, self-contained — no store lookup) and
+    the check is simply "does that folder's manifest declare exactly this
+    daemon file", which needs nothing but the daemon path itself.
+
+    `folder` is the caller's own resolved declaring folder — the same one
+    `ensure_background` threads onto `Child.folder` — used here instead of
+    `os.path.dirname(daemon)` (D513): `load_manifest` only enforces
+    containment, not flatness, so a manifest's `daemon` naming a NESTED path
+    (`daemon = "src/daemon.py"`) is legal, and `dirname(daemon)` for such an
+    app is a subfolder with no `pyproject.toml` of its own — re-deriving the
+    folder that way made every such app un-startable (see `Child.folder`'s
+    docstring, which already called this hazard out). Falls back to
+    `os.path.dirname(daemon)` when `folder` is empty, preserving today's
+    behavior for flat layouts and for the few direct callers (tests only —
+    every production call site passes `folder`) that still don't pass one."""
+    from fused_render import background_apps
+
+    if not _ENGINE_ID.match(engine_id):
+        raise EngineError(f"refusing engine id {engine_id!r}: not a bare identifier")
+    _validate_interpreter(python)
+    target = os.path.realpath(daemon)
+    folder = folder or os.path.dirname(daemon)
+    manifest = background_apps.load_manifest(folder)
+    if manifest is not None and os.path.realpath(manifest.daemon) == target:
+        return
+    raise EngineError(
+        f"refusing to run {daemon!r}: not the declared daemon of its "
+        "folder's own [tool.fused-render.app] background manifest")
+
+
+def ensure_background(engine_id: str, python: str, daemon: str, cache: str,
+                      version: str, folder: str = "") -> Child:
+    """A live child for a background app's engine_id, reusing the current one
+    when it matches and answers — the same double-checked reuse/spawn dance as
+    `ensure`, but for a `kind="background"` child, validated against its own
+    declaring folder's manifest rather than the (now-autostart-only) store.
+
+    `folder` is the manifest's declaring folder (every caller already has it
+    in scope, the same way it already has `cache`/`version`) — stored on the
+    `Child` so `_spawn_env` can export `FUSED_RENDER_APP_DIR` to the daemon,
+    and passed to `_validate_background` so it validates `daemon` against the
+    manifest of the folder that actually declared it, not a re-derived one
+    (D513 — re-deriving via `os.path.dirname(daemon)` breaks any manifest
+    whose `daemon` names a nested path). Optional (defaults to `""`) only so
+    existing direct callers that don't care about it need not pass one; every
+    production call site does."""
+    _validate_background(engine_id, python, daemon, folder)
+    existing = _children.get(engine_id)
+    if (existing is not None and existing.kind == "background"
+            and _matches(existing, python, daemon, cache, version)
+            and _alive(existing) and _ping(existing)):
+        return existing
+    with _spawn_lock:
+        existing = _children.get(engine_id)
+        if (existing is not None and existing.kind == "background"
+                and _matches(existing, python, daemon, cache, version)
+                and _alive(existing) and _ping(existing)):
+            return existing
+        if existing is not None:
+            _terminate(existing)
+        child = Child(engine_id=engine_id, python=python, daemon=daemon,
+                      cache=cache, version=version, kind="background",
+                      folder=folder)
+        _spawn(child)
+        with _lock:
+            _children[engine_id] = child
+        return child
+
+
+def background_running_folders() -> set[str]:
+    """The declaring folders of every currently-live `kind="background"`
+    child — the actual run-state source for the `/apps` grid's running badge
+    (2026-08-26 code review: the badge used to be keyed off
+    `background_apps.autostart_paths()`, which went stale the moment D511
+    split run state from autostart, since `start()` no longer persists
+    anything and a running-but-not-autostart daemon has no other row to
+    appear in). `_children`/`folder`/`_alive` are all already in memory, so
+    this is a snapshot over a dict plus a `Popen.poll()` per background
+    child — no folder walk, no toml read, cheap enough to call once per grid
+    render exactly like the endpoint's docstring promises."""
+    with _lock:
+        children = [c for c in _children.values() if c.kind == "background"]
+    return {c.folder for c in children if c.folder and _alive(c)}
 
 
 #: Set once the first bring-up starts the (daemon) idle sweeper thread.
@@ -515,12 +662,14 @@ def mark_idle(engine_id: str) -> None:
 
 def reap_idle_app_workers(now: float | None = None) -> int:
     """Terminate every warm app worker idle past APP_IDLE_RETIRE_S, returning the
-    count reaped. Only app workers (module set) are eligible. Exposed so a test
-    can drive it directly."""
+    count reaped. Only `kind == "app"` children are eligible — explicit, so a
+    background app can never become reap-eligible by accident (e.g. a future
+    kind that also happens to set `module`). Exposed so a test can drive it
+    directly."""
     now = time.monotonic() if now is None else now
     with _lock:
         candidates = [c for c in _children.values()
-                      if c.module and _busy.get(c.engine_id, 0) == 0
+                      if c.kind == "app" and _busy.get(c.engine_id, 0) == 0
                       and (now - c.last_used) >= APP_IDLE_RETIRE_S]
     # A call that outran its budget got a 504 but its main() may still be running
     # in the worker (we never kill it); the worker reports that, so skip a worker
@@ -538,13 +687,27 @@ def reap_idle_app_workers(now: float | None = None) -> int:
     return len(stale)
 
 
-def restart(engine_id: str, failed: Child | None = None) -> Child:
+def restart(engine_id: str, failed: Child | None = None,
+           version: str | None = None) -> Child:
     """Kill and respawn the child, replaying its reinit requests.
 
     `failed` is the child the caller's request died against: when another
     request already replaced it, the fresh child is returned as-is instead of
     being restarted again — a broken viewport fails a whole burst of requests at
     once, and each of them calls here.
+
+    `version` overrides the respawned child's version digest; omitted (the
+    default), the existing child's own `version` carries over unchanged, the
+    original behavior every non-background caller (engine_forward.py's
+    heal-on-proxy) still wants — a healed child should keep answering to the
+    same version its caller already knows. `/api/apps/background/restart`
+    (D510, 2026-08-26 code review) passes the FRESHLY computed digest instead:
+    without this, a live child's restart rebuilt its replacement from
+    `existing.version` — the OLD digest — so `fused.daemon.restart()` right
+    after editing `daemon.py` respawned the new code tagged with the stale
+    version, and the next enable()/server-start resurrection would then see
+    its own fresh digest disagree with what's registered and tear the
+    just-restarted child down and spawn it a second time.
 
     The new child's state is replayed BEFORE it is published, so a request
     retried mid-replay waits on the spawn lock rather than seeing a child whose
@@ -564,7 +727,9 @@ def restart(engine_id: str, failed: Child | None = None) -> Child:
         _terminate(existing)
         child = Child(engine_id=engine_id, python=existing.python,
                       daemon=existing.daemon, cache=existing.cache,
-                      version=existing.version, module=existing.module)
+                      version=version if version is not None else existing.version,
+                      module=existing.module,
+                      kind=existing.kind, folder=existing.folder)
         _spawn(child)
         _replay(child)
         with _lock:

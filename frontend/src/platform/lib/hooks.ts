@@ -139,6 +139,60 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
+// The shell's own tab icon: READ off the `<link rel="icon">` the document
+// arrived with, not spelled here. frontend/index.html says `/favicon.ico`,
+// but Vite rewrites that to the build's base (`/static/shell-dist/favicon.ico`,
+// vite.config.js) — a hard-coded `/favicon.ico` restore was a 404, which is
+// what the blank placeholder on the tab was (owner, 2026-08-27, second
+// report). Captured lazily on the first swap, so it is whatever the served
+// index.html linked, dev or packaged.
+const DEFAULT_FAVICON = Symbol("default favicon");
+let defaultHref: string | null = null;
+
+// Set the tab icon by REPLACING the `<link rel="icon">` node, never by editing
+// its href: browsers (Chrome at least) do not reliably refetch when an existing
+// link's href flips back to a URL it showed before, which left the previous
+// app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
+// node is a fresh icon request every time. EVERY href — the default and an
+// app's icon alike — also carries a unique query string: Chrome's per-document
+// favicon cache can answer a URL it already holds without repainting (the
+// app's raw URL is stable across visits, so it hits the same cache). The
+// server ignores the query, so the bytes are the same file under a new key.
+let faviconSeq = 0;
+function bust(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}r=${++faviconSeq}`;
+}
+function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
+  const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (defaultHref === null && old) defaultHref = old.href;
+  const link = document.createElement("link");
+  link.rel = "icon";
+  if (href === DEFAULT_FAVICON) {
+    if (!defaultHref) return;
+    link.href = bust(defaultHref);
+    link.setAttribute("sizes", "any");
+  } else {
+    link.href = bust(href);
+  }
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
+}
+
+// Tab icon: while a route inside an app is on screen, its optional icon.svg
+// replaces the shell's own, AS IS — no recolouring, no livery (owner,
+// 2026-08-27: render the author's svg untouched). The default comes back when
+// the route leaves (cleanup) or the href goes null (no icon for this app). One
+// writer at a time by construction — the callers (AppPage, StatView) are
+// mutually exclusive mounts — so there is no arbitration, only the restore.
+export function useFavicon(href: string | null): void {
+  useEffect(() => {
+    if (!href) return;
+    setFaviconHref(href);
+    return () => setFaviconHref(DEFAULT_FAVICON);
+  }, [href]);
+}
+
 // The builtin-mount readiness hook lived here: a bounded /api/config poll that
 // answered "is the bundled zip mount attached and browsable yet", seeded from
 // the boot-time config snapshot because the one-shot fetch (main.tsx) lands
