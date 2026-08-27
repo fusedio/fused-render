@@ -114,10 +114,13 @@ def _resolve(value, anchor) -> str | None:
     return os.path.normpath(os.path.join(os.path.dirname(anchor), value))
 
 
-#: Body/query keys that name a file. Lists (``images``, ``paths``) are
-#: checked element-wise. ``html``/``base`` are anchors for relative values
-#: and are themselves scoped.
-_PATH_KEYS = ("path", "py", "html", "base", "image", "images", "paths")
+#: Body/query keys that name a file. Lists (``images``, ``paths``, a repeated
+#: query key) are checked element-wise. ``html``/``base`` are anchors for
+#: relative values and are themselves scoped. ``src``/``dst`` (rename, copy),
+#: ``from``/``to`` (trash-move) and ``dest`` (compress) are BOTH ends of a
+#: move: a file may not leave the roots, and nothing may arrive from outside.
+_PATH_KEYS = ("path", "py", "html", "base", "image", "images", "paths",
+              "src", "dst", "from", "to", "dest")
 
 
 def _anchor(args: dict):
@@ -166,11 +169,23 @@ _EXACT: dict[str, frozenset[str]] = {
     "/api/env/install": frozenset({"GET", "POST"}),
     "/api/env/progress": frozenset({"GET"}),
     "/api/env/cancel": frozenset({"POST"}),
+    # Every file operation, scoped to the roots. Not here on purpose: `reveal`
+    # (opens Finder on the laptop), `pick-file`/`pick-folder` (native dialogs
+    # on the laptop's screen) — they act on the desktop, not on files.
     "/api/fs/raw": frozenset({"GET", "HEAD"}),
     "/api/fs/stat": frozenset({"GET"}),
+    "/api/fs/list": frozenset({"GET"}),
+    "/api/fs/walk": frozenset({"GET"}),
+    "/api/fs/conditions": frozenset({"GET"}),
+    "/api/fs/git-repo": frozenset({"GET"}),
     "/api/fs/write": frozenset({"POST"}),
     "/api/fs/mkdir": frozenset({"POST"}),
     "/api/fs/upload": frozenset({"POST"}),
+    "/api/fs/delete": frozenset({"POST"}),
+    "/api/fs/rename": frozenset({"POST"}),
+    "/api/fs/copy": frozenset({"POST"}),
+    "/api/fs/trash-move": frozenset({"POST"}),
+    "/api/fs/compress": frozenset({"POST"}),
     "/api/apps/py": frozenset({"GET"}),
     "/api/apps/background/status": frozenset({"GET"}),
     "/api/apps/background/start": frozenset({"POST"}),
@@ -251,7 +266,14 @@ class LanApp:
                     return
             return
         if kind == "websocket":
-            await send({"type": "websocket.close", "code": 1008})
+            # /api/fs/events (the runtime's change feed) is the one socket a
+            # page needs; forwarded when every watched `path` is in the roots.
+            query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
+                             keep_blank_values=True)
+            if scope["path"] == "/api/fs/events" and query.get("path") and _args_in_scope(query):
+                await self.inner(scope, receive, send)
+            else:
+                await send({"type": "websocket.close", "code": 1008})
             return
         if kind != "http":
             return
