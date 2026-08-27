@@ -791,30 +791,32 @@ def _upstream_state(root, has_commits):
 
 
 def _rebase_target(root, remote):
-    """The remote's default branch name — mirrors `ops.py::_default_branch`
-    rather than importing it (this module and `ops.py` are each exec'd
-    standalone, PY-15), so the overview can name the SAME ref `ops.py`'s
-    `_rebase` actually rebases onto. That ref is `<remote>/<default>`,
-    which is NOT necessarily `@{upstream}` — `ahead`/`behind` above are
-    measured against `@{upstream}`, and a published feature branch can
-    track something other than the default branch, which is exactly the
-    mismatch a Rebase button must never paper over. Best effort, like every
-    other field this reader treats as optional: any git failure answers
-    None rather than raising `_Refused` and failing the whole overview."""
+    """The remote's default branch name — mirrors the SYMREF READ half of
+    `ops.py::_default_branch` rather than importing it (this module and
+    `ops.py` are each exec'd standalone, PY-15), so the overview can name
+    the SAME ref `ops.py`'s `_rebase` actually rebases onto. That ref is
+    `<remote>/<default>`, which is NOT necessarily `@{upstream}` —
+    `ahead`/`behind` above are measured against `@{upstream}`, and a
+    published feature branch can track something other than the default
+    branch, which is exactly the mismatch a Rebase button must never paper
+    over.
+
+    Deliberately NOT mirrored: `ops.py::_default_branch`'s `remote set-head
+    --auto` fallback when the symref is missing or stale. That fallback is
+    a NETWORK round trip plus a WRITE to `refs/remotes/<remote>/HEAD` in
+    the repo's own refs — correct in `ops.py`, which only runs it inside an
+    explicit, user-triggered mutation already about to touch the network,
+    but wrong here: this module is the read-only reader on the request
+    path (GT-12 — "a read may never contact a remote as a side effect"), so
+    opening the git panel on a repo whose symref is unresolved must not
+    block on the network or rewrite the user's refs just because they
+    looked. A missing symref answers None here, same as every other
+    failure: the template already falls back to naming `remote`'s default
+    branch generically rather than asserting a ref it does not know."""
     try:
         out = _git(root, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD")
     except _Refused:
-        try:
-            # The remote-tracking HEAD symref is missing or stale often enough
-            # (a clone made before the remote existed, a remote added by
-            # hand) that `ops.py::_rebase` re-asks after this exact fallback —
-            # mirrored here too, so this field is not falsely None on a repo
-            # the button would resolve just fine.
-            _git(root, "remote", "set-head", remote, "--auto")
-            out = _git(root, "symbolic-ref", "--short",
-                       f"refs/remotes/{remote}/HEAD")
-        except _Refused:
-            return None
+        return None
     short = out.decode("utf-8", "replace").strip()
     return short[len(remote) + 1:] if short.startswith(remote + "/") else None
 
@@ -1337,9 +1339,17 @@ def main(
         branch, detached, head, has_commits = _head(root)
         changes, changes_truncated, dirty, staged_outside = _status(root, rel, is_dir)
         upstream, ahead, behind, remote = _upstream_state(root, has_commits)
-        rebase_target = _rebase_target(root, remote) if (has_commits and remote) else None
+        # `rebase_target`/`rebase_ahead` cost a symbolic-ref read and (when
+        # resolvable) a rev-list, on top of every other overview call — not
+        # free, so they only run when the toolbar's Rebase button can
+        # actually paint: `behind and ahead and not detached`, the exact
+        # condition `template.html` gates the button on. A plain in-sync or
+        # merely-ahead-or-behind repo pays nothing for a field it will never
+        # render.
+        can_rebase = bool(remote) and ahead and behind and not detached
+        rebase_target = _rebase_target(root, remote) if can_rebase else None
         rebase_ahead = (_rebase_ahead(root, remote, rebase_target)
-                        if (has_commits and remote) else None)
+                        if can_rebase else None)
         commits, has_more, capped, limit, page = (
             _log(root, rel, limit, page) if (has_commits and history)
             else ([], False, False,

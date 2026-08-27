@@ -83,11 +83,21 @@ def clean_repo(root):
     return root
 
 
-def diverged_repo(root):
+def diverged_repo(root, *, known_head=True):
     """A local branch tracking a remote that has ALSO moved: `git pull
     --ff-only` is refused (finding #2's own trigger — `_pull`'s
     "not-fast-forward" message), so the toolbar's Rebase button is the one
-    surface that can resolve it from inside this view."""
+    surface that can resolve it from inside this view.
+
+    `known_head=True` (the default) leaves `refs/remotes/origin/HEAD` as a
+    modern `git fetch` sets it on its own once it can resolve the remote's
+    default branch — most callers want a repo where the reader can resolve
+    the default branch with no fallback involved. `known_head=False` is the
+    one deliberately UNUSUAL shape: the symref is explicitly REMOVED after
+    the fetch (`remote set-head --delete`) to reproduce the case an older
+    git, or a manually pruned symref, actually leaves — the repo the
+    fallback exists for, and the one the reader must never repair on its
+    own on a read."""
     remote = os.path.join(os.path.dirname(root), "diverged-remote.git")
     os.makedirs(root, exist_ok=True)
     git(root, "init", "-q", root)
@@ -112,6 +122,8 @@ def diverged_repo(root):
     # real user's own "Check for updates" would, or this repo reads as merely
     # ahead (Send), never as diverged.
     git(root, "fetch", "-q", "origin")
+    if not known_head:
+        git(root, "remote", "set-head", "origin", "--delete")
     return root
 
 
@@ -218,6 +230,51 @@ def test_a_diverged_repo_names_the_honest_rebase_target(reader, tmp_path):
     assert repo["remote"] == "origin"
     assert repo["rebase_target"] == "main"
     assert repo["rebase_ahead"] == 1  # one local commit ("ours") not on origin/main
+
+
+def test_reading_a_diverged_repo_never_touches_refs_when_head_is_unresolved(reader, tmp_path):
+    """Code review follow-up on the finding above: the FIRST cut of
+    `_rebase_target` mirrored `ops.py::_default_branch`'s `remote set-head
+    --auto` fallback wholesale — including the network round trip and the
+    LOCAL REF WRITE that fallback does. That is fine in `ops.py`, which
+    only runs it from an explicit, user-triggered mutation that is already
+    about to touch the network. It is not fine here: `log.py` is the
+    read-only reader on the request path (SPEC GT-12 — "a read may never
+    contact a remote as a side effect"), so opening the git panel on any
+    repo whose `refs/remotes/<remote>/HEAD` symref is missing or stale must
+    never block on the network or rewrite the repo's own refs just because
+    the user looked at it.
+
+    `known_head=False` builds a repo that only ever did `remote add` +
+    `fetch` — never a `clone` or a `set-head` — which is exactly the shape
+    where that symref does not exist. The reader must still answer (with
+    `rebase_target` honestly None, which is the fallback the template was
+    already built to render), and the ref this used to create as a side
+    effect must still not exist afterward."""
+    root = diverged_repo(str(tmp_path / "diverged-no-head"), known_head=False)
+    ref_path = os.path.join(root, ".git", "refs", "remotes", "origin", "HEAD")
+    assert not os.path.exists(ref_path), (
+        "fixture assumption: refs/remotes/origin/HEAD must not exist yet")
+
+    out = reader.main(file=root, op="overview")
+
+    assert out["ok"] is True, out
+    repo = out["repo"]
+    assert repo["remote"] == "origin"
+    assert repo["rebase_target"] is None
+    assert repo["rebase_ahead"] is None
+    # The assertion that actually matters: reading the overview must not
+    # have created the symref as a side effect. `packed-refs` is checked
+    # too — `git remote set-head` can write there instead of a loose ref
+    # file depending on repack state, so a loose-file-only check could pass
+    # on a mutation that happened to land in the packed form.
+    assert not os.path.exists(ref_path), (
+        "reading the overview created refs/remotes/origin/HEAD as a "
+        "side effect — the reader must never mutate the repo it is reading")
+    packed = os.path.join(root, ".git", "packed-refs")
+    if os.path.exists(packed):
+        with open(packed, encoding="utf-8") as fh:
+            assert "refs/remotes/origin/HEAD" not in fh.read()
 
 
 def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):
