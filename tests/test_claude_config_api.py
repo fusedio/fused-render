@@ -1395,23 +1395,41 @@ def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
 
 
 def _config_lock_commit_worker(claude_dir: str) -> None:
-    """Module-level (picklable under `multiprocessing`'s default `spawn`
-    start method) so it can run in its OWN process for
+    """Module-level (picklable, and run under a `spawn` context explicitly --
+    see the test) so it can run in its OWN process for
     test_config_lock_held_commit_does_not_deadlock -- see that test for why a
-    thread is not enough. Sets CLAUDE_DIR via the environment BEFORE
-    importing `lib`, the same mechanism production uses (`lib.CLAUDE_DIR` is
-    read from `os.environ.get("CLAUDE_DIR")` once at import), and the same
-    devnull/fixture git identity the `claude_dir` fixture sets -- this
-    process gets none of that fixture's `monkeypatch` state, only what it
-    sets up for itself here."""
-    os.environ["CLAUDE_DIR"] = claude_dir
+    thread is not enough.
+
+    Sets `lib.CLAUDE_DIR`/`SETTINGS_PATH`/`_LOCK_PATH` by ATTRIBUTE, the same
+    mechanism the `claude_dir` fixture uses (`monkeypatch.setattr`) -- NOT by
+    setting the `CLAUDE_DIR` environment variable and importing `lib`
+    afterward, which was this function's first version and was a no-op: under
+    `spawn`, unpickling this function's __module__ already imports the WHOLE
+    test module to find it, and that module imports `lib` at its own top
+    level -- so `lib.CLAUDE_DIR` is resolved from whatever environment this
+    worker process inherited BEFORE a single line of this function body runs.
+    On a machine or CI job that exports `CLAUDE_DIR`, that version would have
+    `git init`ed the REAL directory, overwritten its real settings.json, and
+    committed it -- this process gets none of the `claude_dir` fixture's
+    `monkeypatch` state, only what it sets up for itself here, and it has to
+    actually land where this docstring says.
+    """
+    from fused_render.claude_config import lib as _lib
+
+    _lib.CLAUDE_DIR = claude_dir
+    _lib.SETTINGS_PATH = os.path.join(claude_dir, "settings.json")
+    _lib._LOCK_PATH = os.path.join(claude_dir, ".config-ui.lock")
     os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
     os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
     os.environ["GIT_AUTHOR_NAME"] = "Fixture Author"
     os.environ["GIT_AUTHOR_EMAIL"] = "fixture@example.com"
     os.environ["GIT_COMMITTER_NAME"] = "Fixture Author"
     os.environ["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
-    from fused_render.claude_config import lib as _lib
+
+    # Prove it landed BEFORE anything destructive runs -- this is exactly
+    # the assertion whose absence let the environment-variable version of
+    # this function silently target the developer's real ~/.claude.
+    assert _lib.CLAUDE_DIR == claude_dir, (_lib.CLAUDE_DIR, claude_dir)
 
     with _lib.config_lock():
         _lib.write_json(_lib.SETTINGS_PATH, {"model": "opus"})
@@ -1500,8 +1518,71 @@ def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the
     # Not silently healed into a half-built repo: git itself does not
     # recognise this directory (no HEAD/config/objects/refs were ever
     # written), so a later call will retry rather than proceeding as if
-    # init had actually finished.
-    assert lib.git("rev-parse", "--git-dir", check=False).strip() == ""
+    # init had actually finished. `--resolve-git-dir`, not `--git-dir`: see
+    # test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure
+    # for why `--git-dir` is the wrong check here too.
+    assert lib.git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure(
+        claude_dir):
+    """Second review round: the fix above used `git rev-parse --git-dir` to
+    detect a lost race, and that command performs git's normal repository
+    DISCOVERY -- it walks UP the filesystem for a `.git` in any ancestor.
+    Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override) inside a
+    versioned dotfiles or home repo. From a CLAUDE_DIR with no valid `.git`
+    of its own but a repo somewhere ABOVE it, `--git-dir` exits 0 and prints
+    the ANCESTOR's git dir -- so a genuinely failed `git init` there (EPERM,
+    ENOSPC, a read-only volume) that leaves no local `.git` would have been
+    misread as "someone else already won", and every git() call after that
+    -- identity, the seed `git add -A` + `git commit`, and every later
+    commit()/status()/log()/diff() -- would run against the ANCESTOR repo
+    instead: rewriting its config and committing the user's whole dotfiles
+    tree.
+
+    Builds a REAL ancestor repo directly above the fixture's CLAUDE_DIR (the
+    exact "home/dotfiles repo containing ~/.claude" shape), forces `git
+    init` to fail without creating anything at all, and asserts both that
+    ensure_repo() raises AND that the ancestor repo is completely untouched
+    -- same HEAD sha, same config, no new commit. This test fails against
+    the `--git-dir` version of the fix (it exits 0 and lets ensure_repo()
+    proceed to write into the ancestor)."""
+    ancestor = claude_dir.parent
+
+    def ancestor_git(*args):
+        res = subprocess.run(
+            [lib._git_bin(), "-C", str(ancestor), *args],
+            capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    ancestor_git("init", "-q")
+    ancestor_git("config", "user.email", "fixture@example.com")
+    ancestor_git("config", "user.name", "Fixture Author")
+    (ancestor / "existing-dotfile").write_text("keep me\n")
+    ancestor_git("add", "-A")
+    ancestor_git("commit", "-q", "-m", "seed")
+    before_head = ancestor_git("rev-parse", "HEAD").strip()
+    before_config = (ancestor / ".git" / "config").read_text()
+
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            # A genuine failure that creates NOTHING under CLAUDE_DIR -- e.g.
+            # EPERM before git even gets to mkdir `.git`.
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: permission denied")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    assert not os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    assert ancestor_git("rev-parse", "HEAD").strip() == before_head
+    assert (ancestor / ".git" / "config").read_text() == before_config
 
 
 @pytest.mark.skipif(not git_available(), reason="needs git")
@@ -1519,8 +1600,18 @@ def test_config_lock_held_commit_does_not_deadlock(claude_dir):
     worker that touches `config_lock()` would hang too -- the suite would
     still die, just in some unrelated victim test with no pointer back here.
     A subprocess takes the poisoned lock down with it when this test kills
-    it, so a regression fails HERE, cleanly, instead of hanging the run."""
-    proc = multiprocessing.Process(
+    it, so a regression fails HERE, cleanly, instead of hanging the run.
+
+    Uses the `spawn` context EXPLICITLY, not the platform default (`fork` on
+    Linux <=3.13). A bare fork() out of a pytest worker that may already have
+    PROJ/duckdb/rasterio resident from an earlier module in the same xdist
+    worker is exactly the rc=-11 hazard this repo guards against everywhere
+    else (SUBPROCESS_KWARGS, tests/test_git_posix_spawn.py) -- here it would
+    surface as a load-order-dependent `proc.exitcode` with no connection to
+    the deadlock under test. `spawn` also makes `_config_lock_commit_worker`'s
+    own "picklable" claim actually true on every platform, not just the ones
+    that happen to default to it."""
+    proc = multiprocessing.get_context("spawn").Process(
         target=_config_lock_commit_worker, args=(str(claude_dir),))
     proc.start()
     proc.join(timeout=15)
