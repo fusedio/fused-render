@@ -2132,6 +2132,52 @@ def _session_from_out(run_dir: str) -> str:
 _LIVE_SCAN_LIMIT = 60
 
 
+def _registry_running(workdir: str) -> set:
+    """Session ids in `workdir` that a `claude` process on this machine holds
+    RIGHT NOW — per Claude Code's own registry, `~/.claude/sessions/<pid>.json`,
+    one file per running process (sessionId, cwd, status), deleted on exit.
+
+    `_live_sessions` above knows only the runs THIS app spawned. A session
+    resumed in a terminal, or started there, is invisible to it and read as
+    idle on the Recent chats list while it is plainly generating. The registry
+    is the same source the Tasks page reads (fused_render/tasks_watch.py), so
+    the two lists agree on who is running.
+
+    `busy`/`shell` is running; `idle`/`waiting` is not; a row with NO status is
+    a headless `claude -p` that is alive, which is running for as long as the
+    file exists. A dead pid (a crash left the file behind) counts for nothing.
+    Best-effort throughout: an unreadable registry is an empty answer."""
+    want = os.path.abspath(workdir)
+    try:
+        names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
+    except OSError:
+        return set()
+    out = set()
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(CLAUDE_DIR, "sessions", name), encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("sessionId")
+        cwd = row.get("cwd")
+        if not isinstance(sid, str) or not isinstance(cwd, str):
+            continue
+        if os.path.abspath(cwd) != want:
+            continue
+        status = row.get("status")
+        if isinstance(status, str) and status and status not in ("busy", "shell"):
+            continue
+        if not _pid_alive(str(row.get("pid") or "")):
+            continue
+        out.add(sid)
+    return out
+
+
 def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
     """The id of a run for `file` that is STILL GOING, or "" if there is none.
 
@@ -3273,7 +3319,7 @@ def _cli_sessions(file: str) -> list:
     want = "" if os.path.isdir(file) else os.path.abspath(file)
     # One scan for the whole list — see `_live_sessions` for why this is not
     # `_live_run` asked once per row.
-    live = _live_sessions(file)
+    live = _live_sessions(file) | _registry_running(_workdir(file))
     proj = os.path.join(PROJECTS, _munge(workdir))
     try:
         names = os.listdir(proj)

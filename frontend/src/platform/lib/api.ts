@@ -2365,8 +2365,32 @@ export interface Task {
 // live tasks by the workspace app they belong to off this same poll.
 export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
 
-export function getTasks(): Promise<{ tasks: Task[] }> {
-  return getJson<{ tasks: Task[] }>("/api/tasks");
+export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
+  return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
+}
+
+/** What `/api/tasks/changes` answers: the rows that moved since a generation,
+ *  the keys that moved and are no longer listed, or `full` when the server no
+ *  longer remembers that far back and the page should reload the listing. */
+export interface TaskChanges {
+  generation: number;
+  rows?: Task[];
+  gone?: string[];
+  full?: boolean;
+}
+
+/** Long-poll for task changes since `since`. Resolves the moment the server's
+ *  watcher sees a session start, resume, take a prompt or grow — or after
+ *  `wait` seconds with `rows: []`. */
+export function getTaskChanges(
+  since: number,
+  wait = 25,
+  signal?: AbortSignal,
+): Promise<TaskChanges> {
+  return getJson<TaskChanges>(
+    `/api/tasks/changes?since=${encodeURIComponent(since)}&wait=${encodeURIComponent(wait)}`,
+    { signal },
+  );
 }
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
