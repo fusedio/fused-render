@@ -452,15 +452,16 @@
   background: currentColor;
 }
 
-/* The panel's own EMPTY state — `No models loaded` / `No jobs` /
-   `No notifications` (D579) — for a section with nothing to show (D573). This text used
-   to live in the CHIP itself (a separate unpressable `.dl-idle` span, no
-   button, no panel behind it) — the user's own words moved it: "lets have
-   simpler stuff like models (x count) | notifications | downloads etc and
-   the no xyz part in the popover thing that opens". The chip now always
-   shows a category name (plus its one circle, or Models' size) and is
-   always a real button; this is what its panel draws instead of rows when
-   there is nothing to list. */
+/* The panel's own EMPTY state — `No models loaded` / `No engines running` /
+   `No jobs` / `No notifications` (D579, D591) — for a section with nothing to
+   show (D573). This text used to live in the CHIP itself (a separate
+   unpressable `.dl-idle` span, no button, no panel behind it) — the user's own
+   words moved it: "lets have simpler stuff like models (x count) |
+   notifications | downloads etc and the no xyz part in the popover thing that
+   opens". The chip now shows a category name and its one circle, and is always
+   a real button; this is what its panel draws instead of rows when there is
+   nothing to list. (Models' size was dropped in D589 — the aggregate was a sum
+   of worker RSS and inaccurate — so no chip carries a number any more.) */
 .dl-panel-empty {
   padding: 10px;
   /* Centred (D592, user: "also make the 'no jobs' etc text center aligned in

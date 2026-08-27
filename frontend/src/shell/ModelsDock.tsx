@@ -52,9 +52,24 @@ const COLLAPSED_KEY = "fused-render:models-collapsed";
 
 function loadCollapsed(): boolean {
   try {
-    return localStorage.getItem(COLLAPSED_KEY) === "1";
+    // `!== "0"`, NOT `=== "1"` (D595): an ABSENT key means COLLAPSED, which is
+    // every section's state on a fresh profile and was the bug — four panels
+    // opened over the page at once, and the D582 arbiter then picked which one
+    // survived by registration order rather than by anything meaningful. The
+    // chip's circle already says whether there is anything inside, so an
+    // auto-opened EMPTY panel communicates nothing and covers the page to do
+    // it; "expanded is the honest default" was written when the chip carried a
+    // count and the panel was the only way to see detail.
+    //
+    // THE STORED VALUES KEEP THEIR MEANINGS — no sentinel flip, so no
+    // migration: `"1"` is still collapsed, and `"0"` is still expanded, so
+    // someone who deliberately opened this section stays opened. Only the
+    // absent case moves.
+    return localStorage.getItem(COLLAPSED_KEY) !== "0";
   } catch {
-    return false; // private mode / disabled storage — expanded is the honest default
+    // Collapsed here too: a private-mode profile takes this branch on EVERY
+    // load, so it is the one case that never gets to express a preference.
+    return true;
   }
 }
 

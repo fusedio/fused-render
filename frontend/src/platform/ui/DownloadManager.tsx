@@ -121,9 +121,24 @@ const COLLAPSED_KEY = "fused-render:jobs-collapsed";
 
 function loadCollapsed(): boolean {
   try {
-    return localStorage.getItem(COLLAPSED_KEY) === "1";
+    // `!== "0"`, NOT `=== "1"` (D595): an ABSENT key means COLLAPSED, which is
+    // every section's state on a fresh profile and was the bug — four panels
+    // opened over the page at once, and the D582 arbiter then picked which one
+    // survived by registration order rather than by anything meaningful. The
+    // chip's circle already says whether there is anything inside, so an
+    // auto-opened EMPTY panel communicates nothing and covers the page to do
+    // it; "expanded is the honest default" was written when the chip carried a
+    // count and the panel was the only way to see detail.
+    //
+    // THE STORED VALUES KEEP THEIR MEANINGS — no sentinel flip, so no
+    // migration: `"1"` is still collapsed, and `"0"` is still expanded, so
+    // someone who deliberately opened this section stays opened. Only the
+    // absent case moves.
+    return localStorage.getItem(COLLAPSED_KEY) !== "0";
   } catch {
-    return false; // private mode / disabled storage — expanded is the honest default
+    // Collapsed here too: a private-mode profile takes this branch on EVERY
+    // load, so it is the one case that never gets to express a preference.
+    return true;
   }
 }
 
@@ -563,11 +578,22 @@ function isVanishedOnSuccess(job: Job): boolean {
 export function DownloadManagerView({
   reported,
   ready,
+  initialCollapsed,
   queue,
   refresh,
   patch,
 }: {
   reported: Job[];
+  /** TEST SEAM ONLY — the fold's initial value, defaulting to the persisted
+   *  preference (`loadCollapsed`, which since D595 treats an absent key as
+   *  COLLAPSED). Every real caller omits it. Injectable rather than mocked for
+   *  the reason this file already documents for `cancelFn`/`dismissFn`: a
+   *  `mock.module` (or a `globalThis.localStorage` stub) replaces things for
+   *  the WHOLE bun process, not one file, and both have contaminated unrelated
+   *  suites here before. A test that needs the panel open should SAY so rather
+   *  than depend on whatever the fresh-profile default happens to be — which
+   *  is exactly what changed under them in D595. */
+  initialCollapsed?: boolean;
   /** Has the first /api/jobs read landed (autoExpand.ts's `ready`)? Optional
    *  so a test mounting this view with a fixed list keeps the old behaviour. */
   ready?: boolean;
@@ -575,7 +601,9 @@ export function DownloadManagerView({
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [collapsed, setCollapsed] = useState(
+    () => initialCollapsed ?? loadCollapsed(),
+  );
   // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);

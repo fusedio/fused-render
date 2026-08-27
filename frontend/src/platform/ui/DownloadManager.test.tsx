@@ -74,11 +74,33 @@ function circleFilled(tree: ReactTestRendererJSON | null): boolean {
   return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
 }
 
+// EVERY HARNESS BELOW PASSES `initialCollapsed={false}` (D595): the
+// fresh-profile default became COLLAPSED, and these tests are about what the
+// PANEL contains and how the fold behaves — not about that default. Saying so
+// explicitly is what keeps them from silently re-inverting the next time the
+// default is revisited; the default itself is covered by its own tests.
 function renderCard(reported: Job[]): ReactTestRendererJSON | null {
   return create(
-    <DownloadManagerView reported={reported} refresh={() => {}} patch={() => {}} />,
+    <DownloadManagerView
+      reported={reported}
+      initialCollapsed={false}
+      refresh={() => {}}
+      patch={() => {}}
+    />,
   ).toJSON() as ReactTestRendererJSON | null;
 }
+
+// D595: the real default, with no seam and no storage — the `catch` branch a
+// private-mode profile takes on every load. Its own harness so no other test
+// depends on the default staying put.
+test("with no stored preference and no storage at all, the section starts COLLAPSED", () => {
+  const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
+  const tree = create(
+    <DownloadManagerView reported={[running]} refresh={() => {}} patch={() => {}} />,
+  ).toJSON() as ReactTestRendererJSON | null;
+  expect(findAll(tree, "dl-toggle")).toHaveLength(1); // the chip is still there
+  expect(findAll(tree, "dl-panel")).toHaveLength(0); // ...and nothing is open
+});
 
 function fullQueue(queue: Partial<QueueSlot>): QueueSlot {
   return {
@@ -98,6 +120,7 @@ function renderCardWithQueue(
     <DownloadManagerView
       reported={reported}
       queue={fullQueue(queue)}
+      initialCollapsed={false}
       refresh={() => {}}
       patch={() => {}}
     />,
@@ -111,6 +134,7 @@ function renderInstance(reported: Job[], queue?: Partial<QueueSlot>): ReactTestR
     <DownloadManagerView
       reported={reported}
       queue={queue ? fullQueue(queue) : undefined}
+      initialCollapsed={false}
       refresh={() => {}}
       patch={() => {}}
     />,

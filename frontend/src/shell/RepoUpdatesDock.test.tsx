@@ -332,6 +332,14 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 // rows kept rendering underneath it (see the "collapsed hides every row"
 // test above).
 
+// BOTH DOCK HARNESSES PASS `initialCollapsed={false}` (D595): the
+// fresh-profile default became COLLAPSED, and these tests are about the fold
+// and the auto-open/auto-close overrides — not about that default. Saying so
+// explicitly keeps them from silently re-inverting if the default is revisited.
+// `updateDockInstance` passes it for symmetry with the mount, NOT because a
+// re-render would reset anything — a `useState` initializer runs once, so the
+// fold survives every update on its own. Left in so the two call sites read
+// alike and neither looks like the odd one out.
 function renderDockInstance(
   rows: RepoRow[],
   dismissed: Record<string, string> = {},
@@ -340,6 +348,21 @@ function renderDockInstance(
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
+      initialCollapsed={false}
+      onDismiss={() => {}}
+      onDismissAll={() => {}}
+      onDone={() => {}}
+    />,
+  );
+}
+
+/** Deliberately WITHOUT `initialCollapsed`, so the fold comes from
+ *  `loadCollapsed()` — the only harness here that exercises the real default. */
+function renderDockInstanceDefaultFold(rows: RepoRow[]): ReactTestRenderer {
+  return create(
+    <RepoUpdatesDockView
+      rows={rows}
+      dismissed={{}}
       onDismiss={() => {}}
       onDismissAll={() => {}}
       onDone={() => {}}
@@ -357,6 +380,7 @@ function updateDockInstance(
       <RepoUpdatesDockView
         rows={rows}
         dismissed={dismissed}
+        initialCollapsed={false}
         onDismiss={() => {}}
         onDismissAll={() => {}}
         onDone={() => {}}
@@ -378,6 +402,20 @@ function clickDockToggle(renderer: ReactTestRenderer) {
 // a collapsed section OPENS that section's panel, and the dot is suppressed
 // while it is open, because a dot pointing at a panel the user is already
 // looking at announces nothing.
+// D595, THE DEFAULT ITSELF (user, on a fresh profile: all four panels opened
+// over the page at once). With no `initialCollapsed`, the fold falls back to
+// `loadCollapsed()` — and a test env has no `localStorage`, so this exercises
+// exactly the `catch` branch a private-mode profile takes on EVERY load, which
+// is the one case that never gets to express a preference.
+test("with no stored preference and no storage at all, the section starts COLLAPSED", () => {
+  const renderer = renderDockInstanceDefaultFold([
+    repoRows([status({ root: "/a/one" })])[0],
+  ]);
+  const tree = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(tree, "dl-toggle")).toHaveLength(1); // the chip is still there
+  expect(findAll(tree, "dl-panel")).toHaveLength(0); // ...and nothing is open
+});
+
 test("a genuinely new repo row arriving OPENS the collapsed panel, and shows no dot beside it", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
   const renderer = renderDockInstance([one]);
