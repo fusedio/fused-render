@@ -630,7 +630,7 @@ export function DownloadManagerView({
   // exists to fix). Called unconditionally, before the idle branch below,
   // same as every other hook in this component (rules of hooks: what a
   // render calls, not whether it later draws the idle state).
-  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
+  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     jobs.map((j) => j.id),
     collapsed,
     ready,
@@ -753,27 +753,23 @@ export function DownloadManagerView({
             everything this section shows without over- or underclaiming.
             `Activity` was the vaguest of the three labels and half of why it
             collided with the old `Updates`. */}
-        {/* ALWAYS RENDER THE COUNT, ZERO INCLUDED (D583, user on D581's
-            reserved-slot version: "this is ugly"). D581 reserved an empty 2ch
-            slot to stop the bar reflowing when a count appeared; it worked and
-            paid for it in visible dead space, which left `Jobs` sitting well
-            back from its separator while `Models` sat tight against its own,
-            so the separators read as unevenly spaced. An always-present number
-            buys the same stability with nothing reserved-but-empty: it never
-            appears or disappears, so the only width change left is 9 -> 10.
-            It is also what the reference actually does — VS Code's own
-            errors/warnings item reads `0` rather than going blank. `.is-idle`
-            is what keeps `Jobs 0` reading as quiet rather than as an alert.
-            NO PERCENTAGE here (D581, still): it appeared and disappeared in
-            this exact spot and shifted the bar by itself. Per-job progress
-            lives in the panel, which draws a percentage AND a bar per row. */}
-        <span className="dl-summary">
-          Jobs
-          <span className="dl-count">
-            {totalCount > 0 ? totalCount : <span className="dl-zero" aria-hidden="true" />}
-          </span>
-        </span>
-        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+        {/* THE LABEL, and ONE CIRCLE beside it (D588, user: "jobs and
+            notifications can have a empty/filled circle - no need for
+            count"). No digits: outlined means this section holds nothing,
+            filled means it holds something. Losing the count means 1 job and
+            12 jobs look alike from the bar — the user's explicit trade, and
+            the panel below is where the rows are. Deliberately NOT hedged by
+            putting the count in `title` as a consolation.
+            A SIBLING of `.dl-summary`, not nested inside it: `.dl-toggle` is
+            already `display: flex; align-items: center`, so a direct child is
+            centred on the chip's box, which is what fixes the circle reading
+            as bottom-aligned (notifications.css `.dl-dot` has the full
+            argument). */}
+        <span className="dl-summary">Jobs</span>
+        <span
+          className={"dl-dot" + (totalCount > 0 ? " is-on" : "")}
+          aria-hidden="true"
+        />
       </button>
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed

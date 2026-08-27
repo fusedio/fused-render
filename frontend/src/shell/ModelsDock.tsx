@@ -111,7 +111,15 @@ function ModelRow({
         <span className="dl-title" title={model.model}>
           {repoName(model.model)}
         </span>
-        <span className="dl-amount">{formatSize(model.residentBytes)}</span>
+        {/* A non-ready worker holds no weights yet, so `residentBytes` is
+            null and `formatSize` yields "" — an empty column that reads as a
+            glitch. Its STATE is the honest thing to show there instead
+            (venv/starting/downloading/loading), and the bring-up's real
+            progress (percentage, cancel) is a job row in Jobs, reported by
+            `supervisor._report` (D588). */}
+        <span className="dl-amount">
+          {model.state === "ready" ? formatSize(model.residentBytes) : model.state}
+        </span>
         <button className="dl-row-cancel" onClick={unload} disabled={busy}>
           {busy ? "Unloading…" : "Unload"}
         </button>
@@ -129,27 +137,44 @@ function ModelRow({
  */
 export function ModelsCardView({
   models,
-  totalResidentBytes,
   collapsed,
-  hasNew,
   onToggle,
   onClose,
   onUnload,
 }: {
   models: AiLoadedModel[];
-  totalResidentBytes: number | null;
   collapsed: boolean;
-  /** An unacknowledged model loaded while collapsed — a quiet dot, never a
-   *  forced expansion (`lib/autoExpand.ts`'s own doc, code review finding
-   *  #4). */
-  hasNew: boolean;
   onToggle: () => void;
   /** Background the panel — an outside pointer-down or Escape (D574).
    *  Optional: a caller that mounts this view directly need not dismiss. */
   onClose?: () => void;
   onUnload: (model: string) => Promise<void>;
 }) {
-  const idle = models.length === 0;
+  // READY MODELS ONLY decide the chip (D588). `loaded` includes workers in
+  // venv/starting/downloading/loading, and those carry `residentBytes: null`
+  // (supervisor.py sums the same field, so its `totalResidentBytes` is null
+  // too) — which made a mid-bring-up chip fall back to the bare label,
+  // pixel-identical to idle but NOT muted. That was the third state the user
+  // was reading as confusing. Bring-up already reports a job row via
+  // `supervisor._report`, so it belongs in Jobs where it has a percentage and
+  // a cancel; a half-loaded model with no number here is strictly worse.
+  //
+  // Derived locally rather than from the server's `totalResidentBytes` (that
+  // prop is gone) so the number and the "ready only" rule cannot disagree.
+  const residentBytes = models.reduce(
+    (sum, m) => sum + (m.state === "ready" ? (m.residentBytes ?? 0) : 0),
+    0,
+  );
+  // EXACTLY TWO CHIP STATES, keyed on the one value the chip shows: muted
+  // `Models` when there is nothing resident, `Models · 5.6 GB` when there is.
+  // Keyed on the BYTES, not on `models.length` or a ready count, so a ready
+  // worker whose runner reported no size cannot produce a third, unmuted
+  // bare-label state either.
+  const idle = residentBytes === 0;
+  // The PANEL still lists every worker whatever its state — that is where a
+  // bring-up is legitimately visible, with its state as the detail (ModelRow
+  // above). So the panel's emptiness is its own question, not the chip's.
+  const panelEmpty = models.length === 0;
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -172,20 +197,26 @@ export function ModelsCardView({
         aria-expanded={!collapsed}
         title={collapsed ? "Show loaded models" : "Hide loaded models"}
       >
-        {/* NO COUNT (D575, user: "lets just have [model · memory size] and
-            remove the count") — the label and the resident TOTAL, nothing
-            else. With the count gone this reads identically for one model and
-            for five, which is the point: the size is the number being
-            watched. Idle falls back to the bare label. Activity and Updates
-            keep their own counts — this was a Models-only request. */}
+        {/* NO INDICATOR OF ANY KIND (D588, user: "lets just remove the circle
+            from models item", after "I see many different states for the
+            model item ... this is confusing"). Not the outlined circle Jobs
+            and Notifications carry — Models has no count, so it has no
+            emptiness to indicate that its own muted label does not already
+            say — and not the filled `.dl-new-dot` either, which is deleted
+            app-wide: D587 had already established this chip as a state
+            READOUT that never auto-opens, because a resident model is a
+            consequence of an action the user just took, and an indicator
+            announcing that same event contradicted it. This settles the
+            question rather than reopening it: label, optional size, nothing
+            else. The only treatments left are `.is-idle`'s muting and the
+            hover / `aria-expanded` wash. */}
         <span className="dl-summary">
-          {`Models${totalResidentBytes ? ` · ${formatSize(totalResidentBytes)}` : ""}`}
+          {`Models${residentBytes ? ` · ${formatSize(residentBytes)}` : ""}`}
         </span>
-        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
       {!collapsed && (
         <div className="dl-panel">
-          {idle ? (
+          {panelEmpty ? (
             <div className="dl-panel-empty">No models loaded</div>
           ) : (
             <div className="dl-rows">
@@ -208,7 +239,7 @@ export default function ModelsDock() {
   // model that loaded while this chip was collapsed, AND (D574) a transient
   // auto-open of this section's own panel so the arrival is on screen rather
   // than only hinted at. `autoOpen` is never persisted — see autoExpand.ts.
-  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
+  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     runtime.loaded.map((m) => m.model),
     collapsed,
     // Not `runtime.loaded.length > 0` — an idle machine must still announce
@@ -220,10 +251,11 @@ export default function ModelsDock() {
     // state readout, not an event worth covering the page for. Structural
     // rather than merely unlikely: with `neverOpen`, this section has no code
     // path to `setOverride("open")` at all, so no future arrival can slip
-    // through. `hasNew` still flows (the quiet dot costs nothing), `autoClose`
-    // is untouched (D580's Unload-the-last-row behaviour was explicitly good,
-    // and closing is not opening), and the persisted preference still reopens
-    // it on reload because that IS the user's own choice.
+    // through. D588 then removed this chip's INDICATOR too, so there is no
+    // dot left for an arrival to set — see the chip's own comment. What
+    // survives is `autoClose` (D580's Unload-the-last-row behaviour was
+    // explicitly good, and closing is not announcing) and the persisted
+    // preference reopening it on reload, which IS the user's own choice.
     { neverOpen: true },
   );
   // The saved preference, overridden in EITHER direction by whichever
@@ -279,9 +311,7 @@ export default function ModelsDock() {
   return (
     <ModelsCardView
       models={runtime.loaded}
-      totalResidentBytes={runtime.totalResidentBytes}
       collapsed={!open}
-      hasNew={hasNew}
       onToggle={toggle}
       onClose={close}
       onUnload={onUnload}

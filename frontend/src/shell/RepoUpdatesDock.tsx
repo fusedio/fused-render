@@ -306,7 +306,6 @@ export function RepoUpdatesCardView({
   rows,
   dismissed,
   collapsed,
-  hasNew,
   onToggle,
   onClose,
   onDismiss,
@@ -325,10 +324,6 @@ export function RepoUpdatesCardView({
   /** Remove a dismissed failure from the shell's own list, immediately. */
   onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
-  /** An unacknowledged repo arrived while collapsed — drawn as a quiet dot on
-   *  the chip, never as a forced expansion (`lib/autoExpand.ts`'s own doc,
-   *  code review finding #4). */
-  hasNew: boolean;
   onToggle: () => void;
   /** Background the panel — an outside pointer-down or Escape (D574).
    *  Optional: a caller that mounts this view directly need not dismiss. */
@@ -385,17 +380,15 @@ export function RepoUpdatesCardView({
             all still say "repo updates", which is exactly what they hold —
             `Notifications` is the extensible CATEGORY, so an alert that is
             not a repo update gets a home here without a fourth section. */}
-        {/* Always rendered, zero included — see the jobs chip's own comment
-            (D583). This section is the one that mattered most for stability:
-            `.status-bar` is `justify-content: flex-end`, so the rightmost chip
-            growing pushes BOTH of its neighbours leftward. */}
-        <span className="dl-summary">
-          Notifications
-          <span className="dl-count">
-            {total > 0 ? total : <span className="dl-zero" aria-hidden="true" />}
-          </span>
-        </span>
-        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+        {/* THE LABEL, and ONE CIRCLE (D588) — see the jobs chip's own comment.
+            Filled when this section holds anything: a repo update, a failed
+            job, or both. It is also the QUIET SIGNAL for an error-sourced
+            notification (D586): a background failure fills this circle and
+            opens no panel, since failures never feed the auto-open hook. That
+            used to be `.dl-new-dot`'s job; the circle absorbs it, which is
+            what let a second filled mark meaning "new" be deleted. */}
+        <span className="dl-summary">Notifications</span>
+        <span className={"dl-dot" + (total > 0 ? " is-on" : "")} aria-hidden="true" />
       </button>
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
           exists only while expanded. Collapsed shows no panel at all — see
@@ -476,18 +469,25 @@ export function RepoUpdatesCardView({
  * fixed row list (RepoUpdatesDock.test.tsx), the same split
  * `DownloadManagerView` uses in its own file for the identical reason.
  *
- * Auto-expand's old name, kept for the id-tracking it still does — but code
- * review finding #4 stopped it actually expanding anything. `hasNew` keys off
- * `row.repo.root` per row — a repo not seen before, while the card is
- * collapsed, sets a quiet dot on the chip (`lib/autoExpand.ts`
- * `useAutoExpandOnNew`, shared with DownloadManager.tsx since both cards need
- * the identical wiring around the same pure decision, `jobs.ts`
- * `trackSeenIds`), never forces the panel open. Fed `visible` — the same
- * post-dismissal list `RepoUpdatesCardView` itself renders — so a row a user
- * just dismissed falls out of the seen set with it: dismissing IS a
- * disappearance, and a repo that goes behind again later (a fresh
- * `checked_at` past the dismissal) is a genuine re-arrival, not a re-trigger
- * of an old one.
+ * `useAutoExpandOnNew` keys off `row.repo.root` per row and DOES open the
+ * panel for a repo not seen before while the card was collapsed (D574
+ * reversed the D567 finding that had stopped it; there is no dot any more —
+ * D588 replaced every newness mark with the chip's single circle). Shared
+ * with DownloadManager.tsx, since both sections need the identical wiring
+ * around the same pure decision (`jobs.ts` `trackSeenIds`).
+ *
+ * Fed `visible` — the same post-dismissal list `RepoUpdatesCardView` itself
+ * renders — so a row a user just dismissed falls out of the seen set with it:
+ * dismissing IS a disappearance, and a repo that comes back later is a
+ * genuine re-arrival rather than a re-trigger of an old one. What makes it
+ * "come back" is its POSITION changing (`repoDismissSignature`, D585 finding
+ * 3), never a refreshed `checked_at` — a throttled re-check that moved
+ * nothing used to resurrect the row every five minutes.
+ *
+ * FAILED JOBS ARE NOT IN THAT LIST (D586/D588): they reach this section as a
+ * prop and fill the circle, but they are deliberately absent from the ids
+ * above, which is what makes "a background failure never throws a panel over
+ * the page" structural rather than a flag.
  */
 export function RepoUpdatesDockView({
   rows,
@@ -525,24 +525,18 @@ export function RepoUpdatesDockView({
   // (D574) a transient auto-open of this section's own panel. `autoOpen` is
   // never persisted — autoExpand.ts's header on why that write, not the
   // opening itself, was D567's real defect.
-  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
+  const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     visible.map((row) => row.repo.root),
     collapsed,
     ready,
   );
-  // FAILURES SET THE DOT AND NEVER OPEN THE PANEL (D586, `announceOnly`) —
-  // the one place D574's "always show the notification" is the wrong
-  // instinct. A background pyramid build failing deserves a mark on the chip,
-  // not a panel thrown over the page the user is working in. A second hook
-  // instance rather than merging the id lists, because the two sources want
-  // opposite visibility behaviour from the same machinery; `ready` is `true`
-  // here since the jobs poll's own snapshot is what produced this list.
-  const { hasNew: hasFailureNew } = useAutoExpandOnNew(
-    failed.map((job) => job.id),
-    collapsed,
-    true,
-    { neverOpen: true, neverClose: true },
-  );
+  // NO SECOND HOOK for the failures any more (D588). It existed only to set
+  // `.dl-new-dot` for an error-sourced notification while never opening the
+  // panel (D586); with newness marks gone, the one circle below carries that
+  // signal directly off `failed.length`, and the "never opens" half is now
+  // STRUCTURAL rather than configured — failures are simply not among the ids
+  // the auto-open hook above is given, so there is no path from a failure to
+  // `setOverride("open")` at all.
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are
   // mutually exclusive by construction — autoExpand.ts holds one `Override`,
@@ -590,7 +584,6 @@ export function RepoUpdatesDockView({
       dismissed={dismissed}
       failed={failed}
       collapsed={!open}
-      hasNew={hasNew || hasFailureNew}
       onToggle={toggle}
       onClose={close}
       onJobsChanged={onJobsChanged}

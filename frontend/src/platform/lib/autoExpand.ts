@@ -45,12 +45,6 @@ import { trackSeenIds } from "@platform/lib/jobs";
 type Override = null | "open" | "closed";
 
 export interface AutoExpandState {
-  /** An unacknowledged arrival the user cannot currently SEE — drawn as the
-   *  chip's quiet `.dl-new-dot`. Suppressed while this section's panel is
-   *  showing the arrival itself (D577): a dot beside an open panel listing
-   *  the very thing it is pointing at announces news the user is already
-   *  looking at. Its real case is an arrival that never got a panel. */
-  hasNew: boolean;
   /** Transient, NEVER persisted (see this file's header): true from the moment
    *  a new id lands while the section is collapsed until the panel is
    *  dismissed. */
@@ -135,7 +129,6 @@ export function useAutoExpandOnNew(
   { neverOpen = false, neverClose = false }: AutoExpandOptions = {},
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
-  const [hasNew, setHasNew] = useState(false);
   const [override, setOverride] = useState<Override>(null);
 
   useEffect(() => {
@@ -173,11 +166,11 @@ export function useAutoExpandOnNew(
       // Announce only what the user cannot already see. Setting `"open"` here
       // is also what CLEARS a standing `"closed"` override, which is the half
       // the old `collapsed`-only test could never reach.
-      if (!panelOpen) {
-        // The DOT always; the panel only if this caller allows it (D587).
-        setHasNew(true);
-        if (!neverOpen) setOverride("open");
-      }
+      // Open unless this caller forbids it (D587). There is no dot to set any
+      // more: D588 replaced every "something NEW" indicator with a single
+      // per-chip circle for "is there anything here", which the chip derives
+      // from its own list and needs no hook state for.
+      if (!panelOpen && !neverOpen) setOverride("open");
       return;
     }
 
@@ -193,7 +186,6 @@ export function useAutoExpandOnNew(
     // section would make the next chip click spend itself clearing it instead
     // of opening the panel.
     if (prev.size > 0 && ids.length === 0 && panelOpen && !neverClose) {
-      setHasNew(false);
       setOverride("closed");
     }
   });
@@ -202,17 +194,14 @@ export function useAutoExpandOnNew(
   // outranks any override this hook is holding — so drop it and let their
   // choice through, in both directions.
   useEffect(() => {
-    setHasNew(false);
     setOverride(null);
   }, [collapsed]);
 
   const acknowledge = useCallback(() => {
-    setHasNew(false);
     setOverride(null);
   }, []);
 
   const forceClose = useCallback(() => {
-    setHasNew(false);
     setOverride("closed");
   }, []);
 
@@ -221,7 +210,6 @@ export function useAutoExpandOnNew(
   // never set, so dismissing the panel (`acknowledge`, which clears both) does
   // not leave a dot behind for something the user just chose to close.
   return {
-    hasNew: hasNew && override !== "open",
     autoOpen: override === "open",
     autoClose: override === "closed",
     acknowledge,

@@ -54,11 +54,7 @@ function renderInstance(
   return create(
     <ModelsCardView
       models={props.models ?? [model()]}
-      totalResidentBytes={
-        "totalResidentBytes" in props ? (props.totalResidentBytes as number | null) : 4_000_000_000
-      }
       collapsed={props.collapsed ?? false}
-      hasNew={props.hasNew ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onUnload={props.onUnload ?? (async () => {})}
     />,
@@ -78,7 +74,7 @@ function renderView(
 // included, VS Code/Cursor style, hover is the only affordance — and the
 // idle sentence moved out of the chip into the panel it opens.
 test("no models loaded still draws a real, clickable chip — just muted, and its panel holds the idle sentence", () => {
-  const tree = renderView({ models: [], totalResidentBytes: null, collapsed: false });
+  const tree = renderView({ models: [], collapsed: false });
   expect(tree).not.toBeNull();
   const toggles = findAll(tree, "dl-toggle");
   expect(toggles).toHaveLength(1);
@@ -87,6 +83,11 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
   // The idle sentence now lives in the panel, not the chip.
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
+  // D588: Models carries NO indicator — neither the circle Jobs and
+  // Notifications show nor the old filled dot. Label, optional size, nothing.
+  expect(findAll(tree, "dl-dot")).toHaveLength(0);
+  expect(findAll(tree, "dl-zero")).toHaveLength(0);
+  expect(findAll(tree, "dl-new-dot")).toHaveLength(0);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
@@ -95,8 +96,10 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
 // being watched, and it is already the total across every resident model.
 test("the chip names the category and the resident total — never a count", () => {
   const tree = renderView({
-    models: [model(), model({ model: "org/other-model" })],
-    totalResidentBytes: 18 * 1024 ** 3, // formatSize's own base-1024 steps
+    models: [
+      model({ residentBytes: 9 * 1024 ** 3 }),
+      model({ model: "org/other-model", residentBytes: 9 * 1024 ** 3 }),
+    ],
   });
   const summary = text(findAll(tree, "dl-summary")[0]);
   expect(summary).toBe("Models · 18 GB");
@@ -109,21 +112,54 @@ test("the chip names the category and the resident total — never a count", () 
 // for one resident model and for five, so nothing in it moves as models come
 // and go — only the total changes.
 test("one model and five models read the same, and only the total distinguishes them", () => {
-  const one = renderView({ models: [model()], totalResidentBytes: 4 * 1024 ** 3 });
+  const one = renderView({ models: [model({ residentBytes: 4 * 1024 ** 3 })] });
   const five = renderView({
-    models: [1, 2, 3, 4, 5].map((n) => model({ model: `org/m${n}` })),
-    totalResidentBytes: 4 * 1024 ** 3,
+    models: [1, 2, 3, 4, 5].map((n) =>
+      model({ model: `org/m${n}`, residentBytes: (4 * 1024 ** 3) / 5 }),
+    ),
   });
   expect(text(findAll(one, "dl-summary")[0])).toBe("Models · 4.0 GB");
   expect(text(findAll(five, "dl-summary")[0])).toBe("Models · 4.0 GB");
 });
 
-// A resident model with no size reported falls back to the bare label — the
-// same string the idle chip shows. `.is-idle` (not the text) is what tells
-// them apart, which is why that class is asserted separately above.
-test("a model with no reported size reads the bare label", () => {
-  const tree = renderView({ models: [model()], totalResidentBytes: null });
+// D588, THE LOADING GAP the user read as a confusing third state: a worker in
+// venv/starting/downloading/loading carries `residentBytes: null`, so the chip
+// used to fall back to the bare label while NOT being muted — visually a
+// third state between "idle" and "resident". The chip now counts ready models
+// only, so a bring-up reads exactly like idle (muted, no size) and the
+// bring-up itself is visible in Jobs, where `supervisor._report` gives it a
+// percentage and a cancel.
+test("a model still loading leaves the chip in its idle state, not a third one", () => {
+  const tree = renderView({
+    models: [model({ state: "loading", residentBytes: null })],
+  });
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).toContain(
+    "is-idle",
+  );
+});
+
+// A READY worker whose runner reported no size must not produce that third
+// state either — which is why the chip is keyed on the BYTES rather than on a
+// ready count.
+test("a ready model with no reported size also reads as idle", () => {
+  const tree = renderView({ models: [model({ residentBytes: null })] });
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).toContain(
+    "is-idle",
+  );
+});
+
+// The PANEL is a different question from the chip: a bring-up is legitimately
+// listed there, with its state standing in for the size it has not got yet.
+test("the panel lists a loading model, with its state where the size goes", () => {
+  const tree = renderView({
+    models: [model({ state: "downloading", residentBytes: null })],
+  });
+  expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(findAll(rows[0], "dl-amount")[0])).toBe("downloading");
 });
 
 test("collapsed shows no panel at all — no gauge, no rows, just the chip", () => {
@@ -189,10 +225,29 @@ test("a failed unload says so in the panel — it does not fail silently", async
   expect(text(findAll(after, "dl-row-cancel")[0])).toBe("Unload");
 });
 
-test("a quiet dot marks an unacknowledged arrival — never rendered without one", () => {
-  const quiet = renderView({ hasNew: false });
-  expect(findAll(quiet, "dl-new-dot")).toHaveLength(0);
+// SUPERSEDED BY D588 (user: "lets just remove the circle from models item",
+// after "I see many different states for the model item ... this is
+// confusing"). There is no arrival indicator on this chip at all now — and
+// none app-wide: `hasNew` is deleted from the hook, since each chip shows one
+// circle for "is there anything here" rather than a mark for "is it new".
+// Asserted as an absence so a future edit cannot quietly reintroduce one.
+test("Models renders no arrival indicator, whatever it holds", () => {
+  for (const models of [[], [model()], [model({ state: "loading", residentBytes: null })]]) {
+    const tree = renderView({ models });
+    expect(findAll(tree, "dl-new-dot")).toHaveLength(0);
+    expect(findAll(tree, "dl-dot")).toHaveLength(0);
+    expect(findAll(tree, "dl-zero")).toHaveLength(0);
+  }
+});
 
-  const flagged = renderView({ hasNew: true });
-  expect(findAll(flagged, "dl-new-dot")).toHaveLength(1);
+// D588 item 3: the ONLY treatments on this chip are `.is-idle`'s muting and
+// the hover / `aria-expanded` wash. The failure tint moved to Notifications in
+// D586 and must not be reachable here.
+test("the failure tint cannot reach the Models chip", () => {
+  for (const models of [[], [model()], [model({ state: "error", residentBytes: null })]]) {
+    const tree = renderView({ models });
+    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+      "is-failure",
+    );
+  }
 });

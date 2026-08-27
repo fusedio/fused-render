@@ -395,59 +395,61 @@
   font-weight: 400;
 }
 
-/* The Jobs and Notifications counts. NO RESERVED WIDTH (D583, user on D581's
-   version: "this is ugly") — `min-width: 2ch` is deliberately GONE. D581 held
-   an empty 2ch slot open so the bar could not reflow when a count appeared;
-   the count is now always rendered including zero, so there is nothing to
-   appear and nothing to reserve, and the dead space that made `Jobs` sit back
-   from its separator while `Models` sat tight against its own goes with it.
-   Only the separation from the label is left. `padding-left` rather than
-   `.dl-toggle`'s `gap` because this is a child of `.dl-summary`, not a flex
-   item of the toggle — the gap would never have applied to it anyway, and as
-   padding it travels with the number.
-   Digits stay non-jittery through `.status-bar`'s own `font-variant-numeric:
-   tabular-nums`, which the whole bar inherits, so 1 -> 2 does not shuffle
-   glyph widths.
-   MODELS DELIBERATELY HAS NO COUNT (D575, user: "lets just have [model ·
-   memory size] and remove the count") — it shows `· 628 MB` instead, and an
-   idle Models shows its bare label. Do not add `Models 0` here. */
-.dl-count {
-  padding-left: 0.4em;
+/* THE ONE INDICATOR (D588, user: "jobs and notifications can have a
+   empty/filled circle - no need for count"). Jobs and Notifications each show
+   a single circle: OUTLINED when the section holds nothing, FILLED when it
+   holds something. That is the section's whole state — there are no digits in
+   this bar any more outside Models' size.
+
+   THIS RETIRES THE RESERVATION MACHINERY OUTRIGHT rather than sitting beside
+   it. D581 held an empty `2ch` slot open so the bar could not reflow when a
+   count appeared; D583 replaced that with an always-rendered digit so nothing
+   appeared or disappeared; D584 made the zero an outlined dot. All three were
+   answers to "a count changes width", and a circle that is the SAME ELEMENT
+   at the SAME SIZE in both states answers it by construction: nothing
+   appears, nothing disappears, nothing changes width, so `.dl-count`,
+   `.dl-zero` and their `min-width`/`padding-left`/tabular reasoning are
+   deleted, not left dormant. (`font-variant-numeric: tabular-nums` stays on
+   `.status-bar` — Models' `· 5.6 GB` is the one number left in the bar.)
+
+   A DIRECT FLEX CHILD OF `.dl-toggle`, which is what fixes the centring the
+   user reported as "bottom aligned vertically". The old circle sat three deep
+   (`.dl-summary > .dl-count > .dl-zero`) and leaned on `vertical-align:
+   middle` — which aligns to the baseline plus half the parent's x-height, an
+   approximation that sits low and drifts with the font's metrics. As a flex
+   item of a `display: flex; align-items: center` parent it is centred on the
+   chip's own box with no `vertical-align` at all. Both states are ONE element
+   with one geometry, so they cannot drift apart the way two rules could.
+
+   7px, an explicit pixel size, NOT `1ch`: `1ch` existed only so the circle
+   matched a digit's advance while it could swap places with one, and with the
+   counts gone that constraint is void — a font-relative size would just drift
+   for no reason. 7px reads as a peer of the 12px label without competing with
+   it. Spacing is `.dl-toggle`'s existing `gap: 6px`, unchanged and correct at
+   this size: tighter crowds the label, wider starts to look like a separate
+   item in the bar.
+
+   `currentColor` for BOTH border and fill, which is the whole colour story in
+   one line — the circle inherits whatever the chip's own state has already
+   decided: `--fg-muted` under `.is-idle` (nothing here), `--fg` ordinarily
+   (something here), `--error` under `.is-failure` on Notifications. So a
+   failure tints the circle with the chip and a plain repo update does not,
+   with no second colour rule to keep in sync. */
+.dl-dot {
+  flex: 0 0 auto;
+  display: block;
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
 }
 
-/* ZERO IS AN OUTLINED DOT, not the digit `0` (D584, user: "job 0 and
-   notification 0 is ugly. we can have an outlined dot"). D583's always-render
-   rule stands — something is always in the slot, so nothing appears or
-   disappears — this only changes WHAT stands there when the count is zero.
-
-   EXACTLY ONE DIGIT WIDE, which is the whole point: `* { box-sizing:
-   border-box }` (base.css) puts the border inside the box, so `width: 1ch` is
-   the element's entire advance, and `.status-bar`'s inherited
-   `font-variant-numeric: tabular-nums` makes one `ch` precisely one digit's
-   advance. Swapping the dot for a digit therefore moves nothing at all. (At
-   12px, 1ch is ~6.7px, which lands within a pixel of `.dl-new-dot`'s 6px — the
-   two read as the same family of mark, deliberately.)
-
-   OUTLINED, NEVER FILLED: filled is already taken. `.dl-new-dot` is the filled
-   accent dot meaning "something new arrived", so a second filled dot meaning
-   the opposite — "nothing here" — would be a genuine ambiguity in the same
-   22px strip. Hollow plus `--fg-muted` reads as absence; filled plus
-   `--accent` reads as news.
-
-   A STYLED ELEMENT, not a text glyph, for the reason this project has now
-   learned twice (the round-2 chevron, then D578's separator): a glyph's size,
-   weight and baseline all vary with the font stack, and a border-drawn circle
-   varies with nothing.
-
-   `vertical-align: middle` centres it against the label's x-height instead of
-   sitting it on the baseline, where a 6px box would hang oddly low. */
-.dl-zero {
-  display: inline-block;
-  width: 1ch;
-  height: 1ch;
-  vertical-align: middle;
-  border: 1px solid var(--fg-muted);
-  border-radius: 50%;
+/* FILLED = "there is something in this section". Also the quiet signal for an
+   error-sourced notification (D586): a background failure fills this circle
+   and opens no panel, which is the one case where the circle is the only mark
+   the user gets. */
+.dl-dot.is-on {
+  background: currentColor;
 }
 
 /* The panel's own EMPTY state — `No models loaded` / `No jobs` /
@@ -456,7 +458,7 @@
    button, no panel behind it) — the user's own words moved it: "lets have
    simpler stuff like models (x count) | notifications | downloads etc and
    the no xyz part in the popover thing that opens". The chip now always
-   shows a category name (plus a count once there is one to show) and is
+   shows a category name (plus its one circle, or Models' size) and is
    always a real button; this is what its panel draws instead of rows when
    there is nothing to list. */
 .dl-panel-empty {
@@ -485,21 +487,6 @@
    the count inside it. */
 .dl-toggle.is-failure {
   color: var(--error);
-}
-
-/* An unacknowledged arrival while this section was collapsed
-   (`lib/autoExpand.ts` `useAutoExpandOnNew`) — a quiet dot, never a forced
-   expansion (code review finding #4). Accent, not muted or --fg: this is a
-   deliberate "look here" cue, the same ink `.dl-bar-fill`'s own progress
-   already wears, not the ordinary chip text this file's colour rule
-   otherwise reserves for state. Cleared the moment the section is opened
-   (the hook's own doc), so it never lingers on something already seen. */
-.dl-new-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 .dl-clear {

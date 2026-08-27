@@ -1,5 +1,9 @@
 // The visibility rules for a status-bar section, tested at the hook rather
-// than through a dock: `ModelsDock`'s own tests cover only its pure view (the
+// than through a dock. VISIBILITY IS ALL THIS HOOK DOES since D588 deleted
+// `hasNew` — each chip draws one circle off its own list, so there is no
+// "something new" state left here to test.
+//
+// Rather than through a dock: `ModelsDock`'s own tests cover only its pure view (the
 // stateful half needs `useAiRuntime`), and these rules are where the two
 // defects that actually shipped on this branch lived.
 import { expect, test } from "bun:test";
@@ -10,7 +14,6 @@ import { useAutoExpandOnNew, type AutoExpandOptions } from "./autoExpand";
  *  every render so a test can assert the sequence rather than just the end. */
 interface Seen {
   open: boolean;
-  hasNew: boolean;
   autoOpen: boolean;
   autoClose: boolean;
 }
@@ -18,11 +21,10 @@ interface Seen {
 function harness(opts: AutoExpandOptions = {}) {
   const seen: Seen[] = [];
   function Section({ ids, collapsed }: { ids: string[]; collapsed: boolean }) {
-    const { hasNew, autoOpen, autoClose } = useAutoExpandOnNew(ids, collapsed, true, opts);
+    const { autoOpen, autoClose } = useAutoExpandOnNew(ids, collapsed, true, opts);
     // The exact rule every dock uses.
     seen.push({
       open: autoClose ? false : !collapsed || autoOpen,
-      hasNew,
       autoOpen,
       autoClose,
     });
@@ -40,7 +42,7 @@ function harness(opts: AutoExpandOptions = {}) {
 
 // ---------------------------------------------------------------- the default
 
-test("an arrival into a collapsed section opens it and sets no dot beside it", () => {
+test("an arrival into a collapsed section opens it", () => {
   const h = harness();
   h.render(["a"], true); // seeds
   h.render(["a", "b"], true);
@@ -70,11 +72,10 @@ test("a drained section still hears the next arrival — no permanent deafness",
 // ---------------------------------------------------------------- neverOpen (Models)
 
 // D587, user: "the models popover should never auto open. that is user only".
-test("neverOpen sets the dot and leaves the panel shut", () => {
+test("neverOpen leaves the panel shut on an arrival", () => {
   const h = harness({ neverOpen: true });
   h.render(["a"], true); // seeds
   h.render(["a", "b"], true);
-  expect(h.last().hasNew).toBe(true);
   expect(h.last().autoOpen).toBe(false);
   expect(h.last().open).toBe(false);
   h.unmount();
@@ -83,7 +84,7 @@ test("neverOpen sets the dot and leaves the panel shut", () => {
 // KNOCK-ON of finding 1 (coordinator: "verify that specific case rather than
 // reasoning about it"). Fixing the deafness must NOT hand Models an auto-open
 // path: it has to go from "closed" to "closed with a dot", never to "open".
-test("a drained neverOpen section goes to closed-with-a-dot, never to open", () => {
+test("a drained neverOpen section stays closed on the next arrival, never opens", () => {
   const h = harness({ neverOpen: true });
   h.render(["a"], false); // seeds, open by preference
   h.render([], false); // drains -> auto-closes (kept: closing is not opening)
@@ -92,7 +93,6 @@ test("a drained neverOpen section goes to closed-with-a-dot, never to open", () 
   h.render(["b"], false); // a new model becomes resident
   expect(h.last().open).toBe(false);
   expect(h.last().autoOpen).toBe(false);
-  expect(h.last().hasNew).toBe(true);
   h.unmount();
 });
 
@@ -123,7 +123,6 @@ test("neverOpen + neverClose leaves visibility alone in both directions", () => 
   // dot this asserts (real behaviour, not a quirk worth testing around).
   h.render([], true);
   h.render(["b"], true); // a failure arrives while collapsed
-  expect(h.last().hasNew).toBe(true);
   expect(h.last().open).toBe(false);
   h.unmount();
 });

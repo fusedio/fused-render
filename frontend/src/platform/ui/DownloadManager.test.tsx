@@ -64,6 +64,16 @@ const BASE: Job = {
   stalled: false,
 };
 
+
+/** D588: one circle per chip — outlined when the section holds nothing, filled
+ *  (`.is-on`) when it holds something. Through a helper so both states are
+ *  always checked as one element's two forms. */
+function circleFilled(tree: ReactTestRendererJSON | null): boolean {
+  const dots = findAll(tree, "dl-dot");
+  expect(dots).toHaveLength(1);
+  return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
+}
+
 function renderCard(reported: Job[]): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView reported={reported} refresh={() => {}} patch={() => {}} />,
@@ -118,14 +128,10 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   // own word for exactly this set (`fused_render/jobs.py`, `/api/jobs`).
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Jobs");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
-  // D583: the count is ALWAYS rendered, zero included — nothing appears or
-  // disappears, so the chip's width is stable without reserving dead space.
-  expect(findAll(tree, "dl-count")).toHaveLength(1);
-  // D584: zero renders as an OUTLINED DOT, not the digit `0` (user: "job 0 and
-  // notification 0 is ugly"). It is still always present and still exactly one
-  // digit wide (`width: 1ch` under a global border-box), so nothing shifts.
-  expect(text(findAll(tree, "dl-count")[0])).toBe("");
-  expect(findAll(tree, "dl-zero")).toHaveLength(1);
+  // D588: one circle, outlined because this section holds nothing. No count
+  // element survives anywhere in the bar.
+  expect(findAll(tree, "dl-count")).toHaveLength(0);
+  expect(circleFilled(tree)).toBe(false);
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {
@@ -229,10 +235,10 @@ test("a failed job is drawn NOWHERE in this section — not a row, not the count
   const tree = renderCard([errored]);
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-row")).toHaveLength(0);
-  // The count is the number this section actually holds, so a lone failure
-  // leaves it at zero — the outlined dot, not `1`. A count that still
-  // included failures was the likeliest bug in this change.
-  expect(findAll(tree, "dl-zero")).toHaveLength(1);
+  // The circle answers what this section actually holds, so a lone failure
+  // leaves it OUTLINED. A circle that still filled for a failure would be the
+  // same bug the count version had.
+  expect(circleFilled(tree)).toBe(false);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
   const toggle = findAll(tree, "dl-toggle")[0];
   expect((toggle.props.className as string).split(" ")).not.toContain("is-failure");
@@ -243,7 +249,7 @@ test("a failure beside live work leaves only the live row and a count of one", (
   const errored: Job = { ...BASE, id: "sys:ai-image:errored", state: "error", message: "boom" };
   const tree = renderCard([running, errored]);
   expect(findAll(tree, "dl-row")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-count")[0])).toBe("1");
+  expect(circleFilled(tree)).toBe(true);
 });
 
 test("cancelled and done rows do NOT move — only failures did", () => {
@@ -357,12 +363,13 @@ test("the collapsed chip carries NO aggregate percentage — per-row progress li
 
   clickToggle(renderer); // collapse
 
-  // Collapsed: the chip is all that is left, and it holds neither. The count
-  // slot is the only thing that ever changes width, and it is reserved.
+  // Collapsed: the chip is all that is left, and it holds neither. Its one
+  // circle is the same element and the same width in both states (D588), so
+  // there is nothing left in this chip that can change width at all.
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-bar")).toHaveLength(0);
   expect(findAll(after, "dl-pct")).toHaveLength(0);
-  expect(text(findAll(after, "dl-count")[0])).toBe("1");
+  expect(circleFilled(after)).toBe(true);
 });
 
 test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D563)", () => {
@@ -464,7 +471,7 @@ test("the list draining to empty closes the panel instead of leaving it showing 
   // The chip itself stays — the bar's three sections are always present
   // (D565) — and reads its idle label.
   expect(text(findAll(after, "dl-summary")[0])).toBe("Jobs");
-  expect(findAll(after, "dl-zero")).toHaveLength(1);
+  expect(circleFilled(after)).toBe(false);
 });
 
 // D584 REVIEW FINDING 1, the regression this branch shipped and this test
