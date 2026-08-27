@@ -292,16 +292,33 @@ def stored_calibration_factor() -> float | None:
 
 
 def _catalog_entry(model_id: str) -> dict | None:
-    """The curated entry for `model_id`, scanning every `catalog.SUGGESTIONS`
+    """The curated entry for `model_id`, scanning every RUNNER's resolved
     list — `recalibrate`'s default lookup, since a `bench_store` run only
     records a bare model id and needs the curated `size_gb`/`params`/
     `quantization` triple to compute an uncalibrated estimate to compare
     against. `None` for a repo nobody curated (a cached, uncurated model a
     benchmark was run against) — that run simply cannot anchor calibration,
     the same way it cannot feed `fit.py`'s `download` rung's `params x bpp`
-    estimate either."""
-    for entries in catalog.SUGGESTIONS.values():
-        for entry in entries:
+    estimate either.
+
+    **`catalog.for_runner(code)`, not a raw scan of `catalog.SUGGESTIONS`**
+    (Bugbot review) — the raw table is the BUILT-IN curation only,
+    bypassing the `~/.fused-render/models.json` overlay (`catalog_overlay.
+    apply`, SPEC AI-25) that `estimate_tok_s`'s own live estimate already
+    goes through by way of `ai_runtime.describe_catalog`. A user-corrected
+    `size_gb`/`params`/`quantization` was therefore honoured by the
+    ESTIMATE this factor is meant to correct but ignored when COMPUTING
+    that factor — the stored calibration then scaled every future estimate
+    against a weight size it was never actually derived from. Iterated over
+    `catalog.SUGGESTIONS`'s own KEYS (the canonical runner codes this table
+    is already keyed by) rather than a fresh registry query, since those
+    keys are exactly the codes `for_runner` needs and nothing here reads
+    hardware availability — a runner this machine cannot currently run
+    still curates entries worth calibrating against, the same way `bench_
+    store`'s own history can include a run made on a different machine.
+    """
+    for code in catalog.SUGGESTIONS:
+        for entry in catalog.for_runner(code):
             if entry.get("id") == model_id:
                 return entry
     return None

@@ -32,6 +32,91 @@ def _hardware(name, vram_gb=24.0, bandwidth_gb_s=None, unified=False):
         total_vram_gb=vram_gb, bandwidth_gb_s=bandwidth_gb_s, detected_at=0.0)
 
 
+# -- _catalog_entry: routed through catalog.for_runner (Bugbot review) ------
+#
+# `recalibrate`'s default catalog lookup used to scan raw `catalog.
+# SUGGESTIONS`, bypassing the `~/.fused-render/models.json` overlay
+# (`catalog_overlay.apply`, SPEC AI-25) that `catalog.for_runner` already
+# applies for `estimate_tok_s`'s own live estimate. A user-corrected
+# `size_gb`/`params`/`quantization` was therefore honoured by the ESTIMATE
+# but ignored when computing the calibration FACTOR meant to correct that
+# same estimate — the stored factor then scaled against a weight size it was
+# never actually derived from.
+
+
+def _write_overlay(monkeypatch, code, rows):
+    import json
+    import os
+
+    from fused_render.shell import storage
+
+    path = os.path.join(storage.home_dir(), "models.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({code: rows}, f)
+
+
+def test_catalog_entry_finds_a_built_in_row():
+    from fused_render.ai import catalog
+
+    code = next(iter(catalog.SUGGESTIONS))
+    existing = catalog.SUGGESTIONS[code][0]
+    entry = speed._catalog_entry(existing["id"])
+    assert entry is not None
+    assert entry["id"] == existing["id"]
+
+
+def test_catalog_entry_reflects_a_models_json_overlay(monkeypatch):
+    """The actual regression: an overlay row correcting `size_gb` must be
+    what `_catalog_entry` (and therefore `recalibrate`'s DEFAULT lookup)
+    sees, not the stale built-in figure."""
+    from fused_render.ai import catalog
+
+    code = next(iter(catalog.SUGGESTIONS))
+    existing_id = catalog.SUGGESTIONS[code][0]["id"]
+    _write_overlay(monkeypatch, code, [{"id": existing_id, "size_gb": 999.0}])
+
+    entry = speed._catalog_entry(existing_id)
+    assert entry is not None
+    assert entry["size_gb"] == 999.0
+
+
+def test_catalog_entry_is_none_for_an_uncurated_id():
+    assert speed._catalog_entry("somebody/never-curated") is None
+
+
+def test_recalibrate_default_lookup_uses_the_overlay(monkeypatch):
+    """End to end, through `recalibrate()`'s own default `catalog_lookup`
+    (no override passed) — the production path, not an isolated call to
+    `_catalog_entry` alone. A synthetic id that exists ONLY in the overlay
+    (never in the built-in table), so the DEFAULT lookup can anchor on it
+    at all only by going through `catalog.for_runner` — which is exactly
+    the property the bug removed.
+
+    Proven by comparing the DEFAULT lookup's factor against an EXPLICIT
+    `catalog_lookup` that returns the identical overlay entry directly:
+    before the fix, `_catalog_entry` scanning raw `catalog.SUGGESTIONS`
+    never finds this id at all, the run has nothing to anchor on, and the
+    default factor stays `None` while the explicit one is a real number —
+    the two disagree. After the fix they must be identical.
+    """
+    from fused_render.ai import catalog
+
+    code = next(iter(catalog.SUGGESTIONS))
+    model_id = "test-org/synthetic-overlay-anchor"
+    overlay_entry = {"id": model_id, "params": "8B",
+                     "quantization": "GGUF Q4_K_M", "size_gb": 5.0}
+    _write_overlay(monkeypatch, code, [overlay_entry])
+    run = _run(model=model_id, tok_s=30.0)
+
+    default_factor = speed.recalibrate(runs=[run])
+    explicit_factor = speed.recalibrate(
+        runs=[run], catalog_lookup=lambda _id: overlay_entry)
+
+    assert default_factor is not None
+    assert default_factor == explicit_factor
+
+
 # -- backend_bucket -----------------------------------------------------------------
 
 
