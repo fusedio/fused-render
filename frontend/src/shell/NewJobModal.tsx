@@ -3031,7 +3031,9 @@ export default function NewJobModal({
                 then and a live-looking hotkey on a dead button is a lie. */}
             {!busy && (
               <kbd className="schedule-save-key" aria-hidden>
-                {MOD_LABEL}{ENTER_LABEL}
+                <span>{MOD_LABEL}</span>
+                <span className="schedule-save-key-plus">+</span>
+                <span>{ENTER_LABEL}</span>
               </kbd>
             )}
           </button>

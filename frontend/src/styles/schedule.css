@@ -2462,14 +2462,24 @@ input.schedule-when-field {
   padding-right: 14px;
 }
 .schedule-save-key {
+  display: inline-flex;
+  align-items: center;
+  /* Glyph, plus, glyph — with air between them (Akshil, screenshot,
+     2026-08-27: "a little bit of space between these two icons and a plus
+     icon"). Set glyph-to-glyph the two read as one unfamiliar ligature. */
+  gap: 3px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   line-height: 1;
-  padding: 3px 5px;
+  padding: 3px 6px;
   border-radius: 5px;
   background: color-mix(in srgb, currentColor 14%, transparent);
   color: inherit;
   opacity: 0.85;
+}
+.schedule-save-key-plus {
+  font-size: 9px;
+  opacity: 0.7;
 }
 
 /* The description hangs from a top-aligned icon (multi-line row), and grows
