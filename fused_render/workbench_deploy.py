@@ -22,7 +22,10 @@ from fused_render.workbench_app import (
 PUSH_TIMEOUT_S = 240
 SHARE_TIMEOUT_S = 90
 _STORE_NAME = "workbench_app_deployments.json"
-_URL_RE = re.compile(r"https?://[^\s]+")
+# The trailing set matters: `fused workbench` echoes results as JSON unless
+# told otherwise, so a URL arrives wrapped in quotes. We ask for text below;
+# this stays as the belt to that braces.
+_URL_RE = re.compile(r"""https?://[^\s"']+""")
 _TOKEN_RE = re.compile(r"/canvas/(fc_[A-Za-z0-9_-]+)")
 # The www hosts live in canvases.web_base_url(); only the UDF hosts are this
 # module's own, because nothing else builds them.
@@ -119,10 +122,26 @@ def deployment_plan(compiled: CompiledWorkbenchApp) -> dict[str, Any]:
     }
 
 
+# `--format text` on the `workbench` group, not a bare command. echo_result()
+# falls back to JSON whenever the CLI context carries no output_format, which
+# is how `canvas share` came back as "https://…/canvas/fc_x" — quotes and all —
+# and put a stray quote on the end of every share link we handed out. Parsing
+# whatever format the user's config happens to select is not a contract; asking
+# for one is.
+def _text_output(args: list[str]) -> list[str]:
+    if args and args[0] == "workbench":
+        return [args[0], "--format", "text", *args[1:]]
+    return args
+
+
+def _describe(args: list[str]) -> str:
+    return "fused " + " ".join(arg for arg in args if not arg.startswith("--"))[:60]
+
+
 def _run_cli(cli, args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     try:
         process = subprocess.run(
-            [*cli.command, *args],
+            [*cli.command, *_text_output(args)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -132,7 +151,7 @@ def _run_cli(cli, args: list[str], timeout: int) -> subprocess.CompletedProcess[
         )
     except subprocess.TimeoutExpired as exc:
         raise WorkbenchDeployError(
-            f"`fused {' '.join(args[:3])}` timed out after {timeout}s"
+            f"`{_describe(args)}` timed out after {timeout}s"
         ) from exc
     except OSError as exc:
         raise WorkbenchDeployError(
@@ -140,14 +159,14 @@ def _run_cli(cli, args: list[str], timeout: int) -> subprocess.CompletedProcess[
         ) from exc
     if process.returncode:
         raise WorkbenchDeployError(
-            cli_error(process.stderr or process.stdout, f"fused {' '.join(args[:3])} failed")
+            cli_error(process.stderr or process.stdout, f"`{_describe(args)}` failed")
         )
     return process
 
 
 def _last_url(output: str) -> str | None:
     matches = _URL_RE.findall(output or "")
-    return matches[-1].rstrip(".,)") if matches else None
+    return matches[-1].rstrip(".,)\"'") if matches else None
 
 
 def _bases(environment: str) -> tuple[str, str]:
@@ -226,9 +245,20 @@ def deploy_workbench_app(
         warnings.append("Canvas was pushed without creating or resolving a share token.")
 
     if shared:
+        # `canvas share` mints (or reuses) a share token and does NOT touch the
+        # Canvas access scope: server-side share_collection leaves
+        # access_scope and allow_public_read exactly as they were, so a Canvas
+        # created by push stays team-scoped and the share link reads as
+        # restricted. Nothing in the CLI can change that, so say so rather
+        # than implying the link is public.
         warnings.append(
-            "A team-scoped direct app URL needs a fused_session_token query parameter; "
-            "public Canvas shares do not. Sharing scope remains managed in Workbench."
+            "Sharing minted a share token but did NOT change the Canvas access scope: "
+            "a Canvas created by this deploy stays team-scoped. Make it public in "
+            "Workbench if you need link-only access."
+        )
+        warnings.append(
+            "While the Canvas is team-scoped, the direct app URL needs a "
+            "fused_session_token query parameter to run."
         )
     record = DeploymentRecord(
         page=os.path.abspath(html_path),

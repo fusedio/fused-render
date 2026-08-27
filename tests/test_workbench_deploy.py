@@ -45,7 +45,17 @@ def test_deploy_pushes_shares_and_records_without_generated_tree(tmp_path, monke
 
     assert record.shared is True
     assert record.app_url.endswith(f"/fc_testtoken/{record.shell_slug}")
-    assert [call[0][3] for call in calls] == ["push", "share"]
+    # By verb, not by position: every run carries `workbench --format text`
+    # ahead of the command, so the CLI output is text and not JSON-quoted.
+    verbs = [
+        next(arg for arg in call[0] if arg in ("push", "share")) for call in calls
+    ]
+    assert verbs == ["push", "share"]
+    for call in calls:
+        assert call[0][call[0].index("workbench") + 1 : call[0].index("workbench") + 3] == [
+            "--format",
+            "text",
+        ]
     assert all(call[1]["env"]["FUSED_RENDER_CANVAS_PUSH_INTERNAL"] == "1" for call in calls)
     stored = workbench_deploy.list_deployments(str(page))
     assert stored[0]["digest"] == record.digest
@@ -144,3 +154,47 @@ def test_a_corrupt_row_does_not_break_listing_or_saving(tmp_path, monkeypatch):
     )
     workbench_deploy._save_record(record)
     assert [item["canvas_name"] for item in workbench_deploy.list_deployments()][0] == "D"
+
+
+def test_a_json_quoted_cli_url_does_not_keep_its_quote():
+    """`canvas share` echoes JSON unless asked for text, and quotes rode along.
+
+    The runs now pass `--format text`, but a stray quote on a share link is a
+    link that 404s for whoever it was sent to, so the scrape refuses it too.
+    """
+    assert (
+        workbench_deploy._last_url('"https://www.fused.io/canvas/fc_abc123"')
+        == "https://www.fused.io/canvas/fc_abc123"
+    )
+    assert (
+        workbench_deploy._last_url("Pushed canvas: https://www.fused.io/workbench/me/App.")
+        == "https://www.fused.io/workbench/me/App"
+    )
+    assert workbench_deploy._last_url("nothing here") is None
+
+
+def test_share_reports_that_the_canvas_scope_is_unchanged(tmp_path, monkeypatch):
+    """share_collection mints a token and leaves access_scope alone."""
+    page = _page(tmp_path)
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        workbench_deploy, "fused_cli", lambda: FusedCli(command=["fused"], external=False)
+    )
+
+    def run(command, **kwargs):
+        if "share" in command:
+            return subprocess.CompletedProcess(
+                command, 0, '"https://www.fused.io/canvas/fc_testtoken"', ""
+            )
+        return subprocess.CompletedProcess(
+            command, 0, "https://www.fused.io/workbench/me/Demo\n", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", run)
+    record = workbench_deploy.deploy_workbench_app(
+        str(page), "Demo_App", share=True
+    )
+
+    assert record.share_url == "https://www.fused.io/canvas/fc_testtoken"
+    assert any("did NOT change the Canvas access scope" in w for w in record.warnings)
+    assert any("fused_session_token" in w for w in record.warnings)

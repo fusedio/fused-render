@@ -451,8 +451,8 @@ def compile_workbench_app(
         )
     if plan.entrypoints:
         warnings += [
-            "Public Canvas sharing exposes the generated UDF sources, including embedded "
-            "Python app code and resources.",
+            "Anyone who can open the Canvas can read the generated UDF sources, "
+            "including this app's Python code and embedded resources.",
             "Python dependencies must already be available in the Workbench execution "
             "environment; project dependency files are not installed by this deployment.",
         ]

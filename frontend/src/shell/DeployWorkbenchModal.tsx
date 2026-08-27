@@ -30,10 +30,9 @@ export default function DeployWorkbenchModal({
   const shareId = useId();
   const [canvasName, setCanvasName] = useState(() => canvasNameForApp(appName));
   const [cacheMaxAge, setCacheMaxAge] = useState("0s");
-  // Sharing is OFF by default: `canvas share` mints a public token, and the
-  // compiler's own warning says a public Canvas exposes the generated UDF
-  // sources — the app's Python among them. Publishing is a choice the user
-  // makes, not a default they have to notice and undo.
+  // Sharing is OFF by default: it mints a share token, and anyone who can then
+  // open the Canvas can read the generated UDF sources — the app's Python among
+  // them. That is a choice the user makes, not a default they have to undo.
   const [share, setShare] = useState(false);
   const [plan, setPlan] = useState<WorkbenchAppPlan | null>(null);
   const [result, setResult] = useState<WorkbenchAppDeployment | null>(null);
@@ -186,11 +185,14 @@ export default function DeployWorkbenchModal({
               checked={share}
               onChange={(event) => setShare(event.target.checked)}
             />
-            Publish a public share link
+            Mint a Canvas share link
           </label>
           <p className="field-hint workbench-deploy-share-note">
-            Anyone with the link can open the Canvas and read its generated UDF
-            sources, including this app's Python code and embedded assets.
+            Creates a share token; it does not make the Canvas public. A Canvas
+            created here stays team-scoped, and its direct app URL then needs a
+            fused_session_token to run — change the scope in Workbench for
+            link-only access. Anyone who can open the Canvas can read the
+            generated UDF sources, this app's Python among them.
           </p>
           {plan && (
             <div className="workbench-deploy-plan">
