@@ -39,6 +39,8 @@ const model = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
   detail: null,
   error: null,
   residentBytes: 4_000_000_000,
+  footprintBytes: null,
+  footprintBasis: null,
   device: "mps",
   loadedAt: 0,
   startedAt: 0,

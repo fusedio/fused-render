@@ -2733,6 +2733,76 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
+def test_describe_carries_the_machine_ceiling_once_not_per_row(fake_runner):
+    """D594: the denominator the status bar colours against is a per-machine
+    constant, so it rides at the TOP LEVEL rather than being repeated on every
+    loaded row."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    described = supervisor.describe()
+
+    assert "memoryCeilingBytes" in described
+    ceiling = described["memoryCeilingBytes"]
+    # Either a real positive reading or None where the machine cannot be read —
+    # never 0, which would be a denominator that silently divides wrong.
+    assert ceiling is None or ceiling > 0
+    assert "memoryCeilingBytes" not in described["loaded"][0]
+
+
+def test_describe_reports_a_footprint_and_its_basis_per_loaded_model(
+        fake_runner, tmp_path, monkeypatch):
+    """D594: each row carries what the model COSTS plus which rung of
+    `fit.footprint_bytes`' ladder answered — the same vocabulary
+    `AiFitVerdict` established, so the status bar and the fit badge cannot
+    disagree about the same model.
+
+    Driven through the real measured path (`refresh_memory` is the one writer
+    for the footprint store, SPEC AI-16a) rather than by stubbing
+    `footprint_bytes`, so this pins the WIRING and not a mock.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+    supervisor.refresh_memory()
+
+    row = supervisor.describe()["loaded"][0]
+
+    # The PEAK (9999), not the instantaneous RSS (1234) — those are different
+    # numbers on purpose, and the row now reports both in their own fields:
+    # peak as the cost, RSS as the live reading.
+    assert row["footprintBytes"] == 9999
+    assert row["footprintBasis"] == "measured"
+    assert row["residentBytes"] == 1234
+
+
+def test_an_unmeasured_model_reports_null_not_zero(fake_runner, monkeypatch):
+    """THE NULL-NOT-ZERO RULE, which the whole payload follows and which this
+    field needs most: a model with nothing measured and nothing declared has NO
+    cost figure. Zero would be a lie the page would happily colour green, so
+    the row must say null and let it fall back to RSS alone, uncoloured.
+
+    `footprint_bytes` is stubbed to its own documented "nothing to report"
+    answer rather than the store being left empty: the ladder has THREE rungs
+    and a catalog entry can satisfy the lower two, so an empty store does not
+    reliably produce a null (it did not — the fixture's peak came back through
+    the measured rung). Stubbing the ladder's ANSWER is what isolates the
+    contract this test is about, which is that `describe` passes a null
+    through as null instead of coercing it.
+    """
+    from fused_render.ai import fit
+
+    monkeypatch.setattr(fit, "footprint_bytes", lambda *a, **kw: (None, None))
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["footprintBytes"] is None
+    assert row["footprintBasis"] is None
+    # ...and the live RSS is still there, which is what the row falls back to.
+    assert row["residentBytes"] == 1234
+
+
 def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
     """SPEC AI-16a, D497: the ONE writer for the measured-footprint store is
     `supervisor.refresh_memory`, re-reading `/health` on the same cadence the

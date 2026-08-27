@@ -5236,11 +5236,37 @@ stop it short of quitting the app.
   already reads, so this section opens no second connection to the
   server.** Idle: "No models loaded". Active: plain text, no label prefix —
   `2 models · 18 GB` — the chip's whole vocabulary once there is a value to
-  show. The panel is a QUICK-INFO POPOVER, never a management console (user
+  show. **SUPERSEDED for the chip by D588-D590 and D589**: every status-bar
+  chip is now a bare label plus one circle (outlined = nothing here, filled =
+  something here), with no count and no aggregate size anywhere — the
+  `2 models · 18 GB` phrasing above is history. The aggregate went because it
+  summed `residentBytes`, which is worker-process RSS and explicitly "not the
+  model's size" (user: "the memory gb next to the models isn't even
+  accurate").
+  **THE PER-ROW MEMORY FIGURES (D594)**, which are the honest version of what
+  that aggregate was reaching for: each row shows the model's real COST as its
+  primary, colour-coded figure with the live RSS in parentheses beside it —
+  `9.2 GB (8.4 GB)`. The cost is `fit.footprint_bytes`, so it is the SAME
+  precedence ladder (measured > declared > download) and the same number the
+  AI Models page's fit badge shows, and the row carries `footprintBasis` in
+  `AiFitVerdict`'s existing vocabulary so a measured figure can be stated as
+  fact and the other two hedged. The ordering is deliberate: the primary
+  answers "what does this model cost me", the parenthetical answers "what is
+  it holding this instant" — reversed, the figure already agreed to be
+  inaccurate would sit in the position of authority. Colour is three steps
+  against `AiRuntime.memoryCeilingBytes` (carried once per payload, a
+  per-machine constant: the Apple Silicon WIRED limit where it applies, total
+  RAM otherwise, null when neither reads) reusing the easy/tight/no bands and
+  the existing `--success`/`--warning`/`--error` tokens; only `no` — the model
+  genuinely EXCEEDING the ceiling — gets the error colour, since a large model
+  that fits is not an error. NULL IS NOT ZERO: a model with nothing measured
+  and nothing declared has no primary figure and falls back to RSS alone,
+  uncoloured, rather than colouring a guess or printing 0.
+  The panel is a QUICK-INFO POPOVER, never a management console (user
   call, cutting an earlier gauge/progress-bar draft: "we don't need a gauge
   if too complicated. just a quick info upon clicking which we have a list
   of loaded models we can unload"): one row per resident model — its name
-  (owner trimmed, full id on hover, `repoName()`), its own resident bytes,
+  (owner trimmed, full id on hover, `repoName()`), its memory figures above,
   an Unload button — no proportional fill, no RAM-fraction indicator.
   Unload (`POST /api/ai/runtime/unload`, the D3 `X-Fused`-guarded mutation
   that already existed for the AI Models page) carries no confirmation —

@@ -19,7 +19,15 @@ import { getAiRuntime, type AiRuntime } from "@platform/lib/api";
 const ACTIVE_MS = 1000;
 const IDLE_MS = 10_000;
 
-const EMPTY: AiRuntime = { runners: [], loaded: [], downloading: [], totalResidentBytes: null };
+const EMPTY: AiRuntime = {
+  runners: [],
+  loaded: [],
+  downloading: [],
+  totalResidentBytes: null,
+  // Null, not a guess: `settled` (below) is what distinguishes
+  // "not asked yet" from "this machine has no readable ceiling".
+  memoryCeilingBytes: null,
+};
 
 let current: AiRuntime = EMPTY;
 // Has a real response ever landed? `EMPTY` is indistinguishable from a machine

@@ -75,11 +75,88 @@ function saveCollapsed(collapsed: boolean): void {
 // (round 1: two controls, one meaning each) — Unload is a distinct verb
 // from Cancel, but the same visual language: a row-scoped, quietly-styled
 // text button, not a glyph.
+/** THE ROW'S MEMORY FIGURES (D594, user: "lets also color code the memory
+ *  usage of the model in relation to the user's total memory. if possible lets
+ *  also add the real resident memory in a parenthesis next to it").
+ *
+ *  ORDER IS THE POINT: the model's measured COST is primary and colour-coded,
+ *  the live worker RSS is parenthetical. That is what makes the pair honest —
+ *  the primary answers "what does this model cost me" and the parenthetical
+ *  answers "what is it holding this instant". Reversed, the figure we already
+ *  agreed is inaccurate (RSS: "not the model's size") would sit in the
+ *  position of authority, which is exactly why D589 took the RSS-summed
+ *  aggregate off the chip.
+ *
+ *  NO FOOTPRINT, NO PRIMARY: a model with nothing measured and nothing
+ *  declared falls back to RSS alone, UNCOLOURED — never a coloured guess and
+ *  never a `0`. `title` carries the basis in the vocabulary `AiFitVerdict`
+ *  already set, so a measured figure reads as fact and the other two as
+ *  hedges.
+ */
+function MemoryCell({
+  model,
+  ceilingBytes,
+}: {
+  model: AiLoadedModel;
+  ceilingBytes: number | null;
+}) {
+  const band = memoryBand(model.footprintBytes, ceilingBytes);
+  const rss = formatSize(model.residentBytes);
+  if (model.footprintBytes === null) {
+    // Nothing to colour and nothing to compare — the live figure stands alone,
+    // and says which figure it is so it cannot be mistaken for a cost.
+    return (
+      <span className="dl-amount" title="Resident memory right now">
+        {rss}
+      </span>
+    );
+  }
+  const basis =
+    model.footprintBasis === "measured"
+      ? "Measured on this machine"
+      : model.footprintBasis === "declared"
+        ? "Estimated from the model's declared size"
+        : "Estimated from the download size";
+  return (
+    <span
+      className={"dl-amount" + (band ? ` is-mem-${band}` : "")}
+      title={`${basis}${ceilingBytes ? ` — against ${formatSize(ceilingBytes)} usable` : ""}`}
+    >
+      {formatSize(model.footprintBytes)}
+      {rss ? <span className="dl-mem-live"> ({rss})</span> : null}
+    </span>
+  );
+}
+
+/** Which colour band a model's cost falls in against this machine's ceiling
+ *  (D594) — or null when there is nothing honest to colour: no footprint, or
+ *  no readable ceiling.
+ *
+ *  THE SAME THREE STEPS `AiFitVerdict` already uses — easy / tight / no — so
+ *  the status bar and the AI Models page's fit badge cannot disagree about the
+ *  same model. The thresholds are utilization of the ceiling, and `no` means
+ *  the model genuinely EXCEEDS it: a large model that fits is not an error,
+ *  which is why `no` is the only band that gets the error colour.
+ *
+ *  Pure and exported so the rule is testable without rendering a row. */
+export function memoryBand(
+  footprintBytes: number | null,
+  ceilingBytes: number | null,
+): "easy" | "tight" | "no" | null {
+  if (!footprintBytes || !ceilingBytes) return null;
+  const used = footprintBytes / ceilingBytes;
+  if (used > 1) return "no";
+  return used > 0.7 ? "tight" : "easy";
+}
+
 function ModelRow({
   model,
+  ceilingBytes,
   onUnload,
 }: {
   model: AiLoadedModel;
+  /** This machine's ceiling, for `memoryBand` — see `AiRuntime`. */
+  ceilingBytes: number | null;
   onUnload: (model: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
@@ -112,15 +189,15 @@ function ModelRow({
         <span className="dl-title" title={model.model}>
           {repoName(model.model)}
         </span>
-        {/* A non-ready worker holds no weights yet, so `residentBytes` is
-            null and `formatSize` yields "" — an empty column that reads as a
-            glitch. Its STATE is the honest thing to show there instead
-            (venv/starting/downloading/loading), and the bring-up's real
-            progress (percentage, cancel) is a job row in Jobs, reported by
-            `supervisor._report` (D588). */}
-        <span className="dl-amount">
-          {model.state === "ready" ? formatSize(model.residentBytes) : model.state}
-        </span>
+        {/* A non-ready worker holds no weights yet, so there is no cost to
+            report — its STATE is the honest thing to show in this column
+            instead, and the bring-up's real progress (percentage, cancel) is a
+            job row in Jobs, reported by `supervisor._report` (D588). */}
+        {model.state === "ready" ? (
+          <MemoryCell model={model} ceilingBytes={ceilingBytes} />
+        ) : (
+          <span className="dl-amount">{model.state}</span>
+        )}
         <button className="dl-row-cancel" onClick={unload} disabled={busy}>
           {busy ? "Unloading…" : "Unload"}
         </button>
@@ -138,12 +215,17 @@ function ModelRow({
  */
 export function ModelsCardView({
   models,
+  ceilingBytes = null,
   collapsed,
   onToggle,
   onClose,
   onUnload,
 }: {
   models: AiLoadedModel[];
+  /** This machine's memory ceiling (`AiRuntime.memoryCeilingBytes`), for the
+   *  rows' colour coding. Optional and null-defaulted: with no ceiling the
+   *  figures simply render uncoloured. */
+  ceilingBytes?: number | null;
   collapsed: boolean;
   onToggle: () => void;
   /** Background the panel — an outside pointer-down or Escape (D574).
@@ -210,7 +292,12 @@ export function ModelsCardView({
           ) : (
             <div className="dl-rows">
               {models.map((m) => (
-                <ModelRow key={m.model} model={m} onUnload={onUnload} />
+                <ModelRow
+                  key={m.model}
+                  model={m}
+                  ceilingBytes={ceilingBytes}
+                  onUnload={onUnload}
+                />
               ))}
             </div>
           )}
@@ -300,6 +387,7 @@ export default function ModelsDock() {
   return (
     <ModelsCardView
       models={runtime.loaded}
+      ceilingBytes={runtime.memoryCeilingBytes}
       collapsed={!open}
       onToggle={toggle}
       onClose={close}

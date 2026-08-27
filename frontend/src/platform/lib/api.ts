@@ -2946,8 +2946,25 @@ export interface AiLoadedModel {
   state: string;
   detail: string | null;
   error: string | null;
-  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  /** RSS of the worker process. Not the model's size — see SPEC AI-8. Shown
+   *  as the PARENTHETICAL "right now" figure on a status-bar row (D594), with
+   *  `footprintBytes` in the position of authority, since this one is real but
+   *  measures the wrong thing to answer "what does this model cost me". */
   residentBytes: number | null;
+  /** What this model actually COSTS on this machine, in bytes — the primary
+   *  figure on a status-bar row, colour-coded against
+   *  `AiRuntime.memoryCeilingBytes` (D594). Straight from
+   *  `fused_render/ai/fit.footprint_bytes`, so it is the SAME ladder and the
+   *  same number the AI Models page's fit badge shows, never a second
+   *  estimate. NULL when nothing is measured and nothing is declared — in
+   *  which case the row falls back to `residentBytes` alone, uncoloured,
+   *  rather than colouring a guess or printing 0. */
+  footprintBytes: number | null;
+  /** Which rung of the ladder answered — the SAME vocabulary `AiFitVerdict`
+   *  established (SPEC AI-16, AI-16c, D497), deliberately reused rather than
+   *  reinvented: "measured" is stated as fact, "declared" and "download" are
+   *  hedges. Null exactly when `footprintBytes` is. */
+  footprintBasis: "measured" | "declared" | "download" | null;
   /** "cuda" | "mps" | "cpu" — where the weights actually landed, as the worker
    *  reported it. Null from a runner that does not say. The page shows it
    *  because a model answering at a few words a second on a CPU is working
@@ -2980,6 +2997,13 @@ export interface AiRuntime {
   loaded: AiLoadedModel[];
   downloading: AiDownload[];
   totalResidentBytes: number | null;
+  /** What a model has to fit under on THIS machine, in bytes — the Apple
+   *  Silicon wired limit where it applies, total physical RAM otherwise, and
+   *  NULL when neither can be read (D594). Carried once, not per row, because
+   *  it is a per-machine constant. Null is not zero: with no ceiling there is
+   *  nothing to colour a footprint against, and the row shows its figure
+   *  uncoloured rather than assuming a denominator. */
+  memoryCeilingBytes: number | null;
 }
 
 export function getAiRuntime(): Promise<AiRuntime> {

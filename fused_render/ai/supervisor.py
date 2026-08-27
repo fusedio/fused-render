@@ -2606,12 +2606,59 @@ def describe() -> dict:
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
     total = sum(row["residentBytes"] or 0 for row in loaded)
+    # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
+    # (D594). `residentBytes` above is the worker process's RSS — real, but
+    # "not the model's size" (its own field comment says so), which is why the
+    # summed version was removed from the status-bar chip. The honest per-model
+    # figure is `fit.footprint_bytes`, which already owns the whole precedence
+    # ladder (measured > declared > download) and reports WHICH rung answered.
+    # Reused rather than re-derived: a second ladder here would drift from the
+    # AI Models page's fit badge, which speaks this exact vocabulary.
+    #
+    # ONE `load_store()` for the whole response, passed into every call — the
+    # store is a disk read plus a machine-identity check, and doing it per row
+    # is the cost `footprint_bytes`' own `footprint_store` parameter exists to
+    # avoid (SPEC AI-16).
+    store = footprints.load_store()
+    for row in loaded:
+        footprint, basis = fit.footprint_bytes(
+            row["capability"], row["model"], footprint_store=store)
+        # NULL IS NOT ZERO: a model with nothing measured and nothing declared
+        # has NO cost figure, and the page must fall back to RSS alone rather
+        # than colour a guess or print 0.
+        row["footprintBytes"] = footprint
+        row["footprintBasis"] = basis
     return {
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
         "totalResidentBytes": total or None,
+        # THE DENOMINATOR, once per payload rather than per row — it is a
+        # per-machine constant. The WIRED limit where it applies, not raw total
+        # RAM: on Apple Silicon that is the real ceiling a model has to fit
+        # under (`fit._DEFAULT_WIRED_FRACTION`), and colouring against total
+        # RAM would call a model comfortable while it is about to swap. Total
+        # RAM is the fallback off Darwin, and None when neither can be read —
+        # in which case there is no ceiling to colour against and the page
+        # shows the figure uncoloured.
+        "memoryCeilingBytes": _memory_ceiling_bytes(),
     }
+
+
+def _memory_ceiling_bytes() -> float | None:
+    """What a model has to fit under on this machine, in bytes, or None.
+
+    The wired limit first (`fit._wired_limit_bytes` — Apple Silicon's hard
+    ceiling, which is what actually bounds a model there), then total physical
+    RAM, then nothing. Both rungs come from `fit`, so this adds no new
+    measurement of its own — it only chooses between two numbers `fit` already
+    computes, and returns None rather than a guess when neither is readable.
+    """
+    ram_gb = fit.machine_ram_gb()
+    if ram_gb is None:
+        return None
+    wired = fit._wired_limit_bytes(ram_gb)
+    return wired if wired is not None else ram_gb * fit.GB_BYTES
 
 
 def reset() -> None:
