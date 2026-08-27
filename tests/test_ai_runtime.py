@@ -6653,13 +6653,15 @@ def test_a_LIVE_transcription_row_is_never_absent_at_all():
 
     # Every removal path was walked against a row of this exact shape and none
     # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
-    # is far inside `STALE_DROP_S`), `dismiss` and `clear_finished` (both refuse
-    # a RUNNING row that is not stalled). ONE remote path survives — a tick
-    # thread starved past `STALE_AFTER_S` makes the row dismissible, and a user
-    # looking at "no longer reporting" may well dismiss it — and the rebuild on
-    # detection heals that, because `_transcribe_row` carries the `title` and
-    # `state: "running"` that reopen a forgotten id. So the poll cadence is the
-    # backstop's latency, and it still has to beat the watcher.
+    # is far inside `STALE_DROP_S`), `clear_finished` (refuses every RUNNING
+    # row unconditionally, stalled included — D525) and `dismiss` (refuses a
+    # RUNNING row that is not stalled). ONE remote path survives — a tick
+    # thread starved past `STALE_AFTER_S` makes the row dismissible one at a
+    # time, and a user looking at "no longer reporting" may well dismiss it —
+    # and the rebuild on detection heals that, because `_transcribe_row`
+    # carries the `title` and `state: "running"` that reopen a forgotten id.
+    # So the poll cadence is the backstop's latency, and it still has to beat
+    # the watcher.
     window = _watcher_giveup_window_s()
     assert supervisor._QUEUE_POLL_S < window / 2, (
         f"a dismissed-while-stalled row takes {supervisor._QUEUE_POLL_S}s to come "

@@ -75,6 +75,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   cancelJob,
+  clearableCount,
   clearFinishedJobs,
   dismissJob,
   fetchJobs,
@@ -83,6 +84,7 @@ import {
   jobAmount,
   jobFraction,
   jobRows,
+  jobsAfterClear,
   jobStatusLine,
   jobsSummary,
   overallFraction,
@@ -519,10 +521,14 @@ export function DownloadManagerView({
   // the fold must not take — a live scheduled run standing in for a queue row that
   // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
   const listed = shown.jobs ? jobs : foldedJobRows(jobs);
-  // What "Clear" would actually take — which includes stalled rows, since those
-  // are dismissible too. Counting only finished ones hid the button in exactly
-  // the case a user most wants it: a column of rows nobody is reporting on.
-  const clearable = jobs.filter((j) => !isRunning(j) || j.stalled).length;
+  // What "Clear" would actually take — TERMINAL rows only, mirroring the
+  // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
+  // used to count here too; that silently orphaned live work behind the
+  // button (`clearableCount`'s own doc has the full argument) — the button
+  // hiding in that case is a far smaller cost than the AI job it used to
+  // quietly abandon, and the per-row ✕ stays reachable for a stalled row
+  // someone wants gone right now.
+  const clearable = clearableCount(jobs);
 
   const toggle = () => {
     setCollapsed((was) => {
@@ -534,9 +540,9 @@ export function DownloadManagerView({
   const clear = async () => {
     try {
       await clearFinishedJobs();
-      // Mirrors the server's rule (jobs.py `clear_finished`): everything that
-      // is not still being reported on.
-      patch((js) => js.filter((j) => isRunning(j) && !j.stalled));
+      // Mirrors the server's rule (jobs.py `clear_finished`, D525): every
+      // running row survives, stalled included — see `clearableCount`'s doc.
+      patch((js) => jobsAfterClear(js));
     } catch {
       /* nothing applied locally — the refresh below is the source of truth */
     }

@@ -112,3 +112,25 @@ test("a scheduled run's own terminal row still counts and draws — the exemptio
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
+
+test("a stalled but still-running job alone offers no Clear button", () => {
+  // D525: Clear used to count a stalled row as clearable — mirroring
+  // clear_finished's own old bug — which meant pressing it could sweep the
+  // RECORD of a job that was still genuinely running. The row itself is
+  // still shown (dimmed via is-stalled); only the bulk button's count
+  // changed.
+  const stalled: Job = { ...BASE, id: "sys:ai-image:stalled", state: "running", stalled: true };
+  const tree = renderCard([stalled]);
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-clear")).toHaveLength(0);
+});
+
+test("a terminal row beside a stalled running one offers Clear, counting only the terminal one", () => {
+  const stalled: Job = { ...BASE, id: "sys:ai-image:stalled", state: "running", stalled: true };
+  const done = { ...BASE, id: "sys:ai-image:errored", state: "error" as const, message: "boom" };
+  const tree = renderCard([stalled, done]);
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-row")).toHaveLength(2);
+  expect(findAll(tree, "dl-clear")).toHaveLength(1);
+});

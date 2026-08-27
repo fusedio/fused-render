@@ -4,9 +4,11 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
+  clearableCount,
   GRACE_MS,
   jobAmount,
   jobFraction,
+  jobsAfterClear,
   jobStatusLine,
   jobsSummary,
   overallFraction,
@@ -187,4 +189,31 @@ test("the poll idles once the grace window has elapsed", () => {
   expect(pollInterval([job({ state: "done" })], GRACE_MS)).toBe(POLL_IDLE_MS);
   expect(pollInterval([job({ state: "done" })], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
   expect(pollInterval([], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
+});
+
+// --------------------------------------------------------------------- clear
+//
+// Mirrors the server's rule (jobs.py `clear_finished`, D525): Clear takes
+// TERMINAL records only. A stalled-but-RUNNING row used to be swept too —
+// the work does not actually stop when its record does, so that silently
+// orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still
+// takes a stalled row on purpose; only the bulk sweep changed.
+
+test("clearableCount counts terminal rows but not a stalled running one", () => {
+  const jobs = [
+    job({ id: "run", state: "running", stalled: false }),
+    job({ id: "stalled", state: "running", stalled: true }),
+    job({ id: "done", state: "done" }),
+    job({ id: "err", state: "error" }),
+  ];
+  expect(clearableCount(jobs)).toBe(2);
+});
+
+test("jobsAfterClear keeps every running row, stalled included", () => {
+  const jobs = [
+    job({ id: "run", state: "running", stalled: false }),
+    job({ id: "stalled", state: "running", stalled: true }),
+    job({ id: "done", state: "done" }),
+  ];
+  expect(jobsAfterClear(jobs).map((j) => j.id)).toEqual(["run", "stalled"]);
 });

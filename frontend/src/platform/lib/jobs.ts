@@ -91,6 +91,31 @@ export function isRunning(job: Job): boolean {
   return job.state === "running";
 }
 
+/**
+ * What the card's bulk "Clear" button would actually take, and what it
+ * leaves — mirroring the server's own rule (`fused_render/jobs.py`
+ * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
+ * row is deliberately NOT clearable in bulk any more: `is_stalled` only
+ * means "no report in `STALE_AFTER_S`", and the work behind it does not
+ * stop just because its row does — a Clear press used to silently orphan
+ * a still-running AI job, telling the user it had been cancelled when
+ * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
+ * takes a stalled row one at a time, unchanged: that is a user closing a
+ * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
+ * what any of its rows are.
+ */
+export function clearableCount(jobs: Job[]): number {
+  return jobs.filter((j) => !isRunning(j)).length;
+}
+
+/** The jobs list after a Clear — every row Clear would NOT take, i.e. every
+ *  `running` row, stalled included. Used to optimistically patch the local
+ *  list the instant the server confirms a clear, without waiting for the
+ *  next poll. */
+export function jobsAfterClear(jobs: Job[]): Job[] {
+  return jobs.filter(isRunning);
+}
+
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
