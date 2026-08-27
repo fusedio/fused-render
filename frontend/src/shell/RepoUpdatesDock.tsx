@@ -1,7 +1,7 @@
 // The repo-updates notification card (SPEC §36): its OWN sibling entry in
-// the bottom-right column, one row for every git repo the server has
-// noticed is behind its remote's default branch, with an opt-in action to
-// fix it.
+// the status bar (D562, formerly the bottom-right floating column), one row
+// for every git repo the server has noticed is behind its remote's default
+// branch, with an opt-in action to fix it.
 //
 // It used to be rows PINNED INSIDE the jobs/downloads card, exempt from that
 // card's fold and invisible to its header and its Clear button. That shape
@@ -35,7 +35,7 @@
 // `DownloadManagerView`.
 //
 // WHY THIS FILE LIVES IN shell/, NOT platform/ — the same reason
-// NotificationHost.tsx gives for QueueDock (platform/ui/NotificationHost.tsx
+// StatusBar.tsx gives for QueueDock (platform/ui/StatusBar.tsx
 // §"activity"): resolving a repo root to an explorer route is shell
 // knowledge, and frontend/scripts/check-boundaries.mjs forbids platform
 // importing shell. `navigate` (Fix with Claude's hop) lives in
@@ -255,14 +255,13 @@ function RepoRowView({
  * this card's own rule (D556), and the jobs card has since adopted the exact
  * same one (D561, user call 2026-08-27: "everything is foldable, even for
  * the job cards" — reversing the exemptions D557/D558 had built there). The
- * two cards now behave identically: collapsed renders NO rows at all — the
- * `.dl-rows` wrapper itself is omitted rather than left as an empty box —
- * and reachability while collapsed lives in the header (this card's rows are
- * each individually dismissible via their own ✕, and the header keeps
- * naming how many updates are waiting via `repoUpdatesSummary`). Whenever
- * the toggle is on screen at all (the card returned non-null, meaning
- * `visible.length > 0`), pressing it always visibly hides or shows every
- * row.
+ * two cards now behave identically: collapsed renders a CHIP and nothing
+ * else (D562, status bar redesign) — no rows, no Clear, no per-row ✕ — and
+ * expanding it is what opens the panel those live in, floating above the
+ * status bar rather than pinned inside a header that survives the fold.
+ * Whenever the chip is on screen at all (the card returned non-null, meaning
+ * `visible.length > 0`), pressing it always visibly hides or shows the panel
+ * and every row in it.
  */
 export function RepoUpdatesCardView({
   rows,
@@ -289,39 +288,47 @@ export function RepoUpdatesCardView({
 
   return (
     <div className="dl-host">
-      <div className="dl-head">
-        <button
-          className="dl-toggle"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show updates" : "Hide updates"}
-        >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌄
-          </span>
-          <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
-        </button>
-        <button
-          className="dl-clear"
-          onClick={() => onDismissAll(visible)}
-          title="Dismiss every visible update"
-        >
-          Clear
-        </button>
-      </div>
-      {/* Collapsed shows NO rows and no empty box — see this component's own
-          doc comment on why a CSS-only fold (a max-height cap) is not
-          enough for a list this short. */}
+      {/* The chip — this card's entire presence in the status bar while
+          collapsed (D562): the chevron and the summary, nothing else. Clear
+          and every row live in the panel below, which exists only while
+          expanded. */}
+      <button
+        className="dl-toggle"
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show updates" : "Hide updates"}
+      >
+        <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
+          ⌄
+        </span>
+        <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
+      </button>
+      {/* The panel — floats ABOVE the status bar, anchored to this chip, and
+          exists only while expanded. Collapsed shows no panel at all — see
+          this component's own doc comment on why the fold takes every row,
+          no exemption, including Clear now that it lives here rather than in
+          a header that used to survive the fold. */}
       {!collapsed && (
-        <div className="dl-rows">
-          {visible.map((row) => (
-            <RepoRowView
-              key={row.repo.root}
-              row={row}
-              onDone={onDone}
-              onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
-            />
-          ))}
+        <div className="dl-panel">
+          <div className="dl-head">
+            <button
+              className="dl-clear"
+              onClick={() => onDismissAll(visible)}
+              title="Dismiss every visible update"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="dl-rows">
+            {visible.map((row) => (
+              <RepoRowView
+                key={row.repo.root}
+                row={row}
+                onDone={onDone}
+                onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
+              />
+            ))}
+          </div>
         </div>
       )}
     </div>

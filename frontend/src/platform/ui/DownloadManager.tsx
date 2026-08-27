@@ -36,14 +36,20 @@
 // were exempt, because folding away a queued message's or a live turn's only
 // ✕ left a card collapsed weeks ago with scheduled work arriving and nothing
 // on screen to stop it. The user's rule is that there is no such thing as a
-// "non-foldable card", full stop — so reachability is now the HEADER's job,
-// not an exemption's: `queue?.cancelAll` and `queue?.note` render outside
-// `.dl-rows` and so survive a collapse regardless, `clearable`/`jobsSummary`
-// keep naming what is hidden, and Cancel all's own threshold drops to a
-// single row once the card is collapsed (its own comment, below, has the
-// reasoning) — because collapsing is what makes that lone row's own ✕
-// unreachable in the first place. Nothing here rewrites the stored
-// preference; it is only ever changed by the user pressing the header.
+// "non-foldable card", full stop.
+//
+// COLLAPSED IS NOW A CHIP, NOT A SHORT CARD (D562, status bar redesign, user
+// call: "the collapsed notification is also taking too much space... it is
+// impossible to use the claude template with it"). `.dl-toggle` — the
+// chevron, `jobsSummary`, the aggregate percentage — is the WHOLE of what
+// renders while collapsed; `queue?.cancelAll` and `queue?.note`, along with
+// Clear and every row, render only inside the panel that opens when the
+// card is expanded, and so no longer survive a collapse the way D561's own
+// paragraph here used to promise. That reachability requirement is gone on
+// purpose, not merely forgotten: the chip's whole point is to cost the page
+// nothing but one summary line, and a button on it would be a second thing
+// competing for that line's very little room. Nothing here rewrites the
+// stored preference; it is only ever changed by the user pressing the chip.
 //
 // WHICH HALF OWNS A RUN IS TOLD, NOT GUESSED (`queue.drawn`, jobs.ts `jobRows`).
 // One row per unit of work needs the two halves to agree on who is drawing what, and
@@ -54,9 +60,8 @@
 // The slot now carries the entry ids its rows cover; this half drops exactly those
 // and draws the rest itself, which for a live run is a row with the same title, the
 // same status line and the same ✕, only without the Explorer link that needs shell.
-// This stand-in row folds like any other now (D561) — reachability while
-// collapsed is the header's job (Cancel all's single-row threshold), not this
-// row's own exemption.
+// This stand-in row folds like any other now (D561) — collapsed, it is not on
+// screen at all any more (D562's chip carries no row, and no button either).
 //
 // AND IT IS TOLD ABOUT A RUN, NOT ABOUT A STATE: a drawn run is dropped here whether
 // its job is running or finished. The exemption terminal rows used to have was an
@@ -69,10 +74,18 @@
 // row against it (queue-dock-lib `openRows`): the handover is a render apart instead
 // of a poll apart, and it does not depend on the queue endpoint answering at all.
 //
-// Placement and stacking still belong to NotificationHost: this component
-// positions nothing. It sits ABOVE the server card and BELOW the toasts, because
-// those are the three lifetimes in the column — a toast is seconds, work in
-// progress is minutes, the server card outlives the session.
+// PLACEMENT MOVED (D562): this card used to sit in NotificationHost's fixed,
+// floating column with the toasts and the server card, ABOVE the server card
+// and BELOW the toasts by lifetime (a toast is seconds, work in progress is
+// minutes, the server card outlives the session) — but a FIXED column
+// overlays page content even collapsed, which is what made a page like the
+// Claude template unusable under it. It is handed to `StatusBar` now instead,
+// mounted inside `#main` where it RESERVES layout space rather than floating
+// over it; the toasts, `FdaCard` and `ServerStatusBanner` are unaffected and
+// stay in NotificationHost's column, since none of them are long-lived
+// enough to be worth a permanently reserved strip. This component still
+// positions nothing itself — `StatusBar` owns the chip's place in the bar,
+// and this file's own CSS classes own the panel floating above it.
 //
 // Cancel is a REQUEST, not a kill, for a JOB row (jobs.py `request_cancel`): the
 // shell has no idea what the work is or which process is doing it, so the ✕ sets
@@ -452,20 +465,22 @@ export interface QueueSlot extends QueueCount {
    *  half is. It also spares the queue half a second forever-poll of the same
    *  endpoint, which is what it did before. */
   onJobs?: (jobs: Job[]) => void;
-  /** Cancel all — a FUNCTION of whether the card is collapsed, not a
-   *  pre-decided node, because the threshold itself depends on it (D561,
-   *  user call 2026-08-27, reversing the fold exemptions D557/D558 built).
-   *  Expanded: 2+ genuinely withdrawable rows, since a single row's own
-   *  cancel control is the same action with a better name on it and is
-   *  right there on screen. Collapsed: 1+, because collapsing now hides
-   *  that control along with every other row — the reasoning the 2+
-   *  threshold rested on stops applying the moment the row itself is out
-   *  of view. `showCancelAll`
-   *  (queue-dock-lib.ts) owns the actual number; this is a function rather
-   *  than a lifted `collapsed` state so the card's own collapse preference
-   *  stays local to `DownloadManagerView`, exactly as before. */
-  cancelAll?: (collapsed: boolean) => ReactNode;
-  /** What a cancel actually did, including the half that was refused. */
+  /** "Cancel queued" — a pre-decided node now, not a function of `collapsed`
+   *  (D562, status bar redesign: this only ever renders inside the expanded
+   *  panel, since the collapsed chip carries no controls at all, so there is
+   *  no longer a folded-but-reachable state for a threshold to answer). 2+
+   *  genuinely withdrawable rows, since a single row's own cancel control is
+   *  the same action with a better name on it and is right there on screen.
+   *  `showCancelAll` (queue-dock-lib.ts) owns the actual number — it used to
+   *  take `collapsed` too (D561) and drop the threshold to one row for a
+   *  card that stayed on screen folded; that call site is gone along with
+   *  the promise it was answering. */
+  cancelAll?: ReactNode;
+  /** What a cancel actually did, including the half that was refused. Like
+   *  `cancelAll`, only ever shown inside the expanded panel now (D562) — a
+   *  refusal that happened while the card was open stays reachable until the
+   *  user re-collapses or presses again, same as before; it just no longer
+   *  survives a collapse it didn't cause. */
   note?: ReactNode;
 }
 
@@ -595,72 +610,66 @@ export function DownloadManagerView({
 
   return (
     <div className="dl-host">
-      <div className="dl-head">
-        {/* ALWAYS a real button (D561, user call 2026-08-27): there is always
-            something to fold now that no row is exempt, so the toggle is never
-            offered where it would visibly do nothing — the D558 "static span"
-            mitigation this reverses existed only because SOME rows used to be
-            exempt. */}
-        <button
-          className="dl-toggle"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show details" : "Hide details"}
-        >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌄
-          </span>
-          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
-        </button>
+      {/* The chip — this card's ENTIRE presence in the status bar (D562). ALWAYS
+          a real button: there is always something to fold now that no row is
+          exempt (D561), so the toggle is never offered where it would visibly
+          do nothing. Exactly three things live here — the chevron, the
+          summary, the aggregate percentage — because the chip's whole job is
+          to cost the bar one line; a control on it would be a second thing
+          competing for that line's very little room. Everything else (the
+          rows, Cancel queued, Clear, a cancel's own note) lives in the panel
+          below, which exists only while expanded. */}
+      <button
+        className="dl-toggle"
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show details" : "Hide details"}
+      >
+        <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
+          ⌄
+        </span>
+        <span className="dl-summary">{jobsSummary(jobs, count)}</span>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
-        {/* Two actions, and they are not the same one twice: Cancel all withdraws
-            messages that have not gone yet (the shell's, and only when the shell
-            decides enough rows are genuinely withdrawable — see `queue.cancelAll`'s
-            own doc for the collapsed-drops-to-one-row rule), Clear dismisses rows
-            for work that has ENDED. So a terminal row is clearable without a live
-            one being touched. */}
-        {queue?.cancelAll?.(collapsed)}
-        {clearable > 0 && (
-          <button className="dl-clear" onClick={clear} title="Dismiss finished">
-            Clear
-          </button>
-        )}
-      </div>
-      {/* Collapsed still shows the overall bar: folding the rows away should hide
-          the detail, not the fact that something is running. With nothing running
-          there is no bar — a sweep under a header reading "2 finished" would
-          animate work that is over. */}
-      {collapsed && jobs.some(isRunning) && (
-        <div className="dl-bar">
-          <div
-            className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}
-            data-indeterminate={overall === null ? "1" : undefined}
-            style={overall === null ? undefined : { width: `${overall * 100}%` }}
-          />
-        </div>
-      )}
-      {/* ONE list, in lifecycle order: the queue's rows first (running, then
-          starting, then waiting) and the job rows under them, which is where the
-          same run lands once its turn has ended. A scheduled message therefore
-          moves down this list rather than jumping between two cards.
-          Collapsed shows NO rows at all (D561) — not a shorter, capped list, an
-          absent one, and the wrapper itself is omitted rather than left as an
-          empty box (the same rule RepoUpdatesDock.tsx's own card already
-          follows). Reachability while collapsed is the HEADER's job now:
-          `queue?.cancelAll` and `queue?.note` render outside this block, so a
-          queued message's or a live turn's stop survives the collapse through
-          Cancel all rather than through this list staying open for it. */}
+      </button>
+      {/* The panel — floats ABOVE the status bar (notifications.css), anchored
+          to this chip, and exists only while expanded: opening it IS collapsed
+          turning false, there is no separate "peek" state. Collapsed shows NO
+          panel at all (D561's "no exemption" carried forward into D562) — not
+          a shorter one, an absent one, so `queue?.cancelAll` and `queue?.note`
+          do NOT survive a collapse any more (they used to, when this was a
+          short card rather than a chip — see this file's own header comment
+          for why that promise was dropped on purpose rather than left broken
+          in practice). */}
       {!collapsed && (
-        <div className="dl-rows">
-          {queue?.rows}
-          {jobs.map((job) => (
-            <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-          ))}
+        <div className="dl-panel">
+          <div className="dl-head">
+            {/* Two actions, and they are not the same one twice: Cancel queued
+                withdraws messages that have not gone yet (the shell's, and only
+                when the shell decides enough rows are genuinely withdrawable —
+                `queue.cancelAll`'s own doc), Clear dismisses rows for work that
+                has ENDED. So a terminal row is clearable without a live one
+                being touched. */}
+            {queue?.cancelAll}
+            {clearable > 0 && (
+              <button className="dl-clear" onClick={clear} title="Dismiss finished">
+                Clear
+              </button>
+            )}
+          </div>
+          {/* ONE list, in lifecycle order: the queue's rows first (running, then
+              starting, then waiting) and the job rows under them, which is where
+              the same run lands once its turn has ended. A scheduled message
+              therefore moves down this list rather than jumping between two
+              cards. */}
+          <div className="dl-rows">
+            {queue?.rows}
+            {jobs.map((job) => (
+              <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+            ))}
+          </div>
+          {queue?.note}
         </div>
       )}
-      {/* Below the rows and OUTSIDE the collapse: it answers Cancel all, which is
-          in the header and pressable while the list is folded away. */}
-      {queue?.note}
     </div>
   );
 }

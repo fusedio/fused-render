@@ -1,4 +1,4 @@
-// The rules for the queue's rows in the one bottom-right activity card — the one
+// The rules for the queue's rows in the one status-bar activity card — the one
 // global surface for work that is about to run or running now. Everything that
 // could be got subtly wrong here is about WHICH work that is: past due only, one
 // row per entry, one row per unit of work across BOTH halves of the card, and a
@@ -157,21 +157,6 @@ describe("cancel", () => {
     expect(showCancelAll(one)).toBe(false);
   });
 
-  it("drops the threshold to a single row once the card is collapsed (D561)", () => {
-    // The 2+ threshold rests on "a single row's own ✕ is reachable either way" —
-    // collapsing now hides that ✕ along with every other row (D561, user call
-    // 2026-08-27: there is no such thing as a non-foldable card any more), so
-    // the reasoning stops applying the moment the card is folded. Expanded, one
-    // withdrawable row still hides the button; collapsed, it must show it.
-    const one = queueRows([], [entry({ id: "b", state: "sending" })], [entry({ id: "c" })]);
-    expect(showCancelAll(one, false)).toBe(false);
-    expect(showCancelAll(one, true)).toBe(true);
-    // Zero withdrawable rows still shows nothing, collapsed or not — "all"
-    // would still name zero messages.
-    const gone2 = queueRows([entry({ id: "a", state: "sent" })], [], []);
-    expect(showCancelAll(gone2, true)).toBe(false);
-  });
-
   it("changes the control set as one entry moves queued → sending → live", () => {
     // The three snapshots the dock actually polls, for the SAME entry. What must
     // not happen is a control decided once when the row appeared: waiting offers
@@ -242,9 +227,11 @@ describe("one card, one count", () => {
 // regardless of `collapsed` (jobs.ts `rowsShown`, deleted) — the user rejected
 // the whole idea of a partially-foldable card (D561, 2026-08-27): "everything
 // is foldable, even for the job cards." Collapsed now hides every row, no
-// exceptions, and reachability lives in the header instead — see
-// `showCancelAll`'s own "drops the threshold to a single row once the card is
-// collapsed" test, above, which is where this concern moved to.
+// exceptions. Reachability while collapsed moved to the status bar's chip
+// instead (D562) — not to the header, and not to `showCancelAll`'s threshold,
+// which used to drop to one row for exactly this reason and no longer does
+// (see that function's own doc): the chip carries no controls, so there is
+// nothing left for a lowered threshold to reach.
 
 // ---------------------------------------------------- one row, never two, never none
 
@@ -303,7 +290,7 @@ describe("jobRows: which half owns a scheduled run", () => {
   });
 
   it("keeps the run when the card is mounted BARE, with no queue slot at all", () => {
-    // Same outcome by construction rather than by failure: NotificationHost falls
+    // Same outcome by construction rather than by failure: StatusBar falls
     // back to a plain <DownloadManager /> when no shell composed one, so nothing
     // fills the slot. Told nothing means "draw it yourself".
     expect(jobRows([liveJob()]).map((j) => j.id)).toEqual([LIVE_JOB]);

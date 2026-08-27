@@ -1,4 +1,4 @@
-// The rules for the queue's rows in the one bottom-right activity card, kept pure
+// The rules for the queue's rows in the one status-bar activity card, kept pure
 // so they can be tested without a DOM — the same split platform/lib/schedule-toast.ts
 // makes against scheduleEvents.ts: what a row SAYS lives here, the polling and the
 // pixels live in QueueDock.tsx, and the card around it is DownloadManager's.
@@ -239,22 +239,22 @@ export function withdrawableCount(rows: QueueRow[]): number {
   return rows.filter((r) => rowCancelKind(r) === "queued").length;
 }
 
-/** Whether the card shows Cancel all. Two or more withdrawable rows while
- *  expanded, because for a single one the row's own ✕ — right there on
- *  screen — is the same action with a better name on it; a card holding only
- *  live or claimed work shows nothing either way, since "all" would be a
- *  button for zero messages.
+/** Whether the card shows Cancel queued. Two or more withdrawable rows,
+ *  because for a single one the row's own ✕ — right there on screen — is
+ *  the same action with a better name on it; a card holding only live or
+ *  claimed work shows nothing either way, since "queued" would be a button
+ *  for zero messages.
  *
- *  `collapsed` drops the threshold to ONE (D561, user call 2026-08-27:
- *  "everything is foldable, even for the job cards" — reversing the fold
- *  exemptions D557/D558 built). Collapsing now hides every row, including
- *  that single one, so the "the row's own ✕ is reachable either way"
- *  reasoning the 2+ threshold rests on stops holding the moment the card is
- *  folded — the ✕ is not reachable any more, and Cancel all is the only
- *  thing left standing in the header that can withdraw it. The threshold
- *  lives here, next to the count, so it and the row buttons cannot drift
- *  apart in the component. */
-export function showCancelAll(rows: QueueRow[], collapsed = false): boolean {
-  const min = collapsed ? 1 : 2;
-  return withdrawableCount(rows) >= min;
+ *  No longer a function of `collapsed` (status bar redesign, D562): this
+ *  button now renders only inside the card's expanded panel — the chip that
+ *  stands in for it while collapsed carries no controls at all (spec: chip
+ *  is the summary line, the percentage, and the chevron, nothing else) — so
+ *  there is no longer a folded-but-visible state for it to answer. D561's
+ *  reasoning ("collapsing hides every row, so the button is the only thing
+ *  left that can withdraw a lone one") assumed the header — and this button
+ *  with it — stayed on screen while the card was folded; the bar's chip
+ *  replaces the header for that state instead, so the assumption, and the
+ *  threshold it justified, no longer apply. */
+export function showCancelAll(rows: QueueRow[]): boolean {
+  return withdrawableCount(rows) >= 2;
 }

@@ -145,7 +145,7 @@ export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
  * here would: the queue card's job snapshot (about a second behind the turn —
  * QueueDock) and the schedule's own done/failed events (App wiring
  * useScheduleEvents). Without this the sidebar and the Tasks page sat out
- * their 10–30s cadences while the bottom-right corner already said finished —
+ * their 10–30s cadences while the status bar already said finished —
  * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if
  * finished in one, finished in the other").
  *

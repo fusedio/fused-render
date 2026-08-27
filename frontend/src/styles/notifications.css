@@ -130,57 +130,67 @@
   border-color: var(--fg-muted);
 }
 
+/* ---- Status bar (SPEC §36, D562) ------------------------------------------ */
+/* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
+   column`), as its LAST child — so it reserves height for free and every page's
+   content ends above it, unlike the old fixed floating column this replaced,
+   which overlaid page content even collapsed. Two entries only, `activity` and
+   `repoUpdates` (StatusBar.tsx), each a `.dl-host` chip+panel pair; `:empty`
+   collapses the strip to nothing the moment both return null, the same pattern
+   `#topbar-mode-slot:empty` already uses for the identical reason: an empty bar
+   still reserving space is worse than the overlap problem it exists to fix. */
+.status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  min-height: 34px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+}
+
+.status-bar:empty {
+  display: none;
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Sits between the toasts and the server card — see
-   NotificationHost for why the column is ordered by lifetime. Like the server
-   card it positions nothing; .notif-host owns placement. Deliberately the same
-   plate as a toast (--bg-alt, 8px radius, the same shadow) so the corner reads as
-   one surface rather than three competing widgets.
+   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling card
+   shares below.
 
-   The queue used to wear this same plate in a SECOND card stacked directly above,
-   which is what made the corner read as two competing widgets after all. The
-   `dl-` prefix is the card's, `q-` is the queue row's; both live here now. */
+   Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
+   `.dl-panel` (below) can float above it, anchored to its own right edge —
+   collapsed, `.dl-toggle` inside it is the card's entire presence in the bar;
+   expanded, `.dl-panel` opens above that same chip. Before D562 this element
+   WAS the floating card (the plate, the header and the row list all lived
+   directly in it); that plate — --bg-alt, 8px radius, the toast shadow — moved
+   to `.dl-panel`, the only piece of this card that still floats over page
+   content, and only while the user has it open. */
 .dl-host {
-  /* A fixed comfortable width rather than shrink-to-fit: the column is a flex
-     box that sizes to its widest child, so a card left to its content width
-     jumps every time a row's title or byte count changes length — and at that
-     width "1.21 / 7.54 GB" and its percentage crowd the title into an
-     ellipsis. Capped to the viewport for the same reason .notif-host is. */
-  width: min(340px, calc(100vw - 32px));
-  max-width: 100%;
-  color: var(--fg);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 6px 20px var(--shadow-lg);
-  animation: toast-in var(--dur-med) var(--ease-out);
-  overflow: hidden;
-}
-
-.dl-head {
+  position: relative;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  font-size: 12px;
 }
 
-/* The whole summary is the collapse target, not a lone chevron: the header is
-   already a row-height hit area and a 12px glyph is not. The hover wash on
-   the whole button (not just the chevron) is what tells the eye that hit
-   area is real, rather than leaving the header looking like plain text. */
+/* The chip: this card's whole presence in the bar. The whole summary is the
+   collapse target, not a lone chevron — a compact hit area still needs to be
+   a real one. The hover wash on the whole button (not just the chevron) is
+   what tells the eye that hit area is real, rather than leaving the bar
+   looking like plain text. */
 .dl-toggle {
-  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 2px 4px;
-  margin: -2px -4px;
+  padding: 4px 6px;
+  margin: -4px -6px;
   border-radius: 6px;
   font: inherit;
+  font-size: 12px;
   color: var(--fg);
   background: none;
   border: none;
@@ -191,6 +201,53 @@
 
 .dl-toggle:hover {
   background: var(--row-bg-hover);
+}
+
+/* The panel: floats ABOVE the bar, anchored to its own chip's right edge, and
+   exists in the DOM only while expanded — collapsed, this class never
+   renders at all, which is the whole reachability story (see
+   DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
+   longer survive a collapse the way they did as a short card). Carries the
+   plate `.dl-host` used to wear before this card was split into a chip and a
+   panel: same width cap for the same reason (a card left to its content
+   width jumps every time a row's title or byte count changes length, and at
+   that width "1.21 / 7.54 GB" and its percentage crowd the title into an
+   ellipsis), same --bg-alt/8px-radius/shadow plate a toast wears, so an open
+   panel still reads as the same system rather than a different kind of
+   popover. */
+.dl-panel {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  width: min(340px, calc(100vw - 32px));
+  max-width: 100%;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px var(--shadow-lg);
+  animation: toast-in var(--dur-med) var(--ease-out);
+  overflow: hidden;
+  /* Above ordinary page content, the same reason the old floating column
+     needed it — this is the one piece of the card still capable of
+     overlaying the page, and only because the user opened it. */
+  z-index: 2000;
+}
+
+/* The panel's own header — action buttons only now (Cancel queued / Clear),
+   never the chevron or the summary, which live in the chip outside the
+   panel. Right-aligned: with no toggle left inside to push them there via
+   `flex: 1 1 auto`, this row would otherwise pack its buttons against the
+   left edge instead of the trailing edge every other header in this corner
+   uses. */
+.dl-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
 }
 
 /* Legible at a glance rather than merely present: a muted 11px glyph reads
@@ -373,11 +430,6 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   word-break: break-word;
-}
-
-/* The header's own bar, shown while collapsed, spans the card edge to edge. */
-.dl-host > .dl-bar {
-  border-radius: 0;
 }
 
 .dl-bar {

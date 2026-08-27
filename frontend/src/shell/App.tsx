@@ -48,6 +48,7 @@ import { installHints } from "@platform/lib/hints";
 import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
+import StatusBar from "@platform/ui/StatusBar";
 import QueueDock from "@shell/QueueDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -973,15 +974,22 @@ export default function App({ config }: { config: Config }) {
   return (
     <div id="app">
       {!IS_EMBED && sidebar}
-      <div id="main">{main}</div>
-      {/* ONE work-in-progress card in the notification column, not two: QueueDock
-          is the shell's wrapper around the platform activity card (it fills that
-          card's queue slot), handed in from here rather than imported there
-          because it speaks explorerUrl, which lives in this layer. RepoUpdatesDock
-          is its own sibling card (SPEC §36), handed in the same way and for the
-          same reason: it speaks explorer/lib's staged-Claude-ask store, which
-          platform may not import (frontend/scripts/check-boundaries.mjs). */}
-      <NotificationHost activity={<QueueDock />} repoUpdates={<RepoUpdatesDock />} />
+      <div id="main">
+        {main}
+        {/* ONE work-in-progress card in the bar, not two: QueueDock is the
+            shell's wrapper around the platform activity card (it fills that
+            card's queue slot), handed in from here rather than imported there
+            because it speaks explorerUrl, which lives in this layer.
+            RepoUpdatesDock is its own sibling card (SPEC §36), handed in the
+            same way and for the same reason: it speaks explorer/lib's
+            staged-Claude-ask store, which platform may not import
+            (frontend/scripts/check-boundaries.mjs). Inside `#main` (D562, not
+            NotificationHost's fixed column) and behind the same `!IS_EMBED`
+            guard as the sidebar, so a pane in panel/tab mode does not grow
+            its own bar. */}
+        {!IS_EMBED && <StatusBar activity={<QueueDock />} repoUpdates={<RepoUpdatesDock />} />}
+      </div>
+      <NotificationHost />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

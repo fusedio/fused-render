@@ -18,7 +18,7 @@ Two halves to test, and they are tested in the two ways they can be:
   that a refusal is spoken rather than swallowed, that an empty card is no card at
   all, and that there is exactly ONE card in that corner.
 
-The row-level rules (ordering, dedupe, the header count, what Cancel all counts)
+The row-level rules (ordering, dedupe, the header count, what Cancel queued counts)
 are unit-tested in frontend/src/shell/queue-dock-lib.test.ts, where they are pure.
 """
 import os
@@ -34,11 +34,13 @@ WRITE = {"X-Fused": "1"}
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FRONT = os.path.join(_ROOT, "frontend", "src")
-# The queue half (rows, polling, Cancel all) and the card it fills (plate, header,
+# The queue half (rows, polling, Cancel queued) and the card it fills (plate, header,
 # count, one list, collapse, Clear).
 _DOCK = os.path.join(_FRONT, "shell", "QueueDock.tsx")
 _CARD = os.path.join(_FRONT, "platform", "ui", "DownloadManager.tsx")
 _HOST = os.path.join(_FRONT, "platform", "ui", "NotificationHost.tsx")
+_BAR = os.path.join(_FRONT, "platform", "ui", "StatusBar.tsx")
+_APP = os.path.join(_FRONT, "shell", "App.tsx")
 _CSS = os.path.join(_FRONT, "styles", "notifications.css")
 
 
@@ -267,7 +269,7 @@ def test_a_refusal_is_spoken(dock):
     user the button lies."""
     assert "cancelOutcome(" in dock
     assert "r.refused" in dock
-    assert 'cancelQueued("all")' in dock, "Cancel all lives here and nowhere else"
+    assert 'cancelQueued("all")' in dock, "Cancel queued lives here and nowhere else"
 
 
 def test_an_empty_card_is_no_card(card):
@@ -300,9 +302,11 @@ def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
     """D561 (user call, 2026-08-27): 'everything is foldable, even for the job
     cards' — reversing the earlier partial fold (D557/D558), which pinned the
     queue's rows and a live-run stand-in outside the collapse. Collapsed now
-    renders no `.dl-rows` at all, no exemption; reachability while collapsed
-    moved to the header (Cancel all's threshold drops to one row, queue-dock-lib
-    `showCancelAll`'s own doc has the rule)."""
+    renders no `.dl-rows` at all, no exemption; collapsed also renders no
+    panel at all any more (D562, status bar redesign), so there is nothing
+    left standing in a header for reachability to move to — `showCancelAll`
+    dropped the collapsed-threshold parameter this docstring used to point
+    at (queue-dock-lib.ts's own doc has the current rule)."""
     assert "rowsShown" not in card, "the two-field queue/jobs split is gone"
     assert "foldedJobRows" not in card, "no row is exempt from the fold any more"
     assert "!collapsed && (" in card, "the whole rows block is gated on collapsed alone"
@@ -378,8 +382,8 @@ def test_a_stand_in_job_row_folds_like_any_other_now(card):
     is a job row (`jobRows` — unaffected by D561, this is ownership, not fold).
     It used to be exempt from the collapse specially (`foldedJobRows`); D561
     (user call, 2026-08-27) removed every such exemption, so this row now folds
-    like any other — reachability while collapsed is Cancel all's job, not a
-    per-row carve-out."""
+    like any other — collapsed, it is simply not on screen (D562's chip
+    carries no row and no button), not a per-row carve-out."""
     assert "foldedJobRows" not in card
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
     assert "export function foldedJobRows" not in jobs_ts
@@ -395,24 +399,57 @@ def test_the_stored_fold_is_only_ever_written_by_a_press(card):
 
 
 def test_the_column_owns_where_it_sits(dock, card):
-    """Placement belongs to NotificationHost — neither the queue nor the card
-    positions itself, exactly like the server card below them."""
+    """Placement belongs to StatusBar / notifications.css (D562) — neither the
+    queue nor the card positions itself inline, exactly as it never did when
+    NotificationHost owned this instead."""
     for gone in ("position: fixed", "position:fixed", "zIndex", "z-index"):
         assert gone not in dock
         assert gone not in card
 
 
-def test_the_shell_composes_the_card_and_the_host_places_it(dock):
+def test_the_bar_reserves_space_inside_main_not_the_floating_column(dock, card):
+    """D562 (user call: "the collapsed notification is also taking too much
+    space... it is impossible to use the claude template with it"). The two
+    cards moved OUT of NotificationHost's fixed, floating column and into a
+    bar mounted inside `#main`, which reserves layout space for it instead of
+    overlaying whatever is under it. Toasts, FdaCard and ServerStatusBanner —
+    all short-lived or exceptional enough that overlaying the page is still
+    the right call — are the ones left in NotificationHost's column."""
+    app = _read(_APP)
+    host = _read(_HOST)
+    bar = _read(_BAR)
+    css = _read(_CSS)
+    # StatusBar is mounted INSIDE #main, alongside the routed content, not as
+    # a sibling of it the way NotificationHost is.
+    main_at = app.index('<div id="main">')
+    bar_use_at = app.index("<StatusBar")
+    main_close_at = app.index("</div>", bar_use_at)
+    assert main_at < bar_use_at < main_close_at, "StatusBar must render INSIDE #main"
+    assert "<NotificationHost />" in app, "the two moved entries are gone from its props"
+    assert "activity?: ReactNode" not in host, "NotificationHost no longer takes them"
+    assert "repoUpdates?: ReactNode" not in host
+    assert "DownloadManager" not in host, "the bare-manager fallback moved to StatusBar"
+    assert "activity?: ReactNode" in bar
+    assert "repoUpdates?: ReactNode" in bar
+    # #main already reserves the bar's height for free (explorer.css's own
+    # #main rule); the bar collapses to nothing, not a thin empty strip, once
+    # both cards have nothing to show.
+    assert ".status-bar:empty" in css
+    assert "display: none" in css[css.index(".status-bar:empty"):css.index(".status-bar:empty") + 60]
+
+
+def test_the_shell_composes_the_card_and_the_bar_places_it(dock):
     """platform may not import shell (frontend/scripts/check-boundaries.mjs) and a
     queue row has to speak explorerUrl, which lives in shell. So the dependency
     runs the way the boundary allows: shell imports the card and fills its `queue`
-    slot, and the host takes the composed thing as its ONE activity entry.
+    slot, and StatusBar (D562 — no longer NotificationHost, see the placement
+    test below) takes the composed thing as its ONE activity entry.
 
     Omitted, the bare manager stands in: platform does not come to depend on a
     shell that may not be there."""
     assert 'import DownloadManager from "@platform/ui/DownloadManager"' in dock
-    host = _read(_HOST)
-    assert "activity?: ReactNode" in host
-    assert "{!IS_EMBED && (activity ?? <DownloadManager />)}" in host
-    # one entry in the column, not two stacked cards
-    assert host.count("<DownloadManager />") == 1
+    bar = _read(_BAR)
+    assert "activity?: ReactNode" in bar
+    assert "{activity ?? <DownloadManager />}" in bar
+    # one entry in the bar, not two stacked cards
+    assert bar.count("<DownloadManager />") == 1

@@ -1,4 +1,4 @@
-// The queue half of the ONE bottom-right activity card: work that is about to run
+// The queue half of the ONE status-bar activity card: work that is about to run
 // or running now (Akshil, 2026-08-17).
 //
 // It used to be a card of its own, stacked directly above the download manager,
@@ -14,8 +14,9 @@
 // This is the ONE place `<DownloadManager>` is instantiated. Repo updates
 // (SPEC §36) are no longer a slot filled here — they draw their own sibling
 // card (RepoUpdatesDock.tsx), mounted directly by App.tsx beside this one via
-// NotificationHost's separate `repoUpdates` prop, so this module has nothing
-// to do with them any more. The lifecycle drawn here is one list:
+// StatusBar's separate `repoUpdates` prop (D562 — NotificationHost's, before
+// the status bar redesign), so this module has nothing to do with them any
+// more. The lifecycle drawn here is one list:
 //
 //     queued → starting → running → finished / failed
 //        \______ these rows ______/     \__ a job row __/
@@ -23,7 +24,7 @@
 // WHAT COUNTS AS QUEUED is the whole definition, and it is the server's, not a
 // filter invented here: `GET /api/schedule/queue` answers with what is PAST DUE
 // and waiting to be claimed. A message scheduled for later today is not queued,
-// it is scheduled, and putting it in this card would make Cancel all mean
+// it is scheduled, and putting it in this card would make Cancel queued mean
 // something nobody asked for ("cancel my afternoon").
 //
 // WHY IT EXISTS, in the user's words: a run parked on a permission prompt was
@@ -32,8 +33,11 @@
 // the link is `explorerUrl`, the app's one answer to that question, rather than a
 // path assembled here.
 //
-// It is also the only place Cancel all now lives: the calendar's Queued strip was
-// removed and this replaces the global surface that went with it.
+// It is also the only place Cancel queued now lives (named "Cancel all" until
+// user feedback: over a card that is mostly job rows, "all" read as a promise
+// this button never kept — it withdraws queued scheduled messages only and
+// cannot touch a job row): the calendar's Queued strip was removed and this
+// replaces the global surface that went with it.
 //
 // WHY THE SHELL COMPOSES THE CARD instead of platform polling the queue itself:
 // `explorerUrl` — and `cancelOutcome`, and `relativeDue` — live in
@@ -41,8 +45,8 @@
 // (frontend/scripts/check-boundaries.mjs). Rather than inject three functions
 // downward, the dependency runs the way the boundary already allows: shell imports
 // platform's card and fills its `queue` slot with the parts only shell can build.
-// Placement is still NotificationHost's, which takes this whole thing as its one
-// `activity` entry.
+// Placement (D562) is `StatusBar`'s (platform/ui/StatusBar.tsx), which takes this
+// whole thing as its `activity` entry the same way NotificationHost used to.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelQueued,
@@ -366,17 +370,26 @@ export default function QueueDock() {
       lines.set(job.id.slice(SCHEDULE_JOB_PREFIX.length), jobStatusLine(job) || job.detail);
     }
   }
-  // Cancel all is the QUEUE's — the rows the server would withdraw if asked right
-  // now, which is `pending` and nothing else. A live turn is not one of them (it
-  // has its own ✕, which stops a running process) and neither is a claimed one
-  // (the server refuses `sending`), so the button counts only what it can take —
-  // and disappears when nothing left in the card is withdrawable. It is not the
-  // card's Clear and never becomes it: Clear dismisses rows for work that ENDED.
+  // "Cancel queued" — labelled for what it withdraws, since the old "Cancel
+  // all" read as "cancel everything on this card" over a header that is
+  // mostly job rows, which is precisely what this button does not touch
+  // (user feedback). It is the QUEUE's — the rows the server would withdraw
+  // if asked right now, which is `pending` and nothing else. A live turn is
+  // not one of them (it has its own ✕, which stops a running process) and
+  // neither is a claimed one (the server refuses `sending`), so the button
+  // counts only what it can take — and disappears when nothing left in the
+  // card is withdrawable. It is not the card's Clear and never becomes it:
+  // Clear dismisses rows for work that ENDED.
   //
-  // The threshold itself depends on whether the CARD is collapsed
-  // (`showCancelAll`'s own doc, D561) — and `collapsed` is state private to
-  // `DownloadManagerView`, not lifted up here, so `cancelAll` below is built as
-  // a FUNCTION of it rather than a node decided once at this render.
+  // A plain node now, decided once per render (D562, status bar redesign):
+  // it used to be built as a FUNCTION of whether the card was collapsed,
+  // because the threshold itself depended on it (`showCancelAll`'s own doc,
+  // D561) — collapsed dropped the withdrawable-rows threshold to one, since
+  // that was the only way left to reach a lone row once the header folded
+  // away. This button now renders only inside the card's expanded panel (the
+  // collapsed chip carries no controls at all), so that folded-but-visible
+  // state it was answering no longer exists, and neither does the function
+  // shape it needed.
 
   const cancelAll = async () => {
     setBusy(true);
@@ -413,18 +426,17 @@ export default function QueueDock() {
             onNote={setNote}
           />
         )),
-        cancelAll: (collapsed: boolean) =>
-          showCancelAll(rows, collapsed) ? (
-            <button
-              type="button"
-              className="q-all"
-              onClick={cancelAll}
-              disabled={busy}
-              title="Cancel every queued message"
-            >
-              Cancel all
-            </button>
-          ) : null,
+        cancelAll: showCancelAll(rows) ? (
+          <button
+            type="button"
+            className="q-all"
+            onClick={cancelAll}
+            disabled={busy}
+            title="Cancel every queued message"
+          >
+            Cancel queued
+          </button>
+        ) : null,
         // Only ever the answer to a cancel pressed in this card, so it lives with
         // the card rather than as a toast that would outlive the rows it is about.
         note: note ? <div className="q-note">{note}</div> : null,

@@ -186,11 +186,15 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
 // D557/D558's whole premise — SOME rows (the queue's, a live schedule
 // stand-in) were exempt from the fold, so the toggle sometimes had nothing
 // to hide and was drawn as an inert `<span>` — is gone. The toggle is ALWAYS
-// a real `<button>`, and collapsing ALWAYS hides every row. Reachability
-// while collapsed is the header's job now: `queue.cancelAll` drops its
-// threshold to one row (queue-dock-lib.test.ts owns that rule), and the
-// header keeps naming what is hidden (`jobsSummary`) and keeps the overall
-// progress bar.
+// a real `<button>`, and collapsing ALWAYS hides every row.
+//
+// Collapsed is now a CHIP in the status bar, not a short card (D562): the
+// toggle IS the chip, and it carries no controls — `queue.cancelAll` and
+// Clear render only in the panel that opens when expanded, so neither
+// survives a collapse any more. What DOES survive is what the chip itself
+// draws: `jobsSummary` names what is hidden, and `dl-pct` keeps naming the
+// aggregate percentage (replacing the old collapsed-state progress bar,
+// which had no home once the header shrank to one line).
 
 function clickToggle(renderer: ReactTestRenderer) {
   const before = renderer.toJSON() as ReactTestRendererJSON;
@@ -252,7 +256,13 @@ test("the header still names the hidden work once collapsed", () => {
   expect(after.length).toBeGreaterThan(0);
 });
 
-test("the overall progress bar survives the collapse while something is running", () => {
+test("the chip keeps naming the aggregate percentage once collapsed — D562's chip replaces the old collapsed bar", () => {
+  // D562 (status bar redesign): a collapsed card used to keep drawing a mini
+  // aggregate progress bar directly under its header, so folding the rows
+  // away hid the detail without hiding the fact that something was running.
+  // That bar had no home once collapsed became a one-line chip in the status
+  // bar — the numeric `.dl-pct` next to the summary carries the same fact
+  // now, in the one line the chip has room for.
   const running: Job = {
     ...BASE,
     id: "sys:ai-image:running",
@@ -264,31 +274,27 @@ test("the overall progress bar survives the collapse while something is running"
   const renderer = renderInstance([running]);
   clickToggle(renderer);
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  // Direct child of .dl-host, per notifications.css's own ".dl-host > .dl-bar"
-  // selector — distinguishes the header's collapsed-state bar from any bar a
-  // (now-hidden) row would have drawn.
-  expect((after.children ?? []).some((c) => {
-    const child = c as ReactTestRendererJSON;
-    return typeof child !== "string" && child.props?.className?.split(" ").includes("dl-bar");
-  })).toBe(true);
+  expect(findAll(after, "dl-bar")).toHaveLength(0);
+  expect(text(findAll(after, "dl-pct")[0])).toBe("50%");
 });
 
-test("Cancel all is offered for a single queued row once the card is collapsed (D561)", () => {
-  // queue-dock-lib.ts's `showCancelAll` owns the actual threshold (its own
-  // test pins 2+ expanded, 1+ collapsed); this just confirms the CARD calls
-  // `cancelAll` as a function of `collapsed` rather than rendering a
-  // pre-decided node, which is the only way that threshold can reach here.
-  const cancelAll = (collapsed: boolean) =>
-    collapsed ? <button className="q-all">Cancel all</button> : null;
+test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D562)", () => {
+  // The old behaviour this replaces (D561) dropped `showCancelAll`'s
+  // threshold to one row once collapsed, because the header — and this
+  // button with it — stayed on screen folded. Now the button is a plain,
+  // pre-decided node (queue-dock-lib.ts `showCancelAll` no longer takes
+  // `collapsed` at all) that this card only ever places inside the panel,
+  // which does not exist while collapsed.
+  const cancelAll = <button className="q-all">Cancel queued</button>;
   const renderer = renderInstance([], { waiting: 1, running: 0, cancelAll });
 
   const before = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(before, "q-all")).toHaveLength(0);
+  expect(findAll(before, "q-all")).toHaveLength(1);
 
-  clickToggle(renderer);
+  clickToggle(renderer); // collapse
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-all")).toHaveLength(1);
+  expect(findAll(after, "q-all")).toHaveLength(0);
 });
 
 // ---------------------------------------------- auto-expand on a new arrival
