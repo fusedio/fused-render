@@ -249,12 +249,24 @@
 }
 
 /* An OPEN item reads as open (D573): without a chevron to rotate, the only
-   way to say "this panel is up" is to hold the same hover wash while it is —
-   the VS Code/Cursor convention for an engaged status-bar item. Keyed off
+   way to say "this panel is up" is to mark the chip itself while it is — the
+   VS Code/Cursor convention for an engaged status-bar item. Keyed off
    `aria-expanded` (already correct for every section — a real DOM fact this
-   button already carries) rather than a second className duplicating it. */
+   button already carries) rather than a second className duplicating it.
+
+   `--row-bg-active`, NOT `--row-bg-hover` (D574): round 4 used the hover wash
+   for both, so an open chip and a merely-hovered chip were pixel-identical
+   and "is a panel up?" was unanswerable without looking away from the bar.
+   That got worse the moment D574's auto-open landed — a panel can now open
+   with the user having touched nothing at all, so the open marker is the ONLY
+   thing saying which section did it. `--row-bg-active` is the app's existing
+   engaged/selected token (an accent 0.13 wash over `--bg-alt`, the same one
+   sidebar.css uses for a selected row) — it reads as deliberate rather than
+   as a pointer passing over, and it needs no new token. It also outranks the
+   hover rule above at equal specificity by sitting later in the cascade, so
+   hovering an already-open chip does not knock it back to looking closed. */
 .dl-toggle[aria-expanded="true"] {
-  background: var(--row-bg-hover);
+  background: var(--row-bg-active);
 }
 
 /* The panel: floats ABOVE the bar, anchored to its own chip's RIGHT edge

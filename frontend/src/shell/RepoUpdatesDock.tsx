@@ -47,6 +47,7 @@ import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   repoActionLabel,
   repoFixPrompt,
@@ -63,6 +64,7 @@ import {
 // enough to be a permanent background poll in every shell. The check itself
 // is throttled server-side (git_upstream.CHECK_TTL_S), so polling faster
 // than that would only ever re-read the same cached answer.
+const NOOP = () => {};
 const POLL_MS = 6000;
 
 // This card's own persisted collapse preference — a DISTINCT key from the
@@ -92,6 +94,12 @@ type MutationResult = { ok: boolean; reason?: string; message?: string };
 
 function useRepoUpdates() {
   const [repos, setRepos] = useState<RepoStatus[]>([]);
+  // Has /api/git-upstream answered ONCE? `repos` starts `[]` and stays `[]`
+  // for a repo-free machine, so the list alone cannot tell "not asked yet"
+  // from "genuinely nothing" — and `useAutoExpandOnNew` needs exactly that
+  // distinction to avoid calling every pre-existing repo an arrival on load
+  // (D574 bug 2, autoExpand.ts's `ready`).
+  const [settled, setSettled] = useState(false);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -108,7 +116,10 @@ function useRepoUpdates() {
       window.clearTimeout(timer);
       try {
         const data = await getJson<{ repos?: RepoStatus[] }>("/api/git-upstream");
-        if (!disposed) setRepos(data.repos || []);
+        if (!disposed) {
+          setRepos(data.repos || []);
+          setSettled(true);
+        }
       } catch {
         // Best-effort, like every other poll in this card: a failed read
         // leaves the last snapshot standing rather than clearing the rows.
@@ -124,7 +135,7 @@ function useRepoUpdates() {
   }, []);
 
   const refresh = useCallback(() => pollRef.current(), []);
-  return { repos, refresh };
+  return { repos, settled, refresh };
 }
 
 // Held at MODULE level, not component state, so a remount (switching panes
@@ -274,6 +285,7 @@ export function RepoUpdatesCardView({
   collapsed,
   hasNew,
   onToggle,
+  onClose,
   onDismiss,
   onDismissAll,
   onDone,
@@ -286,15 +298,22 @@ export function RepoUpdatesCardView({
    *  code review finding #4). */
   hasNew: boolean;
   onToggle: () => void;
+  /** Background the panel — an outside pointer-down or Escape (D574).
+   *  Optional: a caller that mounts this view directly need not dismiss. */
+  onClose?: () => void;
   onDismiss: (root: string, checkedAt: number) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
   const idle = visible.length === 0;
+  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
+  // host, not just the panel, is what counts as "inside".
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host">
+    <div className="dl-host" ref={hostRef}>
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
           inspiration" — the bar shows the category NAME plus a count, and
@@ -375,38 +394,63 @@ export function RepoUpdatesCardView({
 export function RepoUpdatesDockView({
   rows,
   dismissed,
+  ready,
   onDismiss,
   onDismissAll,
   onDone,
 }: {
   rows: RepoRow[];
   dismissed: Record<string, number>;
+  /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
+   *  so a caller that mounts this with a fixed list keeps the old behaviour. */
+  ready?: boolean;
   onDismiss: (root: string, checkedAt: number) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
 
+  const visible = visibleRepoRows(rows, dismissed);
+  // A dot for a repo that fell behind while this chip was collapsed, AND
+  // (D574) a transient auto-open of this section's own panel. `autoOpen` is
+  // never persisted — autoExpand.ts's header on why that write, not the
+  // opening itself, was D567's real defect.
+  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
+    visible.map((row) => row.repo.root),
+    collapsed,
+    ready,
+  );
+  const open = !collapsed || autoOpen;
+
+  // First click on an auto-opened chip closes it without persisting an
+  // expansion the user never chose (`autoOpen` implies `collapsed`).
   const toggle = () => {
+    if (autoOpen) {
+      acknowledge();
+      return;
+    }
     setCollapsed((was) => {
       saveCollapsed(!was);
       return !was;
     });
   };
 
-  const visible = visibleRepoRows(rows, dismissed);
-  const hasNew = useAutoExpandOnNew(
-    visible.map((row) => row.repo.root),
-    collapsed,
-  );
+  const close = () => {
+    acknowledge();
+    if (!collapsed) {
+      saveCollapsed(true);
+      setCollapsed(true);
+    }
+  };
 
   return (
     <RepoUpdatesCardView
       rows={rows}
       dismissed={dismissed}
-      collapsed={collapsed}
+      collapsed={!open}
       hasNew={hasNew}
       onToggle={toggle}
+      onClose={close}
       onDismiss={onDismiss}
       onDismissAll={onDismissAll}
       onDone={onDone}
@@ -415,7 +459,7 @@ export function RepoUpdatesDockView({
 }
 
 export default function RepoUpdatesDock() {
-  const { repos, refresh } = useRepoUpdates();
+  const { repos, settled, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
 
@@ -423,6 +467,7 @@ export default function RepoUpdatesDock() {
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
+      ready={settled}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
       onDone={() => refresh()}

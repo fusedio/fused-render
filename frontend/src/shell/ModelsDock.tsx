@@ -32,17 +32,20 @@
 // RepoUpdatesCardView use, for the identical reason: no polling, no network,
 // no `window`/`document`, so ModelsDock.test.tsx can render the view
 // directly with a fixed model list rather than mocking `useAiRuntime`.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
-import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 
 // This section's own persisted collapse preference — a THIRD independent key
 // beside `fused-render:jobs-collapsed` and `fused-render:repo-updates-collapsed`
 // (DownloadManager.tsx / RepoUpdatesDock.tsx), for the identical reason those
 // two are separate: three sections with three separate histories a user
 // might want folded independently.
+const NOOP = () => {};
+
 const COLLAPSED_KEY = "fused-render:models-collapsed";
 
 function loadCollapsed(): boolean {
@@ -129,6 +132,7 @@ export function ModelsCardView({
   collapsed,
   hasNew,
   onToggle,
+  onClose,
   onUnload,
 }: {
   models: AiLoadedModel[];
@@ -139,12 +143,19 @@ export function ModelsCardView({
    *  #4). */
   hasNew: boolean;
   onToggle: () => void;
+  /** Background the panel — an outside pointer-down or Escape (D574).
+   *  Optional: a caller that mounts this view directly need not dismiss. */
+  onClose?: () => void;
   onUnload: (model: string) => Promise<void>;
 }) {
   const idle = models.length === 0;
+  // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
+  // host, not just the panel, is what counts as "inside".
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  useDismissOnOutside(hostRef, !collapsed, onClose ?? NOOP);
 
   return (
-    <div className="dl-host">
+    <div className="dl-host" ref={hostRef}>
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
           inspiration" — the bar shows the category NAME plus a count, and
@@ -160,10 +171,14 @@ export function ModelsCardView({
         aria-expanded={!collapsed}
         title={collapsed ? "Show loaded models" : "Hide loaded models"}
       >
+        {/* NO COUNT (D575, user: "lets just have [model · memory size] and
+            remove the count") — the label and the resident TOTAL, nothing
+            else. With the count gone this reads identically for one model and
+            for five, which is the point: the size is the number being
+            watched. Idle falls back to the bare label. Activity and Updates
+            keep their own counts — this was a Models-only request. */}
         <span className="dl-summary">
-          {idle
-            ? "Models"
-            : `Models ${models.length}${totalResidentBytes ? ` · ${formatSize(totalResidentBytes)}` : ""}`}
+          {`Models${totalResidentBytes ? ` · ${formatSize(totalResidentBytes)}` : ""}`}
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
@@ -188,19 +203,39 @@ export default function ModelsDock() {
   const runtime = useAiRuntime();
   const [collapsed, setCollapsed] = useState(loadCollapsed);
 
-  // Same wiring DownloadManagerView/RepoUpdatesCardView use — a quiet dot
-  // for a model that loaded while this chip was collapsed, never a forced
-  // expansion.
-  const hasNew = useAutoExpandOnNew(
+  // Same wiring DownloadManagerView/RepoUpdatesCardView use — a dot for a
+  // model that loaded while this chip was collapsed, AND (D574) a transient
+  // auto-open of this section's own panel so the arrival is on screen rather
+  // than only hinted at. `autoOpen` is never persisted — see autoExpand.ts.
+  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
     runtime.loaded.map((m) => m.model),
     collapsed,
+    // Not `runtime.loaded.length > 0` — an idle machine must still announce
+    // its first real load (autoExpand.ts's `ready`).
+    aiRuntimeSettled(),
   );
+  const open = !collapsed || autoOpen;
 
+  // First click on an auto-opened chip closes it without writing an
+  // expansion the user never chose (DownloadManagerView's `toggle` carries
+  // the full argument; `autoOpen` implies `collapsed`).
   const toggle = () => {
+    if (autoOpen) {
+      acknowledge();
+      return;
+    }
     setCollapsed((was) => {
       saveCollapsed(!was);
       return !was;
     });
+  };
+
+  const close = () => {
+    acknowledge();
+    if (!collapsed) {
+      saveCollapsed(true);
+      setCollapsed(true);
+    }
   };
 
   const onUnload = async (model: string) => {
@@ -216,9 +251,10 @@ export default function ModelsDock() {
     <ModelsCardView
       models={runtime.loaded}
       totalResidentBytes={runtime.totalResidentBytes}
-      collapsed={collapsed}
+      collapsed={!open}
       hasNew={hasNew}
       onToggle={toggle}
+      onClose={close}
       onUnload={onUnload}
     />
   );

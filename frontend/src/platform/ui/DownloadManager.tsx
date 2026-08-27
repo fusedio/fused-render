@@ -94,6 +94,7 @@
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   cancelJob,
   clearableCount,
@@ -140,11 +141,17 @@ function saveCollapsed(collapsed: boolean): void {
 // Python worker) writes no ping, so the idle poll below is the floor that
 // guarantees the row shows up either way.
 function useJobs(): {
+  /** Has /api/jobs answered once? `jobs` starts `[]` and stays `[]` on an idle
+   *  machine, so the list cannot tell "not asked yet" from "genuinely
+   *  nothing" — the distinction `useAutoExpandOnNew` needs to avoid reading
+   *  pre-existing jobs as arrivals on load (D574 bug 2). */
+  settled: boolean;
   jobs: Job[];
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 } {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [settled, setSettled] = useState(false);
   // Read by the scheduler without re-arming it: the poll loop re-reads the
   // cadence after every response, so `jobs` must not be in its dependency list
   // or every tick would tear the timer down and build a new one.
@@ -204,6 +211,7 @@ function useJobs(): {
       try {
         const snapshot = await fetchJobs();
         if (disposed) return;
+        setSettled(true);
         if (at === epochRef.current) {
           setJobs(snapshot.jobs);
           scheduleFor(snapshot.jobs);
@@ -262,7 +270,7 @@ function useJobs(): {
     setJobs(fn);
   }, []);
 
-  return { jobs, refresh, patch };
+  return { jobs, settled, refresh, patch };
 }
 
 function Bar({ job }: { job: Job }) {
@@ -552,16 +560,23 @@ function isVanishedOnSuccess(job: Job): boolean {
 // global `mock.module` on it does not scope to one file).
 export function DownloadManagerView({
   reported,
+  ready,
   queue,
   refresh,
   patch,
 }: {
   reported: Job[];
+  /** Has the first /api/jobs read landed (autoExpand.ts's `ready`)? Optional
+   *  so a test mounting this view with a fixed list keeps the old behaviour. */
+  ready?: boolean;
   queue?: QueueSlot;
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
+  // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
+  // host, not just the panel, is what counts as "inside".
+  const hostRef = useRef<HTMLDivElement | null>(null);
   // Hand this poll's snapshot back to the queue half, so the run it is drawing is
   // retired against the same evidence this half is acting on rather than against a
   // read six seconds behind it (`QueueSlot.onJobs`, queue-dock-lib `openRows`). In an
@@ -602,7 +617,16 @@ export function DownloadManagerView({
   // exists to fix). Called unconditionally, before the idle branch below,
   // same as every other hook in this component (rules of hooks: what a
   // render calls, not whether it later draws the idle state).
-  const hasNew = useAutoExpandOnNew(jobs.map((j) => j.id), collapsed);
+  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
+    jobs.map((j) => j.id),
+    collapsed,
+    ready,
+  );
+  // OPEN is the persisted preference OR a transient auto-open (D574) — never
+  // `collapsed` alone from here down, and the auto-open half is deliberately
+  // not written back to localStorage (autoExpand.ts's own header on why that
+  // write, not the opening, was D567's actual defect).
+  const open = !collapsed || autoOpen;
 
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
   // used to describe): the bar's three sections are always on screen, this
@@ -631,12 +655,33 @@ export function DownloadManagerView({
   const active = jobs.filter(isRunning).length + count.running + count.waiting;
   const hasFailure = active === 0 && jobs.some((j) => j.state === "error");
 
+  // An auto-opened panel closes on the FIRST click of its own chip without
+  // touching the saved preference — `autoOpen` implies `collapsed` is true
+  // (autoExpand.ts only ever flags an arrival while collapsed), so falling
+  // through to the setter below would persist an expansion the user never
+  // asked for, which is precisely the write D574 keeps banned.
   const toggle = () => {
+    if (autoOpen) {
+      acknowledge();
+      return;
+    }
     setCollapsed((was) => {
       saveCollapsed(!was);
       return !was;
     });
   };
+
+  // Backgrounding the panel (outside pointer-down, Escape). A hand-opened
+  // panel persists the close, same as clicking the chip would; an auto-opened
+  // one only drops the transient flag.
+  const close = () => {
+    acknowledge();
+    if (!collapsed) {
+      saveCollapsed(true);
+      setCollapsed(true);
+    }
+  };
+  useDismissOnOutside(hostRef, open, close);
 
   const clear = async () => {
     try {
@@ -659,7 +704,7 @@ export function DownloadManagerView({
   const totalCount = jobs.length + queued;
 
   return (
-    <div className="dl-host">
+    <div className="dl-host" ref={hostRef}>
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
           inspiration" — a status-bar item there is a label you click, not a
@@ -671,8 +716,8 @@ export function DownloadManagerView({
       <button
         className={"dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")}
         onClick={toggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show details" : "Hide details"}
+        aria-expanded={open}
+        title={open ? "Hide details" : "Show details"}
       >
         <span className="dl-summary">{idle ? "Activity" : `Activity ${totalCount}`}</span>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
@@ -688,7 +733,7 @@ export function DownloadManagerView({
           changed here: an idle section used to skip the panel outright
           ("no panel behind it worth opening"); now the idle SENTENCE lives
           inside it, because the chip itself no longer has room to say it. */}
-      {!collapsed && (
+      {open && (
         <div className="dl-panel">
           {idle ? (
             <div className="dl-panel-empty">No activity</div>
@@ -734,6 +779,14 @@ export function DownloadManagerView({
 }
 
 export default function DownloadManager({ queue }: { queue?: QueueSlot }) {
-  const { jobs: reported, refresh, patch } = useJobs();
-  return <DownloadManagerView reported={reported} queue={queue} refresh={refresh} patch={patch} />;
+  const { jobs: reported, settled, refresh, patch } = useJobs();
+  return (
+    <DownloadManagerView
+      reported={reported}
+      ready={settled}
+      queue={queue}
+      refresh={refresh}
+      patch={patch}
+    />
+  );
 }
