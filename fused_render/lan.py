@@ -104,8 +104,25 @@ def _resolve(value, anchor) -> str | None:
 _PATH_KEYS = ("path", "py", "html", "base", "image", "images", "paths")
 
 
+def _anchor(args: dict):
+    """The page a relative value resolves against — ``html``, else ``base``.
+    Query dicts carry lists; a repeated anchor with two different values is
+    ambiguous (a relative ``py`` could stay in root against one and escape
+    against the other), so it resolves nothing."""
+    for key in ("html", "base"):
+        value = args.get(key)
+        if isinstance(value, list):
+            distinct = {v for v in value if isinstance(v, str) and v}
+            if len(distinct) > 1:
+                return "\0"  # never absolute → every relative value is out of scope
+            value = next(iter(distinct), None)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _args_in_scope(args: dict) -> bool:
-    anchor = args.get("html") if isinstance(args.get("html"), str) else args.get("base")
+    anchor = _anchor(args)
     for key in _PATH_KEYS:
         if key not in args:
             continue
@@ -221,8 +238,11 @@ class LanApp:
         if allowed is None or method not in allowed:
             return _not_found()
 
-        query = {k: v[-1] for k, v in parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
-                                               keep_blank_values=True).items()}
+        # EVERY value of a repeated key is scoped, not the last one: which
+        # duplicate the inner route reads is its business, and a
+        # `?path=<in-root>&path=/etc/passwd` must fail whichever it is.
+        query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
+                         keep_blank_values=True)
         if not _args_in_scope(query):
             return _not_found()
 
