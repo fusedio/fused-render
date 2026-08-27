@@ -415,6 +415,41 @@
   padding-left: 0.4em;
 }
 
+/* ZERO IS AN OUTLINED DOT, not the digit `0` (D584, user: "job 0 and
+   notification 0 is ugly. we can have an outlined dot"). D583's always-render
+   rule stands — something is always in the slot, so nothing appears or
+   disappears — this only changes WHAT stands there when the count is zero.
+
+   EXACTLY ONE DIGIT WIDE, which is the whole point: `* { box-sizing:
+   border-box }` (base.css) puts the border inside the box, so `width: 1ch` is
+   the element's entire advance, and `.status-bar`'s inherited
+   `font-variant-numeric: tabular-nums` makes one `ch` precisely one digit's
+   advance. Swapping the dot for a digit therefore moves nothing at all. (At
+   12px, 1ch is ~6.7px, which lands within a pixel of `.dl-new-dot`'s 6px — the
+   two read as the same family of mark, deliberately.)
+
+   OUTLINED, NEVER FILLED: filled is already taken. `.dl-new-dot` is the filled
+   accent dot meaning "something new arrived", so a second filled dot meaning
+   the opposite — "nothing here" — would be a genuine ambiguity in the same
+   22px strip. Hollow plus `--fg-muted` reads as absence; filled plus
+   `--accent` reads as news.
+
+   A STYLED ELEMENT, not a text glyph, for the reason this project has now
+   learned twice (the round-2 chevron, then D578's separator): a glyph's size,
+   weight and baseline all vary with the font stack, and a border-drawn circle
+   varies with nothing.
+
+   `vertical-align: middle` centres it against the label's x-height instead of
+   sitting it on the baseline, where a 6px box would hang oddly low. */
+.dl-zero {
+  display: inline-block;
+  width: 1ch;
+  height: 1ch;
+  vertical-align: middle;
+  border: 1px solid var(--fg-muted);
+  border-radius: 50%;
+}
+
 /* The panel's own EMPTY state — `No models loaded` / `No jobs` /
    `No notifications` (D579) — for a section with nothing to show (D573). This text used
    to live in the CHIP itself (a separate unpressable `.dl-idle` span, no

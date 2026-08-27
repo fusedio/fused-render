@@ -685,13 +685,16 @@ export function DownloadManagerView({
   // Backgrounding the panel (outside pointer-down, Escape). A hand-opened
   // panel persists the close, same as clicking the chip would; an auto-opened
   // one only drops the transient flag.
-  const close = () => {
-    acknowledge();
-    if (!collapsed) {
-      saveCollapsed(true);
-      setCollapsed(true);
-    }
-  };
+  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
+  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
+  // click on a SIBLING CHIP is outside it, so the persisting version turned
+  // "the user opened Models" into `jobs-collapsed = "1"` plus
+  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
+  // preference became write-only — the exact "the app decided, not the user"
+  // failure the D567 guard exists to prevent, arriving through the dismiss
+  // path instead of through `forceClose`. So this now IS `forceClose`: the
+  // panel goes away, and what the user last chose is left alone.
+  const close = forceClose;
   useDismissOnOutside(hostRef, open, close);
 
   const clear = async () => {
@@ -754,7 +757,10 @@ export function DownloadManagerView({
             this exact spot and shifted the bar by itself. Per-job progress
             lives in the panel, which draws a percentage AND a bar per row. */}
         <span className="dl-summary">
-          Jobs<span className="dl-count">{totalCount}</span>
+          Jobs
+          <span className="dl-count">
+            {totalCount > 0 ? totalCount : <span className="dl-zero" aria-hidden="true" />}
+          </span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>

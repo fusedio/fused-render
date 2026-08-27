@@ -127,22 +127,26 @@ test("renders a real, clickable chip when there are no rows — the idle sentenc
   expect((toggles[0].props.className as string).split(" ")).toContain("is-idle");
   // D579: `Updates` -> `Notifications` (user: "git updates does not make
   // sense out of an app. it belongs to 'notifications'").
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications0"); // label + always-rendered zero (D583)
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
   // D583: the count is ALWAYS rendered, zero included (VS Code's own
   // errors/warnings item reads `0` rather than going blank).
   expect(findAll(tree, "dl-count")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
+  // D584: zero renders as an OUTLINED DOT, not the digit `0` (user: "job 0 and
+  // notification 0 is ugly"). It is still always present and still exactly one
+  // digit wide (`width: 1ch` under a global border-box), so nothing shifts.
+  expect(text(findAll(tree, "dl-count")[0])).toBe("");
+  expect(findAll(tree, "dl-zero")).toHaveLength(1);
 });
 
 test("renders the IDLE chip and panel sentence when every row is dismissed", () => {
   const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
-  const tree = renderView({ rows, dismissed: { "/a/one": 1000 } });
+  const tree = renderView({ rows, dismissed: { "/a/one": "main@3" } });
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications0"); // label + always-rendered zero (D583)
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
-  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
+  expect(findAll(tree, "dl-zero")).toHaveLength(1);
 });
 
 test("the chip names the category, and the count lives in its own reserved slot", () => {
@@ -180,7 +184,7 @@ test("Clear calls onDismissAll with exactly the visible rows", () => {
   let seen: unknown = null;
   const tree = renderView({
     rows,
-    dismissed: { "/a/one": 1000 },
+    dismissed: { "/a/one": "main@3" },
     onDismissAll: (visible) => {
       seen = visible;
     },
@@ -190,18 +194,20 @@ test("Clear calls onDismissAll with exactly the visible rows", () => {
   expect((seen as { repo: RepoStatus }[]).map((r) => r.repo.root)).toEqual(["/a/two"]);
 });
 
-test("the ✕ dismisses only its own row, with that row's own checked_at", () => {
-  const rows = repoRows([status({ root: "/a/one", checked_at: 1234 })]);
+// D584 finding 3: the ✕ reports the row's POSITION signature, not its
+// `checked_at` — a dismissal has to survive a re-check that moved nothing.
+test("the ✕ dismisses only its own row, with that row's own position signature", () => {
+  const rows = repoRows([status({ root: "/a/one", branch: "feature", behind: 4 })]);
   let seen: unknown = null;
   const tree = renderView({
     rows,
-    onDismiss: (root, checkedAt) => {
-      seen = [root, checkedAt];
+    onDismiss: (root, signature) => {
+      seen = [root, signature];
     },
   });
   const x = findAll(tree, "dl-x")[0];
   x.props.onClick();
-  expect(seen).toEqual(["/a/one", 1234]);
+  expect(seen).toEqual(["/a/one", "feature@4"]);
 });
 
 test("collapsed hides every row — not a class flag, the rows are actually gone", () => {
@@ -294,7 +300,7 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 
 function renderDockInstance(
   rows: RepoRow[],
-  dismissed: Record<string, number> = {},
+  dismissed: Record<string, string> = {},
 ): ReactTestRenderer {
   return create(
     <RepoUpdatesDockView
@@ -310,7 +316,7 @@ function renderDockInstance(
 function updateDockInstance(
   renderer: ReactTestRenderer,
   rows: RepoRow[],
-  dismissed: Record<string, number> = {},
+  dismissed: Record<string, string> = {},
 ) {
   act(() => {
     renderer.update(
@@ -383,26 +389,51 @@ test("collapsing, then an EXISTING row merely changing (behind count ticking), s
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });
 
-test("a dismissed row that reappears later (a fresh checked_at) counts as new again", () => {
-  const first = repoRows([status({ root: "/a/one", checked_at: 1000 })])[0];
+test("a dismissed row that goes FURTHER behind counts as new again", () => {
+  const first = repoRows([status({ root: "/a/one", branch: "main", behind: 3 })])[0];
   const renderer = renderDockInstance([first]);
   clickDockToggle(renderer); // collapse
 
   // Dismiss it — visible drops to zero even though `rows` still holds it.
   // The card is idle now (no rows), so there is no toggle/dot to inspect —
   // only that it stays idle.
-  updateDockInstance(renderer, [first], { "/a/one": 1000 });
+  updateDockInstance(renderer, [first], { "/a/one": "main@3" });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(dismissed, "q-row")).toHaveLength(0);
 
-  // Server re-checks and it's behind again: a newer checked_at makes it
-  // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had
-  // fallen out of the seen set on dismissal this is a genuine re-arrival —
-  // so it auto-opens the panel exactly like any other new row (D574).
-  const again = repoRows([status({ root: "/a/one", checked_at: 2000 })])[0];
-  updateDockInstance(renderer, [again], { "/a/one": 1000 });
+  // Upstream actually MOVED (behind 3 -> 9), so the dismissal's signature no
+  // longer covers this row. Since it had fallen out of the seen set on
+  // dismissal, its return is a genuine re-arrival and auto-opens the panel
+  // exactly like any other new row (D574).
+  const again = repoRows([status({ root: "/a/one", branch: "main", behind: 9 })])[0];
+  updateDockInstance(renderer, [again], { "/a/one": "main@3" });
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "q-row")).toHaveLength(1);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
+});
+
+// D584 finding 3 at the dock level: the throttled re-check that moved nothing
+// must not resurrect the row, and so must not pop the panel open either. This
+// is the user-visible half of the bug — a dismissed repo reappearing over
+// whatever they were doing every five minutes, forever, on a branch that is
+// permanently behind.
+test("a re-check that moved NOTHING leaves a dismissed row dismissed and the panel shut", () => {
+  const row = repoRows([status({ root: "/a/one", branch: "main", behind: 3 })])[0];
+  const renderer = renderDockInstance([row]);
+  clickDockToggle(renderer); // collapse
+  updateDockInstance(renderer, [row], { "/a/one": "main@3" });
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(0);
+
+  // Same position, new timestamp — exactly what `check_repo` produces every
+  // CHECK_TTL_S whether or not anything happened.
+  const rechecked = repoRows([
+    status({ root: "/a/one", branch: "main", behind: 3, checked_at: 999_999 }),
+  ])[0];
+  updateDockInstance(renderer, [rechecked], { "/a/one": "main@3" });
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });

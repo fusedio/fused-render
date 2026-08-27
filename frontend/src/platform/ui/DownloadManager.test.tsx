@@ -116,12 +116,16 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   expect(tree).not.toBeNull();
   // D579: `Activity` -> `Jobs` (user: "what about jobs?") — this codebase's
   // own word for exactly this set (`fused_render/jobs.py`, `/api/jobs`).
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Jobs0"); // label + always-rendered zero (D583)
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Jobs");
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
   // D583: the count is ALWAYS rendered, zero included — nothing appears or
   // disappears, so the chip's width is stable without reserving dead space.
   expect(findAll(tree, "dl-count")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
+  // D584: zero renders as an OUTLINED DOT, not the digit `0` (user: "job 0 and
+  // notification 0 is ugly"). It is still always present and still exactly one
+  // digit wide (`width: 1ch` under a global border-box), so nothing shifts.
+  expect(text(findAll(tree, "dl-count")[0])).toBe("");
+  expect(findAll(tree, "dl-zero")).toHaveLength(1);
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {
@@ -423,7 +427,45 @@ test("the list draining to empty closes the panel instead of leaving it showing 
   expect(findAll(after, "dl-panel")).toHaveLength(0);
   // The chip itself stays — the bar's three sections are always present
   // (D565) — and reads its idle label.
-  expect(text(findAll(after, "dl-summary")[0])).toBe("Jobs0"); // label + always-rendered zero (D583)
+  expect(text(findAll(after, "dl-summary")[0])).toBe("Jobs");
+  expect(findAll(after, "dl-zero")).toHaveLength(1);
+});
+
+// D584 REVIEW FINDING 1, the regression this branch shipped and this test
+// exists to keep out: the arrival branch used to gate on the PERSISTED
+// `collapsed` rather than on effective visibility. On a default install there
+// is no stored key, so `collapsed === false` — and once a drain had set the
+// transient `"closed"` override, the next arrival matched neither `collapsed`
+// nor anything that clears the override. The section went permanently deaf:
+// no panel and no dot for the rest of the session. The previous test stopped
+// at the drain, which is exactly why this went unnoticed, so this one polls a
+// NEW job in afterwards.
+test("a new job AFTER a drain re-opens the panel — a closed section never goes deaf", () => {
+  const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const renderer = renderInstance([first]);
+  updateInstance(renderer, []); // drains -> auto-closes
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
+
+  const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
+  updateInstance(renderer, [second]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(1);
+});
+
+// The same defect's other reachable shape: a section force-closed by D582's
+// one-panel-at-a-time arbiter (not by a drain) must also still hear the next
+// arrival. Both paths set the identical `"closed"` override, so this pins that
+// the fix is in the override handling rather than special-cased to draining.
+test("a section closed while EMPTY still auto-opens on its first arrival", () => {
+  const renderer = renderInstance([]); // starts idle, panel open by default
+  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  updateInstance(renderer, [job]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(1);
 });
 
 test("one job finishing while another still runs closes nothing", () => {

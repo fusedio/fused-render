@@ -45,6 +45,7 @@ rule `ops.py`'s `_refuse_mounts` (GT-4 / MD-11) enforces for the same
 reason: a background fetch across an rclone-NFS mount is exactly the wedge
 that refusal exists to prevent.
 """
+import contextlib
 import logging
 import os
 import re
@@ -441,6 +442,16 @@ def _refresh_after_mutation(root, *, keep_on_failure=False, known_update=None):
     if result is not None:
         _record(result)
         return
+    # THE THROTTLE STAMP GOES WITH THE STATE (finding 6, code review
+    # 2026-08-27). `_checked[root]` was left standing here while `_state`
+    # was dropped below, so nothing could re-populate the entry until
+    # `CHECK_TTL_S` (five minutes) elapsed — and in the meantime
+    # `is_known_repo` was False, so every POST for a repo the card had just
+    # shown was refused `unknown-repo`. Clearing the stamp makes the next
+    # check DUE immediately, which is the honest state after a re-check that
+    # failed: we no longer know this repo's position.
+    with _checked_lock:
+        _checked.pop(root, None)
     if keep_on_failure:
         with _state_lock:
             existing = _state.get(root)
@@ -451,6 +462,36 @@ def _refresh_after_mutation(root, *, keep_on_failure=False, known_update=None):
         _state.pop(root, None)
 
 
+@contextlib.contextmanager
+def _mutation_slot():
+    """Hold the process-wide check slot for the duration of a mutation
+    (finding 5, code review 2026-08-27). `note_app_opened` starts a
+    `git fetch` that can run for up to `TIMEOUT_S`, and a mutation firing
+    inside that window used to race it: two git processes in one repo, with
+    the loser dying on "Unable to create '.../FETCH_HEAD.lock': File exists"
+    and surfacing as an opaque `git-failed` the user can do nothing with.
+
+    A BOUNDED WAIT, then an honest refusal — never an unbounded block, which
+    would hang the request thread behind someone else's fetch, and never a
+    non-blocking `acquire` like `note_app_opened`'s, which would refuse a
+    click that only needed to wait a moment. The budget is the fetch's own
+    timeout plus a small margin, so the only way to reach the refusal is a
+    check that is itself already overdue to be killed.
+
+    Yields whether the slot was acquired; releases it only if so, exactly
+    once, on every exit path."""
+    acquired = _check_slot.acquire(timeout=TIMEOUT_S + 5.0)
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            _check_slot.release()
+
+
+_BUSY_REFUSAL = (
+    "This repository is busy with an update check — try again in a moment.")
+
+
 def update_repo(root):
     """--ff-only pull of `origin/<default>` — the card's primary action, on
     the default branch. Refuses on a dirty tree, a detached HEAD, a missing
@@ -458,17 +499,44 @@ def update_repo(root):
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
-    branch, default_branch, refusal = _mutation_preflight(
-        root, include_untracked=False)
-    if refusal is not None:
-        return refusal
-    result = _run(root, "pull", "--ff-only", "--", "origin", default_branch,
-                  timeout=TIMEOUT_S)
-    if not _ok(result):
-        return _refuse("git-failed", _brief(result) or "git pull failed.")
-    _refresh_after_mutation(root)
-    return {"ok": True, "op": "update", "root": root,
-            "message": f"Updated to origin/{default_branch}."}
+    with _mutation_slot() as slot:
+        if not slot:
+            return _refuse("busy", _BUSY_REFUSAL)
+        branch, default_branch, refusal = _mutation_preflight(
+            root, include_untracked=False)
+        if refusal is not None:
+            return refusal
+        # HEAD MUST ACTUALLY BE ON THE DEFAULT BRANCH (finding 4, code review
+        # 2026-08-27) — the most serious defect this review found, and a
+        # direct contradiction of the feature's own goal ("allow users to
+        # actually work on the git repos and not override their changes").
+        #
+        # The endpoint accepts `action: "update"` for any known root, while
+        # the CARD only offers Update when `on_default` was true AT CHECK
+        # TIME. Those are not the same claim. If the user checks out a
+        # feature branch after the row appeared — or acts on a stale
+        # snapshot — then `git pull --ff-only origin <default>` fast-forwards
+        # THE BRANCH THEY ARE ON. With no local commits it does not even
+        # conflict: it SUCCEEDS, silently moving the feature branch to the
+        # default's tip and erasing it as a distinct point, and the old
+        # success message ("Updated to origin/main") gave no hint that the
+        # wrong branch had moved. `switch_repo` is the off-default action and
+        # is unaffected; this refusal is `update_repo`'s alone, which is why
+        # it lives here rather than in the shared preflight.
+        if branch != default_branch:
+            return _refuse(
+                "not-default",
+                f"HEAD is on {branch}, not {default_branch}. Update "
+                f"fast-forwards the branch you are on, so it would move "
+                f"{branch} onto origin/{default_branch} — switch to "
+                f"{default_branch} first.")
+        result = _run(root, "pull", "--ff-only", "--", "origin",
+                      default_branch, timeout=TIMEOUT_S)
+        if not _ok(result):
+            return _refuse("git-failed", _brief(result) or "git pull failed.")
+        _refresh_after_mutation(root)
+        return {"ok": True, "op": "update", "root": root,
+                "message": f"Updated to origin/{default_branch}."}
 
 
 _WORKTREE_BRANCH_RE = re.compile(r"already used by worktree at '([^']+)'")
@@ -545,7 +613,17 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
-    branch, default_branch, refusal = _mutation_preflight(
+    with _mutation_slot() as slot:
+        if not slot:
+            return _refuse("busy", _BUSY_REFUSAL)
+        return _switch_repo_locked(root)
+
+
+def _switch_repo_locked(root):
+    """`switch_repo`'s body, with the mutation slot already held — split out
+    only to keep that function's own docstring adjacent to its contract
+    rather than buried under an indent."""
+    _branch, default_branch, refusal = _mutation_preflight(
         root, include_untracked=False, allow_detached=True)
     if refusal is not None:
         return refusal

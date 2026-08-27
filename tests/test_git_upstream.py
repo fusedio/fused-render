@@ -599,6 +599,68 @@ def test_post_rebase_action_is_refused_bad_action(tmp_path, monkeypatch):
 # --------------------------------------------- untracked files (finding #3)
 
 
+def test_update_refuses_when_head_is_not_on_the_default_branch(tmp_path):
+    """FINDING 4, code review 2026-08-27 — the most serious defect in the
+    branch, and a direct contradiction of this feature's own goal ("allow
+    users to actually work on the git repos and not override their changes").
+
+    The card only OFFERS Update when `on_default` was true AT CHECK TIME, but
+    the endpoint accepts the action for any known root. A user who checks out
+    a feature branch after the row appeared — or who clicks a stale row — used
+    to get `git pull --ff-only origin main` run against the branch they were
+    actually on. THE DANGEROUS PART IS THAT IT SUCCEEDS: with no local commits
+    there is nothing to conflict, so the feature branch silently fast-forwards
+    to main's tip and stops existing as a distinct point, while the success
+    message said "Updated to origin/main" and named no branch at all.
+
+    So this asserts the refusal AND, more importantly, that the feature branch
+    has not moved."""
+    local = _clone_with_remote_ahead(tmp_path)
+    # A feature branch with no commits of its own — the case that used to
+    # fast-forward silently rather than refuse.
+    git(local, "checkout", "-q", "-b", "feature")
+    before = git(local, "rev-parse", "HEAD").strip()
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False, res
+    assert res["reason"] == "not-default", res
+    # The refusal has to name both branches, or the user cannot tell what went
+    # wrong or what to do about it.
+    assert "feature" in res["message"], res
+    assert "main" in res["message"], res
+    # THE ACTUAL SAFETY PROPERTY: the branch the user was on did not move.
+    assert git(local, "rev-parse", "HEAD").strip() == before
+    assert git(local, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature"
+
+
+def test_update_still_works_on_the_default_branch_after_that_guard(tmp_path):
+    """The guard above must not cost the ordinary path — the row's whole
+    purpose. Pinned separately so a future tightening of the branch test
+    cannot quietly refuse every update."""
+    local = _clone_with_remote_ahead(tmp_path)
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is True, res
+
+
+def test_update_refuses_a_detached_head_without_touching_it(tmp_path):
+    """A detached HEAD reaches the new branch comparison as `None`, so this
+    pins that it is still caught by the EXISTING "detached" refusal rather
+    than falling through to a confusing "not-default" — `update_repo` passes
+    `allow_detached=False` precisely so the preflight owns this case."""
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "--detach")
+    before = git(local, "rev-parse", "HEAD").strip()
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False, res
+    assert res["reason"] == "detached", res
+    assert git(local, "rev-parse", "HEAD").strip() == before
+
+
 def test_update_is_not_refused_by_an_unrelated_untracked_file(tmp_path):
     local = _clone_with_remote_ahead(tmp_path)
     write(local, "scratch.tmp", "not tracked, not touched by the pull\n")

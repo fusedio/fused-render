@@ -90,10 +90,16 @@ class ActionError(Exception):
 @contextlib.contextmanager
 def _cache_lock():
     """Serialize every action that touches the showcase clone's git state
-    (refresh, install, update) across concurrent requests — the browse page's
-    background refresh and a clone can be in flight at once against the same
-    repo otherwise. An OS advisory lock (not a Python-level one: each call may
-    run in its own subprocess)."""
+    across concurrent requests — the browse page's background refresh and a
+    clone can be in flight at once against the same repo otherwise. An OS
+    advisory lock (not a Python-level one: each call may run in its own
+    subprocess).
+
+    This used to enumerate "(refresh, install, update)"; `install` and
+    `update` were deleted from this module, so the list named two callers
+    that no longer exist (finding 8, code review 2026-08-27). The rule is
+    unchanged and is stated by kind rather than by caller now, so it cannot
+    go stale the same way again."""
     os.makedirs(STATE_DIR, exist_ok=True)
     fd = os.open(LOCK_PATH, os.O_CREAT | os.O_RDWR)
     try:

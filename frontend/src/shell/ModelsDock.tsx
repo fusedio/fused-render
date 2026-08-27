@@ -245,13 +245,16 @@ export default function ModelsDock() {
     }
   };
 
-  const close = () => {
-    acknowledge();
-    if (!collapsed) {
-      saveCollapsed(true);
-      setCollapsed(true);
-    }
-  };
+  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
+  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
+  // click on a SIBLING CHIP is outside it, so the persisting version turned
+  // "the user opened Models" into `jobs-collapsed = "1"` plus
+  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
+  // preference became write-only — the exact "the app decided, not the user"
+  // failure the D567 guard exists to prevent, arriving through the dismiss
+  // path instead of through `forceClose`. So this now IS `forceClose`: the
+  // panel goes away, and what the user last chose is left alone.
+  const close = forceClose;
 
   const onUnload = async (model: string) => {
     // The response IS a fresh runtime snapshot (`{stopped, ...describe()}`,

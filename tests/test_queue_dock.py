@@ -415,12 +415,16 @@ def test_the_stored_fold_is_only_ever_written_by_a_press(card):
     NONE of the three may write localStorage. Only a user action does: the
     chip's own click (`toggle`) and an outside-click/Escape dismiss (`close`).
 
-    Two `setCollapsed` call sites now, not one — `toggle` and `close` — and both
-    are user-driven. The stronger half of this test is the second assertion:
-    the automatic machinery has no persistence code in it at all."""
-    assert card.count("setCollapsed(") == 2, "toggle and close — both user-driven"
-    # the writer, plus exactly those two call sites
-    assert card.count("saveCollapsed(") == 3
+    BACK TO ONE call site (D584 review finding 2): the dismiss path used to
+    persist too, and that was a bug — `useDismissOnOutside` fires on a
+    pointer-down outside THIS host, and a click on a SIBLING CHIP is outside
+    it, so opening Models wrote `jobs-collapsed = "1"`. All three keys
+    converged on "1" and the preference became write-only. `close` is now
+    `forceClose` (transient only), leaving the chip's own click as the ONLY
+    thing in this card that may write the fold."""
+    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
+    # the writer, plus that one call site
+    assert card.count("saveCollapsed(") == 2
     # The real invariant, checked where it cannot hide: the hook that decides to
     # auto-open/auto-close and the arbiter that enforces one-panel-at-a-time
     # never touch the stored preference. A comment may MENTION localStorage;

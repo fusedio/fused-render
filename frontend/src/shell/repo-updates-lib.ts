@@ -64,10 +64,6 @@ export function repoRows(repos: RepoStatus[] | undefined): RepoRow[] {
   }));
 }
 
-function plural(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? "" : "s"}`;
-}
-
 /** The row's one line of status text. Deliberately generic — no remote name,
  * no branch name, no commit count: "origin/main is 1 commit ahead" reads as
  * a git status line to anyone who isn't fluent in git, and the row already
@@ -87,29 +83,38 @@ export function repoActionLabel(action: RepoAction, defaultBranch?: string): str
 }
 
 /**
- * Which rows a dismissal (decision C) still hides: `dismissed` maps repo
- * root -> the `checked_at` the user's ✕ click was looking at. A row stays
- * hidden only while the server hasn't re-checked that repo since — once the
- * throttled background check runs again (`git_upstream.CHECK_TTL_S`) and
- * produces a NEWER `checked_at`, the dismissal no longer covers it and the
- * row returns. No server state is needed for this: `checked_at` already
- * carries the information a client-side dismissal needs to expire itself.
+ * What a dismissal is ABOUT — the repo's position, not the clock (D584 review
+ * finding 3). `dismissed` maps repo root -> this signature, and a row stays
+ * hidden for as long as its signature is unchanged.
+ *
+ * THIS USED TO BE `checked_at`, AND THAT WAS A REAL BUG. A dismissal expired
+ * as soon as the server re-checked the repo, but `check_repo` stamps a fresh
+ * `checked_at` on EVERY throttled re-check (`CHECK_TTL_S = 300`) whether or
+ * not anything moved. So a dismissed row came back every five minutes — and
+ * because leaving `visible` also drops it from `trackSeenIds`' seen set, the
+ * return read as a genuine arrival and (since D574) POPPED THE PANEL OPEN over
+ * whatever the user was doing. For anyone on a long-lived feature branch,
+ * permanently behind, dismissal was durably useless.
+ *
+ * `behind` and `branch` are what the row is actually claiming — "this branch
+ * is N commits behind" — so the dismissal expires exactly when that claim
+ * changes: new upstream commits arrive, or the user checks out something else.
+ * `RepoStatus` carries no HEAD sha, so `behind` is the closest honest proxy for
+ * "upstream moved", and it needs no server change to be correct.
  */
-export function visibleRepoRows(
-  rows: RepoRow[],
-  dismissed: Record<string, number>
-): RepoRow[] {
-  return rows.filter((row) => {
-    const at = dismissed[row.repo.root];
-    return at === undefined || at < row.repo.checked_at;
-  });
+export function repoDismissSignature(repo: RepoStatus): string {
+  return `${repo.branch ?? ""}@${repo.behind}`;
 }
 
-/** The new card's header text — never emits a zero: the card doesn't render
- * at all with no visible rows (RepoUpdatesDock returns null), so this is
- * only ever called with at least one row. */
-export function repoUpdatesSummary(rows: RepoRow[]): string {
-  return `${plural(rows.length, "update")} available`;
+/** Which rows a dismissal (decision C) still hides. No server state is needed:
+ *  the row's own fields carry everything a client-side dismissal needs to
+ *  expire itself — see `repoDismissSignature` for why they, and not
+ *  `checked_at`, are the right fields. */
+export function visibleRepoRows(
+  rows: RepoRow[],
+  dismissed: Record<string, string>
+): RepoRow[] {
+  return rows.filter((row) => dismissed[row.repo.root] !== repoDismissSignature(row.repo));
 }
 
 /**

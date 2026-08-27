@@ -126,6 +126,19 @@ export function useAutoExpandOnNew(
     const { seen, hasNew: arrived } = trackSeenIds(ids, prev);
     seenRef.current = seen;
 
+    // EFFECTIVE visibility, not the persisted flag — the caller's own `open`
+    // rule, computed once here because BOTH branches below need it (D584
+    // review finding 1). Using bare `collapsed` for the arrival branch was a
+    // real bug with a permanent consequence: on a default install (no stored
+    // key, so `collapsed === false`) a section that had auto-CLOSED on drain
+    // held `override === "closed"` while `collapsed` stayed false, so the next
+    // arrival satisfied neither `collapsed` nor anything that clears the
+    // override — no panel, no dot, for the rest of the session, and the same
+    // for any section D582's arbiter had force-closed. That is D574 defeated
+    // outright, so visibility is derived in one place and both branches read
+    // it.
+    const panelOpen = override === "closed" ? false : !collapsed || override === "open";
+
     // AN ARRIVAL WINS over a drain in the same tick (D580) — and it wins by
     // construction, not by luck: `arrived` means `ids` contains something,
     // so the drain test below (`ids.length === 0`) cannot also be true. The
@@ -133,7 +146,10 @@ export function useAutoExpandOnNew(
     // re-derived, so a new job landing as the last one finishes auto-OPENS
     // and there is no close-then-open flash.
     if (arrived) {
-      if (collapsed) {
+      // Announce only what the user cannot already see. Setting `"open"` here
+      // is also what CLEARS a standing `"closed"` override, which is the half
+      // the old `collapsed`-only test could never reach.
+      if (!panelOpen) {
         setHasNew(true);
         setOverride("open");
       }
@@ -146,16 +162,14 @@ export function useAutoExpandOnNew(
     // already 0. A section that was ALREADY empty is therefore never touched,
     // which is what keeps this from fighting a user who deliberately opened an
     // idle section to look at it.
-    if (prev.size > 0 && ids.length === 0) {
-      // Only worth doing if there is actually a panel on screen to close.
-      // Skipping the no-op also avoids leaving a "closed" override standing on
-      // an already-closed section, where the next chip click would have to
-      // spend itself clearing the override instead of opening the panel.
-      const panelOpen = override === "closed" ? false : !collapsed || override === "open";
-      if (panelOpen) {
-        setHasNew(false);
-        setOverride("closed");
-      }
+    //
+    // Gated on `panelOpen` because there is nothing to close otherwise, and
+    // because leaving a `"closed"` override standing on an already-closed
+    // section would make the next chip click spend itself clearing it instead
+    // of opening the panel.
+    if (prev.size > 0 && ids.length === 0 && panelOpen) {
+      setHasNew(false);
+      setOverride("closed");
     }
   });
 

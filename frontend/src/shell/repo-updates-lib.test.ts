@@ -7,7 +7,6 @@ import {
   repoName,
   repoRows,
   repoStatusText,
-  repoUpdatesSummary,
   visibleRepoRows,
   type RepoStatus,
 } from "./repo-updates-lib";
@@ -111,39 +110,40 @@ describe("visibleRepoRows", () => {
     expect(visibleRepoRows(rows, {})).toEqual(rows);
   });
 
-  it("hides a row dismissed at or after its own checked_at", () => {
-    const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
-    expect(visibleRepoRows(rows, { "/a/one": 1000 })).toEqual([]);
-    expect(visibleRepoRows(rows, { "/a/one": 1500 })).toEqual([]);
+  it("hides a row whose signature matches the dismissal", () => {
+    const rows = repoRows([status({ root: "/a/one", branch: "feature", behind: 3 })]);
+    expect(visibleRepoRows(rows, { "/a/one": "feature@3" })).toEqual([]);
   });
 
-  it("shows a row again once checked_at has advanced past its dismissal", () => {
-    // The server re-checked (CHECK_TTL_S elapsed) and produced a NEWER
-    // checked_at than the dismissal recorded — the throttle window this
-    // row was dismissed for has passed, so it returns.
-    const rows = repoRows([status({ root: "/a/one", checked_at: 2000 })]);
-    expect(visibleRepoRows(rows, { "/a/one": 1000 })).toEqual(rows);
+  // D584 finding 3, the bug this replaced: dismissal used to key on
+  // `checked_at`, and `check_repo` stamps a fresh one on EVERY throttled
+  // re-check (CHECK_TTL_S = 300) whether or not anything moved — so a
+  // dismissed row returned every five minutes and, since D574, popped the
+  // panel open with it.
+  it("KEEPS a row hidden across a re-check that moved nothing", () => {
+    const rows = repoRows([
+      status({ root: "/a/one", branch: "feature", behind: 3, checked_at: 999_999 }),
+    ]);
+    expect(visibleRepoRows(rows, { "/a/one": "feature@3" })).toEqual([]);
+  });
+
+  it("shows a row again once upstream actually moved", () => {
+    const rows = repoRows([status({ root: "/a/one", branch: "feature", behind: 7 })]);
+    expect(visibleRepoRows(rows, { "/a/one": "feature@3" })).toEqual(rows);
+  });
+
+  it("shows a row again once the user checked out a different branch", () => {
+    const rows = repoRows([status({ root: "/a/one", branch: "other", behind: 3 })]);
+    expect(visibleRepoRows(rows, { "/a/one": "feature@3" })).toEqual(rows);
   });
 
   it("only affects the dismissed repo's own row", () => {
     const rows = repoRows([
-      status({ root: "/a/one", checked_at: 1000 }),
-      status({ root: "/a/two", checked_at: 1000 }),
+      status({ root: "/a/one", branch: "feature", behind: 3 }),
+      status({ root: "/a/two", branch: "feature", behind: 3 }),
     ]);
-    const visible = visibleRepoRows(rows, { "/a/one": 1000 });
+    const visible = visibleRepoRows(rows, { "/a/one": "feature@3" });
     expect(visible.map((r) => r.repo.root)).toEqual(["/a/two"]);
-  });
-});
-
-describe("repoUpdatesSummary", () => {
-  it("singularizes one update", () => {
-    const rows = repoRows([status()]);
-    expect(repoUpdatesSummary(rows)).toBe("1 update available");
-  });
-
-  it("pluralizes more than one", () => {
-    const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
-    expect(repoUpdatesSummary(rows)).toBe("2 updates available");
   });
 });
 

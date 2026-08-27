@@ -51,6 +51,7 @@ import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   repoActionLabel,
+  repoDismissSignature,
   repoFixPrompt,
   repoRows,
   repoStatusText,
@@ -106,18 +107,26 @@ function useRepoUpdates() {
   useEffect(() => {
     let disposed = false;
     let timer = 0;
+    // WHICH poll invocation is the current one. `clearTimeout` alone was not
+    // enough (finding 7, code review 2026-08-27): it cancels a PENDING timer,
+    // but the fork happens across the `await`. `refresh()` calling
+    // `pollRef.current()` while an earlier `poll` was still awaiting left both
+    // in flight; each then assigned `timer` on its way out, the second
+    // overwriting the first, so one chain was leaked — unclearable on unmount
+    // and ticking for the rest of the session, which is exactly the doubling
+    // the comment here used to claim was already fixed. A generation counter
+    // closes it properly: only the newest invocation may schedule.
+    let generation = 0;
     const poll = async () => {
-      // Cancel whatever is still pending from a PRIOR call to this same
-      // `poll` — without this, `refresh()` (below) calling `pollRef.current()`
-      // out of band, on top of the timer already ticking, forked a second
-      // setTimeout chain: every Update/Switch click permanently
-      // doubled the number of concurrent /api/git-upstream poll loops for
-      // the session, and only the LAST-assigned timer id was ever cleared
-      // on unmount.
+      const mine = ++generation;
       window.clearTimeout(timer);
       try {
         const data = await getJson<{ repos?: RepoStatus[] }>("/api/git-upstream");
-        if (!disposed) {
+        // Superseded responses are DROPPED, not painted: a fresher read is
+        // already in flight, and letting an older one land after it would
+        // flick stale rows back onto the screen (the same reason
+        // `useJobs` carries its own epoch).
+        if (!disposed && mine === generation) {
           setRepos(data.repos || []);
           setSettled(true);
         }
@@ -125,7 +134,8 @@ function useRepoUpdates() {
         // Best-effort, like every other poll in this card: a failed read
         // leaves the last snapshot standing rather than clearing the rows.
       }
-      if (!disposed) timer = window.setTimeout(poll, POLL_MS);
+      // Exactly ONE chain survives — whichever invocation is newest.
+      if (!disposed && mine === generation) timer = window.setTimeout(poll, POLL_MS);
     };
     pollRef.current = poll;
     poll();
@@ -146,19 +156,21 @@ function useRepoUpdates() {
 // dismissal (decision C), only this in-memory map, and a reload starting
 // fresh is an acceptable, documented trade rather than reaching for
 // localStorage for something this ephemeral.
-let moduleDismissed: Record<string, number> = {};
+let moduleDismissed: Record<string, string> = {};
 
 function useDismissed() {
-  const [dismissed, setDismissedState] = useState<Record<string, number>>(moduleDismissed);
+  const [dismissed, setDismissedState] = useState<Record<string, string>>(moduleDismissed);
 
-  const dismissOne = useCallback((root: string, checkedAt: number) => {
-    moduleDismissed = { ...moduleDismissed, [root]: checkedAt };
+  // Keyed on `repoDismissSignature`, never on `checked_at` (D584 finding 3):
+  // a re-check that changes nothing must not resurrect a dismissed row.
+  const dismissOne = useCallback((root: string, signature: string) => {
+    moduleDismissed = { ...moduleDismissed, [root]: signature };
     setDismissedState(moduleDismissed);
   }, []);
 
   const dismissAll = useCallback((rows: RepoRow[]) => {
     const next = { ...moduleDismissed };
-    for (const row of rows) next[row.repo.root] = row.repo.checked_at;
+    for (const row of rows) next[row.repo.root] = repoDismissSignature(row.repo);
     moduleDismissed = next;
     setDismissedState(next);
   }, []);
@@ -292,7 +304,7 @@ export function RepoUpdatesCardView({
   onDone,
 }: {
   rows: RepoRow[];
-  dismissed: Record<string, number>;
+  dismissed: Record<string, string>;
   collapsed: boolean;
   /** An unacknowledged repo arrived while collapsed — drawn as a quiet dot on
    *  the chip, never as a forced expansion (`lib/autoExpand.ts`'s own doc,
@@ -302,7 +314,7 @@ export function RepoUpdatesCardView({
   /** Background the panel — an outside pointer-down or Escape (D574).
    *  Optional: a caller that mounts this view directly need not dismiss. */
   onClose?: () => void;
-  onDismiss: (root: string, checkedAt: number) => void;
+  onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
@@ -320,9 +332,11 @@ export function RepoUpdatesCardView({
           inspiration" — the bar shows the category NAME plus a count, and
           the idle sentence moves into the panel below; see
           `DownloadManagerView`'s own header comment for the fuller
-          reasoning, identical here). `repoUpdatesSummary`'s richer "N
-          updates available" phrasing stays a pure, tested function
-          (repo-updates-lib.test.ts) but no longer renders in the chip. */}
+          reasoning, identical here). `repoUpdatesSummary`, which used to
+          render the richer "N updates available" phrasing here, is DELETED —
+          nothing rendered it after D573 and its docstring had gone stale
+          claiming this card does not draw with zero rows (finding 8, code
+          review 2026-08-27). */}
       <button
         className={"dl-toggle" + (idle ? " is-idle" : "")}
         onClick={onToggle}
@@ -344,7 +358,10 @@ export function RepoUpdatesCardView({
             `.status-bar` is `justify-content: flex-end`, so the rightmost chip
             growing pushes BOTH of its neighbours leftward. */}
         <span className="dl-summary">
-          Notifications<span className="dl-count">{visible.length}</span>
+          Notifications
+          <span className="dl-count">
+            {visible.length > 0 ? visible.length : <span className="dl-zero" aria-hidden="true" />}
+          </span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
@@ -376,7 +393,7 @@ export function RepoUpdatesCardView({
                     key={row.repo.root}
                     row={row}
                     onDone={onDone}
-                    onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
+                    onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
                   />
                 ))}
               </div>
@@ -417,11 +434,11 @@ export function RepoUpdatesDockView({
   onDone,
 }: {
   rows: RepoRow[];
-  dismissed: Record<string, number>;
+  dismissed: Record<string, string>;
   /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
    *  so a caller that mounts this with a fixed list keeps the old behaviour. */
   ready?: boolean;
-  onDismiss: (root: string, checkedAt: number) => void;
+  onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
@@ -467,13 +484,16 @@ export function RepoUpdatesDockView({
     }
   };
 
-  const close = () => {
-    acknowledge();
-    if (!collapsed) {
-      saveCollapsed(true);
-      setCollapsed(true);
-    }
-  };
+  // TRANSIENT ONLY — no write to the saved preference (D584 review finding 2).
+  // `useDismissOnOutside` fires on any pointer-down outside THIS host, and a
+  // click on a SIBLING CHIP is outside it, so the persisting version turned
+  // "the user opened Models" into `jobs-collapsed = "1"` plus
+  // `repo-updates-collapsed = "1"`. All three keys converged on "1" and the
+  // preference became write-only — the exact "the app decided, not the user"
+  // failure the D567 guard exists to prevent, arriving through the dismiss
+  // path instead of through `forceClose`. So this now IS `forceClose`: the
+  // panel goes away, and what the user last chose is left alone.
+  const close = forceClose;
 
   return (
     <RepoUpdatesCardView
