@@ -446,7 +446,7 @@ function EndpointRow({
             onClick={copyCurl}
             title="Copy this call as a curl command"
             className={cn(
-              "absolute top-1/2 right-[42px] -translate-y-1/2 px-1 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
+              "absolute top-1/2 right-[42px] -translate-y-1/2 border-border/60 px-1.5 text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
               "group-hover/row:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none",
               open ? "opacity-100" : "opacity-0",
             )}
