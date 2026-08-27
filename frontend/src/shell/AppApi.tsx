@@ -1,6 +1,6 @@
 // The app page's API tab: every .py in the app folder as an endpoint, the way
-// a Swagger page lists routes — one line per file, a badge for what kind of
-// entrypoint it has, its signature in mono; open a row and the parameters
+// a Swagger page lists routes — one line per file, a glyph for what kind of
+// entrypoint it has, one line about it; open a row and the parameters
 // become a form with Execute under it and the response beneath that.
 //
 // The description of each file is the `api` template's (inspector.py, served
@@ -9,11 +9,15 @@
 // (app-api-lib.ts mirrors template.html). So a file behaves identically here
 // and in its own api view; this tab only puts all of them on one page.
 //
-// The badge is the one loud thing on the row. It names the entrypoint the
-// ACTIVE engine will call: UDF (a `@fused.udf` function, fused engine only),
-// MAIN (`main()`), RESULT (a static `result = …` script, fused only), or a
-// muted "no entrypoint" for a helper module — those stay listed rather than
-// hidden, because "this file cannot be called" is an answer too.
+// The list is meant to read as a LIST, not as code: a glyph for what the file
+// is (a play mark if Execute works on it, a file mark for a helper module, a
+// warning if it will not parse), the filename in mono, and one sentence about
+// it in prose — the docstring's first line, or failing that just the parameter
+// names. Types, defaults and the full signature wait inside the open row. The
+// entrypoint kind the ACTIVE engine will call (`@fused.udf` under fused, else
+// `main()`, or a static `result = …`) only gets a word when it is unusual.
+// Helper modules stay listed rather than hidden, dimmer: "this file cannot be
+// called" is an answer too.
 //
 // Which row is open lives in the QUERY (`?ep=<rel>`), written in place
 // (replaceSearch — opening a row is not a navigation Back should retrace) and
@@ -39,7 +43,7 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
-import { ChevronRight, FileCode2, Play } from "lucide-react";
+import { ChevronRight, FileCode2, Play, TriangleAlert } from "lucide-react";
 import {
   collectParams,
   defaultLabel,
@@ -62,17 +66,35 @@ type Run =
   | { kind: "done"; result: RunResult; ms: number; sent: Record<string, unknown> }
   | { kind: "failed"; message: string };
 
-// The badge's words and colours, one per kind. Semantic tokens only, so both
-// themes come for free; the two callable kinds share the primary tint because
-// they are the same promise ("Execute works here"), the static script is
-// quieter, and a helper module is outlined — present, not callable.
-const KIND_BADGE: Record<EndpointKind, { label: string; className: string }> = {
-  udf: { label: "UDF", className: "bg-primary/10 text-primary" },
-  main: { label: "MAIN", className: "bg-primary/10 text-primary" },
-  result: { label: "RESULT", className: "bg-secondary text-secondary-foreground" },
-  none: { label: "MODULE", className: "border-border text-muted-foreground" },
-  error: { label: "SYNTAX", className: "bg-destructive/10 text-destructive" },
+// What a row says about its kind, in words — only where the kind is unusual.
+// The common case (a `main()`) says nothing: a list where every line shouted
+// MAIN read as a terminal dump. The glyph (KindGlyph) carries the rest.
+const KIND_NOTE: Record<EndpointKind, string | null> = {
+  udf: "udf",
+  main: null,
+  result: "static result",
+  none: null,
+  error: "won't parse",
 };
+
+/** The row's leading glyph: a play mark for anything Execute works on, a file
+ *  mark for a helper module, a warning for a file that does not parse. Muted at
+ *  rest; the play mark takes the primary colour when the row is hovered, which
+ *  is the only colour on the list. */
+function KindGlyph({ kind }: { kind: EndpointKind }) {
+  if (kind === "error") {
+    return <TriangleAlert aria-hidden className="size-4 flex-none text-destructive" />;
+  }
+  if (kind === "none") {
+    return <FileCode2 aria-hidden className="size-4 flex-none text-muted-foreground/60" />;
+  }
+  return (
+    <Play
+      aria-hidden
+      className="size-3.5 flex-none fill-current text-muted-foreground/70 transition-colors group-hover/row:text-primary motion-reduce:transition-none"
+    />
+  );
+}
 
 const MONO = "font-mono text-[12.5px]";
 
@@ -164,37 +186,36 @@ export default function AppApi({
 
       {data && (
         <>
-          {/* The header line: how many routes, which engine will run them, and
-              the environment they run in. Facts, set small. */}
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5 text-[12.5px] text-muted-foreground">
-            <span>
-              <span className="text-foreground tabular-nums">{callable}</span>{" "}
-              {callable === 1 ? "endpoint" : "endpoints"}
-              {endpoints.length > callable && (
-                <>
-                  {" "}
-                  · {endpoints.length - callable}{" "}
-                  {endpoints.length - callable === 1 ? "module" : "modules"}
-                </>
-              )}
-            </span>
-            <span aria-hidden>·</span>
-            <span>
-              runs with the <span className="text-foreground">{data.engine}</span> engine
-            </span>
-            {deps.length > 0 && (
-              <>
-                <span aria-hidden>·</span>
-                <span className="flex flex-wrap items-center gap-1">
+          {/* The header line: one plain sentence about what is here, and — set
+              apart on the right — what the folder needs installed. The engine
+              is not named: nobody chooses it on this page. */}
+          {endpoints.length > 0 && (
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 px-1 text-[13px] text-muted-foreground">
+              <p className="m-0">
+                {callable === 0
+                  ? "Nothing to run yet"
+                  : `${callable} ${callable === 1 ? "endpoint" : "endpoints"} you can run`}
+                {endpoints.length > callable &&
+                  ` · ${endpoints.length - callable} helper ${
+                    endpoints.length - callable === 1 ? "module" : "modules"
+                  }`}
+              </p>
+              {deps.length > 0 && (
+                <p className="m-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-1">
+                  <span>Needs</span>
                   {deps.map((d) => (
-                    <Badge key={d} variant="outline" className={cn(MONO, "h-[18px] font-normal")}>
+                    <Badge
+                      key={d}
+                      variant="outline"
+                      className="h-[18px] font-normal text-muted-foreground"
+                    >
                       {d}
                     </Badge>
                   ))}
-                </span>
-              </>
-            )}
-          </div>
+                </p>
+              )}
+            </div>
+          )}
 
           {endpoints.length === 0 && (
             <div className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-border py-16 text-[13px] text-muted-foreground">
@@ -207,8 +228,10 @@ export default function AppApi({
             </div>
           )}
 
+          {/* Hugs its rows — no flex-1: four endpoints should not be stretched
+              into a full-height frame with a void under them. */}
           {endpoints.length > 0 && (
-            <div className="flex min-h-0 flex-1 flex-col overflow-auto rounded-xl border border-border">
+            <div className="flex flex-none flex-col rounded-xl border border-border">
               <ul className="m-0 list-none divide-y divide-border p-0">
                 {endpoints.map((ep) => (
                   <EndpointRow
@@ -263,59 +286,77 @@ function EndpointRow({
   onExecute: () => void;
 }) {
   const kind = endpointKind(ep);
-  const badge = KIND_BADGE[kind];
   const fn = ep.function ?? null;
   const params = fn?.params ?? [];
   const runnable = isRunnable(ep);
   const summary = summaryLine(fn?.docstring ?? ep.module_docstring);
+  // Only the unusual kinds get a word on the row; MAIN on every line said
+  // nothing. A missing docstring falls back to the parameter NAMES — enough to
+  // tell two endpoints apart, without the types and defaults.
+  const kindNote = KIND_NOTE[kind];
+  const paramHint =
+    fn && params.length > 0
+      ? params.map((p) => p.name).join(" · ")
+      : fn
+        ? "No parameters"
+        : kind === "none"
+          ? "Helper module — nothing to call"
+          : "";
   const cut = ep.rel.lastIndexOf("/");
   const crumb = cut >= 0 ? ep.rel.slice(0, cut + 1) : "";
   const name = ep.rel.slice(cut + 1);
   const bodyId = `app-api-body-${ep.rel.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   return (
-    <li className={cn("app-api-row", open && "bg-muted/30")}>
-      {/* The route line. Badge, path, signature, chevron — one row, one click. */}
+    <li className={cn("app-api-row group/row", open && "bg-muted/30")}>
+      {/* The route line: a glyph for what the file is, its name, one sentence
+          about it, and — on hover — the invitation. The signature is NOT here:
+          types and defaults belong to the open form, and a wall of them made
+          the list read as code. */}
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
         aria-controls={bodyId}
         className={cn(
-          "flex w-full items-center gap-3 border-0 bg-transparent px-3 py-2.5 text-left text-foreground",
+          "flex w-full items-center gap-3 border-0 bg-transparent px-4 py-3 text-left text-foreground",
           "cursor-pointer hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
           !runnable && "text-muted-foreground",
         )}
       >
-        <Badge
-          variant="outline"
-          className={cn(
-            MONO,
-            "h-[20px] w-[64px] justify-center rounded-md border-transparent px-0 text-[10.5px] font-semibold tracking-[0.06em]",
-            badge.className,
+        <KindGlyph kind={kind} />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
+          <span
+            className={cn(MONO, "flex-none truncate", runnable && "font-medium")}
+            title={ep.path}
+          >
+            {crumb && <span className="text-muted-foreground">{crumb}</span>}
+            {name}
+          </span>
+          {kindNote && (
+            <span className="flex-none text-[11px] tracking-[0.04em] text-muted-foreground uppercase">
+              {kindNote}
+            </span>
           )}
-        >
-          {badge.label}
-        </Badge>
-        <span className={cn(MONO, "min-w-0 flex-none truncate")} title={ep.path}>
-          {crumb && <span className="text-muted-foreground">{crumb}</span>}
-          <span className={cn(runnable ? "font-medium" : "font-normal")}>{name}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+            {summary || paramHint}
+          </span>
         </span>
-        {fn && (
-          <span className={cn(MONO, "min-w-0 flex-1 truncate text-muted-foreground")}>
-            <Signature fn={fn} />
+        {runnable && !open && (
+          <span
+            className={cn(
+              "flex-none text-[12px] text-muted-foreground opacity-0 transition-opacity",
+              "group-hover/row:opacity-100 group-focus-within/row:opacity-100 motion-reduce:transition-none",
+            )}
+            aria-hidden
+          >
+            Try it
           </span>
         )}
-        {!fn && summary && (
-          <span className="min-w-0 flex-1 truncate text-[12.5px] text-muted-foreground">
-            {summary}
-          </span>
-        )}
-        {!fn && !summary && <span className="flex-1" />}
         <ChevronRight
           aria-hidden
           className={cn(
-            "size-4 flex-none text-muted-foreground transition-transform duration-150 motion-reduce:transition-none",
+            "size-3.5 flex-none text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
             open && "rotate-90",
           )}
         />
@@ -323,6 +364,11 @@ function EndpointRow({
 
       {open && (
         <div id={bodyId} className="flex flex-col gap-4 border-t border-border px-4 pt-3 pb-4">
+          {fn && (
+            <p className={cn(MONO, "m-0 text-muted-foreground")}>
+              <Signature fn={fn} />
+            </p>
+          )}
           {kind === "error" && (
             <pre className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}>
               Syntax error — {ep.parse_error}
