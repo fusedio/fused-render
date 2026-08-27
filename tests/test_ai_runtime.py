@@ -5222,6 +5222,40 @@ def test_fit_basis_measured_wins_over_declared_and_download(
     assert entry["fit"]["footprintBytes"] == 5_000_000_000
 
 
+def test_the_catalog_forwards_harvested_kv_geometry_into_the_fit_footprint(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review finding: `describe_catalog` called `fit.verdict` without
+    ANY of the `num_hidden_layers`/`num_key_value_heads`/`num_attention_
+    heads`/`head_dim`/`hidden_size`/`layer_types` kwargs that feed
+    `fit.footprint_bytes`'s KV-cache term (fit.py L640-662), even though
+    `hub_metadata.cached()` — read on this same request for the vision/
+    tool-use tags — already holds that geometry on disk. Without forwarding
+    it, every download-rung footprint collapses to exactly
+    `size_gb * 1e9 + RUNTIME_OVERHEAD_BYTES`, with a KV term of zero no
+    matter how big the context window or how wide the model. This test pins
+    a row WITH cached geometry getting a strictly bigger footprint than that
+    flat figure, so the wiring cannot go inert again."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: {
+        "numHiddenLayers": 32,
+        "numKeyValueHeads": 8,
+        "numAttentionHeads": 32,
+        "headDim": 128,
+        "hiddenSize": 4096,
+        "layerTypes": None,
+    } if model_id == "org/geometry-known" else None)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/geometry-known", "label": "Geometry known", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/geometry-known"
+    flat_floor = 4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["footprintBytes"] > flat_floor, (
+        "KV-cache term is 0 despite cached geometry being available — "
+        "hub_metadata.cached() geometry was not forwarded to fit.verdict")
+
+
 def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
         client, fake_runner, fixed_fit_machine, monkeypatch):
     footprints.record(registry.IMAGE_GENERATION, "org/cross-cap", 9_000_000_000)

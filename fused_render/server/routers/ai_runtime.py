@@ -885,7 +885,8 @@ def _catalog_with_downloads() -> list[dict]:
                                        footprint_store=footprint_store,
                                        hardware=hardware,
                                        params=entry.get("params"),
-                                       quantization=entry.get("quantization"))
+                                       quantization=entry.get("quantization"),
+                                       **_kv_geometry_kwargs(entry["id"]))
             # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
             # calibrated, calibrationFactor} or None — SPEC AI-21. Text
             # generation only: `speed.py`'s formula is a tok/s figure, and
@@ -936,6 +937,46 @@ def _catalog_with_downloads() -> list[dict]:
 #: FOOTPRINT, not `size_gb` alone, on a precedence ladder this router does
 #: not own. `fit.machine_ram_gb()` is the same stdlib RAM reading, cached
 #: forever, moved rather than duplicated.
+
+
+#: `hub_metadata.cached()`'s camelCase field names, mapped to the snake_case
+#: keyword `fit.footprint_bytes`'s KV-cache term reads (its own docstring:
+#: "the same field NAMES `hub_metadata` returns (minus its
+#: `numHiddenLayers`-style camelCase)"). `kv_dtype` has no harvested
+#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype — so
+#: it is left for `fit.py`'s own quantization-based default.
+_KV_GEOMETRY_FIELDS = {
+    "numHiddenLayers": "num_hidden_layers",
+    "numKeyValueHeads": "num_key_value_heads",
+    "numAttentionHeads": "num_attention_heads",
+    "headDim": "head_dim",
+    "hiddenSize": "hidden_size",
+    "layerTypes": "layer_types",
+}
+
+
+def _kv_geometry_kwargs(model_id: str) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`layer_types` kwargs for
+    `model_id`, read straight off `hub_metadata.cached()` — NO network call
+    (code review finding 1's same constraint `_accepts_image`/
+    `_capability_tags` already keep on this polled route). Without this, the
+    KV-cache term in `fit.footprint_bytes` is silently 0 for every catalog
+    row: the geometry `hub_metadata.cached()` already holds on disk (and
+    that this same request already reads for the vision/tool-use tags) was
+    never forwarded to `fit.verdict`.
+
+    Absent for an uncached repo, same as every other optional geometry
+    kwarg — the ladder just falls through to the params-only weight
+    estimate, exactly as before this existed.
+    """
+    meta = hub_metadata.cached(model_id)
+    if not meta:
+        return {}
+    return {
+        snake: meta[camel]
+        for camel, snake in _KV_GEOMETRY_FIELDS.items()
+        if meta.get(camel) is not None
+    }
 
 
 def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
