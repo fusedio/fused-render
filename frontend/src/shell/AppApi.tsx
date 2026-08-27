@@ -447,8 +447,10 @@ function EndpointRow({
             title="Copy this call as a curl command"
             className={cn(
               "absolute inset-y-0 right-[42px] my-auto rounded-md border-border bg-transparent px-1.5 font-normal text-muted-foreground hover:bg-transparent hover:text-foreground dark:hover:bg-transparent transition-opacity",
-              "group-hover/row:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none",
-              open ? "opacity-100" : "opacity-0",
+              "group-hover/row:pointer-events-auto group-hover/row:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 motion-reduce:transition-none",
+              // Hidden means hidden: no hit-testing, so a tap in the gap on a
+              // collapsed row (touch has no hover) reaches the toggle beneath.
+              open ? "opacity-100" : "pointer-events-none opacity-0",
             )}
           >
             {copied ? (
