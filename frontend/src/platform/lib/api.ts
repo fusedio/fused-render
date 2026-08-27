@@ -2042,6 +2042,37 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
   return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
 }
 
+/** One live engine child (server/engine_host.py `Child`), as
+ *  `GET /api/engines/running` reports it (D591). */
+export interface RunningEngine {
+  engine_id: string;
+  /** "template" | "app" | "background" — which bring-up path owns it. Carried
+   *  so three similarly-named rows stay distinguishable in the panel. */
+  kind: string;
+  pid: number;
+  version: string;
+  /** The declaring folder — `kind: "background"` only, "" otherwise. */
+  folder: string;
+  /** The module a warm app worker serves — "" for the other kinds. */
+  module: string;
+}
+
+/** Every engine daemon running right now — the status bar's Engines section.
+ *  Read-only and unguarded, like `getBackgroundAppsRunning` above: the server
+ *  snapshots a dict it already holds and polls one `Popen` per child, so there
+ *  is no walk and no spawn behind this. */
+export function getRunningEngines(): Promise<{ engines: RunningEngine[] }> {
+  return getJson<{ engines: RunningEngine[] }>("/api/engines/running");
+}
+
+/** Stop one engine child. Recoverable for all three kinds — a template engine
+ *  respawns on the next `ensure`, a warm app worker on its next call, and a
+ *  background daemon going down is the documented "quit this app" action —
+ *  which is why the panel offers it as a plain button (D591). */
+export function stopEngine(engineId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/api/engines/${encodeURIComponent(engineId)}/stop`, {});
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.

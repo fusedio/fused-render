@@ -78,16 +78,23 @@ import DownloadManager from "@platform/ui/DownloadManager";
 
 export default function StatusBar({
   models,
+  engines,
   activity,
   repoUpdates,
 }: {
   models?: ReactNode;
+  /** The running engine daemons (D591). Between Models and Jobs because both
+   *  it and Models report what is RUNNING RIGHT NOW, where Jobs and
+   *  Notifications are transient work that appears and resolves — the lifetime
+   *  ordering this file's own header documents. */
+  engines?: ReactNode;
   activity?: ReactNode;
   repoUpdates?: ReactNode;
 }) {
   return (
     <div className="status-bar">
       {models}
+      {engines}
       {activity ?? <DownloadManager />}
       {repoUpdates}
     </div>

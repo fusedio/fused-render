@@ -21,11 +21,14 @@
 // know.
 import { useEffect, useRef } from "react";
 
-/** Lifetime order — Models, Jobs, Notifications — which is also the order
- *  `StatusBar.tsx` renders them in and the order that breaks every tie below.
+/** Lifetime order — Models, Engines, Jobs, Notifications — which is also the
+ *  order `StatusBar.tsx` renders them in and the order that breaks every tie
+ *  below. Engines sits beside Models (D591) because both report what is
+ *  RUNNING RIGHT NOW, where Jobs and Notifications are transient work that
+ *  appears and resolves.
  *  Named rather than inferred so the tie-break cannot silently change if the
  *  bar's markup is reordered for visual reasons. */
-export const SECTION_ORDER = ["models", "jobs", "notifications"] as const;
+export const SECTION_ORDER = ["models", "engines", "jobs", "notifications"] as const;
 export type SectionKey = (typeof SECTION_ORDER)[number];
 
 interface Entry {

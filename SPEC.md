@@ -10529,6 +10529,31 @@ background apps are the third.
   running). `engine_host.background_running_folders()` enumerates the
   in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
+- **The status bar's Engines section (D591).** Two routes on
+  `server/routers/engines.py` let the user see and stop what is running,
+  across ALL THREE child kinds rather than background apps only:
+  - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
+    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
+    (`kind="background"` only) and `module` (warm app workers only) so a row
+    can be labelled without guessing each kind's conventions. Read-only and
+    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
+    this router's proxied GETs. The work is
+    `engine_host.running_engines()`, which keeps the same lock discipline
+    `background_running_folders` established — snapshot under `_lock`,
+    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
+    lock or the private `_children` dict.
+  - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
+    like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
+    executing side. Calls `engine_host.stop`, which is idempotent (it pops
+    with a default), so a stale row clicked after the engine already exited
+    is a no-op rather than an error. NOT a destructive route: a `template`
+    engine respawns on the next `ensure`, a warm `app` worker on its next
+    call (and is idle-reaped on a timer regardless, `APP_IDLE_RETIRE_S`), and
+    a `background` daemon going down is exactly the documented "quit this app
+    right now" action. Deliberately NOT routed through
+    `POST /api/apps/background/stop`, which takes an `html` PAGE path and
+    derives the folder with a `dirname()` — handing it a folder resolves to
+    the folder's PARENT — and which covers `kind="background"` only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,

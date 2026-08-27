@@ -51,6 +51,7 @@ import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import StatusBar from "@platform/ui/StatusBar";
 import ModelsDock from "@shell/ModelsDock";
+import EnginesDock from "@shell/EnginesDock";
 import QueueDock from "@shell/QueueDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -1004,6 +1005,7 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
+            engines={<EnginesDock />}
             /* D586: failures are re-routed from Jobs to Notifications, and
                this is the one place both sections are in scope. Plain prop
                wiring on purpose — the alternative was a shared store, which
