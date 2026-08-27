@@ -3519,6 +3519,16 @@ this page, scoped by the same pathspec the working-tree lists use, and its
 view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
 
+**The community showcase clone (`~/Fused/showcase`) is a repo like any
+other from here** (D550-D552). It used to be managed on the app's behalf —
+fetched and fast-forwarded on every server start — and is not any more:
+`fused_render/community.py` clones it once, if missing, and never touches it
+again. There is also no second, INSTALLED copy any more (`~/Fused/local/
+<slug>`); an app opened from the showcase IS the copy, edited in place. Both
+changes make the showcase an ordinary git work tree with an ordinary
+`origin`, which is precisely what GT-20 below needs to be true for its
+"every app opened" check to say anything useful about it.
+
 - **GT-1** An ordinary view template (`fused_render/templates/git/`) —
   `template.html`, `log.py` (the reader), `ops.py` (the mutations),
   `condition.py` (the gate) and `icon.svg`. No shell or server code: everything
@@ -4203,6 +4213,58 @@ caller that wants the log on purpose.
   only reaches a LOCAL generation and this asks for a Claude model. Mount-backed
   targets never reach any of it: `_locate` refuses a mount in both modules and the
   gate never offers the view (GT-4 / MD-11).
+
+- **GT-20** **A repo the user opens an app in gets a passive "origin has
+  moved" notice, opt-in from outside this view (D550-D553).** Every app open
+  through `GET /render` (D301's own definition of "this app is being
+  opened") triggers a throttled check — per repo ROOT, not per app, so
+  several apps in one repo cost one fetch — of whether the remote's default
+  branch has moved: fetch that ONE ref, count `HEAD..origin/<default>`.
+  Never on a timer, never at server start, never from a plain directory
+  listing (`/api/fs/list`'s own hook, `note_folder_opened`, is gated on the
+  unrelated file-indexing preference and fires once per LISTING; borrowing it
+  would put a git notification behind an unrelated switch). Silence on an
+  unreachable remote is deliberate — a background check that nagged about a
+  misconfigured remote would be worse than one that says nothing, and this
+  view remains where a fetch error is visible. A mount-backed repo is refused
+  before any subprocess, the same rule GT-4 states for this view's own reads
+  and writes.
+
+  **The check and its two mutations live server-side, in a NEW module
+  (`fused_render/git_upstream.py`), not in `ops.py`.** `ops.py` is reached
+  only as `fused.runPython("./ops.py")` from inside THIS view's own iframe
+  (GT-1) — the activity card (§36) that shows the result has no route to it.
+  So the server-side module MIRRORS `ops.py`'s git plumbing and mount refusal
+  (GT-1's own reason: a template exec'd standalone must not be imported).
+  `update`/`switch` each check `status --porcelain` FIRST and refuse a dirty
+  tree with a structured reason the card renders, matching GT-16's
+  confirmation rule for the same class of act. A third mutation, `rebase` —
+  replaying the current branch onto the default, offered as a secondary
+  action alongside Switch — was part of this card for one release and then
+  removed outright (D555 amendment, user call: "the rebase button is scary,
+  let's just remove it"), rather than left reachable only from a stale
+  client. `ops.py`'s own `_pull` refusal, which briefly pointed at that
+  button, points at a terminal again instead (GT-15).
+
+  **The action offered is BRANCH-shaped, not count-shaped, and never
+  rewrites the user's own commits.** On the repo's default branch:
+  **Update**, the row's only action — an `--ff-only` pull, which can never
+  conflict, matching this view's own `pull` (GT-15). Off the default
+  branch: **Switch**, the row's only action there — a plain `git checkout
+  <default_branch>`, which never touches a single commit on the branch the
+  user is on and so can only refuse, never conflict, matching this view's
+  own `branch_checkout` (GT-1's neighbour). Switch is preferred over ever
+  offering to rewrite the user's branch because this whole feature exists to
+  nudge a repo toward its default branch without ever putting the user's own
+  work at risk; after a successful switch the repo is very likely behind
+  again (that is why Switch was offered), so the row reappearing with
+  Update once the check re-runs is intended, not a bug. A refusal
+  (most commonly `dirty`) offers **Fix with Claude** (§36), which navigates
+  to the repo and hands a Claude-capable surface there the same class of
+  prompt GT-19's operation-error case builds — the error, the branch,
+  ahead/behind, the dirty flag, the repo root — but through a staged
+  cross-navigation ask rather than `window._fusedAskClaude`, because no
+  surface for that repo may be mounted yet.
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
@@ -5048,22 +5110,50 @@ stop it short of quitting the app.
   1.5s is ~160 records describing nothing that happened, and they would spend
   the rate budget the calls they annotate need.
 - **BG-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
-  the list as one card in the shared bottom-right notification stack (§3),
-  between the toasts and the server card — the column is ordered by lifetime
-  (seconds / minutes / the session), so nothing long-lived shifts under the
-  pointer when a short-lived neighbour expires. Top-level document only
-  (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
-  N times. Hidden entirely when there are no records.
+  as the Activity section in the status bar (`platform/ui/StatusBar.tsx`,
+  D563), inside `#main` beside the Models and repo-updates sections. Top-level
+  document only (`!IS_EMBED`): the list is global, so a copy per pane would say
+  the same thing N times. ALWAYS PRESENT (D565, superseding the "hidden when
+  there are no records" rule this used to state): nothing running and nothing
+  queued draws the IDLE state (`.dl-idle`, "No activity" — D569; "Idle" alone
+  named no subject) instead of vanishing — the bar's three sections are a
+  fixed readout now, not a notification stack that disappears when quiet.
+
+  **The collapse hides EVERY row, no exemption** (D562, user call
+  2026-08-27: "everything is foldable, even for the job cards"). It used to
+  be a PARTIAL fold — the queue's rows and a live scheduled run's stand-in
+  job row stayed on screen regardless of `collapsed`, because folding either
+  away took the only cancel a queued message or a live turn has with it, and
+  a card collapsed weeks ago left that work arriving with nothing on screen
+  to stop it. D562 first moved reachability to the header — `queue.cancelAll`
+  became a function of `collapsed`, dropping its threshold from 2+
+  withdrawable rows to 1+ once folded. **Superseded by D563** (status bar
+  redesign), and then stripped further: collapsed is now a CHIP with no
+  controls at all, and by D588/D590 no readout either — the label `Jobs` plus
+  ONE circle, outlined when the section holds nothing and filled when it holds
+  anything (user: "no count. just a circle outlined or filled"). The chevron
+  went in D573, the aggregate percentage (`dl-pct`) in D581, the count in
+  D588/D590. So there is no folded-but-visible header left for a control to
+  answer, and `queue.cancelAll` is a plain pre-decided node again, rendered
+  only inside the panel that opens on expand. The fold hides every detail
+  INCLUDING how much is happening; the filled circle says only that something
+  is, and the panel is where the rest lives.
 - **BG-11** **Indeterminate is a first-class state.** A running job with no
   `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
   never a bar parked at an invented percentage: parking is what makes live work
   read as frozen (the install loader's D213 lesson). Under
   `prefers-reduced-motion` the sweep is replaced by a dimmed full-width bar
   rather than left as a stub the blanket rule stopped mid-travel.
-- **BG-12** **Overall progress averages the running jobs**, it does not sum
-  their bytes: a sum lets one 8GB download swallow a 40MB one, so the header bar
-  would sit still while a whole other job ran start to finish. Any running job
-  with no numbers makes the overall bar indeterminate rather than optimistic.
+- **BG-12** **There is no aggregate progress figure.** `jobs.ts::overallFraction`
+  and the collapsed header bar it fed are DELETED (D581). They used to AVERAGE
+  the running jobs rather than sum their bytes — a sum lets one 8GB download
+  swallow a 40MB one, so the bar sat still while a whole other job ran start to
+  finish — and a running job with no numbers made the aggregate indeterminate
+  rather than optimistic. That reasoning was sound and is kept here only to say
+  why nobody should reintroduce the average either: the status-bar chip carries
+  no number at all now (BG-10), so there is nothing left for an aggregate to
+  render into. PER-ROW progress is untouched — each `.dl-row` keeps its own bar,
+  including BG-11's indeterminate state, inside the expanded panel.
 - **BG-13** **Poll cadence** is 1s while anything runs, 5s otherwise, and paused
   while the document is hidden. A same-origin `localStorage` ping
   (`fused-render:jobs-ping`, written by the runtime on every report and heard
@@ -5081,6 +5171,151 @@ stop it short of quitting the app.
   written against it needs no hosted-only branch. **This is an obligation on a
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
+- **BG-15** **Repo updates (GT-20) are their own sibling notification card**
+  (D550-D553, revised D555-D557, D563, D565) — one row per repo with a known
+  upstream update, in the Updates section `StatusBar` places beside Models
+  and the jobs/queue Activity section, inside `#main` (D563 — no longer
+  `NotificationHost`'s fixed bottom-right column, whose overlay of page
+  content even while collapsed is what the status bar redesign exists to
+  fix). ALWAYS PRESENT (D565): no repo behind draws the IDLE state
+  (`.dl-idle`, "No updates" — D569) rather than returning null, matching the
+  other two sections. **This supersedes the original shape**, where the rows were
+  a second named slot
+  (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
+  That placement broke the jobs card in four ways at once, discovered
+  together: with zero jobs and zero queue but one repo row, the header fell
+  through to a job-count sentence and read **"0 finished"**; the jobs card's
+  collapse toggle did nothing (repo rows were exempt from the fold and there
+  were no job rows left to fold); Clear disappeared (its count was jobs
+  only); and there was no way to dismiss a repo row at all — all four the
+  same root cause, a second kind of row wedged inside a header, a fold and a
+  Clear button that were never built to know about it. Giving it its own
+  card fixes the class of bug rather than patching each symptom: the jobs
+  card's empty-card gate, header and Clear now only ever reason about jobs
+  and the queue again.
+
+  **This card's own fold takes EVERY row** — and, since D562 (user call,
+  2026-08-27: "everything is foldable, even for the job cards"), so does the
+  jobs card's. The two used to differ: the jobs card pinned the queue's rows
+  and a live-run stand-in outside its collapse (BG-10), on the reasoning
+  that folding away a queued message's or a live turn's only ✕ left a card
+  collapsed weeks ago with scheduled work arriving and nothing on screen to
+  stop it. That reasoning did not disappear — it moved, twice. D562 first
+  moved it into the header, dropping `queue.cancelAll`'s threshold from 2+
+  withdrawable rows to 1+ once collapsed. D563's status bar redesign then
+  retired that move rather than carrying it forward: collapsed is now a
+  CHIP with no controls and no readout — the label `Notifications` plus one
+  circle, outlined or filled (D588/D590; the chevron went in D573, the
+  percentage in D581, the count in D588) — so there is no folded-but-visible
+  header left for a lowered threshold to reach, and `queue.cancelAll`/Clear/
+  every row now render only inside the panel that opens on expand. A repo row
+  has no in-flight message a fold could strand mid-turn, so this card needed
+  neither move: the filled circle says something is waiting, and every row
+  carries its own dismiss control once the panel is open.
+
+  **Dismissing a row is scoped to the repo's POSITION, not to the clock
+  (D556, corrected by D584 review finding 3).** A row stays hidden for as
+  long as its `branch@behind` signature is unchanged
+  (`repo-updates-lib.ts::repoDismissSignature`), and reappears exactly when
+  the claim it makes changes: new upstream commits arrive, or the user checks
+  out something else. `RepoStatus` carries no HEAD sha, so `behind` is the
+  closest honest proxy for "upstream moved", and it needs no server change.
+
+  **The original `checked_at` rule was a BUG, and this is the record of why
+  so nobody reimplements it.** It said a row stays hidden while
+  `dismissed[root] >= repo.checked_at` and returns once the server's own
+  throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces a newer one.
+  But `check_repo` stamps a fresh `checked_at` on EVERY throttled recheck
+  whether or not anything moved — so a dismissed row came back every five
+  minutes on its own, and because leaving `visible` also drops it from
+  `trackSeenIds`' seen set, the return read as a genuine arrival and (since
+  D574) POPPED THE PANEL OPEN over whatever the user was doing. For anyone on
+  a long-lived feature branch, permanently behind, dismissal was durably
+  useless. No server-side dismissal state is needed under either rule; the
+  signature is simply the field that actually answers the question. The
+  dismissed map
+  is held at MODULE level in `RepoUpdatesDock.tsx`, not component state, so
+  a remount (switching panes or panels) does not forget it; a full page
+  reload resurrecting a dismissed row inside the throttle window is an
+  accepted, deliberate trade against reaching for `localStorage` for
+  something this ephemeral.
+
+  **Rejected: generalising `DownloadManager`'s `QueueSlot` to N slots.**
+  Giving repo updates their own top-level card is the smaller change now
+  that the card no longer needs the rows to share its ONE plate at all — see
+  GT-20 for why Switch, never a history-rewriting action, is this card's
+  off-default action (D555). **Rejected: modeling a repo row on the job
+  registry.**
+  `fused_render/jobs.py` models `queued → running → finished`, a progress
+  fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
+  an action fits none of those, and `clearFinishedJobs` would sweep it the
+  moment it next ran. `shell/RepoUpdatesDock.tsx` therefore polls its own
+  endpoint (`GET /api/git-upstream`) the same way `QueueDock.tsx` polls its
+  own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
+  `StatusBar`'s separate `repoUpdates` prop (D563 — `NotificationHost`'s,
+  before the status bar redesign) rather than a slot on `DownloadManager`.
+- **BG-16** **The status bar's third section, Models (D566,
+  `shell/ModelsDock.tsx`), reads what is resident right now and what it
+  costs — `GET /api/ai/runtime`, the same shared poll (`apps/ai_models/lib/
+  aiRuntime.ts` `useAiRuntime`) `GlobalSidebar`'s own resident-model dot
+  already reads, so this section opens no second connection to the
+  server.** Idle: "No models loaded". Active: plain text, no label prefix —
+  `2 models · 18 GB` — the chip's whole vocabulary once there is a value to
+  show. **SUPERSEDED for the chip by D588-D590 and D589**: every status-bar
+  chip is now a bare label plus one circle (outlined = nothing here, filled =
+  something here), with no count and no aggregate size anywhere — the
+  `2 models · 18 GB` phrasing above is history. The aggregate went because it
+  summed `residentBytes`, which is worker-process RSS and explicitly "not the
+  model's size" (user: "the memory gb next to the models isn't even
+  accurate").
+  **THE PER-ROW MEMORY FIGURES (D594)**, which are the honest version of what
+  that aggregate was reaching for: each row shows the model's real COST as its
+  primary, colour-coded figure with the live RSS in parentheses beside it —
+  `9.2 GB (8.4 GB)`. The cost is `fit.footprint_bytes`, so it is the SAME
+  precedence ladder (measured > declared > download) and the same number the
+  AI Models page's fit badge shows, and the row carries `footprintBasis` in
+  `AiFitVerdict`'s existing vocabulary so a measured figure can be stated as
+  fact and the other two hedged. The ordering is deliberate: the primary
+  answers "what does this model cost me", the parenthetical answers "what is
+  it holding this instant" — reversed, the figure already agreed to be
+  inaccurate would sit in the position of authority. Colour is three steps
+  against `AiRuntime.memoryCeilingBytes` (carried once per payload, a
+  per-machine constant: the Apple Silicon WIRED limit where it applies, total
+  RAM otherwise, null when neither reads) reusing the easy/tight/no bands and
+  the existing `--success`/`--warning`/`--error` tokens; only `no` — the model
+  genuinely EXCEEDING the ceiling — gets the error colour, since a large model
+  that fits is not an error. NULL IS NOT ZERO: a model with nothing measured
+  and nothing declared has no primary figure and falls back to RSS alone,
+  uncoloured, rather than colouring a guess or printing 0.
+  The panel is a QUICK-INFO POPOVER, never a management console (user
+  call, cutting an earlier gauge/progress-bar draft: "we don't need a gauge
+  if too complicated. just a quick info upon clicking which we have a list
+  of loaded models we can unload"): one row per resident model — its name
+  (owner trimmed, full id on hover, `repoName()`), its memory figures above,
+  an Unload button — no proportional fill, no RAM-fraction indicator.
+  Unload (`POST /api/ai/runtime/unload`, the D3 `X-Fused`-guarded mutation
+  that already existed for the AI Models page) carries no confirmation —
+  the action is recoverable by loading again — but the row reflects being
+  in flight ("Unloading…", disabled) and a failure says so inline rather
+  than doing nothing visible; a success publishes the response's fresh
+  runtime snapshot back through `aiRuntime.ts`'s shared store so every
+  reader updates on the click rather than the next poll tick. Ordered
+  LEFTMOST of the three sections: Models is PERSISTENT status, true the
+  instant anything is resident, where Activity and Updates are TRANSIENT
+  work that appears and resolves (BG-10's own lifetime-ordering principle,
+  restated for what is always true versus what is currently happening).
+
+  **Every section's chip carries a quiet `.dl-new-dot` for an
+  unacknowledged arrival while collapsed, never a forced expansion
+  (D567).** `lib/autoExpand.ts`'s `useAutoExpandOnNew` used to call
+  `setCollapsed(false)` (and persist it) the instant a new id showed up —
+  code review finding #4 caught that this recreated the exact complaint
+  the status-bar redesign exists to fix: a background job popping a
+  floating panel over whatever page the user had open, uninvited, and
+  surviving a reload because the forced expansion was written to
+  `localStorage`. The hook now only answers whether something arrived
+  unacknowledged; opening the panel — the user's own click, for any
+  reason — is what clears it.
 
 ---
 
@@ -10345,6 +10580,31 @@ background apps are the third.
   running). `engine_host.background_running_folders()` enumerates the
   in-memory `_children` dict directly (`kind == "background"`, `_alive`'s
   `Popen.poll()`) — no folder walk, no toml reads, same cost as before.
+- **The status bar's Engines section (D591).** Two routes on
+  `server/routers/engines.py` let the user see and stop what is running,
+  across ALL THREE child kinds rather than background apps only:
+  - `GET /api/engines/running` -> `{"engines": [...]}`, one entry per LIVE
+    child with `engine_id`, `kind`, `pid`, `version`, plus `folder`
+    (`kind="background"` only) and `module` (warm app workers only) so a row
+    can be labelled without guessing each kind's conventions. Read-only and
+    UNGUARDED, the same posture as `GET /api/apps/background/running` and as
+    this router's proxied GETs. The work is
+    `engine_host.running_engines()`, which keeps the same lock discipline
+    `background_running_folders` established — snapshot under `_lock`,
+    `_alive()`'s `Popen.poll()` outside it — so the router never touches the
+    lock or the private `_children` dict.
+  - `POST /api/engines/{engine_id}/stop` -> `{"ok": true}`, `X-Fused` guarded
+    like its `ensure`/`reinit`/`forget` siblings since it reaches the child's
+    executing side. Calls `engine_host.stop`, which is idempotent (it pops
+    with a default), so a stale row clicked after the engine already exited
+    is a no-op rather than an error. NOT a destructive route: a `template`
+    engine respawns on the next `ensure`, a warm `app` worker on its next
+    call (and is idle-reaped on a timer regardless, `APP_IDLE_RETIRE_S`), and
+    a `background` daemon going down is exactly the documented "quit this app
+    right now" action. Deliberately NOT routed through
+    `POST /api/apps/background/stop`, which takes an `html` PAGE path and
+    derives the folder with a `dirname()` — handing it a folder resolves to
+    the folder's PARENT — and which covers `kind="background"` only.
 - **Startup resurrection.** A daemon thread started from `server/app.py`'s
   startup event (beside `_startup_sync_user_plugin`'s D228 precedent — never
   the pre-bind path) walks `autostart_paths()` and brings each one up,

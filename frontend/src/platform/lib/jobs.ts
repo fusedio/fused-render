@@ -91,6 +91,70 @@ export function isRunning(job: Job): boolean {
   return job.state === "running";
 }
 
+/**
+ * A FAILURE belongs to Notifications, not Jobs (D586, user: "maybe we can have
+ * a flow like running activities are shown in jobs and after done, a completed
+ * message goes to notifications?").
+ *
+ * `Jobs` claims to be work IN PROGRESS, and an `error` row is not in progress —
+ * it sat there indefinitely while being the one thing that actually wanted
+ * attention. Only `error` moves: a `cancelled` row is user-initiated (they
+ * already know) and ages out on its own, and a `done` row has its artefact on
+ * disk, so neither becomes a notification.
+ *
+ * This needs no notification store, and that is why the cheap version works:
+ * `fused_render/jobs.py`'s `_sweep` already keeps `error` rows until they are
+ * explicitly dismissed (where `done`/`cancelled` age out via `first_read_at` +
+ * `FINISHED_TTL_S`), so the server-side lifetime, the dismissal endpoint and
+ * its `X-Fused` guard all already exist. This is a client-side re-route of
+ * rows that are already there.
+ */
+export function isFailure(job: Job): boolean {
+  return job.state === "error";
+}
+
+/** What the Jobs section draws: everything EXCEPT failures. Deliberately not
+ *  "only running" — `done` and `cancelled` rows keep behaving exactly as they
+ *  did (vanish-on-success, then the server's TTL), because D586 moves failures
+ *  and nothing else. */
+export function inFlightJobs(jobs: Job[]): Job[] {
+  return jobs.filter((j) => !isFailure(j));
+}
+
+/** What the Notifications section draws alongside its repo rows. */
+export function failedJobs(jobs: Job[]): Job[] {
+  return jobs.filter(isFailure);
+}
+
+/**
+ * What the card's bulk "Clear" button would actually take, and what it
+ * leaves — mirroring the server's own rule (`fused_render/jobs.py`
+ * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
+ * row is deliberately NOT clearable in bulk any more: `is_stalled` only
+ * means "no report in `STALE_AFTER_S`", and the work behind it does not
+ * stop just because its row does — a Clear press used to silently orphan
+ * a still-running AI job, telling the user it had been cancelled when
+ * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
+ * takes a stalled row one at a time, unchanged: that is a user closing a
+ * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
+ * what any of its rows are.
+ *
+ * (This block sat two functions further up until code review finding 4 —
+ * `DownloadManager.tsx` cites "`clearableCount`'s own doc has the full
+ * argument" twice, and the doc was over `isFailure`.)
+ */
+export function clearableCount(jobs: Job[]): number {
+  return jobs.filter((j) => !isRunning(j)).length;
+}
+
+/** The jobs list after a Clear — every row Clear would NOT take, i.e. every
+ *  `running` row, stalled included. Used to optimistically patch the local
+ *  list the instant the server confirms a clear, without waiting for the
+ *  next poll. */
+export function jobsAfterClear(jobs: Job[]): Job[] {
+  return jobs.filter(isRunning);
+}
+
 // A scheduled message's job row, by id (fused_render/schedule.py `_JOB_PREFIX`).
 export const SCHEDULE_JOB_PREFIX = "sys:schedule:";
 
@@ -157,43 +221,6 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
   });
 }
 
-/**
- * The job rows the FOLD does not take — pass it what `jobRows` returned.
- *
- * A live scheduled run that reaches the job half is there because the queue half is
- * not drawing it (that is exactly what `jobRows` filtered on), so this row is the
- * only one that run has anywhere, and its ✕ is the only way to stop it. Folding it
- * away would re-create the bug `rowsShown` exists to prevent, one level down: a card
- * collapsed weeks ago, a turn running unattended, and nothing on screen to stop it
- * or to say that expanding would help.
- *
- * A SCHEDULED RUN'S OUTCOME SURVIVES TOO, and that is a reversal (Akshil,
- * 2026-08-21: a run showed "thinking" in the corner, then the row simply
- * disappeared and no surface ever said it had finished). A terminal row is a
- * report rather than a control, which was the reason to fold it — but folding
- * the ONLY report of unattended work leaves the collapsed card telling the story
- * backwards: a run appears, works, and vanishes mid-sentence. The row the user
- * watched has to be the row that says how it ended.
- *
- * `done` and `cancelled` only, never `error`. Not a hedge — the two are
- * self-retiring (jobs.py sweeps a finished row after FINISHED_TTL_S, a few
- * seconds), so the fold gains one closing frame and gives it back. An `error`
- * row is kept until it is dismissed BY DESIGN (it is the outcome someone may have to act
- * on), so piercing the fold with one would defeat the collapse preference for as
- * long as it sat there — and the card's header already carries the count that
- * says a run failed.
- *
- * Nothing else survives: a download's ✕ is a cancel REQUEST for work the user
- * started themselves and is one expand away, which is exactly what the
- * preference was set to fold.
- */
-export function foldedJobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => {
-    if (scheduleEntryId(j.id) === "") return false;
-    return isRunning(j) || j.state === "done" || j.state === "cancelled";
-  });
-}
-
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet
@@ -202,7 +229,12 @@ export function foldedJobRows(jobs: Job[]): Job[] {
 // reporter rounding, and a bar past its own end is worse than a full one.
 export function jobFraction(job: Job): number | null {
   if (job.state === "done") return 1;
-  if (job.total === null || job.total <= 0 || job.done === null) return null;
+  // `== null`, not `=== null` (D577): covers `undefined` as well, so a payload
+  // missing these keys yields null rather than `undefined / undefined` ->
+  // `NaN` -> a literal `NaN%` painted into the bar. Not user-reachable today
+  // (fused_render/jobs.py serializes explicit nulls — `done: float | None =
+  // None`), but the loose check costs nothing and removes the trap.
+  if (job.total == null || job.total <= 0 || job.done == null) return null;
   return Math.max(0, Math.min(1, job.done / job.total));
 }
 
@@ -312,104 +344,19 @@ export interface QueueCount {
   running: number;
 }
 
-const NO_QUEUE: QueueCount = { waiting: 0, running: 0 };
-
-/** Which of the card's two kinds of row are on screen (see `rowsShown`). */
-export interface RowsShown {
-  /** The queue's rows — work about to run or running now. */
-  queue: boolean;
-  /** The job rows — everything a page reported, and the outcome of a run. */
-  jobs: boolean;
-}
-
-/**
- * What the FOLD takes, which is not the whole list — and this is the one place
- * that decides it, because getting it wrong hides a control rather than a detail.
- *
- * The collapse is a persisted preference (`fused-render:jobs-collapsed`), and it
- * was set against the card as it used to be: a download history that grows all
- * session and is worth folding away. Then the queue moved into this same card, and
- * folding the whole list started taking the ONLY cancel a queued message or a live
- * turn has with it — a card someone collapsed weeks ago left scheduled work
- * arriving with no reachable way to stop it, and nothing on screen to say that
- * expanding would give them one. That is the bug this split fixes.
- *
- * So the fold applies to the JOB rows only:
- *
- * * **queue rows always show** while there are any. They are bounded (past due
- *   and about to run, not a session's history), each one is a claim on attention
- *   the user did not make, and each carries the only control that can stop it —
- *   a queued message's withdrawal, or a live turn's stop. Three rows about to run
- *   is not what anybody folded a downloads card to avoid.
- * * **job rows fold**, which is what the preference was set for. A download's ✕ is
- *   a cancel REQUEST for work the user started themselves, one expand away; the
- *   header still counts it and the overall bar still says it is running.
- *
- * `jobs: false` is still not quite "no job rows": `foldedJobRows` keeps the one kind
- * that must not be folded — a live scheduled run the queue half is not drawing,
- * which is the same argument as above applied to the row that stands in for a queue
- * row when the queue read failed. Everything the preference was set for still folds.
- *
- * Nothing here writes the preference: the stored fold is only ever changed by the
- * user pressing the header, so a card folded on purpose stays folded — it just
- * stops swallowing the queue's controls. Both false means no list at all, which
- * with an empty queue is exactly the collapsed download card as it always was.
- */
-export function rowsShown(collapsed: boolean, queue: QueueCount = NO_QUEUE): RowsShown {
-  return { queue: queue.waiting + queue.running > 0, jobs: !collapsed };
-}
-
-// The one header line for the whole card — the queue's rows and the job rows
-// under a single count, because they are one list of one kind of thing and two
-// headers over one corner is what this replaced.
-//
-// Counts what is HAPPENING, and falls back to describing what finished only when
-// nothing is: a header reading "2 running" over a list of four finished rows is
-// the common case, and the running ones are the news. Terminal rows are still
-// reachable — they are in the list, and Clear counts them.
-//
-// The NOUN is the honest one for the mix. Nothing has actually begun yet ⇒
-// "queued", never "running": a past-due message the scheduler has not claimed is
-// waiting, and calling that running is the kind of small lie that makes a user
-// stop believing the corner. "downloading" survives only for a card whose active
-// work is entirely downloads, which is what it always meant.
-//
-// A MIX names both halves instead of adding them up, for that same reason: one
-// live turn beside two unclaimed messages reads "1 running · 2 queued", never
-// "3 running". The sum was the same lie in a shorter sentence — it inflated how
-// much work is underway at exactly the moment a reader glances at the corner to
-// judge that.
-export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
-  const running = jobs.filter(isRunning);
-  const live = running.length + queue.running;
-  const active = live + queue.waiting;
-  if (active === 0) {
-    const failed = jobs.filter((j) => j.state === "error").length;
-    if (failed > 0) return failed === 1 ? "1 failed" : `${failed} failed`;
-    return jobs.length === 1 ? "1 finished" : `${jobs.length} finished`;
-  }
-  if (live === 0) return active === 1 ? "1 queued" : `${active} queued`;
-  const downloads = running.filter((j) => j.kind === "download").length;
-  const pureDownloads =
-    queue.waiting === 0 && queue.running === 0 && downloads === running.length;
-  const noun = pureDownloads ? "downloading" : "running";
-  const head = `${live} ${noun}`;
-  return queue.waiting === 0 ? head : `${head} · ${queue.waiting} queued`;
-}
-
-// Overall progress across the running jobs, for the collapsed header's bar —
-// or null when not every one of them can say how far along it is. Averaged over
-// jobs rather than summed over bytes on purpose: summing lets one 8GB model
-// download swallow a 40MB one entirely, so the bar would sit still while a
-// whole other job ran start to finish.
-export function overallFraction(jobs: Job[]): number | null {
-  const running = jobs.filter(isRunning);
-  if (running.length === 0) return null;
-  const fractions = running.map(jobFraction);
-  if (fractions.some((f) => f === null)) return null;
-  return (fractions as number[]).reduce((a, b) => a + b, 0) / running.length;
-}
-
+// `jobsSummary` AND `NO_QUEUE` ARE DELETED (code review 2026-08-28, finding 8),
+// along with `overallFraction`, `rowsShown`, `RowsShown`, `foldedJobRows` and
+// `repoUpdatesSummary` before them. `jobsSummary` printed the card's one header
+// line — "2 running · 1 queued", with a genuinely careful set of rules behind it
+// (name both halves rather than summing them, since one live turn beside two
+// unclaimed messages is not "3 running"; keep "downloading" only for a card
+// whose active work really is all downloads; fall back to what FINISHED only
+// when nothing is happening). D579 moved the idle sentence into the panel and
+// D588/D590 reduced the chip to a label plus one circle, which left nothing in
+// the bar for a sentence to render into. It survived that as a "pure, fully
+// tested function" with no non-test caller, which is the shape a future reader
+// mistakes for something load-bearing. `QueueCount` above STAYS — the card still
+// computes it, and the queue rows still need it.
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
 // discover is a job STARTED by some other document (a page in another browser
@@ -446,4 +393,39 @@ export function pollInterval(jobs: Job[], sinceLastRunningMs: number): number {
   if (jobs.some(isRunning)) return POLL_ACTIVE_MS;
   if (sinceLastRunningMs < GRACE_MS) return POLL_ACTIVE_MS;
   return POLL_IDLE_MS;
+}
+
+// ------------------------------------------------------------- auto-expand
+//
+// Shared by BOTH notification cards (DownloadManager.tsx's jobs/downloads
+// card and shell/RepoUpdatesDock.tsx's repo-updates card, D562 follow-up —
+// user call: "we can make the notifications 'un collapse' when a new one
+// comes"). Lives here, not in repo-updates-lib.ts, because platform/ may not
+// import shell/ (frontend/scripts/check-boundaries.mjs) — a helper both
+// sides use has to live on the platform side, and shell is free to import
+// it back.
+//
+// Pure and generic over the id: a job id for the jobs card, a repo root for
+// the repo-updates card. `seen` in, `seen` out — the caller (a ref, one per
+// card) owns the mutable state across renders/polls; this function only
+// decides what one snapshot means against it.
+//
+// An id merely CHANGING (progress ticking, running -> done, ahead/behind
+// moving) is not new — it was already in `seen` from an earlier snapshot and
+// stays there, so `hasNew` stays false and the card does not re-open under a
+// user who just folded it. An id that DISAPPEARS (cleared, dismissed,
+// forgotten, the server no longer reporting it) falls out of the returned
+// set — it is only ever repopulated from `currentIds` — so a genuinely
+// re-arriving id later reads as new again, exactly like a first arrival.
+export function trackSeenIds(
+  currentIds: Iterable<string>,
+  seen: ReadonlySet<string>
+): { seen: Set<string>; hasNew: boolean } {
+  const next = new Set<string>();
+  let hasNew = false;
+  for (const id of currentIds) {
+    next.add(id);
+    if (!seen.has(id)) hasNew = true;
+  }
+  return { seen: next, hasNew };
 }

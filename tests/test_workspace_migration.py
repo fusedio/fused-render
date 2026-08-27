@@ -139,25 +139,6 @@ def test_a_move_failure_does_not_raise(machine, monkeypatch):
 
 # ------------------------------------------------------------- the state files
 
-def test_rewrites_community_install_paths(machine, monkeypatch):
-    legacy, new, home = machine
-    legacy.mkdir(parents=True)
-    from fused_render import community
-
-    installs = home / "community" / "installs.json"
-    monkeypatch.setattr(community, "INSTALLS_JSON", str(installs))
-    storage.write_json(str(installs), {"schema": 1, "installs": {
-        "sine": {"path": str(legacy / "local" / "sine"), "commit": "abc"},
-        "other": {"path": str(legacy.parent / "Elsewhere" / "app")},
-    }})
-
-    wm.run()
-
-    data = storage.read_json(str(installs))
-    assert data["installs"]["sine"]["path"] == str(new / "local" / "sine")
-    assert data["installs"]["sine"]["commit"] == "abc"
-    assert data["installs"]["other"]["path"] == str(legacy.parent / "Elsewhere" / "app")
-
 
 def test_rewrites_bookmark_urls_including_nested_folders(machine):
     legacy, new, home = machine
@@ -492,19 +473,11 @@ def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
     _remap_url — the reason their parameters are typed `object`."""
     legacy, new, home = machine
     legacy.mkdir(parents=True)
-    from fused_render import community
 
-    installs = home / "community" / "installs.json"
-    monkeypatch.setattr(community, "INSTALLS_JSON", str(installs))
-    storage.write_json(str(installs), {"installs": {
-        "bad": {"path": None},
-        "worse": {"path": 17},
-        "good": {"path": str(legacy / "app")},
-    }})
     bookmarks = os.path.join(str(home), "bookmarks.json")
     # url fields are canonical_fs_path form (see the two tests above); the
-    # installs/scheduled-message paths below stay raw str(Path) — an
-    # OS-native record, per _remap's own docstring.
+    # scheduled-message paths below stay raw str(Path) — an OS-native
+    # record, per _remap's own docstring.
     storage.write_json(bookmarks, [
         {"id": "1", "name": "bad", "url": None},
         {"id": "2", "name": "worse", "url": {"nested": 1}},
@@ -524,12 +497,9 @@ def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
     wm.run()
 
     # The neighbours of every corrupt value are still rewritten...
-    assert storage.read_json(str(installs))["installs"]["good"]["path"] \
-        == str(new / "app")
     assert storage.read_json(bookmarks)[2]["url"] == _view_url(new / "a.html")
     assert storage.read_json(recents)["entries"][1]["url"] == _view_url(new / "b.html")
     assert storage.read_json(store)["entries"][1]["target"] == str(new / "proj")
     # ...and the corrupt ones are left exactly as they were.
-    assert storage.read_json(str(installs))["installs"]["bad"]["path"] is None
     assert storage.read_json(bookmarks)[0]["url"] is None
     assert storage.read_json(recents)["entries"][0]["url"] == 42

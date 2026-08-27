@@ -73,6 +73,7 @@ STATE = {
     "detail": "",
     "error": "",
     "resident_bytes": None,
+    "os_footprint_bytes": None,
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
@@ -555,9 +556,24 @@ _rss_peak = None
 def resident_bytes():
     """What this model is costing in memory, or None.
 
-    RSS by default: on Apple Silicon the GPU pool IS system memory, so it is the
-    honest single number and there is no separate VRAM figure to reconcile it
-    with. A runner that can do better supplies `memory=` to `serve()`, and the
+    RSS by default. **THE OLD JUSTIFICATION HERE WAS WRONG AND IS WORTH STATING
+    PLAINLY** (D597): it said "on Apple Silicon the GPU pool IS system memory,
+    so it is the honest single number and there is no separate VRAM figure to
+    reconcile it with". The premise is true — unified memory — but the
+    conclusion does not follow, because the pool is not in RSS. Measured on a
+    live MLX FLUX worker: 172 MB of RSS against 23 GB of dirty
+    `IOAccelerator (graphics)` regions, which are charged to the task's
+    `phys_footprint` and never appear in `resident_size`. So RSS is a FLOOR
+    here, not an honest total, and `os_footprint_bytes()` below is what answers
+    "what is this process actually holding" — as a LOWER BOUND, since neither
+    counter it can read is a superset of the other (see its own docstring).
+    This function's RETURN VALUE is deliberately unchanged all the same: it
+    feeds `peak_resident_bytes` -> `footprints.py` -> `fit.py`'s "measured"
+    rung, so redefining it would silently re-verdict every model the user has
+    ever run (easy -> tight, tight -> no). Whether a "measured" footprint
+    should include the allocator pool is a real question and not this change's
+    to answer.
+    A runner that can do better supplies `memory=` to `serve()`, and the
     LARGER of the two wins — both are real measurements and neither is a
     superset (RSS includes the interpreter and framework; a framework allocator
     includes buffers that may not be faulted into RSS yet), so the cost is at
@@ -589,6 +605,113 @@ def resident_bytes():
     if isinstance(rss, int) and rss > 0:
         _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
+
+
+#: macOS `TASK_VM_INFO`, and the byte offset of `phys_footprint` inside
+#: `task_vm_info_data_t`. VERIFIED EMPIRICALLY rather than counted off a header:
+#: `resident_size` at offset 16 matches `ps -o rss` exactly, and dirtying 500 MiB
+#: of anonymous memory moved offset 144 by 524.6 MB and offset 152 by nothing.
+#: The kernel reports how many `natural_t`s it filled, so a generous buffer is
+#: safe across OS revisions (this field arrived in "rev1" and every supported
+#: macOS fills well past it).
+_TASK_VM_INFO = 22
+_RESIDENT_SIZE_OFFSET = 16
+_PHYS_FOOTPRINT_OFFSET = 144
+
+
+def os_footprint_bytes():
+    """A LOWER BOUND on what this process is holding RIGHT NOW, or None (D597).
+
+    **`max(phys_footprint, resident_size)`, NOT `phys_footprint` alone** — code
+    review 2026-08-28, finding 3, which corrected a claim this docstring and
+    `ModelsDock.tsx`'s `MemoryCell` both used to make: that RSS is a strict
+    subset of the footprint. It is not. `phys_footprint` deliberately EXCLUDES
+    clean file-backed pages, and those are counted in `resident_size`. Measured
+    here, in a plain interpreter with no framework loaded: `resident_size`
+    19.2 MB against `phys_footprint` 9.3 MB. So for any runner that maps its
+    weights read-only — GGUF/llama.cpp, torch with `mmap=True` — the footprint
+    is the SMALLER of the two by roughly the size of the model file, and
+    reporting it alone rendered a row as `8.2 GB now (1.1 GB held)`: a visible
+    contradiction, with the status bar's colour band painted off the smaller
+    number while the machine held the larger.
+
+    NEITHER COUNTER IS THE TOTAL, which is why `max` rather than a choice
+    between them: RSS misses the Metal pool (measured on a live MLX FLUX
+    worker: 172 MB of RSS against 24 GB of `phys_footprint`, 23 GB of it dirty
+    `IOAccelerator` regions), and the footprint misses clean file pages. Their
+    max is a strictly better lower bound than either, and it restores the one
+    invariant the UI pair depends on — "held" can never read as less than
+    "now". A true total would need to add the disjoint parts, which needs a
+    region-by-region walk this probe deliberately does not do; hence "lower
+    bound" in the first line rather than "what it holds".
+
+    STILL THE NUMBER ACTIVITY MONITOR SHOWS in the case that motivated it: on
+    an MLX worker `phys_footprint` dominates by three orders of magnitude, so
+    the max IS the footprint and a user watching their system monitor sees the
+    figure this reports. The correction only ever raises the answer, and only
+    where RSS is the bigger of the two.
+
+    NOT `resident_bytes()`, and not a redefinition of it — see that function's
+    own docstring for why its value is frozen. This is additive, and it does
+    not feed `peak_resident_bytes` -> `footprints.py` -> `fit.py`, so no
+    model's "measured" verdict moves because of it.
+
+    NOT `get_active_memory()` either, which is what the framework has handed
+    out of its pool. After a render finishes MLX returns buffers to its own
+    pool but NOT to the OS, so active collapses while the process still holds
+    the memory. That exclusion is deliberate and correct for a COST figure
+    (`mflux_image/worker.py`'s own comment, and D310 measured a ~23.6 GB pool
+    against ~14.1 GB active) because it keeps runners comparable — torch
+    reports what it allocated, not the driver's reservation. It simply does not
+    apply to a live reading.
+
+    STDLIB ONLY on darwin, via `ctypes` — no psutil, whose `memory_full_info()`
+    does not expose `phys_footprint`. Both figures come out of the SAME
+    `task_vm_info` read (offsets 16 and 144), so they describe the same instant
+    and the max cannot be taken across two moments. Falls back to psutil's RSS
+    wherever no such counter exists (every non-macOS platform, and any darwin
+    failure above), and to None if even that is unavailable: never a guess, the
+    same rule the other two probes follow.
+    """
+    footprint = None
+    resident = None
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            import ctypes.util
+            import struct
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            libc.mach_task_self.restype = ctypes.c_uint32
+            size = 1024
+            buf = (ctypes.c_uint8 * size)()
+            count = ctypes.c_uint32(size // 4)
+            rc = libc.task_info(
+                ctypes.c_uint32(libc.mach_task_self()),
+                ctypes.c_int(_TASK_VM_INFO),
+                ctypes.byref(buf),
+                ctypes.byref(count),
+            )
+            filled = count.value * 4
+            raw = bytes(buf)
+            if rc == 0 and filled >= _PHYS_FOOTPRINT_OFFSET + 8:
+                footprint = struct.unpack_from("<Q", raw, _PHYS_FOOTPRINT_OFFSET)[0]
+            if rc == 0 and filled >= _RESIDENT_SIZE_OFFSET + 8:
+                resident = struct.unpack_from("<Q", raw, _RESIDENT_SIZE_OFFSET)[0]
+        except Exception:  # noqa: BLE001 - a memory probe must never break /health
+            footprint = resident = None
+    if resident is None:
+        # Every other platform, and any darwin failure above. On a machine with
+        # no separate GPU pool hiding outside RSS this is exactly what this
+        # function would have reported anyway.
+        try:
+            import psutil
+
+            resident = int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:  # noqa: BLE001 - psutil raises its own family
+            resident = None
+    candidates = [n for n in (footprint, resident) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
 
 
@@ -4077,6 +4200,9 @@ def _handler(generate, streaming):
                     # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
                     health["peak_resident_bytes"] = peak_resident_bytes()
+                    # The OS's own "right now" figure (D597), additive beside
+                    # the two above — see `os_footprint_bytes`.
+                    health["os_footprint_bytes"] = os_footprint_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)

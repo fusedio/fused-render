@@ -130,26 +130,230 @@
   border-color: var(--fg-muted);
 }
 
+/* ---- Status bar (SPEC §36, D563, redesigned D565, D573) ------------------- */
+/* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
+   column`), as its LAST child — so it reserves height for free and every page's
+   content ends above it, unlike the old fixed floating column this replaced,
+   which overlaid page content even collapsed. Four entries, left to right by
+   lifetime (StatusBar.tsx's own doc has the ordering principle): `models` and
+   `engines` (persistent), `activity` and `repoUpdates` (transient), each a
+   `.dl-host` chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different
+   categories of status bar should be always present") — there used to be a
+   `:empty { display: none }` rule collapsing the strip to nothing when both
+   sections were empty; the categories are a fixed readout now, so that rule is
+   gone and `#main` is permanently shorter by this bar's height, which is the
+   accepted cost of the call. `tabular-nums` here, not per element, so every
+   ticking figure in the bar's SUBTREE inherits it — no chip carries a digit any
+   more (D588/D590 took the counts, D589 Models' size), but a `.dl-panel` is a
+   descendant of this element, and a row's `.dl-pct`/`.dl-amount`/status line
+   tick constantly where proportional digits would twitch.
+
+   D573 (user: "the chevron doesn't belong to the status bar. lets follow
+   vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
+   LABEL you click, not a tree/accordion row with a disclosure triangle — the
+   only affordance is a hover wash across the item's own hit area, at rest
+   there is nothing. `min-height` drops 34px -> 24px (VS Code's own bar is
+   ~22px) and the chip text drops to 11px (below, `.dl-toggle`) to bring the
+   whole strip toward that density — it is a status bar, not a toolbar. */
+/* `justify-content: flex-end` (D569, user: "the items must be right
+   aligned.") — left unset in round 2, chips packed left and left a large
+   void on the right in every screenshot the user showed. See `.dl-panel`
+   below: right-aligning the chips is not cosmetic-only, it flips which edge
+   a panel has to anchor to. */
+.status-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+  padding: 0 8px;
+  /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
+     exactly what vscode is doing for the status bar") — `height`, not
+     `min-height`, because every item is now full-height and nothing inside
+     is allowed to grow the strip. 8px at the ends so the first and last item
+     are not flush against the window edge; NO `gap`, since each item's own
+     5px of side padding is the entire separation and adjacent items touch,
+     which is what VS Code does. */
+  height: 22px;
+  color: var(--fg);
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Sits between the toasts and the server card — see
-   NotificationHost for why the column is ordered by lifetime. Like the server
-   card it positions nothing; .notif-host owns placement. Deliberately the same
-   plate as a toast (--bg-alt, 8px radius, the same shadow) so the corner reads as
-   one surface rather than three competing widgets.
+   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's and
+   ModelsDock.tsx's sibling sections share below.
 
-   The queue used to wear this same plate in a SECOND card stacked directly above,
-   which is what made the corner read as two competing widgets after all. The
-   `dl-` prefix is the card's, `q-` is the queue row's; both live here now. */
+   Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
+   `.dl-panel` (below) can float above it, anchored to its own RIGHT edge
+   (D569, user: "the items must be right aligned" — `.status-bar` now packs
+   chips against the bar's right edge with `justify-content: flex-end`; a
+   LEFT-anchored panel would grow off `#main`'s right edge the instant it
+   actually reached 340px, the same class of bug D568's fix (2) fixed in the
+   opposite direction when chips packed left) — collapsed, `.dl-toggle` inside it
+   is the section's entire presence in the bar; expanded, `.dl-panel` opens
+   above that same chip. Before D563 this element WAS the floating card (the
+   plate, the header and the row list all lived directly in it); that plate —
+   --bg-alt, 8px radius, the toast shadow — moved to `.dl-panel`, the only
+   piece of this card that still floats over page content, and only while the
+   user has it open.
+
+   NO DIVIDER between sections any more (D573 retires the vertical rule this
+   comment used to describe) — VS Code separates status-bar items by padding
+   and the hover wash alone, no border between them; `.dl-toggle`'s own
+   padding (below) is what gives each chip a hit area, and there is nothing
+   left here to draw a rule between.
+
+   `flex: 0 1 auto; min-width: 0` (code review finding #6, was `0 0 auto` with
+   no `min-width`): a section never GREW to fill spare room in the bar — that
+   part was fine — but it also never SHRANK, so `.dl-summary`'s own
+   `text-overflow: ellipsis` had no narrower box to ellipsize into, and a
+   second chip in a narrow window was pushed straight past `#main`'s right
+   edge instead. Letting the section shrink is what lets its summary ellipsize
+   the way every other truncated label in this app already does under
+   pressure, rather than overflowing. */
 .dl-host {
-  /* A fixed comfortable width rather than shrink-to-fit: the column is a flex
-     box that sizes to its widest child, so a card left to its content width
-     jumps every time a row's title or byte count changes length — and at that
-     width "1.21 / 7.54 GB" and its percentage crowd the title into an
-     ellipsis. Capped to the viewport for the same reason .notif-host is. */
+  height: 100%; /* D576: the item inside fills the bar's full height. */
+  position: relative;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+/* A `|` BETWEEN sections (D578, user: "can we keep the | between them?" —
+   their original framing was `models (x count) | notifications | downloads`,
+   so this is the second time they have asked for it). A DELIBERATE DEVIATION
+   FROM VS CODE, which genuinely draws no dividers between status-bar items,
+   and therefore a partial reversal of D573's "no divider" call — the user's
+   own request outranks the reference here.
+   ON THE HOST, NOT INSIDE THE BUTTON, which is the whole reason this can work
+   at all now: `.dl-toggle` is a full-height rectangle that takes a hover and
+   an open background wash (D576), so a separator drawn inside it would be
+   washed along with the label and read as part of the item rather than as the
+   chrome between two of them.
+   A 1px HAIRLINE, not the literal `|` character: this project has already
+   learned that a typeset glyph renders at whatever weight and baseline the
+   font stack gives it (the round-2 `⌃`, which is why the chevron went to SVG
+   before being deleted outright), and at 12px a `|` sits off-centre and
+   inherits the label's own weight. A fixed 11px tall block against the bar's
+   22px is deliberately SHORT — a rule spanning the full height would read as
+   a structural division of the bar rather than a light separation of items.
+   `content: ""` on a pseudo-element is already outside the accessibility tree
+   and unclickable, so no `aria-hidden` or `pointer-events` is needed.
+   `3px` of margin each side puts it in the 10px of dead space between two
+   neighbours' `padding: 0 5px`, so it crowds neither label and — since this
+   ADDS space rather than removing it — it cannot bring back the 12px hover-
+   wash overlap that the old negative margin caused: the two washes now end
+   3px short of the separator on either side. */
+.status-bar > .dl-host:not(:last-child)::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 1px;
+  height: 11px;
+  margin: 0 3px;
+  background: var(--fg-muted);
+  opacity: 0.5;
+}
+
+/* The chip: this card's whole presence in the bar, and — D573 — ALWAYS a
+   real, clickable `<button>`, idle sections included: a status-bar item in
+   VS Code/Cursor is a label you click, and hover (not a disclosure chevron)
+   is the entire "this does something" signal. `min-width: 0` lets it
+   ellipsize under pressure (`.dl-host`'s own comment); the compact hit area
+   still needs to be a real one, which is what the hover wash below is for.
+   11px, not 12px (D573, "denser than what we have" — VS Code's own bar runs
+   ~12px text at ~22px tall; ours matches the app's existing small-chrome
+   size, the same 11px `.dl-amount`/`.dl-model` already use, rather than
+   inventing a fourth text size for this one strip). */
+.dl-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  /* A FULL-HEIGHT SQUARE RECTANGLE (D576) — the single biggest difference from
+     round 4, which drew an inset pill: `padding: 3px 8px` with a compensating
+     `-3px` vertical margin plus a 6px radius made these read as chips or
+     badges floating in the bar. A VS Code status-bar item is the full height of
+     the bar with 5px of side padding and no radius at all, so its hover fill
+     runs edge to edge vertically. The negative margin is gone along with the
+     inset it was compensating for. */
+  height: 100%;
+  padding: 0 5px;
+  border-radius: 0;
+  font: inherit;
+  /* 12px regular — VS Code's status bar runs 12px at normal weight; round 4's
+     11px was a guess at "denser". `.dl-summary`'s weight goes with it, below. */
+  font-size: 12px;
+  color: var(--fg);
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--dur-med) var(--ease-out);
+}
+
+.dl-toggle:hover {
+  background: var(--status-item-hover);
+}
+
+/* An OPEN item reads as open (D573): without a chevron to rotate, the only
+   way to say "this panel is up" is to mark the chip itself while it is — the
+   VS Code/Cursor convention for an engaged status-bar item. Keyed off
+   `aria-expanded` (already correct for every section — a real DOM fact this
+   button already carries) rather than a second className duplicating it.
+
+   A DIFFERENT TOKEN FROM HOVER (D574, retuned to VS Code's own pair in D576):
+   round 4 used the hover wash for both, so an open item and a merely-hovered
+   one were pixel-identical and "is a panel up?" was unanswerable without
+   looking away from the bar. That got worse the moment D574's auto-open
+   landed — a panel can now open with the user having touched nothing at all,
+   so the open marker is the ONLY thing saying which section did it.
+   `--status-item-active` is VS Code's `statusBarItem.activeBackground` (a
+   0.18 alpha overlay) against `--status-item-hover`'s 0.12 — deliberately
+   well clear of it. It also outranks the hover rule above at equal
+   specificity by sitting later in the cascade, so hovering an already-open
+   item does not knock it back to looking closed. */
+.dl-toggle[aria-expanded="true"] {
+  background: var(--status-item-active);
+}
+
+/* The panel: floats ABOVE the bar, anchored to its own chip's RIGHT edge
+   (D569, user: "the items must be right aligned" — chips now pack right via
+   `.status-bar`'s `justify-content: flex-end`, the mirror image of round 2's
+   layout; `left: 0` would grow a 340px panel off `#main`'s RIGHT edge the
+   moment a chip near that edge opened, the same class of bug as D568's
+   finding #2, just on the opposite side now that the alignment flipped),
+   and exists in the DOM only while expanded — collapsed,
+   this class never renders at all, which is the whole reachability story
+   (see DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
+   longer survive a collapse the way they did as a short card). Carries the
+   plate `.dl-host` used to wear before this card was split into a chip and a
+   panel: same width cap for the same reason (a card left to its content
+   width jumps every time a row's title or byte count changes length, and at
+   that width "1.21 / 7.54 GB" and its percentage crowd the title into an
+   ellipsis), same --bg-alt/8px-radius/shadow plate a toast wears, so an open
+   panel still reads as the same system rather than a different kind of
+   popover.
+
+   NO `max-width: 100%` (code review finding #1, HIGH — this is what caused
+   the user's screenshot): a percentage `max-width` on an absolutely
+   positioned element resolves against its CONTAINING BLOCK, which after the
+   chip/panel split is `.dl-host` — content-sized to the chip alone (finding
+   #6 above), roughly 100–180px, not the bar or the viewport. `width: min(340px,
+   calc(100vw - 32px))` already caps the panel correctly on its own; the
+   `max-width: 100%` line only ever clamped that number back DOWN to the
+   chip's width, which is exactly the crushed ~130px panel, ellipsised repo
+   name and wrapped Clear button the screenshot showed. */
+.dl-panel {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
   width: min(340px, calc(100vw - 32px));
-  max-width: 100%;
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -157,50 +361,164 @@
   box-shadow: 0 6px 20px var(--shadow-lg);
   animation: toast-in var(--dur-med) var(--ease-out);
   overflow: hidden;
+  /* Above `.notif-host`'s own 2000 (code review finding #5): `#main` — this
+     panel's ancestor — precedes `<NotificationHost />` in App.tsx's markup,
+     so on an EQUAL z-index the later sibling wins regardless of which one
+     the user actually opened, and a toast, FdaCard or the server banner
+     painted over an open panel. One higher is enough to always win against
+     that column while it is open, without reaching for anything above the
+     app's own stacking scale. */
+  z-index: 2001;
 }
 
+/* THE PANEL'S FOOTER — bulk action buttons only (Cancel queued / Clear), under
+   the list they act on. Right-aligned: with no toggle inside to push them there
+   via `flex: 1 1 auto`, they would otherwise pack against the leading edge.
+
+   IT WAS A HEADER UNTIL D602 (user: "notification UI is messed up"), and the
+   class keeps its name because both panels share it and renaming it would
+   touch more than this fix needs. A full-width band with `8px 10px` of padding
+   holding one small right-aligned button read as a blank row that had failed
+   to render — and it was the FIRST thing in the panel. It made sense while it
+   also carried a count and a title on its left; D588/D590 removed both and
+   left a header with nothing to head.
+
+   `6px 10px`, not `8px 10px`: enough to be comfortably clickable, not enough
+   to read as another row. The rows themselves are `8px 10px` (`.dl-row`), so
+   staying under that is what keeps this from looking like one of them.
+
+   THE HAIRLINE MOVED HERE FROM `.dl-rows` (which had `border-top`). That was
+   the actual source of the line the user saw under the band — it separated the
+   old header from the list, and left where it was it would now draw a stray
+   line across the panel's very top, doubled against `.dl-panel`'s own border.
+   As a `border-top` here it does the job it always did — divide actions from
+   content — from the correct side. */
 .dl-head {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   font-size: 12px;
-}
-
-/* The whole summary is the collapse target, not a lone chevron: the header is
-   already a row-height hit area and a 12px glyph is not. */
-.dl-toggle {
-  flex: 1 1 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding: 0;
-  font: inherit;
-  color: var(--fg);
-  background: none;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-}
-
-.dl-chevron {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  font-size: 11px;
-  line-height: 1;
-  transition: transform var(--dur-med) var(--ease-out);
-}
-
-.dl-chevron.is-collapsed {
-  transform: rotate(-90deg);
+  border-top: 1px solid var(--border);
 }
 
 .dl-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  /* REGULAR (D576): VS Code's status-bar items carry no extra weight at all.
+     Round 1 went 600 ("reads like a heading", per code review), round 4 walked
+     it back to 500; matching VS Code exactly takes it to 400, and at 12px on a
+     22px bar the bolder text was the loudest thing on screen. */
+  font-weight: 400;
+}
+
+/* THE ONE INDICATOR (D588, user: "jobs and notifications can have a
+   empty/filled circle - no need for count"). Jobs and Notifications each show
+   a single circle: OUTLINED when the section holds nothing, FILLED when it
+   holds something. That is the section's whole state — and since D589 removed
+   Models' `· 5.6 GB`, NO CHIP IN THIS BAR CARRIES A NUMBER AT ALL. The digits
+   that remain all live inside an expanded `.dl-panel`: a row's `.dl-pct`, its
+   `.dl-amount`, its status line.
+
+   THIS RETIRES THE RESERVATION MACHINERY OUTRIGHT rather than sitting beside
+   it. D581 held an empty `2ch` slot open so the bar could not reflow when a
+   count appeared; D583 replaced that with an always-rendered digit so nothing
+   appeared or disappeared; D584 made the zero an outlined dot. All three were
+   answers to "a count changes width", and a circle that is the SAME ELEMENT
+   at the SAME SIZE in both states answers it by construction: nothing
+   appears, nothing disappears, nothing changes width, so `.dl-count`,
+   `.dl-zero` and their `min-width`/`padding-left`/tabular reasoning are
+   deleted, not left dormant. (`font-variant-numeric: tabular-nums` stays on
+   `.status-bar` — not for any chip, which has no digits left, but because a
+   `.dl-panel` is a descendant of `.status-bar` and every ticking figure in a
+   panel row inherits it from there. Assessed rather than assumed at code
+   review 2026-08-28, finding 9.)
+
+   A DIRECT FLEX CHILD OF `.dl-toggle`, which is what fixes the centring the
+   user reported as "bottom aligned vertically". The old circle sat three deep
+   (`.dl-summary > .dl-count > .dl-zero`) and leaned on `vertical-align:
+   middle` — which aligns to the baseline plus half the parent's x-height, an
+   approximation that sits low and drifts with the font's metrics. As a flex
+   item of a `display: flex; align-items: center` parent it is centred on the
+   chip's own box with no `vertical-align` at all. Both states are ONE element
+   with one geometry, so they cannot drift apart the way two rules could.
+
+   7px, an explicit pixel size, NOT `1ch`: `1ch` existed only so the circle
+   matched a digit's advance while it could swap places with one, and with the
+   counts gone that constraint is void — a font-relative size would just drift
+   for no reason. 7px reads as a peer of the 12px label without competing with
+   it. Spacing is `.dl-toggle`'s existing `gap: 6px`, unchanged and correct at
+   this size: tighter crowds the label, wider starts to look like a separate
+   item in the bar.
+
+   `currentColor` for BOTH border and fill, which is the whole colour story in
+   one line — the circle inherits whatever the chip's own state has already
+   decided: `--fg-muted` under `.is-idle` (nothing here), `--fg` ordinarily
+   (something here), `--error` under `.is-failure` on Notifications. So a
+   failure tints the circle with the chip and a plain repo update does not,
+   with no second colour rule to keep in sync. */
+.dl-dot {
+  flex: 0 0 auto;
+  display: block;
+  width: 7px;
+  height: 7px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+
+/* FILLED = "there is something in this section". Also the quiet signal for an
+   error-sourced notification (D586): a background failure fills this circle
+   and opens no panel, which is the one case where the circle is the only mark
+   the user gets. */
+.dl-dot.is-on {
+  background: currentColor;
+}
+
+/* The panel's own EMPTY state — `No models loaded` / `No engines running` /
+   `No jobs` / `No notifications` (D579, D591) — for a section with nothing to
+   show (D573). This text used to live in the CHIP itself (a separate
+   unpressable `.dl-idle` span, no button, no panel behind it) — the user's own
+   words moved it: "lets have simpler stuff like models (x count) |
+   notifications | downloads etc and the no xyz part in the popover thing that
+   opens". The chip now shows a category name and its one circle, and is always
+   a real button; this is what its panel draws instead of rows when there is
+   nothing to list. (Models' size was dropped in D589 — the aggregate was a sum
+   of worker RSS and inaccurate — so no chip carries a number any more.) */
+.dl-panel-empty {
+  padding: 10px;
+  /* Centred (D592, user: "also make the 'no jobs' etc text center aligned in
+     the popover"). One rule covers all four sections because they already
+     share this class — `No models loaded` / `No engines running` / `No jobs` /
+     `No notifications`. A one-line sentence in a 340px panel reads as a
+     stranded fragment left-aligned; centred it reads as the panel's own
+     state. */
+  text-align: center;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* IDLE CHIP TEXT: the section has nothing in it (D573) — the chip is still a
+   real button (hover wash, opens the panel above to show the empty state),
+   only its text goes muted. This is now the ONLY signal in the bar that a
+   section has content: no separate element, no chevron, nothing else
+   changes shape between idle and active. */
+.dl-toggle.is-idle {
+  color: var(--fg-muted);
+}
+
+/* FAILURE: the one state worth a colour other than the ordinary "things are
+   happening" ink. ON THE NOTIFICATIONS CHIP NOW, not Jobs (D586) — failures
+   were re-routed out of Jobs, so the condition there could never fire again;
+   the tint moved with the rows, to the section that actually holds them
+   (`RepoUpdatesCardView`'s own `hasFailure`). It is also simpler there: an
+   `error` row is always terminal, so Jobs' old "everything terminal and
+   nothing left running" clause had nothing left to say and is gone. Applied to
+   the whole chip, so the whole line reads as needing a look rather than just
+   the count inside it. */
+.dl-toggle.is-failure {
+  color: var(--error);
 }
 
 .dl-clear {
@@ -221,26 +539,38 @@
 
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
-   would push its own header off-screen. */
+   would push its own header off-screen. Never rendered at all while
+   collapsed (D562, 2026-08-27, user call: "everything is foldable, even for
+   the job cards") — collapsing hides EVERY row, queue and job alike, with no
+   exemption and no partial-height fold, so there is no `.is-folded` cap any
+   more; DownloadManagerView and RepoUpdatesDock.tsx's own card both omit
+   this element outright rather than leave an empty box when collapsed. */
 .dl-rows {
   max-height: min(46vh, 340px);
   overflow-y: auto;
-  border-top: 1px solid var(--border);
-}
-
-/* FOLDED, the same list holds the rows that carry a control for unattended work and
-   nothing else: the collapse takes the job rows (a session's download history, which
-   is what it was set to fold away) and never the only cancel a queued message or a
-   live turn has — see DownloadManager, jobs.ts `rowsShown` and `foldedJobRows`. That
-   is usually the queue's rows; when the queue read failed it is a JOB row standing in
-   for one, which wears .dl-row and lands in the same 16px control column (measured:
-   every .q-x, .q-spin and .dl-x sits at the same offset, so the column does not step
-   sideways where the row kind changes). Capped shorter than the open list so
-   the fold still buys a small card when a dozen messages come due at once, e.g.
-   after a laptop wake. Same rows, same hairlines, same controls; only the ceiling
-   moves, so nothing shifts sideways as the card opens and closes. */
-.dl-rows.is-folded {
-  max-height: min(30vh, 172px);
+  /* ROUND 3, REAL BUG (user, with a screenshot: "the notification cards
+     should not be scrollable" — their panel had scrolled SIDEWAYS, cutting
+     off the left half of every row, to reach a Cancel button clipped on the
+     right). This rule declared `overflow-y` alone; per the CSS overflow
+     spec, a computed `visible` on one axis becomes `auto` on the other axis
+     the moment that axis is not `visible` — so `overflow-x` silently
+     computed to `auto` too, and any row wide enough to overflow (the
+     `.dl-title`/`.dl-model` fix above is the actual cause, not this rule)
+     turned the whole panel into a horizontal scroll container instead of
+     clipping or, better, genuinely fitting. `overflow-x: hidden` makes that
+     axis explicit and permanently closed — this panel must never scroll
+     sideways, whatever a row does — while `overflow-y` stays `auto` on
+     purpose: a long job list has to scroll vertically or it pushes its own
+     header off-screen, and that half of this rule is unchanged. This is
+     belt-and-braces alongside the row fix above, not a replacement for it —
+     clamping the axis alone would silently CLIP a control that overflows
+     instead of letting the user scroll to it, which is worse; the row
+     itself must still genuinely fit within `.dl-panel`'s width. */
+  overflow-x: hidden;
+  /* NO `border-top` any more (D602): it existed to divide the old header from
+     this list, and that divider now lives on `.dl-head` as a `border-top`
+     because the actions moved below. Left here it would draw a line across the
+     panel's top edge, doubled against `.dl-panel`'s own border. */
 }
 
 /* One rule for every row in the list, whatever kind it is — a queue row above a
@@ -270,33 +600,162 @@
   margin-bottom: 5px;
 }
 
+/* THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
+   space in the jobs card. why are we truncating stuff instead of placing things
+   elsewhere?"). This element is no longer part of a shrink LADDER, because
+   there is nothing left on the head line for it to lose a fight with:
+   `.dl-model` moved to its own line and `.dl-amount` went back to protected.
+   The row was never short of space — it was short of LINES, and D571/D577 kept
+   answering "which text loses?" instead.
+   TWO LINES, CLAMPED, not one line ellipsised: a long prompt now uses the width
+   the card actually has and the second line takes the remainder, so the
+   pathological `F…` — a field rendered as one character plus an ellipsis, which
+   conveys nothing while still costing width — is gone by construction rather
+   than by tuning. The clamp stops a runaway title pushing the bar and status
+   line down the panel; `overflow-wrap: anywhere` is what lets an unbroken token
+   (a URL, a long model id) wrap at all instead of forcing an overflow.
+   `min-width: 15ch` STAYS (D577, user: "the UI is not readable"): with the
+   head's other flexible item gone this is rarely reached, but it is still what
+   stops a very narrow panel squeezing the title to a few characters — the floor
+   whose absence produced `Downloa…`. */
 .dl-title {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 15ch;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 
-/* The model running this row (JobRow's `.dl-model`), a dimmed suffix after
-   the title — never part of `title` itself, so it needs its own truncation
-   story. `.dl-title` is the row's only `flex-shrink`able child (flex: 1 1
-   auto); this, like `.dl-amount`/`.dl-pct`/`.dl-x` beside it, is `flex: 0 0
-   auto` and so cannot be squeezed — a long prompt ellipsizes in `.dl-title`
-   long before this would ever be asked to give up room. */
+/* The model running this row (JobRow's `.dl-model`) — ON ITS OWN LINE since
+   D596, no longer a suffix on the head. It is a `<div>` between the head and
+   the progress bar, so it has the panel's full width and needs no shrink
+   factor, no `min-width` floor and no place in any ladder: `flex: 0 999 auto`
+   and the whole "freeze and redistribute" mechanism D571 built here are
+   DELETED, not retuned.
+   Why this field and not the title: `jobs.ts`'s own comment calls it a
+   redundant restatement whenever the title already names the model, so when
+   something has to give ground it is the one that should be relegated. Giving
+   it a line costs nothing the card did not already have — the card's spare
+   space was the user's whole complaint.
+   Still ellipsised on ONE line, because a model id is a single unbreakable
+   token and wrapping one mid-word reads worse than truncating it; at full panel
+   width it now almost never reaches that. Full id stays on hover. */
 .dl-model {
-  flex: 0 0 auto;
+  margin-bottom: 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
-.dl-amount,
+/* BACK IN THE PROTECTED GROUP (D596), reversing D577's `flex: 0 9999 auto`.
+   D577 made this the first thing to shrink because the head line was
+   over-subscribed and something had to give; with `.dl-model` on its own line
+   the head is no longer over-subscribed and the title WRAPS rather than
+   fighting for width, so there is nothing a shrinking amount would buy. It also
+   removes the class of bug the user reported: a byte count minced to a
+   character and an ellipsis is not information, and an ellipsis implies
+   recoverable content behind it. This field now either renders in full or is
+   not under pressure at all. */
+.dl-amount {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* THE MEMORY BANDS. Three steps matching `AiFitVerdict`'s existing
+   easy/tight/no vocabulary — the AI Models page's fit badge already speaks it,
+   and a second scale for the same concept would be a regression.
+   EXISTING STATUS TOKENS, no new hex: `--success`/`--warning`/`--error` are
+   what this palette reserves for exactly this ("--success/--warning/--error say
+   what a thing IS", tokens.css's own note), so they theme correctly for free.
+   `no` — the model genuinely EXCEEDS the ceiling — is the ONLY band that gets
+   the error colour. A large model that fits is not an error, which is the
+   distinction `tight` exists to draw.
+
+   ON `.dl-mem-live` — THE PARENTHETICAL — NOT `.dl-amount` (D600), moved off
+   the primary deliberately. The band is computed from `osFootprintBytes`
+   against the machine ceiling, so it belongs on the figure it DESCRIBES.
+   Painted on the primary it coloured a 1.8 GB RSS green while the machine sat
+   at 24 GB of 24 GB — a false signal at the one moment the colour matters.
+   `.dl-amount` keeps the row's ordinary muted ink, so the leading "now" figure
+   is never tinted by a judgement about a different number. */
+.dl-mem-live {
+  color: var(--fg-muted);
+}
+
+.dl-mem-live.is-mem-easy {
+  color: var(--success);
+}
+
+.dl-mem-live.is-mem-tight {
+  color: var(--warning);
+}
+
+.dl-mem-live.is-mem-no {
+  color: var(--error);
+}
+
+/* PROTECTED — never `flex-shrink`: `.dl-pct` here, `.dl-row-cancel` and
+   `.dl-x` further down, keep their intrinsic width unconditionally, which is
+   what makes a running row's Cancel button reachable rather than pushed off
+   the edge (D571's goal, unchanged — `.dl-amount` moved OUT of this group in
+   D577, `.dl-pct` did not). */
 .dl-pct {
   flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
+}
+
+/* A row's own action — Unload (Models), Stop (Engines), Cancel (a running
+   job). Text, not a glyph, so "stop this" and "take it off my screen" (the
+   row's ✕) read as different intents rather than the same cross with a
+   different tooltip.
+   PROMINENT SINCE D593 (user: "can we make the unload button on the model row
+   more prominent. it is easy to miss right now"). It used to be `.dl-clear`'s
+   quiet outline shrunk down — 10px, `--fg-muted`, `background: none` — which
+   at the end of a row full of muted metadata read as more metadata. Three
+   changes, all aimed at "clearly a control" and none at "warning": a FILLED
+   resting background (`--row-bg-hover`, i.e. the panel's own `--bg-alt` under
+   a neutral wash, so it sits slightly raised against the panel rather than
+   flush in it), `--fg` text at 11px instead of muted 10px, and real padding
+   for a hit target instead of a 1px squeeze.
+   DELIBERATELY NOT DESTRUCTIVE STYLING — no `--error`, no red. Unloading a
+   model reloads on next use, and every Engines kind respawns (routers/
+   engines.py's own docstring), so a danger treatment would overstate what
+   these do. Prominent, not alarming.
+   ONE CLASS COVERS ALL THREE, which is why Cancel gets the same lift: having
+   Unload prominent and its neighbours faint would read as a hierarchy that
+   does not exist between them. */
+.dl-row-cancel {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--row-bg-hover);
+  border: 1px solid var(--fg-muted);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+/* Hover moves the BACKGROUND, not the opacity — `--row-bg-active` is the app's
+   existing engaged token (an accent wash over `--bg-alt`, the same one a
+   selected sidebar row wears), so the feedback is a real state change and
+   needs no new token. */
+.dl-row-cancel:hover:not(:disabled) {
+  background: var(--row-bg-active);
+  border-color: var(--fg);
+}
+
+.dl-row-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
@@ -344,11 +803,6 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   word-break: break-word;
-}
-
-/* The header's own bar, shown while collapsed, spans the card edge to edge. */
-.dl-host > .dl-bar {
-  border-radius: 0;
 }
 
 .dl-bar {
@@ -444,8 +898,16 @@
   font-size: 12px;
 }
 
+/* `flex: 0 1 auto`, NOT `1 1 auto` (D573, user: the trailing ✕ "sits after a
+   wide gap of dead space"): a grow factor stretched the title across the whole
+   panel width, shoving the row's action and its dismiss ✕ hard against the
+   right edge with an empty void between them and the name they belong to. With
+   no grow, the controls FOLLOW the text — the row reads as one group, and
+   spare width falls after the ✕ instead of inside the row. Shrink stays `1`
+   (with `min-width: 0` below) so a long repo name still ellipsizes rather than
+   pushing those controls off the panel edge. */
 .q-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -495,6 +957,7 @@
    make the job rows below them look unreachable. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
+.dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible,
 .q-open:focus-visible,
