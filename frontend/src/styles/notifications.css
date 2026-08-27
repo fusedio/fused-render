@@ -573,64 +573,51 @@
   margin-bottom: 5px;
 }
 
-/* `min-width: 15ch`, NOT `0` (D577, user: "the UI is not readable") — the
-   floor is the whole fix. D571 made this the element that gives way so
-   `Cancel` could never be pushed out of the panel; that goal was right and is
-   kept, but with a `0` floor and every OTHER element refusing to shrink at
-   all, "gives way" meant the title surrendered EVERYTHING before anything
-   else surrendered anything: it rendered as `Downloa…` — seven characters —
-   beside a byte count at full intrinsic width. A partial model name is
-   useful; `Downloa…` is not. 15ch still ellipsizes under real pressure, it
-   just stops at a length that carries information. `flex-shrink` stays `1`,
-   the LOWEST of the three flexible elements now (`.dl-amount` 9999,
-   `.dl-model` 999, below), so the title is still the last thing asked. */
+/* THE TITLE WRAPS INSTEAD OF COMPETING (D596, user: "we have a ton of free
+   space in the jobs card. why are we truncating stuff instead of placing things
+   elsewhere?"). This element is no longer part of a shrink LADDER, because
+   there is nothing left on the head line for it to lose a fight with:
+   `.dl-model` moved to its own line and `.dl-amount` went back to protected.
+   The row was never short of space — it was short of LINES, and D571/D577 kept
+   answering "which text loses?" instead.
+   TWO LINES, CLAMPED, not one line ellipsised: a long prompt now uses the width
+   the card actually has and the second line takes the remainder, so the
+   pathological `F…` — a field rendered as one character plus an ellipsis, which
+   conveys nothing while still costing width — is gone by construction rather
+   than by tuning. The clamp stops a runaway title pushing the bar and status
+   line down the panel; `overflow-wrap: anywhere` is what lets an unbroken token
+   (a URL, a long model id) wrap at all instead of forcing an overflow.
+   `min-width: 15ch` STAYS (D577, user: "the UI is not readable"): with the
+   head's other flexible item gone this is rarely reached, but it is still what
+   stops a very narrow panel squeezing the title to a few characters — the floor
+   whose absence produced `Downloa…`. */
 .dl-title {
   flex: 1 1 auto;
   min-width: 15ch;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   font-weight: 600;
 }
 
-/* The model running this row (JobRow's `.dl-model`), a dimmed suffix after
-   the title — never part of `title` itself, so it needs its own truncation
-   story.
-   ROUND 3, REAL BUG (measured: a running, cancellable row with a realistic
-   model name — `Downloading Qwen2.5-Coder-32B-Instruct-4bit` — pushed Cancel
-   33px past the panel's right edge, clipped in half by `.dl-panel`'s own
-   `overflow: hidden`). This class used to be `flex: 0 0 auto` with no
-   `min-width`, on the theory that `.dl-title` (the row's only OTHER
-   flex-shrinkable child) would always give up room first and this would
-   never be asked to. That theory holds for a long PROMPT — `.dl-title`
-   absorbs it — but not for a long MODEL NAME: this element carries its own
-   unrelated text and, `flex: 0 0 auto`, refused to shrink at all, so once
-   `.dl-title` had already given up every pixel down to its own `min-width:
-   0` the row's total content could still exceed the panel's width, and
-   `.dl-amount`/`.dl-pct`/`.dl-row-cancel`/`.dl-x` (still genuinely `flex: 0
-   0 auto`, and MUST stay that way — their own width is never optional) had
-   nowhere to go but past the panel's padding edge.
-
-   ORDERED, NOT PROPORTIONAL (D571 follow-up, coordinator: with both this and
-   `.dl-title` at an equal `flex-shrink: 1`, the two shrank in lockstep —
-   `Downloadin…` / `Qwen2.…` — cutting the row's TWO identifying fields to
-   uselessness together while `.dl-amount`/`.dl-pct` kept full width. `.dl-
-   model` is a dimmed SECONDARY suffix, and per `jobs.ts`'s own comment it is
-   a redundant restatement whenever the title already names the model — true
-   in exactly this repro. `flex-shrink: 999` here, `.dl-title`'s stays `1`
-   (unchanged above): CSS Flexbox resolves shrink in passes — an item
-   clamped at its `min-width` freezes and drops out, and remaining negative
-   space is then redistributed among the flexible items still standing. With
-   a 999:1 shrink-factor split, the first pass assigns the model suffix
-   essentially all of the negative space; once it bottoms out at `min-width:
-   0` and freezes, `.dl-title` is the only item left to absorb whatever
-   deficit remains. The practical result is the model collapses to nothing
-   FIRST, and the title only starts giving up characters once there is
-   nothing left of the model to take — a priority order out of a mechanism
-   built for proportions, not a JS measurement or a second breakpoint. */
+/* The model running this row (JobRow's `.dl-model`) — ON ITS OWN LINE since
+   D596, no longer a suffix on the head. It is a `<div>` between the head and
+   the progress bar, so it has the panel's full width and needs no shrink
+   factor, no `min-width` floor and no place in any ladder: `flex: 0 999 auto`
+   and the whole "freeze and redistribute" mechanism D571 built here are
+   DELETED, not retuned.
+   Why this field and not the title: `jobs.ts`'s own comment calls it a
+   redundant restatement whenever the title already names the model, so when
+   something has to give ground it is the one that should be relegated. Giving
+   it a line costs nothing the card did not already have — the card's spare
+   space was the user's whole complaint.
+   Still ellipsised on ONE line, because a model id is a single unbreakable
+   token and wrapping one mid-word reads worse than truncating it; at full panel
+   width it now almost never reaches that. Full id stays on hover. */
 .dl-model {
-  flex: 0 999 auto;
-  min-width: 0;
+  margin-bottom: 5px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -638,25 +625,17 @@
   color: var(--fg-muted);
 }
 
-/* SHRINKS FIRST, ahead of even the model suffix (D577): `flex-shrink: 9999`
-   against `.dl-model`'s 999 and `.dl-title`'s 1. This used to sit in the
-   PROTECTED group below with `flex: 0 0 auto`, and that was the actual cause
-   of the unreadable row — the amount held its full intrinsic width
-   (`2.0 / 4.3 GB`, or a bare byte pair when a reporter sends no `unit`) while
-   the title collapsed to nothing beside it. It is also the most REDUNDANT
-   thing in the row: the progress bar and `.dl-pct` each already say how far
-   along the job is, so the amount is the third telling of it and the right
-   thing to lose. Ellipsized rather than hidden outright: `.dl-panel`'s width
-   is `min(340px, 100vw - 32px)`, i.e. fixed at 340px for any viewport wider
-   than 372px, so a width-threshold `display: none` would essentially never
-   fire — the variable here is CONTENT length, not panel width, and only
-   shrink priority answers that. */
+/* BACK IN THE PROTECTED GROUP (D596), reversing D577's `flex: 0 9999 auto`.
+   D577 made this the first thing to shrink because the head line was
+   over-subscribed and something had to give; with `.dl-model` on its own line
+   the head is no longer over-subscribed and the title WRAPS rather than
+   fighting for width, so there is nothing a shrinking amount would buy. It also
+   removes the class of bug the user reported: a byte count minced to a
+   character and an ellipsis is not information, and an ellipsis implies
+   recoverable content behind it. This field now either renders in full or is
+   not under pressure at all. */
 .dl-amount {
-  flex: 0 9999 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 0 0 auto;
   font-size: 11px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;

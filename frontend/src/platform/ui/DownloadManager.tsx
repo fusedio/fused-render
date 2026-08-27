@@ -432,22 +432,6 @@ export function JobRow({
         <span className="dl-title" title={job.page || undefined}>
           {job.title}
         </span>
-        {/* Suppressed when it just repeats the title (`_start_resident`/`load`
-            set both `title` and `model` to the same model id) — otherwise a
-            model-load row would draw the model name twice. */}
-        {job.model && job.model !== job.title && (
-          // The MODEL name only, not the whole `owner/model` repo id. The owner
-          // is the same for every row a given model ever draws, so it spent the
-          // head's scarcest resource on the one part that never distinguishes
-          // anything. Full id stays on hover, since shortening makes two
-          // owners' same-named models identical. `.dl-model` itself now
-          // ellipsises and shrinks FIRST, ahead of `.dl-title` (D571,
-          // notifications.css's own comment on `.dl-model` has the
-          // mechanism) — this suffix gives way before the title does.
-          <span className="dl-model" title={job.model}>
-            {repoName(job.model)}
-          </span>
-        )}
         {amount && <span className="dl-amount">{amount}</span>}
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
@@ -475,6 +459,28 @@ export function JobRow({
           </button>
         )}
       </div>
+      {/* THE MODEL, ON ITS OWN LINE (D596, user: "we have a ton of free space in
+          the jobs card. why are we truncating stuff instead of placing things
+          elsewhere?"). It used to be a suffix on the head line, competing with
+          the title for one line's width under D571's shrink ladder — which is
+          how a running FLUX row rendered `update picture to be ghibli st…` then
+          a lone `F…`: a field minced to one character plus an ellipsis, which
+          conveys nothing while still costing width. `jobs.ts`'s own comment
+          already calls this a redundant restatement whenever the title names
+          the model, so it is the field that should be RELEGATED rather than the
+          one that should be minced. Off the head line it gets the panel's full
+          width and needs no shrink factor at all.
+          Suppressed when it just repeats the title (`_start_resident`/`load`
+          set both `title` and `model` to the same model id) — otherwise a
+          model-load row would draw the model name twice. The MODEL name only,
+          not the whole `owner/model` repo id: the owner is identical for every
+          row a given model ever draws. Full id stays on hover, since shortening
+          makes two owners' same-named models identical. */}
+      {job.model && job.model !== job.title && (
+        <div className="dl-model" title={job.model}>
+          {repoName(job.model)}
+        </div>
+      )}
       <Bar job={job} />
       {/* A local action's own failure takes this line over the job's
           ordinary status sentence — it is more urgent and it is about the

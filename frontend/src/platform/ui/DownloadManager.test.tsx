@@ -589,7 +589,7 @@ test("re-collapsing while the same ids are still present sets no dot either", ()
 // which now share the job of giving way (`.dl-title`, `.dl-model`) both carry
 // the full shrink-to-ellipsis contract, not that a browser renders it inside
 // the width. The real geometry was verified against a running dev server.
-describe("a running row's protected controls never give up their width (D569)", () => {
+describe("the row uses LINES, not a shrink ladder (D596)", () => {
   const { readFileSync } = require("node:fs") as typeof import("node:fs");
   const { join } = require("node:path") as typeof import("node:path");
   const CSS = readFileSync(join(import.meta.dir, "../../styles/notifications.css"), "utf8");
@@ -600,67 +600,96 @@ describe("a running row's protected controls never give up their width (D569)", 
     return css.slice(at, css.indexOf("}", at));
   }
 
-  // D577 (user: "the UI is not readable") INVERTS what gives way. The row had
-  // rendered `Downloa…  2100000000 / 4600000000  46%  [Cancel]`: with a `0`
-  // floor on the title and every other element refusing to shrink at all,
-  // "the title gives way" meant it surrendered EVERYTHING before anything
-  // else surrendered anything. The title now holds a readable floor and the
-  // AMOUNT is what collapses — it is the most redundant thing in the row,
-  // since the bar and `.dl-pct` each already say how far along the job is.
-  it("gives the title a readable floor instead of letting it vanish", () => {
+  // D596 (user: "we have a ton of free space in the jobs card. why are we
+  // truncating stuff instead of placing things elsewhere?"). D571/D577 kept
+  // answering "which text loses?" on a single head line; the row was never
+  // short of space, it was short of LINES. The old ladder — `.dl-amount` 9999,
+  // `.dl-model` 999, `.dl-title` 1 — is RETIRED, so the tests that pinned it
+  // are replaced rather than retuned.
+
+  it("wraps the title to two clamped lines instead of ellipsising it on one", () => {
     const rule = block(CSS, ".dl-title");
+    expect(rule).toContain("-webkit-line-clamp: 2;");
+    expect(rule).toContain("overflow-wrap: anywhere;");
+    // The one-line treatment is what produced `Downloa…` and `F…`.
+    expect(rule).not.toContain("white-space: nowrap;");
+    // ...and the floor that stops a narrow panel mincing it survives (D577).
     expect(rule).toContain("min-width: 15ch;");
-    expect(rule).not.toContain("min-width: 0;");
-    expect(rule).toContain("overflow: hidden;");
-    expect(rule).toContain("text-overflow: ellipsis;");
-    expect(rule).toContain("white-space: nowrap;");
   });
 
-  it("still lets the model suffix and the amount shrink to nothing and ellipsise", () => {
-    for (const selector of [".dl-model", ".dl-amount"]) {
-      const rule = block(CSS, selector);
-      expect(rule).toContain("min-width: 0;");
-      expect(rule).toContain("overflow: hidden;");
-      expect(rule).toContain("text-overflow: ellipsis;");
-      expect(rule).toContain("white-space: nowrap;");
-    }
+  it("leaves the model suffix with no shrink factor at all — it is off the head line", () => {
+    const rule = block(CSS, ".dl-model");
+    expect(rule).not.toContain("flex:");
+    expect(rule).not.toContain("min-width:");
   });
 
-  // The ORDER is the subtle part and the whole point of D577, so it is pinned
-  // explicitly rather than left implied by three separate `flex` assertions:
-  // amount collapses first, then the model suffix, and the title only starts
-  // giving up characters once there is nothing left of either to take.
-  it("shrinks amount FIRST, then the model suffix, and the title LAST", () => {
-    const shrink = (selector: string): number => {
-      const m = block(CSS, selector).match(/flex:\s*\d+\s+(\d+)\s+auto;/);
-      expect(m).not.toBeNull();
-      return Number(m![1]);
-    };
-    const amount = shrink(".dl-amount");
-    const model = shrink(".dl-model");
-    const title = shrink(".dl-title");
-    expect(amount).toBeGreaterThan(model);
-    expect(model).toBeGreaterThan(title);
-  });
-
-  // D571 follow-up: proportional shrink cut BOTH identifying fields to
-  // uselessness together (`Downloadin…` / `Qwen2.…`) while the protected
-  // controls kept full width. The model suffix now shrinks lopsidedly
-  // first — see notifications.css's own comment on `.dl-model` for the
-  // "freeze and redistribute" mechanism this relies on.
-  it("shrinks the model suffix FIRST — its flex-shrink dwarfs the title's", () => {
-    expect(block(CSS, ".dl-title")).toContain("flex: 1 1 auto;");
-    expect(block(CSS, ".dl-model")).toContain("flex: 0 999 auto;");
-  });
-
-  // D577 moved `.dl-amount` OUT of this protected group; the other three stay,
-  // which is what keeps a running row's Cancel reachable rather than pushed
-  // past the panel's edge (D571's goal, still standing).
-  it("never lets the percentage, Cancel or dismiss give up their intrinsic width", () => {
-    for (const selector of [".dl-pct", ".dl-row-cancel", ".dl-x"]) {
+  it("protects EVERY remaining item on the head line, amount included", () => {
+    // `.dl-amount` rejoined this group in D596: with the model gone and the
+    // title wrapping, there is nothing a shrinking amount would buy, and a
+    // byte count minced to one character is not information.
+    for (const selector of [".dl-amount", ".dl-pct", ".dl-row-cancel", ".dl-x"]) {
       expect(block(CSS, selector)).toContain("flex: 0 0 auto;");
     }
-    expect(block(CSS, ".dl-amount")).not.toContain("flex: 0 0 auto;");
+  });
+
+  // THE ACTUAL RELAYOUT, asserted in the MARKUP rather than in the CSS text —
+  // the CSS above is only correct if the element really did move out of the
+  // head, and a stylesheet assertion cannot see that.
+  it("renders the model OUTSIDE the head line, once, on its own", () => {
+    const running: Job = {
+      ...BASE,
+      id: "sys:ai-image:flux",
+      title: "update picture to be ghibli style with more colour",
+      model: "mlx-community/FLUX.2-Klein-4B-4bit",
+      state: "running",
+      stalled: false,
+      done: 3,
+      total: 4,
+    };
+    const tree = renderCard([running]);
+    const row = findAll(tree, "dl-row")[0];
+    const head = findAll(row, "dl-row-head")[0];
+
+    expect(findAll(row, "dl-model")).toHaveLength(1);
+    expect(findAll(head, "dl-model")).toHaveLength(0);
+    // The title is intact in the head — not competing with the model for it.
+    expect(text(findAll(head, "dl-title")[0])).toBe(
+      "update picture to be ghibli style with more colour",
+    );
+    // The head still keeps its protected controls.
+    expect(findAll(head, "dl-pct")).toHaveLength(1);
+    expect(findAll(head, "dl-row-cancel")).toHaveLength(1);
+  });
+
+  it("still suppresses the model when it would just repeat the title", () => {
+    const load: Job = {
+      ...BASE,
+      id: "sys:ai-load:x",
+      title: "mlx-community/FLUX.2-Klein-4B-4bit",
+      model: "mlx-community/FLUX.2-Klein-4B-4bit",
+      state: "running",
+      stalled: false,
+    };
+    const tree = renderCard([load]);
+    expect(findAll(tree, "dl-model")).toHaveLength(0);
+  });
+
+  // The failure mode the coordinator flagged for the relayout: a SHORT title
+  // must not leave a ragged hole. The head is only as tall as its content, so
+  // a short row draws no model line at all and no empty second line.
+  it("adds no extra line for a short title with no model", () => {
+    const short: Job = {
+      ...BASE,
+      id: "sys:ai-image:short",
+      title: "Resize",
+      model: "",
+      state: "running",
+      stalled: false,
+    };
+    const tree = renderCard([short]);
+    const row = findAll(tree, "dl-row")[0];
+    expect(findAll(row, "dl-model")).toHaveLength(0);
+    expect(text(findAll(row, "dl-title")[0])).toBe("Resize");
   });
 
   it("closes the panel's rows list to horizontal scroll — a row must fit, not scroll sideways", () => {
