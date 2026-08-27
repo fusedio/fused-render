@@ -22,7 +22,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { captureAppPreview, exportAppFile } from "@platform/lib/appShot";
+import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -558,7 +558,20 @@ function usePreviewFileMenu(
   // until a frame is in hand: a dismissed prompt leaves the old file alone.
   const shootPreview = async (replacing: boolean) => {
     const name = basename(parent);
-    const blob = await captureAppPreview(fsPath, document.querySelector(".preview-frame.is-shown"));
+    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
+    // full-viewport reload of the entry when the frame can't be cropped; that
+    // is not the view the user is looking at, so here it is refused up front
+    // (and `stage: false` refuses it again inside) rather than saved under a
+    // "Preview saved" toast (Bugbot, 2026-08-27).
+    const frame = document.querySelector(".preview-frame.is-shown");
+    if (!cropRect(frame)) {
+      pushToast({
+        msg: "Preview not captured — the app frame has to be fully on screen",
+        tone: "error",
+      });
+      return;
+    }
+    const blob = await captureAppPreview(fsPath, frame, { stage: false });
     if (!blob) {
       pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
       return;

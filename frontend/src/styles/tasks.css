@@ -48,9 +48,19 @@
 .tasks-list-frame {
   border: 1px solid var(--border);
   border-radius: 8px;
-  /* The scroller used to clip the row washes to the corners; now the frame
-     has to, or a hovered first row pokes square corners out of a round box. */
-  overflow: hidden;
+}
+/* The scroller used to clip the row washes to the corners. The frame must NOT
+   do it with `overflow: hidden`: the ring's unread-count tooltip hangs below
+   the last row, and a clipping frame cut it off (Bugbot, 2026-08-27). So the
+   END rows round their own outer corners instead — one px inside the frame's
+   8px so the wash meets the border's inner edge — and nothing is clipped. */
+.tasks-list-frame > .tasks-node:first-child > .tasks-row {
+  border-top-left-radius: 7px;
+  border-top-right-radius: 7px;
+}
+.tasks-list-frame > .tasks-node:last-child > .tasks-row {
+  border-bottom-left-radius: 7px;
+  border-bottom-right-radius: 7px;
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a

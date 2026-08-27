@@ -2249,7 +2249,14 @@ function TaskNode({
             // <a> it is the browser's own new-tab; the mark owes the same
             // (Bugbot, 2026-08-27).
             onAuxClick={(e) => {
-              if (e.button === 1 && href) window.open(href, "_blank", "noopener");
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            // …and the default a middle press STARTS is autoscroll, which the
+            // <a> never triggers and this span otherwise would (Bugbot).
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
             }}
           >
             {ICON_FILE}

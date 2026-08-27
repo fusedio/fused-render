@@ -111,7 +111,7 @@ export async function exportAppFile(
 // of it is a picture of the app rather than a sliver of one. GEOMETRY ONLY —
 // whether the element has actually painted the app is the caller's promise
 // (see exportAppFile), because nothing in a bounding rect can answer it.
-function cropRect(el: Element | null | undefined): DOMRect | null {
+export function cropRect(el: Element | null | undefined): DOMRect | null {
   if (!el) return null;
   const r = el.getBoundingClientRect();
   if (r.width < MIN_CROP_CSS_PX.width || r.height < MIN_CROP_CSS_PX.height) return null;
@@ -209,12 +209,21 @@ async function capWidth(blob: Blob, maxWidth: number): Promise<Blob | undefined>
 export async function captureAppPreview(
   entryHtml: string,
   captureEl?: Element | null,
+  // `stage: false` — photograph the shown element or nothing. The caller is
+  // asking for THIS view (the explorer's "Set Current View as Preview"), and a
+  // fresh reload of the entry on a stage is a different picture than the one
+  // the user is looking at; silently saving it would be a lie with a success
+  // toast (Bugbot, 2026-08-27). The export path keeps the stage: any picture
+  // beats no thumbnail in a .fused.
+  opts: { stage?: boolean } = {},
 ): Promise<Blob | undefined> {
   let stage: HTMLDivElement | undefined;
   try {
     let source: Element;
     if (cropRect(captureEl)) {
       source = captureEl as Element;
+    } else if (opts.stage === false) {
+      return undefined;
     } else {
       // No usable thumb on screen — the stage: a scrim over the whole
       // viewport (so nothing of the page bleeds into the shot's margins) with
