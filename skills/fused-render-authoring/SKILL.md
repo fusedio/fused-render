@@ -161,6 +161,7 @@ The runtime is injected automatically when the explorer renders the page. Never 
 | `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
 
 Notes:
+- **`_`-prefixed param names are the shell's.** `set()` throws on them, `get()`/`getAll()` hide them (except `_file`). Never invent one, never rewrite the URL query yourself, and read `_preview` only to skip work — see **"Reserved params and preview mode"** below.
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
 - Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
 - **Stale requests to the same `.py` auto-cancel.** For the common slider/scrub case — a fast drag fires a request per intermediate value and only the last matters — you get this for free: a new `runPython("./x.py", …)` aborts any prior in-flight call to `./x.py`, and the superseded call's promise never settles (its continuation just stops, so nothing stale is drawn). Calls to **different** files are independent. When you genuinely need multiple concurrent calls to the **same** file to all finish — a polling loop, per-tile fetches, or a write that must complete — pass `{ key: null }` to opt out. Use a distinct `{ key: "…" }` to split one file into independent channels, or `{ signal }` (your own `AbortController`) to cancel on something other than the next call.
@@ -318,6 +319,70 @@ Why this shape:
 - `draw()` reads **params, not the control**, so a bookmarked/refreshed URL renders identically before any interaction.
 - The control writes the param and nothing else; `onChange` is the single re-render path — no double-render logic, no drift between URL and UI.
 - Values passed to `runPython` can stay strings; annotations on `main` coerce them.
+
+## Reserved params and preview mode
+
+### The `_` namespace is the shell's
+
+**Every query key starting with `_` belongs to the shell, not to your page.** The runtime enforces it: `fused.params.set("_x", …)` **throws**, `fused.params.get("_x")` returns `undefined`, and `getAll()` filters `_` keys out. The single exception is `_file` — readable, never writable.
+
+So:
+
+- **Never invent a `_`-prefixed param for your own state.** Names in use today include `_file`, `_mode`, `_preview`, `_nofocus`, `_layout`, `_side`, `_panel`, `_tab`, `_listing`, `_render`, `_rev` — and the set grows without notice. Squatting on one means the shell silently overwrites your state, or you overwrite the shell's. Page params get plain names: `limit`, `sort`, `offset`, `theme`.
+- **Never reach around the runtime to read one.** `new URLSearchParams(location.search).get("_whatever")` is going behind `fused.params` to read a value whose meaning is the shell's and can change under you. The one exception is `_preview`, below — and only ever to do *less* work.
+- **Never rewrite the URL's query yourself.** A `history.replaceState` (or a `location.search = …`) built from your own params drops the shell's `_` keys and breaks the pane/tab it is mounted in. Write through `fused.params.set` only.
+
+### `_preview=1`: this render is a picture of the page, not a use of it
+
+The shell renders pages it was never asked to *open*: `/apps` cards, listing-pane peeks, hover previews. Those frames are stamped `_preview=1` (usually with `_nofocus=1`), they are mounted and unmounted as the pointer moves, and **many of them boot at once on a home/listing page** for apps the user has not opened and may never open.
+
+A page that boots identically in a preview turns that listing into N simultaneous cold starts. This is the single most common way an app folder makes the home page unusable.
+
+**Read the flag at boot and return early.** Under preview, render something cheap and static — a title, a cached thumbnail, an inert placeholder — and start none of:
+
+- `runPython` calls whose `main()` imports something heavy, scans a directory, or hits the network
+- model loads or downloads (`fused.ai`, `fused.ai.image`, `fused.ai.models.load`)
+- daemon starts (`fused.daemon.start` — already refused in preview, see below)
+- `fused.capture.*`, `writeFile`, `trackJob`
+- polling loops, `setInterval`, websockets, EventSource
+- anything that records an "open", mutates state, or unpacks/extracts on first use
+
+Read it by climbing, because the flag is **inherited**: your page may be framed by a template that was the one stamped, and only the ancestor's URL carries it. This mirrors the runtime's own `selfOrAncestorHasFlag`:
+
+```js
+function isPreview() {
+  const has = (s) => {
+    try { return new URLSearchParams(String(s).replace(/^\?/, "")).get("_preview") === "1"; }
+    catch (e) { return false; }
+  };
+  if (has(location.search)) return true;
+  try {
+    let w = window;
+    while (w.parent && w.parent !== w) {
+      w = w.parent;
+      if (has(w.location.search)) return true;
+    }
+  } catch (e) { /* cross-origin ancestor: the climb ends here */ }
+  return false;
+}
+
+const PREVIEW = isPreview();
+
+async function boot() {
+  if (PREVIEW) return renderPlaceholder();   // synchronous, no Python, no network
+  await loadEverything();                    // the real thing, only on a real open
+}
+boot();
+```
+
+Two more rules:
+
+- **Forward the stamps to frames you mount yourself**: `frame.src = url + "?_preview=1&_nofocus=1"` when `PREVIEW`. Otherwise the inner page reads a clean URL and does the work you just skipped.
+- **A preview that *can* show real content should show a cached one, never compute one.** Ask for the already-extracted / already-cached artifact and fall back to the placeholder when it is absent; never let a peek be the thing that populates the cache.
+
+What the runtime already handles, so you don't have to: `fused.daemon.start/stop/restart/setAutostart/call` reject in a preview frame, and a preview never writes the shell's URL. **Everything else — your Python calls, AI calls, timers, fetches — runs exactly as it would in a real open unless you gate it.**
+
+`fused_render/templates/fusedapp/template.html` is the worked example: it reads `_preview`, asks the server for an existing extract only, live-renders it when there is one, and shows an inert "Open this file to unpack and run the app" card when there isn't.
 
 ## Style and theming
 
@@ -583,6 +648,11 @@ None of the above holds state indefinitely: `fused.engine(py)`, the warm variant
 
 - `fused.params.set("n", 5)` → **throws** (number). Use `String(5)`.
 - Reading `input.value` inside `draw()` instead of `fused.params.get()` → refresh loses state.
+- Naming a page param with a leading underscore (`_tab`, `_mode`, `_view`) → `params.set` throws, and if you route around it via `location.search` you collide with a shell param whose meaning changes under you. Drop the underscore.
+- Building the URL query yourself (`history.replaceState` with your own `URLSearchParams`) → silently drops the shell's `_layout`/`_side`/`_file` and breaks the pane the page is mounted in. Use `fused.params.set`.
+- Booting the full app under `_preview=1` → a listing/`/apps` page fires every card's cold start at once (heavy imports, model loads, extracts, daemons) for apps the user never opened. Gate boot on the preview flag and render a placeholder; see **"Reserved params and preview mode"**.
+- Reading `_preview` from `location.search` only → misses the inherited case where an outer template frame carries the stamp. Climb the same-origin ancestors (snippet in that section).
+- Mounting your own iframe in a preview without forwarding `?_preview=1&_nofocus=1` → the inner page does all the work you just skipped, and steals the keyboard from the listing.
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
 - Missing annotation on a numeric param → `main` receives `"50"` (string) and comparisons silently misbehave.
 - Expecting module state to persist between `runPython` calls → each call is a fresh process.
