@@ -73,6 +73,7 @@ STATE = {
     "detail": "",
     "error": "",
     "resident_bytes": None,
+    "os_footprint_bytes": None,
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
@@ -555,9 +556,23 @@ _rss_peak = None
 def resident_bytes():
     """What this model is costing in memory, or None.
 
-    RSS by default: on Apple Silicon the GPU pool IS system memory, so it is the
-    honest single number and there is no separate VRAM figure to reconcile it
-    with. A runner that can do better supplies `memory=` to `serve()`, and the
+    RSS by default. **THE OLD JUSTIFICATION HERE WAS WRONG AND IS WORTH STATING
+    PLAINLY** (D597): it said "on Apple Silicon the GPU pool IS system memory,
+    so it is the honest single number and there is no separate VRAM figure to
+    reconcile it with". The premise is true — unified memory — but the
+    conclusion does not follow, because the pool is not in RSS. Measured on a
+    live MLX FLUX worker: 172 MB of RSS against 23 GB of dirty
+    `IOAccelerator (graphics)` regions, which are charged to the task's
+    `phys_footprint` and never appear in `resident_size`. So RSS is a FLOOR
+    here, not an honest total, and `os_footprint_bytes()` below is what answers
+    "what is this process actually holding".
+    This function's RETURN VALUE is deliberately unchanged all the same: it
+    feeds `peak_resident_bytes` -> `footprints.py` -> `fit.py`'s "measured"
+    rung, so redefining it would silently re-verdict every model the user has
+    ever run (easy -> tight, tight -> no). Whether a "measured" footprint
+    should include the allocator pool is a real question and not this change's
+    to answer.
+    A runner that can do better supplies `memory=` to `serve()`, and the
     LARGER of the two wins — both are real measurements and neither is a
     superset (RSS includes the interpreter and framework; a framework allocator
     includes buffers that may not be faulted into RSS yet), so the cost is at
@@ -590,6 +605,82 @@ def resident_bytes():
         _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
+
+
+#: macOS `TASK_VM_INFO`, and the byte offset of `phys_footprint` inside
+#: `task_vm_info_data_t`. VERIFIED EMPIRICALLY rather than counted off a header:
+#: `resident_size` at offset 16 matches `ps -o rss` exactly, and dirtying 500 MiB
+#: of anonymous memory moved offset 144 by 524.6 MB and offset 152 by nothing.
+#: The kernel reports how many `natural_t`s it filled, so a generous buffer is
+#: safe across OS revisions (this field arrived in "rev1" and every supported
+#: macOS fills well past it).
+_TASK_VM_INFO = 22
+_PHYS_FOOTPRINT_OFFSET = 144
+
+
+def os_footprint_bytes():
+    """What the OS says this process is holding RIGHT NOW, or None (D597).
+
+    THE NUMBER ACTIVITY MONITOR SHOWS, which is the whole point: on macOS that
+    is the task's `phys_footprint`, and for an MLX worker it is the only figure
+    that includes the Metal buffers. Measured on a live FLUX worker:
+    `phys_footprint` 24 GB (23 GB of it dirty `IOAccelerator` regions) against
+    172 MB of RSS and 1.79 GB of `mx.get_active_memory()`. A user watching
+    their system monitor sees the 24 GB, so a "right now" column that reports
+    either of the other two is telling them something they can directly
+    observe to be false.
+
+    NOT `resident_bytes()`, and not a redefinition of it — see that function's
+    own docstring for why its value is frozen. This is additive.
+
+    NOT `get_active_memory()` either, which is what the framework has handed
+    out of its pool. After a render finishes MLX returns buffers to its own
+    pool but NOT to the OS, so active collapses while the process still holds
+    the memory. That exclusion is deliberate and correct for a COST figure
+    (`mflux_image/worker.py`'s own comment, and D310 measured a ~23.6 GB pool
+    against ~14.1 GB active) because it keeps runners comparable — torch
+    reports what it allocated, not the driver's reservation. It simply does not
+    apply to a live reading.
+
+    STDLIB ONLY, via `ctypes` — no psutil, whose `memory_full_info()` does not
+    expose this counter on darwin. Falls back to RSS wherever no such counter
+    exists (every non-macOS platform), and to None if even that is
+    unavailable: never a guess, the same rule the other two probes follow.
+    """
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            import ctypes.util
+            import struct
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            libc.mach_task_self.restype = ctypes.c_uint32
+            size = 1024
+            buf = (ctypes.c_uint8 * size)()
+            count = ctypes.c_uint32(size // 4)
+            rc = libc.task_info(
+                ctypes.c_uint32(libc.mach_task_self()),
+                ctypes.c_int(_TASK_VM_INFO),
+                ctypes.byref(buf),
+                ctypes.byref(count),
+            )
+            filled = count.value * 4
+            if rc == 0 and filled >= _PHYS_FOOTPRINT_OFFSET + 8:
+                value = struct.unpack_from("<Q", bytes(buf), _PHYS_FOOTPRINT_OFFSET)[0]
+                if value > 0:
+                    return int(value)
+        except Exception:  # noqa: BLE001 - a memory probe must never break /health
+            pass
+    # Every other platform, and any darwin failure above: RSS is the best
+    # available, and is exactly what this function would have reported anyway
+    # where there is no separate GPU pool hiding outside it.
+    try:
+        import psutil
+
+        rss = int(psutil.Process(os.getpid()).memory_info().rss)
+        return rss if rss > 0 else None
+    except Exception:  # noqa: BLE001 - psutil raises its own family
+        return None
 
 
 def peak_resident_bytes():
@@ -4077,6 +4168,9 @@ def _handler(generate, streaming):
                     # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
                     health["peak_resident_bytes"] = peak_resident_bytes()
+                    # The OS's own "right now" figure (D597), additive beside
+                    # the two above — see `os_footprint_bytes`.
+                    health["os_footprint_bytes"] = os_footprint_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)

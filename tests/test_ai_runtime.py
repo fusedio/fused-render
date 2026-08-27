@@ -2733,6 +2733,100 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     assert described["totalResidentBytes"] == 1234
 
 
+def test_os_footprint_probe_returns_a_plausible_figure_or_none():
+    """D597: the live figure's probe. Deliberately does NOT pin a byte count —
+    it varies per machine and per moment — only that it answers with something
+    usable and that it TRACKS real memory, which is the property RSS failed at
+    (172 MB of RSS against 23 GB of Metal buffers on a live FLUX worker).
+
+    Loaded by path because `worker_base` is a runner-side module that normally
+    executes inside a runner venv, not as part of the server package's import
+    graph.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe"] = wb
+    spec.loader.exec_module(wb)
+
+    first = wb.os_footprint_bytes()
+    # Either a real positive reading or None where no counter exists — never 0,
+    # which a UI would render as "holding nothing".
+    assert first is None or first > 0
+
+    if first is None:
+        return  # no counter on this platform; nothing further to assert
+
+    # THE PROPERTY THAT MATTERS: it must move with genuinely dirtied memory.
+    # A probe that reports a constant (or that misses a whole allocator pool,
+    # which is exactly what RSS does here) would satisfy the check above and
+    # still be useless.
+    blob = bytearray(64 * 1024 * 1024)
+    for i in range(0, len(blob), 4096):
+        blob[i] = 1
+    after = wb.os_footprint_bytes()
+    assert after is not None
+    assert after > first, f"probe did not track a 64 MiB allocation: {first} -> {after}"
+    del blob
+
+
+def test_os_footprint_falls_back_cleanly_when_no_counter_exists(monkeypatch):
+    """The non-macOS path, and any darwin failure: RSS, or None — never a raise
+    and never a guess. Forced by claiming a platform with no `task_info`, which
+    is what every non-Apple runner genuinely is."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe_fallback", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe_fallback"] = wb
+    spec.loader.exec_module(wb)
+
+    monkeypatch.setattr(wb.sys, "platform", "linux")
+    value = wb.os_footprint_bytes()
+    # psutil is absent from the server venv (AI-2), so this legitimately
+    # resolves to None here; where psutil IS present it must be a real RSS.
+    assert value is None or value > 0
+
+
+def test_describe_carries_the_os_footprint_without_coercing_null(
+        fake_runner, monkeypatch):
+    """D597: the new field rides through `describe` (and therefore
+    `/api/ai/runtime`) beside `residentBytes` rather than replacing it, and a
+    missing reading stays NULL — zero would render as "holding nothing" in the
+    one column whose job is to explain memory pressure the user can see.
+
+    The fake runner reports no `os_footprint_bytes`, which is exactly the
+    "runner too old / probe unavailable" case.
+    """
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    _wait_ready("org/small")
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert "osFootprintBytes" in row
+    assert row["osFootprintBytes"] is None
+    # ...and the field it sits BESIDE is untouched, which is the whole point of
+    # this being additive: `residentBytes` still feeds `fit.py`'s measured rung.
+    assert row["residentBytes"] == 1234
+
+
+def test_describe_reports_a_real_os_footprint_when_the_runner_sends_one(
+        fake_runner, monkeypatch):
+    """The populated path: a runner that answers with a footprint has it
+    carried through verbatim, not rounded and not merged with RSS."""
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/small")
+    worker.os_footprint_bytes = 24_000_000_000
+
+    row = supervisor.describe()["loaded"][0]
+
+    assert row["osFootprintBytes"] == 24_000_000_000
+    assert row["residentBytes"] == 1234  # still its own, smaller, RSS number
+
+
 def test_describe_carries_the_machine_ceiling_once_not_per_row(fake_runner):
     """D594: the denominator the status bar colours against is a per-machine
     constant, so it rides at the TOP LEVEL rather than being repeated on every

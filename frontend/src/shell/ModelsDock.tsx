@@ -116,13 +116,25 @@ function MemoryCell({
   ceilingBytes: number | null;
 }) {
   const band = memoryBand(model.footprintBytes, ceilingBytes);
-  const rss = formatSize(model.residentBytes);
+  // `osFootprintBytes`, NOT `residentBytes` (D597, user: "i see a 12gb (1.8gb)
+  // for flux, but my system monitor says 23gb?"). RSS does not see Metal
+  // buffers at all — a live FLUX worker measured 172 MB of RSS against 23 GB
+  // of dirty IOAccelerator regions — so the old parenthetical was reporting a
+  // number the user could directly observe to be false, in the one slot whose
+  // whole job is to explain memory pressure they can see. This field is the
+  // task's `phys_footprint`: what Activity Monitor shows.
+  const live = formatSize(model.osFootprintBytes);
+  // LABELLED IN WORDS, not bare parentheses (D597): two byte figures side by
+  // side are otherwise indistinguishable, and these two answer different
+  // questions — "what does this model cost" vs "what is the process holding
+  // right now". `now` is short enough for a 340px panel and unambiguous.
+  const liveCell = live ? <span className="dl-mem-live"> ({live} now)</span> : null;
   if (model.footprintBytes === null) {
     // Nothing to colour and nothing to compare — the live figure stands alone,
-    // and says which figure it is so it cannot be mistaken for a cost.
+    // and its `title` says which figure it is so it cannot be read as a cost.
     return (
-      <span className="dl-amount" title="Resident memory right now">
-        {rss}
+      <span className="dl-amount" title="Held by the process right now">
+        {live}
       </span>
     );
   }
@@ -135,10 +147,14 @@ function MemoryCell({
   return (
     <span
       className={"dl-amount" + (band ? ` is-mem-${band}` : "")}
-      title={`${basis}${ceilingBytes ? ` — against ${formatSize(ceilingBytes)} usable` : ""}`}
+      title={
+        `Cost: ${basis.toLowerCase()}` +
+        (ceilingBytes ? `, against ${formatSize(ceilingBytes)} usable` : "") +
+        (live ? ` — ${live} held by the process right now` : "")
+      }
     >
       {formatSize(model.footprintBytes)}
-      {rss ? <span className="dl-mem-live"> ({rss})</span> : null}
+      {liveCell}
     </span>
   );
 }

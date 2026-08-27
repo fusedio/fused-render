@@ -39,6 +39,7 @@ const model = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
   detail: null,
   error: null,
   residentBytes: 4_000_000_000,
+  osFootprintBytes: 4_000_000_000,
   footprintBytes: null,
   footprintBasis: null,
   device: "mps",
@@ -151,9 +152,13 @@ test("muting tracks whether there are rows at all, not whether bytes were report
 
 // The panel is where cost still lives, and per-worker it is a real comparable
 // figure even though the aggregate was not — so this row keeps its number
-// (D589 deliberately left `.dl-amount` alone).
-test("the panel row still reports that worker's own size", () => {
-  const tree = renderView({ models: [model({ residentBytes: 4 * 1024 ** 3 })] });
+// (D589 deliberately left `.dl-amount` alone). The LIVE figure is
+// `osFootprintBytes` since D597, not `residentBytes`: RSS does not see Metal
+// buffers, so it under-reported an MLX worker by more than a factor of ten.
+test("the panel row reports the OS footprint, not RSS", () => {
+  const tree = renderView({
+    models: [model({ osFootprintBytes: 4 * 1024 ** 3, residentBytes: 172_000_000 })],
+  });
   expect(text(findAll(findAll(tree, "dl-row")[0], "dl-amount")[0])).toBe("4.0 GB");
 });
 
@@ -176,9 +181,11 @@ test("collapsed shows no panel at all — no gauge, no rows, just the chip", () 
   expect(findAll(tree, "dl-row")).toHaveLength(0);
 });
 
-test("expanded draws one row per model — its name, its own resident bytes, an Unload button, no gauge", () => {
+test("expanded draws one row per model — its name, its live footprint, an Unload button, no gauge", () => {
   const tree = renderView({
-    models: [model({ model: "mlx-community/Qwen3-8B-MLX-4bit", residentBytes: 4_200_000_000 })],
+    models: [
+      model({ model: "mlx-community/Qwen3-8B-MLX-4bit", osFootprintBytes: 4_200_000_000 }),
+    ],
   });
   const row = findAll(tree, "dl-row")[0];
   expect(text(findAll(row, "dl-title")[0])).toBe("Qwen3-8B-MLX-4bit"); // owner trimmed, matching repoName()

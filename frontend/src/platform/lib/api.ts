@@ -2951,6 +2951,14 @@ export interface AiLoadedModel {
    *  `footprintBytes` in the position of authority, since this one is real but
    *  measures the wrong thing to answer "what does this model cost me". */
   residentBytes: number | null;
+  /** What the OS says the worker process is holding RIGHT NOW — macOS
+   *  `phys_footprint`, the figure Activity Monitor shows; RSS elsewhere
+   *  (D597). THIS is the parenthetical "right now" number, not
+   *  `residentBytes`: on Apple Silicon the Metal pool is charged to
+   *  `phys_footprint` and never appears in RSS, so a live FLUX worker read
+   *  172 MB of RSS against 23 GB of dirty IOAccelerator regions. Null where
+   *  no counter could be read. */
+  osFootprintBytes: number | null;
   /** What this model actually COSTS on this machine, in bytes — the primary
    *  figure on a status-bar row, colour-coded against
    *  `AiRuntime.memoryCeilingBytes` (D594). Straight from

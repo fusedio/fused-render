@@ -234,6 +234,13 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: What the OS says the worker process is holding RIGHT NOW — macOS
+    #: `phys_footprint`, i.e. the number Activity Monitor shows, RSS elsewhere
+    #: (D597, `worker_base.os_footprint_bytes`). ADDITIVE beside
+    #: `resident_bytes`: that field feeds `peak_resident_bytes` ->
+    #: `footprints.py` -> `fit.py`'s "measured" rung, and redefining it would
+    #: re-verdict every model the user has ever run.
+    os_footprint_bytes: int | None = None
     #: The high-water mark of what this model has cost, as the runner
     #: reported it (SPEC AI-8c, D497) — `worker_base.peak_resident_bytes()`,
     #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
@@ -1078,6 +1085,9 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                footprint = health.get("os_footprint_bytes")
+                worker.os_footprint_bytes = (
+                    footprint if isinstance(footprint, int) else None)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
@@ -2573,6 +2583,11 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # The OS's "right now" figure (D597) — what a user's system
+                # monitor shows, which `residentBytes` does NOT on Apple
+                # Silicon (Metal buffers are charged to `phys_footprint`, not
+                # RSS). Null where no counter could be read; never coerced.
+                "osFootprintBytes": w.os_footprint_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.
