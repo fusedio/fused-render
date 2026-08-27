@@ -487,6 +487,10 @@ def lan_apps() -> list[dict]:
             "linked": not folder.startswith(os.path.realpath(fused_dir()) + os.sep),
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
+            # The author's preview.png (app_dict resolves it), full-bleed on the
+            # tile; falls back to icon.svg, then to the monogram, on the page.
+            "preview": ("/api/fs/raw?" + urlencode({"path": app["preview_image"]})
+                        if app.get("preview_image") else None),
             # The SVG bytes themselves via /api/fs/raw (an <img> subresource,
             # so the route's document-load downgrade does not apply).
             "icon": ("/api/fs/raw?" + urlencode({"path": os.path.join(folder, "icon.svg")})

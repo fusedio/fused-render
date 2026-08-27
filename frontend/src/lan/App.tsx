@@ -30,7 +30,8 @@ interface LanAppRow {
   linked: boolean;
   recency: number; // epoch seconds; 0 = never opened and no mtime
   url: string;
-  icon: string | null;
+  preview: string | null; // preview.png, full-bleed
+  icon: string | null; // icon.svg
 }
 
 const FILTER_KEY = "fused-render:lan-filter";
@@ -283,11 +284,16 @@ function AppCard({ app, now }: { app: LanAppRow; now: number }) {
       className="lan-card flex flex-col overflow-hidden rounded-2xl border border-[var(--sh-border)] bg-[var(--card)] focus-visible:ring-2 focus-visible:ring-[var(--accent)] focus-visible:outline-none"
     >
       <div
-        className={cn("lan-tile flex aspect-[3/2] items-center justify-center", app.icon && "lan-tile--icon")}
+        className={cn(
+          "lan-tile flex aspect-[3/2] items-center justify-center overflow-hidden",
+          (app.preview || app.icon) && "lan-tile--icon",
+        )}
         style={{ ["--tile-h" as string]: hueOf(app.name) }}
         aria-hidden
       >
-        {app.icon ? (
+        {app.preview ? (
+          <img src={app.preview} alt="" className="size-full object-cover" loading="lazy" />
+        ) : app.icon ? (
           <img src={app.icon} alt="" className="size-12 object-contain" />
         ) : (
           <span className="text-[44px] leading-none font-semibold tracking-[-0.04em]">{initial}</span>
