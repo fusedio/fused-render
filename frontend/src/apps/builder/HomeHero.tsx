@@ -3,8 +3,19 @@
 // new app's claude chat. Shared by Home ("/") and the /apps hub, which is why
 // it lives in the builder app rather than the shell.
 import { useEffect, useRef, useState } from "react";
-import { aiComplete, createApp, getHomeApps, type DefaultModel, type SessionEffort } from "@platform/lib/api";
-import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
+import {
+  aiComplete,
+  createApp,
+  getHomeApps,
+  type DefaultModel,
+  type SessionEffort,
+} from "@platform/lib/api";
+import {
+  navigate,
+  navigateUrl,
+  replaceSearch,
+  urlForFsPath,
+} from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { useAutoGrow } from "@platform/lib/autoGrow";
@@ -70,7 +81,8 @@ const NAME_SYSTEM_PROMPT =
   "letters and digits only. Use only words that appear in the description or " +
   "plainly describe what the app does — never invented brand words. If the " +
   "text is not a description of an app to build, reply with exactly: " +
-  NAME_NONE + ". Reply with ONLY the name — no quotes, no prose.";
+  NAME_NONE +
+  ". Reply with ONLY the name — no quotes, no prose.";
 
 // A kebab-case folder name for an app described by `prompt`: ask the AI relay
 // (haiku, the server default — cheap and fast). null when the relay is down or
@@ -79,7 +91,9 @@ const NAME_SYSTEM_PROMPT =
 // "make-me-a-tool-that" and nobody could tell that naming had failed at all.
 async function suggestAppName(prompt: string): Promise<string | null> {
   try {
-    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) => t.trim());
+    const text = await aiComplete(prompt, NAME_SYSTEM_PROMPT).then((t) =>
+      t.trim(),
+    );
     // NAME_SYSTEM_PROMPT asks for a bare kebab-case reply; if the model added
     // prose instead (common even with "no prose" in the ask), `text` won't be
     // pure lowercase-and-hyphens. Taking the first token then would name the
@@ -134,8 +148,10 @@ async function createAppUnderFreeName(
 // How many starter chips the row shows at once, and therefore how far the
 // shuffle button advances. Four rather than three because the pool is deep
 // enough now (starterPrompts.tsx) that three was showing a smaller share of it
-// than the row had room for — `.home-composer-samples` wraps, so a narrow
-// window folds the fourth chip onto its own line instead of overflowing.
+// than the row had room for. The row is ONE line always: the chips sit in a
+// no-wrap strip that scrolls sideways when four of them are wider than the
+// composer (`.home-composer-sample-strip`), with the shuffle button outside
+// the strip so it stays visible however far the chips are scrolled.
 const SAMPLE_ROW = 4;
 
 // The composer's two session pickers — what the scaffolding turn runs
@@ -215,7 +231,16 @@ function ComposerPick<T extends string>({
   return (
     <label className="home-composer-pick">
       <span className="home-composer-pick-glyph" aria-hidden="true">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
           {PICK_GLYPHS[glyph]}
         </svg>
       </span>
@@ -252,7 +277,9 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // Empty = "let the chat decide", the default; see MODEL_CHOICES.
   const [model, setModel] = useState<DefaultModel>("");
   const [effort, setEffort] = useState<SessionEffort>("");
-  const [phase, setPhase] = useState<"idle" | "naming" | "askName" | "creating">("idle");
+  const [phase, setPhase] = useState<
+    "idle" | "naming" | "askName" | "creating"
+  >("idle");
   // The name the user is typing while phase === "askName" — only reached when
   // haiku could not name the app; see suggestAppName.
   const [nameDraft, setNameDraft] = useState("");
@@ -312,6 +339,14 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // picked in the 30-odd mixed pool is meaningless in a five-brief capability
   // slice — modulo would keep it in range but land somewhere arbitrary.
   useEffect(() => setSampleOffset(0), [annotation?.capability]);
+  // ...and so does the strip's sideways scroll, on EITHER kind of change. The
+  // chips are swapped inside a scroll container that keeps its offset, so a
+  // row the user had scrolled to the end would show the new batch's tail
+  // instead of its first idea — the one thing shuffle is for.
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    stripRef.current?.scrollTo({ left: 0 });
+  }, [sampleOffset, annotation?.capability]);
 
   // The chip's detail is instructions for the CLAUDE SESSION, not something
   // the user typed — spliced in ahead of what they wrote so it reads as
@@ -319,7 +354,9 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // seeing or editing the model prose.
   const fullPrompt = () => {
     const trimmed = prompt.trim();
-    return annotation ? `${annotation.detail}\n\nThe app I want: ${trimmed}` : trimmed;
+    return annotation
+      ? `${annotation.detail}\n\nThe app I want: ${trimmed}`
+      : trimmed;
   };
 
   // Second half of a create: the app has a name, scaffold it and land in its
@@ -333,7 +370,12 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
     setSessionError(null);
     setPhase("creating");
     try {
-      const res = await createAppUnderFreeName(name, fullPrompt(), model, effort);
+      const res = await createAppUnderFreeName(
+        name,
+        fullPrompt(),
+        model,
+        effort,
+      );
       // The folder exists from here on, so the Recent grid is stale — refresh it
       // now, since the task-error branch below stays on this page.
       onCreated();
@@ -358,7 +400,10 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
       // still spawning past the server's wait) lands on the bare page — the
       // row in the app's Tasks tab tells the rest.
       if (res.task?.run_id) {
-        navigateUrl(appLandingUrl(res.entry_html, res.task.run_id, model, effort), { isDir: false });
+        navigateUrl(
+          appLandingUrl(res.entry_html, res.task.run_id, model, effort),
+          { isDir: false },
+        );
       } else {
         navigate(res.entry_html, { isDir: false });
       }
@@ -368,7 +413,8 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
         setPhase(back);
         // The row remounts on the way back; put the caret where it was so
         // Escape / a corrected name work without a click first.
-        if (back === "askName") requestAnimationFrame(() => nameRef.current?.select());
+        if (back === "askName")
+          requestAnimationFrame(() => nameRef.current?.select());
       }
     }
   };
@@ -406,11 +452,18 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
 
   return (
     <div className="home-composer-wrap">
-      <div className={"home-composer" + (phase === "naming" || phase === "creating" ? " is-busy" : "")}>
+      <div
+        className={
+          "home-composer" +
+          (phase === "naming" || phase === "creating" ? " is-busy" : "")
+        }
+      >
         {annotation && (
           <div className="home-composer-annots">
             <span className="home-composer-annot" title={annotation.detail}>
-              <span className="home-composer-annot-at" aria-hidden="true">@</span>
+              <span className="home-composer-annot-at" aria-hidden="true">
+                @
+              </span>
               {annotation.name}
               <button
                 type="button"
@@ -455,7 +508,11 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
               the one decision left before the create, and model/effort are
               already chosen. Enter confirms, Escape backs out to the prompt. */}
           {phase === "askName" ? (
-            <div className="home-composer-name" role="group" aria-label="Name your app">
+            <div
+              className="home-composer-name"
+              role="group"
+              aria-label="Name your app"
+            >
               <span className="home-composer-name-why">
                 Couldn't name it automatically — pick a name:
               </span>
@@ -471,7 +528,11 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
                 // a user reaches for between words produces the separator the
                 // name needs. Done on the value (not keydown) so a pasted
                 // "My App" lands as "my-app" too.
-                onChange={(e) => setNameDraft(e.target.value.toLowerCase().replace(/\s+/g, "-"))}
+                onChange={(e) =>
+                  setNameDraft(
+                    e.target.value.toLowerCase().replace(/\s+/g, "-"),
+                  )
+                }
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
@@ -491,73 +552,105 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
               </button>
             </div>
           ) : (
-          <div className="home-composer-picks">
-            <ComposerPick
-              glyph="model"
-              label="Model"
-              value={model}
-              choices={MODEL_CHOICES}
-              disabled={busy}
-              onPick={setModel}
-            />
-            <ComposerPick
-              glyph="effort"
-              label="Effort"
-              value={effort}
-              choices={EFFORT_CHOICES}
-              disabled={busy}
-              onPick={setEffort}
-            />
-            <span className="home-composer-hint">
-              {phase === "naming" && "Naming your app…"}
-              {phase === "creating" && "Creating the app…"}
-            </span>
-          </div>
+            <div className="home-composer-picks">
+              <ComposerPick
+                glyph="model"
+                label="Model"
+                value={model}
+                choices={MODEL_CHOICES}
+                disabled={busy}
+                onPick={setModel}
+              />
+              <ComposerPick
+                glyph="effort"
+                label="Effort"
+                value={effort}
+                choices={EFFORT_CHOICES}
+                disabled={busy}
+                onPick={setEffort}
+              />
+              <span className="home-composer-hint">
+                {phase === "naming" && "Naming your app…"}
+                {phase === "creating" && "Creating the app…"}
+              </span>
+            </div>
           )}
           {/* In askName the send button confirms the name — same spot, same
               arrow, so the gesture that started the create finishes it. */}
           <button
             type="button"
             className="home-composer-send"
-            aria-label={phase === "askName" ? "Create with this name" : "Build it"}
+            aria-label={
+              phase === "askName" ? "Create with this name" : "Build it"
+            }
             title={phase === "askName" ? "Create with this name" : "Build it"}
             disabled={phase === "askName" ? !nameOk : !canSubmit}
             onClick={phase === "askName" ? confirmName : submit}
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
               <path d="M12 19V5M5 12l7-7 7 7" />
             </svg>
           </button>
         </div>
       </div>
       <div className="home-composer-samples">
-        {Array.from({ length: Math.min(SAMPLE_ROW, samples.length) }, (_, i) => {
-          const s = samples[(sampleOffset + i) % samples.length];
-          return (
-            <button
-              key={s.label}
-              type="button"
-              className="home-composer-sample"
-              title={s.prompt}
-              disabled={busy}
-              onClick={() => setPrompt(s.prompt)}
-            >
-              <span className="home-composer-sample-glyph" aria-hidden="true">
-                {s.glyph}
-              </span>
-              {s.label}
-            </button>
-          );
-        })}
+        <div className="home-composer-sample-strip" ref={stripRef}>
+          {Array.from(
+            { length: Math.min(SAMPLE_ROW, samples.length) },
+            (_, i) => {
+              const s = samples[(sampleOffset + i) % samples.length];
+              return (
+                <button
+                  key={s.label}
+                  type="button"
+                  className="home-composer-sample"
+                  title={s.prompt}
+                  disabled={busy}
+                  onClick={() => setPrompt(s.prompt)}
+                >
+                  <span
+                    className="home-composer-sample-glyph"
+                    aria-hidden="true"
+                  >
+                    {s.glyph}
+                  </span>
+                  {s.label}
+                </button>
+              );
+            },
+          )}
+        </div>
         <button
           type="button"
           className="home-composer-sample home-composer-shuffle"
           aria-label="More ideas"
           title="More ideas"
           disabled={busy}
-          onClick={() => setSampleOffset((o) => (o + SAMPLE_ROW) % samples.length)}
+          onClick={() =>
+            setSampleOffset((o) => (o + SAMPLE_ROW) % samples.length)
+          }
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <svg
+            width="13"
+            height="13"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
             <path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v5h-5" />
           </svg>
         </button>
@@ -595,8 +688,18 @@ export function HomeHero({ onCreated }: { onCreated: () => void }) {
           page — so the mark stands alone beside the tagline. Both theme
           renders are in the DOM; CSS shows the one matching data-theme. */}
       <h1 className="home-hero-brand">
-        <img className="home-hero-logo home-hero-logo-dark" src={logoMarkDark} alt="" aria-hidden="true" />
-        <img className="home-hero-logo home-hero-logo-light" src={logoMarkLight} alt="" aria-hidden="true" />
+        <img
+          className="home-hero-logo home-hero-logo-dark"
+          src={logoMarkDark}
+          alt=""
+          aria-hidden="true"
+        />
+        <img
+          className="home-hero-logo home-hero-logo-light"
+          src={logoMarkLight}
+          alt=""
+          aria-hidden="true"
+        />
         <span className="home-hero-tagline">
           Build your next <span className="home-hero-accent">local app</span>
         </span>
