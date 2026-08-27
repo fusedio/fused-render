@@ -5,21 +5,54 @@
 // split `DownloadManagerView` uses for the jobs card and for the same
 // reason: no polling, no network, no `window`/`document`, so this file can
 // render it directly with a fixed row list.
-import { expect, mock, test } from "bun:test";
-import { create, type ReactTestRendererJSON } from "react-test-renderer";
+import { expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-// router.ts touches `location` at module init (rewriteLegacyPath) — dead in a
-// DOM-less bun test. Mocked before the component import, the same way
-// useListingSelection.render.test.ts does it for the same module; none of
-// this file's tests exercise `navigate` (that only fires from a row's own
-// "Fix with Claude" click, never triggered here).
-mock.module("@platform/lib/router", () => ({
-  navigate: () => {},
-}));
+// NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
+// here — found the hard way, live: an earlier version of this file DID mock
+// router.ts (`{navigate: () => {}}`), which broke TWO unrelated files
+// (useWalkSearch.render.test.ts, FilesHome.render.test.tsx) the moment all
+// three ran in the same `bun test` invocation. `mock.module` replaces a
+// specifier for the WHOLE process, not just this file — first-registration
+// wins, so a stub written for THIS file's needs quietly became the module
+// every OTHER file's import resolved against too. Making the stub "complete"
+// (every export name router.ts has) only fixed the crash; FilesHome still
+// broke, because its assertions depend on `navigate`'s REAL behavior
+// (`history.pushState` + `window.dispatchEvent`), not just its presence.
+// FilesHome.render.test.tsx's own header comment already documents this
+// exact lesson for `@platform/lib/api` ("a real ES module namespace export
+// is frozen... this stubs `globalThis.fetch` instead") — the same principle
+// applies to router.ts. So instead of mocking either module, this file
+// installs the minimal `location`/`window`/`history` globals router.ts's
+// own module-init code touches (mirroring `hook-harness.ts`'s `Clock`) and
+// then imports the REAL router.ts — a real, unfrozen, behaviorally correct
+// module every other file can also import safely alongside this one.
+(globalThis as Record<string, unknown>).location = { pathname: "/x", search: "" };
+(globalThis as Record<string, unknown>).window = {
+  parent: undefined,
+  top: undefined,
+  dispatchEvent: () => true,
+};
+(globalThis as Record<string, unknown>).history = {
+  state: null,
+  replaceState: () => {},
+  pushState: () => {},
+};
 
 const { RepoUpdatesCardView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
 import type { RepoStatus } from "@shell/repo-updates-lib";
+
+// The globals above exist only to get router.ts's module-init code through
+// ITS one-time evaluation above (triggered by the dynamic import) — nothing
+// in this file's own tests touches `window`/`location`/`history` again, so
+// they are torn back down immediately rather than left standing for
+// whichever file happens to run next in the same process (mirroring
+// `hook-harness.ts` Clock's own install/restore discipline, just inlined
+// since this file only ever needs the install once, at load).
+delete (globalThis as Record<string, unknown>).location;
+delete (globalThis as Record<string, unknown>).window;
+delete (globalThis as Record<string, unknown>).history;
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -50,7 +83,9 @@ const status = (over: Partial<RepoStatus> = {}): RepoStatus => ({
   ...over,
 });
 
-function renderView(props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {}) {
+function renderInstance(
+  props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
+): ReactTestRenderer {
   const rows = props.rows ?? repoRows([status()]);
   return create(
     <RepoUpdatesCardView
@@ -62,7 +97,13 @@ function renderView(props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = 
       onDismissAll={props.onDismissAll ?? (() => {})}
       onDone={props.onDone ?? (() => {})}
     />,
-  ).toJSON() as ReactTestRendererJSON | null;
+  );
+}
+
+function renderView(
+  props: Partial<Parameters<typeof RepoUpdatesCardView>[0]> = {},
+): ReactTestRendererJSON | null {
+  return renderInstance(props).toJSON() as ReactTestRendererJSON | null;
 }
 
 test("renders no card at all when there are no rows", () => {
@@ -143,4 +184,59 @@ test("expanded shows every row", () => {
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows, collapsed: false });
   expect(findAll(tree, "q-row")).toHaveLength(2);
+});
+
+test("pressing the secondary action does not relabel the primary as Working (task 12)", async () => {
+  // One shared `busy` boolean used to cover BOTH buttons, with only the
+  // primary swapping its label — so pressing Rebase (secondary) made the
+  // Switch button (primary) read "Working…" for an action the user never
+  // pressed. Fixed by tracking WHICH action is running.
+  //
+  // `fetch` (not `@platform/lib/api`) is what gets stubbed, and only for
+  // this one test — see the file header comment on why a shared module mock
+  // is the wrong tool here. Restored in `finally` so a later test in this
+  // same file (or process) never sees the stub.
+  const originalFetch = globalThis.fetch;
+  const pendingFetches: Array<(v: Response) => void> = [];
+  globalThis.fetch = (() =>
+    new Promise<Response>((resolve) => pendingFetches.push(resolve))) as unknown as typeof fetch;
+
+  try {
+    const rows = repoRows([status({ on_default: false, branch: "feature", default_branch: "main" })]);
+    const renderer = renderInstance({ rows });
+
+    const before = renderer.toJSON() as ReactTestRendererJSON;
+    const rebaseBtn = findAll(before, "q-all").find((n) => text(n) === "Rebase");
+    expect(rebaseBtn).toBeDefined();
+
+    // `run`'s `setBusyAction(action)` happens synchronously before its first
+    // `await`, so a plain (non-async) act() flushes it — the fetch itself
+    // stays pending, which is exactly the mid-flight state under test.
+    act(() => {
+      (rebaseBtn as ReactTestRendererJSON).props.onClick();
+    });
+
+    const mid = renderer.toJSON() as ReactTestRendererJSON;
+    const buttons = findAll(mid, "q-all").map((n) => text(n));
+    // The PRESSED button reads Working…; the untouched primary keeps its own
+    // label rather than being relabeled by a shared boolean.
+    expect(buttons).toContain("Working…");
+    expect(buttons).toContain("Switch to main");
+    expect(buttons).not.toContain("Rebase"); // the pressed one, mid-flight
+
+    // Settle the pending fetch with a real Response-shaped object (postJson
+    // calls `res.json()` then reads `res.ok`) so the test doesn't leak an
+    // unresolved promise / dangling act() warning — awaited so the `finally`
+    // block's `setBusyAction(null)`, a microtask chain after this resolve,
+    // is flushed inside act() rather than after it.
+    await act(async () => {
+      pendingFetches.pop()?.({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, op: "rebase", root: rows[0].repo.root }),
+      } as unknown as Response);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

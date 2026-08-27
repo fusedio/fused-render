@@ -163,12 +163,18 @@ function RepoRowView({
   onDone: (result: MutationResult) => void;
   onDismiss: () => void;
 }) {
-  const [busy, setBusy] = useState(false);
+  // WHICH action is running, not just whether one is (task 12, code review
+  // 2026-08-27): a single shared `busy: boolean` relabeled the PRIMARY
+  // button "Working…" no matter which of the two buttons was actually
+  // pressed — pressing Rebase (secondary) made Switch (primary) claim to be
+  // the one running, while Rebase's own label never changed at all. Each
+  // button now only reads "Working…" when it is the one `busyAction` names.
+  const [busyAction, setBusyAction] = useState<RepoAction | null>(null);
   const [failure, setFailure] = useState<MutationResult | null>(null);
 
   const run = async (action: RepoAction) => {
-    if (busy) return;
-    setBusy(true);
+    if (busyAction !== null) return;
+    setBusyAction(action);
     setFailure(null);
     try {
       const result = await postJson<MutationResult>("/api/git-upstream", {
@@ -180,7 +186,7 @@ function RepoRowView({
     } catch {
       setFailure({ ok: false, message: "check your connection and retry" });
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
@@ -203,18 +209,22 @@ function RepoRowView({
           type="button"
           className="q-all"
           onClick={() => run(row.primaryAction)}
-          disabled={busy}
+          disabled={busyAction !== null}
         >
-          {busy ? "Working…" : repoActionLabel(row.primaryAction, row.repo.default_branch)}
+          {busyAction === row.primaryAction
+            ? "Working…"
+            : repoActionLabel(row.primaryAction, row.repo.default_branch)}
         </button>
         {row.secondaryAction && (
           <button
             type="button"
             className="q-all"
             onClick={() => run(row.secondaryAction as RepoAction)}
-            disabled={busy}
+            disabled={busyAction !== null}
           >
-            {repoActionLabel(row.secondaryAction, row.repo.default_branch)}
+            {busyAction === row.secondaryAction
+              ? "Working…"
+              : repoActionLabel(row.secondaryAction, row.repo.default_branch)}
           </button>
         )}
         <button
