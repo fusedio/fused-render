@@ -398,7 +398,7 @@ export default function AppPage({
                 <TabsTrigger
                   key={id}
                   value={id}
-                  className="flex-none px-2 py-1.5"
+                  className="flex-none px-4 py-2.5"
                   // Base UI assumes a native <button> unless told otherwise:
                   // without this the anchor gets type="button" and Space
                   // does not activate it (Bugbot on #851).
