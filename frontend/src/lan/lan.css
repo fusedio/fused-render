@@ -42,10 +42,12 @@ a {
     linear-gradient(160deg, oklch(0.93 0.05 var(--tile-h)) 0%, oklch(0.86 0.06 var(--tile-h)) 100%);
   color: oklch(0.38 0.09 var(--tile-h));
 }
-/* An author's icon.svg sits on a light plate in BOTH themes: most icons are
-   drawn dark-on-light (the sidebar shows them the same way), and a black glyph
-   on the dark card was invisible. */
-.lan-tile--icon,
+/* An author's icon.svg is shown as-is on the theme's raised surface — the same
+   treatment the sidebar gives it (icon.svg renders unfiltered, D-row for #898),
+   so an icon looks the same in both places. */
+.lan-tile--icon {
+  background: linear-gradient(160deg, #262830 0%, #1b1d21 100%);
+}
 :root[data-theme="light"] .lan-tile--icon {
   background: linear-gradient(160deg, #f4f4f2 0%, #e6e6e2 100%);
 }
