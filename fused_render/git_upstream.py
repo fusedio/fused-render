@@ -338,14 +338,28 @@ def _operation_in_flight(root):
     return None
 
 
-def _mutation_preflight(root, *, include_untracked=True):
+def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     """Every check both mutations need before touching anything: the repo
     still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
     `ops.py:_refuse_mounts` exists to prevent), isn't already mid an
     operation `rebase_repo` (or a terminal) left in flight, has a clean
-    working tree, an attached branch, and a resolvable `origin` with a
-    default branch. Returns `(branch, default_branch, refusal)` — exactly
-    one of the first two or the third is None."""
+    working tree, an attached branch (unless `allow_detached`), and a
+    resolvable `origin` with a default branch. Returns `(branch,
+    default_branch, refusal)` — the third is None on success; `branch` is
+    also None on success exactly when `allow_detached=True` was passed AND
+    HEAD is detached — the one case a None `branch` is not itself a
+    refusal.
+
+    `allow_detached` exists ONLY for `switch_repo` (task 9, code review
+    2026-08-27): `check_repo` reports a detached HEAD as `on_default:
+    False`, which makes Switch the row's PRIMARY action — and a `switch_repo`
+    that then refused with "detached" would make that primary button a
+    guaranteed dead end, since a checkout of the default branch is exactly
+    what RESOLVES a detached HEAD, not something it needs to be attached
+    already to do. `update_repo`/`rebase_repo` both act ON the current
+    branch (a pull fast-forwards it, a rebase replays its commits), so
+    "there is nothing to update" stays the right refusal for them — only
+    `switch_repo` passes `allow_detached=True`."""
     if not os.path.isdir(root):
         return None, None, _refuse("missing", f"{root} no longer exists.")
     if shell_mounts.is_mount_backed(root):
@@ -370,7 +384,7 @@ def _mutation_preflight(root, *, include_untracked=True):
             "dirty", "This repository has uncommitted changes — commit, "
             "stash, or discard them first.")
     branch = _current_branch(root)
-    if not branch:
+    if not branch and not allow_detached:
         return None, None, _refuse(
             "detached", "HEAD is detached, so there is nothing to update. "
             "Check out a branch first.")
@@ -471,13 +485,21 @@ def switch_repo(root):
     ever touches tracked paths and HEAD, so an untracked scratch file no
     more blocks this than it blocks a pull.
 
+    `allow_detached=True` too (task 9, code review 2026-08-27):
+    `check_repo` reports a detached HEAD as `on_default: False`, which
+    makes Switch the row's PRIMARY action for exactly that repo — and
+    this is the one mutation a detached HEAD must not refuse, since
+    checking out the default branch IS the resolution for it, not
+    something that needs a branch already attached to run. Without this
+    the row's only button was a guaranteed dead end.
+
     After a successful switch the repo is very likely BEHIND (that is the
     whole reason the row offered Switch), so `_refresh_after_mutation`
     finding it behind and the row reappearing with Update is intended, not
     a bug — the user is now on the default branch and Update runs from
     there."""
     branch, default_branch, refusal = _mutation_preflight(
-        root, include_untracked=False)
+        root, include_untracked=False, allow_detached=True)
     if refusal is not None:
         return refusal
     result = _run(root, "checkout", default_branch, timeout=TIMEOUT_S)

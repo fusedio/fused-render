@@ -345,6 +345,56 @@ def test_switch_is_not_refused_by_an_unrelated_untracked_file(tmp_path):
         assert f.read() == "not tracked, not touched by the checkout\n"
 
 
+def test_switch_resolves_a_detached_head_instead_of_refusing_it(tmp_path):
+    # check_repo reports `branch: None` / `on_default: False` for a detached
+    # HEAD, which used to make Switch the row's PRIMARY action — and then
+    # switch_repo refused with "detached", a guaranteed dead end (code
+    # review, task 9). A checkout of the default branch is exactly the
+    # resolution for a detached HEAD, so this is the one mutation that must
+    # not refuse it.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "--detach")
+    assert git_upstream._current_branch(local) is None  # fixture sanity
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    assert git(local, "symbolic-ref", "--short", "HEAD").strip() == "main"
+
+
+def test_switch_still_refuses_a_dirty_detached_head(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "--detach")
+    write(local, "a.txt", "uncommitted\n")
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "dirty"
+
+
+def test_update_still_refuses_a_detached_head(tmp_path):
+    # Only switch_repo's preflight is loosened — update_repo's own "there is
+    # nothing to update" refusal for a detached HEAD is unchanged.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "--detach")
+
+    res = git_upstream.update_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "detached"
+
+
+def test_rebase_still_refuses_a_detached_head(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "--detach")
+
+    res = git_upstream.rebase_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "detached"
+
+
 # ------------------------------------------------------------- is_known_repo
 
 
