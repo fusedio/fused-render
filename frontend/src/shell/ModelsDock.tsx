@@ -425,10 +425,12 @@ export default function ModelsDock() {
   const runtime = useAiRuntime();
   const [collapsed, setCollapsed] = useState(true);
 
-  // Same wiring DownloadManagerView/RepoUpdatesCardView use — a dot for a
-  // model that loaded while this chip was collapsed, AND (D574) a transient
-  // auto-open of this section's own panel so the arrival is on screen rather
-  // than only hinted at. `autoOpen` is never persisted — see autoExpand.ts.
+  // Same wiring DownloadManagerView/RepoUpdatesCardView use, minus the half
+  // this section forbids: `neverOpen` below means the only thing this hook does
+  // here is CLOSE the panel when the last model unloads (D580). There is no dot
+  // for an arrival either — D588 deleted `.dl-new-dot` app-wide, and the chip's
+  // circle is derived from `models.length`, not from hook state. `autoOpen` is
+  // never persisted regardless — see autoExpand.ts.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     runtime.loaded.map((m) => m.model),
     collapsed,
