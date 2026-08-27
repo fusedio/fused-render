@@ -212,7 +212,7 @@ def test_wait_returns_union_since_and_full_when_too_far_back(monkeypatch):
     assert tasks_watch.wait(0, 0) == (2, frozenset({"a", "b"}))
     assert tasks_watch.wait(1, 0) == (2, frozenset({"b"}))
     assert tasks_watch.wait(2, 0.05) == (2, frozenset())  # timed out, nothing
-    assert tasks_watch.wait(-1, 0) == (2, None)  # never seen a listing: full
+    assert tasks_watch.wait(-1, 0) == (2, frozenset())  # handshake: here we are, no keys
     monkeypatch.setattr(tasks_watch, "RING", 2)
     for _ in range(3):
         tasks_watch.notify({"c"})
@@ -279,9 +279,9 @@ def test_changes_endpoint_returns_only_the_moved_rows(claude_home):
         # Nothing since: an empty answer, same generation.
         r = client.get(f"/api/tasks/changes?since={gen + 1}&wait=0").json()
         assert r == {"generation": gen + 1, "rows": [], "gone": []}
-        # Too far back: reload.
+        # Handshake: the generation, nothing else, no wait.
         r = client.get("/api/tasks/changes?since=-1&wait=0").json()
-        assert r == {"generation": gen + 1, "full": True}
+        assert r == {"generation": gen + 1, "rows": [], "gone": []}
 
 
 def test_changes_endpoint_reports_a_deleted_task_as_gone(claude_home):

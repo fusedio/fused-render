@@ -11272,6 +11272,7 @@ document.getElementById("back").onclick = () => {
   // a stale count for a moment is quieter than a section that blinks. Boot is
   // the only place the "not read yet" state is real.
   loadRecent();
+  watchRecent();
   // A chat left MID-TURN may not be in that list yet (Akshil, 2026-08-19 — "the
   // chat doesn't show in recent chats until the run completes"): the list is
   // the transcripts in the cwd's project dir (agent.py `_sessions`), and a
@@ -16158,6 +16159,45 @@ for (const p of LIST_PANELS) {
   };
 }
 
+// While the landing is up, the list re-reads itself the moment anything in
+// this folder changes — a chat started or resumed in a TERMINAL included,
+// which no poke from this page could ever know about. The signal is the same
+// one the Tasks page rides: GET /api/tasks/changes long-polls the server's
+// change watcher (fused_render/tasks_watch.py) and answers with the rows that
+// moved; a row whose project is this folder (or a folder above this file) is
+// news for Recent chats. The first call is a handshake (since=-1) that only
+// learns the current generation. One request in flight at a time, hidden tabs
+// sit it out, a failed call backs off, and leaving the landing ends the loop —
+// the seat number is the same idiom loadRecent uses.
+let recentWatchSeat = 0;
+async function watchRecent() {
+  const seat = ++recentWatchSeat;
+  let gen = -1;
+  const onLanding = () => seat === recentWatchSeat && chatEl.classList.contains("home");
+  while (onLanding()) {
+    if (document.hidden) {
+      await new Promise((r) => document.addEventListener("visibilitychange", r, { once: true }));
+      continue;
+    }
+    let r;
+    try {
+      const res = await fetch(`/api/tasks/changes?since=${gen}&wait=25`);
+      if (!res.ok) throw new Error(String(res.status));
+      r = await res.json();
+    } catch {
+      await sleep(3000);
+      continue;
+    }
+    if (!onLanding()) return;
+    const handshake = gen < 0;
+    gen = r.generation;
+    if (handshake) continue;
+    const rows = r.rows || [];
+    const here = (p) => typeof p === "string" && p && (FILE === p || FILE.startsWith(p + "/"));
+    if (r.full || (r.gone || []).length || rows.some((row) => here(row.project))) loadRecent();
+  }
+}
+
 let recentSeq = 0;
 async function loadRecent() {
   // Reads overlap by design now (the back handler retries over a just-left
@@ -17059,6 +17099,10 @@ const ASK_DETECTION_TIMEOUT_MS = 1500;
     // how a live conversation's parked messages used to disappear.
     focusBox(homebox);
     await loadRecent();
+    // And keep it fresh from here on — this is the landing most people arrive
+    // at cold, and the Back handler's own watchRecent() call only covers a
+    // landing reached by LEAVING a chat (cmux-ux-tester, PR #892).
+    watchRecent();
     await mountSnapshots();
     // Last of the three landing reads, and unawaited by nothing above it on
     // purpose: it is the only one that leaves the machine (a localhost call to

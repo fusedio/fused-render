@@ -129,9 +129,16 @@ def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | No
     Returns ``(generation, keys)``. ``keys`` is the union of every task key that
     changed in generations ``since+1 .. generation`` — empty when the wait
     timed out with nothing new, and **None** when `since` is older than the
-    ring remembers (the caller should reload everything)."""
+    ring remembers (the caller should reload everything).
+
+    A negative `since` is a handshake — "where are we?" — answered at once with
+    the current generation and no keys, so a client that has its own listing
+    (the Claude page's Recent chats) can start watching without first paying
+    for GET /api/tasks."""
     deadline = time.monotonic() + max(0.0, min(timeout, MAX_WAIT_SEC))
     with _cond:
+        if since < 0:
+            return _generation, frozenset()
         if since > _generation:
             # The client is ahead of us: this process restarted (or was
             # hot-reloaded) and counts from zero again. Its rows may be stale
@@ -142,7 +149,7 @@ def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | No
             if remaining <= 0:
                 return _generation, frozenset()
             _cond.wait(remaining)
-        if since < 0 or (_changed and _changed[0][0] > since + 1):
+        if _changed and _changed[0][0] > since + 1:
             return _generation, None
         keys: set[str] = set()
         for gen, changed in _changed:
