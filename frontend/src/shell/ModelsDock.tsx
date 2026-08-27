@@ -207,27 +207,36 @@ export default function ModelsDock() {
   // model that loaded while this chip was collapsed, AND (D574) a transient
   // auto-open of this section's own panel so the arrival is on screen rather
   // than only hinted at. `autoOpen` is never persisted — see autoExpand.ts.
-  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
     runtime.loaded.map((m) => m.model),
     collapsed,
     // Not `runtime.loaded.length > 0` — an idle machine must still announce
     // its first real load (autoExpand.ts's `ready`).
     aiRuntimeSettled(),
   );
-  const open = !collapsed || autoOpen;
+  // The saved preference, overridden in EITHER direction by whichever
+  // transient flag is standing (D580 adds the closing half; the two are
+  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
+  // not two independent booleans). `autoClose` is tested first because a
+  // drained list beats a stale auto-open that the same drain is retiring.
+  const open = autoClose ? false : !collapsed || autoOpen;
 
-  // First click on an auto-opened chip closes it without writing an
-  // expansion the user never chose (DownloadManagerView's `toggle` carries
-  // the full argument; `autoOpen` implies `collapsed`).
+  // ONE unified toggle for a chip whose visible state may be the SAVED
+  // preference or either transient override (D580). It acts on what the user
+  // SEES — `wantOpen = !open` — then writes the preference only if the
+  // preference is what disagrees. That is what keeps D574's rule intact
+  // without a special case for it: dismissing an auto-OPENED panel (or
+  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
+  // the outcome, so clearing the override is the whole of the work and
+  // nothing is persisted. A click on a chip whose state came from the
+  // preference itself still flips and saves it, exactly as before.
   const toggle = () => {
-    if (autoOpen) {
-      acknowledge();
-      return;
+    const wantOpen = !open;
+    acknowledge();
+    if (collapsed === wantOpen) {
+      saveCollapsed(!wantOpen);
+      setCollapsed(!wantOpen);
     }
-    setCollapsed((was) => {
-      saveCollapsed(!was);
-      return !was;
-    });
   };
 
   const close = () => {

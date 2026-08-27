@@ -37,6 +37,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { trackSeenIds } from "@platform/lib/jobs";
 
+// The panel's visibility can be steered by this hook in EITHER direction, and
+// both directions are transient — a temporary override sitting on top of the
+// caller's own persisted `collapsed` preference, never a write to it (D567's
+// standing guard, restated in D574 and D580). `null` means "no opinion, the
+// saved preference decides".
+type Override = null | "open" | "closed";
+
 export interface AutoExpandState {
   /** An unacknowledged arrival the user cannot currently SEE — drawn as the
    *  chip's quiet `.dl-new-dot`. Suppressed while this section's panel is
@@ -46,12 +53,21 @@ export interface AutoExpandState {
   hasNew: boolean;
   /** Transient, NEVER persisted (see this file's header): true from the moment
    *  a new id lands while the section is collapsed until the panel is
-   *  dismissed. The caller treats the panel as open when `!collapsed ||
-   *  autoOpen`, and leaves its own saved preference alone. */
+   *  dismissed. */
   autoOpen: boolean;
-  /** Drop the auto-open and clear the dot — the caller's own "close" path
-   *  (the chip's click, an outside pointer-down, Escape). Stable identity, so
-   *  it is safe in an effect's dependency list. */
+  /** The mirror of `autoOpen` (D580, user: "after a job finishes, ensure we
+   *  close the jobs popover if no jobs left"): true once the row list has
+   *  drained to empty while the panel was open. Equally transient — the
+   *  saved preference is untouched, so the section reverts to whatever the
+   *  user themselves last chose.
+   *
+   *  Together these two make the caller's rule
+   *  `open = autoClose ? false : !collapsed || autoOpen`, and they are
+   *  mutually exclusive by construction (one `Override`, not two booleans). */
+  autoClose: boolean;
+  /** Drop whichever override is standing and clear the dot — the caller's own
+   *  click / outside pointer-down / Escape path. Stable identity, so it is
+   *  safe in an effect's dependency list. */
   acknowledge: () => void;
 }
 
@@ -90,41 +106,74 @@ export function useAutoExpandOnNew(
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
   const [hasNew, setHasNew] = useState(false);
-  const [autoOpen, setAutoOpen] = useState(false);
+  const [override, setOverride] = useState<Override>(null);
 
   useEffect(() => {
     // Nothing is knowable before the first response — not even "the set is
     // empty" — so hold off entirely rather than seeding from a placeholder.
     if (!ready) return;
-    if (seenRef.current === null) {
+    const prev = seenRef.current;
+    if (prev === null) {
       seenRef.current = new Set(ids);
       return;
     }
-    const { seen, hasNew: arrived } = trackSeenIds(ids, seenRef.current);
+    const { seen, hasNew: arrived } = trackSeenIds(ids, prev);
     seenRef.current = seen;
-    if (arrived && collapsed) {
-      setHasNew(true);
-      setAutoOpen(true);
+
+    // AN ARRIVAL WINS over a drain in the same tick (D580) — and it wins by
+    // construction, not by luck: `arrived` means `ids` contains something,
+    // so the drain test below (`ids.length === 0`) cannot also be true. The
+    // early return makes that ordering explicit rather than leaving it to be
+    // re-derived, so a new job landing as the last one finishes auto-OPENS
+    // and there is no close-then-open flash.
+    if (arrived) {
+      if (collapsed) {
+        setHasNew(true);
+        setOverride("open");
+      }
+      return;
+    }
+
+    // DRAINED: the list went non-empty -> empty. `trackSeenIds` returns a set
+    // built only from `currentIds`, so `prev` shrinks with the list and this
+    // fires exactly once on the transition — the tick after, `prev.size` is
+    // already 0. A section that was ALREADY empty is therefore never touched,
+    // which is what keeps this from fighting a user who deliberately opened an
+    // idle section to look at it.
+    if (prev.size > 0 && ids.length === 0) {
+      // Only worth doing if there is actually a panel on screen to close.
+      // Skipping the no-op also avoids leaving a "closed" override standing on
+      // an already-closed section, where the next chip click would have to
+      // spend itself clearing the override instead of opening the panel.
+      const panelOpen = override === "closed" ? false : !collapsed || override === "open";
+      if (panelOpen) {
+        setHasNew(false);
+        setOverride("closed");
+      }
     }
   });
 
-  // Expanding by hand acknowledges too — the user is looking at the rows, so
-  // neither the dot nor a pending auto-open has anything left to announce.
+  // A change to the SAVED preference is the user speaking directly, which
+  // outranks any override this hook is holding — so drop it and let their
+  // choice through, in both directions.
   useEffect(() => {
-    if (!collapsed) {
-      setHasNew(false);
-      setAutoOpen(false);
-    }
+    setHasNew(false);
+    setOverride(null);
   }, [collapsed]);
 
   const acknowledge = useCallback(() => {
     setHasNew(false);
-    setAutoOpen(false);
+    setOverride(null);
   }, []);
 
   // The dot and the auto-opened panel are never shown together (D577 defect 2:
   // `Activity 1  46% ●` with the panel already open). Suppressed rather than
   // never set, so dismissing the panel (`acknowledge`, which clears both) does
   // not leave a dot behind for something the user just chose to close.
-  return { hasNew: hasNew && !autoOpen, autoOpen, acknowledge };
+  return {
+    hasNew: hasNew && override !== "open",
+    autoOpen: override === "open",
+    autoClose: override === "closed",
+    acknowledge,
+  };
 }

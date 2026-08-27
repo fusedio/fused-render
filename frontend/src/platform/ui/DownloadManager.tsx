@@ -617,7 +617,7 @@ export function DownloadManagerView({
   // exists to fix). Called unconditionally, before the idle branch below,
   // same as every other hook in this component (rules of hooks: what a
   // render calls, not whether it later draws the idle state).
-  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
     jobs.map((j) => j.id),
     collapsed,
     ready,
@@ -626,7 +626,12 @@ export function DownloadManagerView({
   // `collapsed` alone from here down, and the auto-open half is deliberately
   // not written back to localStorage (autoExpand.ts's own header on why that
   // write, not the opening, was D567's actual defect).
-  const open = !collapsed || autoOpen;
+  // The saved preference, overridden in EITHER direction by whichever
+  // transient flag is standing (D580 adds the closing half; the two are
+  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
+  // not two independent booleans). `autoClose` is tested first because a
+  // drained list beats a stale auto-open that the same drain is retiring.
+  const open = autoClose ? false : !collapsed || autoOpen;
 
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
   // used to describe): the bar's three sections are always on screen, this
@@ -663,20 +668,22 @@ export function DownloadManagerView({
   const active = jobs.filter(isRunning).length + count.running + count.waiting;
   const hasFailure = active === 0 && jobs.some((j) => j.state === "error");
 
-  // An auto-opened panel closes on the FIRST click of its own chip without
-  // touching the saved preference — `autoOpen` implies `collapsed` is true
-  // (autoExpand.ts only ever flags an arrival while collapsed), so falling
-  // through to the setter below would persist an expansion the user never
-  // asked for, which is precisely the write D574 keeps banned.
+  // ONE unified toggle for a chip whose visible state may be the SAVED
+  // preference or either transient override (D580). It acts on what the user
+  // SEES — `wantOpen = !open` — then writes the preference only if the
+  // preference is what disagrees. That is what keeps D574's rule intact
+  // without a special case for it: dismissing an auto-OPENED panel (or
+  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
+  // the outcome, so clearing the override is the whole of the work and
+  // nothing is persisted. A click on a chip whose state came from the
+  // preference itself still flips and saves it, exactly as before.
   const toggle = () => {
-    if (autoOpen) {
-      acknowledge();
-      return;
+    const wantOpen = !open;
+    acknowledge();
+    if (collapsed === wantOpen) {
+      saveCollapsed(!wantOpen);
+      setCollapsed(!wantOpen);
     }
-    setCollapsed((was) => {
-      saveCollapsed(!was);
-      return !was;
-    });
   };
 
   // Backgrounding the panel (outside pointer-down, Escape). A hand-opened

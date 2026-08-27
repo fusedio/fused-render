@@ -427,24 +427,34 @@ export function RepoUpdatesDockView({
   // (D574) a transient auto-open of this section's own panel. `autoOpen` is
   // never persisted — autoExpand.ts's header on why that write, not the
   // opening itself, was D567's real defect.
-  const { hasNew, autoOpen, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
     visible.map((row) => row.repo.root),
     collapsed,
     ready,
   );
-  const open = !collapsed || autoOpen;
+  // The saved preference, overridden in EITHER direction by whichever
+  // transient flag is standing (D580 adds the closing half; the two are
+  // mutually exclusive by construction — autoExpand.ts holds one `Override`,
+  // not two independent booleans). `autoClose` is tested first because a
+  // drained list beats a stale auto-open that the same drain is retiring.
+  const open = autoClose ? false : !collapsed || autoOpen;
 
-  // First click on an auto-opened chip closes it without persisting an
-  // expansion the user never chose (`autoOpen` implies `collapsed`).
+  // ONE unified toggle for a chip whose visible state may be the SAVED
+  // preference or either transient override (D580). It acts on what the user
+  // SEES — `wantOpen = !open` — then writes the preference only if the
+  // preference is what disagrees. That is what keeps D574's rule intact
+  // without a special case for it: dismissing an auto-OPENED panel (or
+  // reopening an auto-CLOSED one) finds the saved flag already agreeing with
+  // the outcome, so clearing the override is the whole of the work and
+  // nothing is persisted. A click on a chip whose state came from the
+  // preference itself still flips and saves it, exactly as before.
   const toggle = () => {
-    if (autoOpen) {
-      acknowledge();
-      return;
+    const wantOpen = !open;
+    acknowledge();
+    if (collapsed === wantOpen) {
+      saveCollapsed(!wantOpen);
+      setCollapsed(!wantOpen);
     }
-    setCollapsed((was) => {
-      saveCollapsed(!was);
-      return !was;
-    });
   };
 
   const close = () => {
