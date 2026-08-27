@@ -287,7 +287,7 @@ def test_an_empty_card_draws_the_idle_state_not_no_card(card):
     # D573: the idle SENTENCE moved from a chip-level `.dl-idle` span into
     # the panel a real, always-clickable chip opens (VS Code/Cursor status
     # bar idiom — no separate idle markup any more).
-    assert '<div className="dl-panel-empty">No activity</div>' in card
+    assert '<div className="dl-panel-empty">No jobs</div>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -464,7 +464,7 @@ def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
     bar_tsx = _read(_BAR)
     assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
     # D573: idle text moved from the chip into the panel it opens.
-    assert '<div className="dl-panel-empty">No activity</div>' in card, "the activity section's own idle text"
+    assert '<div className="dl-panel-empty">No jobs</div>' in card, "the activity section's own idle text"
 
 
 def test_the_shell_composes_the_card_and_the_bar_places_it(dock):

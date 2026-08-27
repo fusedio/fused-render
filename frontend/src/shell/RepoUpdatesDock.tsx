@@ -276,7 +276,7 @@ function RepoRowView({
  * clickable button either way now (VS Code/Cursor status-bar idiom — hover
  * is the affordance, not a disclosure chevron), muted text (`.is-idle`) is
  * the one remaining "nothing here" signal, and the idle sentence itself
- * ("No updates") lives in the panel that opens beneath it rather than in
+ * ("No notifications", D579) lives in the panel that opens beneath it
  * the chip, which only ever shows the category name and a count now.
  */
 export function RepoUpdatesCardView({
@@ -326,9 +326,21 @@ export function RepoUpdatesCardView({
         className={"dl-toggle" + (idle ? " is-idle" : "")}
         onClick={onToggle}
         aria-expanded={!collapsed}
-        title={collapsed ? "Show updates" : "Hide updates"}
+        title={collapsed ? "Show notifications" : "Hide notifications"}
       >
-        <span className="dl-summary">{idle ? "Updates" : `Updates ${visible.length}`}</span>
+        {/* `Notifications`, NOT `Updates` (D579, user: "git updates does not
+            make sense out of an app. it belongs to 'notifications'") — a repo
+            being behind upstream is ONE KIND of notification, not a top-level
+            category beside Models and Activity, and `Updates` also collided
+            with `Activity` (both read as "stuff that changed", neither says
+            whose). The count is unchanged. Nothing else was renamed: this
+            file, its `.dl-*`/`.q-*` classes and `repoRows`/`visibleRepoRows`
+            all still say "repo updates", which is exactly what they hold —
+            `Notifications` is the extensible CATEGORY, so an alert that is
+            not a repo update gets a home here without a fourth section. */}
+        <span className="dl-summary">
+          {idle ? "Notifications" : `Notifications ${visible.length}`}
+        </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
@@ -336,12 +348,12 @@ export function RepoUpdatesCardView({
           this component's own doc comment on why the fold takes every row,
           no exemption, including Clear now that it lives here rather than
           in a header that used to survive the fold. An idle section now
-          opens a panel too (D573) — the idle sentence ("No updates") lives
+          opens a panel too (D573) — the idle sentence ("No notifications") lives
           there instead of in the chip, which no longer has room for it. */}
       {!collapsed && (
         <div className="dl-panel">
           {idle ? (
-            <div className="dl-panel-empty">No updates</div>
+            <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
               <div className="dl-head">

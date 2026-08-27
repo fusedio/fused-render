@@ -395,8 +395,8 @@
   font-weight: 400;
 }
 
-/* The panel's own EMPTY state — `No models loaded` / `No activity` /
-   `No updates` — for a section with nothing to show (D573). This text used
+/* The panel's own EMPTY state — `No models loaded` / `No jobs` /
+   `No notifications` (D579) — for a section with nothing to show (D573). This text used
    to live in the CHIP itself (a separate unpressable `.dl-idle` span, no
    button, no panel behind it) — the user's own words moved it: "lets have
    simpler stuff like models (x count) | notifications | downloads etc and

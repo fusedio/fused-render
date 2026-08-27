@@ -719,15 +719,24 @@ export function DownloadManagerView({
           disclosure triangle; hover is the only affordance, at rest and
           idle alike). `.is-idle` is the ONE remaining signal that this
           section has nothing in it — muted text, same clickable chip,
-          same hover wash — now that the idle SENTENCE ("No activity") has
+          same hover wash — now that the idle SENTENCE ("No jobs", D579) has
           moved into the panel below rather than living in the chip. */}
       <button
         className={"dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")}
         onClick={toggle}
         aria-expanded={open}
-        title={open ? "Hide details" : "Show details"}
+        title={open ? "Hide jobs" : "Show jobs"}
       >
-        <span className="dl-summary">{idle ? "Activity" : `Activity ${totalCount}`}</span>
+        {/* `Jobs`, NOT `Activity` (D579, user: "what about jobs?") — this
+            codebase's own word for exactly this set (`fused_render/jobs.py`,
+            `/api/jobs`, the `Job` dataclass, `KINDS`), so the label and the
+            store it reads from finally agree. It also avoids the subset trap
+            that ruled out `Downloads` and `Tasks`: downloads, background
+            tasks AND the scheduled queue are all jobs, so it covers
+            everything this section shows without over- or underclaiming.
+            `Activity` was the vaguest of the three labels and half of why it
+            collided with the old `Updates`. */}
+        <span className="dl-summary">{idle ? "Jobs" : `Jobs ${totalCount}`}</span>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
@@ -744,7 +753,7 @@ export function DownloadManagerView({
       {open && (
         <div className="dl-panel">
           {idle ? (
-            <div className="dl-panel-empty">No activity</div>
+            <div className="dl-panel-empty">No jobs</div>
           ) : (
             <>
               {/* Omitted outright, not left as a blank padded band (code review
