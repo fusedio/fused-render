@@ -18,7 +18,9 @@ import {
   getConfig,
   getTasks,
   listDir,
+  rawUrl,
   scheduleMessage,
+  uploadTaskShot,
 } from "@platform/lib/api";
 import type { Config, RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -1807,6 +1809,22 @@ export function saveActionLabel(
 // itself, so this alias only names what the builder returns.
 export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
 
+// One attached image, from either of the two places it can come from. A fresh
+// attach holds the file as a data URL (its thumbnail, shown before the upload
+// answers) and gains `path` when POST /api/schedule/shot returns; an Edit's
+// restored attachment is the opposite — a stored path with no data URL, drawn
+// through /api/fs/raw. `key` only keys the React list.
+export interface TaskImage {
+  key: number;
+  path: string;
+  dataUrl: string | null;
+}
+
+// Mirrors the server's IMAGES_MAX (schedule.py): each image rides every run of
+// a repeat into the model's context, so the count is a budget, not a limit on
+// what the form can hold.
+export const IMAGES_MAX = 4;
+
 export function buildSchedulePayload(form: {
   target: string;
   // The SECOND field on the card: the task's DESCRIPTION, and — joined under
@@ -1863,6 +1881,9 @@ export function buildSchedulePayload(form: {
   // not to draw it (design: a plan, not a log). Absent means "yes, treat it as
   // planned", which is what every caller that is not this form means.
   timePicked?: boolean;
+  // Uploaded task-shot paths, in attach order. Omitted from the wire when
+  // empty, like every other optional here.
+  images?: string[];
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
@@ -1925,6 +1946,7 @@ export function buildSchedulePayload(form: {
     // nothing, and the key is left off the wire rather than sent as "" for the
     // same reason `title` is.
     ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
+    ...(form.images && form.images.length ? { images: form.images } : {}),
   };
 }
 
@@ -2106,6 +2128,112 @@ export default function NewJobModal({
   // with it, so the split has to be taken once rather than per reader.
   const draft = splitDraft(initialMessage);
   const [message, setMessage] = useState(initialAsk);
+  // The attached images (design: same affordance the claude template's chat
+  // has — paste, drop or pick, thumbnails with a remove ✕). An Edit opens on
+  // the entry's stored paths; a fresh attach shows its data URL immediately
+  // and swaps in the uploaded path when the POST answers.
+  const [images, setImages] = useState<TaskImage[]>(() =>
+    (editing?.images ?? []).map((p, i) => ({ key: i, path: p, dataUrl: null })),
+  );
+  // THE REF IS THE AUTHORITY, the state is its mirror for rendering — and that
+  // asymmetry is load-bearing twice (Bugbot, PR #865). Save awaits the uploads
+  // and then has to read the paths they wrote; a `setImages` updater only
+  // reaches `images` on the next RENDER, so a drop-then-immediate-Save read an
+  // empty path and `filter(Boolean)` dropped the picture — losing exactly the
+  // attachment the await existed to save. And the cap has to be answered
+  // BEFORE the upload starts, which a state updater cannot do either.
+  // `applyImages` writes the ref synchronously, then mirrors.
+  const imagesRef = useRef<TaskImage[]>(images);
+  const applyImages = useCallback((fn: (prev: TaskImage[]) => TaskImage[]) => {
+    imagesRef.current = fn(imagesRef.current);
+    setImages(imagesRef.current);
+  }, []);
+  // Keys for images attached in THIS session, clear of the edit-seeded 0..n.
+  const imageKey = useRef(1000);
+  // Every in-flight ATTACHMENT — the read and the upload together, not just
+  // the upload — so Save can await the stragglers instead of silently
+  // scheduling a task with half its images. Each promise removes itself when
+  // it settles. Registering only the upload was a hole: it was added inside
+  // `FileReader.onload`, so a drop-then-Save could run while readers were
+  // still pending, find the set empty, await nothing, and drop every fresh
+  // attachment (Bugbot, PR #865).
+  const pendingRef = useRef<Set<Promise<void>>>(new Set());
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const attachImages = useCallback((files: FileList | File[] | null) => {
+    const picked = [...(files ?? [])].filter((f) => f.type.startsWith("image/"));
+    if (!picked.length) return;
+    picked.forEach((file) => {
+      const key = imageKey.current++;
+      // Registered SYNCHRONOUSLY, before the read even starts, and covering
+      // read-then-upload as one unit — that is what makes Save's await
+      // meaningful for a file dropped an instant earlier.
+      const pending: Promise<void> = new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onerror = () => reject(fr.error ?? new Error("could not read the image"));
+        fr.onload = () => resolve(String(fr.result || ""));
+        fr.readAsDataURL(file);
+      })
+        .then((dataUrl) => {
+          if (!dataUrl.startsWith("data:image/")) return;
+          // The cap is answered against the REF, synchronously, and BEFORE the
+          // POST: files that lose the race used to upload anyway, writing
+          // orphan bytes into a directory with no TTL and leaving Save
+          // something to await that no chip would ever show.
+          if (imagesRef.current.length >= IMAGES_MAX) return;
+          applyImages((prev) => [...prev, { key, path: "", dataUrl }]);
+          return uploadTaskShot(dataUrl).then(({ path }) =>
+            applyImages((prev) => prev.map((i) => (i.key === key ? { ...i, path } : i))),
+          );
+        })
+        .catch((e) => {
+          // A failed read or upload takes its thumbnail with it — a picture on
+          // the card that would not reach the task is the lie to avoid.
+          applyImages((prev) => prev.filter((i) => i.key !== key));
+          setError((e as Error).message || "image upload failed");
+        })
+        .finally(() => pendingRef.current.delete(pending));
+      pendingRef.current.add(pending);
+    });
+  }, [applyImages]);
+
+  // The open image, if any — the claude template's #shotview, ported: a chip's
+  // 22px thumbnail proves a picture EXISTS, it cannot show what is in it, so
+  // clicking it opens a fitted viewer and a second click swaps to natural size
+  // (the zoom class) with the box scrolling.
+  const [viewer, setViewer] = useState<TaskImage | null>(null);
+  const [viewerZoom, setViewerZoom] = useState(false);
+
+  // Escape closes the VIEWER while it is up — captured at the document so the
+  // modal chassis' own Escape (which would close the whole card) never sees it.
+  useEffect(() => {
+    if (!viewer) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setViewer(null);
+      }
+    };
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () => document.removeEventListener("keydown", onKey, { capture: true });
+  }, [viewer]);
+
+  // ONE paste handler for both text fields: a screenshot pasted on the title is
+  // as deliberate as one pasted on the description, and only a FILE paste is
+  // intercepted — ordinary text pastes stay exactly what they were.
+  const pasteImages = useCallback(
+    (e: React.ClipboardEvent) => {
+      const files = [...e.clipboardData.items]
+        .filter((i) => i.kind === "file")
+        .map((i) => i.getAsFile())
+        .filter((f): f is File => !!f && f.type.startsWith("image/"));
+      if (files.length) {
+        e.preventDefault();
+        attachImages(files);
+      }
+    },
+    [attachImages],
+  );
+
   // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
   // This is only the synchronous half of the precedence: a usable stored title,
   // else blank. The two SESSION steps — the thread's `ai-title`, then its first
@@ -2475,6 +2603,10 @@ export default function NewJobModal({
     newTaskEachRun,
     customRule: JSON.stringify(customRule),
     permission,
+    // Paths only: a fresh attach reads as dirty from the moment it lands
+    // (its path is "" until the upload answers, then a path — both differ
+    // from this baseline), which is exactly right — the user added something.
+    images: (editing?.images ?? []).join("\n"),
   }));
   // EVERY field the form can lose arms the guard — time, repeat rule and
   // permission included. Comparing only text fields let a single ✕ silently
@@ -2488,7 +2620,8 @@ export default function NewJobModal({
     repeatOn !== initial.repeatOn ||
     newTaskEachRun !== initial.newTaskEachRun ||
     JSON.stringify(customRule) !== initial.customRule ||
-    permission !== initial.permission;
+    permission !== initial.permission ||
+    images.map((i) => i.path || "pending").join("\n") !== initial.images;
 
   const picked = useMemo(() => new Date(when), [when]);
   const pickedOk = !Number.isNaN(picked.getTime());
@@ -2709,6 +2842,10 @@ export default function NewJobModal({
     setBusy(true);
     setError(null);
     try {
+      // A drop the instant before Save must still make the task: wait out the
+      // in-flight uploads, then read the paths off state. Failures already
+      // removed themselves (attachImages' catch), so what remains is real.
+      await Promise.all([...pendingRef.current]);
       // One pure function builds the whole body, so what actually goes on the
       // wire can be asserted without a DOM (new-task-form.test.ts). A rule
       // rides with its anchor, a legacy cron line replaces `due`, a CHAT's
@@ -2740,6 +2877,7 @@ export default function NewJobModal({
           // Whether anybody chose this time, which is what decides if the task
           // is a plan or a thing to run. See `timePicked`.
           timePicked,
+          images: imagesRef.current.map((i) => i.path).filter(Boolean),
         }),
       );
       rememberRecent(target);
@@ -2926,13 +3064,29 @@ export default function NewJobModal({
             one line that never wraps and never grows. Long text scrolls
             horizontally under the caret while the field has focus and ellipses
             when it does not — see `.new-task-title` in new-task.css. */}
-        <div className="new-task-write">
+        <div
+          className="new-task-write"
+          // The write block is the drop target — the part of the card that
+          // reads as "the message", which is what an image is attached TO.
+          onDragOver={(e) => {
+            if ([...e.dataTransfer.items].some((i) => i.kind === "file")) {
+              e.preventDefault();
+            }
+          }}
+          onDrop={(e) => {
+            if (e.dataTransfer.files?.length) {
+              e.preventDefault();
+              attachImages(e.dataTransfer.files);
+            }
+          }}
+        >
           <input
             ref={titleRef}
             type="text"
             className="new-task-field new-task-title"
             aria-label="What should Claude do?"
             aria-required="true"
+            onPaste={pasteImages}
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -2963,7 +3117,104 @@ export default function NewJobModal({
             placeholder={ASK_PLACEHOLDER}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
+            onPaste={pasteImages}
           />
+
+          {/* The attachments: thumbnails in attach order, each with its ✕, and
+              the picker chip while there is budget left (IMAGES_MAX). Hidden
+              entirely with nothing attached and no room implied — the row only
+              exists once the first image lands or via the chip itself, which
+              is the quiet entry point for a user who won't drag. */}
+          {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
+              the image and the x icon on it"): a bare thumbnail that OPENS the
+              viewer — a receipt this small proves a picture exists, it cannot
+              show what is in it — and an ✕ riding its corner. The card has no
+              room for the claude template's full pill; what it keeps from the
+              template is the affordance, not the chrome. */}
+          <div className="new-task-images">
+            {images.map((img) => (
+              <div
+                key={img.key}
+                className={"nt-img" + (img.path ? "" : " nt-img-up")}
+              >
+                <button
+                  type="button"
+                  className="nt-img-open"
+                  aria-label="View image"
+                  onClick={() => {
+                    setViewer(img);
+                    setViewerZoom(false);
+                  }}
+                >
+                  <img src={img.dataUrl ?? rawUrl(img.path)} alt="" />
+                </button>
+                <button
+                  type="button"
+                  className="nt-img-x"
+                  aria-label="Remove image"
+                  onClick={() => {
+                    applyImages((prev) => prev.filter((i) => i.key !== img.key));
+                    setViewer((v) => (v?.key === img.key ? null : v));
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            {images.length < IMAGES_MAX && (
+              <button
+                type="button"
+                className="nt-img-add"
+                aria-label="Add image"
+                onClick={() => fileRef.current?.click()}
+              >
+                {ICON_PLUS}
+              </button>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e) => {
+                attachImages(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </div>
+
+          {/* The viewer (#shotview, ported): modal on purpose — the one thing
+              the user is doing here is looking at one picture. Fitted first;
+              clicking the image swaps to natural size and the box scrolls,
+              which is the only way a card-sized column shows a wide screenshot
+              at a legible scale. Scrim click and Escape both close it. */}
+          {viewer && (
+            <div className="nt-shotview" role="dialog" aria-label="Attached image">
+              <div className="nt-shotview-scrim" onClick={() => setViewer(null)} />
+              <figure className={"nt-shotview-box" + (viewerZoom ? " zoom" : "")}>
+                <img
+                  className="nt-shotview-img"
+                  src={viewer.dataUrl ?? rawUrl(viewer.path)}
+                  alt="attached image"
+                  onClick={() => setViewerZoom((z) => !z)}
+                />
+                <figcaption className="nt-shotview-bar">
+                  <span className="nt-shotview-path">
+                    {viewer.path || "uploading…"}
+                  </span>
+                  <span className="nt-shotview-spacer" />
+                  <button
+                    type="button"
+                    className="nt-chip-x"
+                    onClick={() => setViewer(null)}
+                  >
+                    Close
+                  </button>
+                </figcaption>
+              </figure>
+            </div>
+          )}
         </div>
 
         {/* The path is a combobox, Google-style: focusing it drops the last

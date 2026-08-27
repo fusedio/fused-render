@@ -426,6 +426,28 @@ def report_or_cancel(job=None, **fields):
 #: the model — 379 MB for a 6GB model, which is what sent us looking.
 _measure = None
 
+#: A runner's own PEAK-memory probe, when it has one — SPEC AI-8c, D497. A
+#: second, OPTIONAL hook beside `_measure`, for a different question:
+#: `_measure`/`resident_bytes()` answer "what is this costing RIGHT NOW",
+#: which `supervisor.refresh_memory` only samples when `/health` happens to be
+#: read. `fit` (AI-16) needs the HIGH-WATER MARK of a whole load-and-generate
+#: pass instead — a staged pipeline like `ltx-video` frees stages between
+#: renders (`low_memory=True`), so its peak is whichever stage happened to be
+#: resident at the moment someone looked, which bounds nothing. Set by
+#: `serve(peak_memory=...)`.
+_measure_peak = None
+
+#: The RSS high-water mark this worker has observed, kept HERE rather than by
+#: the supervisor — SPEC AI-8c. `resident_bytes()` already runs on every
+#: `/health` and at load; remembering the running `max()` of what it measured
+#: turns a sparse sample into a monotone bound at the cost of one module-level
+#: integer. Still weaker than a runner's own allocator peak (it only sees the
+#: moments `/health` was actually polled), which is exactly why a runner that
+#: HAS a true peak probe is asked to supply one instead — see `peak_resident_
+#: bytes` for the precedence between the two, and AI-16's `basis` for how that
+#: difference is carried outward to a reader.
+_rss_peak = None
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
@@ -440,7 +462,14 @@ def resident_bytes():
 
     psutil comes with every runner's environment; if it is somehow absent the
     answer is whatever the runner could measure, or None rather than a guess.
+
+    **Also updates `_rss_peak`**, as a side effect of the one RSS reading this
+    function already takes — see `peak_resident_bytes`. Every call site here
+    already runs on every `/health` and at load, so no new sampling point is
+    needed to turn this into a high-water mark; it would just be a second read
+    of the same number.
     """
+    global _rss_peak
     own = None
     if _measure is not None:
         try:
@@ -454,7 +483,49 @@ def resident_bytes():
         rss = int(psutil.Process(os.getpid()).memory_info().rss)
     except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
         rss = None
+    if isinstance(rss, int) and rss > 0:
+        _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
+
+
+def peak_resident_bytes():
+    """The high-water mark of what this model has cost, or None — SPEC AI-8c.
+
+    **`max(probe, _rss_peak)`, not the probe alone** — the same correction
+    `resident_bytes()` makes between its own two readings, for the identical
+    reason. MLX's `mx.get_peak_memory()` is a true peak of the ALLOCATOR only:
+    it does not count the interpreter and framework baseline `resident_bytes`'s
+    own docstring measures at 379 MB for a 6GB model. Returning the probe
+    outright would let a `measured` footprint (AI-16a) UNDERSTATE what the
+    process actually occupied — the exact dishonesty AI-16c exists to remove,
+    now on the write side instead of the read side: a badge reading "Ran
+    comfortably here (20 GB)" for a load whose real high-water was larger is
+    the same wrong claim a `_fit_verdict` computed over the wrong footprint
+    used to make. Neither reading is a superset of the other (a probe can
+    catch a stage that came and went between two `/health` polls that
+    `_rss_peak`'s sparser sampling missed, and `_rss_peak` catches whatever a
+    probe's own accounting does not cover), so the larger of the two is what
+    is least wrong, exactly as `resident_bytes` already argues for `own`/`rss`.
+
+    A probe that raises or answers nothing (a wheel shipping neither
+    `get_peak_memory` name) is simply absent from the `max` — `_rss_peak`
+    alone answers, which is `resident_bytes`'s pre-AI-8c behaviour restated as
+    a high-water mark rather than a sample.
+
+    `None` when NEITHER has an answer yet — a worker `/health`ed before its
+    first `resident_bytes()` call, or one whose environment has no psutil and
+    no probe. Never a guess, the same rule `resident_bytes` follows.
+    """
+    peak = None
+    if _measure_peak is not None:
+        try:
+            probed = _measure_peak()
+        except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+            probed = None
+        if isinstance(probed, int) and probed > 0:
+            peak = probed
+    candidates = [n for n in (peak, _rss_peak) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
 
 
@@ -835,16 +906,23 @@ def _repo_files(model_id, include=None, allow=None, ignore=None,
     return getattr(info, "sha", None), files
 
 
-def repo_total_bytes(model_id, include=None, ignore=None):
+def repo_total_bytes(model_id, include=None, allow=None, ignore=None):
     """The size of what will ACTUALLY be fetched, from the Hub, or None.
 
     Without it the bar has no total and shows as indeterminate — which is
     honest, and much better than a wrong total. Summing the whole repo when only
     part of it is being fetched is how a 2.6GB pull came to read as a fraction
     of 30GB and then jump to "complete" against a figure it never downloaded.
+
+    `allow` gained a name here (it was `include`/`ignore` only) for
+    `download_plan` (SPEC AI-5n): a phase scoped with `allow_patterns` has to
+    be priced against the same scope its `download_snapshot` call fetches, the
+    same reason `download_snapshot` itself threads `allow_patterns` into
+    `_repo_files` rather than pricing the whole repo.
     """
     try:
-        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore)[1])
+        return _total_bytes(
+            _repo_files(model_id, include=include, allow=allow, ignore=ignore)[1])
     except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
         return None
 
@@ -2722,7 +2800,21 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
-    identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+    # `total_scope` explicit on EVERY tick, not left for the row's default or
+    # a caller a level up to have set (code review, SPEC AI-5n/D498):
+    # `total_scope` is STICKY on the job row (`jobs.py` only overwrites it
+    # when a tick's body names it), and `download_plan` wraps a multi-phase
+    # download with its own ticker beating `total_scope="download"` on a
+    # tighter cadence than this function's own one-second ticks. Without this,
+    # a tick from THIS phase landing right after one of `download_plan`'s
+    # beats would leave the row saying `total_scope="download"` under a total
+    # that is only this phase's own (smaller) figure — `modelSize.ts` would
+    # then let a partial phase total win outright over the catalog's constant,
+    # showing e.g. 19.1GB for a 28.5GB download at the phase boundary. `total`
+    # here is always THIS call's own phase total (`download_plan` prices the
+    # WHOLE download separately, through its own `_tick`), so `"phase"` is
+    # unconditionally correct for every tick this function sends.
+    identity = {**(row or {}), "kind": "download", "unit": "bytes", "total_scope": "phase"}
     # A notice left over from a PREVIOUS fetch is not about this one. It cannot
     # happen in a download-only worker (one process, one download), but a
     # resident worker fetches component models during requests, and a fetch that
@@ -3379,6 +3471,171 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     return fell_back
 
 
+#: How often `download_plan`'s own ticker corrects the row back to the GRAND
+#: total. Deliberately shorter than `fetch_with_progress`'s own one-second
+#: cadence (see `download_plan`'s docstring for why two tickers exist at all):
+#: a tighter interval here means the window where a viewer can catch a phase's
+#: OWN, smaller total on screen is well under a second rather than up to one.
+_PLAN_TICK_S = 0.3
+
+
+def _phase_total(model_id, allow, ignore, folder):
+    """One phase's own total, in bytes, or None — WITHOUT a Hub metadata call
+    when the phase is already complete on disk per this app's own
+    completeness record (SPEC AI-5l's fast path in `download_snapshot`,
+    reused rather than reimplemented).
+
+    This is `download_plan`'s fix for the bug review caught: pricing every
+    phase up front via a bare `repo_total_bytes()` call means an LTX bring-up
+    with `mlx-community/gemma-3-12b-it-4bit` already cached contacted the Hub
+    anyway, purely to price a phase that needed no network to answer at all
+    — the exact "no metadata call, no etag revalidation" fast path
+    `download_snapshot` documents for itself, silently defeated one level up
+    by a pricing step that never checked. `_cached_path` is the SAME check
+    (`local_files_only=True`, verified against our own fetch record) that
+    function runs first, so a fully-offline bring-up with every phase already
+    on disk now prices the whole plan without touching the network once.
+
+    **Still not perfectly mirror-transparent.** A phase NOT in our own
+    completeness record but servable entirely by `_mirror_snapshot` (AI-5l)
+    still pays one Hub metadata call here before `download_snapshot`'s own
+    mirror check gets a chance to run — `_mirror_snapshot` does not offer a
+    cheap, network-free "would you serve this" probe separate from actually
+    fetching, so there is no way to skip pricing for that case without either
+    duplicating its logic or triggering the fetch itself twice. Narrower than
+    the reported defect, which is specifically about an ALREADY-CACHED phase,
+    and accepted rather than solved here.
+    """
+    def local():
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, local_files_only=True)
+
+    if _cached_path(model_id, local, allow=allow, ignore=ignore):
+        return bytes_on_disk(folder)
+    return repo_total_bytes(model_id, allow=allow, ignore=ignore)
+
+
+def download_plan(phases):
+    """Fetch several repos as ONE download, priced at their SUM (SPEC AI-5n,
+    D498). Returns each phase's own `download_snapshot` result, in order.
+
+    `phases` is an ordered list of `(model_id, allow_patterns, ignore_patterns)`
+    — every repo one logical "Download" button touches. `ltx-video` fetches
+    the LTX weights and then `mlx-community/gemma-3-12b-it-4bit` as two
+    sequential `download_snapshot` calls; reporting only the first repo's
+    total is AI-5b's original defect rebuilt one level up — true of a phase,
+    silent about the download the button actually started.
+
+    **The grand total is summed ONCE, before a byte moves**, from
+    `_phase_total` per phase — the SAME call `download_snapshot` makes for
+    its own scoped total when a phase is not already on disk, so a phase that
+    only fetches part of a repo is priced against exactly what it fetches, in
+    the sum as much as on its own. See `_phase_total`'s own docstring for how
+    an already-complete phase is priced with no network at all.
+    **A phase whose size cannot be answered costs the WHOLE total**, not
+    just its own: `total` is `None` the moment any phase's is, rather than
+    summing the KNOWN phases and pretending the rest cost nothing — that is
+    AI-5b's defect rebuilt a second way, a bar priced at a fraction that jumps
+    the instant the indeterminate phase's bytes start landing. Indeterminate is
+    honest; partial is not.
+
+    **Each phase still runs through `download_snapshot`, unmodified.** AI-5l's
+    mirror branch, AI-5i's segmented fetch and the already-complete fast path
+    all still apply per phase exactly as they do for a bare call — this
+    function COMPOSES them, it does not reimplement any of them.
+
+    **A second reporting layer rides alongside each phase's own, and the two
+    are not coordinated.** `download_snapshot` has no way to know it is one of
+    several phases, so it goes on reporting its OWN phase-scoped total on its
+    OWN cadence (`fetch_with_progress`'s one-second tick) — reused code, not
+    duplicated here. A background ticker corrects the row back to the GRAND
+    total on a TIGHTER cadence (`_PLAN_TICK_S`) for the life of the whole
+    plan, naming the phase in `detail` ("Fetching weights… (2 of 2)") and
+    marking `total_scope="download"` so `modelSize.ts` knows this total may
+    win outright rather than only ever raise the catalog's constant. Because
+    the two tickers are independent, a viewer CAN catch a tick that briefly
+    shows one phase's own smaller total before the next correction lands —
+    reporting has always been best-effort here (see `report`'s own
+    docstring), and the alternative is threading a "stay quiet" flag through
+    `download_snapshot`'s three fetch paths (mirror, segmented, hub fallback)
+    to suppress its own ticks, which is exactly the duplication this function
+    exists to avoid. `_PLAN_TICK_S` keeps that window well under a second.
+
+    **The closing tick only lands on SUCCESS.** A phase that raises — a
+    network failure, or `Cancelled` from the ✕ — must not be followed by a
+    tick claiming `done=<the grand total>`: that is a finished-download shape
+    for a download that did not finish, the same lie a `state="running"`
+    revival elsewhere in this file is written not to tell. `fetch_with_progress`
+    itself never sends a closing tick on failure either — the exception is the
+    report — and this function now matches it.
+    """
+    resolved = list(phases)
+    if not resolved:
+        return []
+
+    folders = [repo_folder(model_id) for model_id, _allow, _ignore in resolved]
+    per_phase_totals = [
+        _phase_total(model_id, allow, ignore, folder)
+        for (model_id, allow, ignore), folder in zip(resolved, folders)
+    ]
+    total = None if any(t is None for t in per_phase_totals) else sum(per_phase_totals)
+    count = len(resolved)
+
+    def grand_done():
+        """`bytes_on_disk` summed across every phase's folder, or None the
+        moment any one of them cannot answer — the same all-or-nothing rule
+        `total` follows above, so `done` and `total` never disagree about
+        which phases they cover."""
+        parts = [bytes_on_disk(folder) for folder in folders]
+        return None if any(part is None for part in parts) else sum(parts)
+
+    current_phase = [1]
+
+    def _tick(**fields):
+        report(state="running", kind="download", unit="bytes",
+              total_scope="download", total=total, **fields)
+
+    _plan_stop = threading.Event()
+
+    def beat():
+        while not _plan_stop.wait(_PLAN_TICK_S):
+            n = current_phase[0]
+            detail = (f"Fetching weights… ({n} of {count})" if count > 1
+                      else "Fetching weights…")
+            _tick(detail=detail, done=_capped(grand_done(), total))
+
+    ticker = threading.Thread(target=beat, name="download-plan", daemon=True)
+    ticker.start()
+    try:
+        results = []
+        for index, (model_id, allow, ignore) in enumerate(resolved, start=1):
+            current_phase[0] = index
+            results.append(download_snapshot(model_id, allow_patterns=allow,
+                                             ignore_patterns=ignore))
+    except BaseException:
+        _plan_stop.set()
+        # JOINED on the SAME bound `heartbeat()` uses (`JOB_TIMEOUT_S + 1.0`),
+        # not a shorter one: `_tick` is a plain `report`, which POSTs with a
+        # `JOB_TIMEOUT_S` socket timeout, and a `ticker.join` shorter than
+        # that can return while a beat is still inside its POST. That beat
+        # then lands AFTER this function returns — reviving a row a moment
+        # later flipped `state` back to "running" and cleared `finished_at`,
+        # exactly the "tick in flight outlives the work" bug `heartbeat`
+        # already had to fix once.
+        ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+        raise
+    _plan_stop.set()
+    ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+    # Land on the grand total, `fetch_with_progress`'s own closing tick's
+    # reasoning applied one level up: every phase folder's snapshot
+    # symlinks are not counted, so a finished plan measures slightly under
+    # its own total and a bar stuck short of 100% reads as a download that
+    # gave up. Only reached on success — see the docstring's closing note.
+    _tick(detail="Fetching weights…", done=total if total is not None else grand_done())
+    return results
+
+
 def download_file(repo_id, filename, detail=None, job=None, row=None):
     """One file out of a repo — a GGUF checkpoint, say — with progress.
 
@@ -3625,7 +3882,11 @@ def _handler(generate, streaming):
                 # whatever it happened to cost before it had done anything.
                 health = snapshot()
                 if health.get("state") == "ready":
+                    # `resident_bytes()` FIRST: it is what feeds `_rss_peak`
+                    # (SPEC AI-8c), and `peak_resident_bytes()`'s RSS fallback
+                    # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
+                    health["peak_resident_bytes"] = peak_resident_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -3737,16 +3998,22 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
-def serve(download, load, generate, streaming=False, memory=None, argv=None):
+def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
+         argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
     there, because the supervisor waits on the process rather than on a health
     route, so a failure must not be swallowed into a status nobody reads.
+
+    `peak_memory` is `memory`'s sibling (SPEC AI-8c, D497) — a runner that can
+    answer "what did this cost at its WORST", not just "right now". See
+    `peak_resident_bytes` for what a runner without one gets instead.
     """
-    global JOB_ID, _measure
+    global JOB_ID, _measure, _measure_peak
 
     _measure = memory
+    _measure_peak = peak_memory
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

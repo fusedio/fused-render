@@ -213,7 +213,59 @@ export interface ClaudeHealth {
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
   config_dir: string;
+  /** `sys.platform`. Here so the UI never guesses which install line to show —
+      it used to, and it guessed wrong on Windows. */
+  platform: string;
+  /** The native install line for THIS platform, stated by the server rather
+      than reconstructed here. */
+  install_command: string;
+  /** Found, and runnable-looking, but it would not report its own version.
+      Silent before this existed; `doctor` is what makes it sayable. */
+  broken: boolean;
+  /** "native" | "npm" | "brew" | "winget" | "system" | … , or null when we
+      could not tell. Only ever set from `claude doctor` or, failing that, the
+      shape of the resolved path. */
+  install_method: string | null;
+  /** Whether `claude update` would actually change anything.
+      `false` means it is a documented no-op here — a package manager owns the
+      binary, or updates are switched off — and the UI must NOT offer to run it.
+      `null` means we could not tell, which is not evidence against it. */
+  updatable: boolean | null;
+  /** What to actually run: `claude update`, or the owning manager's own upgrade
+      line. null when we know the CLI cannot update itself and cannot name the
+      command that would. */
+  update_command: string | null;
+  update_manager: string | null;
+  /** Why an update would not work, in a sentence, when `updatable` is false. */
+  update_blocked_reason: string | null;
+  /** `claude doctor`'s own report, when it was run. Only measured while
+      something already looks wrong — a healthy machine never pays for it. */
+  doctor: ClaudeDoctor | null;
   checked_at: number;
+}
+
+/** What `claude doctor` said about its own installation. */
+export interface ClaudeDoctor {
+  install_method: string | null;
+  /** The CLI's own problem/fix pairs, verbatim. Better than anything we could
+      infer, and the reason the broken-install card has something to show. */
+  warnings: { problem: string; fix: string }[];
+  text: string;
+}
+
+/** One run of the installer or of `claude update`, as the server holds it. */
+export interface ClaudeInstallStatus {
+  action: "install" | "update" | null;
+  state: "idle" | "running" | "done" | "error";
+  detail: string;
+  /** The child's own output, verbatim — a 403 from downloads.claude.ai and a
+      proxy eating the TLS handshake are different problems with different
+      fixes, and a reworded message throws both away. */
+  output: string;
+  error: string | null;
+  command: string | null;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export function getClaudeHealth(): Promise<ClaudeHealth> {
@@ -224,6 +276,29 @@ export function getClaudeHealth(): Promise<ClaudeHealth> {
     gone and installed or signed into something. */
 export function refreshClaudeHealth(): Promise<ClaudeHealth> {
   return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
+}
+
+/** Run the native installer, or `claude update`, on this machine.
+    Rejects with the server's own sentence when it refuses — an update that
+    would no-op comes back as a 409 naming the command that would work. */
+export function startClaudeInstall(
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>("/api/claude/install", { action });
+}
+
+export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** `claude doctor` on demand — what the CLI thinks of its own installation. */
+export function runClaudeDoctor(): Promise<{
+  ok: boolean;
+  doctor: ClaudeDoctor | null;
+  path?: string;
+  error?: string;
+}> {
+  return postJson("/api/claude/doctor", {});
 }
 
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
@@ -730,6 +805,13 @@ export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
     inflightConditions.set(fsPath, p);
   }
   return p;
+}
+
+// One task-attachment image in, its stored path out (POST /api/schedule/shot).
+// The path is what scheduleMessage's `images` carries; the bytes live under
+// the server's task-shots dir, where the scheduled run is pre-allowed to Read.
+export function uploadTaskShot(dataUrl: string): Promise<{ path: string }> {
+  return postJson<{ path: string }>("/api/schedule/shot", { data: dataUrl });
 }
 
 export function rawUrl(fsPath: string): string {
@@ -1946,6 +2028,14 @@ export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
 
+// Which enabled background apps (server/background_apps.py) currently have a
+// live daemon, keyed by folder path — feeds the /apps grid's "running" badge
+// (Apps.tsx). Cheap by design: the endpoint reads only engine_host.current,
+// no folder walk, no toml reads.
+export function getBackgroundAppsRunning(): Promise<{ running: Record<string, boolean> }> {
+  return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
@@ -1953,6 +2043,40 @@ export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   return getJson<{ entry: string | null }>(
     `/api/apps/entry?path=${encodeURIComponent(path)}`,
   );
+}
+
+// ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
+//
+// A store of its own since 2026-08-26: a new task adds its app, nothing removes
+// one automatically, and removing one archives every task under it. Rows arrive
+// in ADDED order; `exists` is false for a folder that has gone (the row stays
+// until the user removes it).
+export interface CurrentAppEntry {
+  /** Canonical (forward-slash) absolute app folder. */
+  path: string;
+  name: string;
+  kind: "workspace" | "linked";
+  entry: string | null;
+  exists: boolean;
+  added_at: number | null;
+}
+
+export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
+  return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** Take an app off the desk. SIDE EFFECT, by design: every task whose project
+ *  is the folder or inside it is archived (the same gesture as
+ *  `archiveTask`, per task — cancelled work, filed session, nothing destroyed). */
+export async function removeCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; removed: boolean; archived: number; cancelled: number }> {
+  const r = await fetch(`/api/current-apps?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
 }
 
 // Scaffold a new app folder and (optionally) create ONE task on its index.html
@@ -2783,6 +2907,27 @@ export function getAiRuntime(): Promise<AiRuntime> {
   return getJson<AiRuntime>("/api/ai/runtime");
 }
 
+/** Will this model sit comfortably on THIS machine — the server's judgement,
+ *  widened from a bare verdict string to an object (SPEC AI-16, AI-16c, D497)
+ *  so the page can tell a MEASURED answer apart from a guess. `basis`:
+ *
+ *  - "measured" — this model actually RAN here, and `footprintBytes` is what
+ *    it cost at its peak (`fused_render/ai/footprints.py`). Worded on the
+ *    page as a FACT ("Ran here, tight (28 GB)"), never as a hedge.
+ *  - "declared" — a curator's optional `resident_gb` estimate.
+ *  - "download" — nothing better is known; `footprintBytes` is the download's
+ *    own `size_gb`, exactly what `fit` meant before this shape existed.
+ *
+ *  `footprintBytes` is the figure the verdict was judged against, in bytes —
+ *  not necessarily `size_gb` scaled, since a "measured" or "declared" figure
+ *  can differ from the download entirely (LTX-2.3's `low_memory=True` peak is
+ *  one stage of a two-repo download). */
+export interface AiFitVerdict {
+  verdict: "easy" | "tight" | "no";
+  basis: "measured" | "declared" | "download";
+  footprintBytes: number;
+}
+
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
  *  the server's catalog is the curation, and what is on this disk is the cache
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
@@ -2825,14 +2970,21 @@ export interface AiCatalogModel {
    *  cached entries and on models nobody has measured; the consumer keeps the
    *  server's default then. */
   defaults?: { steps?: number } | null;
-  /** Will this model sit comfortably on THIS machine — the server's judgement
-   *  over the size and the machine's RAM ("easy" | "tight" | "no"), or null
-   *  when either half is unknown. A judgement, not a measurement; the page
-   *  words it as one. */
-  fit?: "easy" | "tight" | "no" | null;
+  /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
+   *  Null when nothing is known at all (no size, no measurement, no curator
+   *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
+   *  follows. */
+  fit?: AiFitVerdict | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
+  /** A curator's optional estimate of this model's RESIDENT footprint in GB —
+   *  additive, in the shape `recommended`/`acceptsImage` already established
+   *  (SPEC AI-11i/AI-11j): a curator MAY answer, and absence falls through
+   *  `fit`'s ladder to `size_gb` rather than meaning anything. Never present
+   *  on a cached entry — nobody has curated a repo the user found themselves,
+   *  same reason `note` is null there. */
+  resident_gb?: number | null;
   /** Why you would or would not pick this one. Null on a CACHED entry: nobody
    *  wrote a note for a repo the user found themselves, and null says so where
    *  prose generated from a repo id would claim otherwise. */
@@ -3344,6 +3496,9 @@ export interface ScheduledMessage {
   target: string;
   message: string;
   due: string;
+  // Task-shot paths attached in the New task form (server: schedule.shots_dir()).
+  // Read back so an edit — which is cancel + re-create — can re-state them.
+  images?: string[];
   session_id: string;
   // WHERE `session_id` came from: true only when the server LEARNED it (a
   // repeating template's first run reported the session it opened, and that id
@@ -3472,6 +3627,10 @@ export function scheduleMessage(body: {
   // A no-op where there is nothing to move — a task whose session exists is
   // numbered on the session id, and that key is untouched by an edit.
   replaces?: string;
+  // Paths returned by uploadTaskShot, at most 4. The server refuses anything
+  // not living under its own task-shots dir, so this can only name images this
+  // form itself uploaded.
+  images?: string[];
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

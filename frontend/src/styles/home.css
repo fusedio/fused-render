@@ -214,7 +214,9 @@
   border-radius: 999px;
   color: var(--fg-muted);
   cursor: pointer;
-  transition: color 120ms ease, background-color 120ms ease;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
 }
 
 .home-composer-pick:hover:not(:has(:disabled)) {
@@ -286,7 +288,9 @@
   background: var(--fg);
   color: var(--bg);
   cursor: pointer;
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
 }
 
 .home-composer-send:hover:not(:disabled) {
@@ -298,18 +302,55 @@
   cursor: default;
 }
 
-/* Starter-idea chips under the composer — click fills the box, never submits. */
+/* Starter-idea chips under the composer — click fills the box, never submits.
+   Always ONE line: the chips scroll sideways inside the strip when they don't
+   fit (a wrapping row pushed the shuffle button onto a second line, and the
+   chip labels are long enough for that to happen at ordinary widths), while
+   the shuffle button lives outside the strip so it never scrolls away. */
 .home-composer-samples {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-start;
+  align-items: center;
+  flex-wrap: nowrap;
+  /* Centred under the composer box, not left-flush: the strip is shrink-to-fit,
+     so a row narrower than the composer sits centred and only goes edge-to-edge
+     once the chips actually overflow. */
+  justify-content: center;
   gap: 8px;
+  min-width: 0;
+}
+
+.home-composer-sample-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  /* min-width:0 so the strip is allowed to be narrower than its content —
+     without it a flex item's auto min-size keeps it at full content width and
+     the row overflows the composer instead of scrolling. */
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow-x: auto;
+  /* Keep a flick that reaches the end of the chips inside the strip: the page
+     itself leaves the x-axis open for swipe-back, and overscrolling a chip row
+     into a browser-history navigation would be a nasty surprise. */
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  /* A scrolled chip should stop flush with the edge of its own row rather than
+     half-clipped mid-label. */
+  scroll-snap-type: x proximity;
+}
+
+.home-composer-sample-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .home-composer-sample {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  /* Never shrink or wrap a chip: the strip scrolls instead. */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  scroll-snap-align: start;
   padding: 5px 12px;
   font: inherit;
   font-size: 12.5px;
@@ -318,7 +359,9 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   cursor: pointer;
-  transition: color 120ms ease, border-color 120ms ease;
+  transition:
+    color 120ms ease,
+    border-color 120ms ease;
 }
 
 .home-composer-sample:hover:not(:disabled) {
@@ -336,9 +379,11 @@
   color: var(--fg-muted);
 }
 
-/* Icon-only round chip that advances to the next batch of ideas. */
+/* Icon-only round chip that advances to the next batch of ideas. Outside the
+   scrolling strip, so it holds its place at the end of the row. */
 .home-composer-shuffle {
   padding: 5px 8px;
+  flex: 0 0 auto;
 }
 
 .home-section {
@@ -443,3 +488,44 @@
   padding: 18px 0;
 }
 
+/* The ask-for-a-name row (HomeHero.tsx, phase "askName"): shown in the
+   composer footer in place of the pickers when haiku could not name the app.
+   Wraps like the picks row does, since the sidebar modal is narrow. */
+.home-composer-name {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.home-composer-name-why {
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.home-composer .home-composer-name-input {
+  height: auto;
+  width: 180px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.home-composer .home-composer-name-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.home-composer-name-cancel {
+  border: none;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.home-composer-name-cancel:hover {
+  color: var(--fg);
+}

@@ -24,6 +24,7 @@ const BASE: Job = {
   state: "running",
   done: 45,
   total: 100,
+  total_scope: "phase",
   unit: "",
   message: "",
   page: "",

@@ -75,23 +75,54 @@ const DEFAULTS = { width: 480, height: 272, guidance: 1.0 };
 // The rail's slider bounds, in one place so a URL value and a dragged value
 // cannot disagree about what the control's scale is.
 const SIZE_RANGE = [256, 2048] as const;
-const STEPS_RANGE = [1, 100] as const;
+// Steps top out at the server's own 28: nothing in the shortlist gets better
+// past it, and the Max chip already says 28 — a rail running to 100 only made
+// the chip look like a mid-point.
+const STEPS_RANGE = [1, 28] as const;
 const GUIDANCE_RANGE = [0, 20] as const;
 
 // Multiple-of-16 pairs, all small by default. The chip writes its pair into the
-// same `w`/`h` params the custom sliders edit; a pair matching no chip lights
-// none of them — including a saved link from before 16:9 was re-footed onto the
-// default size, which now lights nothing rather than lying.
+// same `w`/`h` params the sliders edit, and then LOCKS the shape: moving width
+// re-derives height (and the other way round) until Custom is picked, so a
+// bigger 16:9 no longer means working out the second side by hand. A saved
+// link whose pair fits none of the shapes lights Custom.
 const ASPECTS = [
-  { value: "1:1", label: "1:1", title: "Square — 512×512", width: 512, height: 512 },
-  { value: "3:4", label: "3:4", title: "Portrait — 480×640", width: 480, height: 640 },
-  { value: "4:3", label: "4:3", title: "Landscape — 640×480", width: 640, height: 480 },
+  { value: "1:1", label: "1:1", title: "Square — 512×512", width: 512, height: 512, rw: 1, rh: 1 },
+  { value: "3:4", label: "3:4", title: "Portrait — 480×640", width: 480, height: 640, rw: 3, rh: 4 },
+  { value: "4:3", label: "4:3", title: "Landscape — 640×480", width: 640, height: 480, rw: 4, rh: 3 },
   // The default pair, so a fresh stage lights a chip rather than none. 480/272
   // is 1.76 rather than 1.778 — the nearest multiple-of-16 pair to the size
   // asked for, and the same rounding SDXL's own "16:9" bucket carries.
-  { value: "16:9", label: "16:9", title: "Wide — 480×272", width: 480, height: 272 },
-  { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768 },
+  { value: "16:9", label: "16:9", title: "Wide — 480×272", width: 480, height: 272, rw: 16, rh: 9 },
+  { value: "9:16", label: "9:16", title: "Tall — 432×768", width: 432, height: 768, rw: 9, rh: 16 },
 ] as const;
+type Aspect = (typeof ASPECTS)[number];
+const CUSTOM = "custom";
+const ASPECT_CHIPS = [
+  ...ASPECTS.map(({ value, label, title }) => ({ value, label, title })),
+  { value: CUSTOM, label: "Custom", title: "Width and height move on their own" },
+];
+
+// The locked axis, snapped to the nearest multiple of 16 and kept on the rail.
+// Reproduces every preset pair from its own width (480 → 272 for 16:9), so the
+// same functions decide which chip a saved size lights. A pair is a shape's if
+// EITHER side derives the other: a height edit writes `widthFor(h)`, whose
+// own `heightFor` can land one step off after rounding, and a link saved then
+// must reload with the lock it was showing. Where the rail's edge clamped a
+// side, more than one shape can derive the same pair (16:9 and 4:3 both reach
+// 2048×1600), so the candidates are ranked by how close their true ratio is
+// to the pair's rather than by list order.
+const snap16 = (n: number) =>
+  Math.min(SIZE_RANGE[1], Math.max(SIZE_RANGE[0], Math.round(n / 16) * 16));
+const heightFor = (width: number, a: Aspect) => snap16((width * a.rh) / a.rw);
+const widthFor = (height: number, a: Aspect) => snap16((height * a.rw) / a.rh);
+const aspectOf = (width: number, height: number) => {
+  const off = (a: Aspect) => Math.abs(Math.log(width / height) - Math.log(a.rw / a.rh));
+  const fits = ASPECTS.filter(
+    (a) => heightFor(width, a) === height || widthFor(height, a) === width,
+  ).sort((x, y) => off(x) - off(y));
+  return fits[0]?.value ?? CUSTOM;
+};
 
 // Eight authored examples — two pages of four (D465). Every one names a
 // subject AND a way of rendering it (medium, light, lens, texture), because
@@ -262,6 +293,9 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
   // control that lies about what will run.
   const [width, setWidth] = useState(() => numParam("w", DEFAULTS.width, ...SIZE_RANGE));
   const [height, setHeight] = useState(() => numParam("h", DEFAULTS.height, ...SIZE_RANGE));
+  // Which shape is locked — a chip value, or `custom` for two free sliders. Not
+  // a URL param: `w`/`h` round-trip and the chip is recovered from them.
+  const [aspect, setAspect] = useState<string>(() => aspectOf(width, height));
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [guidance, setGuidance] = useState(() =>
     numParam("guidance", DEFAULTS.guidance, ...GUIDANCE_RANGE),
@@ -516,7 +550,16 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
     return () => window.clearInterval(timer);
   }, [rendering]);
 
-  const aspect = ASPECTS.find((a) => a.width === width && a.height === height)?.value ?? null;
+  const locked = ASPECTS.find((a) => a.value === aspect) ?? null;
+  // The slider handlers: under a locked shape the other side follows.
+  const changeWidth = (w: number) => {
+    setWidth(w);
+    if (locked) setHeight(heightFor(w, locked));
+  };
+  const changeHeight = (h: number) => {
+    setHeight(h);
+    if (locked) setWidth(widthFor(h, locked));
+  };
   const speed = speedChips?.find((c) => c.steps === steps)?.value ?? null;
   // Is the size the PICTURE's? Only with a base image, and only until somebody
   // picks one themselves.
@@ -563,6 +606,10 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
       setRun({ started, job: null, done: false, readFailed: false });
+      // The seed the server settled on — invented when the box was empty —
+      // lands in the box, so the render can be reproduced or nudged. Repeat
+      // Generates reuse it until the box is cleared.
+      setSeed(String(started.seed));
       try {
         const outcome = await watchJob(started.jobId, controller.signal, (job) =>
           setRun((r) => (r && r.started.jobId === started.jobId ? { ...r, job } : r)),
@@ -754,9 +801,10 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               is also the way back to picking a size by hand. */}
           {!sizeIsTheImages && (
             <RailChips
-              options={ASPECTS.map(({ value, label, title }) => ({ value, label, title }))}
+              options={ASPECT_CHIPS}
               active={aspect}
               onPick={(value) => {
+                setAspect(value);
                 const pick = ASPECTS.find((a) => a.value === value);
                 if (pick) {
                   setWidth(pick.width);
@@ -797,13 +845,17 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
           <>
             <RailSlider
               label="Width"
-              hint="Snapped to a multiple of 16 by the server."
+              hint={
+                locked
+                  ? `Height follows to keep ${locked.label}. Pick Custom to move them apart.`
+                  : "Snapped to a multiple of 16 by the server."
+              }
               min={SIZE_RANGE[0]}
               max={SIZE_RANGE[1]}
               step={16}
               value={width}
               fallback={DEFAULTS.width}
-              onChange={setWidth}
+              onChange={changeWidth}
             />
             <RailSlider
               label="Height"
@@ -813,7 +865,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               step={16}
               value={height}
               fallback={DEFAULTS.height}
-              onChange={setHeight}
+              onChange={changeHeight}
             />
           </>
         )}
@@ -964,8 +1016,8 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
               </div>
             )}
             {/* Progress only. The settled parameters were dropped by request,
-                and D429's seed-reuse button with them: an invented seed is now
-                surfaced nowhere, so a random render cannot be reproduced. */}
+                and D429's seed-reuse button with them; the invented seed is
+                surfaced by pre-filling the Seed box instead. */}
             {busy && (
               <figcaption className="pg-image-caption">
                 <span>{job?.detail || "Starting — a cold model loads first…"}</span>

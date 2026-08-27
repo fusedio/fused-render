@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import jobs
-from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, supervisor
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
@@ -112,7 +112,7 @@ FAKE_WORKER = textwrap.dedent('''
         json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
     def ready():
         time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
-        STATE.update(state="ready", resident_bytes=1234, loaded_at=time.time())
+        STATE.update(state="ready", resident_bytes=1234, peak_resident_bytes=9999, loaded_at=time.time())
     threading.Thread(target=ready, daemon=True).start()
     srv.serve_forever()
 ''')
@@ -2512,8 +2512,8 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
 
     Read through `projectenv.dependencies_of` — the app's own manifest reader,
     which is markers-and-all verbatim (what a packaging invariant wants) and
-    which already carries the `tomli` fallback for the 3.10 that
-    `requires-python` still promises.
+    which still carries a `tomli` fallback, now unreachable: `requires-python`
+    is >=3.11, so `tomllib` is always there.
     """
     from fused_render import projectenv
 
@@ -2731,6 +2731,47 @@ def test_a_model_loads_and_reports_its_memory(fake_runner):
     described = supervisor.describe()
     assert described["loaded"][0]["model"] == "org/small"
     assert described["totalResidentBytes"] == 1234
+
+
+def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
+    """SPEC AI-16a, D497: the ONE writer for the measured-footprint store is
+    `supervisor.refresh_memory`, re-reading `/health` on the same cadence the
+    rest of the app already relies on — this is the wiring `fit.py`'s
+    "measured" basis depends on existing at all."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    from fused_render.ai import footprints
+
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/small")
+    # `_wait_ready` only waits on the BRING-UP loop's own polling, which sets
+    # `resident_bytes` directly but not the peak — `refresh_memory` (called by
+    # `describe()`, the status endpoint's own path) is the one place that
+    # writes the peak at all, exactly as it is in production.
+    supervisor.refresh_memory()
+    assert worker.peak_resident_bytes == 9999
+    assert footprints.read(registry.TEXT_GENERATION, "org/small") == 9999
+
+
+def test_a_footprint_write_failure_does_not_break_refresh_memory_or_describe(
+        fake_runner, monkeypatch):
+    """Code review: `footprints.record` calls `storage.write_json`, which can
+    raise `OSError` (a full disk, a permissions problem, a home directory that
+    went away mid-session). `describe()` calls `refresh_memory()`
+    unconditionally, and `describe()` backs `GET /api/ai/runtime` — a status
+    route with no business 500ing because a NICE-TO-HAVE observation (a peak
+    footprint, remembered for next time's fit verdict) failed to write. The
+    resident-bytes reading itself, which the route exists to report, must
+    still land."""
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(footprints, "record", _boom)
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    worker = _wait_ready("org/small")
+    supervisor.refresh_memory()
+    assert worker.peak_resident_bytes == 9999
+    described = supervisor.describe()
+    assert described["loaded"][0]["model"] == "org/small"
 
 
 def test_loading_a_second_text_model_evicts_the_first(fake_runner):
@@ -5105,6 +5146,116 @@ def test_editing_a_model_WITH_an_edit_recipe_still_opens_a_job(
         json={"prompt": "a fox", "image": "photo.png", "base": page, "model": known},
         headers={"X-Fused": "1"}).json()
     _wait_job(started["jobId"])
+
+
+# -- the fit verdict: measured > declared > download (SPEC AI-16, AI-16c, D497) -
+
+
+def _fit_text_row(client):
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    return next(row for row in rows if row["capability"] == registry.TEXT_GENERATION)
+
+
+@pytest.fixture()
+def fixed_fit_machine(monkeypatch):
+    """A pinned 32GB machine with no Apple-Silicon wired ceiling in play, so
+    the threshold arithmetic these tests reach for is deterministic on any
+    host the suite runs on. `fit.py`'s OWN threshold arithmetic is tested
+    directly in `tests/test_ai_fit.py`; this fixture is only what lets the
+    route-level tests below assert a STABLE verdict word."""
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+    monkeypatch.setattr(fit, "_wired_limit_mb", lambda: None)
+
+
+def test_fit_is_null_when_nothing_is_known(client, fake_runner, fixed_fit_machine,
+                                           monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/unknown-size", "label": "Unknown", "size_gb": None, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/unknown-size"
+    assert entry["fit"] is None
+
+
+def test_fit_basis_download_from_size_gb_alone(client, fake_runner, fixed_fit_machine,
+                                               monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/only-size", "label": "Only size", "size_gb": 4.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"] == {"verdict": "easy", "basis": "download",
+                            "footprintBytes": 4.0 * 1e9}
+
+
+def test_fit_basis_declared_wins_over_download(client, fake_runner, fixed_fit_machine,
+                                               monkeypatch):
+    """A curator's optional `resident_gb` — the shape AI-11i/AI-11j already
+    established for `recommended`/`acceptsImage` — outranks the download
+    figure, the same way LTX-2.3's `low_memory=True` peak is smaller than its
+    two-repo download total."""
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/declared", "label": "Declared", "size_gb": 28.5,
+         "resident_gb": 12.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "declared"
+    assert entry["fit"]["footprintBytes"] == 12.0 * 1e9
+    assert entry["fit"]["verdict"] == "easy"
+
+
+def test_fit_basis_measured_wins_over_declared_and_download(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """SPEC AI-16a: a model that has actually RUN here beats a guess about it,
+    whichever guess — the download's byte count or a curator's estimate."""
+    footprints.record(registry.TEXT_GENERATION, "org/measured", 5_000_000_000)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/measured", "label": "Measured", "size_gb": 28.5,
+         "resident_gb": 12.0, "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "measured"
+    assert entry["fit"]["footprintBytes"] == 5_000_000_000
+
+
+def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    footprints.record(registry.IMAGE_GENERATION, "org/cross-cap", 9_000_000_000)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/cross-cap", "label": "Cross capability", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["fit"]["basis"] == "download"
+
+
+def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review on AI-16: the route used to call `fit.verdict` per catalog
+    entry, and each of THOSE did its own fresh `footprints.read` — a
+    `storage.read_json` open, a JSON parse and a `benchmark.machine()`
+    identity check per entry, for a route (`GET /api/ai/catalog`) the picker
+    polls. `footprints.load_store()` now happens ONCE per request and every
+    entry's `fit.verdict` reads off that same in-memory store — a multi-entry
+    catalog (several suggested models under one capability) must not cost
+    more than a single `load_store()` call regardless of how many entries it
+    answers for."""
+    calls = []
+    real_load_store = footprints.load_store
+
+    def _counting_load_store():
+        calls.append(1)
+        return real_load_store()
+
+    monkeypatch.setattr(footprints, "load_store", _counting_load_store)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
+        {"id": "org/two", "label": "Two", "size_gb": 8.0, "note": ""},
+        {"id": "org/three", "label": "Three", "size_gb": 12.0, "note": ""},
+    ])
+    row = _fit_text_row(client)
+    assert len(row["models"]) >= 3
+    assert all(m["fit"] is not None for m in row["models"])
+    assert len(calls) == 1
 
 
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------

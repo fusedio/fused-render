@@ -572,7 +572,7 @@ export function TextStage({
           hint="Lower is focused and repeatable; higher is varied and creative."
           min={LIMITS.temperature[0]}
           max={LIMITS.temperature[1]}
-          step={0.05}
+          step={0.1}
           value={temperature}
           fallback={DEFAULTS.temperature}
           onChange={setTemperature}

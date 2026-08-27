@@ -170,7 +170,7 @@ def test_a_leftover_script_header_is_an_ordinary_comment(monkeypatch, tmp_path):
     )
     # Stubbed rather than run for real: the assertion is about what run_python
     # DECIDES, and a real backend would make this test require the `[fused]`
-    # extra — which the 3.10-3.13 matrix does not install, so it would fail
+    # extra — which the 3.11-3.13 matrix does not install, so it would fail
     # there rather than skip. `_FakeBackend` carries both halves of the
     # contract, so `via` below proves which path was taken.
     backend = _FakeBackend(_FakeResult(return_value="7"))

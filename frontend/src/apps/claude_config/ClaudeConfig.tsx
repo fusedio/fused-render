@@ -9,12 +9,14 @@
 // sidebars glued together. So the sections are a horizontal TAB STRIP across
 // the top, and the horizontal budget the nav was eating goes to the content:
 //
-//   ┌ cc-tabbar ────────────────────────────────────────────────┐
-//   │ Preferences Plugins Marketplaces …          [🕘 History •] │
-//   ├ cc-body ───────────────────────────┬──────────────────────┤
-//   │ caption (the file this tab edits)  │  preview pane        │
-//   │ section content                    │  (MD Files only)     │
-//   └────────────────────────────────────┴──────────────────────┘
+//   ┌ cc-header ───────────────────────────────────────────── 49px ┐
+//   │ Claude config                          [● Clean / N uncommitted]│
+//   ├ cc-tabbar ──────────────────────────────────────────────────┤
+//   │ Plugins  Memory  Skills  Statusline  MCP  Preferences         │
+//   ├ cc-body ──────────────────────────────────────────────────┤
+//   │ caption (the file this tab edits)                            │
+//   │ section content                                               │
+//   └───────────────────────────────────────────────────────────┘
 //
 // Two pieces of state, each in the place that suits it:
 //
@@ -23,33 +25,31 @@
 //   * the git epoch lives here, because every section can dirty the repo and
 //     they all report back through one `onChanged`.
 //
-// History is deliberately NOT one of the tabs. It is a persistent button at the
-// strip's right edge, because it is the only page whose state matters while you
-// are looking at some other one: it carries the dirty dot that tells you the
-// config has uncommitted drift, and it is where you commit that drift. Profiles
-// lives on it too — a profile is a git branch over the same repo, so it belongs
-// with the history rather than beside Preferences.
+// History is deliberately NOT one of the tabs. It is the git chip in the
+// header band, because it is the only page whose state matters while you are
+// looking at some other one: the chip carries the dirty state that tells you
+// the config has uncommitted drift (a tab-strip button used to carry that as
+// a dot, and its own edge-pinned position was what clipped the strip's last
+// tab label at a narrow width — the header has no such neighbour to collide
+// with), and it is where you commit that drift. Profiles lives on it too — a
+// profile is a git branch over the same repo, so it belongs with the history
+// rather than beside Preferences.
 //
-// The CLAUDE.md explorer ("MD Files", `?cctab=claudemd`) is a section here.
-// It briefly had a page of its own; it is back because the sidebar's CLAUDE
-// group reads better with one Config entry than with two peers. It is the one
-// section that needs a split PREVIEW pane, which is why .cc-body lays out as
-// two columns (content / preview) — the pane renders beside the content column,
-// so the preview path lives in this file and the section is handed
-// `preview`/`onPreview`. Every other section leaves the second column empty.
-// A stale `/claude-md` URL redirects here (shell/App.tsx).
+// The CLAUDE.md explorer ("MD Files") is GONE (round 2): it was a browse-and-
+// preview surface bolted onto a page whose job is configuring things, and it
+// was the only section that needed a second body column. `?cctab=claudemd`
+// and the legacy `/claude-md` URL both redirect to Preferences now
+// (shell/App.tsx).
 //
 // A note on remounting: the shell renders this page keyed on the nav epoch, so
 // any navigation — including this panel's own `?cctab=` writes — remounts it.
 // That is why nothing here tries to cache across a section change: a section
 // switch IS a fresh mount, and each section refetches exactly as the original
 // app re-rendered.
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { navigateUrl } from "@platform/lib/router";
-import { Icon, Pill, PreviewPane, useGitStatus } from "./bits";
-import ClaudeMdSection from "./sections/ClaudeMdSection";
+import { Icon, Pill, useGitStatus } from "./bits";
 import HistorySection from "./sections/HistorySection";
-import MarketplacesSection from "./sections/MarketplacesSection";
 import McpSection from "./sections/McpSection";
 import MemorySection from "./sections/MemorySection";
 import PluginsSection from "./sections/PluginsSection";
@@ -60,14 +60,15 @@ import StatuslineSection from "./sections/StatuslineSection";
 // The tab strip, in order. `file` is the caption under the strip — it names the
 // file (or the git object) the section actually edits, which is the one thing a
 // settings UI over someone's dotfiles owes them.
+// Preferences sits LAST in the strip, not first: it's the tab people touch
+// once and leave, while Plugins/MCP are the ones worth landing on first. It
+// stays the routing default below regardless of its position here — the
+// strip's order is presentation, the default is a bookmark contract.
 const TABS = [
-  { id: "preferences", label: "Preferences", file: "settings.json" },
-  { id: "plugins", label: "Plugins", file: "settings.json → enabledPlugins" },
-  { id: "marketplaces", label: "Marketplaces", file: "settings.json → extraKnownMarketplaces" },
   {
-    id: "claudemd",
-    label: "MD Files",
-    file: "CLAUDE.md / CLAUDE.local.md across all projects",
+    id: "plugins",
+    label: "Plugins",
+    file: "settings.json → enabledPlugins + extraKnownMarketplaces",
   },
   // `readOnly` puts one pill in the caption row. It replaces the
   // "(read-only viewer)" that used to be baked into three of these strings —
@@ -81,6 +82,7 @@ const TABS = [
     label: "MCP",
     file: "global MCP servers via the `claude mcp` CLI (not version-controlled)",
   },
+  { id: "preferences", label: "Preferences", file: "settings.json" },
 ] as const;
 
 // The History page: reachable by the strip's right-edge button, never a tab.
@@ -117,9 +119,6 @@ export default function ClaudeConfig() {
   //                  loses its "uncommitted" markers). Only this remounts the
   //                  section.
   const [badgeEpoch, setBadgeEpoch] = useState(0);
-  // The MD Files section's split preview pane — a second column beside the
-  // content column, so its path lives here rather than in the section.
-  const [preview, setPreview] = useState<string | null>(null);
   const [sectionEpoch, setSectionEpoch] = useState(0);
   const onChanged = useCallback(() => setBadgeEpoch((n) => n + 1), []);
   const onCommitted = useCallback(() => {
@@ -128,17 +127,55 @@ export default function ClaudeConfig() {
   }, []);
   // One status read per epoch, for the dot alone — the History page fetches its
   // own drift when you get there.
-  const { status } = useGitStatus(badgeEpoch);
+  const { status, failed } = useGitStatus(badgeEpoch);
+
+  // The tab strip's trailing fade mask is only honest while there's more to
+  // scroll to — scrolled all the way to the end, "there's more here" is a
+  // lie, and it was rendering the LAST tab's own label semi-transparent for
+  // no reason. Tracked here (not pure CSS: there's no selector for "this
+  // element's scrollLeft equals its scrollWidth minus its clientWidth") and
+  // re-measured on scroll, on resize, and whenever the strip's own content
+  // box changes size (a ResizeObserver catches a font/label reflow that
+  // neither event would).
+  const tablistRef = useRef<HTMLDivElement>(null);
+  const [tabsAtEnd, setTabsAtEnd] = useState(true);
+  useEffect(() => {
+    const el = tablistRef.current;
+    if (!el) return;
+    const check = () => {
+      setTabsAtEnd(el.scrollWidth - el.scrollLeft - el.clientWidth <= 1);
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    window.addEventListener("resize", check);
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", check);
+      window.removeEventListener("resize", check);
+      ro.disconnect();
+    };
+  }, []);
 
   const raw = new URLSearchParams(location.search).get(SECTION_PARAM);
   // `?cctab=profiles` was a tab of its own until Profiles became a block of the
-  // History page. An old bookmark should land where its content went, not on
-  // the default tab.
+  // History page, `?cctab=marketplaces` until Marketplaces folded into the
+  // Plugins rail, and `?cctab=claudemd` until the MD Files tab was deleted
+  // outright. Every old bookmark should land where its content went (or, for
+  // claudemd, on the default tab — there is no replacement page for it).
   const active: SectionId = raw === "profiles"
     ? HISTORY.id
-    : isSectionId(raw)
-      ? raw
-      : "preferences";
+    : raw === "marketplaces"
+      ? "plugins"
+      : isSectionId(raw)
+        ? raw
+        : "preferences";
+  // `active` is always a valid SectionId (isSectionId or one of the explicit
+  // redirects above), so this find always hits — the `??` is unreachable, not
+  // a real fallback. It stays PAGES[0] anyway rather than picking a
+  // preferences-flavored default: PAGES[0] is just "some page", used only if
+  // the two stay out of sync in the future, and it should fail obviously
+  // rather than quietly resolve to a section nobody asked for.
   const meta = PAGES.find((s) => s.id === active) ?? PAGES[0];
 
   const setActive = (next: SectionId) => {
@@ -157,12 +194,6 @@ export default function ClaudeConfig() {
         return <PreferencesSection onChanged={onChanged} />;
       case "plugins":
         return <PluginsSection onChanged={onChanged} />;
-      case "marketplaces":
-        return <MarketplacesSection onChanged={onChanged} />;
-      case "claudemd":
-        return (
-          <ClaudeMdSection onChanged={onChanged} preview={preview} onPreview={setPreview} />
-        );
       case "memory":
         return <MemorySection onChanged={onChanged} />;
       case "skills":
@@ -178,14 +209,63 @@ export default function ClaudeConfig() {
 
   return (
     <div className="cc-root">
+      {/* Header band: the page name, and the one thing this page always states
+          — the git chip. It replaces the old tab strip's History button, which
+          is what fixed the tab strip clipping its last label: History is repo-
+          global state, not a section, so it belongs in the header rather than
+          fighting the tabs for room. */}
+      <div className="cc-header">
+        <span className="cc-header-title">Claude config</span>
+        {/* Three states, not two: the chip states drift POSITIVELY ("Clean"),
+            so it must never say that from a null status — during the first
+            fetch, or forever if cc.gitOps.status() keeps failing. The old
+            nav badge just stayed absent in that case; this is its
+            replacement's one chance to be equally honest. */}
+        <button
+          type="button"
+          aria-current={active === HISTORY.id ? "page" : undefined}
+          className={
+            "cc-gitchip" +
+            (status?.dirty ? " dirty" : "") +
+            (!status || failed ? " unknown" : "") +
+            (active === HISTORY.id ? " active" : "")
+          }
+          title={
+            failed
+              ? "Git status unavailable — could not be reached"
+              : !status
+                ? "Checking git status…"
+                : status.dirty
+                  ? `${status.files.length} uncommitted change(s) — review and commit them in History`
+                  : "Commits, profiles and uncommitted changes"
+          }
+          onClick={() => setActive(HISTORY.id)}
+        >
+          <span className="cc-gitchip-dot" aria-hidden="true" />
+          {failed
+            ? "Status unknown"
+            : !status
+              ? "Checking…"
+              : status.dirty
+                ? `${status.files.length} uncommitted`
+                : "Clean"}
+          <Icon name="clock" />
+        </button>
+      </div>
       <div className="cc-tabbar">
         {/* The tablist holds the TABS and nothing else — History is not one of
-            them, so it sits outside as a plain button with aria-current. A
-            tablist whose children aren't all tabs mis-announces the set's size
-            and position ("tab 9 of 9" for a thing that isn't a tab). Keeping it
-            out also means the strip can scroll sideways while History stays
-            pinned at the edge, which is the behaviour it wants anyway. */}
-        <div className="cc-tablist" role="tablist" aria-label="Claude config sections">
+            them, so it sits in the header instead. A tablist whose children
+            aren't all tabs mis-announces the set's size and position ("tab 9 of
+            9" for a thing that isn't a tab), and previously the strip's own
+            edge-pinned History button was what clipped the last tab's label
+            under it at a narrow width. The strip now scrolls sideways under a
+            fade mask with nothing else sharing its row to collide with. */}
+        <div
+          ref={tablistRef}
+          className={"cc-tablist" + (tabsAtEnd ? " at-end" : "")}
+          role="tablist"
+          aria-label="Claude config sections"
+        >
           {TABS.map((s) => (
             <button
               key={s.id}
@@ -199,24 +279,6 @@ export default function ClaudeConfig() {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          aria-current={active === HISTORY.id ? "page" : undefined}
-          className={"cc-tab cc-tab-history" + (active === HISTORY.id ? " active" : "")}
-          title={
-            status?.dirty
-              ? `${status.files.length} uncommitted change(s) — review and commit them here`
-              : "Commits, profiles and uncommitted changes"
-          }
-          onClick={() => setActive(HISTORY.id)}
-        >
-          <Icon name="clock" />
-          {HISTORY.label}
-          {/* The badge that used to sit at the nav's bottom edge, reduced to its
-              signal: on any tab you still learn the repo has drifted, and the
-              page that does something about it is one click away. */}
-          {status?.dirty && <span className="cc-tab-dot" aria-label="uncommitted changes" />}
-        </button>
       </div>
       <div className="cc-body">
         <main className="cc-main">
@@ -237,9 +299,6 @@ export default function ClaudeConfig() {
             {body()}
           </div>
         </main>
-        {active === "claudemd" && preview && (
-          <PreviewPane path={preview} onClose={() => setPreview(null)} />
-        )}
       </div>
     </div>
   );

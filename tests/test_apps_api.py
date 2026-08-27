@@ -13,7 +13,7 @@ not list — a page-less folder at depth 1 is a shelf of apps, not an app — so
 these assertions are unchanged by the walk becoming recursive. The depth rules
 are exercised directly in tests/test_app_listing.py.
 
-The spawn is stubbed at the module seam (_start_app_session) — no test here
+The spawn is stubbed at the module seam (_create_app_task) — no test here
 launches a real claude.
 """
 import json
@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import app_listing
 from fused_render.server import create_app
+from fused_render import claude_spawn, schedule
 from fused_render.server.routers import apps as apps_mod
 
 
@@ -266,7 +267,7 @@ def test_new_app_requires_the_fused_header(client):
 
 def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     called = []
-    monkeypatch.setattr(apps_mod, "_start_app_session",
+    monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda entry, prompt, *rest:
                         called.append((entry, prompt)) or ("r-1", None))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
@@ -275,8 +276,8 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     dest = workspace / "local" / "demo"
     assert body["path"] == str(dest)
     assert body["entry_html"] == str(dest / "index.html")
-    assert body["session_started"] is False
-    assert called == []  # empty prompt: no spawn attempt at all
+    assert body["task"] is None
+    assert called == []  # empty prompt: no task attempt at all
     assert (dest / "index.html").is_file()
     assert (dest / "CLAUDE.md").is_file()
     # the starter kit's entry is a valid single-entry app: it lists back
@@ -301,7 +302,7 @@ def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
 
     claude_dir = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
-    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p, *rest: (None, "x"))
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
     assert not (workspace / "local" / "demo" / ".claude").exists()
@@ -321,16 +322,16 @@ def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
         seen["effort"] = effort
         return "run-42", None
 
-    monkeypatch.setattr(apps_mod, "_start_app_session", fake_start)
+    monkeypatch.setattr(apps_mod, "_create_app_task", fake_start)
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "build a todo app"},
                     headers=HDRS)
-    assert r.json()["session_started"] is True
-    assert r.json()["session_error"] is None
-    assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    # The scaffolding session starts on the app FOLDER (claude agent),
-    # so its transcript lands where the split view lists sessions from.
-    assert seen["target"] == str(workspace / "local" / "demo")
+    assert r.json()["task"] == "run-42"   # the UI attaches to the entry's run
+    assert r.json()["task_error"] is None
+    # The scaffolding task is scheduled on the app's index.html — the FILE, not
+    # the folder (D-855's `_create_app_task`), which is what lets "open this
+    # task" land on the page rather than on the directory listing.
+    assert seen["target"] == str(workspace / "local" / "demo" / "index.html")
     assert seen["prompt"] == "build a todo app"
     # no pickers touched: "" both, i.e. no --model/--effort on the spawn, so the
     # session keeps whatever a chat opened by hand would have detected
@@ -343,7 +344,7 @@ def test_the_composers_model_and_effort_reach_the_session(client, workspace,
     with, so they have to arrive at the spawn — a create that accepted them and
     started a default session is the whole feature missing."""
     seen = {}
-    monkeypatch.setattr(apps_mod, "_start_app_session",
+    monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda e, p, model="", effort="":
                         seen.update(model=model, effort=effort) or ("r-1", None))
     r = client.post("/api/apps/new",
@@ -368,7 +369,7 @@ def test_an_unknown_model_or_effort_is_a_400_not_a_substitution(client, workspac
     own UI can only send list values, so this only fires for a hand-rolled
     request. And nothing is created: the folder must not survive a rejected
     request any more than a bad name's does."""
-    monkeypatch.setattr(apps_mod, "_start_app_session",
+    monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda *a, **k: pytest.fail("must not spawn"))
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "hi", **body}, headers=HDRS)
@@ -381,7 +382,7 @@ def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
     """"" is a first-class value in both lists, not a rejected one — it is what
     the pickers' "Auto" option sends and what a client predating them omits."""
     seen = []
-    monkeypatch.setattr(apps_mod, "_start_app_session",
+    monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda e, p, model="", effort="":
                         seen.append((model, effort)) or ("r-1", None))
     for body in ({"model": "", "effort": ""}, {}):
@@ -392,13 +393,12 @@ def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
 
 
 def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, monkeypatch):
-    monkeypatch.setattr(apps_mod, "_start_app_session",
+    monkeypatch.setattr(apps_mod, "_create_app_task",
                         lambda e, p, *rest: (None, "claude CLI not found"))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"}, headers=HDRS)
     assert r.status_code == 200
-    assert r.json()["session_started"] is False
-    assert r.json()["run_id"] is None
-    assert r.json()["session_error"] == "claude CLI not found"
+    assert r.json()["task"] is None
+    assert r.json()["task_error"] == "claude CLI not found"
     assert (workspace / "local" / "demo" / "index.html").is_file()
 
 
@@ -678,26 +678,32 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     seen = {}
 
     def fake_run(cmd, **kwargs):
-        seen["cmd"] = cmd
-        seen["kwargs"] = kwargs
+        # Scheduling also shells out (launchctl, for the wake stub), and that
+        # call lands here too — the one this test is about is the fork-safe
+        # python helper, so match it rather than keeping whatever came last.
+        if cmd and cmd[0] == claude_spawn.sys.executable:
+            seen["cmd"] = cmd
+            seen["kwargs"] = kwargs
         return type("R", (), {"returncode": 0,
                               "stdout": '{"run_id": "r-1"}', "stderr": ""})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
-    started_threads = []
-    monkeypatch.setattr(apps_mod.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda s: started_threads.append(kw)})())
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    watched = []
+    monkeypatch.setattr(schedule, "_watch_turn",
+                        lambda entry, run_id: watched.append(run_id))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "secret prompt $(boom)")
-    assert (run_id, err) == ("r-1", None)
+    run_id, err = apps_mod._create_app_task(str(entry), "secret prompt $(boom)")
+    assert err is None and run_id["run_id"] == "r-1"
 
     # a real python -c helper, not claude itself, and prompt over stdin only
-    assert seen["cmd"][0] == apps_mod.claude_spawn.sys.executable
+    assert seen["cmd"][0] == claude_spawn.sys.executable
     assert "secret prompt" not in " ".join(seen["cmd"])
     import json as jsonlib
     req = jsonlib.loads(seen["kwargs"]["input"])
-    assert req["message"] == "secret prompt $(boom)"
+    # Prefixed with the scheduler's `<live-app-state>` block (schedule._outgoing),
+    # so the user's words are the tail — what matters here is that they travel
+    # over stdin and never through argv.
+    assert req["message"].endswith("secret prompt $(boom)")
     assert req["file"] == str(entry)
     # unattended: nobody polls `decide` for a session started from a POST, so
     # the strict default mode would park the first tool call until the
@@ -718,8 +724,22 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # model output) raised UnicodeDecodeError instead of returning a run_id.
     assert seen["kwargs"]["encoding"] == "utf-8"
     assert seen["kwargs"]["errors"] == "replace"
-    assert started_threads  # the session-recording poll thread was kicked off
+    assert watched  # the scheduler's turn watcher was kicked off for the run
 
+
+
+def _an_entry(tmp_path) -> str:
+    """A real index.html to schedule against.
+
+    `_create_app_task` goes through `schedule.create`, which refuses a target
+    that is not on disk — unlike the spawn seam it replaced (PR #855), which
+    never looked at the filesystem at all. The file's CONTENT is irrelevant
+    here; its existence is the precondition.
+    """
+    entry = tmp_path / "an-app" / "index.html"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("<!doctype html>", encoding="utf-8")
+    return str(entry)
 
 def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspace,
                                                              monkeypatch):
@@ -732,13 +752,11 @@ def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspac
                               "stdout": '{"run_id": "r-1"}', "stderr": ""})()
 
     seen = {}
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
-    monkeypatch.setattr(apps_mod.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda s: None})())
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
 
-    run_id, err = apps_mod._start_app_session("/x/index.html", "hi", "haiku", "low")
-    assert (run_id, err) == ("r-1", None)
+    run_id, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi", "haiku", "low")
+    assert err is None and run_id["run_id"] == "r-1"
     assert (seen["model"], seen["effort"]) == ("haiku", "low")
     # still the apps API's own policy, unchanged by the new args
     assert seen["permission_mode"] == "auto"
@@ -750,10 +768,11 @@ def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
         return type("R", (), {"returncode": 1, "stdout": "",
                               "stderr": "boom\nFileNotFoundError: claude"})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
-    assert run_id is None
-    assert "FileNotFoundError: claude" in err
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert err is None          # the task stored fine; the SEND is what failed
+    assert not entry["run_id"]
+    assert "FileNotFoundError: claude" in entry["error"]
 
 
 def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
@@ -770,11 +789,12 @@ def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
                               "of the environment that launched fused-render. "
                               "Also looked in: /opt/foo"})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
-    assert run_id is None
-    assert "Claude Code isn't installed" in err
-    assert "render.fused.io/#troubleshooting-notfound" in err
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert err is None          # stored fine; the reason rides the entry
+    assert not entry["run_id"]
+    assert "Claude Code isn't installed" in entry["error"]
+    assert "render.fused.io/#troubleshooting-notfound" in entry["error"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
@@ -782,7 +802,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
         tmp_path, workspace, monkeypatch):
     """The regression the mocked tests could never catch.
 
-    Everything below _start_app_session is real here — the helper subprocess,
+    Everything below _create_app_task is real here — the helper subprocess,
     agent._start, the detached spawn — with only `claude` itself replaced by a
     shell stub that records the argv and stdin it was handed. The live bug was
     precisely that this whole path produced nothing: the helper's absence meant
@@ -799,7 +819,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "hello from the test")
+    run_id, err = apps_mod._create_app_task(str(entry), "hello from the test")
     assert err is None and run_id, err
 
     # the spawn is detached, so wait for the stub to finish writing
@@ -812,7 +832,10 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     # the prompt reached the process, over stdin as one stream-json user line
     assert "hello from the test" not in "\n".join(argv)   # never in argv
     row = json.loads(stdin_log.read_text())
-    assert row["message"]["content"][0]["text"] == "hello from the test"
+    # A scheduled turn is prefixed with the `<live-app-state>` block naming the
+    # file the task was scheduled against (schedule._outgoing), so the user's
+    # own words are the tail rather than the whole message.
+    assert row["message"]["content"][0]["text"].endswith("hello from the test")
     # ...and it can act on it unattended: prompt-tool wired AND a mode that
     # doesn't park every tool call on a card nobody is watching for.
     assert argv[argv.index("--permission-mode") + 1] == "auto"
@@ -903,14 +926,15 @@ def _repo_text(*parts):
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
     home = _repo_text("frontend", "src", "apps", "builder", "HomeHero.tsx")
-    # Folder-first: the scaffolding session runs via the claude agent on
-    # the app FOLDER, so the re-attach must land there (same runs dir, same
-    # .claude-split.json sidecar) rather than on the entry html.
-    assert '_mode: "claude"' in home, "post-create nav must select the claude mode"
-    assert "claudeChatUrl(res.path" in home, "…on the app folder, not entry_html"
+    # The scaffolding work is a TASK on the app's index.html now, and the chat
+    # rides beside that page as a SIDE PANE rather than as a whole-page mode —
+    # so the re-attach carries `_side=claude` plus the run to attach to.
+    assert '_side: "claude"' in home, "post-create nav must open the claude pane"
+    assert "appLandingUrl(res.entry_html, res.task.run_id" in home, \
+        "…on the app's entry html, carrying the task's run"
     assert "run: runId" in home, "…and attach to the run the POST just started"
     # the run_id is what gates it: no session (no prompt) -> the default view
-    assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home
+    assert "if (res.task?.run_id) {" in home
 
 
 def test_claude_is_the_selectable_chat_mode_for_html():
@@ -971,10 +995,16 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "make it red")
-    assert err is None and run_id, err
+    task, err = apps_mod._create_app_task(str(entry), "make it red")
+    assert err is None and task, err
+    run_id = task["run_id"]
+    assert run_id, task.get("error")
 
-    agent = apps_mod._claude_agent()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_poll", claude_spawn.agent_path())
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
     deadline = time.monotonic() + 30
     data = {}
     while time.monotonic() < deadline:

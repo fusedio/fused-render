@@ -758,7 +758,7 @@ def test_the_bundle_ships_the_whole_importable_stdlib():
 
 #: Excluded names CPython has since REMOVED, and the version that removed them.
 #: The DMG is built on 3.12 (`envinstall.SCRIPT_PYTHON_VERSION`), while this
-#: suite runs on 3.10–3.13, so an entry can be perfectly valid for the build
+#: suite runs on 3.11–3.13, so an entry can be perfectly valid for the build
 #: interpreter and absent from the one asserting about it — `lib2to3` is gone in
 #: 3.13. Listed rather than waved through so a typo is still caught: an
 #: exclusion has to be a real module on SOME version we know about.

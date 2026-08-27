@@ -11,6 +11,7 @@ fused-render resolves an **ordered list of preview templates — modes** — for
 
 - **This skill:** where files go, how the registry binds extensions, how to test registration.
 - **`skills/fused-render-authoring/SKILL.md`:** how to write the `template.html` and reader `.py` themselves — the `fused` API, the `main()` contract, the params-are-state wiring pattern, the `_file` handling, the pitfalls. **Read it before writing any html/py.** In particular its "Preview templates" section is exactly what a custom template is.
+- **`skills/fused-render-background-apps/SKILL.md`:** a different concept entirely — a folder that needs a resident daemon process, not a file preview. Reach for it when the "template" you're building is really a long-running server the page talks to, not a render mode.
 
 ## Guardrail: use fused's internal APIs, never raw OS/shell commands
 

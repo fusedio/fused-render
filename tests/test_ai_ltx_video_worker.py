@@ -75,6 +75,15 @@ class FakeBase:
         self.downloads.append((model_id, kwargs))
         return f"/snapshots/{model_id.replace('/', '_')}"
 
+    def download_plan(self, phases):
+        """The real `worker_base.download_plan`'s outward contract, minus its
+        own progress ticking: each phase still runs through THIS fake's
+        `download_snapshot` (so `self.downloads` records every phase exactly
+        as it would a bare call), and the results come back in order."""
+        return [self.download_snapshot(model_id, allow_patterns=allow,
+                                       ignore_patterns=ignore)
+                for model_id, allow, ignore in phases]
+
     def serve(self, **kwargs):
         return None
 
@@ -412,7 +421,11 @@ def test_download_also_fetches_the_gemma_text_encoder_UNPATTERNED(monkeypatch, b
 
     ids = [model_id for model_id, _kwargs in base.downloads]
     assert GEMMA in ids
-    assert base.downloads[ids.index(GEMMA)][1] == {}
+    # `download_plan` (SPEC AI-5n) always passes both kwargs explicitly, even
+    # where a phase names neither — unlike a bare `download_snapshot(GEMMA)`
+    # call, which passed nothing. Still nothing EXCLUDED: `None` on both.
+    assert base.downloads[ids.index(GEMMA)][1] == {
+        "allow_patterns": None, "ignore_patterns": None}
 
 
 def test_download_is_not_best_effort_on_a_gemma_failure(monkeypatch, base):

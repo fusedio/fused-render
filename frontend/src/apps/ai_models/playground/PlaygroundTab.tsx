@@ -32,6 +32,7 @@ import { VideoStage } from "./VideoStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
+import { fitNote } from "@apps/ai_models/shared/fitNote";
 import { formatSize } from "@platform/lib/format";
 import { capabilityLabel } from "@apps/ai_models/lib/engines";
 import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
@@ -137,9 +138,10 @@ export default function PlaygroundTab() {
   // lets the tick lapse on its own.
   const [copiedRepo, setCopiedRepo] = useState(false);
   const runtime = useAiRuntime();
-  // `useUrlVersion`, not `useNavEpoch`: the selection is written with
-  // `replaceSearch`, which fires only fused:urlchange — the nav epoch counts
-  // pushes and pops and would leave a click's own rewrite unread.
+  // `useUrlVersion`, not `useNavEpoch`: a model pick is PUSHED (so Back walks
+  // through the models tried) and the nav epoch would hear that, but the
+  // stages' own slider rewrites are `replaceSearch`, which fires only
+  // fused:urlchange — and this counter hears all three.
   const urlVersion = useUrlVersion();
 
   // One fetch per mount, then again when a download lands: `downloaded` on the
@@ -305,13 +307,16 @@ export default function PlaygroundTab() {
     const nextCapability = railRows.find((row) =>
       row.models.some((model) => model.id === id),
     )?.capability;
+    // Both writes PUSH a history entry: moving between models is moving between
+    // places, and Back should return to the one before — with the settings it
+    // had, since a stage's slider rewrites edit the entry it is on.
     if (nextCapability && selected && nextCapability !== selected.row.capability) {
-      resetParams({ model: id });
+      resetParams({ model: id }, "push");
       return;
     }
     // cap dies with the first explicit pick — leaving it would make a shared
     // URL claim a task the user has since clicked away from.
-    writeParams({ model: id, cap: null });
+    writeParams({ model: id, cap: null }, "push");
   };
 
   const residentRow = selected
@@ -395,7 +400,7 @@ export default function PlaygroundTab() {
   // `shared/modelSize`).
   const selectedSize = selected ? modelSizeHint(selected.model.size_gb, jobForSelected) : null;
   // The fit verdict, in words, for all three answers — null and only null draws
-  // nothing (see the fact itself).
+  // nothing (see `fitNote`'s own header for the wording rule, SPEC AI-16c).
   //
   // The two bad answers are TINTED and the good one is not. Amber and red are
   // the app's warning and error tokens and they are spent here for the reason
@@ -404,29 +409,7 @@ export default function PlaygroundTab() {
   // (the shadcn redesign's ref put it there), with a small dot carrying the
   // hue — a dot on a quiet secondary badge, not a filled colour, so it stays
   // below the RUNNING green that D461 reserves for the loud treatment.
-  const fitNote = !selected
-    ? null
-    : selected.model.fit === "easy"
-      ? {
-          text: "Runs comfortably here",
-          dot: "bg-emerald-500",
-          title:
-            "Judged against this machine's memory — the weights leave room for everything else.",
-        }
-      : selected.model.fit === "tight"
-        ? {
-            text: "Tight fit on this machine",
-            dot: "bg-[var(--warning)]",
-            title:
-              "Judged against this machine's memory — close other heavy apps while it runs.",
-          }
-        : selected.model.fit === "no"
-          ? {
-              text: "Likely too big for this machine",
-              dot: "bg-[var(--error)]",
-              title: "Judged against this machine's memory — it may crawl or fail to load.",
-            }
-          : null;
+  const fitBadge = fitNote(selected?.model.fit);
 
   // The running pull's own figures, for the header's ring and byte line.
   // `!!` rather than the raw chain: a `total` of 0 makes `&&` yield the NUMBER
@@ -693,10 +676,10 @@ export default function PlaygroundTab() {
                         bad is silent exactly when it is being consulted.
                         `null` still draws nothing — a verdict over a size
                         nobody measured is a lie. */}
-                    {fitNote && (
-                      <Badge variant="secondary" className="gap-1.5 font-normal" title={fitNote.title}>
-                        <span className={"size-1.5 rounded-full " + fitNote.dot} />
-                        {fitNote.text}
+                    {fitBadge && (
+                      <Badge variant="secondary" className="gap-1.5 font-normal" title={fitBadge.title}>
+                        <span className={"size-1.5 rounded-full " + fitBadge.dot} />
+                        {fitBadge.text}
                       </Badge>
                     )}
                   </div>

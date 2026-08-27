@@ -8,7 +8,6 @@
 // UI says so, then re-lists when the user confirms they're done.
 import { useCallback, useId, useState } from "react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { SkeletonLines } from "@platform/ui/Skeleton";
 import * as cc from "../api";
 import type { CliResult, McpKind, McpServer, McpStatus } from "../api";
 import {
@@ -19,7 +18,9 @@ import {
   DisclosureButton,
   Empty,
   Icon,
+  List,
   ListRow,
+  ListSkeleton,
   Pill,
   SKELETON_ROWS,
   SectionToolbar,
@@ -200,7 +201,7 @@ export default function McpSection() {
           200 with {ok:false} — it is the section's whole content when it
           happens, so it reads as an empty state rather than a banner. */}
       {data && !data.ok && <Empty>{data.error || "Could not list MCP servers."}</Empty>}
-      {!data && !error && <SkeletonLines rows={SKELETON_ROWS} label="Loading MCP servers" />}
+      {!data && !error && <ListSkeleton rows={SKELETON_ROWS} label="Loading MCP servers" />}
       {data?.ok && servers.length === 0 && (
         <Empty
           action={
@@ -220,74 +221,76 @@ export default function McpSection() {
           return (
             <div className="cc-group" key={kind}>
               <h3 className="cc-group-title">{heading}</h3>
-              {list.map((s) => {
-                const st = STATUS[s.status] ?? STATUS.unknown;
-                // `canAuth` says the transport COULD hold a session, not that
-                // there is anything to do: a connected stdio-less server with
-                // no auth state offers neither button, and the row must then
-                // have no action bar at all rather than an empty one.
-                const showLogin = s.canAuth && s.needsAuth;
-                const showLogout = s.canAuth && s.connected;
-                return (
-                  <ListRow
-                    key={s.name}
-                    name={s.name}
-                    pills={<Pill tone={st.tone}>{st.label}</Pill>}
-                    secondary={s.endpoint}
-                    secondaryTitle={s.endpoint}
-                    secondaryMono
-                    // The endpoint is the long part and the row cuts it, so the
-                    // panel restates it whole — plus the transport and kind,
-                    // which used to be pills competing with the status for the
-                    // one thing on this tab you actually read.
-                    details={
-                      <dl className="cc-lrow-dl">
-                        <dt className="cc-lrow-dt">Endpoint</dt>
-                        <dd className="cc-lrow-dd cc-mono">{s.endpoint || "—"}</dd>
-                        <dt className="cc-lrow-dt">Transport</dt>
-                        <dd className="cc-lrow-dd">{s.transport}</dd>
-                        <dt className="cc-lrow-dt">Status</dt>
-                        <dd className="cc-lrow-dd">{st.label}</dd>
-                        {/* Why, in the CLI's own words. This is the whole
-                            reason a failed row is worth expanding: the pill can
-                            only say "failed", and what the user needs is
-                            "Authorization header is badly formatted". */}
-                        {s.statusDetail && (
-                          <>
-                            <dt className="cc-lrow-dt">Detail</dt>
-                            <dd className="cc-lrow-dd">{s.statusDetail}</dd>
-                          </>
-                        )}
-                        <dt className="cc-lrow-dt">Registered by</dt>
-                        <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
-                      </dl>
-                    }
-                    actions={
-                      <>
-                        {showLogin && (
-                          <button type="button" className="btn" onClick={() => login(s)}>
-                            Authenticate
-                          </button>
-                        )}
-                        {showLogout && (
-                          <button type="button" className="btn" onClick={() => logout(s)}>
-                            Log out
-                          </button>
-                        )}
-                        {s.removable && (
-                          <button
-                            type="button"
-                            className="btn btn-danger"
-                            onClick={() => remove(s)}
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </>
-                    }
-                  />
-                );
-              })}
+              <List>
+                {list.map((s) => {
+                  const st = STATUS[s.status] ?? STATUS.unknown;
+                  // `canAuth` says the transport COULD hold a session, not that
+                  // there is anything to do: a connected stdio-less server with
+                  // no auth state offers neither button, and the row must then
+                  // have no action bar at all rather than an empty one.
+                  const showLogin = s.canAuth && s.needsAuth;
+                  const showLogout = s.canAuth && s.connected;
+                  return (
+                    <ListRow
+                      key={s.name}
+                      name={s.name}
+                      pills={<Pill tone={st.tone}>{st.label}</Pill>}
+                      secondary={s.endpoint}
+                      secondaryTitle={s.endpoint}
+                      secondaryMono
+                      // The endpoint is the long part and the row cuts it, so the
+                      // panel restates it whole — plus the transport and kind,
+                      // which used to be pills competing with the status for the
+                      // one thing on this tab you actually read.
+                      details={
+                        <dl className="cc-lrow-dl">
+                          <dt className="cc-lrow-dt">Endpoint</dt>
+                          <dd className="cc-lrow-dd cc-mono">{s.endpoint || "—"}</dd>
+                          <dt className="cc-lrow-dt">Transport</dt>
+                          <dd className="cc-lrow-dd">{s.transport}</dd>
+                          <dt className="cc-lrow-dt">Status</dt>
+                          <dd className="cc-lrow-dd">{st.label}</dd>
+                          {/* Why, in the CLI's own words. This is the whole
+                              reason a failed row is worth expanding: the pill can
+                              only say "failed", and what the user needs is
+                              "Authorization header is badly formatted". */}
+                          {s.statusDetail && (
+                            <>
+                              <dt className="cc-lrow-dt">Detail</dt>
+                              <dd className="cc-lrow-dd">{s.statusDetail}</dd>
+                            </>
+                          )}
+                          <dt className="cc-lrow-dt">Registered by</dt>
+                          <dd className="cc-lrow-dd">{KIND_LABEL[s.kind]}</dd>
+                        </dl>
+                      }
+                      actions={
+                        <>
+                          {showLogin && (
+                            <button type="button" className="btn" onClick={() => login(s)}>
+                              Authenticate
+                            </button>
+                          )}
+                          {showLogout && (
+                            <button type="button" className="btn" onClick={() => logout(s)}>
+                              Log out
+                            </button>
+                          )}
+                          {s.removable && (
+                            <button
+                              type="button"
+                              className="btn btn-danger"
+                              onClick={() => remove(s)}
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </>
+                      }
+                    />
+                  );
+                })}
+              </List>
             </div>
           );
         })}
