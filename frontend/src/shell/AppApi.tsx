@@ -487,10 +487,10 @@ function EndpointRow({
                   snippet: a secondary door, not a second Execute. */}
               <Button
                 size="sm"
-                variant="ghost"
+                variant="outline"
                 onClick={copyCurl}
                 title="Copy this call as a curl command"
-                className="ml-auto text-muted-foreground hover:text-foreground"
+                className="ml-auto bg-transparent hover:bg-transparent"
               >
                 {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
                 {copied ? "Copied" : "curl"}
