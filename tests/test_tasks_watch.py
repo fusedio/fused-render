@@ -58,13 +58,19 @@ def _history(root, sid):
                             "sessionId": sid}) + "\n")
 
 
+_STAMP = [time.time() + 10]
+
+
 def _registry(root, sid, pid=None, status="busy", name="p"):
     row = {"pid": pid if pid is not None else os.getpid(), "sessionId": sid,
            "cwd": "/proj", "status": status, "updatedAt": 1787824059664}
     path = root / "sessions" / f"{name}.json"
     path.write_text(json.dumps(row), encoding="utf-8")
-    # A same-second rewrite must still be seen: bump mtime explicitly.
-    os.utime(path, (time.time() + 1, time.time() + 1))
+    # Two rewrites can land inside the clock's granularity (Windows time.time()
+    # is ~15ms before 3.13), and the watcher would rightly see no change: stamp
+    # each write one whole second later than the last.
+    _STAMP[0] += 1
+    os.utime(path, (_STAMP[0], _STAMP[0]))
     return path
 
 

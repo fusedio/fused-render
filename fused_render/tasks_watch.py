@@ -72,7 +72,7 @@ _registry: dict[str, dict] = {}   # session_id -> parsed sessions/<pid>.json
 _departed: dict[str, float] = {}
 _primed = False
 _hist_size = -1
-_sess_mtimes: dict[str, float] = {}   # sessions/<pid>.json -> mtime
+_sess_mtimes: dict[str, tuple] = {}   # sessions/<pid>.json -> (mtime_ns, size)
 _sess_sids: dict[str, str] = {}       # sessions/<pid>.json -> session_id
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
@@ -262,9 +262,12 @@ def _read_registry() -> set[str]:
             continue
         path = os.path.join(SESSIONS_DIR, name)
         try:
-            mtime = os.path.getmtime(path)
+            st = os.stat(path)
         except OSError:
             continue
+        # mtime AND size: a rewrite inside the filesystem's timestamp
+        # granularity still changes what it says.
+        mtime = (st.st_mtime_ns, st.st_size)
         seen.add(path)
         if _sess_mtimes.get(path) == mtime:
             # Unchanged file — but a crash or a kill leaves the file behind
