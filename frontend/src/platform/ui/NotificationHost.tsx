@@ -25,6 +25,17 @@
 // (see DownloadManager's header): same corner, same plate, same kind of thing, so
 // two headers over one lifecycle was the bug.
 //
+// `repoUpdates` is a SEPARATE entry (SPEC §36), between `activity` and
+// `<FdaCard />` — a repo behind its remote's default branch used to be rows
+// pinned inside the activity card, exempt from that card's own header, fold
+// and Clear, which broke all three at once (see RepoUpdatesDock.tsx's own
+// module comment for the full history). It gets its own place in the
+// lifetime order instead of merging back into `activity`: it outlives a job
+// (a "your branch is behind" fact does not resolve itself the way a
+// download finishes) but not the FDA nudge or the server card, both of
+// which are near-permanent fixtures of the corner rather than something
+// tied to a repo the user happens to have open right now.
+//
 // Panes keep their attribution for free: in panel/tab mode each pane is its
 // own document, so a pane's toast renders in THAT pane's bottom-right corner,
 // not the window's. Only the top-level document shows the server card and the
@@ -54,7 +65,13 @@ import { IS_EMBED } from "@platform/lib/router";
 // filled there was none, so the run had no row and no stop. It is told which runs the
 // slot covers now (DownloadManager's `QueueSlot.drawn`), and told nothing means it
 // draws them itself.
-export default function NotificationHost({ activity }: { activity?: ReactNode }) {
+export default function NotificationHost({
+  activity,
+  repoUpdates,
+}: {
+  activity?: ReactNode;
+  repoUpdates?: ReactNode;
+}) {
   const toasts = useToasts();
   return (
     <div className="notif-host">
@@ -74,6 +91,10 @@ export default function NotificationHost({ activity }: { activity?: ReactNode })
         </div>
       ))}
       {!IS_EMBED && (activity ?? <DownloadManager />)}
+      {/* Its own sibling card (SPEC §36) — see the header comment for why it
+          sits here rather than folding back into `activity`. Omitted like
+          `activity` when the shell has nothing to hand in. */}
+      {!IS_EMBED && repoUpdates}
       {/* Full Disk Access nudge (macOS packaged app only): longer-lived than a
           toast or a job — once granted or dismissed it never comes back — so it
           sits just above the one entry that outlives the session. */}

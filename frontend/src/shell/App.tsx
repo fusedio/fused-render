@@ -46,6 +46,7 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import QueueDock from "@shell/QueueDock";
+import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
@@ -953,8 +954,11 @@ export default function App({ config }: { config: Config }) {
       {/* ONE work-in-progress card in the notification column, not two: QueueDock
           is the shell's wrapper around the platform activity card (it fills that
           card's queue slot), handed in from here rather than imported there
-          because it speaks explorerUrl, which lives in this layer. */}
-      <NotificationHost activity={<QueueDock />} />
+          because it speaks explorerUrl, which lives in this layer. RepoUpdatesDock
+          is its own sibling card (SPEC §36), handed in the same way and for the
+          same reason: it speaks explorer/lib's staged-Claude-ask store, which
+          platform may not import (frontend/scripts/check-boundaries.mjs). */}
+      <NotificationHost activity={<QueueDock />} repoUpdates={<RepoUpdatesDock />} />
       {shortcutsOpen && (
         <ShortcutsOverlay onClose={() => setShortcutsOpen(false)} />
       )}

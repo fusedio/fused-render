@@ -11,12 +11,11 @@
 // DownloadManager, which owns the plate, the one header, the one count, the one
 // list and Clear.
 //
-// This is also the ONE place `<DownloadManager>` is instantiated, which is why
-// it fills the card's SECOND named slot too (`repoUpdates`, RepoUpdatesDock.tsx
-// / SPEC §36) rather than that slot being wired in separately from App.tsx: both
-// slots have to land in the same instance to share the one plate, and
-// `useRepoUpdatesSlot` is a hook for exactly that reason — it has no plate of
-// its own to draw. The lifecycle is one list now:
+// This is the ONE place `<DownloadManager>` is instantiated. Repo updates
+// (SPEC §36) are no longer a slot filled here — they draw their own sibling
+// card (RepoUpdatesDock.tsx), mounted directly by App.tsx beside this one via
+// NotificationHost's separate `repoUpdates` prop, so this module has nothing
+// to do with them any more. The lifecycle drawn here is one list:
 //
 //     queued → starting → running → finished / failed
 //        \______ these rows ______/     \__ a job row __/
@@ -59,7 +58,6 @@ import {
 } from "@platform/lib/jobs";
 import { navigateUrl } from "@platform/lib/router";
 import DownloadManager from "@platform/ui/DownloadManager";
-import { useRepoUpdatesSlot } from "@shell/RepoUpdatesDock";
 import { cancelOutcome, explorerUrl, firstLine } from "@shell/schedule-lib";
 import {
   drawnIds,
@@ -309,11 +307,6 @@ function Row({
 
 export default function QueueDock() {
   const { snap, refresh } = useQueue();
-  // The card's SECOND named slot (DownloadManager's `RepoUpdatesSlot`), built
-  // here rather than by NotificationHost/App directly: this is the one place
-  // a `<DownloadManager>` is instantiated, and both slots have to land in
-  // that SAME instance to share one plate.
-  const repoUpdates = useRepoUpdatesSlot();
   // The card's own job snapshot, handed up on every one of its polls — about once a
   // second while anything is live, against this half's six. It is what the status
   // lines are read from AND what decides when this half lets a run go.
@@ -396,7 +389,6 @@ export default function QueueDock() {
 
   return (
     <DownloadManager
-      repoUpdates={repoUpdates}
       queue={{
         ...queueCount(rows),
         // Which runs these rows cover, so the job half drops exactly them. Taken
