@@ -120,24 +120,38 @@ function cropRect(el: Element | null | undefined): DOMRect | null {
   return r;
 }
 
+// Where the viewport's origin sits on the screen, learned from POINTER EVENTS:
+// every MouseEvent carries both `screenX/Y` and `clientX/Y`, and their
+// difference IS the viewport origin in screen units — exact for any window
+// chrome layout. The arithmetic it replaced (`screenX` + half of
+// `outerWidth - innerWidth` per side) assumed chrome sits on top and splits
+// evenly at the sides, and a browser with a SIDE PANEL — Arc's sidebar,
+// Chrome's side panel, vertical tabs — puts all of it on one side: the shot
+// landed half a sidebar too far left, the shell's own sidebar baked into the
+// preview and the app cut off at the right. The export is always a click
+// away, and that click passes through here (capture phase, so a
+// stopPropagation in a menu cannot hide it).
+let viewportOrigin: { x: number; y: number } | undefined;
+if (typeof window !== "undefined") {
+  const learn = (e: MouseEvent) => {
+    viewportOrigin = { x: e.screenX - e.clientX, y: e.screenY - e.clientY };
+  };
+  window.addEventListener("pointerdown", learn, { capture: true, passive: true });
+  window.addEventListener("click", learn, { capture: true, passive: true });
+}
+
 // A viewport rect as the SCREEN sees it, in the browser's own screen units
 // (CSS pixels of the screen — points on macOS, DIPs elsewhere; the server
-// applies `dpr` where its display measures in physical pixels). The window's
-// chrome — tab strip, toolbar — is the difference between the outer and inner
-// sizes, assumed to sit on top and split evenly at the sides, which holds for
-// every mainstream browser in a normal window. Page zoom ≠ 100% or a docked
-// devtools panel break the arithmetic silently (a wrong crop, still a valid
-// PNG) — accepted: both are developer states, and the export is one click
-// away from a redo.
+// applies `dpr` where its display measures in physical pixels). The
+// outer/inner fallback is for a call no pointer event preceded (keyboard
+// activation) and keeps the top-chrome assumption only. Page zoom ≠ 100%
+// skews both silently (a wrong crop, still a valid PNG) — accepted.
 function screenRect(r: DOMRect): [number, number, number, number] {
-  const chromeX = Math.max(0, (window.outerWidth - window.innerWidth) / 2);
-  const chromeY = Math.max(0, window.outerHeight - window.innerHeight);
-  return [
-    window.screenX + chromeX + r.left,
-    window.screenY + chromeY + r.top,
-    r.width,
-    r.height,
-  ];
+  const origin = viewportOrigin ?? {
+    x: window.screenX + Math.max(0, (window.outerWidth - window.innerWidth) / 2),
+    y: window.screenY + Math.max(0, window.outerHeight - window.innerHeight),
+  };
+  return [origin.x + r.left, origin.y + r.top, r.width, r.height];
 }
 
 // Two frames, so whatever the click that reached here was tearing down — the
