@@ -332,10 +332,9 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 // rows kept rendering underneath it (see the "collapsed hides every row"
 // test above).
 
-// BOTH DOCK HARNESSES PASS `initialCollapsed={false}` (D595): the
-// fresh-profile default became COLLAPSED, and these tests are about the fold
-// and the auto-open/auto-close overrides — not about that default. Saying so
-// explicitly keeps them from silently re-inverting if the default is revisited.
+// BOTH DOCK HARNESSES PASS `initialCollapsed={false}`: the default is
+// COLLAPSED (D595, unconditional since D603), and these tests are about the
+// fold and the auto-open/auto-close overrides — not about that default.
 // `updateDockInstance` passes it for symmetry with the mount, NOT because a
 // re-render would reset anything — a `useState` initializer runs once, so the
 // fold survives every update on its own. Left in so the two call sites read
@@ -356,8 +355,8 @@ function renderDockInstance(
   );
 }
 
-/** Deliberately WITHOUT `initialCollapsed`, so the fold comes from
- *  `loadCollapsed()` — the only harness here that exercises the real default. */
+/** Deliberately WITHOUT `initialCollapsed` — the only harness here that
+ *  exercises the real, unconditional default (D603). */
 function renderDockInstanceDefaultFold(rows: RepoRow[]): ReactTestRenderer {
   return create(
     <RepoUpdatesDockView
@@ -402,12 +401,11 @@ function clickDockToggle(renderer: ReactTestRenderer) {
 // a collapsed section OPENS that section's panel, and the dot is suppressed
 // while it is open, because a dot pointing at a panel the user is already
 // looking at announces nothing.
-// D595, THE DEFAULT ITSELF (user, on a fresh profile: all four panels opened
-// over the page at once). With no `initialCollapsed`, the fold falls back to
-// `loadCollapsed()` — and a test env has no `localStorage`, so this exercises
-// exactly the `catch` branch a private-mode profile takes on EVERY load, which
-// is the one case that never gets to express a preference.
-test("with no stored preference and no storage at all, the section starts COLLAPSED", () => {
+// THE DEFAULT ITSELF (D595, made unconditional in D603 — user: "on page reload
+// the models popover auto opens for some reason", which was a stored `"0"`
+// being faithfully restored). With no `initialCollapsed` there is nothing to
+// consult: a section starts collapsed on every load, full stop.
+test("a section always starts collapsed, with nothing persisted to say otherwise", () => {
   const renderer = renderDockInstanceDefaultFold([
     repoRows([status({ root: "/a/one" })])[0],
   ]);

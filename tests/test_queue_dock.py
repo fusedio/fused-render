@@ -407,35 +407,51 @@ def test_a_stand_in_job_row_folds_like_any_other_now(card):
     assert "export function jobRows(jobs: Job[], drawn?" in jobs_ts
 
 
-def test_the_stored_fold_is_only_ever_written_by_a_press(card):
-    """No silent rewrite: the preference is the user's alone. This is the D567
-    guard, and it has SURVIVED every reversal since — D574 put auto-open back
-    (the panel opens on a new arrival), D580 added auto-close (it shuts when the
-    list drains), and D582 lets one section close another for exclusivity, but
-    NONE of the three may write localStorage. Only a user action does: the
-    chip's own click (`toggle`) and an outside-click/Escape dismiss (`close`).
+def test_the_fold_is_never_persisted_at_all(card, dock):
+    """D603 SUPERSEDES this test's original subject. It used to police WHO may
+    write the stored fold — the D567 guard, which survived D574's auto-open,
+    D580's auto-close and D582's exclusivity, each of which had to be kept away
+    from `localStorage`. There is no longer a stored fold to write: the key,
+    `loadCollapsed` and `saveCollapsed` are deleted outright (user: "on page
+    reload the models popover auto opens for some reason" — not the auto-open
+    path at all, but a stored `"0"` from an earlier click being faithfully
+    restored on every load since).
 
-    BACK TO ONE call site (D584 review finding 2): the dismiss path used to
-    persist too, and that was a bug — `useDismissOnOutside` fires on a
-    pointer-down outside THIS host, and a click on a SIBLING CHIP is outside
-    it, so opening Models wrote `jobs-collapsed = "1"`. All three keys
-    converged on "1" and the preference became write-only. `close` is now
-    `forceClose` (transient only), leaving the chip's own click as the ONLY
-    thing in this card that may write the fold."""
-    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
-    # the writer, plus that one call site
-    assert card.count("saveCollapsed(") == 2
-    # The real invariant, checked where it cannot hide: the hook that decides to
-    # auto-open/auto-close and the arbiter that enforces one-panel-at-a-time
-    # never touch the stored preference. A comment may MENTION localStorage;
-    # a call is what would break the guard.
+    So the invariant gets STRONGER rather than disappearing: no source file in
+    this feature may touch `localStorage` for the fold at all. Deleting the
+    writer is what makes that checkable as an absence instead of as a count.
+
+    Checked on CODE, not on comments — several of these files legitimately
+    explain in prose why the persistence was removed, and a test that tripped
+    over its own explanation would be worse than no test.
+    """
+    def code_only(src):
+        return "\n".join(
+            line for line in src.splitlines()
+            if not line.strip().startswith(("//", "*", "/*")))
+
+    # The two halves of the activity card, plus the machinery they lean on.
+    for label, src in (("the card", card), ("the dock", dock)):
+        stripped = code_only(src)
+        assert "localStorage" not in stripped, f"{label} must not persist the fold"
+        assert "saveCollapsed" not in stripped, f"{label} must not write the fold"
+        assert "loadCollapsed" not in stripped, f"{label} must not read a stored fold"
+
     for module in ("autoExpand.ts", "exclusiveSection.ts"):
-        src = _read(os.path.join(_FRONT, "platform", "lib", module))
-        code = "\n".join(
-            line for line in src.splitlines() if not line.strip().startswith(("//", "*", "/*"))
-        )
-        assert "localStorage" not in code, f"{module} must not persist anything"
-        assert "saveCollapsed" not in code, f"{module} must not write the fold"
+        stripped = code_only(_read(os.path.join(_FRONT, "platform", "lib", module)))
+        assert "localStorage" not in stripped, f"{module} must not persist anything"
+
+    # And every section, not just this card's: four separate keys existed
+    # (`models-`, `jobs-`, `repo-updates-`, `engines-collapsed`) and all four go.
+    for rel in (("shell", "ModelsDock.tsx"), ("shell", "RepoUpdatesDock.tsx"),
+                ("shell", "EnginesDock.tsx")):
+        stripped = code_only(_read(os.path.join(_FRONT, *rel)))
+        assert "localStorage" not in stripped, f"{rel[-1]} must not persist the fold"
+        assert "-collapsed" not in stripped, f"{rel[-1]} must not keep a fold key"
+
+    # The one remaining setter is the chip's own click. `close` is `forceClose`
+    # (transient only), which is what D585 finding 2 fixed and D603 does not undo.
+    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
 
 
 def test_the_column_owns_where_it_sits(dock, card):

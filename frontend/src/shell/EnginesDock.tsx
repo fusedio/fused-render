@@ -28,46 +28,30 @@ import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import StatusDot from "@platform/ui/StatusDot";
 
 const NOOP = () => {};
-
-// Its own persisted collapse preference, a FOURTH independent key beside the
-// other three — same reasoning those three are separate (four sections with
-// four histories a user might fold independently).
-const COLLAPSED_KEY = "fused-render:engines-collapsed";
-
 // Matches the Models section's idle cadence: this is a "what is running"
 // readout, not progress, so it does not need to tick every second.
 const POLL_MS = 10_000;
 
-function loadCollapsed(): boolean {
-  try {
-    // `!== "0"`, NOT `=== "1"` (D595): an ABSENT key means COLLAPSED, which is
-    // every section's state on a fresh profile and was the bug — four panels
-    // opened over the page at once, and the D582 arbiter then picked which one
-    // survived by registration order rather than by anything meaningful. The
-    // chip's circle already says whether there is anything inside, so an
-    // auto-opened EMPTY panel communicates nothing and covers the page to do
-    // it; "expanded is the honest default" was written when the chip carried a
-    // count and the panel was the only way to see detail.
-    //
-    // THE STORED VALUES KEEP THEIR MEANINGS — no sentinel flip, so no
-    // migration: `"1"` is still collapsed, and `"0"` is still expanded, so
-    // someone who deliberately opened this section stays opened. Only the
-    // absent case moves.
-    return localStorage.getItem(COLLAPSED_KEY) !== "0";
-  } catch {
-    // Collapsed here too: a private-mode profile takes this branch on EVERY
-    // load, so it is the one case that never gets to express a preference.
-    return true;
-  }
-}
-
-function saveCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
-  } catch {
-    /* best-effort, like every other persisted chrome flag */
-  }
-}
+// NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
+// popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
+// plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
+// unread — a key that is written and never read is worse than no key, because
+// the next reader assumes it means something.
+//
+// WHY: a `.dl-panel` floats above the page and is dismissed by an outside
+// pointer-down or Escape. That is popover behaviour, and a popover that
+// restores itself across reloads covers the page on every navigation. "Open"
+// is a statement about this moment, not a preference worth remembering. The
+// user's own report was not the auto-open path at all — D587's `neverOpen` was
+// intact — it was a stored `"0"` from having clicked Models open earlier,
+// faithfully restored on every load since, which is indistinguishable from a
+// bug from where they sit. This also makes D582's arbiter trivial instead of
+// arbitrary (nothing wants to be open at mount) and finally makes "never auto
+// open" hold on EVERY path rather than all but one.
+//
+// The transient `autoOpen`/`autoClose` overrides are untouched; opening is an
+// explicit click within the session. Any key left on a real machine from an
+// earlier build is inert and needs no migration — nothing reads it.
 
 /** A useful NAME for a row, never the opaque id when something better exists:
  *  the folder's basename for a background app, the module for a warm app
@@ -193,7 +177,7 @@ export default function EnginesDock() {
   // onto already-running engines is not read as a wave of arrivals
   // (autoExpand.ts's `ready`).
   const [settled, setSettled] = useState(false);
-  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [collapsed, setCollapsed] = useState(true);
   const pollRef = useRef<() => void>(() => {});
 
   useEffect(() => {
@@ -249,10 +233,7 @@ export default function EnginesDock() {
   const toggle = () => {
     const wantOpen = !open;
     acknowledge();
-    if (collapsed === wantOpen) {
-      saveCollapsed(!wantOpen);
-      setCollapsed(!wantOpen);
-    }
+    if (collapsed === wantOpen) setCollapsed(!wantOpen);
   };
 
   const close = forceClose;

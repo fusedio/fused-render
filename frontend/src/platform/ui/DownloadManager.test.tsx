@@ -74,11 +74,11 @@ function circleFilled(tree: ReactTestRendererJSON | null): boolean {
   return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
 }
 
-// EVERY HARNESS BELOW PASSES `initialCollapsed={false}` (D595): the
-// fresh-profile default became COLLAPSED, and these tests are about what the
-// PANEL contains and how the fold behaves — not about that default. Saying so
-// explicitly is what keeps them from silently re-inverting the next time the
-// default is revisited; the default itself is covered by its own tests.
+// EVERY HARNESS BELOW PASSES `initialCollapsed={false}`: the default is
+// COLLAPSED (D595, made unconditional in D603), and these tests are about what
+// the PANEL contains and how the fold behaves — not about that default. Saying
+// so explicitly is what keeps them from silently inverting the next time the
+// default is revisited; the default itself has its own test.
 function renderCard(reported: Job[]): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView
@@ -90,10 +90,13 @@ function renderCard(reported: Job[]): ReactTestRendererJSON | null {
   ).toJSON() as ReactTestRendererJSON | null;
 }
 
-// D595: the real default, with no seam and no storage — the `catch` branch a
-// private-mode profile takes on every load. Its own harness so no other test
-// depends on the default staying put.
-test("with no stored preference and no storage at all, the section starts COLLAPSED", () => {
+// D603: the real default, with no seam passed. It is now UNCONDITIONAL —
+// nothing is read from storage, so there is no absent-key case, no private-mode
+// case and no stored `"0"` that could restore a panel over the page on reload
+// (which is exactly what the user reported: "on page reload the models popover
+// auto opens for some reason"). Its own harness so no other test depends on the
+// default staying put.
+test("a section always starts collapsed, with nothing persisted to say otherwise", () => {
   const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
   const tree = create(
     <DownloadManagerView reported={[running]} refresh={() => {}} patch={() => {}} />,

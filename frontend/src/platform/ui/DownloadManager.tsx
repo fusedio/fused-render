@@ -117,38 +117,26 @@ import {
   type QueueCount,
 } from "@platform/lib/jobs";
 import { repoName } from "@platform/lib/format";
-const COLLAPSED_KEY = "fused-render:jobs-collapsed";
-
-function loadCollapsed(): boolean {
-  try {
-    // `!== "0"`, NOT `=== "1"` (D595): an ABSENT key means COLLAPSED, which is
-    // every section's state on a fresh profile and was the bug — four panels
-    // opened over the page at once, and the D582 arbiter then picked which one
-    // survived by registration order rather than by anything meaningful. The
-    // chip's circle already says whether there is anything inside, so an
-    // auto-opened EMPTY panel communicates nothing and covers the page to do
-    // it; "expanded is the honest default" was written when the chip carried a
-    // count and the panel was the only way to see detail.
-    //
-    // THE STORED VALUES KEEP THEIR MEANINGS — no sentinel flip, so no
-    // migration: `"1"` is still collapsed, and `"0"` is still expanded, so
-    // someone who deliberately opened this section stays opened. Only the
-    // absent case moves.
-    return localStorage.getItem(COLLAPSED_KEY) !== "0";
-  } catch {
-    // Collapsed here too: a private-mode profile takes this branch on EVERY
-    // load, so it is the one case that never gets to express a preference.
-    return true;
-  }
-}
-
-function saveCollapsed(collapsed: boolean): void {
-  try {
-    localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
-  } catch {
-    /* best-effort, like every other persisted chrome flag */
-  }
-}
+// NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
+// popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
+// plus `loadCollapsed`/`saveCollapsed`; all three are DELETED, not merely
+// unread — a key that is written and never read is worse than no key, because
+// the next reader assumes it means something.
+//
+// WHY: a `.dl-panel` floats above the page and is dismissed by an outside
+// pointer-down or Escape. That is popover behaviour, and a popover that
+// restores itself across reloads covers the page on every navigation. "Open"
+// is a statement about this moment, not a preference worth remembering. The
+// user's own report was not the auto-open path at all — D587's `neverOpen` was
+// intact — it was a stored `"0"` from having clicked Models open earlier,
+// faithfully restored on every load since, which is indistinguishable from a
+// bug from where they sit. This also makes D582's arbiter trivial instead of
+// arbitrary (nothing wants to be open at mount) and finally makes "never auto
+// open" hold on EVERY path rather than all but one.
+//
+// The transient `autoOpen`/`autoClose` overrides are untouched; opening is an
+// explicit click within the session. Any key left on a real machine from an
+// earlier build is inert and needs no migration — nothing reads it.
 
 // Poll /api/jobs, adapting the cadence to whether anything is live, and poll
 // IMMEDIATELY when another same-origin document says it just reported.
@@ -612,15 +600,15 @@ export function DownloadManagerView({
   patch,
 }: {
   reported: Job[];
-  /** TEST SEAM ONLY — the fold's initial value, defaulting to the persisted
-   *  preference (`loadCollapsed`, which since D595 treats an absent key as
-   *  COLLAPSED). Every real caller omits it. Injectable rather than mocked for
-   *  the reason this file already documents for `cancelFn`/`dismissFn`: a
-   *  `mock.module` (or a `globalThis.localStorage` stub) replaces things for
-   *  the WHOLE bun process, not one file, and both have contaminated unrelated
-   *  suites here before. A test that needs the panel open should SAY so rather
-   *  than depend on whatever the fresh-profile default happens to be — which
-   *  is exactly what changed under them in D595. */
+  /** TEST SEAM ONLY — the fold's initial value. Every real caller omits it and
+   *  gets `true`: sections ALWAYS start collapsed now (D603), unconditionally,
+   *  with no stored preference to consult. KEPT rather than deleted with the
+   *  persistence, because it is now the ONLY way to mount a section already
+   *  open, and ~20 tests here are about what an OPEN panel contains rather than
+   *  about the default. Injectable rather than stubbed through
+   *  `globalThis.localStorage` for the reason this file documents at length for
+   *  `mock.module`: a process-wide replacement has contaminated unrelated
+   *  suites here before. */
   initialCollapsed?: boolean;
   /** Has the first /api/jobs read landed (autoExpand.ts's `ready`)? Optional
    *  so a test mounting this view with a fixed list keeps the old behaviour. */
@@ -629,9 +617,7 @@ export function DownloadManagerView({
   refresh: () => void;
   patch: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(
-    () => initialCollapsed ?? loadCollapsed(),
-  );
+  const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
   // Wraps the chip AND the panel — see dismissOnOutside.ts on why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -744,10 +730,7 @@ export function DownloadManagerView({
   const toggle = () => {
     const wantOpen = !open;
     acknowledge();
-    if (collapsed === wantOpen) {
-      saveCollapsed(!wantOpen);
-      setCollapsed(!wantOpen);
-    }
+    if (collapsed === wantOpen) setCollapsed(!wantOpen);
   };
 
   // Backgrounding the panel (outside pointer-down, Escape). A hand-opened
