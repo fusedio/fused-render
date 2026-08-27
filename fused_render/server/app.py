@@ -405,6 +405,17 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
+    # Claude Code's live-session registry, prompt history and live transcripts.
+    # A startup event for the same reason as `_startup_schedule`: it is a
+    # thread for the life of the process that reads the user's real ~/.claude,
+    # and tests build apps without lifespan.
+    @app.on_event("startup")
+    async def _startup_tasks_watch():
+        from fused_render import tasks_watch
+
+        tasks_watch.start()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()

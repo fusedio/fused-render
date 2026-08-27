@@ -49,11 +49,12 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getConfig,
   getSchedule,
   getScheduleQueue,
+  getTaskChanges,
   getTasks,
 } from "@platform/lib/api";
 import type {
@@ -81,7 +82,7 @@ import {
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { viewFromSearch, viewUrl } from "./tasks-lib";
+import { mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
 import { isUnderDir } from "./current-apps-lib";
 
@@ -134,6 +135,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksFailed, setTasksFailed] = useState(false);
+  // The rows as the changes loop below last saw them, and the server
+  // generation they answer to. Refs, not state: the loop is one long-lived
+  // effect and must read the newest value without re-subscribing on every
+  // poll. Mirrored from `tasks` by the effect under it.
+  const tasksRef = useRef<Task[]>([]);
+  const generationRef = useRef(-1);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -267,6 +277,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       (r) => {
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        if (typeof r.generation === "number") generationRef.current = r.generation;
         // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
         // dot and the counts beside the label are this answer, not a second poll
         // of their own — two polls would show a dot the page disagrees with for
@@ -304,6 +315,71 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   useEffect(() => {
     window.addEventListener(TASKS_POKE_EVENT, reload);
     return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
+  }, []);
+  // The fast lane. /api/tasks/changes long-polls the server's change watcher
+  // (tasks_watch.py) and answers the moment a session starts, resumes, takes
+  // a prompt or grows — so a `claude` typed into a terminal in some folder is
+  // a row here within a second, not up to a poll later. Only the rows that
+  // moved come back and are folded into place (mergeTaskChanges); the 20s
+  // full reload above stays as the truth underneath. Hidden tabs sit the loop
+  // out — useRefreshOnReturn reloads on the way back — and a failed call
+  // backs off rather than hammering a server that is restarting.
+  useEffect(() => {
+    let stopped = false;
+    let controller: AbortController | null = null;
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+      });
+    const untilVisible = () =>
+      new Promise<void>((resolve) => {
+        const onChange = () => {
+          if (document.visibilityState !== "visible") return;
+          document.removeEventListener("visibilitychange", onChange);
+          resolve();
+        };
+        document.addEventListener("visibilitychange", onChange);
+      });
+    const run = async () => {
+      while (!stopped) {
+        if (document.visibilityState !== "visible") {
+          await untilVisible();
+          continue;
+        }
+        if (generationRef.current < 0) {
+          // No full listing has answered yet; nothing to merge into.
+          await sleep(500);
+          continue;
+        }
+        controller = new AbortController();
+        try {
+          const r = await getTaskChanges(generationRef.current, 25, controller.signal);
+          if (stopped) return;
+          if (r.full) {
+            reload();
+            await sleep(1000);
+            continue;
+          }
+          generationRef.current = r.generation;
+          const rows = r.rows ?? [];
+          const gone = r.gone ?? [];
+          if (rows.length || gone.length) {
+            const merged = mergeTaskChanges(tasksRef.current, rows, gone);
+            tasksRef.current = merged;
+            setTasks(merged);
+            publishTasks(merged);
+          }
+        } catch {
+          if (stopped) return;
+          await sleep(3000);
+        }
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+      controller?.abort();
+    };
   }, []);
 
   const pickView = (v: TaskView) => {
