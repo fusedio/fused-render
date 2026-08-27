@@ -373,9 +373,14 @@ export default function AppPage({
       <header className="app-page-head">
         <div className="app-page-title">
           <h1>{slug}</h1>
-          {/* The folder, as a link: the one door from this page into the
-              explorer, for when the files are the question. */}
-          <a className="app-page-folder" href={folderHref} title={dir}>
+          {/* Reads as the folder, opens the entry page (index.html) in the
+              explorer — the app itself, not its listing. Falls back to the
+              folder when there is no entry yet. */}
+          <a
+            className="app-page-folder"
+            href={entry ? urlForFsPath(entry) : folderHref}
+            title={entry ?? dir}
+          >
             {tildePath(dir, home)}
           </a>
         </div>
