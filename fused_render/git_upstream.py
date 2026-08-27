@@ -290,19 +290,42 @@ def _is_clean(root, *, include_untracked=True):
     return not _out(result)
 
 
+def _real_gitdir(root):
+    """The actual git directory for `root` — a plain subdirectory for an
+    ordinary checkout, but a DIFFERENT, shared directory for a LINKED
+    WORKTREE, where `root/.git` is a FILE (`gitdir: /path/to/real/gitdir`),
+    not a directory. `os.path.isdir(root, ".git")` is blind to that shape —
+    it answers False for every linked worktree, silently — which is exactly
+    how a conflicted rebase inside one went undetected by
+    `_operation_in_flight` below. `git rev-parse --absolute-git-dir` asks
+    git itself, which already resolves this correctly for both shapes, so
+    nothing here has to special-case `.git`-as-file by hand. None on any
+    failure (git missing, `root` not a repo) — the same silent-on-uncertainty
+    posture the rest of this preflight uses, never a raise."""
+    result = _run(root, "rev-parse", "--absolute-git-dir")
+    if not _ok(result):
+        return None
+    return _out(result) or None
+
+
 def _operation_in_flight(root):
     """Which multi-step git operation `root` is already mid-way through, if
-    any. Mirrors `templates/git/log.py`'s `_operation_in_flight` (that
-    module's own twin of this) — `rebase-merge`/`rebase-apply` are checked
-    FIRST because a conflicted rebase step also writes `MERGE_HEAD`, and
-    asking about single refs first would misreport the step's PARENT
-    operation as a plain merge. Every name log.py's version reports is kept
-    here, not just `rebase` (the only one this module's own mutations can
-    leave behind): a merge/cherry-pick/revert started some OTHER way — a
-    terminal, the git companion — must still be named accurately by this
-    preflight rather than folding into the generic "dirty" refusal."""
-    gitdir = os.path.join(root, ".git")
-    if not os.path.isdir(gitdir):
+    any. Mirrors `templates/git/log.py`'s `_operation_in_flight` in every
+    other respect (that module's own twin of this) — `rebase-merge`/
+    `rebase-apply` are checked FIRST because a conflicted rebase step also
+    writes `MERGE_HEAD`, and asking about single refs first would misreport
+    the step's PARENT operation as a plain merge. Every name log.py's
+    version reports is kept here, not just `rebase` (the only one this
+    module's own mutations can leave behind): a merge/cherry-pick/revert
+    started some OTHER way — a terminal, the git companion — must still be
+    named accurately by this preflight rather than folding into the
+    generic "dirty" refusal. UNLIKE log.py's twin, this one resolves the
+    real gitdir via `_real_gitdir` rather than assuming `root/".git"` is a
+    directory, so it (and only it, for now — log.py's copy has the same
+    blind spot, pre-existing on main and out of scope here) still finds
+    these markers inside a linked worktree."""
+    gitdir = _real_gitdir(root)
+    if gitdir is None:
         return None
     for sub in ("rebase-merge", "rebase-apply"):
         if os.path.isdir(os.path.join(gitdir, sub)):

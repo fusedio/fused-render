@@ -466,6 +466,67 @@ def test_update_reports_a_mid_rebase_repo_accurately_not_as_dirty(tmp_path):
     assert "rebase" in res["message"]
 
 
+def _rebase_conflict_in_linked_worktree(tmp_path, name="wtconflict"):
+    """The same conflicting-rebase shape as `_rebase_conflict_repo`, but the
+    branch with the local commit lives in a LINKED WORKTREE rather than the
+    main checkout: `<worktree>/.git` there is a FILE containing
+    `gitdir: <real path>`, never a directory — the exact shape
+    `_operation_in_flight`'s old `os.path.isdir(root/".git")` probe went
+    blind to (it always answered False, so a conflicted rebase inside a
+    linked worktree was never detected)."""
+    remote = str(tmp_path / f"{name}.git")
+    local = str(tmp_path / name)
+    os.makedirs(local)
+    git(local, "init", "-q")
+    # See _clone_with_remote_ahead's own comment on this: a persisted local
+    # identity, because the CI runner has no ambient one.
+    git(local, "config", "user.name", "Fixture Author")
+    git(local, "config", "user.email", "fixture@example.com")
+    write(local, "a.txt", "one\ntwo\nthree\n")
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "base")
+    with_remote(local, remote)
+
+    other = str(tmp_path / f"{name}-other")
+    git(str(tmp_path), "clone", "-q", remote, other)
+    write(other, "a.txt", "one\nTHEIRS\nthree\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", "theirs")
+    git(other, "push", "-q", "origin", "HEAD:main")
+
+    worktree = str(tmp_path / f"{name}-wt")
+    git(local, "worktree", "add", "-q", "-b", "feature", worktree, "HEAD")
+    write(worktree, "a.txt", "one\nOURS\nthree\n")
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-q", "-m", "ours")
+    return worktree
+
+
+def test_a_conflicted_rebase_in_a_linked_worktree_is_named_rebase_not_dirty(tmp_path):
+    """`_operation_in_flight` used to resolve `root/".git"` as a directory and
+    give up (`return None`) the instant that was false — true for a plain
+    checkout, but `.git` is a FILE in a linked worktree, so this path was
+    ALWAYS blind there. The consequence: `_mutation_preflight` fell through
+    to the generic "dirty" refusal, whose advice (commit, stash, or discard)
+    can destroy an in-progress rebase instead of continuing or aborting it.
+    Pins that the real gitdir is resolved (`git rev-parse
+    --absolute-git-dir`) so a conflicted rebase in a linked worktree is
+    named "rebase", exactly as it already is for a plain checkout."""
+    worktree = _rebase_conflict_in_linked_worktree(tmp_path)
+    assert not os.path.isdir(os.path.join(worktree, ".git")), (
+        "fixture assumption: .git must be a FILE in a linked worktree")
+
+    first = git_upstream.rebase_repo(worktree)
+    assert first["ok"] is False
+    assert first["reason"] == "git-failed"  # the conflict itself
+
+    res = git_upstream.update_repo(worktree)
+
+    assert res["ok"] is False
+    assert res["reason"] == "in-progress"
+    assert "rebase" in res["message"]
+
+
 # --------------------------------------------------- throttle stamp (finding #5)
 
 
