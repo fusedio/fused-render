@@ -832,9 +832,31 @@ export function DownloadManagerView({
             <div className="dl-panel-empty">No jobs</div>
           ) : (
             <>
-              {/* Omitted outright, not left as a blank padded band (code review
-                  finding #3), when neither child has anything to offer — e.g.
-                  exactly one job running, nothing queued, nothing terminal yet. */}
+              {/* ONE list, in lifecycle order: the queue's rows first (running, then
+                  starting, then waiting) and the job rows under them, which is where
+                  the same run lands once its turn has ended. A scheduled message
+                  therefore moves down this list rather than jumping between two
+                  cards. */}
+              <div className="dl-rows">
+                {queue?.rows}
+                {jobs.map((job) => (
+                  <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                ))}
+              </div>
+              {queue?.note}
+              {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
+                  up"). These bulk actions used to render ABOVE the rows, where
+                  a full-width padded band holding one small right-aligned
+                  button read as a blank row that had failed to render — the
+                  first thing in the panel. It was a header when it also
+                  carried a count and a title on its left; D588/D590 removed
+                  both and left a header with nothing to head. Under the list,
+                  the same button reads as acting on what is above it, which is
+                  what it does. */}
+              {/* Still omitted outright when neither child has anything to
+                  offer (code review finding #3) — a footer with nothing in it
+                  is the same defect one position lower. This panel's footer can
+                  hold TWO buttons, so nothing here may assume a single child. */}
               {(queue?.cancelAll || clearable > 0) && (
                 <div className="dl-head">
                   {/* Two actions, and they are not the same one twice: Cancel queued
@@ -851,18 +873,6 @@ export function DownloadManagerView({
                   )}
                 </div>
               )}
-              {/* ONE list, in lifecycle order: the queue's rows first (running, then
-                  starting, then waiting) and the job rows under them, which is where
-                  the same run lands once its turn has ended. A scheduled message
-                  therefore moves down this list rather than jumping between two
-                  cards. */}
-              <div className="dl-rows">
-                {queue?.rows}
-                {jobs.map((job) => (
-                  <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-                ))}
-              </div>
-              {queue?.note}
             </>
           )}
         </div>

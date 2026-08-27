@@ -369,19 +369,36 @@
   z-index: 2001;
 }
 
-/* The panel's own header — action buttons only now (Cancel queued / Clear),
-   never the summary, which lives in the chip outside the panel.
-   Right-aligned: with no toggle left inside to push them there via
-   `flex: 1 1 auto`, this row would otherwise pack its buttons against the
-   left edge instead of the trailing edge every other header in this corner
-   uses. */
+/* THE PANEL'S FOOTER — bulk action buttons only (Cancel queued / Clear), under
+   the list they act on. Right-aligned: with no toggle inside to push them there
+   via `flex: 1 1 auto`, they would otherwise pack against the leading edge.
+
+   IT WAS A HEADER UNTIL D602 (user: "notification UI is messed up"), and the
+   class keeps its name because both panels share it and renaming it would
+   touch more than this fix needs. A full-width band with `8px 10px` of padding
+   holding one small right-aligned button read as a blank row that had failed
+   to render — and it was the FIRST thing in the panel. It made sense while it
+   also carried a count and a title on its left; D588/D590 removed both and
+   left a header with nothing to head.
+
+   `6px 10px`, not `8px 10px`: enough to be comfortably clickable, not enough
+   to read as another row. The rows themselves are `8px 10px` (`.dl-row`), so
+   staying under that is what keeps this from looking like one of them.
+
+   THE HAIRLINE MOVED HERE FROM `.dl-rows` (which had `border-top`). That was
+   the actual source of the line the user saw under the band — it separated the
+   old header from the list, and left where it was it would now draw a stray
+   line across the panel's very top, doubled against `.dl-panel`'s own border.
+   As a `border-top` here it does the job it always did — divide actions from
+   content — from the correct side. */
 .dl-head {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 6px 10px;
   font-size: 12px;
+  border-top: 1px solid var(--border);
 }
 
 .dl-summary {
@@ -543,7 +560,10 @@
      instead of letting the user scroll to it, which is worse; the row
      itself must still genuinely fit within `.dl-panel`'s width. */
   overflow-x: hidden;
-  border-top: 1px solid var(--border);
+  /* NO `border-top` any more (D602): it existed to divide the old header from
+     this list, and that divider now lives on `.dl-head` as a `border-top`
+     because the actions moved below. Left here it would draw a line across the
+     panel's top edge, doubled against `.dl-panel`'s own border. */
 }
 
 /* One rule for every row in the list, whatever kind it is — a queue row above a

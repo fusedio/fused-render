@@ -420,24 +420,6 @@ export function RepoUpdatesCardView({
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
-              {/* Clear takes only the REPO rows — the ones this card's own
-                  client-side dismissal model covers. A failed job's dismissal
-                  is server-side and permanent (`dismissJob`), so sweeping both
-                  under one button would hide two different promises behind it;
-                  a failure is dismissed by its own row's ✕ (D586). Omitted
-                  entirely when there is no repo row to clear, rather than
-                  offering a button that would do nothing. */}
-              {visible.length > 0 && (
-                <div className="dl-head">
-                  <button
-                    className="dl-clear"
-                    onClick={() => onDismissAll(visible)}
-                    title="Dismiss every visible update"
-                  >
-                    Clear
-                  </button>
-                </div>
-              )}
               {/* ONE list, TWO row kinds (D586). Repo updates first, then
                   failures: the repo rows are the actionable ones (Update /
                   Switch), and a failure is a record of something that already
@@ -471,6 +453,33 @@ export function RepoUpdatesCardView({
                   />
                 ))}
               </div>
+              {/* A FOOTER, NOT A HEADER (D602, user: "notification UI is messed
+                  up"). These bulk actions used to render ABOVE the rows, where
+                  a full-width padded band holding one small right-aligned
+                  button read as a blank row that had failed to render — the
+                  first thing in the panel. It was a header when it also
+                  carried a count and a title on its left; D588/D590 removed
+                  both and left a header with nothing to head. Under the list,
+                  the same button reads as acting on what is above it, which is
+                  what it does. */}
+              {/* Clear takes only the REPO rows — the ones this card's own
+                  client-side dismissal model covers. A failed job's dismissal
+                  is server-side and permanent (`dismissJob`), so sweeping both
+                  under one button would hide two different promises behind it;
+                  a failure is dismissed by its own row's ✕ (D586). Omitted
+                  entirely when there is no repo row to clear, rather than
+                  offering a button that would do nothing. */}
+              {visible.length > 0 && (
+                <div className="dl-head">
+                  <button
+                    className="dl-clear"
+                    onClick={() => onDismissAll(visible)}
+                    title="Dismiss every visible update"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
