@@ -70,7 +70,7 @@ def test_init_repo_ships_boilerplate_commit(workspace):
     # Session sidecars stay out of history.
     gi = (d / ".gitignore").read_text()
     assert "*.html.json" in gi
-    # …and so does the app's own `.fused/` state folder (D518). The trailing
+    # …and so does the app's own `.fused/` state folder (D548). The trailing
     # slash is load-bearing: it ignores the DIRECTORY without touching an
     # exported `<name>.fused` app file (SPEC §43) sitting in the same folder.
     assert ".fused/" in gi

@@ -2052,7 +2052,7 @@ def _commit_turn(file: str, message: str) -> None:
         # (D359), and it had already moved out of the app dir before that
         # (D83-reversal, D205) — but a repo from either era may still have one
         # sitting in its tree, and this sweep's add -A would commit it into app
-        # history. `.fused/` is the LIVE one: the app's own state folder (D518)
+        # history. `.fused/` is the LIVE one: the app's own state folder (D548)
         # is written continuously by the running app, so a turn's add -A would
         # otherwise sweep a whole cache into the commit. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local

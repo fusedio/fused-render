@@ -52,13 +52,15 @@ import {
   type ReactNode,
 } from "react";
 import {
+  appIconUrl,
   getAppEntry,
+  getAppIcon,
   resolveConditions,
   statPath,
   type Config,
   type TemplateEntry,
 } from "@platform/lib/api";
-import { useUrlVersion } from "@platform/lib/hooks";
+import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
 import { navigateUrl, urlForFsPath } from "@platform/lib/router";
 import {
@@ -222,6 +224,25 @@ export default function AppPage({
   // back/forward between the two tabs lands on the right one.
   useUrlVersion();
   const tab = appPageTabFromSearch(location.search);
+
+  // The tab favicon is the app's optional icon.svg while its page is open
+  // (`/api/apps/icon`; the same file the Projects row draws). Guarded by
+  // `live` like the resolve below, so a fast switch between two apps cannot
+  // paint the first one's icon over the second.
+  const [iconHref, setIconHref] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    setIconHref(null);
+    getAppIcon(dir)
+      .then((r) => {
+        if (live) setIconHref(r.icon ? appIconUrl(r.icon, r.mtime) : null);
+      })
+      .catch(() => live && setIconHref(null));
+    return () => {
+      live = false;
+    };
+  }, [dir]);
+  useFavicon(iconHref);
 
   useEffect(() => {
     let live = true;

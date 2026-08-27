@@ -139,6 +139,121 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
+// The shell's own tab icon: READ off the `<link rel="icon">` the document
+// arrived with, not spelled here. frontend/index.html says `/favicon.ico`,
+// but Vite rewrites that to the build's base (`/static/shell-dist/favicon.ico`,
+// vite.config.js) — a hard-coded `/favicon.ico` restore was a 404, which is
+// what the blank placeholder on the tab was (owner, 2026-08-27, second
+// report). Captured lazily on the first swap, so it is whatever the served
+// index.html linked, dev or packaged.
+const DEFAULT_FAVICON = Symbol("default favicon");
+let defaultHref: string | null = null;
+
+// The fused-render mark's own two colours (frontend/public/favicon.ico: the
+// #1b1d21 rounded square, the #e5ff44 glyph). An app's favicon is composed in
+// the same livery so every fused tab reads as one family.
+const FAVICON_BG = "#1b1d21";
+const FAVICON_FG = "#e5ff44";
+
+// Set the tab icon by REPLACING the `<link rel="icon">` node, never by editing
+// its href: browsers (Chrome at least) do not reliably refetch when an existing
+// link's href flips back to a URL it showed before, which left the previous
+// app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
+// node is a fresh icon request every time. The default goes back with a unique
+// query string as well — Chrome's per-document favicon cache can answer a URL
+// it already holds without repainting; static serving ignores the query, so
+// the bytes are the same file under a new key.
+let restoreSeq = 0;
+function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
+  const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (defaultHref === null && old) defaultHref = old.href;
+  const link = document.createElement("link");
+  link.rel = "icon";
+  if (href === DEFAULT_FAVICON) {
+    if (!defaultHref) return;
+    const sep = defaultHref.includes("?") ? "&" : "?";
+    link.href = `${defaultHref}${sep}r=${++restoreSeq}`;
+    link.setAttribute("sizes", "any");
+  } else {
+    link.href = href;
+  }
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
+}
+
+// An app's icon.svg as a favicon in the fused livery: the svg's alpha as a
+// yellow glyph, inset on a black rounded square — mirroring the shell's own
+// mark (owner, 2026-08-27). Composed on a canvas: the svg is drawn to an
+// offscreen layer and recoloured with `source-in` (its shape, our colour — the
+// same alpha-mask idea the sidebar uses via CSS mask), then laid over the
+// square. Resolves to a PNG data URL, or null when the svg fails to load or
+// the canvas is unavailable — callers then leave the default icon in place.
+async function composeFavicon(src: string): Promise<string | null> {
+  const img = new Image();
+  const loaded = new Promise<boolean>((resolve) => {
+    img.onload = () => resolve(true);
+    img.onerror = () => resolve(false);
+  });
+  img.src = src;
+  if (!(await loaded)) return null;
+  const size = 64;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  // The square: radius and inset in the ico's own proportions (a soft corner
+  // and a glyph that fills the middle ~56%).
+  const r = size * 0.22;
+  ctx.fillStyle = FAVICON_BG;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, size, size, r);
+  ctx.fill();
+  // The glyph, recoloured on its own layer so the fill cannot bleed onto the
+  // square. Drawn with its aspect kept inside the inset box.
+  const layer = document.createElement("canvas");
+  layer.width = layer.height = size;
+  const lc = layer.getContext("2d");
+  if (!lc) return null;
+  const inset = size * 0.22;
+  const box = size - inset * 2;
+  const iw = img.naturalWidth || box;
+  const ih = img.naturalHeight || box;
+  const scale = Math.min(box / iw, box / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  lc.drawImage(img, (size - dw) / 2, (size - dh) / 2, dw, dh);
+  lc.globalCompositeOperation = "source-in";
+  lc.fillStyle = FAVICON_FG;
+  lc.fillRect(0, 0, size, size);
+  ctx.drawImage(layer, 0, 0);
+  try {
+    return canvas.toDataURL("image/png");
+  } catch {
+    return null;
+  }
+}
+
+// Tab icon: while a route inside an app is on screen, its optional icon.svg
+// (composed in the fused livery, above) replaces the shell's own; the default
+// comes back when the route leaves (cleanup) or the href goes null (no icon
+// for this app). One writer at a time by construction — the callers (AppPage,
+// StatView) are mutually exclusive mounts — so there is no arbitration, only
+// the restore. Composition is async, so a `live` flag stops a slow icon from
+// landing after the route moved on.
+export function useFavicon(href: string | null): void {
+  useEffect(() => {
+    if (!href) return;
+    let live = true;
+    composeFavicon(href).then((dataUrl) => {
+      if (live && dataUrl) setFaviconHref(dataUrl);
+    });
+    return () => {
+      live = false;
+      setFaviconHref(DEFAULT_FAVICON);
+    };
+  }, [href]);
+}
+
 // The builtin-mount readiness hook lived here: a bounded /api/config poll that
 // answered "is the bundled zip mount attached and browsable yet", seeded from
 // the boot-time config snapshot because the one-shot fetch (main.tsx) lands

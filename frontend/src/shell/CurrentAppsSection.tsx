@@ -225,14 +225,30 @@ function CurrentAppRow({
       className={
         "bookmark-row current-app-row" +
         (active ? " active" : "") +
-        (app.exists ? "" : " is-missing")
+        (app.exists ? "" : " is-missing") +
+        (app.running ? " is-running" : "")
       }
       title={tip}
       draggable
       {...drag}
     >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
-        {app.running ? <span className="sidebar-rail-dot is-running" /> : "▣"}
+        {app.iconUrl ? (
+          // The app's own icon.svg in the generic mark's slot, as a CSS MASK
+          // over currentColor rather than an <img>: authors draw in black,
+          // and a black glyph on the dark theme vanished (owner, 2026-08-27).
+          // Masked, the shape takes the row's colour — muted, accent when
+          // active — exactly like the ▣ it replaces.
+          <span
+            className="current-app-icon"
+            style={{
+              maskImage: `url("${app.iconUrl}")`,
+              WebkitMaskImage: `url("${app.iconUrl}")`,
+            }}
+          />
+        ) : (
+          "▣"
+        )}
       </span>
       <a
         className="bookmark-name"
@@ -243,6 +259,14 @@ function CurrentAppRow({
       >
         {app.name}
       </a>
+      {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never
+          covers the app's icon: the glyph slot is identity, the dot is state. */}
+      {app.running && (
+        <span
+          className="sidebar-rail-dot is-running current-app-running"
+          aria-hidden="true"
+        />
+      )}
       <span className="bookmark-actions">
         <button
           className="icon-btn delete-btn current-app-archive"

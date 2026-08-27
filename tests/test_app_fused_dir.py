@@ -1,4 +1,4 @@
-"""The `.fused/` app state folder (fused_render/app_fused_dir.py, D518, SPEC §47).
+"""The `.fused/` app state folder (fused_render/app_fused_dir.py, D548, SPEC §47).
 
 `ensure` is called on the render path, so every test here is really asking one
 of two questions: does it produce the documented layout, and does it stay quiet
@@ -74,7 +74,7 @@ def test_ensure_completes_a_half_made_folder(app):
 # ------------------------------------------------------- meta.json as a witness
 
 def test_a_moved_app_keeps_its_recorded_path(app, caplog):
-    """THE decision (D518): the recorded `app_dir` is evidence that the folder
+    """THE decision (D548): the recorded `app_dir` is evidence that the folder
     moved, so `ensure` reports it and leaves it. Rewriting on sight would erase
     the divergence in the same moment an app could act on it."""
     app_fused_dir.ensure(str(app))

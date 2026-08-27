@@ -24,7 +24,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render import jobs
-from fused_render.ai import catalog, fit, footprints, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, registry, speed, supervisor
 from fused_render.ai import tasks as ai_tasks
 from fused_render.ai.runners import formats, partial
 from fused_render.server import create_app
@@ -5183,8 +5183,13 @@ def test_fit_basis_download_from_size_gb_alone(client, fake_runner, fixed_fit_ma
         {"id": "org/only-size", "label": "Only size", "size_gb": 4.0, "note": ""},
     ])
     entry = _fit_text_row(client)["models"][0]
-    assert entry["fit"] == {"verdict": "easy", "basis": "download",
-                            "footprintBytes": 4.0 * 1e9}
+    # SPEC AI-19 item 3: the flat runtime-overhead constant now lands on
+    # every `download`-rung estimate, and `score`/`runMode` are new fields
+    # on every verdict — `fit.py`'s own tests cover their arithmetic in
+    # full; this route-level test only needs the shape to still be right.
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["verdict"] == "easy"
+    assert entry["fit"]["footprintBytes"] == 4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES
 
 
 def test_fit_basis_declared_wins_over_download(client, fake_runner, fixed_fit_machine,
@@ -5217,6 +5222,40 @@ def test_fit_basis_measured_wins_over_declared_and_download(
     assert entry["fit"]["footprintBytes"] == 5_000_000_000
 
 
+def test_the_catalog_forwards_harvested_kv_geometry_into_the_fit_footprint(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review finding: `describe_catalog` called `fit.verdict` without
+    ANY of the `num_hidden_layers`/`num_key_value_heads`/`num_attention_
+    heads`/`head_dim`/`hidden_size`/`layer_types` kwargs that feed
+    `fit.footprint_bytes`'s KV-cache term (fit.py L640-662), even though
+    `hub_metadata.cached()` — read on this same request for the vision/
+    tool-use tags — already holds that geometry on disk. Without forwarding
+    it, every download-rung footprint collapses to exactly
+    `size_gb * 1e9 + RUNTIME_OVERHEAD_BYTES`, with a KV term of zero no
+    matter how big the context window or how wide the model. This test pins
+    a row WITH cached geometry getting a strictly bigger footprint than that
+    flat figure, so the wiring cannot go inert again."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda model_id: {
+        "numHiddenLayers": 32,
+        "numKeyValueHeads": 8,
+        "numAttentionHeads": 32,
+        "headDim": 128,
+        "hiddenSize": 4096,
+        "layerTypes": None,
+    } if model_id == "org/geometry-known" else None)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/geometry-known", "label": "Geometry known", "size_gb": 4.0,
+         "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    assert entry["id"] == "org/geometry-known"
+    flat_floor = 4.0 * 1e9 + fit.RUNTIME_OVERHEAD_BYTES
+    assert entry["fit"]["basis"] == "download"
+    assert entry["fit"]["footprintBytes"] > flat_floor, (
+        "KV-cache term is 0 despite cached geometry being available — "
+        "hub_metadata.cached() geometry was not forwarded to fit.verdict")
+
+
 def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
         client, fake_runner, fixed_fit_machine, monkeypatch):
     footprints.record(registry.IMAGE_GENERATION, "org/cross-cap", 9_000_000_000)
@@ -5226,6 +5265,36 @@ def test_a_measurement_under_a_DIFFERENT_capability_does_not_leak_into_this_one(
     ])
     entry = _fit_text_row(client)["models"][0]
     assert entry["fit"]["basis"] == "download"
+
+
+def test_speed_estimate_is_present_on_a_text_generation_entry_with_a_known_size(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """SPEC AI-21: `entry["speedEstimate"]` is wired for `text-generation`
+    only, and it is `fit.weight_bytes` (not a bare `size_gb`) that feeds it —
+    proven by giving a recognized quantization a real params count."""
+    monkeypatch.setattr(fit.hw_detect, "cached_hardware", lambda: None)
+    monkeypatch.setattr(fit, "is_apple_silicon", lambda: False)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/speedy", "label": "Speedy", "size_gb": 4.0,
+         "params": "4B", "quantization": "GGUF Q4_K_M", "note": ""},
+    ])
+    entry = _fit_text_row(client)["models"][0]
+    speed_estimate = entry["speedEstimate"]
+    assert speed_estimate is not None
+    assert speed_estimate["method"] == "backend-constant"
+    assert speed_estimate["tokensPerSecond"] > 0
+    assert speed_estimate["contextTokens"] == fit.KV_CACHE_CONTEXT_TOKENS
+
+
+def test_speed_estimate_is_null_on_a_non_text_generation_capability(
+        client, fake_image_runner, fixed_fit_machine, monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-image", [
+        {"id": "org/img", "label": "Image", "size_gb": 4.0, "note": ""},
+    ])
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.IMAGE_GENERATION)
+    entry = row["models"][0]
+    assert entry["speedEstimate"] is None
 
 
 def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
@@ -5256,6 +5325,50 @@ def test_the_footprint_store_is_loaded_ONCE_per_catalog_request(
     assert len(row["models"]) >= 3
     assert all(m["fit"] is not None for m in row["models"])
     assert len(calls) == 1
+
+
+def test_the_hardware_reading_is_loaded_ONCE_per_catalog_request(
+        client, fake_runner, fixed_fit_machine, monkeypatch):
+    """Code review on AI-19: `fit._select_pool` used to call `hw_detect.
+    cached_hardware()` itself on every `fit.verdict` invocation — a fresh
+    `storage.read_json` open and JSON parse per catalog ROW, the identical
+    cost the test above already fixed for `footprints.load_store()`.
+    `hw_detect.cached_hardware()` now happens ONCE per request
+    (`describe_catalog`'s own `hardware = hw_detect.cached_hardware()`) and
+    every entry's `fit.verdict` reads off that same threaded-through value.
+
+    A test that only checked the verdict/runMode came out right on each row
+    would pass equally well against the N-reads-per-row bug this pins — the
+    assertion has to be a COUNT, not just a correct answer.
+
+    `speed.estimate_tok_s` is NOT stubbed here — SPEC AI-21 wired it to call
+    `hw_detect.cached_hardware()` too (its own, separate call path, one per
+    `text-generation` entry), which used to inflate this test's count for a
+    reason it was not about, and was stubbed out for that reason. Code
+    review caught that as half a fix: `speed.estimate_tok_s` now takes the
+    identical `hardware=` parameter `fit.verdict` does and is handed the
+    SAME per-request reading below, so this test now asserts the real,
+    end-to-end count across BOTH call paths — the assertion that actually
+    proves the fix, rather than one that would pass equally well against
+    `speed.py`'s own copy of the bug."""
+    calls = []
+    real_cached_hardware = fit.hw_detect.cached_hardware
+
+    def _counting_cached_hardware():
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(fit.hw_detect, "cached_hardware", _counting_cached_hardware)
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-text", [
+        {"id": "org/one", "label": "One", "size_gb": 4.0, "note": ""},
+        {"id": "org/two", "label": "Two", "size_gb": 8.0, "note": ""},
+        {"id": "org/three", "label": "Three", "size_gb": 12.0, "note": ""},
+    ])
+    row = _fit_text_row(client)
+    assert len(row["models"]) >= 3
+    assert all(m["fit"] is not None for m in row["models"])
+    assert all(m["speedEstimate"] is not None for m in row["models"])
+    assert len(calls) == 1, f"expected exactly one hw_detect read, got {len(calls)}"
 
 
 # -- who may be HANDED an image: the catalog's own `acceptsImage` (D467) --------
@@ -5393,6 +5506,85 @@ def test_accepts_image_is_false_with_no_runner_resolved(hub):
     """`runner_code=None` — a capability with nothing to serve it — must not
     be read as vacancy meaning yes."""
     assert ai_runtime._accepts_image(registry.TEXT_GENERATION, None, "org/whatever") is False
+
+
+# -- `acceptsImage`'s pre-download fallback (SPEC AI-17 item 17) --------------
+#
+# `has_vision_tower` can only read a snapshot already on disk. For a curated
+# or searched repo with NOTHING cached yet, `_accepts_image` falls back to
+# `hub_metadata.get`'s Hub-harvested `hasVisionTower` — but only there: an
+# ALREADY-cached snapshot's own on-disk reading stays higher precedence, so a
+# stale or wrong Hub-metadata reading can never override a real measurement.
+
+
+def test_ai_runtime_module_only_reads_hub_metadatas_cache_never_the_fetch(hub):
+    """Source-level guard (code review finding 1), the same shape `test_ai_
+    hw_detect.py::test_fit_module_only_reads_the_cache_never_the_probe`
+    already pins for `hw_detect`/`fit.py`: this route must never call
+    `hub_metadata.get` (a synchronous, network-backed, 8-second-timeout
+    fetch) — only `hub_metadata.cached` (a plain disk read). A future edit
+    that reintroduces `hub_metadata.get(...)` here is caught by reading the
+    source, not only by a test that happens to monkeypatch it away."""
+    import inspect
+
+    source = inspect.getsource(ai_runtime)
+    assert "hub_metadata.get(" not in source
+    assert "hub_metadata.cached(" in source
+
+
+def test_accepts_image_falls_back_to_hub_metadata_when_nothing_is_cached(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": True})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-vlm") is True
+
+
+def test_accepts_image_is_false_when_uncached_and_hub_metadata_says_no_tower(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": False})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/uncached-chat") is False
+
+
+def test_accepts_image_is_false_when_uncached_and_hub_metadata_has_nothing(hub, monkeypatch):
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached", lambda repo_id: None)
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/never-seen") is False
+
+
+# -- orthogonal capability tags: tool-use / vision (SPEC AI-28) --------------
+
+
+def test_capability_tags_is_empty_for_a_non_text_generation_capability(hub):
+    assert ai_runtime._capability_tags(registry.IMAGE_GENERATION, "org/whatever") == ()
+
+
+def test_capability_tags_tags_tool_use_from_the_repo_id_alone(hub):
+    assert "tool-use" in ai_runtime._capability_tags(
+        registry.TEXT_GENERATION, "Qwen/Qwen3-8B-Instruct")
+
+
+def test_capability_tags_tags_vision_from_a_cached_snapshot(hub):
+    _cached_repo(hub, "org/vlm", files=("model.safetensors",),
+                config={"model_type": "qwen3_5", "vision_config": {"depth": 4}})
+    assert "vision" in ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/vlm")
+
+
+def test_capability_tags_uses_hub_metadata_family_evidence_when_uncached(hub, monkeypatch):
+    """A repo id alone (`org/my-finetune`) is uninformative — the harvested
+    `modelType` from `hub_metadata` is what actually names the family."""
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"modelType": "qwen3", "hasVisionTower": False})
+    tags = ai_runtime._capability_tags(registry.TEXT_GENERATION, "org/my-finetune")
+    assert tags == ("tool-use",)
+
+
+def test_accepts_image_prefers_the_cached_reading_over_hub_metadata(hub, monkeypatch):
+    """The on-disk answer wins even when it disagrees with a stale/wrong Hub
+    reading — a real cached snapshot with no vision tower must not be
+    overridden by `hub_metadata` claiming otherwise."""
+    _cached_repo(hub, "org/plain-chat", files=("model.safetensors",),
+                config={"model_type": "llama"})
+    monkeypatch.setattr(ai_runtime.hub_metadata, "cached",
+                        lambda repo_id: {"hasVisionTower": True})
+    assert ai_runtime._accepts_image(registry.TEXT_GENERATION, "mlx-text", "org/plain-chat") is False
 
 
 def test_a_failing_render_reports_the_reason_on_the_row(client, fake_image_runner,
@@ -9648,6 +9840,43 @@ def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
     gets. No model, no permission — never a permission for everything."""
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     assert "FUSED_MODEL_MIRROR_OK" not in supervisor._child_env("t")
+
+
+# -- FUSED_AI_MEMORY_BUDGET_BYTES: the item 14 wiring's budget seam ----------
+#
+# `fit.available_budget_bytes()` runs SERVER-side (it needs `hw_detect.
+# cached_hardware()`, which lives in the `fused_render` package a worker's
+# bare-module interpreter cannot import — see `formats.py`'s own top-of-file
+# note). This env var is how the number crosses that process boundary, the
+# identical shape `FUSED_MODEL_MIRROR_OK` already establishes for a
+# per-model, computed-server-side fact a worker needs but cannot derive
+# itself.
+
+
+def test_child_env_carries_the_computed_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 12_345_678_901.0)
+    env = supervisor._child_env("t")
+    assert env["FUSED_AI_MEMORY_BUDGET_BYTES"] == "12345678901"
+
+
+def test_child_env_omits_the_budget_when_it_cannot_be_computed(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    env = supervisor._child_env("t")
+    assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
+
+
+def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_path):
+    """The same non-negotiable rule `FUSED_MODEL_MIRROR_OK` already keeps:
+    this environment is a COPY of the server's, and a stale or operator-set
+    value must not silently outlive the computation that is supposed to
+    produce it fresh on every spawn."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "999")
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    env = supervisor._child_env("t")
+    assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
 
 
 def test_an_inherited_permission_is_stripped_rather_than_passed_on(monkeypatch,

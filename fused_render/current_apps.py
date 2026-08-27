@@ -190,10 +190,27 @@ def _added_epoch(ts) -> float | None:
         return None
 
 
+ICON_NAME = "icon.svg"
+
+
+def app_icon(folder: str) -> dict | None:
+    """The app's optional ``icon.svg`` — ``{"icon": <canonical path>, "mtime":
+    <epoch>}`` when the file sits directly in the app folder, else None. One
+    fixed name, no lookup table: the sidebar's Projects row and the tab favicon
+    both read it, and the mtime rides along so the client can bust the
+    browser's (aggressive) favicon cache when the author edits the file.
+    Raises OSError like the isdir it sits next to — callers already catch."""
+    p = os.path.join(folder, ICON_NAME)
+    if not os.path.isfile(p):
+        return None
+    return {"icon": canonical_fs_path(p), "mtime": os.stat(p).st_mtime}
+
+
 def list_apps() -> list[dict]:
     """The desk, in stored (added) order. Each: ``path`` (canonical), ``name``
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
-    otherwise), ``entry`` (the page to run, or None), ``exists``, ``added_at``
+    otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
+    ``icon_mtime`` (the optional ``icon.svg``, see `app_icon`), ``added_at``
     (epoch). A folder that is gone or unreadable still lists — the row is the
     user's to remove — with ``exists`` false and no entry."""
     linked = {
@@ -206,11 +223,13 @@ def list_apps() -> list[dict]:
         path = a["path"]
         entry = None
         exists = False
+        icon = None
         if not guard.blocks(path):
             try:
                 exists = os.path.isdir(path)
                 if exists:
                     entry = app_listing.app_entry(path)
+                    icon = app_icon(path)
             except OSError:
                 exists = False
         out.append({
@@ -219,6 +238,8 @@ def list_apps() -> list[dict]:
             "kind": "linked" if path in linked else "workspace",
             "entry": canonical_fs_path(entry) if entry else None,
             "exists": exists,
+            "icon": icon["icon"] if icon else None,
+            "icon_mtime": icon["mtime"] if icon else None,
             "added_at": _added_epoch(a.get("addedAt")),
         })
     return out

@@ -40,7 +40,7 @@ with no new machinery — the same row a task scheduled by hand would get.
 it specially.
 
 Both paths also materialise the app's ``.fused/`` state folder — ``data/``,
-``cache/`` and ``meta.json`` (``app_fused_dir``, D518, SPEC §47). Creation
+``cache/`` and ``meta.json`` (``app_fused_dir``, D548, SPEC §47). Creation
 hangs off ``record_app_open`` rather than off creation alone, because the
 convention has to hold for every app authored before it existed, and a page
 carrying the fused-app marker being rendered IS the app being opened (D301).
@@ -329,6 +329,29 @@ def _app_folder_exists(rel: str) -> bool:
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
+@router.get("/api/apps/icon")
+def api_app_icon(path: str):
+    """The optional ``icon.svg`` of the app that owns ``path`` — the folder
+    itself, or a file anywhere inside an app (a page open in the explorer).
+    Ownership is the tasks' rule (`current_apps.app_dir_for`: registry first,
+    then the workspace climb to the first tagged folder), so the favicon on
+    `/explorer/.../index.html` agrees with the Projects row. `{"icon": null}`
+    for anything outside an app or an app without the file; `mtime` rides
+    along for cache-busting."""
+    from fused_render import current_apps
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return {"icon": None}
+    folder = current_apps.app_dir_for(path)
+    if folder is None:
+        return {"icon": None}
+    try:
+        found = current_apps.app_icon(folder)
+    except OSError:
+        found = None
+    return found or {"icon": None}
+
+
 @router.get("/api/apps/entry")
 def api_app_entry(path: str):
     """The folder's app entry (its first tagged top-level page — the one rule,
@@ -371,7 +394,7 @@ def record_app_open(path: str, title: str | None = None) -> bool:
     puts the folder on the /apps hub and stores the open time itself.
 
     Opening an app is also where its ``.fused/`` folder comes into being
-    (``app_fused_dir.ensure``, D518): the convention has to hold for the apps
+    (``app_fused_dir.ensure``, D548): the convention has to hold for the apps
     that existed before it, and the render path is the one moment the server
     knows a folder is being used AS an app. Deliberately ahead of the
     workspace/registered fork — a linked folder outside ~/Fused is just as much

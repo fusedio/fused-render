@@ -287,7 +287,7 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
 
 
 def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
-    """D518 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
+    """D548 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
     boilerplate commit never sees it — assert both halves: the layout is there,
     and the `.gitignore` git init just wrote already excludes it."""
     monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))

@@ -1,4 +1,4 @@
-"""The `.fused/` folder: an app's own place to keep state (D518, SPEC §47).
+"""The `.fused/` folder: an app's own place to keep state (D548, SPEC §47).
 
 An app folder is authored content — the entry `.html`, its `.py` data files,
 assets. Anything the app *accumulates while running* had nowhere to go, so

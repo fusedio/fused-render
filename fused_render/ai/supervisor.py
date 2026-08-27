@@ -54,7 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import footprints, registry
+from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -702,6 +702,20 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     mirror" — this permission is what still keeps that default from widening
     anything: a base URL alone names no repo, and only a suggested model's id
     ever reaches `FUSED_MODEL_MIRROR_OK`.
+
+    **`FUSED_AI_MEMORY_BUDGET_BYTES` carries `fit.available_budget_bytes()`
+    across the identical process boundary** (SPEC AI-24 item 14's real
+    wiring) — a worker's bare-module interpreter cannot import
+    `fused_render.ai.fit`/`hw_detect` (see `formats.py`'s own top-of-file
+    note on why it stays stdlib-only), so the one place this figure CAN be
+    computed is here, server-side, on every spawn — never once and cached,
+    since `hw_detect`'s own background refresh means the answer can
+    genuinely change between one worker's bring-up and the next. `llama_
+    text.py`'s curated-recipe resolver is the one reader today. POPPED when
+    the computation answers `None` (RAM itself unreadable), for the same
+    "this environment is a copy of the server's" reason `FUSED_MODEL_
+    MIRROR_OK` is: a stale or operator-set value must not silently outlive
+    the fresh computation that is supposed to produce it.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -714,6 +728,11 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
+    budget = fit.available_budget_bytes()
+    if budget is not None:
+        env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
+    else:
+        env.pop("FUSED_AI_MEMORY_BUDGET_BYTES", None)
     return env
 
 
@@ -1811,6 +1830,145 @@ def start_reaper() -> None:
 
     _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
     _reaper_thread.start()
+
+
+#: How often the background hardware-detection thread re-probes once it has
+#: probed at least once (SPEC AI-18, D519; wiring per code review — the
+#: probe had no caller in production, so `hw_detect.cached_hardware()`
+#: always answered None and `fit._select_pool`/`speed._uncalibrated` always
+#: took their no-GPU-known branch). Unlike `_REAPER_TICK_S`'s 30s (evaluating
+#: something that changes by the minute), this is generous: a machine's
+#: VRAM/GPU does not change while it is running, under ordinary use — this
+#: interval exists mainly to notice an eGPU plugged in mid-session, not to
+#: track something that moves often, and `hw_detect.detect_hardware` is a
+#: real subprocess spawn (50-500ms) that has no business running often.
+_HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
+
+_hardware_refresh_thread: threading.Thread | None = None
+
+
+def _hardware_refresh_tick() -> None:
+    """One probe-and-cache cycle — split out of `start_hardware_refresh`'s
+    loop so a test can drive it directly with `hw_detect.refresh_hardware`
+    monkeypatched, the same way `reap_idle(now)` is tested without ever
+    starting `start_reaper`'s thread (see `tests/conftest.py`'s
+    `_no_ai_idle_reaper_thread`, which documents why no test asserts a
+    THREAD gets spawned)."""
+    hw_detect.refresh_hardware(ram_gb=fit.machine_ram_gb())
+
+
+def start_hardware_refresh() -> None:
+    """Start the background GPU/VRAM-detection thread, once per process —
+    the missing wiring `hw_detect.py`'s own docstring assumes exists:
+    `detect_hardware()`/`refresh_hardware()` are a slow subprocess probe
+    (`nvidia-smi`/`rocm-smi`/a PowerShell WMI+registry query/`sysctl`) that
+    must never run on the verdict path, so `fit.py` and `speed.py` only ever
+    read `hw_detect.cached_hardware()` — but until SOMETHING calls
+    `refresh_hardware`, that cache never gets written, and both modules
+    silently take their "no hardware known" branch forever. This is that
+    something.
+
+    Idempotent via a module-level handle, for the identical reason
+    `start_reaper` is: the startup hook that calls this (`server/app.py`)
+    can run more than once across the test suite's many `create_app` calls
+    in one process.
+
+    **One probe fires immediately**, unlike the reaper's sleep-then-tick
+    shape — a fit verdict on the very first catalog request after server
+    startup should not have to wait `_HARDWARE_REFRESH_INTERVAL_S` for a
+    number to exist at all. The thread then sleeps and re-probes on that
+    interval, forever. A failed tick (no vendor tool found, a hung spawn
+    past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
+    logged and never kills the loop — the next tick tries again.
+    """
+    global _hardware_refresh_thread
+    if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hardware_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hardware-refresh tick failed")
+            time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
+
+    _hardware_refresh_thread = threading.Thread(
+        target=run, name="ai-hardware-refresh", daemon=True)
+    _hardware_refresh_thread.start()
+
+
+#: How often the background Hub-metadata-warming thread re-sweeps the
+#: curated id list (code review finding 1). Deliberately much shorter than
+#: `_HARDWARE_REFRESH_INTERVAL_S`: unlike VRAM, `hub_metadata`'s own TTLs
+#: (13 days positive, `NEGATIVE_TTL_SECONDS` — 1 hour — negative) are what
+#: actually bound the network cost of a sweep, so a tight tick here costs
+#: nothing extra for an already-fresh entry (`hub_metadata.get` returns
+#: instantly without touching the network) while keeping a newly-expired
+#: negative entry from sitting un-refreshed for hours. 20 minutes: shorter
+#: than the negative TTL (so a repo that started publishing a `config.json`
+#: is noticed inside one negative-TTL window) and long enough that a sweep
+#: of the curated list is a rare event on the wire, not a busy loop.
+_HUB_METADATA_REFRESH_INTERVAL_S = 20 * 60  # 20 minutes
+
+_hub_metadata_refresh_thread: threading.Thread | None = None
+
+
+def _hub_metadata_refresh_tick() -> None:
+    """One sweep of `catalog.all_suggested_ids()` through `hub_metadata.get`
+    — split out for the same testability reason `_hardware_refresh_tick` is
+    (a test drives this directly, `hub_metadata.get` monkeypatched, without
+    ever starting the thread).
+
+    Every curated id, not only `text-generation` ones: `hub_metadata.get`
+    is cheap to call for an id whose harvest nothing currently reads (a
+    future caller — item 5's KV-cache term threading `hub_metadata` in, per
+    that module's own docstring — should not need a second sweep wired up
+    to start reading it), and the alternative (importing `registry`'s
+    capability constants here to filter) buys nothing this module needs
+    today. One repo's failure (a `get()` call that raises past its own
+    `except Exception` — should not happen, but this loop must survive it
+    regardless) is logged and does not stop the sweep for the rest.
+    """
+    for repo_id in catalog.all_suggested_ids():
+        try:
+            hub_metadata.get(repo_id)
+        except Exception:  # noqa: BLE001 - one repo's failure must not stop the sweep
+            logger.exception("hub-metadata refresh failed for %s", repo_id)
+
+
+def start_hub_metadata_refresh() -> None:
+    """Start the background Hub-metadata-warming thread, once per process —
+    the request-path half of code review finding 1's fix.
+
+    `ai_runtime._accepts_image`/`_capability_tags` used to call
+    `hub_metadata.get(model_id)` directly from `describe_catalog`, which
+    `hub_metadata.py`'s own module docstring is explicit is the wrong side
+    of exactly the split `hw_detect.py` already drew for the identical
+    reason: `get()` is a synchronous `urllib` GET with an 8-second timeout,
+    and `describe_catalog` backs a route the picker polls. This mirrors
+    `start_hardware_refresh`'s shape exactly — idempotent via a module-level
+    thread handle, one sweep fires immediately so the first catalog request
+    after startup already has warm entries rather than waiting a full
+    interval, then the thread sleeps and re-sweeps forever. `ai_runtime.py`
+    now calls `hub_metadata.cached()` only, which is a plain disk read and
+    never touches the network — this thread is the only writer.
+    """
+    global _hub_metadata_refresh_thread
+    if _hub_metadata_refresh_thread is not None and _hub_metadata_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hub_metadata_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hub-metadata refresh tick failed")
+            time.sleep(_HUB_METADATA_REFRESH_INTERVAL_S)
+
+    _hub_metadata_refresh_thread = threading.Thread(
+        target=run, name="ai-hub-metadata-refresh", daemon=True)
+    _hub_metadata_refresh_thread.start()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
