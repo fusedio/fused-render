@@ -3,8 +3,13 @@
 // per-row dismissal that expires once the server re-checks. Rendered through
 // `RepoUpdatesCardView` — the pure, props-in half of this card, exactly the
 // split `DownloadManagerView` uses for the jobs card and for the same
-// reason: no polling, no network, no `window`/`document`, so this file can
-// render it directly with a fixed row list.
+// reason: no polling, and no persisted `collapsed` state (both live in the
+// default-exported `RepoUpdatesDock` this file never mounts) — so most tests
+// here render it directly with a fixed row list and no globals at all. The
+// exceptions are noted where they happen: a `location`/`window`/`history`
+// stub, installed and torn down once at file load so router.ts's real
+// module can be imported (see the comment just below), and a per-test
+// `globalThis.fetch` stub in the one test that presses a row's own button.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 

@@ -1,8 +1,9 @@
-// The rules for repo-update rows in the one bottom-right activity card, kept
-// pure so they can be tested without a DOM or a poll — the same split
+// The rules for repo-update rows in their own sibling notification card
+// (SPEC §36, D522 — no longer rows inside the jobs/downloads activity card),
+// kept pure so they can be tested without a DOM or a poll — the same split
 // queue-dock-lib.ts makes against QueueDock.tsx: what a row SAYS and WHICH
-// action it offers live here; the polling and the pixels live in
-// RepoUpdatesDock.tsx, and the card around it is DownloadManager's.
+// action it offers live here; the polling, the card's own plate/header/fold
+// and the pixels all live in RepoUpdatesDock.tsx.
 //
 // The rows this module builds never decide "is this repo worth mentioning" —
 // that answer is the server's (fused_render/git_upstream.py's `known_repos`,

@@ -239,15 +239,19 @@ def check_repo(root):
 
 # --------------------------------------------------------------- the mutations
 #
-# The two actions the activity card's repo rows offer: Update (an --ff-only
-# pull, primary, on the default branch) and Rebase (secondary, everywhere
-# else — offered exactly where Update would refuse to fast-forward, and onto
-# exactly one target: the remote's tracked default branch, never a
-# user-chosen ref). Both mirror templates/git/ops.py's own `_pull`
-# (ops.py:1096-1121, the explicit remote-and-refspec argument) and
-# `_require_remote` (ops.py:827-836, the no-remote refusal) — mirrored, not
-# imported, for the reason the module docstring gives. `_rebase` there is
-# this function's twin; keep the two in step.
+# The three actions the repo-updates card's rows offer (SPEC §36, D522):
+# Update (an --ff-only pull, primary, on the default branch); Switch (a
+# plain checkout of the default branch, primary everywhere else — offered
+# exactly where Update would refuse to fast-forward, and never touching a
+# single commit of the user's own); and Rebase (demoted to secondary
+# alongside Switch, for the user who genuinely wants their current branch
+# replayed onto the default instead), onto exactly one target: the remote's
+# tracked default branch, never a user-chosen ref. Update and Rebase mirror
+# templates/git/ops.py's own `_pull` (ops.py:1096-1121, the explicit
+# remote-and-refspec argument) and `_require_remote` (ops.py:827-836, the
+# no-remote refusal) — mirrored, not imported, for the reason the module
+# docstring gives. `_rebase` there is `rebase_repo`'s twin; keep the two in
+# step. `switch_repo` has no such twin in ops.py — see its own docstring.
 
 
 def _brief(result):
@@ -407,8 +411,8 @@ def _record(result):
 
 
 def _refresh_after_mutation(root):
-    """Re-check `root` right after a successful `update`/`rebase`, so its
-    row clears (or updates) without waiting out CHECK_TTL_S. Unlike the
+    """Re-check `root` right after a successful `update`/`rebase`/`switch`,
+    so its row clears (or updates) without waiting out CHECK_TTL_S. Unlike the
     throttled background path (`_background_check`), a re-check that fails
     here must NOT leave the pre-mutation entry standing — a stale `behind >
     0` with an Update button, after the mutation that button ran already
