@@ -323,6 +323,29 @@ def _app_folder_exists(rel: str) -> bool:
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
+@router.get("/api/apps/icon")
+def api_app_icon(path: str):
+    """The optional ``icon.svg`` of the app that owns ``path`` — the folder
+    itself, or a file anywhere inside an app (a page open in the explorer).
+    Ownership is the tasks' rule (`current_apps.app_dir_for`: registry first,
+    then the workspace climb to the first tagged folder), so the favicon on
+    `/explorer/.../index.html` agrees with the Projects row. `{"icon": null}`
+    for anything outside an app or an app without the file; `mtime` rides
+    along for cache-busting."""
+    from fused_render import current_apps
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return {"icon": None}
+    folder = current_apps.app_dir_for(path)
+    if folder is None:
+        return {"icon": None}
+    try:
+        found = current_apps.app_icon(folder)
+    except OSError:
+        found = None
+    return found or {"icon": None}
+
+
 @router.get("/api/apps/entry")
 def api_app_entry(path: str):
     """The folder's app entry (its first tagged top-level page — the one rule,

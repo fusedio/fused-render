@@ -2064,11 +2064,32 @@ export interface CurrentAppEntry {
   kind: "workspace" | "linked";
   entry: string | null;
   exists: boolean;
+  /** The app's optional `icon.svg` (canonical path) and its mtime — the
+   *  Projects row glyph and the tab favicon. Null when the file is absent. */
+  icon?: string | null;
+  icon_mtime?: number | null;
   added_at: number | null;
 }
 
 export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
   return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
+ *  or any file inside it — the server's ownership rule), or `icon: null`. */
+export interface AppIconResult {
+  icon: string | null;
+  mtime?: number | null;
+}
+
+export function getAppIcon(fsPath: string): Promise<AppIconResult> {
+  return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
+}
+
+/** The URL to draw an app icon from: the raw file, with its mtime as a cache
+ *  key so an edited icon.svg shows up without a hard reload. */
+export function appIconUrl(icon: string, mtime?: number | null): string {
+  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
 }
 
 /** Take an app off the desk. SIDE EFFECT, by design: every task whose project
