@@ -91,67 +91,59 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
-// D575 (user: "lets just have [model · memory size] and remove the count"):
-// the label and the resident TOTAL, never a count. The size is the number
-// being watched, and it is already the total across every resident model.
-test("the chip names the category and the resident total — never a count", () => {
-  const tree = renderView({
-    models: [
-      model({ residentBytes: 9 * 1024 ** 3 }),
-      model({ model: "org/other-model", residentBytes: 9 * 1024 ** 3 }),
-    ],
-  });
-  const summary = text(findAll(tree, "dl-summary")[0]);
-  expect(summary).toBe("Models · 18 GB");
-  // The count is the specific thing D575 removed — guard it by value, not by
-  // the whole string, so a future size-format change cannot mask a regression.
-  expect(summary).not.toContain("2");
+// D589 (user: "the memory gb next to the models isn't even accurate"): the
+// chip is the bare label, full stop. The aggregate was a sum of
+// `residentBytes` — "RSS of the worker process. Not the model's size", per
+// api.ts's own comment on the field — so it under-reported MLX's allocator
+// pool and over-reported shared pages. It is gone rather than corrected,
+// because no arithmetic fixes a number measuring the wrong thing.
+test("the chip is the bare label — no size, no count, whatever is resident", () => {
+  for (const models of [
+    [] as AiLoadedModel[],
+    [model({ residentBytes: 4 * 1024 ** 3 })],
+    [model(), model({ model: "org/other", residentBytes: 9 * 1024 ** 3 })],
+    [model({ state: "loading", residentBytes: null })],
+  ]) {
+    const tree = renderView({ models });
+    expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+  }
 });
 
-// The whole point of dropping the count (D575): the chip reads IDENTICALLY
-// for one resident model and for five, so nothing in it moves as models come
-// and go — only the total changes.
-test("one model and five models read the same, and only the total distinguishes them", () => {
-  const one = renderView({ models: [model({ residentBytes: 4 * 1024 ** 3 })] });
-  const five = renderView({
-    models: [1, 2, 3, 4, 5].map((n) =>
-      model({ model: `org/m${n}`, residentBytes: (4 * 1024 ** 3) / 5 }),
-    ),
-  });
-  expect(text(findAll(one, "dl-summary")[0])).toBe("Models · 4.0 GB");
-  expect(text(findAll(five, "dl-summary")[0])).toBe("Models · 4.0 GB");
-});
-
-// D588, THE LOADING GAP the user read as a confusing third state: a worker in
-// venv/starting/downloading/loading carries `residentBytes: null`, so the chip
-// used to fall back to the bare label while NOT being muted — visually a
-// third state between "idle" and "resident". The chip now counts ready models
-// only, so a bring-up reads exactly like idle (muted, no size) and the
-// bring-up itself is visible in Jobs, where `supervisor._report` gives it a
-// percentage and a cancel.
-test("a model still loading leaves the chip in its idle state, not a third one", () => {
-  const tree = renderView({
-    models: [model({ state: "loading", residentBytes: null })],
-  });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
-  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).toContain(
+// `idle` keys off the ROW LIST now, not off a byte sum — which dissolves
+// D588's ready-vs-loading problem instead of solving it again: with no size to
+// fall back from, a bring-up and a resident model both just mean "there is
+// something here", and only genuinely-nothing is muted.
+test("muting tracks whether there are rows at all, not whether bytes were reported", () => {
+  const nothing = renderView({ models: [] });
+  expect((findAll(nothing, "dl-toggle")[0].props.className as string).split(" ")).toContain(
     "is-idle",
   );
+
+  // A ready model whose runner reported no size, and a model mid-bring-up:
+  // both used to be able to read as idle-but-unmuted. Both are simply "there
+  // is something here" now.
+  for (const models of [
+    [model({ residentBytes: null })],
+    [model({ state: "loading", residentBytes: null })],
+  ]) {
+    const tree = renderView({ models });
+    expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+      "is-idle",
+    );
+  }
 });
 
-// A READY worker whose runner reported no size must not produce that third
-// state either — which is why the chip is keyed on the BYTES rather than on a
-// ready count.
-test("a ready model with no reported size also reads as idle", () => {
-  const tree = renderView({ models: [model({ residentBytes: null })] });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
-  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).toContain(
-    "is-idle",
-  );
+// The panel is where cost still lives, and per-worker it is a real comparable
+// figure even though the aggregate was not — so this row keeps its number
+// (D589 deliberately left `.dl-amount` alone).
+test("the panel row still reports that worker's own size", () => {
+  const tree = renderView({ models: [model({ residentBytes: 4 * 1024 ** 3 })] });
+  expect(text(findAll(findAll(tree, "dl-row")[0], "dl-amount")[0])).toBe("4.0 GB");
 });
 
-// The PANEL is a different question from the chip: a bring-up is legitimately
-// listed there, with its state standing in for the size it has not got yet.
+// A bring-up is legitimately listed in the panel, with its state standing in
+// for the size it has not got yet (D588) — the bring-up's real progress is a
+// job row in Jobs, via `supervisor._report`.
 test("the panel lists a loading model, with its state where the size goes", () => {
   const tree = renderView({
     models: [model({ state: "downloading", residentBytes: null })],

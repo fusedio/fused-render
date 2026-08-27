@@ -150,31 +150,21 @@ export function ModelsCardView({
   onClose?: () => void;
   onUnload: (model: string) => Promise<void>;
 }) {
-  // READY MODELS ONLY decide the chip (D588). `loaded` includes workers in
-  // venv/starting/downloading/loading, and those carry `residentBytes: null`
-  // (supervisor.py sums the same field, so its `totalResidentBytes` is null
-  // too) — which made a mid-bring-up chip fall back to the bare label,
-  // pixel-identical to idle but NOT muted. That was the third state the user
-  // was reading as confusing. Bring-up already reports a job row via
-  // `supervisor._report`, so it belongs in Jobs where it has a percentage and
-  // a cancel; a half-loaded model with no number here is strictly worse.
+  // NO AGGREGATE MEMORY ON THE CHIP (D589, user: "the memory gb next to the
+  // models isn't even accurate"). It was a sum of `residentBytes`, which
+  // `api.ts`'s own comment on that field says is "RSS of the worker process.
+  // Not the model's size" — so it under-reports MLX's allocator pool and
+  // over-reports pages shared between workers. Summing it and labelling the
+  // result as the models' memory was dishonest, and no arithmetic here could
+  // fix a number that is measuring the wrong thing.
   //
-  // Derived locally rather than from the server's `totalResidentBytes` (that
-  // prop is gone) so the number and the "ready only" rule cannot disagree.
-  const residentBytes = models.reduce(
-    (sum, m) => sum + (m.state === "ready" ? (m.residentBytes ?? 0) : 0),
-    0,
-  );
-  // EXACTLY TWO CHIP STATES, keyed on the one value the chip shows: muted
-  // `Models` when there is nothing resident, `Models · 5.6 GB` when there is.
-  // Keyed on the BYTES, not on `models.length` or a ready count, so a ready
-  // worker whose runner reported no size cannot produce a third, unmuted
-  // bare-label state either.
-  const idle = residentBytes === 0;
-  // The PANEL still lists every worker whatever its state — that is where a
-  // bring-up is legitimately visible, with its state as the detail (ModelRow
-  // above). So the panel's emptiness is its own question, not the chip's.
-  const panelEmpty = models.length === 0;
+  // `idle` therefore keys off the ROW LIST — is there anything to show — not
+  // off a byte sum. That also dissolves D588's ready-vs-loading problem rather
+  // than solving it again: with no size to fall back from, a bring-up and a
+  // resident model both simply mean "there is something here". The per-row
+  // `.dl-amount` KEEPS its figure: per worker it is at least a real,
+  // comparable number, and it is the panel's only cost signal.
+  const idle = models.length === 0;
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -210,13 +200,11 @@ export function ModelsCardView({
             question rather than reopening it: label, optional size, nothing
             else. The only treatments left are `.is-idle`'s muting and the
             hover / `aria-expanded` wash. */}
-        <span className="dl-summary">
-          {`Models${residentBytes ? ` · ${formatSize(residentBytes)}` : ""}`}
-        </span>
+        <span className="dl-summary">Models</span>
       </button>
       {!collapsed && (
         <div className="dl-panel">
-          {panelEmpty ? (
+          {idle ? (
             <div className="dl-panel-empty">No models loaded</div>
           ) : (
             <div className="dl-rows">
