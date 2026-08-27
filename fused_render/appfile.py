@@ -115,27 +115,122 @@ def appfiles_root() -> str:
     return os.path.join(storage.home_dir(), "appfiles")
 
 
+class _IgnoreRoots:
+    """The gitignore view of one export walk — which `git check-ignore`
+    oracle decides each directory, resolved the way the explorer's walk and
+    the index filter resolve it (server/gitignore.py is the one authority):
+
+    * app folder inside a git work tree (its own repo, OR a subfolder of a
+      bigger repo whose `.gitignore` sits at the toplevel) -> one oracle at
+      the toplevel; git cascades every nested `.gitignore`, `.git/info/exclude`
+      and the global excludesfile from there by itself.
+    * no repo, but a `.gitignore` in the app folder or ANY ancestor -> one
+      oracle grafted (empty GIT_DIR) at the nearest such ancestor, which again
+      cascades the `.gitignore` files between it and the app.
+    * a nested `.git` (or, with no repo in scope, a nested `.gitignore`) met
+      during the walk re-roots below it, as the explorer walk does.
+    * mount-backed folder, no git, nothing found -> no filtering (today's
+      behaviour). git MISSING fails open too; git BREAKING mid-walk does not
+      (see `ignored`) — a half-filtered artifact is worse than no export.
+    """
+
+    def __init__(self, app_dir: str):
+        from fused_render.server.gitignore import _IgnoreOracle, _repo_toplevel
+        from fused_render.shell import mounts as shell_mounts
+
+        self._Oracle = _IgnoreOracle
+        self._oracles: dict[str, object] = {}
+        self.root: str | None = None      # abs dir the current oracle sits at
+        self.in_repo = False
+        if shell_mounts.is_mount_backed(app_dir):
+            return
+        top = _repo_toplevel(app_dir)
+        if top is not None:
+            self.in_repo = True
+            self.root = top
+            return
+        d = app_dir
+        while True:
+            if os.path.isfile(os.path.join(d, ".gitignore")):
+                self.root = d
+                return
+            parent = os.path.dirname(d)
+            if parent == d:
+                return
+            d = parent
+
+    def reroot(self, dirpath: str, names: set[str]) -> None:
+        if ".git" in names and dirpath != self.root:
+            self.root, self.in_repo = dirpath, True
+        elif not self.in_repo and ".gitignore" in names and self.root is None:
+            self.root = dirpath
+
+    def ignored(self, dirpath: str, names: list[str]) -> set[str]:
+        """Subset of `names` (children of `dirpath`) git ignores."""
+        if self.root is None or not names:
+            return set()
+        oracle = self._oracles.get(self.root)
+        if oracle is None:
+            oracle = self._oracles[self.root] = self._Oracle(self.root)
+        rel = os.path.relpath(os.path.realpath(dirpath),
+                              os.path.realpath(self.root))
+        if rel.startswith(".."):
+            # Two spellings of the same place that realpath could not
+            # reconcile: fail OPEN for this dir rather than mis-query git.
+            return set()
+        prefix = "" if rel == "." else rel.replace(os.sep, "/") + "/"
+        queries = [prefix + n for n in names]
+        hits = oracle.ignored(queries)
+        if oracle.broken:
+            raise AppFileError(
+                "git check-ignore stopped answering while reading the app "
+                "folder's gitignore rules; retry the export"
+            )
+        return {n for n, q in zip(names, queries) if q in hits}
+
+    def close(self) -> None:
+        for o in self._oracles.values():
+            o.close()
+        self._oracles.clear()
+
+
 def _iter_app_files(app_dir: str):
     """Yield (abs_path, folder-relative forward-slash path) for every exported
     file: symlinks skipped (a link's target is outside the author's folder or
-    reachable inside it), hidden names and machinery dirs dropped."""
-    for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
-        dirnames[:] = sorted(
-            d
-            for d in dirnames
-            if not d.startswith(".")
-            and d not in _SKIP_DIRS
-            and not os.path.islink(os.path.join(dirpath, d))
-        )
-        rel_dir = os.path.relpath(dirpath, app_dir)
-        for fname in sorted(filenames):
-            if fname.startswith(".") or fname in _SKIP_FILES:
-                continue
-            full = os.path.join(dirpath, fname)
-            if os.path.islink(full):
-                continue
-            rel = fname if rel_dir == "." else f"{rel_dir}/{fname}".replace(os.sep, "/")
-            yield full, rel
+    reachable inside it), hidden names and machinery dirs dropped, and
+    anything the folder's gitignore rules ignore (see `_IgnoreRoots`) left
+    home — a build `dist/`, a `.venv`, data the author never committed.
+
+    git's own view is what's honored: a TRACKED file that happens to match a
+    pattern is not ignored, so it ships; the no-repo graft has an empty index
+    and applies patterns unconditionally."""
+    roots = _IgnoreRoots(app_dir)
+    try:
+        for dirpath, dirnames, filenames in os.walk(app_dir, followlinks=False):
+            roots.reroot(dirpath, set(dirnames) | set(filenames))
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if not d.startswith(".")
+                and d not in _SKIP_DIRS
+                and not os.path.islink(os.path.join(dirpath, d))
+            )
+            files = sorted(
+                f for f in filenames
+                if not f.startswith(".") and f not in _SKIP_FILES
+                and not os.path.islink(os.path.join(dirpath, f))
+            )
+            drop = roots.ignored(dirpath, dirnames + files)
+            if drop:
+                dirnames[:] = [d for d in dirnames if d not in drop]
+                files = [f for f in files if f not in drop]
+            rel_dir = os.path.relpath(dirpath, app_dir)
+            for fname in files:
+                full = os.path.join(dirpath, fname)
+                rel = fname if rel_dir == "." else f"{rel_dir}/{fname}".replace(os.sep, "/")
+                yield full, rel
+    finally:
+        roots.close()
 
 
 def default_file_name(app_dir: str) -> str:
@@ -178,6 +273,12 @@ def export_app_file(app_dir: str, out_path: str,
 
     entry_rel = os.path.relpath(entry, app_dir).replace(os.sep, "/")
     members = list(_iter_app_files(app_dir))
+    if not any(rel == entry_rel for _, rel in members):
+        raise AppFileError(
+            f"the app's entry page {entry_rel} is excluded by a gitignore rule "
+            "(in the app folder, a parent folder, or the repository), so the "
+            ".fused would have nothing to open; un-ignore it and export again"
+        )
     if len(members) > MAX_EXPORT_ENTRIES:
         raise AppFileError(
             f"app folder has too many files to export ({len(members)} > {MAX_EXPORT_ENTRIES})"
