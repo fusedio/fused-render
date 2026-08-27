@@ -5110,12 +5110,11 @@ stop it short of quitting the app.
   1.5s is ~160 records describing nothing that happened, and they would spend
   the rate budget the calls they annotate need.
 - **BG-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
-  the list as one card in the shared bottom-right notification stack (§3),
-  between the toasts and the server card — the column is ordered by lifetime
-  (seconds / minutes / the session), so nothing long-lived shifts under the
-  pointer when a short-lived neighbour expires. Top-level document only
+  as one card in the status bar (`platform/ui/StatusBar.tsx`, D562), inside
+  `#main` beside the repo-updates card. Top-level document only
   (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
-  N times. Hidden entirely when there are no records.
+  N times. Hidden entirely when there are no records (`.status-bar:empty`
+  collapses the bar itself the moment both its cards are).
 
   **The collapse hides EVERY row, no exemption** (D561, user call
   2026-08-27: "everything is foldable, even for the job cards"). It used to
@@ -5123,14 +5122,17 @@ stop it short of quitting the app.
   job row stayed on screen regardless of `collapsed`, because folding either
   away took the only cancel a queued message or a live turn has with it, and
   a card collapsed weeks ago left that work arriving with nothing on screen
-  to stop it. Reachability moved to the HEADER instead: `queue.cancelAll` is
-  a function of `collapsed`, not a pre-decided node — expanded it needs 2+
-  withdrawable rows (a single one's own ✕, right there on screen, is the
-  same action with a better name on it), collapsed it needs only 1+, since
-  collapsing removes that single row's own ✕ along with everything else.
-  `jobsSummary` keeps naming what is hidden (queued/running counts) and the
-  overall progress bar still shows while collapsed and something runs — the
-  fold hides the detail, never the fact that something is happening.
+  to stop it. D561 first moved reachability to the header — `queue.cancelAll`
+  became a function of `collapsed`, dropping its threshold from 2+
+  withdrawable rows to 1+ once folded. **Superseded by D562** (status bar
+  redesign): collapsed is now a CHIP with no controls at all —
+  `jobsSummary`, the aggregate percentage (`dl-pct`, replacing the old
+  collapsed-only progress bar) and the chevron, nothing else — so there is
+  no folded-but-visible header left for a control to answer, and
+  `queue.cancelAll` is a plain pre-decided node again, rendered only inside
+  the panel that opens on expand. The fold still hides the detail, never
+  the fact that something is happening: the chip's percentage says so where
+  the bar used to.
 - **BG-11** **Indeterminate is a first-class state.** A running job with no
   `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
   never a bar parked at an invented percentage: parking is what makes live work
@@ -5159,11 +5161,12 @@ stop it short of quitting the app.
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
 - **BG-15** **Repo updates (GT-20) are their own sibling notification card**
-  (D549-D552, revised D554-D556) — one row per repo with a known upstream
-  update, in a SECOND card `NotificationHost` places between the jobs/queue
-  activity card and `FdaCard` (the column's lifetime order: a repo update
-  outlives a job but not the FDA nudge or the server card). **This
-  supersedes the original shape**, where the rows were a second named slot
+  (D549-D552, revised D554-D556, D562) — one row per repo with a known
+  upstream update, in a SECOND card `StatusBar` places beside the jobs/queue
+  activity card, inside `#main` (D562 — no longer `NotificationHost`'s fixed
+  bottom-right column, whose overlay of page content even while collapsed is
+  what the status bar redesign exists to fix). **This supersedes the
+  original shape**, where the rows were a second named slot
   (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
   That placement broke the jobs card in four ways at once, discovered
   together: with zero jobs and zero queue but one repo row, the header fell
@@ -5183,16 +5186,17 @@ stop it short of quitting the app.
   and a live-run stand-in outside its collapse (BG-10), on the reasoning
   that folding away a queued message's or a live turn's only ✕ left a card
   collapsed weeks ago with scheduled work arriving and nothing on screen to
-  stop it. That reasoning did not disappear — it moved. A repo row has no
-  in-flight message a fold could strand mid-turn, the header already names
-  how many updates are waiting whether the list is open or not, and every
-  row carries its own dismiss control, so collapsing this card costs
-  nothing a user cannot get back by expanding again or pressing ✕. The jobs
-  card now protects the SAME thing through its header instead of an
-  exemption: `queue.cancelAll`'s threshold drops from 2+ withdrawable rows
-  to 1+ the moment the card is collapsed (BG-10's own bullet), since
-  collapsing removes the single row's own ✕ that the 2+ threshold assumed
-  was still reachable.
+  stop it. That reasoning did not disappear — it moved, twice. D561 first
+  moved it into the header, dropping `queue.cancelAll`'s threshold from 2+
+  withdrawable rows to 1+ once collapsed. D562's status bar redesign then
+  retired that move rather than carrying it forward: collapsed is now a
+  CHIP with no controls at all — the summary, the aggregate percentage, the
+  chevron, nothing else — so there is no folded-but-visible header left for
+  a lowered threshold to reach, and `queue.cancelAll`/Clear/every row now
+  render only inside the panel that opens on expand. A repo row has no
+  in-flight message a fold could strand mid-turn, so this card needed
+  neither move: the chip already names how many updates are waiting, and
+  every row carries its own dismiss control once the panel is open.
 
   **Dismissing a row is scoped to the throttle window, not permanent
   (D555).** The payload already carries `checked_at`; a row stays hidden
@@ -5217,8 +5221,8 @@ stop it short of quitting the app.
   moment it next ran. `shell/RepoUpdatesDock.tsx` therefore polls its own
   endpoint (`GET /api/git-upstream`) the same way `QueueDock.tsx` polls its
   own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
-  `NotificationHost`'s separate `repoUpdates` prop rather than a slot on
-  `DownloadManager`.
+  `StatusBar`'s separate `repoUpdates` prop (D562 — `NotificationHost`'s,
+  before the status bar redesign) rather than a slot on `DownloadManager`.
 
 ---
 
