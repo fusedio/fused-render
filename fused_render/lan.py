@@ -312,8 +312,15 @@ class LanApp:
         method = scope["method"].upper()
 
         if path == "/" or path == "/index.html":
-            return FileResponse(os.path.join(_STATIC_DIR, "index.html"),
-                                headers={"Cache-Control": "no-store"})
+            # The grid is a second Vite page (frontend/lan.html → shell-dist/
+            # lan.html); its assets resolve under /static/shell-dist/, which the
+            # /static/ prefix below already forwards.
+            page = os.path.join(os.path.dirname(_STATIC_DIR), "shell-dist", "lan.html")
+            if not os.path.isfile(page):
+                return PlainTextResponse(
+                    "phone grid not built (frontend/lan.html → shell-dist/lan.html); "
+                    "run: cd frontend && npm run build", status_code=503)
+            return FileResponse(page, headers={"Cache-Control": "no-store"})
         if path == "/api/lan/apps" and method == "GET":
             return JSONResponse({"apps": lan_apps(), "host": HOSTNAME})
         if path.startswith("/a/"):
@@ -476,6 +483,8 @@ def lan_apps() -> list[dict]:
             "title": app.get("title"),
             "tag": app.get("tag"),
             "path": folder,
+            # A linked app lives outside the workspace (registered_apps).
+            "linked": not folder.startswith(os.path.realpath(fused_dir()) + os.sep),
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The SVG bytes themselves via /api/fs/raw (an <img> subresource,
