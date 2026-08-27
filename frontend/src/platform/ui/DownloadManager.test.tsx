@@ -158,7 +158,7 @@ test("a scheduled run's own terminal row still counts and draws — the exemptio
 });
 
 test("a stalled but still-running job alone offers no Clear button", () => {
-  // D557: Clear used to count a stalled row as clearable — mirroring
+  // D558: Clear used to count a stalled row as clearable — mirroring
   // clear_finished's own old bug — which meant pressing it could sweep the
   // RECORD of a job that was still genuinely running. The row itself is
   // still shown (dimmed via is-stalled); only the bulk button's count
@@ -179,16 +179,16 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
   expect(findAll(tree, "dl-clear")).toHaveLength(1);
 });
 
-// -------------------------------------------------- the collapse toggle (D561)
+// -------------------------------------------------- the collapse toggle (D562)
 //
 // Reversed by user call (2026-08-27): "there should be nothing called a
 // 'non foldable card' — everything is foldable, even for the job cards."
-// D557/D558's whole premise — SOME rows (the queue's, a live schedule
+// D558/D559's whole premise — SOME rows (the queue's, a live schedule
 // stand-in) were exempt from the fold, so the toggle sometimes had nothing
 // to hide and was drawn as an inert `<span>` — is gone. The toggle is ALWAYS
 // a real `<button>`, and collapsing ALWAYS hides every row.
 //
-// Collapsed is now a CHIP in the status bar, not a short card (D562): the
+// Collapsed is now a CHIP in the status bar, not a short card (D563): the
 // toggle IS the chip, and it carries no controls — `queue.cancelAll` and
 // Clear render only in the panel that opens when expanded, so neither
 // survives a collapse any more. What DOES survive is what the chip itself
@@ -256,8 +256,8 @@ test("the header still names the hidden work once collapsed", () => {
   expect(after.length).toBeGreaterThan(0);
 });
 
-test("the chip keeps naming the aggregate percentage once collapsed — D562's chip replaces the old collapsed bar", () => {
-  // D562 (status bar redesign): a collapsed card used to keep drawing a mini
+test("the chip keeps naming the aggregate percentage once collapsed — D563's chip replaces the old collapsed bar", () => {
+  // D563 (status bar redesign): a collapsed card used to keep drawing a mini
   // aggregate progress bar directly under its header, so folding the rows
   // away hid the detail without hiding the fact that something was running.
   // That bar had no home once collapsed became a one-line chip in the status
@@ -278,8 +278,8 @@ test("the chip keeps naming the aggregate percentage once collapsed — D562's c
   expect(text(findAll(after, "dl-pct")[0])).toBe("50%");
 });
 
-test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D562)", () => {
-  // The old behaviour this replaces (D561) dropped `showCancelAll`'s
+test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D563)", () => {
+  // The old behaviour this replaces (D562) dropped `showCancelAll`'s
   // threshold to one row once collapsed, because the header — and this
   // button with it — stayed on screen folded. Now the button is a plain,
   // pre-decided node (queue-dock-lib.ts `showCancelAll` no longer takes
@@ -299,7 +299,7 @@ test("Cancel queued renders only inside the expanded panel — the collapsed chi
 
 // ---------------------------------------------- auto-expand on a new arrival
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D561
+// "we can make the notifications 'un collapse' when a new one comes" (D562
 // follow-up). The shared decision (`trackSeenIds`) is tested on its own in
 // jobs.test.ts; these pin the CARD actually wiring it in, asserting on the
 // rendered rows themselves rather than a class name — an earlier fold bug

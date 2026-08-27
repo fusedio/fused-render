@@ -14,7 +14,7 @@
 // them: it is the one entry that outlives any toast, so it must not shuffle as
 // toasts come and go. Styling is .notif-host in shell.css.
 //
-// TWO ENTRIES USED TO LIVE HERE AND DO NOT ANY MORE (D562, status bar
+// TWO ENTRIES USED TO LIVE HERE AND DO NOT ANY MORE (D563, status bar
 // redesign, user call: "the collapsed notification is also taking too much
 // space... it is impossible to use the claude template with it"): the
 // activity card (SPEC §36, work in progress — jobs and the scheduled queue)

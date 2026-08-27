@@ -983,7 +983,7 @@ export default function App({ config }: { config: Config }) {
             RepoUpdatesDock is its own sibling card (SPEC §36), handed in the
             same way and for the same reason: it speaks explorer/lib's
             staged-Claude-ask store, which platform may not import
-            (frontend/scripts/check-boundaries.mjs). Inside `#main` (D562, not
+            (frontend/scripts/check-boundaries.mjs). Inside `#main` (D563, not
             NotificationHost's fixed column) and behind the same `!IS_EMBED`
             guard as the sidebar, so a pane in panel/tab mode does not grow
             its own bar. */}

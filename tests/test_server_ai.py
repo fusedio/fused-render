@@ -320,7 +320,7 @@ def test_is_local_model_recognises_both_id_shapes(model, expected):
 
 # -- remote-Claude job-row notification -------------------------------------
 #
-# The status bar's activity card (DownloadManager.tsx, D562) is driven purely by
+# The status bar's activity card (DownloadManager.tsx, D563) is driven purely by
 # `GET /api/jobs`, which reads `fused_render/jobs.py`'s in-memory registry.
 # Before this, only the local-model path (`supervisor._report`) ever wrote a
 # row — a page calling fused.ai() against remote Claude produced NOTHING

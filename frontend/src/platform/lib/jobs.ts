@@ -394,7 +394,7 @@ export function pollInterval(jobs: Job[], sinceLastRunningMs: number): number {
 // ------------------------------------------------------------- auto-expand
 //
 // Shared by BOTH notification cards (DownloadManager.tsx's jobs/downloads
-// card and shell/RepoUpdatesDock.tsx's repo-updates card, D561 follow-up —
+// card and shell/RepoUpdatesDock.tsx's repo-updates card, D562 follow-up —
 // user call: "we can make the notifications 'un collapse' when a new one
 // comes"). Lives here, not in repo-updates-lib.ts, because platform/ may not
 // import shell/ (frontend/scripts/check-boundaries.mjs) — a helper both

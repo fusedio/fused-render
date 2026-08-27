@@ -225,10 +225,10 @@ describe("one card, one count", () => {
 
 // The fold used to keep the queue rows and a live stand-in job row on screen
 // regardless of `collapsed` (jobs.ts `rowsShown`, deleted) — the user rejected
-// the whole idea of a partially-foldable card (D561, 2026-08-27): "everything
+// the whole idea of a partially-foldable card (D562, 2026-08-27): "everything
 // is foldable, even for the job cards." Collapsed now hides every row, no
 // exceptions. Reachability while collapsed moved to the status bar's chip
-// instead (D562) — not to the header, and not to `showCancelAll`'s threshold,
+// instead (D563) — not to the header, and not to `showCancelAll`'s threshold,
 // which used to drop to one row for exactly this reason and no longer does
 // (see that function's own doc): the chip carries no controls, so there is
 // nothing left for a lowered threshold to reach.
@@ -257,7 +257,7 @@ function shownRows(
 ): string[] {
   const open = openRows(rows, queueJobs);
   const jobs = jobRows(reported, drawnIds(open));
-  // Collapsed hides every row now (D561, 2026-08-27) — no per-kind exemption
+  // Collapsed hides every row now (D562, 2026-08-27) — no per-kind exemption
   // left to compute, so this is `!collapsed` guarding the whole list rather
   // than `rowsShown`/`foldedJobRows` deciding a kind at a time.
   if (collapsed) return [];
@@ -454,7 +454,7 @@ describe("one scheduled run, one row, at every step of its life", () => {
   it("never draws the same run twice, at any step healthy or degraded — and never draws it at all while collapsed", () => {
     // The other failure mode, and the one the old unconditional drop was protecting
     // against. Every moment the pair of halves can actually be in: exactly one row
-    // for this run, never two and never zero, WHILE EXPANDED. Collapsed (D561,
+    // for this run, never two and never zero, WHILE EXPANDED. Collapsed (D562,
     // 2026-08-27), the row count is always zero regardless of which half currently
     // owns the run — ownership decides WHICH single row would show; the fold now
     // decides only whether any row shows at all, and that answer no longer depends

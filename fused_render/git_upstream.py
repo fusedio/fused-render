@@ -238,13 +238,13 @@ def check_repo(root):
 
 # --------------------------------------------------------------- the mutations
 #
-# The two actions the repo-updates card's rows offer (SPEC §36, D554): Update
+# The two actions the repo-updates card's rows offer (SPEC §36, D555): Update
 # (an --ff-only pull, primary, on the default branch); and Switch (a plain
 # checkout of the default branch, primary everywhere else — offered exactly
 # where Update would refuse to fast-forward, and never touching a single
 # commit of the user's own). A Rebase secondary action was offered
 # alongside Switch for one release and then removed (too dangerous to offer
-# from a passive notice, user call — D554 amendment) rather than left as the
+# from a passive notice, user call — D555 amendment) rather than left as the
 # card's only work-losing button. Update mirrors templates/git/ops.py's own
 # `_pull` (ops.py:1096-1121, the explicit remote-and-refspec argument) and
 # `_require_remote` (ops.py:827-836, the no-remote refusal) — mirrored, not
@@ -500,7 +500,7 @@ def switch_repo(root):
     """Check out the default branch — the card's PRIMARY action off the
     default branch (decision D, SPEC §36). A rebase-onto-default secondary
     action was offered alongside this for one release and then removed as
-    too dangerous to offer (D554 amendment); Switch stays the only
+    too dangerous to offer (D555 amendment); Switch stays the only
     off-default action, and is preferred over rebasing the current branch
     onto the default for the same reason that removal gave: it never
     rewrites or replays a single commit of the user's work, so it can never

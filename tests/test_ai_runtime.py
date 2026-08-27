@@ -6846,7 +6846,7 @@ def test_a_LIVE_transcription_row_is_never_absent_at_all():
     # Every removal path was walked against a row of this exact shape and none
     # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
     # is far inside `STALE_DROP_S`), `clear_finished` (refuses every RUNNING
-    # row unconditionally, stalled included — D557) and `dismiss` (refuses a
+    # row unconditionally, stalled included — D558) and `dismiss` (refuses a
     # RUNNING row that is not stalled). ONE remote path survives — a tick
     # thread starved past `STALE_AFTER_S` makes the row dismissible one at a
     # time, and a user looking at "no longer reporting" may well dismiss it —

@@ -127,3 +127,37 @@ test("fileBarMenu drops the splits AND their separator when it can't split", () 
   // something missing.
   expect(items[items.length - 1]).not.toBe("separator");
 });
+
+test("fileBarMenu offers Set Current View as Preview only on an app entry, in its own group", () => {
+  const base = {
+    onRename: () => {},
+    onOpenInClaude: () => {},
+    onCopyPath: () => {},
+    onReveal: () => {},
+    onOpenInNewTab: () => {},
+  };
+  // A plain file: no preview verb, and no orphan separator for it.
+  expect(labels(fileBarMenu(base))).not.toContain("Set Current View as Preview");
+  let shot = 0;
+  const items = fileBarMenu({ ...base, onSetPreview: () => shot++, onSplit: () => {} });
+  expect(labels(items)).toEqual([
+    "Rename…",
+    "—",
+    "Reveal in Finder",
+    "Open in New Tab",
+    "Copy Path",
+    "Copy Claude session command",
+    "—",
+    "Set Current View as Preview",
+    "—",
+    "Split right",
+    "Split down",
+  ]);
+  item(items, "Set Current View as Preview").onClick?.();
+  expect(shot).toBe(1);
+  // Without splits the preview group still closes the list cleanly.
+  expect(labels(fileBarMenu({ ...base, onSetPreview: () => {} })).slice(-2)).toEqual([
+    "—",
+    "Set Current View as Preview",
+  ]);
+});

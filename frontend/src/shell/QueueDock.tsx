@@ -14,7 +14,7 @@
 // This is the ONE place `<DownloadManager>` is instantiated. Repo updates
 // (SPEC §36) are no longer a slot filled here — they draw their own sibling
 // card (RepoUpdatesDock.tsx), mounted directly by App.tsx beside this one via
-// StatusBar's separate `repoUpdates` prop (D562 — NotificationHost's, before
+// StatusBar's separate `repoUpdates` prop (D563 — NotificationHost's, before
 // the status bar redesign), so this module has nothing to do with them any
 // more. The lifecycle drawn here is one list:
 //
@@ -45,7 +45,7 @@
 // (frontend/scripts/check-boundaries.mjs). Rather than inject three functions
 // downward, the dependency runs the way the boundary already allows: shell imports
 // platform's card and fills its `queue` slot with the parts only shell can build.
-// Placement (D562) is `StatusBar`'s (platform/ui/StatusBar.tsx), which takes this
+// Placement (D563) is `StatusBar`'s (platform/ui/StatusBar.tsx), which takes this
 // whole thing as its `activity` entry the same way NotificationHost used to.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -381,10 +381,10 @@ export default function QueueDock() {
   // card is withdrawable. It is not the card's Clear and never becomes it:
   // Clear dismisses rows for work that ENDED.
   //
-  // A plain node now, decided once per render (D562, status bar redesign):
+  // A plain node now, decided once per render (D563, status bar redesign):
   // it used to be built as a FUNCTION of whether the card was collapsed,
   // because the threshold itself depended on it (`showCancelAll`'s own doc,
-  // D561) — collapsed dropped the withdrawable-rows threshold to one, since
+  // D562) — collapsed dropped the withdrawable-rows threshold to one, since
   // that was the only way left to reach a lone row once the header folded
   // away. This button now renders only inside the card's expanded panel (the
   // collapsed chip carries no controls at all), so that folded-but-visible

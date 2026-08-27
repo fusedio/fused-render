@@ -299,11 +299,11 @@ def test_there_is_one_card_not_two(dock, card):
 
 
 def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
-    """D561 (user call, 2026-08-27): 'everything is foldable, even for the job
-    cards' — reversing the earlier partial fold (D557/D558), which pinned the
+    """D562 (user call, 2026-08-27): 'everything is foldable, even for the job
+    cards' — reversing the earlier partial fold (D558/D559), which pinned the
     queue's rows and a live-run stand-in outside the collapse. Collapsed now
     renders no `.dl-rows` at all, no exemption; collapsed also renders no
-    panel at all any more (D562, status bar redesign), so there is nothing
+    panel at all any more (D563, status bar redesign), so there is nothing
     left standing in a header for reachability to move to — `showCancelAll`
     dropped the collapsed-threshold parameter this docstring used to point
     at (queue-dock-lib.ts's own doc has the current rule)."""
@@ -379,10 +379,10 @@ def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(doc
 
 def test_a_stand_in_job_row_folds_like_any_other_now(card):
     """A live run the queue half is NOT drawing still gets exactly one row, and it
-    is a job row (`jobRows` — unaffected by D561, this is ownership, not fold).
-    It used to be exempt from the collapse specially (`foldedJobRows`); D561
+    is a job row (`jobRows` — unaffected by D562, this is ownership, not fold).
+    It used to be exempt from the collapse specially (`foldedJobRows`); D562
     (user call, 2026-08-27) removed every such exemption, so this row now folds
-    like any other — collapsed, it is simply not on screen (D562's chip
+    like any other — collapsed, it is simply not on screen (D563's chip
     carries no row and no button), not a per-row carve-out."""
     assert "foldedJobRows" not in card
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
@@ -399,7 +399,7 @@ def test_the_stored_fold_is_only_ever_written_by_a_press(card):
 
 
 def test_the_column_owns_where_it_sits(dock, card):
-    """Placement belongs to StatusBar / notifications.css (D562) — neither the
+    """Placement belongs to StatusBar / notifications.css (D563) — neither the
     queue nor the card positions itself inline, exactly as it never did when
     NotificationHost owned this instead."""
     for gone in ("position: fixed", "position:fixed", "zIndex", "z-index"):
@@ -408,7 +408,7 @@ def test_the_column_owns_where_it_sits(dock, card):
 
 
 def test_the_bar_reserves_space_inside_main_not_the_floating_column(dock, card):
-    """D562 (user call: "the collapsed notification is also taking too much
+    """D563 (user call: "the collapsed notification is also taking too much
     space... it is impossible to use the claude template with it"). The two
     cards moved OUT of NotificationHost's fixed, floating column and into a
     bar mounted inside `#main`, which reserves layout space for it instead of
@@ -442,7 +442,7 @@ def test_the_shell_composes_the_card_and_the_bar_places_it(dock):
     """platform may not import shell (frontend/scripts/check-boundaries.mjs) and a
     queue row has to speak explorerUrl, which lives in shell. So the dependency
     runs the way the boundary allows: shell imports the card and fills its `queue`
-    slot, and StatusBar (D562 — no longer NotificationHost, see the placement
+    slot, and StatusBar (D563 — no longer NotificationHost, see the placement
     test below) takes the composed thing as its ONE activity entry.
 
     Omitted, the bare manager stands in: platform does not come to depend on a

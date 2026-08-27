@@ -82,6 +82,10 @@ export interface FileBarActions {
   // split, and a directory's preview has no file to split on) — the separator
   // goes with it, so the menu never ends in a divider.
   onSplit?: (dir: SplitDir) => void;
+  // Only on an APP's entry page (Preview asks /api/apps/entry): photograph
+  // what the frame is showing and make it the folder's preview.png. Absent on
+  // a plain file — there is no card anywhere that would show the picture.
+  onSetPreview?: () => void;
 }
 
 // Right-click on the bar over a single open FILE. A short list on purpose: it
@@ -110,6 +114,15 @@ export function fileBarMenu(actions: FileBarActions): MenuEntry[] {
       icon: MenuIcons.openWith,
       onClick: actions.onOpenInClaude,
     },
+    // In its own group: the four above are about the FILE; this one is about
+    // the APP the file is the face of (Akshil, 2026-08-27: "if I right-click
+    // ... I want an option of add a preview").
+    ...(actions.onSetPreview
+      ? ([
+          "separator",
+          { label: "Set Current View as Preview", icon: MenuIcons.camera, onClick: actions.onSetPreview },
+        ] as MenuEntry[])
+      : []),
     ...(actions.onSplit ? (["separator", ...splitItems(actions.onSplit)] as MenuEntry[]) : []),
   ];
 }

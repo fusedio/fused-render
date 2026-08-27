@@ -245,11 +245,11 @@ export function withdrawableCount(rows: QueueRow[]): number {
  *  claimed work shows nothing either way, since "queued" would be a button
  *  for zero messages.
  *
- *  No longer a function of `collapsed` (status bar redesign, D562): this
+ *  No longer a function of `collapsed` (status bar redesign, D563): this
  *  button now renders only inside the card's expanded panel — the chip that
  *  stands in for it while collapsed carries no controls at all (spec: chip
  *  is the summary line, the percentage, and the chevron, nothing else) — so
- *  there is no longer a folded-but-visible state for it to answer. D561's
+ *  there is no longer a folded-but-visible state for it to answer. D562's
  *  reasoning ("collapsing hides every row, so the button is the only thing
  *  left that can withdraw a lone one") assumed the header — and this button
  *  with it — stayed on screen while the card was folded; the bar's chip

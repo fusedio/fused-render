@@ -76,7 +76,7 @@ describe("repoRows", () => {
 
 describe("repoStatusText", () => {
   // Deliberately generic — no remote name, no branch name, no commit count
-  // (D554 amendment, user feedback: "origin/main is 1 commit ahead" reads
+  // (D555 amendment, user feedback: "origin/main is 1 commit ahead" reads
   // as a git status line, not a sentence for a non-technical reader).
   it("is the same generic sentence regardless of branch shape or count", () => {
     const [onDefault] = repoRows([status({ on_default: true, default_branch: "main", behind: 3 })]);

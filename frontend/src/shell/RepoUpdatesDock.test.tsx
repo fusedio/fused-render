@@ -196,7 +196,7 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   // task 12's regression (code review, 2026-08-27) needed TWO buttons on one
   // row to reproduce: a shared `busy` boolean covered both, with only the
   // primary swapping its label, so pressing the secondary (a Rebase button,
-  // since removed as too dangerous to offer — D554 amendment) made the
+  // since removed as too dangerous to offer — D555 amendment) made the
   // primary read "Working…" for an action the user never pressed. A row
   // offers exactly one button now, so that exact two-button mix-up is no
   // longer reachable — this keeps only what's still true: the pressed
@@ -250,7 +250,7 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 
 // ---------------------------------------------- auto-expand on a new arrival
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D561
+// "we can make the notifications 'un collapse' when a new one comes" (D562
 // follow-up). The shared decision (`trackSeenIds`) is tested on its own in
 // jobs.test.ts; these pin `RepoUpdatesDockView` — the stateful half that
 // owns collapse for this card — actually wiring it in. Assertions are on

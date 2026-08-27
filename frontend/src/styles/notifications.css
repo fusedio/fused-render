@@ -130,7 +130,7 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Status bar (SPEC §36, D562) ------------------------------------------ */
+/* ---- Status bar (SPEC §36, D563) ------------------------------------------ */
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
@@ -164,7 +164,7 @@
    Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
    `.dl-panel` (below) can float above it, anchored to its own right edge —
    collapsed, `.dl-toggle` inside it is the card's entire presence in the bar;
-   expanded, `.dl-panel` opens above that same chip. Before D562 this element
+   expanded, `.dl-panel` opens above that same chip. Before D563 this element
    WAS the floating card (the plate, the header and the row list all lived
    directly in it); that plate — --bg-alt, 8px radius, the toast shadow — moved
    to `.dl-panel`, the only piece of this card that still floats over page
@@ -292,7 +292,7 @@
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
    would push its own header off-screen. Never rendered at all while
-   collapsed (D561, 2026-08-27, user call: "everything is foldable, even for
+   collapsed (D562, 2026-08-27, user call: "everything is foldable, even for
    the job cards") — collapsing hides EVERY row, queue and job alike, with no
    exemption and no partial-height fold, so there is no `.is-folded` cap any
    more; DownloadManagerView and RepoUpdatesDock.tsx's own card both omit

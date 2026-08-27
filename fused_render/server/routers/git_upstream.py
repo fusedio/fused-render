@@ -22,7 +22,7 @@ same reason community.py's endpoint is: these shell out to git, and
 FastAPI's threadpool keeps that off the event loop. A `"rebase"` action
 was accepted here for one release, backing a secondary Rebase button the
 card offered; it is refused now (falls through to `bad-action`) — the
-button was removed as too dangerous to offer (D554 amendment) and the
+button was removed as too dangerous to offer (D555 amendment) and the
 mutation went with it.
 """
 from fastapi import APIRouter, Body, Header

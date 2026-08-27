@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
+  setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
   rawUrl,
@@ -21,7 +22,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -259,17 +260,15 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
       // folder carries an authored preview.png; the probe below is only so a
-      // pointless share prompt isn't raised for a capture the server would
-      // discard anyway (stat failure reads as "no authored still" — worst
-      // case is that redundant prompt, never a lost export).
+      // pointless native shot (and, on a Mac that has not granted Screen
+      // Recording, its permission dialog) isn't taken for a capture the
+      // server would discard anyway (stat failure reads as "no authored
+      // still" — worst case is that redundant shot, never a lost export).
       //
-      // ONE cheap local probe, and it must stay that: appShot raises the share
-      // prompt on this click's transient user activation, which Chrome expires
-      // a few seconds out, so anything slow awaited here spends the activation
-      // and loses the prompt. `.is-shown` satisfies appShot's crop-source
-      // contract (pixels that ARE the app, not a box it may fill): the class
-      // rides `shown`, which the frame swap only sets once that frame paints —
-      // the same guarantee `data-fused-annotate-target` below relies on.
+      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
+      // the app, not a box it may fill): the class rides `shown`, which the
+      // frame swap only sets once that frame paints — the same guarantee
+      // `data-fused-annotate-target` below relies on.
       const authored = await statPath(dir + "/preview.png").then(
         (s) => !s.is_dir,
         () => false,
@@ -488,6 +487,88 @@ function usePreviewFileMenu(
     });
   };
 
+  // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
+  // (/api/apps/entry) exactly as ExportAppButton asks it — under the marker
+  // rule a filename says nothing. Only an entry gets "Set Current View as
+  // Preview": a preview.png beside a plain html file has no card to show it.
+  const [isAppEntry, setIsAppEntry] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setIsAppEntry(false);
+    if (stat.is_dir) return;
+    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+    getAppEntry(parent)
+      .then((r) => {
+        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no verb for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, parent, stat.is_dir]);
+
+  // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
+  // frame is showing and write it as the folder's preview.png. Same capture
+  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
+  // to the shown frame), so the same one-time share prompt.
+  //
+  // ORDER: the share prompt needs the click's own transient activation, which
+  // Chrome expires a few seconds out. The one thing awaited before it is a stat
+  // of preview.png (milliseconds) — and when that says a still already exists,
+  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
+  // overwriting), which is a fresh activation of its own. Nothing is written
+  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  const shootPreview = async (replacing: boolean) => {
+    const name = basename(parent);
+    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
+    // full-viewport reload of the entry when the frame can't be cropped; that
+    // is not the view the user is looking at, so here it is refused up front
+    // (and `stage: false` refuses it again inside) rather than saved under a
+    // "Preview saved" toast (Bugbot, 2026-08-27).
+    const frame = document.querySelector(".preview-frame.is-shown");
+    if (!cropRect(frame)) {
+      pushToast({
+        msg: "Preview not captured — the app frame has to be fully on screen",
+        tone: "error",
+      });
+      return;
+    }
+    const blob = await captureAppPreview(fsPath, frame, { stage: false });
+    if (!blob) {
+      pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
+      return;
+    }
+    try {
+      await setAppPreview(parent, blob);
+      pushToast({
+        msg: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
+        tone: "info",
+      });
+    } catch (e) {
+      pushToast({ msg: "Could not save preview: " + (e as Error).message, tone: "error" });
+    }
+  };
+  const doSetPreview = () => {
+    statPath(join(parent, "preview.png")).then(
+      (s) => {
+        if (s.is_dir) {
+          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
+          return;
+        }
+        setDialog({
+          kind: "confirm",
+          title: "Replace preview?",
+          message: `"${basename(parent)}" already has a preview.png. Replace it with what the app shows now?`,
+          confirmLabel: "Replace",
+          onConfirm: () => void shootPreview(true),
+        });
+      },
+      () => void shootPreview(false),
+    );
+  };
+
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
   // lib/bar-menus for what it leaves out and why). The splits are offered on the
   // same condition TemplatePreview uses for its own split affordances: a single
@@ -499,6 +580,7 @@ function usePreviewFileMenu(
       onCopyPath: doCopyPath,
       onReveal: doReveal,
       onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+      onSetPreview: isAppEntry ? doSetPreview : undefined,
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });

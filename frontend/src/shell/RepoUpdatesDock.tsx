@@ -1,5 +1,5 @@
 // The repo-updates notification card (SPEC §36): its OWN sibling entry in
-// the status bar (D562, formerly the bottom-right floating column), one row
+// the status bar (D563, formerly the bottom-right floating column), one row
 // for every git repo the server has noticed is behind its remote's default
 // branch, with an opt-in action to fix it.
 //
@@ -167,7 +167,7 @@ function RepoRowView({
   // WHICH action is running, not just whether one is (task 12, code review
   // 2026-08-27, from back when a row could offer two buttons — Update/Switch
   // primary plus a Rebase secondary, since removed as too dangerous to offer,
-  // D554 amendment): a single shared `busy: boolean` relabeled the button
+  // D555 amendment): a single shared `busy: boolean` relabeled the button
   // "Working…" no matter which of the two was actually pressed. Kept as
   // `RepoAction | null` rather than collapsing back to a plain boolean —
   // still correct, and still the cheaper property to reason about, for the
@@ -252,11 +252,11 @@ function RepoRowView({
  * `window`/`document`, so RepoUpdatesDock.test.tsx can render it directly.
  *
  * THE FOLD TAKES EVERY ROW — no exemption, no partial fold. That was always
- * this card's own rule (D556), and the jobs card has since adopted the exact
- * same one (D561, user call 2026-08-27: "everything is foldable, even for
- * the job cards" — reversing the exemptions D557/D558 had built there). The
+ * this card's own rule (D557), and the jobs card has since adopted the exact
+ * same one (D562, user call 2026-08-27: "everything is foldable, even for
+ * the job cards" — reversing the exemptions D558/D559 had built there). The
  * two cards now behave identically: collapsed renders a CHIP and nothing
- * else (D562, status bar redesign) — no rows, no Clear, no per-row ✕ — and
+ * else (D563, status bar redesign) — no rows, no Clear, no per-row ✕ — and
  * expanding it is what opens the panel those live in, floating above the
  * status bar rather than pinned inside a header that survives the fold.
  * Whenever the chip is on screen at all (the card returned non-null, meaning
@@ -289,7 +289,7 @@ export function RepoUpdatesCardView({
   return (
     <div className="dl-host">
       {/* The chip — this card's entire presence in the status bar while
-          collapsed (D562): the chevron and the summary, nothing else. Clear
+          collapsed (D563): the chevron and the summary, nothing else. Clear
           and every row live in the panel below, which exists only while
           expanded. */}
       <button
@@ -342,7 +342,7 @@ export function RepoUpdatesCardView({
  * fixed row list (RepoUpdatesDock.test.tsx), the same split
  * `DownloadManagerView` uses in its own file for the identical reason.
  *
- * Auto-expand (D561 follow-up, "un collapse when a new one comes") keys off
+ * Auto-expand (D562 follow-up, "un collapse when a new one comes") keys off
  * `row.repo.root` per row — a repo not seen before, while the card is
  * collapsed, opens it exactly like the user's own toggle would
  * (`lib/autoExpand.ts` `useAutoExpandOnNew`, shared with DownloadManager.tsx

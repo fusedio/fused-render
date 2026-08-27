@@ -29,7 +29,7 @@
 // card owns everything shared — the plate, the one header, the one count, the one
 // scrolling list, the collapse, and Clear.
 //
-// EVERYTHING FOLDS NOW (D561, user call 2026-08-27, reversing D557/D558's
+// EVERYTHING FOLDS NOW (D562, user call 2026-08-27, reversing D558/D559's
 // exemptions): collapsing hides the queue's rows exactly like the job rows,
 // with no kind of row pinned outside it. That used to be deliberately
 // asymmetric — the queue's rows and a live scheduled run's stand-in job row
@@ -38,13 +38,13 @@
 // on screen to stop it. The user's rule is that there is no such thing as a
 // "non-foldable card", full stop.
 //
-// COLLAPSED IS NOW A CHIP, NOT A SHORT CARD (D562, status bar redesign, user
+// COLLAPSED IS NOW A CHIP, NOT A SHORT CARD (D563, status bar redesign, user
 // call: "the collapsed notification is also taking too much space... it is
 // impossible to use the claude template with it"). `.dl-toggle` — the
 // chevron, `jobsSummary`, the aggregate percentage — is the WHOLE of what
 // renders while collapsed; `queue?.cancelAll` and `queue?.note`, along with
 // Clear and every row, render only inside the panel that opens when the
-// card is expanded, and so no longer survive a collapse the way D561's own
+// card is expanded, and so no longer survive a collapse the way D562's own
 // paragraph here used to promise. That reachability requirement is gone on
 // purpose, not merely forgotten: the chip's whole point is to cost the page
 // nothing but one summary line, and a button on it would be a second thing
@@ -60,8 +60,8 @@
 // The slot now carries the entry ids its rows cover; this half drops exactly those
 // and draws the rest itself, which for a live run is a row with the same title, the
 // same status line and the same ✕, only without the Explorer link that needs shell.
-// This stand-in row folds like any other now (D561) — collapsed, it is not on
-// screen at all any more (D562's chip carries no row, and no button either).
+// This stand-in row folds like any other now (D562) — collapsed, it is not on
+// screen at all any more (D563's chip carries no row, and no button either).
 //
 // AND IT IS TOLD ABOUT A RUN, NOT ABOUT A STATE: a drawn run is dropped here whether
 // its job is running or finished. The exemption terminal rows used to have was an
@@ -74,7 +74,7 @@
 // row against it (queue-dock-lib `openRows`): the handover is a render apart instead
 // of a poll apart, and it does not depend on the queue endpoint answering at all.
 //
-// PLACEMENT MOVED (D562): this card used to sit in NotificationHost's fixed,
+// PLACEMENT MOVED (D563): this card used to sit in NotificationHost's fixed,
 // floating column with the toasts and the server card, ABOVE the server card
 // and BELOW the toasts by lifetime (a toast is seconds, work in progress is
 // minutes, the server card outlives the session) — but a FIXED column
@@ -466,18 +466,18 @@ export interface QueueSlot extends QueueCount {
    *  endpoint, which is what it did before. */
   onJobs?: (jobs: Job[]) => void;
   /** "Cancel queued" — a pre-decided node now, not a function of `collapsed`
-   *  (D562, status bar redesign: this only ever renders inside the expanded
+   *  (D563, status bar redesign: this only ever renders inside the expanded
    *  panel, since the collapsed chip carries no controls at all, so there is
    *  no longer a folded-but-reachable state for a threshold to answer). 2+
    *  genuinely withdrawable rows, since a single row's own cancel control is
    *  the same action with a better name on it and is right there on screen.
    *  `showCancelAll` (queue-dock-lib.ts) owns the actual number — it used to
-   *  take `collapsed` too (D561) and drop the threshold to one row for a
+   *  take `collapsed` too (D562) and drop the threshold to one row for a
    *  card that stayed on screen folded; that call site is gone along with
    *  the promise it was answering. */
   cancelAll?: ReactNode;
   /** What a cancel actually did, including the half that was refused. Like
-   *  `cancelAll`, only ever shown inside the expanded panel now (D562) — a
+   *  `cancelAll`, only ever shown inside the expanded panel now (D563) — a
    *  refusal that happened while the card was open stays reachable until the
    *  user re-collapses or presses again, same as before; it just no longer
    *  survives a collapse it didn't cause. */
@@ -599,7 +599,7 @@ export function DownloadManagerView({
   const clear = async () => {
     try {
       await clearFinishedJobs();
-      // Mirrors the server's rule (jobs.py `clear_finished`, D557): every
+      // Mirrors the server's rule (jobs.py `clear_finished`, D558): every
       // running row survives, stalled included — see `clearableCount`'s doc.
       patch((js) => jobsAfterClear(js));
     } catch {
@@ -610,9 +610,9 @@ export function DownloadManagerView({
 
   return (
     <div className="dl-host">
-      {/* The chip — this card's ENTIRE presence in the status bar (D562). ALWAYS
+      {/* The chip — this card's ENTIRE presence in the status bar (D563). ALWAYS
           a real button: there is always something to fold now that no row is
-          exempt (D561), so the toggle is never offered where it would visibly
+          exempt (D562), so the toggle is never offered where it would visibly
           do nothing. Exactly three things live here — the chevron, the
           summary, the aggregate percentage — because the chip's whole job is
           to cost the bar one line; a control on it would be a second thing
@@ -634,7 +634,7 @@ export function DownloadManagerView({
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed
           turning false, there is no separate "peek" state. Collapsed shows NO
-          panel at all (D561's "no exemption" carried forward into D562) — not
+          panel at all (D562's "no exemption" carried forward into D563) — not
           a shorter one, an absent one, so `queue?.cancelAll` and `queue?.note`
           do NOT survive a collapse any more (they used to, when this was a
           short card rather than a chip — see this file's own header comment

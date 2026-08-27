@@ -441,7 +441,7 @@ def test_switch_names_the_worktree_already_holding_the_default_branch(tmp_path):
     # a primary button that always failed, surfacing raw git text instead of
     # naming the worktree. A rebase-onto-default secondary action was once
     # offered as the way out of this specific refusal too; it was removed as
-    # too dangerous to offer (D554 amendment), so the refusal now just names
+    # too dangerous to offer (D555 amendment), so the refusal now just names
     # the fact and stops — the fix is a terminal, same as every other
     # refusal this module surfaces.
     local = _clone_with_remote_ahead(tmp_path, name="wtswitch")
@@ -572,7 +572,7 @@ def test_post_switch_action_is_accepted(tmp_path, monkeypatch):
 
 def test_post_rebase_action_is_refused_bad_action(tmp_path, monkeypatch):
     # A secondary Rebase button once posted `action: "rebase"` here; removed
-    # as too dangerous to offer (D554 amendment), along with the endpoint's
+    # as too dangerous to offer (D555 amendment), along with the endpoint's
     # own handling of it — this pins that a client still sending it (a stale
     # tab, a hand-written request) is refused rather than falling through to
     # some other mutation.
@@ -618,7 +618,7 @@ def _rebase_conflict_repo(tmp_path, name="conflict"):
     conflicts on one line of `a.txt` — the same shape
     tests/test_git_conflicts.py's `rebase_conflict_repo` builds. This module
     offers no rebase mutation of its own (removed as too dangerous to offer
-    — D554 amendment); the tests below drive the rebase with a raw `git
+    — D555 amendment); the tests below drive the rebase with a raw `git
     rebase`, standing in for a terminal, since detecting a rebase already in
     flight must work regardless of what started it."""
     remote = str(tmp_path / f"{name}.git")

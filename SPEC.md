@@ -3520,7 +3520,7 @@ view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
 
 **The community showcase clone (`~/Fused/showcase`) is a repo like any
-other from here** (D549-D551). It used to be managed on the app's behalf —
+other from here** (D550-D552). It used to be managed on the app's behalf —
 fetched and fast-forwarded on every server start — and is not any more:
 `fused_render/community.py` clones it once, if missing, and never touches it
 again. There is also no second, INSTALLED copy any more (`~/Fused/local/
@@ -4215,7 +4215,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   gate never offers the view (GT-4 / MD-11).
 
 - **GT-20** **A repo the user opens an app in gets a passive "origin has
-  moved" notice, opt-in from outside this view (D549-D552).** Every app open
+  moved" notice, opt-in from outside this view (D550-D553).** Every app open
   through `GET /render` (D301's own definition of "this app is being
   opened") triggers a throttled check — per repo ROOT, not per app, so
   several apps in one repo cost one fetch — of whether the remote's default
@@ -4241,7 +4241,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   confirmation rule for the same class of act. A third mutation, `rebase` —
   replaying the current branch onto the default, offered as a secondary
   action alongside Switch — was part of this card for one release and then
-  removed outright (D554 amendment, user call: "the rebase button is scary,
+  removed outright (D555 amendment, user call: "the rebase button is scary,
   let's just remove it"), rather than left reachable only from a stale
   client. `ops.py`'s own `_pull` refusal, which briefly pointed at that
   button, points at a terminal again instead (GT-15).
@@ -5110,21 +5110,21 @@ stop it short of quitting the app.
   1.5s is ~160 records describing nothing that happened, and they would spend
   the rate budget the calls they annotate need.
 - **BG-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
-  as one card in the status bar (`platform/ui/StatusBar.tsx`, D562), inside
+  as one card in the status bar (`platform/ui/StatusBar.tsx`, D563), inside
   `#main` beside the repo-updates card. Top-level document only
   (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
   N times. Hidden entirely when there are no records (`.status-bar:empty`
   collapses the bar itself the moment both its cards are).
 
-  **The collapse hides EVERY row, no exemption** (D561, user call
+  **The collapse hides EVERY row, no exemption** (D562, user call
   2026-08-27: "everything is foldable, even for the job cards"). It used to
   be a PARTIAL fold — the queue's rows and a live scheduled run's stand-in
   job row stayed on screen regardless of `collapsed`, because folding either
   away took the only cancel a queued message or a live turn has with it, and
   a card collapsed weeks ago left that work arriving with nothing on screen
-  to stop it. D561 first moved reachability to the header — `queue.cancelAll`
+  to stop it. D562 first moved reachability to the header — `queue.cancelAll`
   became a function of `collapsed`, dropping its threshold from 2+
-  withdrawable rows to 1+ once folded. **Superseded by D562** (status bar
+  withdrawable rows to 1+ once folded. **Superseded by D563** (status bar
   redesign): collapsed is now a CHIP with no controls at all —
   `jobsSummary`, the aggregate percentage (`dl-pct`, replacing the old
   collapsed-only progress bar) and the chevron, nothing else — so there is
@@ -5161,9 +5161,9 @@ stop it short of quitting the app.
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
 - **BG-15** **Repo updates (GT-20) are their own sibling notification card**
-  (D549-D552, revised D554-D556, D562) — one row per repo with a known
+  (D550-D553, revised D555-D557, D563) — one row per repo with a known
   upstream update, in a SECOND card `StatusBar` places beside the jobs/queue
-  activity card, inside `#main` (D562 — no longer `NotificationHost`'s fixed
+  activity card, inside `#main` (D563 — no longer `NotificationHost`'s fixed
   bottom-right column, whose overlay of page content even while collapsed is
   what the status bar redesign exists to fix). **This supersedes the
   original shape**, where the rows were a second named slot
@@ -5180,15 +5180,15 @@ stop it short of quitting the app.
   card's empty-card gate, header and Clear now only ever reason about jobs
   and the queue again.
 
-  **This card's own fold takes EVERY row** — and, since D561 (user call,
+  **This card's own fold takes EVERY row** — and, since D562 (user call,
   2026-08-27: "everything is foldable, even for the job cards"), so does the
   jobs card's. The two used to differ: the jobs card pinned the queue's rows
   and a live-run stand-in outside its collapse (BG-10), on the reasoning
   that folding away a queued message's or a live turn's only ✕ left a card
   collapsed weeks ago with scheduled work arriving and nothing on screen to
-  stop it. That reasoning did not disappear — it moved, twice. D561 first
+  stop it. That reasoning did not disappear — it moved, twice. D562 first
   moved it into the header, dropping `queue.cancelAll`'s threshold from 2+
-  withdrawable rows to 1+ once collapsed. D562's status bar redesign then
+  withdrawable rows to 1+ once collapsed. D563's status bar redesign then
   retired that move rather than carrying it forward: collapsed is now a
   CHIP with no controls at all — the summary, the aggregate percentage, the
   chevron, nothing else — so there is no folded-but-visible header left for
@@ -5199,7 +5199,7 @@ stop it short of quitting the app.
   every row carries its own dismiss control once the panel is open.
 
   **Dismissing a row is scoped to the throttle window, not permanent
-  (D555).** The payload already carries `checked_at`; a row stays hidden
+  (D556).** The payload already carries `checked_at`; a row stays hidden
   while `dismissed[root] >= repo.checked_at` and reappears once the
   server's own throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces
   a newer one — no server-side dismissal state is needed. The dismissed map
@@ -5213,7 +5213,7 @@ stop it short of quitting the app.
   Giving repo updates their own top-level card is the smaller change now
   that the card no longer needs the rows to share its ONE plate at all — see
   GT-20 for why Switch, never a history-rewriting action, is this card's
-  off-default action (D554). **Rejected: modeling a repo row on the job
+  off-default action (D555). **Rejected: modeling a repo row on the job
   registry.**
   `fused_render/jobs.py` models `queued → running → finished`, a progress
   fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
@@ -5221,7 +5221,7 @@ stop it short of quitting the app.
   moment it next ran. `shell/RepoUpdatesDock.tsx` therefore polls its own
   endpoint (`GET /api/git-upstream`) the same way `QueueDock.tsx` polls its
   own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
-  `StatusBar`'s separate `repoUpdates` prop (D562 — `NotificationHost`'s,
+  `StatusBar`'s separate `repoUpdates` prop (D563 — `NotificationHost`'s,
   before the status bar redesign) rather than a slot on `DownloadManager`.
 
 ---
@@ -9887,10 +9887,12 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   never extract fresh, never rebuild, never record recency; the entry iframe
   carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
   thumb — a peek must not be the first run of a stranger's pages.
-  Export can BAKE one in: `exportAppFile` captures a tab screenshot
-  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
-  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
-  when and only when the folder has no authored `preview.png`. The crop
+  Export can BAKE one in: `exportAppFile` takes a NATIVE screen shot of
+  the app's on-screen rect (`POST /api/capture/shot-region`, the §45 still
+  behind `fused.capture.screenshot()` pointed at a browser-measured rect,
+  PNG bytes back and no file in `<home>/recordings`; chosen over DOM
+  serialization because canvas/WebGL apps rasterize blank) when and only
+  when the folder has no authored `preview.png`. The crop
   source is the card's own thumbnail when it is on screen AND HAS PAINTED
   the app — a card without a preview.png renders the live app there, so
   nothing navigates or flashes, but only two card previews start at a time
@@ -9900,18 +9902,21 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   (`data-capture-ready`, set on the body iframe's load) because the surface
   that opens the context menu is not the one holding that state; the
   full-viewport stage is the fallback for a missing, off-screen or unpainted
-  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
-  before anything is awaited: `getDisplayMedia` spends the click's transient
-  user activation, which expires seconds later, so asking after a stage
-  iframe's load-and-settle wait would lose the prompt for every app slower
-  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
-  stream is continuous, so the stage mounts and settles against a stream
-  already running. The prompt itself cannot be silenced — that is
-  getDisplayMedia's contract. The
+  thumb, sized so its shot lands under the width cap at this DPR (so nothing
+  downscales). The browser reports the rect in its screen units
+  (`screenX` + chrome + the element's box) plus `devicePixelRatio`; the
+  backend's `locate` hook maps that onto ONE display in its own units
+  (points on macOS, physical pixels on Windows/Linux) and REFUSES a rect that
+  is not entirely on one display rather than clipping it — a sliver baked
+  in is a valid PNG nothing later can catch. No share prompt and nothing
+  hinging on the click's transient user activation (the earlier tab-capture
+  version's whole ordering problem); on a Mac without Screen Recording
+  granted the first shot raises the TCC dialog and that export ships plain.
+  The
   X-Fused `POST /api/appfile/export` variant writes it as
   `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, prompt dismissed, blank,
-  over-cap — exports plain: the route drops a too-big screenshot rather than
+  wins; every capture failure — unsupported, permission denied, off-display,
+  blank, over-cap — exports plain: the route drops a too-big screenshot rather than
   failing the download, where `export_app_file` itself still raises for a
   caller that meant to supply a still). An injected preview extracts as a
   real file in the app's read-only extract dir like any other member.
@@ -10156,6 +10161,27 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
+- **MC-12** **The registration entry's `command` is the resolved `fused`
+  path, VERBATIM — including the bare `fused.cmd` `inspect_app._fused_cli()`
+  reports on Windows — never routed through a `cmd.exe /c` hop we add
+  ourselves (D549).** A `.cmd` cannot be handed to `CreateProcess` directly,
+  which reads as an obvious bug to a reader who has not checked how the MCP
+  host actually spawns it — the fix a `cmd.exe` hop resembles is real for a
+  process THIS codebase spawns itself, and wrong here: the MCP TS SDK's
+  stdio transport spawns via `cross-spawn` with `shell: false`, and
+  cross-spawn decides whether to build its OWN safe `cmd.exe /c` hop by
+  reading the command's file extension (only `.com`/`.exe` skip it) — naming
+  `cmd.exe` ourselves makes that check see an `.exe` and skip the hop
+  cross-spawn would otherwise have applied correctly, which is a regression,
+  not a fix, under that theory, and still not reliably safer under the
+  alternative one (a spaced path breaks a hand-rolled `cmd.exe /c` too, once
+  both the wrapper path and the served path need their own quoting). Neither
+  host theory has been verified against a real Windows Claude Code install —
+  D549 names the check that would. Extracted into a pure
+  `registrationDefinition(fused, path)` function specifically so
+  `tests/test_mcp_panel.py` can pin the shape (no `cmd.exe`, no `/c`, for
+  both a POSIX- and a Windows-shaped `fused` path) and turn a well-meaning
+  revert of this decision into a loud, specific test failure.
 
 ## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
 

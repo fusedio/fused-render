@@ -1,5 +1,5 @@
 // The rules for repo-update rows in their own sibling notification card
-// (SPEC §36, D554 — no longer rows inside the jobs/downloads activity card),
+// (SPEC §36, D555 — no longer rows inside the jobs/downloads activity card),
 // kept pure so they can be tested without a DOM or a poll — the same split
 // queue-dock-lib.ts makes against QueueDock.tsx: what a row SAYS and WHICH
 // action it offers live here; the polling, the card's own plate/header/fold
@@ -23,7 +23,7 @@ export interface RepoStatus {
 
 // "rebase" was a member of this union, offered as a secondary action beside
 // Switch (replaying the current branch onto the default). Removed — user
-// call, D554 amendment: "the rebase button is scary, let's just remove it".
+// call, D555 amendment: "the rebase button is scary, let's just remove it".
 // Every row now offers exactly one action, so there is no secondary slot
 // left to carry it.
 export type RepoAction = "update" | "switch";

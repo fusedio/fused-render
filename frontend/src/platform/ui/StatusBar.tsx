@@ -1,4 +1,4 @@
-// The bottom status bar (SPEC §36, D562): a thin strip inside `#main` that
+// The bottom status bar (SPEC §36, D563): a thin strip inside `#main` that
 // RESERVES layout space for the two long-lived notification cards — the
 // activity card (jobs and the scheduled queue) and the repo-updates card —
 // so a page's content ends above it instead of a floating card overlaying it.

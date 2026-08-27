@@ -223,7 +223,7 @@ def rebase_conflict_repo(root, path="pkg/mod.py"):
 
 def test_a_rebase_conflict_leaves_the_repo_in_a_state_the_conflicts_reader_finds(reader, tmp_path):
     # `ops.py` offers no rebase op of its own (removed as too dangerous to
-    # offer — D554 amendment); a rebase left mid-operation is still always
+    # offer — D555 amendment); a rebase left mid-operation is still always
     # possible from a terminal or another tool, and the conflict reader must
     # still find and describe it accurately, which is what this pins — the
     # rebase itself is driven with a raw `git rebase`, standing in for the
