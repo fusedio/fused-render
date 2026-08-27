@@ -300,28 +300,42 @@
   font-size: 12px;
 }
 
-/* Legible at a glance rather than merely present: full --fg and a real
-   15px-drawn glyph (not a muted, undersized one) make the header's
-   clickability obvious without touching the hit area (still the whole
-   `.dl-toggle`) or the collapse rotation below.
-   `DlChevron` (platform/ui/DlChevron.tsx) draws it as an inline SVG now —
+/* `DlChevron` (platform/ui/DlChevron.tsx) draws it as an inline SVG —
    round 3, user: "the collapsing arrow is very ugly" — replacing the text
    glyph `⌃` that shipped in round 2. A typeset caret renders at whatever
    weight and baseline the font stack gives it; this app's own convention
    for a rotating disclosure is an inline lucide-style `<polyline>` (see
    `shell/NewJobModal.tsx`'s `ICON_CHEVRON_DOWN`, `platform/ui/
    MenuIcons.tsx`'s `chevron`), so this glyph now follows it instead of
-   inventing a fourth spelling. `color` still drives it (the SVG's own
-   `stroke="currentColor"`), so `.is-failure` below needs no change, and
-   this class still only ever supplies size, color and the collapse
-   rotation — never the shape, which lives in the component now. Pointing
-   UP, not down (D568 finding #6): the panel opens UPWARD (`.dl-panel`'s
-   `bottom: 100%`), so the glyph points toward where expanding actually
-   reveals content. */
+   inventing a fourth spelling. `color` drives it (the SVG's own
+   `stroke="currentColor"`), and this class still only ever supplies size,
+   color and the collapse rotation — never the shape, which lives in the
+   component. Pointing UP, not down (D568 finding #6): the panel opens
+   UPWARD (`.dl-panel`'s `bottom: 100%`), so the glyph points toward where
+   expanding actually reveals content.
+
+   REST STATE IS `--fg-muted`, not `--fg` (D570, user on the round-3 SVG:
+   "the up arrow is glaring") — the SAME over-correction shape D568 finding
+   #7 fixed the opposite direction on (an 11px `--fg-muted` text glyph that
+   was too QUIET). A crisp 15px SVG stroke at full `--fg` next to `.dl-
+   summary`'s 500-weight text reads as the loudest thing in the bar, wrong
+   for a disclosure affordance whose job is to be found, not to shout.
+   `stroke-width` also drops 2 -> 1.5 (see the component) for the same
+   reason. `--fg` is not gone, it moved to the chip's OWN hover/focus below
+   — the chevron now brightens exactly when the row it belongs to is
+   interactive, which is also the hover feedback this affordance should
+   have carried from round 1 and never did. */
 .dl-chevron {
   flex: 0 0 auto;
+  color: var(--fg-muted);
+  transition:
+    transform var(--dur-med) var(--ease-out),
+    color var(--dur-med) var(--ease-out);
+}
+
+.dl-toggle:hover .dl-chevron,
+.dl-toggle:focus-visible .dl-chevron {
   color: var(--fg);
-  transition: transform var(--dur-med) var(--ease-out);
 }
 
 /* Collapsed still reads as "closed, click to open" by rotating to point
@@ -484,14 +498,27 @@
    0` the row's total content could still exceed the panel's width, and
    `.dl-amount`/`.dl-pct`/`.dl-row-cancel`/`.dl-x` (still genuinely `flex: 0
    0 auto`, and MUST stay that way — their own width is never optional) had
-   nowhere to go but past the panel's padding edge. `flex: 0 1 auto` plus
-   `min-width: 0` and the same overflow/ellipsis treatment `.dl-title` wears
-   makes this the row's SECOND shrinkable child rather than an unshrinkable
-   one — both it and the title can now be squeezed all the way to nothing
-   before anything protected is ever displaced, which is what actually
-   guarantees the protected controls stay inside the panel. */
+   nowhere to go but past the panel's padding edge.
+
+   ORDERED, NOT PROPORTIONAL (D571 follow-up, coordinator: with both this and
+   `.dl-title` at an equal `flex-shrink: 1`, the two shrank in lockstep —
+   `Downloadin…` / `Qwen2.…` — cutting the row's TWO identifying fields to
+   uselessness together while `.dl-amount`/`.dl-pct` kept full width. `.dl-
+   model` is a dimmed SECONDARY suffix, and per `jobs.ts`'s own comment it is
+   a redundant restatement whenever the title already names the model — true
+   in exactly this repro. `flex-shrink: 999` here, `.dl-title`'s stays `1`
+   (unchanged above): CSS Flexbox resolves shrink in passes — an item
+   clamped at its `min-width` freezes and drops out, and remaining negative
+   space is then redistributed among the flexible items still standing. With
+   a 999:1 shrink-factor split, the first pass assigns the model suffix
+   essentially all of the negative space; once it bottoms out at `min-width:
+   0` and freezes, `.dl-title` is the only item left to absorb whatever
+   deficit remains. The practical result is the model collapses to nothing
+   FIRST, and the title only starts giving up characters once there is
+   nothing left of the model to take — a priority order out of a mechanism
+   built for proportions, not a JS measurement or a second breakpoint. */
 .dl-model {
-  flex: 0 1 auto;
+  flex: 0 999 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -458,6 +458,16 @@ describe("a running row's protected controls never give up their width (D569)", 
     }
   });
 
+  // D571 follow-up: proportional shrink cut BOTH identifying fields to
+  // uselessness together (`Downloadin…` / `Qwen2.…`) while the protected
+  // controls kept full width. The model suffix now shrinks lopsidedly
+  // first — see notifications.css's own comment on `.dl-model` for the
+  // "freeze and redistribute" mechanism this relies on.
+  it("shrinks the model suffix FIRST — its flex-shrink dwarfs the title's", () => {
+    expect(block(CSS, ".dl-title")).toContain("flex: 1 1 auto;");
+    expect(block(CSS, ".dl-model")).toContain("flex: 0 999 auto;");
+  });
+
   it("never lets the amount, percentage, Cancel or dismiss give up their intrinsic width", () => {
     // A combined block: `.dl-amount, .dl-pct { flex: 0 0 auto; ... }`.
     const amountPct = CSS.slice(

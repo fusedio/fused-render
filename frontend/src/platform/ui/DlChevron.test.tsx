@@ -8,7 +8,7 @@
 // spelling. Unlike the round-3 geometry fixes, this one IS fully checkable
 // with `react-test-renderer`: there is no viewport dependency in "is this an
 // svg with a polyline, not a span with a text node".
-import { expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import DlChevron from "@platform/ui/DlChevron";
@@ -47,4 +47,46 @@ test("points UP (the direction .dl-panel actually opens, bottom: 100%)", () => {
     (c): c is ReactTestRendererJSON => typeof c !== "string" && c.type === "polyline",
   );
   expect(polyline?.props.points).toBe("18 15 12 9 6 15");
+});
+
+// D570 (user, on the shipped round-3 chevron: "the up arrow is glaring") —
+// full `--fg` at 15px with strokeWidth 2 out-weighed `.dl-summary`'s
+// 500-weight text beside it. The fix has a component half (checkable here)
+// and a stylesheet half (a source pin below — `react-test-renderer` cannot
+// compute a rendered stroke's visual weight against neighbouring text, only
+// prove the two declarations exist and agree).
+test("draws a lighter stroke than round 3 shipped (2 -> 1.5)", () => {
+  const tree = root(create(<DlChevron collapsed={false} />).toJSON());
+  expect(tree.props.strokeWidth).toBe("1.5");
+});
+
+describe("the chevron reads quieter than the summary text beside it (D570)", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const CSS = readFileSync(join(import.meta.dir, "../../styles/notifications.css"), "utf8");
+
+  function block(css: string, selector: string): string {
+    const at = css.indexOf(selector + " {");
+    expect(at).toBeGreaterThan(-1);
+    return css.slice(at, css.indexOf("}", at));
+  }
+
+  it("rests muted, not full --fg", () => {
+    expect(block(CSS, ".dl-chevron")).toContain("color: var(--fg-muted);");
+  });
+
+  it("only brightens to --fg on its own chip's hover or focus", () => {
+    expect(CSS).toContain(".dl-toggle:hover .dl-chevron,\n.dl-toggle:focus-visible .dl-chevron {");
+    const hoverBlock = CSS.slice(
+      CSS.indexOf(".dl-toggle:hover .dl-chevron"),
+      CSS.indexOf("}", CSS.indexOf(".dl-toggle:hover .dl-chevron")),
+    );
+    expect(hoverBlock).toContain("color: var(--fg);");
+  });
+
+  it("still tints --error under a failure, same as before — is-failure is untouched", () => {
+    expect(block(CSS, ".dl-toggle.is-failure,\n.dl-toggle.is-failure .dl-chevron")).toContain(
+      "color: var(--error);",
+    );
+  });
 });

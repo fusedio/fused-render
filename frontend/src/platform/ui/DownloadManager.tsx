@@ -308,12 +308,35 @@ export function JobRow({
   job,
   onChanged,
   onPatch,
+  cancelFn = cancelJob,
+  dismissFn = dismissJob,
 }: {
   job: Job;
   onChanged: () => void;
   onPatch: (fn: (jobs: Job[]) => Job[]) => void;
+  /** Test seam only (D572's own failure-path test uses it) — every real
+   *  caller gets the real `cancelJob`/`dismissJob` (@platform/lib/jobs) by
+   *  default. Injectable rather than mocked so a rejected-request test does
+   *  not need a process-wide `mock.module` on `@platform/lib/jobs` (this
+   *  file's own header comment already tells that contamination story for
+   *  `@platform/lib/api`, which this module itself calls into). */
+  cancelFn?: (id: string) => Promise<Job>;
+  dismissFn?: (id: string) => Promise<{ dismissed: string }>;
 }) {
   const [busy, setBusy] = useState(false);
+  // A REJECTED cancel/dismiss must say so, not vanish (D572, user: "the
+  // cancel button also doesn't seem to be doing anything?" — a 404, a 500 or
+  // an offline server all left the empty `catch` below discarding the
+  // failure with no toast, no console entry, no state change and no label
+  // move, so the click produced literally nothing observable). Same posture
+  // D566 already set for this exact situation in the Models panel's own
+  // Unload ("must not fail silently") — a row-scoped `.dl-status` line, not
+  // a toast, since the row is already the thing the user is looking at.
+  // `onPatch`/`onChanged()`'s "the refresh is the source of truth" framing
+  // (below) is still correct for the SUCCESS path and for an ordinary race —
+  // the server is authoritative about whether the work actually stopped —
+  // it was only ever wrong for a request that never landed at all.
+  const [failure, setFailure] = useState<string | null>(null);
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
@@ -337,13 +360,18 @@ export function JobRow({
 
   const cancel = async () => {
     setBusy(true);
+    setFailure(null);
     try {
-      await cancelJob(job.id);
+      await cancelFn(job.id);
       // The row stays — the work has not stopped — but the label has to move
       // to "Cancelling…" now, or the button reads as having done nothing.
       onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
     } catch {
-      /* nothing applied locally — the refresh below is the source of truth */
+      // The request never landed — a 404 against a job id the server never
+      // heard of, a 500, an offline server. `onPatch` above did NOT run, so
+      // there is nothing for the refresh to correct; without this the button
+      // just goes quiet, which reads as broken because it is.
+      setFailure("Could not cancel — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -352,11 +380,14 @@ export function JobRow({
 
   const dismiss = async () => {
     setBusy(true);
+    setFailure(null);
     try {
-      await dismissJob(job.id);
+      await dismissFn(job.id);
       onPatch((js) => js.filter((j) => j.id !== job.id));
     } catch {
-      /* nothing applied locally — the refresh below is the source of truth */
+      // Same class of problem as `cancel` above: a rejected request left the
+      // row exactly as it was with nothing said about why.
+      setFailure("Could not dismiss — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -385,10 +416,11 @@ export function JobRow({
           // The MODEL name only, not the whole `owner/model` repo id. The owner
           // is the same for every row a given model ever draws, so it spent the
           // head's scarcest resource on the one part that never distinguishes
-          // anything — and `.dl-model` is `flex: 0 0 auto` (notifications.css),
-          // so the space it took came out of `.dl-title`, ellipsizing the user's
-          // actual prompt down to a few characters. Full id stays on hover,
-          // since shortening makes two owners' same-named models identical.
+          // anything. Full id stays on hover, since shortening makes two
+          // owners' same-named models identical. `.dl-model` itself now
+          // ellipsises and shrinks FIRST, ahead of `.dl-title` (D571,
+          // notifications.css's own comment on `.dl-model` has the
+          // mechanism) — this suffix gives way before the title does.
           <span className="dl-model" title={job.model}>
             {repoName(job.model)}
           </span>
@@ -421,7 +453,12 @@ export function JobRow({
         )}
       </div>
       <Bar job={job} />
-      {status && <div className="dl-status">{status}</div>}
+      {/* A local action's own failure takes this line over the job's
+          ordinary status sentence — it is more urgent and it is about the
+          very button the user just pressed. `status` (the server's report)
+          comes back once a later poll succeeds or the row's own next action
+          clears `failure`. */}
+      {(failure ?? status) && <div className="dl-status">{failure ?? status}</div>}
     </div>
   );
 }

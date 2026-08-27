@@ -28,12 +28,28 @@
 // `.dl-chevron.is-collapsed` (notifications.css) still rotates it 90° to a
 // closed read pointing right. This file only supplies the shape and the
 // class names; the rotation and the color (`currentColor`, driven by CSS
-// `color`) are unchanged, including the `.is-failure` -> `var(--error)` tint.
+// `color`) are unchanged in their MECHANISM, including the `.is-failure` ->
+// `var(--error)` tint — only the REST-state color and stroke weight moved,
+// D570 below.
 //
 // 15px, not the app's usual 16px icon norm — the exact size round 2's own
 // finding kept for legibility ("Legible at a glance… a bigger glyph make the
 // header's clickability obvious"); shrinking it to match `Chevron.tsx`/
 // `PanelIcon.tsx`'s 16px would be a size nobody asked to change.
+//
+// D570 (user, on the round-3 SVG: "the up arrow is glaring") — the same
+// over-correction shape D568 finding #7 hit in the opposite direction (an
+// 11px `--fg-muted` text glyph that was too QUIET). `strokeWidth` drops 2 ->
+// 1.5: at 15px on this 24-unit grid, 2 renders a ~1.25px stroke, heavier
+// than `.dl-summary`'s 500-weight text beside it and the loudest mark in
+// the bar — wrong for a disclosure affordance whose job is to be found, not
+// to shout. The REST color moved out of this file entirely: `currentColor`
+// still drives the stroke, but `.dl-chevron` (notifications.css) now sets
+// `--fg-muted` at rest and only rises to `--fg` on `.dl-toggle:hover`/
+// `:focus-visible` — quieter than the old flat full-`--fg` fill, and it
+// gains real hover feedback the affordance should have had from round 1.
+// 1.5 is still well clear of a hairline: this stays structurally a drawn
+// glyph, not a reversion to the 11px text caret round 2 replaced.
 export default function DlChevron({ collapsed }: { collapsed: boolean }) {
   return (
     <svg
@@ -43,7 +59,7 @@ export default function DlChevron({ collapsed }: { collapsed: boolean }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
+      strokeWidth="1.5"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
