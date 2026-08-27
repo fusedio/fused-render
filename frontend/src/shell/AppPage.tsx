@@ -1,7 +1,8 @@
 // The app page — `/apps/<folder path>` (D488, widened 2026-08-26): one app
 // folder — a workspace app under any shelf, or a linked app anywhere on disk —
-// as a place rather than as a folder. Three tabs, named by the `_tab` query
-// param (absent = overview; `?_tab=tasks`, `?_tab=files` — current-apps-lib):
+// as a place rather than as a folder. Six tabs, named by the `_tab` query
+// param (absent = overview; `?_tab=tasks`, `?_tab=files`, `?_tab=api` —
+// current-apps-lib):
 //
 //   Overview  the app itself, live in a frame — USE it here, the way the
 //             explorer's file view runs an entry page (`/render?path=`, with no
@@ -13,6 +14,9 @@
 //   Files     the folder's files as a tree, each rendered in one of its own
 //             templates (shell/AppFiles.tsx) — "what is in this app and what
 //             does each piece look like", without leaving the page.
+//   API       every .py in the folder as an endpoint, Swagger-style
+//             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
+//             response — the api template's view, for the whole app at once.
 //   MCP       the folder's `mcp` template (templates/mcp) in a frame — the
 //             tool curation panel the explorer offers on an app folder, here
 //             as a tab. Offered whenever the template exists; the template's
@@ -63,6 +67,7 @@ import {
   GitBranch,
   ListTodo,
   Plug,
+  Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -78,6 +83,7 @@ import {
 } from "./current-apps-lib";
 import Scheduled from "./Scheduled";
 import AppFiles from "./AppFiles";
+import AppApi from "./AppApi";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -154,6 +160,13 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     render: ({ dir, entry, folderHref }) => (
       <AppFiles dir={dir} entry={entry} folderHref={folderHref} />
     ),
+  },
+  api: {
+    label: "API",
+    Icon: Webhook,
+    // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
+    // one folder inspection — form values and responses are session scratch.
+    render: ({ dir, folderHref }) => <AppApi dir={dir} folderHref={folderHref} />,
   },
   mcp: {
     label: "MCP",
