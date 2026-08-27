@@ -128,11 +128,19 @@ test("the ✕ dismisses only its own row, with that row's own checked_at", () =>
   expect(seen).toEqual(["/a/one", 1234]);
 });
 
-test("collapsed folds every row — the whole list gets is-folded, not a partial fold", () => {
+test("collapsed hides every row — not a class flag, the rows are actually gone", () => {
+  // A className check alone (e.g. asserting `.dl-rows` gets `is-folded`)
+  // would pass even if every row still rendered underneath it — which is
+  // exactly the bug review caught (task 8): the class was applied, nothing
+  // was actually hidden. This asserts the OBSERVABLE content instead.
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows, collapsed: true });
-  const folded = findAll(tree, "dl-rows").filter(
-    (n) => n.props.className.split(" ").includes("is-folded"),
-  );
-  expect(folded).toHaveLength(1);
+  expect(findAll(tree, "q-row")).toHaveLength(0);
+  expect(findAll(tree, "dl-rows")).toHaveLength(0); // no empty box left behind either
+});
+
+test("expanded shows every row", () => {
+  const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
+  const tree = renderView({ rows, collapsed: false });
+  expect(findAll(tree, "q-row")).toHaveLength(2);
 });

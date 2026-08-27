@@ -260,12 +260,19 @@ function RepoRowView({
  * everything is therefore the simpler, honest choice for a card whose only
  * job is "how many, and do you want to see them right now".
  *
- * D526 (the jobs card's toggle investigation) does not apply here: this
- * card returns `null` outright with no visible rows, and folds EVERY row
- * once it renders — so whenever the toggle is on screen at all, at least
- * one row exists for it to fold. There is no state, unlike the jobs card's
- * (whose queue rows and live-run stand-in always show regardless of
- * `collapsed`), where pressing this toggle would visibly do nothing.
+ * **Hiding is done in JS, not CSS** — the SAME rule `DownloadManagerView`
+ * follows (its own `listed` / `shown.jobs` split): the `.dl-rows.is-folded`
+ * CSS rule is a max-height CAP (172px), not a way to hide content, so
+ * applying it to a `.dl-rows` that still had every row mapped underneath it
+ * folded NOTHING for the 1-4 rows this card typically holds — the exact D526
+ * bug this card was supposed to have been immune to, shipped anyway (code
+ * review, 2026-08-27). Collapsed therefore renders NO rows at all — `shown`
+ * below is `[]` — and the `.dl-rows` wrapper itself is omitted rather than
+ * left as an empty box, mirroring how `DownloadManagerView` guards its own
+ * list (`shown.queue || listed.length > 0`). So whenever the toggle is on
+ * screen at all (the card returned non-null, meaning `visible.length > 0`),
+ * pressing it always visibly hides or shows every row — there is no D526
+ * state here where the button would be inert.
  */
 export function RepoUpdatesCardView({
   rows,
@@ -312,16 +319,21 @@ export function RepoUpdatesCardView({
           Clear
         </button>
       </div>
-      <div className={"dl-rows" + (collapsed ? " is-folded" : "")}>
-        {visible.map((row) => (
-          <RepoRowView
-            key={row.repo.root}
-            row={row}
-            onDone={onDone}
-            onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
-          />
-        ))}
-      </div>
+      {/* Collapsed shows NO rows and no empty box — see this component's own
+          doc comment on why a CSS-only fold (a max-height cap) is not
+          enough for a list this short. */}
+      {!collapsed && (
+        <div className="dl-rows">
+          {visible.map((row) => (
+            <RepoRowView
+              key={row.repo.root}
+              row={row}
+              onDone={onDone}
+              onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
