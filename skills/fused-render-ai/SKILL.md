@@ -1,6 +1,6 @@
 ---
 name: fused-render-ai
-description: Use when a fused-render page needs an AI model — calling fused.ai for text, streaming tokens, holding a conversation, generating an image with fused.ai.image, transcribing audio or video with fused.ai.transcribe, or driving local models with fused.ai.models (list/catalog/load/download/unload) and fused.ai.cancel. Also use when a .py data file or an external process wants the same calls via `import fused_ai`, when an AI call rejects with ai_unavailable, model_loading, unavailable, cancelled, timeout, or stalled, when a model download needs watching, or when a page (or a .py file) that calls AI must survive export.
+description: Call an AI model from a fused-render page or .py file — fused.ai text and streaming, .image, .video, .transcribe, .embed, .models, and `import fused_ai`. Use when a page needs a model, or an AI call rejects (ai_unavailable, model_loading, timeout, stalled).
 ---
 
 # AI in a fused-render Page
@@ -249,7 +249,7 @@ el.dataset.seed = img.seed;
 
 Resolves with `{jobId, path, url, previewUrl, previewPath, model, prompt, width, height, steps, guidance, seed}`, plus `image` (the resolved absolute path) when you passed one — the render that will actually happen, not the one you asked for.
 
-### Editing a base image: `{image}` — mflux only (D432)
+### Editing a base image: `{image}` — mflux only
 
 ```js
 const edited = await fused.ai.image({
@@ -584,10 +584,10 @@ Fifteen runners, five capabilities, taking **either** a Hugging Face repo id **o
 
 | Capability | Runners (default first) | Reality |
 |---|---|---|
-| `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. The three Transformers rows that used to sit between them were withdrawn: llama.cpp reads a quantized GGUF of the same current-generation Qwen several times quicker, at roughly a third of the download and a third of the memory, so **local text ids are GGUF now** — the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
+| `text-generation` | MLX, then llama.cpp (CPU), then llama.cpp (Vulkan) | **Everywhere.** MLX on Apple Silicon; **llama.cpp (CPU)** everywhere else, and as the Apple Silicon fallback — the same index's wheel links Metal, so it is on the GPU there too. **Local text ids are GGUF**: the curated ones are the GGUF's own filename, and any other GGUF repo resolves generically once picked from Hub search or loaded by its bare repo id. A plain safetensors repo is loadable only by MLX, i.e. only on Apple Silicon. Vulkan is the one opt-in row: it needs a working loader AND driver ICD from the GPU vendor or the Load button refuses with a reason naming which is missing; once loaded, a model too large for the card degrades to partial or full CPU offload rather than failing the load. |
 | `text-to-image` | MLX FLUX, then Diffusers (CPU), then Diffusers (CUDA), then Diffusers (ROCm) | **Everywhere.** MLX FLUX takes Apple Silicon (quicker, smaller download, much more memory); Diffusers (CPU) serves everywhere else and is one Engines-tab switch away on a Mac — minutes per image rather than seconds. The CUDA and ROCm variants are opt-in and hardware-gated: offered only where the app sees a usable NVIDIA or AMD GPU, greyed out with the reason otherwise. |
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
-| `embeddings` | MLX Embeddings, then ONNX Embeddings (CPU), then ONNX (DirectML), (CUDA), (ROCm) | **Everywhere.** MLX takes Apple Silicon; **ONNX Embeddings (CPU)** serves everywhere else and is the Apple Silicon fallback. Three Transformers rows used to sit here and were withdrawn: an embedding call is one forward pass over a short sequence or one image, so the compute was never the argument — the WHEEL was, at 0.2–5.9 GB of torch to run a model whose own weights are 1.5 GB, against tens of megabytes of `onnxruntime` producing the same vectors (there is a real-weights parity gate asserting ≥0.999 cosine). So **local embedding ids are ONNX exports now** on every machine but a Mac. The three accelerated rows are opt-in and hardware-gated; none of them is about speed, and `auto` never reaches one. |
+| `embeddings` | MLX Embeddings, then ONNX Embeddings (CPU), then ONNX (DirectML), (CUDA), (ROCm) | **Everywhere.** MLX takes Apple Silicon; **ONNX Embeddings (CPU)** serves everywhere else and is the Apple Silicon fallback, so **local embedding ids are ONNX exports** on every machine but a Mac (a parity gate asserts ≥0.999 cosine against the torch weights). The three accelerated rows — DirectML, CUDA, ROCm — are opt-in and hardware-gated; none of them is about speed, and `auto` never reaches one. |
 | `text-to-video` | LTX-2.3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** LTX-2.3 runs on `ltx-2-mlx`, which is MLX-only; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
 
 Those five strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
@@ -743,7 +743,7 @@ First failing = `ai_unavailable`, not your bug. `X-Fused: 1` is required on ever
 - **Reading progress as bytes or steps** → it is `unit: "s"`, seconds of audio.
 - **`fused.ai.cancel()` to stop a transcription** → it defaults to `"text-generation"`; name the capability or use the row's ✕.
 - **Loading `openai/whisper-large-v3`** → transformers format, which no shipping runner reads. Take the id from `catalog()`.
-- **Loading a plain safetensors text model such as `Qwen/Qwen3.5-9B`** → since the Transformers engines were withdrawn, only MLX reads safetensors, so this is loadable on Apple Silicon and nowhere else. Off a Mac take the GGUF id from `catalog()` — the same model, a quarter of the download.
+- **Loading a plain safetensors text model such as `Qwen/Qwen3.5-9B`** → only MLX reads safetensors, so it loads on Apple Silicon and nowhere else. Off a Mac take the GGUF id from `catalog()` — the same model, a quarter of the download.
 
 **Export**
 
