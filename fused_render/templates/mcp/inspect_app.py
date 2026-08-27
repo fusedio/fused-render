@@ -120,6 +120,12 @@ def _fused_cli() -> str:
     here, guarded against by
     `tests/test_mcp_inspect.py::test_the_reader_finds_exactly_what_the_writer_names`,
     which pins the two sides together), `fused` everywhere else.
+
+    This returns the bare `.cmd` path on purpose — the caller (`template.html`'s
+    registration entry) does NOT route it through a `cmd.exe /c` hop. See the
+    comment at that call site for why a hop was investigated and rejected
+    (cross-spawn's own extension-based dispatch, and the unresolved-either-way
+    quoting risk for a spaced path); it is intentionally not repeated here.
     """
     cli_dir = _shared_import("appenv", "fused_cli_dir")
     if cli_dir is None:

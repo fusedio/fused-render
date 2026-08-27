@@ -501,6 +501,47 @@ async function refreshRegistration() {
   }
 }
 
+// The entry a Claude session will run: the resolved absolute `fused`, and the
+// absolute app folder. Absolute both times on purpose — an MCP host spawns
+// this with no useful cwd and no shell PATH assumptions.
+//
+// On Windows `fused` is a bare `fused.cmd` path (a batch file, not a
+// `CreateProcess`-executable) — that is DELIBERATE, not an oversight. Do not
+// "fix" it by routing through `cmd.exe` yourself (`command: "cmd.exe", args:
+// ["/c", fused, ...]`): investigated and rejected for this exact spot. The
+// MCP TS SDK's stdio transport spawns via `cross-spawn` with `shell: false`,
+// and cross-spawn decides whether to build its own safe `cmd.exe /c` hop by
+// looking at the COMMAND'S OWN FILE EXTENSION (only `.com`/`.exe` skip the
+// hop) — see its `lib/parse.js`. Naming `cmd.exe` ourselves makes that
+// extension check see an `.exe` and skip the hop entirely, which is worse
+// than doing nothing: cross-spawn's hop is what correctly escapes a path
+// that contains a space (it wraps the whole command line in one extra quote
+// pair and sets `windowsVerbatimArguments`, which we have no way to set from
+// a JSON args array) — see nodejs/node#7367, which cross-spawn's own README
+// cites as one of the bugs it fixes. If the host does NOT use cross-spawn (a
+// bare, uncorrected spawn), a hand-rolled `cmd.exe` hop still doesn't
+// reliably save a spaced path either: `cmd /c`'s own quote-stripping rule
+// only has a safe fast path for exactly one quoted segment, and both the
+// wrapper path and `path` can independently contain one (a spaced username
+// hits the wrapper path too).
+//
+// Neither theory has been checked against a real Windows Claude Code install
+// — this is inference from the MCP SDK's source, not an observed spawn. The
+// check that WOULD settle it: register this entry on Windows, then run
+// `claude mcp list` and see whether the server reports connected (proves the
+// host resolves an un-hopped `.cmd` fine) rather than merely
+// added-but-unreachable (would mean this reasoning was wrong and the hop is
+// needed after all — reopen this comment, don't just add the hop back
+// silently).
+//
+// A pure function (not inlined at the one call site) so
+// tests/test_mcp_panel.py can pin this exact shape without a browser: the
+// next reader who sees a bare `.cmd` here and "fixes" it with a `cmd.exe`
+// hop should get a loud, specific test failure, not a silent revert.
+function registrationDefinition(fused, path) {
+  return { command: fused, args: ["app", "serve", path] };
+}
+
 async function toggleRegistration() {
   // A failed probe RE-PROBES rather than toggling: we do not know which of
   // add/remove the click would mean, and this row is now the only affordance
@@ -526,13 +567,7 @@ async function toggleRegistration() {
       registered = false;
       say("Unregistered " + name + ".");
     } else {
-      // The entry a Claude session will run: the resolved absolute `fused`, and
-      // the absolute app folder. Absolute both times on purpose — an MCP host
-      // spawns this with no useful cwd and no shell PATH assumptions.
-      const definition = {
-        command: report.fused,
-        args: ["app", "serve", report.path],
-      };
+      const definition = registrationDefinition(report.fused, report.path);
       const out = await callConfig({
         action: "add",
         name: name,
