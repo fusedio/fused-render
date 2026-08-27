@@ -347,6 +347,42 @@ def _apply_unified_override(device: GpuDevice, *, cpu_name: str, ram_gb: float) 
         device.unified_memory = True
 
 
+#: `/proc/cpuinfo`'s own path — a seam so a test can point this at a fixture
+#: file rather than the real `/proc`, which does not exist off Linux at all.
+_PROC_CPUINFO_PATH = "/proc/cpuinfo"
+
+
+def _linux_cpu_name() -> str:
+    """The CPU's marketing name, read from `/proc/cpuinfo`'s `model name`
+    field — the standard Linux mechanism (`lscpu` and a bare `cat /proc/
+    cpuinfo` read the identical field), used here because `platform.
+    processor()` is documented as frequently EMPTY on Linux (the stdlib's
+    own caveat), which silently broke two things at once (Bugbot review):
+    `_apply_unified_override`'s AMD-unified-APU detection (keyed off the
+    CPU name, never the GPU's own — Strix Halo's iGPU reports as an
+    ordinary-looking "AMD Radeon 8060S Graphics") never fired on Linux, and
+    neither did the bandwidth table's "ryzen ai max"/"strix halo" rows,
+    matched against the identical CPU-name string.
+
+    Empty string on ANY failure — missing file (this is called
+    unconditionally when `sys.platform` starts with `"linux"`, and a
+    container or an exotic kernel might still lack `/proc`), a permission
+    error, or a `model name` field this format has never had — the same
+    "no signal" answer the Darwin/Windows CPU-name reads already give in
+    their own failure cases, so `detect_hardware`'s override/bandwidth
+    logic needs no extra branch for it.
+    """
+    try:
+        with open(_PROC_CPUINFO_PATH, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if line.startswith("model name"):
+                    _key, _sep, value = line.partition(":")
+                    return value.strip()
+    except OSError:
+        pass
+    return ""
+
+
 def _total_vram_gb(gpus: list[GpuDevice]) -> float:
     """The sum across every device — multi-GPU aggregation, sum of vram x
     count. Identical GPUs are not deduplicated: two real 24GB cards really do
@@ -442,12 +478,27 @@ def detect_hardware(ram_gb: float | None = None) -> HardwareInfo:
     not a caller-visible error.
     """
     gpus = _nvidia_gpus() or _amd_gpus() or _windows_gpus() or _apple_gpu(ram_gb) or []
-    cpu_name = (_run(["sysctl", "-n", "machdep.cpu.brand_string"]) or "") \
-        if sys.platform == "darwin" else (platform.processor() or "")
+    if sys.platform == "darwin":
+        cpu_name = _run(["sysctl", "-n", "machdep.cpu.brand_string"]) or ""
+    elif sys.platform.startswith("linux"):
+        # `platform.processor()` is commonly empty here — see
+        # `_linux_cpu_name`'s own docstring for why this reads `/proc/
+        # cpuinfo` directly instead (Bugbot review).
+        cpu_name = _linux_cpu_name()
+    else:
+        cpu_name = platform.processor() or ""
     if ram_gb:
         for device in gpus:
             _apply_unified_override(device, cpu_name=cpu_name, ram_gb=ram_gb)
     bandwidth = _bandwidth_for(gpus[0].name) if gpus else None
+    if bandwidth is None and gpus and gpus[0].unified_memory:
+        # A unified APU's OWN device name (an ordinary-looking iGPU string,
+        # e.g. "AMD Radeon 8060S Graphics") names nothing in the bandwidth
+        # table — the table's "ryzen ai max"/"strix halo" rows are matched
+        # against the CPU's marketing name instead, the identical signal
+        # `_apply_unified_override` already used to detect the device as
+        # unified in the first place (Bugbot review).
+        bandwidth = _bandwidth_for(cpu_name)
     return HardwareInfo(gpus=gpus, total_vram_gb=_total_vram_gb(gpus),
                         bandwidth_gb_s=bandwidth, detected_at=time.time())
 

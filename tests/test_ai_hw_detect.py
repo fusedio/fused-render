@@ -137,6 +137,90 @@ def test_nvidia_grace_dgx_spark_overrides_to_full_system_ram():
     assert device.unified_memory is True
 
 
+# -- Linux CPU name (Bugbot review, code review 2026-08-27) -----------------
+#
+# `platform.processor()` is documented as frequently empty on Linux (Python's
+# own note in the stdlib docs), so `detect_hardware`'s AMD-unified-APU
+# override — keyed off the CPU marketing name, never the GPU's own name
+# (Strix Halo reports as an ordinary-looking iGPU, "AMD Radeon 8060S
+# Graphics") — never fired there, and neither did the bandwidth table's
+# "ryzen ai max"/"strix halo" rows, which are ALSO matched against the CPU
+# name rather than the GPU device name for the identical reason.
+#
+# **Reasoned rather than observed on real Strix Halo hardware** — no such
+# machine was available to verify `/proc/cpuinfo`'s exact `model name` line
+# against a real BIOS string; the fix targets the documented, standard Linux
+# mechanism (`/proc/cpuinfo`'s `model name:` field, the same source `lscpu`
+# and `cat /proc/cpuinfo` themselves read) rather than a guess.
+
+
+def test_linux_cpu_name_reads_the_model_name_field(tmp_path, monkeypatch):
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text(
+        "processor\t: 0\n"
+        "vendor_id\t: AuthenticAMD\n"
+        "model name\t: AMD Ryzen AI Max+ 395 w/ Radeon 8060S\n"
+        "cpu MHz\t\t: 3800.000\n"
+    )
+    monkeypatch.setattr(hw_detect, "_PROC_CPUINFO_PATH", str(cpuinfo))
+    assert hw_detect._linux_cpu_name() == "AMD Ryzen AI Max+ 395 w/ Radeon 8060S"
+
+
+def test_linux_cpu_name_is_empty_when_the_file_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(hw_detect, "_PROC_CPUINFO_PATH", str(tmp_path / "nope"))
+    assert hw_detect._linux_cpu_name() == ""
+
+
+def test_linux_cpu_name_is_empty_when_no_model_name_line_exists(tmp_path, monkeypatch):
+    cpuinfo = tmp_path / "cpuinfo"
+    cpuinfo.write_text("processor\t: 0\nvendor_id\t: GenuineIntel\n")
+    monkeypatch.setattr(hw_detect, "_PROC_CPUINFO_PATH", str(cpuinfo))
+    assert hw_detect._linux_cpu_name() == ""
+
+
+def test_detect_hardware_reads_proc_cpuinfo_on_linux(monkeypatch):
+    """The actual regression: `detect_hardware` used to read
+    `platform.processor()` unconditionally, which is commonly empty on
+    Linux — it now reaches for `/proc/cpuinfo` there instead, making the
+    AMD-unified-APU override and its bandwidth row both reachable."""
+    monkeypatch.setattr(hw_detect.sys, "platform", "linux")
+    monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: [
+        hw_detect.GpuDevice(name="AMD Radeon 8060S Graphics", vram_gb=0.5)])
+    monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
+    monkeypatch.setattr(hw_detect, "_linux_cpu_name",
+                        lambda: "AMD Ryzen AI Max+ 395 w/ Radeon 8060S")
+
+    info = hw_detect.detect_hardware(ram_gb=128.0)
+
+    assert info.gpus[0].unified_memory is True
+    assert info.gpus[0].vram_gb == 128.0
+    assert info.total_vram_gb == 128.0
+    # The bandwidth table's "ryzen ai max" row, reachable via the CPU name
+    # now that the device is known to be unified and its OWN name ("AMD
+    # Radeon 8060S Graphics") matches nothing in the table.
+    assert info.bandwidth_gb_s == 256.0
+
+
+def test_detect_hardware_bandwidth_falls_back_to_the_device_name_first(monkeypatch):
+    """A discrete GPU's own name is still tried first (and normally
+    succeeds) — the CPU-name fallback only engages for a device the
+    unified-APU override actually fired on."""
+    monkeypatch.setattr(hw_detect.sys, "platform", "linux")
+    monkeypatch.setattr(hw_detect, "_nvidia_gpus", lambda: [
+        hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)])
+    monkeypatch.setattr(hw_detect, "_amd_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_windows_gpus", lambda: None)
+    monkeypatch.setattr(hw_detect, "_apple_gpu", lambda ram_gb: None)
+    monkeypatch.setattr(hw_detect, "_linux_cpu_name", lambda: "AMD Ryzen 9 7950X")
+
+    info = hw_detect.detect_hardware(ram_gb=64.0)
+
+    assert info.gpus[0].unified_memory is False
+    assert info.bandwidth_gb_s == 1008.0
+
+
 def test_a_discrete_gpu_is_not_overridden():
     device = hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)
     hw_detect._apply_unified_override(device, cpu_name="AMD Ryzen 9 7950X",
