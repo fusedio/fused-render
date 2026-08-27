@@ -184,6 +184,15 @@
   text-align: left;
 }
 
+/* D526: rendered as a plain `<span>`, not a `<button>`, when nothing on
+   screen is foldable right now (DownloadManagerView's own `foldable`
+   comment has the full story) — a header that LOOKS pressable but changes
+   nothing on press is what the user reported as a broken toggle. Same
+   layout as the real button, just no pointer affordance. */
+.dl-toggle.is-static {
+  cursor: default;
+}
+
 .dl-chevron {
   flex: 0 0 auto;
   color: var(--fg-muted);

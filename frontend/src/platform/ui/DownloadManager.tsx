@@ -521,6 +521,21 @@ export function DownloadManagerView({
   // the fold must not take — a live scheduled run standing in for a queue row that
   // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
   const listed = shown.jobs ? jobs : foldedJobRows(jobs);
+  // Whether collapsing would hide anything AT ALL (D526). Reported as the toggle
+  // "does nothing" — traced to `rowsShown`'s own documented rule: queue rows
+  // always show regardless of `collapsed`, and `foldedJobRows` deliberately keeps
+  // a live scheduled run's stand-in row through the fold too. Both are correct on
+  // their own terms (folding either would take away the only cancel a queued
+  // message or a live turn has), but together they mean a card whose job rows are
+  // ENTIRELY queue-adjacent — no rows, or only a live stand-in — folds nothing no
+  // matter how many times the header is pressed. That is not a broken toggle, it
+  // is an honest one offered where it has no work to do, which reads exactly like
+  // a broken one. The fix is not forcing a fold that would hide a control (the
+  // very bug `rowsShown` exists to prevent) but not drawing the toggle as
+  // pressable when nothing on screen would move — comparing against ALL of
+  // `jobs`, not `listed`, because `listed` already depends on `collapsed` and
+  // would make this circular.
+  const foldable = jobs.length > foldedJobRows(jobs).length;
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
   // used to count here too; that silently orphaned live work behind the
@@ -552,17 +567,27 @@ export function DownloadManagerView({
   return (
     <div className="dl-host">
       <div className="dl-head">
-        <button
-          className="dl-toggle"
-          onClick={toggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show details" : "Hide details"}
-        >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌄
+        {foldable ? (
+          <button
+            className="dl-toggle"
+            onClick={toggle}
+            aria-expanded={!collapsed}
+            title={collapsed ? "Show details" : "Hide details"}
+          >
+            <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
+              ⌄
+            </span>
+            <span className="dl-summary">{jobsSummary(jobs, count)}</span>
+          </button>
+        ) : (
+          // No chevron, no button, no onClick: there is nothing a fold could
+          // hide right now (see `foldable`'s own comment), so offering a
+          // press here would be a control that visibly does nothing — worse
+          // than no control at all.
+          <span className="dl-toggle is-static">
+            <span className="dl-summary">{jobsSummary(jobs, count)}</span>
           </span>
-          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
-        </button>
+        )}
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
         {/* Two actions, and they are not the same one twice: Cancel all withdraws
             messages that have not gone yet (the shell's, and only when 2+ rows

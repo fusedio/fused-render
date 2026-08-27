@@ -21,7 +21,7 @@
 import { expect, test } from "bun:test";
 import { create, type ReactTestRendererJSON } from "react-test-renderer";
 
-import { DownloadManagerView } from "@platform/ui/DownloadManager";
+import { DownloadManagerView, type QueueSlot } from "@platform/ui/DownloadManager";
 import type { Job } from "@platform/lib/jobs";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
@@ -61,6 +61,22 @@ const BASE: Job = {
 function renderCard(reported: Job[]): ReactTestRendererJSON | null {
   return create(
     <DownloadManagerView reported={reported} refresh={() => {}} patch={() => {}} />,
+  ).toJSON() as ReactTestRendererJSON | null;
+}
+
+function renderCardWithQueue(
+  reported: Job[],
+  queue: Partial<QueueSlot>,
+): ReactTestRendererJSON | null {
+  const full: QueueSlot = {
+    waiting: 0,
+    running: 0,
+    rows: null,
+    drawn: [],
+    ...queue,
+  };
+  return create(
+    <DownloadManagerView reported={reported} queue={full} refresh={() => {}} patch={() => {}} />,
   ).toJSON() as ReactTestRendererJSON | null;
 }
 
@@ -133,4 +149,53 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-row")).toHaveLength(2);
   expect(findAll(tree, "dl-clear")).toHaveLength(1);
+});
+
+// -------------------------------------------------- the collapse toggle (D526)
+//
+// The user reported the collapse toggle "does nothing". Investigating: with
+// queue rows present, `rowsShown.queue` is TRUE regardless of `collapsed`
+// (jobs.ts `rowsShown`'s own doc — queue rows always show), so a card whose
+// only rows are the queue's folds nothing when pressed: the button is a real
+// toggle, but there is nothing on screen for it to hide. That is not a dead
+// button, it is an HONEST one drawing a control for an action that would do
+// nothing — the fix is to not offer the control at all when nothing is
+// foldable, not to force a fold that would hide a queue row's only cancel
+// (jobs.ts `rowsShown`'s own reasoning against that).
+
+test("with only queue rows and no job rows, the header offers no clickable toggle", () => {
+  // Nothing job-shaped exists to fold — `foldedJobRows([])` is `[]`, same as
+  // `[]` unfolded — so collapsing would change nothing on screen.
+  const tree = renderCardWithQueue([], { waiting: 1, running: 0 });
+  expect(tree).not.toBeNull();
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  expect(toggles[0].type).not.toBe("button");
+});
+
+test("with a job row the fold would actually hide, the toggle is a real button", () => {
+  const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
+  const tree = renderCardWithQueue([running], { waiting: 1, running: 0 });
+  expect(tree).not.toBeNull();
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  expect(toggles[0].type).toBe("button");
+});
+
+test("a lone scheduled run's stand-in job row survives the fold, so the toggle stays inert for it alone", () => {
+  // foldedJobRows deliberately keeps a live scheduled run's stand-in row
+  // through the fold (queue read failed / no queue slot) — collapsing
+  // cannot hide THIS row either, so with nothing else to fold the toggle
+  // must read as inert here too, for the same reason as the queue-only case.
+  const liveSchedule: Job = {
+    ...BASE,
+    id: "sys:schedule:entry-1",
+    state: "running",
+    stalled: false,
+  };
+  const tree = renderCard([liveSchedule]);
+  expect(tree).not.toBeNull();
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  expect(toggles[0].type).not.toBe("button");
 });

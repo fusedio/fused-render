@@ -259,6 +259,13 @@ function RepoRowView({
  * cannot immediately recover by expanding it again or by pressing ✕. Folding
  * everything is therefore the simpler, honest choice for a card whose only
  * job is "how many, and do you want to see them right now".
+ *
+ * D526 (the jobs card's toggle investigation) does not apply here: this
+ * card returns `null` outright with no visible rows, and folds EVERY row
+ * once it renders — so whenever the toggle is on screen at all, at least
+ * one row exists for it to fold. There is no state, unlike the jobs card's
+ * (whose queue rows and live-run stand-in always show regardless of
+ * `collapsed`), where pressing this toggle would visibly do nothing.
  */
 export function RepoUpdatesCardView({
   rows,
