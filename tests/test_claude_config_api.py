@@ -26,6 +26,7 @@ import ast
 import json
 import os
 import subprocess
+import threading
 from unittest import mock
 
 import pytest
@@ -1390,6 +1391,69 @@ def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
     (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
     assert lib.commit("Enable — plugin ✔")
     assert lib.log()[0]["message"] == "Enable — plugin ✔"
+
+
+# -- ensure_repo(): the first-run `git init` TOCTOU race ---------------------
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_survives_concurrent_first_run(claude_dir):
+    """The reported bug: on first paint, PreferencesSection's preferences.get()
+    and useGitStatus's gitOps.status() fire two POSTs at once, both dispatched
+    through run_in_threadpool -- genuine OS-thread concurrency in one process
+    -- and both reach lib.ensure_repo() unguarded by config_lock(). The old
+    body was a bare check-then-act (`os.path.isdir(.git)` then `git init`):
+    the loser's `git init` dies mid-template-copy with "File exists" (git's
+    copy_file() opens each hook with O_CREAT|O_EXCL after an lstat that skips
+    existing entries -- EEXIST can only happen in that window).
+
+    A test that calls ensure_repo() twice sequentially proves nothing: the
+    second call short-circuits on os.path.isdir before the race window ever
+    opens. This drives real concurrency instead -- several threads arrive at
+    a FRESH CLAUDE_DIR together via a barrier, so they race the check for
+    real."""
+    n = 8
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def worker():
+        barrier.wait()
+        try:
+            lib.ensure_repo()
+        except Exception as e:  # pragma: no cover - failure path
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == [], errors
+    assert os.path.isdir(os.path.join(str(claude_dir), ".git"))
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_config_lock_held_commit_does_not_deadlock(claude_dir):
+    """The trap: config_lock() acquires _THREAD_LOCK, a plain (non-reentrant)
+    threading.Lock, then commit() calls ensure_repo(). If ensure_repo() ever
+    routed its init check back through config_lock(), preferences.py's
+    action=patch (which holds config_lock() before calling commit()) would
+    self-deadlock on the very first edit. Runs on its own thread with a
+    timeout so a regression fails this test instead of hanging the suite."""
+    done = threading.Event()
+
+    def worker():
+        with lib.config_lock():
+            (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
+            lib.commit("test edit")
+        done.set()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    finished = done.wait(timeout=10)
+    assert finished, "config_lock() -> commit() -> ensure_repo() deadlocked"
 
 
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(
