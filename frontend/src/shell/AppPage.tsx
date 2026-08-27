@@ -67,13 +67,14 @@ import {
   AppWindow,
   Files,
   GitBranch,
+  ExternalLink,
   ListTodo,
-  Maximize2,
   Plug,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { basename } from "@platform/lib/format";
@@ -144,16 +145,6 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
             src={`/render?path=${encodeURIComponent(entry)}`}
             title={`App: ${slug}`}
           />
-          {/* Floats over the frame's top-right: the app full-size in the
-              explorer, the same address the header path opens. */}
-          <a
-            className="app-page-fullscreen"
-            href={urlForFsPath(entry)}
-            title="Open full screen"
-            aria-label="Open full screen"
-          >
-            <Maximize2 />
-          </a>
         </div>
       ) : (
         <p className="app-page-empty">
@@ -386,17 +377,27 @@ export default function AppPage({
       <header className="app-page-head">
         <div className="app-page-title">
           <h1>{slug}</h1>
-          {/* Reads as the folder, opens the entry page (index.html) in the
-              explorer — the app itself, not its listing. Falls back to the
-              folder when there is no entry yet. */}
-          <a
-            className="app-page-folder"
-            href={entry ? urlForFsPath(entry) : folderHref}
-            title={entry ?? dir}
-          >
+          {/* Reads as the folder and IS the folder: opens its listing in the
+              explorer. The app itself is the "Open app" button opposite. */}
+          <a className="app-page-folder" href={folderHref} title={dir}>
             {tildePath(dir, home)}
           </a>
         </div>
+        {entry && (
+          /* The app full-size in the explorer (its entry page), in a new tab
+             so this page and its live frame stay put. */
+          <Button
+            size="sm"
+            variant="outline"
+            className="app-page-open"
+            render={
+              <a href={urlForFsPath(entry)} target="_blank" rel="noopener" />
+            }
+          >
+            Open app
+            <ExternalLink data-icon="inline-end" />
+          </Button>
+        )}
       </header>
 
       <div className="app-page-body">

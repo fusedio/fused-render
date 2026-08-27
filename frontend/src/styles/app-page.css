@@ -61,6 +61,14 @@
   text-decoration: underline;
 }
 
+/* "Open app" sits opposite the title, on the same baseline padding, so the
+   header's bottom rule reads as one line under both. */
+.app-page-open {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin-bottom: 10px;
+}
+
 /* The gutter frame — the same width story as the playground's .pg-frame
    (ai-playground.css): one centered column, capped, with gutters either side
    below the cap. The tab strip, the app frame and the Tasks page all share it,
@@ -118,35 +126,6 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
-}
-
-/* Full-screen door in the frame's top-right corner: quiet until hovered,
-   over whatever the app draws there, so it must bring its own backdrop. */
-.app-page-fullscreen {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
-  color: var(--fg);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  transition: background 120ms, border-color 120ms;
-}
-
-.app-page-fullscreen:hover {
-  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
-  border-color: var(--fg-muted);
-}
-
-.app-page-fullscreen svg {
-  width: 18px;
-  height: 18px;
 }
 
 /* The nested Tasks page brings its own 22px page padding and a 1050px column
