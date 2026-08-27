@@ -395,6 +395,47 @@ def test_rebase_still_refuses_a_detached_head(tmp_path):
     assert res["reason"] == "detached"
 
 
+def test_switch_checkout_argument_order_does_not_read_the_branch_as_a_pathspec(tmp_path):
+    # `git checkout -- <branch>` (`--` BEFORE the branch) makes git read the
+    # branch name as a PATHSPEC — "restore this path from the index" — not a
+    # branch switch, and fails with "pathspec '<branch>' did not match any
+    # file(s)". That was the mistake in the original task handoff (code
+    # review, task 10). The correct order is `git checkout <branch> --`
+    # (branch first), which disambiguates without changing the meaning.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    assert "pathspec" not in (res.get("message") or "").lower()
+    assert git(local, "symbolic-ref", "--short", "HEAD").strip() == "main"
+
+
+def test_switch_names_the_worktree_already_holding_the_default_branch(tmp_path):
+    # A worktree-per-branch flow (this repo's own) puts every non-default
+    # worktree in exactly this state: the default branch is checked out in
+    # the MAIN checkout, so `git checkout <default>` from a linked worktree
+    # fails deterministically with "already used by worktree at ...". Task
+    # 10 (code review): every off-default row in such a worktree used to get
+    # a primary button that always failed, surfacing raw git text instead of
+    # naming the worktree and pointing at the action that actually works
+    # there (Rebase).
+    local = _clone_with_remote_ahead(tmp_path, name="wtswitch")
+    worktree = str(tmp_path / "wtswitch-linked")
+    git(local, "worktree", "add", "-q", "-b", "feature", worktree, "HEAD")
+
+    res = git_upstream.switch_repo(worktree)
+
+    assert res["ok"] is False
+    assert res["reason"] == "checked-out-elsewhere"
+    assert os.path.realpath(local) in res["message"]
+    assert "Rebase" in res["message"]
+    # Not a silent action swap: switch_repo still tried `switch`, and still
+    # refused rather than quietly running a rebase on the user's behalf.
+    assert git(worktree, "symbolic-ref", "--short", "HEAD").strip() == "feature"
+
+
 # ------------------------------------------------------------- is_known_repo
 
 

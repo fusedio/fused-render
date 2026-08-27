@@ -47,6 +47,7 @@ that refusal exists to prevent.
 """
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -472,6 +473,20 @@ def rebase_repo(root):
             "message": f"Rebased onto origin/{default_branch}."}
 
 
+_WORKTREE_BRANCH_RE = re.compile(r"already used by worktree at '([^']+)'")
+
+
+def _worktree_holding_branch(brief):
+    """The path of the OTHER worktree already holding a branch a `checkout`
+    just refused to switch to, parsed out of git's own "'<branch>' is
+    already used by worktree at '<path>'" — or None when `brief` doesn't
+    say that (`switch_repo`'s own caller). Used ONLY to name the worktree in
+    a refusal, never to decide what to do about it — the refusal always
+    still refuses (task 10)."""
+    match = _WORKTREE_BRANCH_RE.search(brief or "")
+    return match.group(1) if match else None
+
+
 def switch_repo(root):
     """Check out the default branch — the card's PRIMARY action off the
     default branch (decision D, SPEC §36), with `rebase_repo` demoted to
@@ -497,14 +512,44 @@ def switch_repo(root):
     whole reason the row offered Switch), so `_refresh_after_mutation`
     finding it behind and the row reappearing with Update is intended, not
     a bug — the user is now on the default branch and Update runs from
-    there."""
+    there.
+
+    THE ARGUMENT ORDER (task 10, code review 2026-08-27): `default_branch`
+    comes BEFORE `--`, never after. `git checkout -- <branch>` — `--`
+    FIRST — makes git read `<branch>` as a PATHSPEC ("restore this path
+    from the index"), not a branch to switch to, and fails with
+    "pathspec '<branch>' did not match any file(s)" (this was the mistake
+    in the original task handoff for this function). `git checkout
+    <branch> --` — `--` LAST, saying "no pathspecs follow" — switches
+    branches exactly as intended, with the same disambiguation `--` gives
+    `update_repo`/`rebase_repo` their own revision arguments.
+
+    A LINKED WORKTREE (task 10) fails this deterministically, not
+    occasionally: whenever `default_branch` is already checked out in
+    ANOTHER worktree of the same repo — the normal state for a
+    worktree-per-branch flow, including this repo's own — git refuses
+    with "already used by worktree at <path>", and every off-default row
+    in such a worktree would otherwise get a primary button that always
+    fails. Detected here (`_worktree_holding_branch`) rather than left as
+    raw git text, and refused (never silently swapped to Rebase — the
+    user asked for Switch; the fix is telling them Rebase is the one that
+    works here, not doing it on their behalf)."""
     branch, default_branch, refusal = _mutation_preflight(
         root, include_untracked=False, allow_detached=True)
     if refusal is not None:
         return refusal
-    result = _run(root, "checkout", default_branch, timeout=TIMEOUT_S)
+    result = _run(root, "checkout", default_branch, "--", timeout=TIMEOUT_S)
     if not _ok(result):
-        return _refuse("git-failed", _brief(result) or "git checkout failed.")
+        brief = _brief(result)
+        worktree = _worktree_holding_branch(brief)
+        if worktree:
+            return _refuse(
+                "checked-out-elsewhere",
+                f"{default_branch} is already checked out in another "
+                f"worktree of this repository ({worktree}) — git will not "
+                "check out the same branch twice. Rebase is the action "
+                "that works from here instead.")
+        return _refuse("git-failed", brief or "git checkout failed.")
     _refresh_after_mutation(root)
     return {"ok": True, "op": "switch", "root": root,
             "message": f"Switched to {default_branch}."}
