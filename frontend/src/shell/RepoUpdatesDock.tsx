@@ -46,6 +46,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
+import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import {
   repoActionLabel,
   repoFixPrompt,
@@ -336,10 +337,37 @@ export function RepoUpdatesCardView({
   );
 }
 
-export default function RepoUpdatesDock() {
-  const { repos, refresh } = useRepoUpdates();
-  const rows = repoRows(repos);
-  const { dismissed, dismissOne, dismissAll } = useDismissed();
+/**
+ * The stateful half that owns collapse (including auto-expand) and wraps
+ * the pure `RepoUpdatesCardView` — `rows`/`dismissed`/the callbacks come in
+ * as props, no polling, no network, so this can be rendered directly with a
+ * fixed row list (RepoUpdatesDock.test.tsx), the same split
+ * `DownloadManagerView` uses in its own file for the identical reason.
+ *
+ * Auto-expand (D548 follow-up, "un collapse when a new one comes") keys off
+ * `row.repo.root` per row — a repo not seen before, while the card is
+ * collapsed, opens it exactly like the user's own toggle would
+ * (`lib/autoExpand.ts` `useAutoExpandOnNew`, shared with DownloadManager.tsx
+ * since both cards need the identical wiring around the same pure decision,
+ * `jobs.ts` `trackSeenIds`). Fed `visible` — the same post-dismissal list
+ * `RepoUpdatesCardView` itself renders — so a row a user just dismissed
+ * falls out of the seen set with it: dismissing IS a disappearance, and a
+ * repo that goes behind again later (a fresh `checked_at` past the
+ * dismissal) is a genuine re-arrival, not a re-trigger of an old one.
+ */
+export function RepoUpdatesDockView({
+  rows,
+  dismissed,
+  onDismiss,
+  onDismissAll,
+  onDone,
+}: {
+  rows: RepoRow[];
+  dismissed: Record<string, number>;
+  onDismiss: (root: string, checkedAt: number) => void;
+  onDismissAll: (visible: RepoRow[]) => void;
+  onDone: (result: MutationResult) => void;
+}) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
 
   const toggle = () => {
@@ -349,12 +377,36 @@ export default function RepoUpdatesDock() {
     });
   };
 
+  const visible = visibleRepoRows(rows, dismissed);
+  useAutoExpandOnNew(
+    visible.map((row) => row.repo.root),
+    collapsed,
+    setCollapsed,
+    saveCollapsed,
+  );
+
   return (
     <RepoUpdatesCardView
       rows={rows}
       dismissed={dismissed}
       collapsed={collapsed}
       onToggle={toggle}
+      onDismiss={onDismiss}
+      onDismissAll={onDismissAll}
+      onDone={onDone}
+    />
+  );
+}
+
+export default function RepoUpdatesDock() {
+  const { repos, refresh } = useRepoUpdates();
+  const rows = repoRows(repos);
+  const { dismissed, dismissOne, dismissAll } = useDismissed();
+
+  return (
+    <RepoUpdatesDockView
+      rows={rows}
+      dismissed={dismissed}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
       onDone={() => refresh()}

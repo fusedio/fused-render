@@ -390,3 +390,38 @@ export function pollInterval(jobs: Job[], sinceLastRunningMs: number): number {
   if (sinceLastRunningMs < GRACE_MS) return POLL_ACTIVE_MS;
   return POLL_IDLE_MS;
 }
+
+// ------------------------------------------------------------- auto-expand
+//
+// Shared by BOTH notification cards (DownloadManager.tsx's jobs/downloads
+// card and shell/RepoUpdatesDock.tsx's repo-updates card, D548 follow-up —
+// user call: "we can make the notifications 'un collapse' when a new one
+// comes"). Lives here, not in repo-updates-lib.ts, because platform/ may not
+// import shell/ (frontend/scripts/check-boundaries.mjs) — a helper both
+// sides use has to live on the platform side, and shell is free to import
+// it back.
+//
+// Pure and generic over the id: a job id for the jobs card, a repo root for
+// the repo-updates card. `seen` in, `seen` out — the caller (a ref, one per
+// card) owns the mutable state across renders/polls; this function only
+// decides what one snapshot means against it.
+//
+// An id merely CHANGING (progress ticking, running -> done, ahead/behind
+// moving) is not new — it was already in `seen` from an earlier snapshot and
+// stays there, so `hasNew` stays false and the card does not re-open under a
+// user who just folded it. An id that DISAPPEARS (cleared, dismissed,
+// forgotten, the server no longer reporting it) falls out of the returned
+// set — it is only ever repopulated from `currentIds` — so a genuinely
+// re-arriving id later reads as new again, exactly like a first arrival.
+export function trackSeenIds(
+  currentIds: Iterable<string>,
+  seen: ReadonlySet<string>
+): { seen: Set<string>; hasNew: boolean } {
+  const next = new Set<string>();
+  let hasNew = false;
+  for (const id of currentIds) {
+    next.add(id);
+    if (!seen.has(id)) hasNew = true;
+  }
+  return { seen: next, hasNew };
+}

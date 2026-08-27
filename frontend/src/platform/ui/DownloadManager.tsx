@@ -80,6 +80,7 @@
 // says "Cancelling…" until the work actually stops, rather than lying about it. A
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import {
   cancelJob,
   clearableCount,
@@ -516,6 +517,18 @@ export function DownloadManagerView({
   const jobs = jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j));
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
+
+  // Un-collapse when a job id we haven't seen before shows up — see
+  // lib/autoExpand.ts `useAutoExpandOnNew`'s own doc. Called unconditionally, before
+  // the empty-card early return below, same as every other hook in this
+  // component (rules of hooks: what a render calls, not whether it later
+  // returns null).
+  useAutoExpandOnNew(
+    jobs.map((j) => j.id),
+    collapsed,
+    setCollapsed,
+    saveCollapsed,
+  );
 
   // Nothing to say — render nothing at all, no chrome. The card is a picture of
   // what is happening now, so an empty one is not an empty state with a header

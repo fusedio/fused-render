@@ -15,6 +15,7 @@ import {
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  trackSeenIds,
   type Job,
 } from "@platform/lib/jobs";
 
@@ -150,6 +151,38 @@ test("with nothing running, failures are the news", () => {
 
 test("with nothing running and nothing failed, it counts what finished", () => {
   expect(jobsSummary([job({ id: "a", state: "done" })])).toBe("1 finished");
+});
+
+// --------------------------------------------------------------- auto-expand
+
+test("trackSeenIds flags a genuinely new id and folds it into the returned set", () => {
+  const { seen, hasNew } = trackSeenIds(["a", "b"], new Set(["a"]));
+  expect(hasNew).toBe(true);
+  expect(Array.from(seen).sort()).toEqual(["a", "b"]);
+});
+
+test("trackSeenIds does not flag an id already in the seen set", () => {
+  const { seen, hasNew } = trackSeenIds(["a"], new Set(["a", "b"]));
+  expect(hasNew).toBe(false);
+  // dropped from seen: "b" is no longer present in currentIds
+  expect(Array.from(seen)).toEqual(["a"]);
+});
+
+test("an id that changes state but stays present never re-reads as new", () => {
+  const first = trackSeenIds(["job-1"], new Set());
+  expect(first.hasNew).toBe(true);
+  // simulate a progress tick / running -> done: same id, still present
+  const second = trackSeenIds(["job-1"], first.seen);
+  expect(second.hasNew).toBe(false);
+});
+
+test("an id that disappears and later reappears counts as new again", () => {
+  const arrived = trackSeenIds(["job-1"], new Set());
+  const gone = trackSeenIds([], arrived.seen);
+  expect(gone.hasNew).toBe(false);
+  expect(gone.seen.size).toBe(0);
+  const back = trackSeenIds(["job-1"], gone.seen);
+  expect(back.hasNew).toBe(true);
 });
 
 // ---------------------------------------------------------- overall fraction

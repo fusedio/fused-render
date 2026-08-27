@@ -290,3 +290,77 @@ test("Cancel all is offered for a single queued row once the card is collapsed (
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "q-all")).toHaveLength(1);
 });
+
+// ---------------------------------------------- auto-expand on a new arrival
+//
+// "we can make the notifications 'un collapse' when a new one comes" (D548
+// follow-up). The shared decision (`trackSeenIds`) is tested on its own in
+// jobs.test.ts; these pin the CARD actually wiring it in, asserting on the
+// rendered rows themselves rather than a class name — an earlier fold bug
+// shipped green on a className-only assertion while the rows underneath
+// kept rendering.
+
+function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Partial<QueueSlot>) {
+  act(() => {
+    renderer.update(
+      <DownloadManagerView
+        reported={reported}
+        queue={queue ? fullQueue(queue) : undefined}
+        refresh={() => {}}
+        patch={() => {}}
+      />,
+    );
+  });
+}
+
+test("collapsing, then a genuinely new job id arriving, re-opens the card", () => {
+  const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const renderer = renderInstance([first]);
+  clickToggle(renderer); // collapse
+
+  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
+
+  const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
+  updateInstance(renderer, [first, second]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-row")).toHaveLength(2);
+});
+
+test("collapsing, then an EXISTING job merely changing, does not re-open the card", () => {
+  const job: Job = {
+    ...BASE,
+    id: "sys:ai-image:a",
+    state: "running",
+    done: 1,
+    total: 10,
+    stalled: false,
+  };
+  const renderer = renderInstance([job]);
+  clickToggle(renderer); // collapse
+
+  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
+
+  // Same id, progress ticking (and even finishing) — not a new arrival.
+  updateInstance(renderer, [{ ...job, done: 9, state: "running" }]);
+  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(stillCollapsed, "dl-row")).toHaveLength(0);
+});
+
+test("re-collapsing while the same ids are still present stays collapsed", () => {
+  // Rule: an id already in the seen set never re-triggers, so a user who
+  // folds the card back up while nothing new has arrived keeps it folded.
+  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const renderer = renderInstance([job]);
+  updateInstance(renderer, [job]); // a poll re-reports the same id
+  clickToggle(renderer); // collapse
+
+  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
+
+  updateInstance(renderer, [job]); // another poll, still the same id
+  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(stillCollapsed, "dl-row")).toHaveLength(0);
+});

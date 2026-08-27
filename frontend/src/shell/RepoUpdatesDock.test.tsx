@@ -44,9 +44,9 @@ import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from 
   pushState: () => {},
 };
 
-const { RepoUpdatesCardView } = await import("@shell/RepoUpdatesDock");
+const { RepoUpdatesCardView, RepoUpdatesDockView } = await import("@shell/RepoUpdatesDock");
 const { repoRows } = await import("@shell/repo-updates-lib");
-import type { RepoStatus } from "@shell/repo-updates-lib";
+import type { RepoRow, RepoStatus } from "@shell/repo-updates-lib";
 
 // The globals above exist only to get router.ts's module-init code through
 // ITS one-time evaluation above (triggered by the dynamic import) — nothing
@@ -244,4 +244,106 @@ test("pressing the secondary action does not relabel the primary as Working (tas
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+// ---------------------------------------------- auto-expand on a new arrival
+//
+// "we can make the notifications 'un collapse' when a new one comes" (D548
+// follow-up). The shared decision (`trackSeenIds`) is tested on its own in
+// jobs.test.ts; these pin `RepoUpdatesDockView` — the stateful half that
+// owns collapse for this card — actually wiring it in. Assertions are on
+// the rendered rows (`q-row`) themselves, never a class name alone: a
+// className-only check is exactly how an earlier fold bug on this same card
+// shipped green while the rows kept rendering underneath it (see the
+// "collapsed hides every row" test above).
+
+function renderDockInstance(
+  rows: RepoRow[],
+  dismissed: Record<string, number> = {},
+): ReactTestRenderer {
+  return create(
+    <RepoUpdatesDockView
+      rows={rows}
+      dismissed={dismissed}
+      onDismiss={() => {}}
+      onDismissAll={() => {}}
+      onDone={() => {}}
+    />,
+  );
+}
+
+function updateDockInstance(
+  renderer: ReactTestRenderer,
+  rows: RepoRow[],
+  dismissed: Record<string, number> = {},
+) {
+  act(() => {
+    renderer.update(
+      <RepoUpdatesDockView
+        rows={rows}
+        dismissed={dismissed}
+        onDismiss={() => {}}
+        onDismissAll={() => {}}
+        onDone={() => {}}
+      />,
+    );
+  });
+}
+
+function clickDockToggle(renderer: ReactTestRenderer) {
+  const before = renderer.toJSON() as ReactTestRendererJSON;
+  const toggle = findAll(before, "dl-toggle")[0];
+  act(() => {
+    (toggle.props as { onClick: () => void }).onClick();
+  });
+}
+
+test("collapsing, then a genuinely new repo row arriving, re-opens the card", () => {
+  const one = repoRows([status({ root: "/a/one" })])[0];
+  const renderer = renderDockInstance([one]);
+  clickDockToggle(renderer); // collapse
+
+  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(collapsed, "q-row")).toHaveLength(0);
+
+  const two = repoRows([status({ root: "/a/two" })])[0];
+  updateDockInstance(renderer, [one, two]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "q-row")).toHaveLength(2);
+});
+
+test("collapsing, then an EXISTING row merely changing (behind count ticking), does not re-open", () => {
+  const one = repoRows([status({ root: "/a/one", behind: 1 })])[0];
+  const renderer = renderDockInstance([one]);
+  clickDockToggle(renderer); // collapse
+
+  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(collapsed, "q-row")).toHaveLength(0);
+
+  const changed = repoRows([status({ root: "/a/one", behind: 5 })])[0];
+  updateDockInstance(renderer, [changed]);
+
+  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(stillCollapsed, "q-row")).toHaveLength(0);
+});
+
+test("a dismissed row that reappears later (a fresh checked_at) counts as new again", () => {
+  const first = repoRows([status({ root: "/a/one", checked_at: 1000 })])[0];
+  const renderer = renderDockInstance([first]);
+  clickDockToggle(renderer); // collapse
+
+  // Dismiss it — visible drops to zero even though `rows` still holds it.
+  updateDockInstance(renderer, [first], { "/a/one": 1000 });
+  const dismissed = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(dismissed, "q-row")).toHaveLength(0);
+
+  // Server re-checks and it's behind again: a newer checked_at makes it
+  // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had
+  // fallen out of the seen set on dismissal this is a genuine re-arrival.
+  const again = repoRows([status({ root: "/a/one", checked_at: 2000 })])[0];
+  updateDockInstance(renderer, [again], { "/a/one": 1000 });
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "q-row")).toHaveLength(1);
 });
