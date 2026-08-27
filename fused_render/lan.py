@@ -1,10 +1,11 @@
-"""Share the apps in ``~/Fused/local`` with phones on the same Wi-Fi.
+"""Share your apps with phones on the same Wi-Fi.
 
 Off by default (the ``lan_enabled`` preference, shell/prefs.py). When on, the
 server opens a SECOND listener on every interface and advertises it over
 mDNS as ``render.fused.local`` (alias ``render.local``), so a phone on the
 same network opens ``http://render.fused.local/`` and lands on a grid of the
-apps in ``~/Fused/local``. Plain http on purpose: a trusted certificate needs
+apps the /apps hub lists — every folder under ``~/Fused`` plus the linked
+external folders (``allowed_roots``). Plain http on purpose: a trusted certificate needs
 either a public domain (not local) or a CA profile installed on the phone
 (setup friction); both are recorded follow-ups. On plain http iOS withholds
 the live microphone and clipboard READ; everything server-side works.
@@ -69,25 +70,46 @@ _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static",
 
 
 def local_root() -> str:
-    """``~/Fused/local`` — the ONLY folder the LAN side may see."""
+    """``~/Fused/local`` — where ``/a/<slug>`` shortcuts and default capture
+    paths land when an app is not otherwise placed."""
     return os.path.join(fused_dir(), "local")
 
 
 # ---- path scoping -----------------------------------------------------------
 
+_ROOTS_TTL_S = 2.0
+_roots_cache: tuple[float, list[str]] | None = None
+
 
 def allowed_roots() -> list[str]:
-    """The folders the LAN side may reach: the apps themselves, and the app's
-    own state dir (``~/.fused-render`` — where apps keep their per-install data
-    beside prefs/bookmarks; ``FUSED_RENDER_HOME`` moves it, so both the default
-    and the effective dir are listed)."""
+    """The folders the LAN side may reach: the whole workspace (``~/Fused`` —
+    every tag folder: local, showcase, clones …), the app state dir
+    (``~/.fused-render``, where apps keep per-install data beside prefs;
+    ``FUSED_RENDER_HOME`` moves it, so both the default and the effective dir
+    are listed), and every LINKED app — an external folder registered through
+    "Open app" (registered_apps.py), which the /apps hub lists beside the
+    workspace. Registered folders come from a JSON store, so the list is held
+    for a couple of seconds: one page load fans out into many scoped reads."""
+    global _roots_cache
+    import time
+
+    now = time.monotonic()
+    if _roots_cache is not None and now - _roots_cache[0] < _ROOTS_TTL_S:
+        return _roots_cache[1]
     from fused_render.shell.storage import home_dir
 
-    roots = [local_root(), os.path.expanduser("~/.fused-render"), home_dir()]
+    roots = [fused_dir(), os.path.expanduser("~/.fused-render"), home_dir()]
+    try:
+        from fused_render import registered_apps
+
+        roots.extend(a["path"] for a in registered_apps.registered_apps() if a.get("path"))
+    except Exception:  # noqa: BLE001 — a broken registry narrows, never widens
+        logger.warning("lan: registered apps unreadable", exc_info=True)
     seen: list[str] = []
     for root in roots:
         if root not in seen:
             seen.append(root)
+    _roots_cache = (now, seen)
     return seen
 
 
@@ -342,7 +364,10 @@ class LanApp:
         parts = [p for p in rest.split("/") if p]
         if not parts or any(p in (".", "..") for p in parts):
             return _not_found()
-        folder = os.path.join(local_root(), parts[0])
+        # The slug names an app the grid lists (any tag, or a linked folder);
+        # a folder under ~/Fused/local by that name is the fallback.
+        folder = next((a["path"] for a in lan_apps() if a["name"] == parts[0]), None) \
+            or os.path.join(local_root(), parts[0])
         file = "/".join(parts[1:]) or _entry_for(folder) or "index.html"
         target = os.path.normpath(os.path.join(folder, file))
         if not _inside_root(target) or not os.path.isfile(target):
@@ -415,25 +440,31 @@ def _entry_for(folder: str) -> str | None:
 
 
 def lan_apps() -> list[dict]:
-    """The apps under ``~/Fused/local`` as the grid shows them, in the /apps
-    hub's order: the hub's own listing (``_workspace_apps`` — entry, title,
-    ``opened_at`` from the recents store, ``updated_at`` from the folder)
-    filtered to the local root, sorted by the hub's rule (frontend
+    """Every app the /apps hub lists, in the hub's order: the workspace listing
+    (``_workspace_apps`` — every tag folder under ``~/Fused``, with ``opened_at``
+    from the recents store and ``updated_at`` from the folder) plus the linked
+    external folders (``registered_apps``), sorted by the hub's rule (frontend
     ``sortApps``: ``opened_at ?? updated_at ?? 0`` newest first, then title,
-    then name). Same source and same rule so the two grids cannot drift. Read
-    each time — a phone opens the grid rarely."""
+    then name). Exported ``.fused`` files are not here: they are archives, not
+    folders a page can render from. Same source and same rule as the hub so the
+    two grids cannot drift. Read each time — a phone opens the grid rarely."""
     from fused_render.server.routers.apps import _workspace_apps
 
-    root = os.path.realpath(local_root())
     rows = []
     try:
-        apps = _workspace_apps()
+        apps = list(_workspace_apps())
     except Exception:  # noqa: BLE001 — an unreadable workspace is an empty grid
         logger.warning("lan: workspace listing failed", exc_info=True)
-        return rows
+        apps = []
+    try:
+        from fused_render import registered_apps
+
+        apps.extend(registered_apps.registered_apps())
+    except Exception:  # noqa: BLE001
+        logger.warning("lan: registered apps unreadable", exc_info=True)
     for app in apps:
         folder = app.get("path") or ""
-        if not (folder == root or folder.startswith(root + os.sep)):
+        if not folder or not _inside_root(folder):
             continue
         entry_path = app.get("entry") or app.get("entry_html")
         if not entry_path:
@@ -443,6 +474,8 @@ def lan_apps() -> list[dict]:
         rows.append({
             "name": app.get("name") or os.path.basename(folder),
             "title": app.get("title"),
+            "tag": app.get("tag"),
+            "path": folder,
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The SVG bytes themselves via /api/fs/raw (an <img> subresource,

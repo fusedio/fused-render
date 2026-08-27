@@ -237,15 +237,16 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
     <section className="prefs-section">
       <h2>Share on local network</h2>
       <p className="deploy-muted">
-        Open the apps in <code>~/Fused/local</code> from a phone or another computer on the same
-        Wi-Fi. While this is on, <b>anyone on your network</b> can open and run those apps — nothing
-        else on this computer is reachable. Plain http: on iPhone the live microphone and clipboard
-        paste stay off; everything else works.
+        Open your apps — everything under <code>~/Fused</code> and every linked folder — from a
+        phone or another computer on the same Wi-Fi. While this is on, <b>anyone on your network</b>{" "}
+        can open and run those apps and read or change their files; nothing else on this computer is
+        reachable. Plain http: on iPhone the live microphone and clipboard paste stay off; everything
+        else works.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
         <span>
-          <b>Share ~/Fused/local</b> on this network.
+          <b>Share my apps</b> on this network.
         </span>
       </label>
       {enabled && lan?.running && lan.url && (

@@ -165,11 +165,12 @@ def canvases_enabled() -> bool:
 
 
 def lan_enabled() -> bool:
-    """Whether the apps in ~/Fused/local are shared with the local network
-    (default off — opt-in). The switch fused_render/lan.py reads: on, a second
-    listener on every interface serves those apps to phones on the same Wi-Fi
-    as http://render.fused.local/. A feature flag, not a route guard: the
-    loopback server is untouched either way."""
+    """Whether the user's apps (everything under ~/Fused plus linked folders)
+    are shared with the local network (default off — opt-in). The switch
+    fused_render/lan.py reads: on, a second listener on every interface serves
+    those apps to phones on the same Wi-Fi as http://render.fused.local/. A
+    feature flag, not a route guard: the loopback server is untouched either
+    way."""
     return read_prefs().get("lan_enabled") is True
 
 

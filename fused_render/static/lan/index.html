@@ -33,6 +33,7 @@
     background: var(--line); font-weight: 600; font-size: 18px; overflow: hidden; }
   .icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .name { font-weight: 600; font-size: 15px; word-break: break-word; }
+  .tag { color: var(--muted); font-size: 12px; margin-top: auto; }
   .empty, .error { color: var(--muted); padding: 32px 8px; text-align: center; }
   code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
@@ -44,7 +45,7 @@
     <span class="host" id="host"></span>
   </header>
   <div class="grid" id="grid"></div>
-  <p class="empty" id="empty" hidden>No apps in <code>~/Fused/local</code> yet.</p>
+  <p class="empty" id="empty" hidden>No apps in <code>~/Fused</code> yet.</p>
   <p class="error" id="error" hidden></p>
 </main>
 <script>
@@ -75,6 +76,12 @@
       name.className = "name";
       name.textContent = app.title || app.name;
       a.append(icon, name);
+      if (app.tag) {
+        const tag = document.createElement("div");
+        tag.className = "tag";
+        tag.textContent = app.tag;
+        a.append(tag);
+      }
       grid.appendChild(a);
     }
   } catch (e) {
