@@ -790,54 +790,6 @@ def _upstream_state(root, has_commits):
     return upstream, ahead, behind, remote
 
 
-def _rebase_target(root, remote):
-    """The remote's default branch name — mirrors the SYMREF READ half of
-    `ops.py::_default_branch` rather than importing it (this module and
-    `ops.py` are each exec'd standalone, PY-15), so the overview can name
-    the SAME ref `ops.py`'s `_rebase` actually rebases onto. That ref is
-    `<remote>/<default>`, which is NOT necessarily `@{upstream}` —
-    `ahead`/`behind` above are measured against `@{upstream}`, and a
-    published feature branch can track something other than the default
-    branch, which is exactly the mismatch a Rebase button must never paper
-    over.
-
-    Deliberately NOT mirrored: `ops.py::_default_branch`'s `remote set-head
-    --auto` fallback when the symref is missing or stale. That fallback is
-    a NETWORK round trip plus a WRITE to `refs/remotes/<remote>/HEAD` in
-    the repo's own refs — correct in `ops.py`, which only runs it inside an
-    explicit, user-triggered mutation already about to touch the network,
-    but wrong here: this module is the read-only reader on the request
-    path (GT-12 — "a read may never contact a remote as a side effect"), so
-    opening the git panel on a repo whose symref is unresolved must not
-    block on the network or rewrite the user's refs just because they
-    looked. A missing symref answers None here, same as every other
-    failure: the template already falls back to naming `remote`'s default
-    branch generically rather than asserting a ref it does not know."""
-    try:
-        out = _git(root, "symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD")
-    except _Refused:
-        return None
-    short = out.decode("utf-8", "replace").strip()
-    return short[len(remote) + 1:] if short.startswith(remote + "/") else None
-
-
-def _rebase_ahead(root, remote, target):
-    """Commits on HEAD not reachable from `<remote>/<target>` — the TRUE
-    count a Rebase click would replay, as distinct from `ahead` (above),
-    which counts commits not reachable from `@{upstream}` and can name a
-    different number when `@{upstream}` is not the default branch. None
-    when `target` could not be resolved, so the view can fall back honestly
-    instead of asserting a count that might not be true."""
-    if not target:
-        return None
-    try:
-        out = _git(root, "rev-list", "--count", f"{remote}/{target}..HEAD")
-    except _Refused:
-        return None
-    text = out.decode("utf-8", "replace").strip()
-    return int(text) if text.isdigit() else None
-
-
 def _log(root, rel, limit, page):
     """One window of the scoped log.
 
@@ -1339,17 +1291,6 @@ def main(
         branch, detached, head, has_commits = _head(root)
         changes, changes_truncated, dirty, staged_outside = _status(root, rel, is_dir)
         upstream, ahead, behind, remote = _upstream_state(root, has_commits)
-        # `rebase_target`/`rebase_ahead` cost a symbolic-ref read and (when
-        # resolvable) a rev-list, on top of every other overview call — not
-        # free, so they only run when the toolbar's Rebase button can
-        # actually paint: `behind and ahead and not detached`, the exact
-        # condition `template.html` gates the button on. A plain in-sync or
-        # merely-ahead-or-behind repo pays nothing for a field it will never
-        # render.
-        can_rebase = bool(remote) and ahead and behind and not detached
-        rebase_target = _rebase_target(root, remote) if can_rebase else None
-        rebase_ahead = (_rebase_ahead(root, remote, rebase_target)
-                        if can_rebase else None)
         commits, has_more, capped, limit, page = (
             _log(root, rel, limit, page) if (has_commits and history)
             else ([], False, False,
@@ -1373,16 +1314,6 @@ def main(
                 "ahead": ahead,
                 "behind": behind,
                 "remote": remote,
-                # The ref `ops.py::_rebase` actually rebases onto
-                # (`<remote>/<default>`) and how many commits it would
-                # replay onto it — NOT the same ref or count as
-                # `upstream`/`ahead` above when this branch's own
-                # `@{upstream}` is not the default branch. A Rebase
-                # trigger's copy must be built from these, never from
-                # `ahead`, or it can describe an operation other than the
-                # one the button runs.
-                "rebase_target": rebase_target,
-                "rebase_ahead": rebase_ahead,
             },
             "changes": changes,
             "changes_truncated": changes_truncated,

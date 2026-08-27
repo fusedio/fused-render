@@ -7,9 +7,8 @@ GET /render's D301 block. It only reads the in-memory result that check
 populates — never shells out to git, never blocks — so it is a plain sync
 def polled by the frontend dock.
 
-POST runs one of the three mutations (`action: "update"`, `"rebase"`, or
-`"switch"`) the card's buttons call, each against one `root`. Two guards,
-not one:
+POST runs one of the two mutations (`action: "update"` or `"switch"`) the
+card's buttons call, each against one `root`. Two guards, not one:
 `X-Fused` (D3) so a blind cross-origin POST from an unrelated open page
 can't reach it at all — the same guard every other mutating POST carries
 (`server/common.py::_require_fused`, e.g. `routers/ai_models.py`'s delete
@@ -17,10 +16,14 @@ endpoint) — and, on top of that, `root` must be a path THIS server's own
 background check has already recorded state for
 (`git_upstream.is_known_repo`), never an arbitrary client-supplied path.
 The second guard matters even same-origin: without it, any page open in
-the app could POST `{"action": "rebase", "root": "/any/repo/on/disk"}` and
-get a history rewrite in a repository the card never showed a row for.
-A sync def for the same reason community.py's endpoint is: these shell
-out to git, and FastAPI's threadpool keeps that off the event loop.
+the app could POST `{"action": "update", "root": "/any/repo/on/disk"}` and
+mutate a repository the card never showed a row for. A sync def for the
+same reason community.py's endpoint is: these shell out to git, and
+FastAPI's threadpool keeps that off the event loop. A `"rebase"` action
+was accepted here for one release, backing a secondary Rebase button the
+card offered; it is refused now (falls through to `bad-action`) — the
+button was removed as too dangerous to offer (D554 amendment) and the
+mutation went with it.
 """
 from fastapi import APIRouter, Body, Header
 
@@ -52,8 +55,6 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
                 "message": "that repository is not one this app has checked."}
     if action == "update":
         return git_upstream.update_repo(root)
-    if action == "rebase":
-        return git_upstream.rebase_repo(root)
     if action == "switch":
         return git_upstream.switch_repo(root)
     return {"ok": False, "reason": "bad-action",

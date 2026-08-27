@@ -1260,11 +1260,8 @@ const OPS = "./ops.py";
 
 /* The ops that can lose uncommitted work. Mirrors ops.py's DESTRUCTIVE_OPS, and
  * the mirroring is the safety property: an op named here gets the inline
- * confirmation step, and one that is not gets called on the first click.
- * "rebase" rewrites this branch's own commits (ops.py's module docstring has
- * the full reasoning for why that op exists at all), so it gets the same
- * confirmation step every other entry here does. */
-const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve", "rebase"]);
+ * confirmation step, and one that is not gets called on the first click. */
+const DESTRUCTIVE = new Set(["discard", "discard_all", "stash_drop", "resolve"]);
 
 const file = fused.params.get("_file") || "";
 const skeleton = document.getElementById("skeleton");
@@ -1634,7 +1631,7 @@ function headState(repo) {
 
 /* ------------------------------------------------------------------ toolbar */
 
-function toolbar(data, branchAsk) {
+function toolbar(data) {
   const repo = data.repo;
   const panel = param("panel");
   const bar = el("div", { className: "bar" });
@@ -1693,41 +1690,6 @@ function toolbar(data, branchAsk) {
         : "") + "git pull --ff-only",
       onClick: () => run("pull", { op: "pull" }),
     }));
-    /* GENUINELY diverged (both directions pending), not merely behind: a
-       plain `git pull --ff-only` above is guaranteed to refuse here (that
-       refusal — `_pull`'s "not-fast-forward" — is exactly what names this
-       button in its own message), so the resolution belongs next to the
-       button that cannot resolve it, not only inside the failure text after
-       a doomed click. `_rebase`/DESTRUCTIVE_OPS/`pendingConfirm`'s
-       `op === "rebase"` branch already existed for this; the trigger was
-       the missing half — see D551's "the git panel [must be] able to do
-       what its own divergence refusal ... tells the user is available".
-       Distinct from the activity card's own Rebase (git_upstream.py,
-       RepoUpdatesDock.tsx): that one is a passive, cross-repo notice; this
-       one is the same op reached from inside the repo the divergence is
-       IN, right where the failed Pull would otherwise leave a dead end.
-
-       The `ahead` gate above is still upstream-relative (it is only asking
-       "would Pull refuse?"), but the COPY below never uses `ahead`/`remote`
-       alone to describe the rebase itself: `ops.py::_rebase` always rebases
-       onto `<remote>/<default branch>`, which is NOT necessarily this
-       branch's `@{upstream}` — a published feature branch can track
-       something else entirely. `repo.rebase_target`/`repo.rebase_ahead`
-       (log.py's own `rev-list --count <remote>/<default>..HEAD`, alongside
-       the ordinary ahead/behind) name the REAL target and the REAL count, so
-       the button can never advertise a ref or a number the click does not
-       use (code review finding, High). */
-    if (ahead && !repo.detached) {
-      const rebaseRef = repo.rebase_target ? remote + "/" + repo.rebase_target
-        : remote + "'s default branch";
-      const rebaseCount = repo.rebase_ahead != null
-        ? plural(repo.rebase_ahead, "commit") : "your commits";
-      group.append(confirmable("rebase",
-        [icon(PULL_GLYPH, 14), btnLabel("Rebase")],
-        "Rebase replays " + rebaseCount + " onto " + rebaseRef + ".",
-        { label: "Rebase onto " + rebaseRef + " — replays " + rebaseCount
-            + " onto it" }));
-    }
   } else if (ahead && canPush) {
     group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Send")], {
       label: "Send " + plural(ahead, "commit"),
@@ -1772,11 +1734,6 @@ function toolbar(data, branchAsk) {
   if (panel === "branch") {
     wrap.append(el("div", { className: "pop" }, branchPanel(data)));
   }
-  /* The Rebase confirmation (`pendingConfirm`'s `where: "branch"`) rides
-     right under the bar that grew the button which asked it — the same
-     "the question sits next to the thing it is about" rule every other
-     `askIn` call in this file already follows. */
-  if (branchAsk) wrap.append(branchAsk);
   return wrap;
 }
 
@@ -3271,19 +3228,6 @@ function pendingConfirm(data) {
        so there is no single row to attach it to. */
     return null;
   }
-  if (op === "rebase") {
-    return {
-      where: "branch",
-      node: confirmBar(
-        "Rebase " + (data.repo.branch || "this branch")
-        + " onto the remote's default branch? Your commits are replayed on "
-        + "top of it with new hashes — the old ones only survive in the "
-        + "reflog. A conflict stops the rebase in place, for the conflicts "
-        + "panel to resolve.",
-        () => run("rebase", { op: "rebase" }),
-        "Rebase"),
-    };
-  }
   if (op === "stash_drop") {
     const split = rest.indexOf(":");
     if (split === -1) return null;
@@ -3565,7 +3509,7 @@ function render(data, stashes, diff) {
      is the thing the user is being asked to read. */
   const panel = proposalPanel();
   if (panel) page.append(panel);
-  page.append(toolbar(data, askIn("branch")));
+  page.append(toolbar(data));
   const box = commitBox(data);
   if (box) page.append(box);
   page.append(cols);

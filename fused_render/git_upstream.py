@@ -1,5 +1,5 @@
 """A throttled "has origin moved?" check for the folder an app was just
-opened in, plus (below) the opt-in update/rebase mutations the activity
+opened in, plus (below) the opt-in update/switch mutations the activity
 card's repo rows offer (SPEC §33 / §36).
 
 WHEN THIS RUNS. `note_app_opened` is called from GET /render's D301 block
@@ -200,8 +200,7 @@ def _ahead_behind_counts(root, default_branch):
     direction. Both sides are wanted here (not just `behind`, the original
     narrower call this replaced): `ahead` is what the "Fix with Claude"
     prompt (repo-updates-lib.ts's `repoFixPrompt`) needs to describe a
-    rebase refusal honestly — the rebase path exists BECAUSE the branch has
-    local commits behind couldn't tell it about."""
+    refusal honestly, whatever mutation triggered it."""
     result = _run(root, "rev-list", "--left-right", "--count",
                   f"HEAD...origin/{default_branch}")
     if not _ok(result):
@@ -239,19 +238,18 @@ def check_repo(root):
 
 # --------------------------------------------------------------- the mutations
 #
-# The three actions the repo-updates card's rows offer (SPEC §36, D554):
-# Update (an --ff-only pull, primary, on the default branch); Switch (a
-# plain checkout of the default branch, primary everywhere else — offered
-# exactly where Update would refuse to fast-forward, and never touching a
-# single commit of the user's own); and Rebase (demoted to secondary
-# alongside Switch, for the user who genuinely wants their current branch
-# replayed onto the default instead), onto exactly one target: the remote's
-# tracked default branch, never a user-chosen ref. Update and Rebase mirror
-# templates/git/ops.py's own `_pull` (ops.py:1096-1121, the explicit
-# remote-and-refspec argument) and `_require_remote` (ops.py:827-836, the
-# no-remote refusal) — mirrored, not imported, for the reason the module
-# docstring gives. `_rebase` there is `rebase_repo`'s twin; keep the two in
-# step. `switch_repo` has no such twin in ops.py — see its own docstring.
+# The two actions the repo-updates card's rows offer (SPEC §36, D554): Update
+# (an --ff-only pull, primary, on the default branch); and Switch (a plain
+# checkout of the default branch, primary everywhere else — offered exactly
+# where Update would refuse to fast-forward, and never touching a single
+# commit of the user's own). A Rebase secondary action was offered
+# alongside Switch for one release and then removed (too dangerous to offer
+# from a passive notice, user call — D554 amendment) rather than left as the
+# card's only work-losing button. Update mirrors templates/git/ops.py's own
+# `_pull` (ops.py:1096-1121, the explicit remote-and-refspec argument) and
+# `_require_remote` (ops.py:827-836, the no-remote refusal) — mirrored, not
+# imported, for the reason the module docstring gives. `switch_repo` has no
+# such twin in ops.py — see its own docstring.
 
 
 def _brief(result):
@@ -276,15 +274,15 @@ def _is_clean(root, *, include_untracked=True):
     `include_untracked` is NOT one bound tightened for its own sake: an
     `--ff-only` pull only ever touches TRACKED refs and the index, so a
     `.venv/`, build output, or a scratch file sitting untracked in the tree
-    can never conflict with it — `update_repo` passes `include_untracked=
-    False` so a repo that would otherwise never be able to update from this
-    card (an ordinary repo with an ordinary gitignored build dir) isn't
-    refused over files the pull will never touch. `rebase_repo` keeps the
-    stricter, untracked-inclusive check (the default here): a rebase
-    replays commits by checking out each one in turn, and an untracked file
-    that happens to collide with a path one of THOSE commits touches is a
-    real, if rarer, way to lose it — worth refusing up front rather than
-    discovering mid-rebase.
+    can never conflict with it — `update_repo`/`switch_repo` both pass
+    `include_untracked=False` so a repo that would otherwise never be able
+    to update or switch from this card (an ordinary repo with an ordinary
+    gitignored build dir) isn't refused over files neither mutation will
+    ever touch. The stricter, untracked-inclusive default here exists for a
+    mutation that replays commits by checking out each one in turn, where an
+    untracked file colliding with a path one of those commits touches is a
+    real way to lose it — worth refusing up front rather than discovering it
+    mid-operation, should this module ever grow one.
     """
     args = ["status", "--porcelain"]
     if not include_untracked:
@@ -320,11 +318,12 @@ def _operation_in_flight(root):
     `rebase-apply` are checked FIRST because a conflicted rebase step also
     writes `MERGE_HEAD`, and asking about single refs first would misreport
     the step's PARENT operation as a plain merge. Every name log.py's
-    version reports is kept here, not just `rebase` (the only one this
-    module's own mutations can leave behind): a merge/cherry-pick/revert
-    started some OTHER way — a terminal, the git companion — must still be
-    named accurately by this preflight rather than folding into the
-    generic "dirty" refusal. UNLIKE log.py's twin, this one resolves the
+    version reports is kept here, not just `rebase`: a rebase left in
+    flight — by a terminal, the git companion, anything — is still
+    something this module must notice and name accurately, same as a
+    merge/cherry-pick/revert started some OTHER way, rather than folding
+    any of them into the generic "dirty" refusal. UNLIKE log.py's twin,
+    this one resolves the
     real gitdir via `_real_gitdir` rather than assuming `root/".git"` is a
     directory, so it (and only it, for now — log.py's copy has the same
     blind spot, pre-existing on main and out of scope here) still finds
@@ -347,8 +346,9 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     """Every check both mutations need before touching anything: the repo
     still exists, isn't mount-backed (GT-4 / MD-11 — the same wedge
     `ops.py:_refuse_mounts` exists to prevent), isn't already mid an
-    operation `rebase_repo` (or a terminal) left in flight, has a clean
-    working tree, an attached branch (unless `allow_detached`), and a
+    operation left in flight — a rebase may be in progress for any reason,
+    not only one this module started — has a clean working tree, an
+    attached branch (unless `allow_detached`), and a
     resolvable `origin` with a default branch. Returns `(branch,
     default_branch, refusal)` — the third is None on success; `branch` is
     also None on success exactly when `allow_detached=True` was passed AND
@@ -361,10 +361,9 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     that then refused with "detached" would make that primary button a
     guaranteed dead end, since a checkout of the default branch is exactly
     what RESOLVES a detached HEAD, not something it needs to be attached
-    already to do. `update_repo`/`rebase_repo` both act ON the current
-    branch (a pull fast-forwards it, a rebase replays its commits), so
-    "there is nothing to update" stays the right refusal for them — only
-    `switch_repo` passes `allow_detached=True`."""
+    already to do. `update_repo` acts ON the current branch (a pull
+    fast-forwards it), so "there is nothing to update" stays the right
+    refusal for it — only `switch_repo` passes `allow_detached=True`."""
     if not os.path.isdir(root):
         return None, None, _refuse("missing", f"{root} no longer exists.")
     if shell_mounts.is_mount_backed(root):
@@ -411,19 +410,18 @@ def _record(result):
 
 
 def _refresh_after_mutation(root, *, keep_on_failure=False, known_update=None):
-    """Re-check `root` right after a successful `update`/`rebase`/`switch`,
-    so its row clears (or updates) without waiting out CHECK_TTL_S. On
-    SUCCESS the row is always replaced wholesale with `check_repo`'s fresh
-    result, for all three mutations alike.
+    """Re-check `root` right after a successful `update`/`switch`, so its
+    row clears (or updates) without waiting out CHECK_TTL_S. On SUCCESS the
+    row is always replaced wholesale with `check_repo`'s fresh result, for
+    both mutations alike.
 
-    On FAILURE the three diverge (Bugbot finding, code review 2026-08-27).
-    `update_repo`/`rebase_repo` (default, `keep_on_failure=False`) drop the
-    entry outright: those mutations only succeed by fast-forwarding onto (or
-    replaying onto) `origin/<default>`, so once one has actually succeeded a
-    stale `behind > 0` row with an Update/Rebase button standing is a LIE —
-    the very commits it claims are still missing already landed — and that
-    lie is worse than the row briefly vanishing until the next background
-    check restores it correctly.
+    On FAILURE the two diverge (Bugbot finding, code review 2026-08-27).
+    `update_repo` (default, `keep_on_failure=False`) drops the entry
+    outright: it only succeeds by fast-forwarding onto `origin/<default>`,
+    so once it has actually succeeded a stale `behind > 0` row with an
+    Update button standing is a LIE — the very commits it claims are still
+    missing already landed — and that lie is worse than the row briefly
+    vanishing until the next background check restores it correctly.
 
     `switch_repo` passes `keep_on_failure=True` because that lie does not
     apply to it: a checkout never claims to have caught the branch up, and
@@ -473,36 +471,6 @@ def update_repo(root):
             "message": f"Updated to origin/{default_branch}."}
 
 
-def rebase_repo(root):
-    """Rebase the current branch onto `origin/<default>` — the card's
-    secondary action, offered exactly where `update_repo` would refuse to
-    fast-forward (off the default branch). Same preflight as `update_repo`.
-
-    A conflict is left in place, mid-rebase, rather than aborted: the git
-    companion's conflict reader and `resolve` op already handle a rebase in
-    progress generically (the same reasoning `templates/git/ops.py`'s
-    `_rebase` — this function's twin — documents in full), so the way back
-    in is the git panel (or Fix with Claude, scoped to this repo), never a
-    silent discard of the rebase the button just started."""
-    branch, default_branch, refusal = _mutation_preflight(
-        root, include_untracked=True)
-    if refusal is not None:
-        return refusal
-    fetch = _run(root, "fetch", "--", "origin", default_branch, timeout=TIMEOUT_S)
-    if not _ok(fetch):
-        return _refuse("git-failed", _brief(fetch) or "git fetch failed.")
-    result = _run(root, "rebase", "--", f"origin/{default_branch}",
-                  timeout=TIMEOUT_S)
-    if not _ok(result):
-        return _refuse(
-            "git-failed",
-            _brief(result) or "git rebase failed — resolve the conflict in "
-            "the git panel.")
-    _refresh_after_mutation(root)
-    return {"ok": True, "op": "rebase", "root": root,
-            "message": f"Rebased onto origin/{default_branch}."}
-
-
 _WORKTREE_BRANCH_RE = re.compile(r"already used by worktree at '([^']+)'")
 
 
@@ -530,16 +498,18 @@ def _worktree_holding_branch(brief):
 
 def switch_repo(root):
     """Check out the default branch — the card's PRIMARY action off the
-    default branch (decision D, SPEC §36), with `rebase_repo` demoted to
-    secondary on the same row. Preferred over rebasing the current branch
-    onto the default: it never rewrites or replays a single commit of the
-    user's work, so it can never conflict and never needs the git panel's
-    conflict view afterward — a plain `git checkout` either succeeds
-    outright or refuses, in git's own words, exactly the way `_brief`
-    already surfaces for the other two mutations. Same preflight as
-    `update_repo` (`include_untracked=False`): an ordinary checkout only
-    ever touches tracked paths and HEAD, so an untracked scratch file no
-    more blocks this than it blocks a pull.
+    default branch (decision D, SPEC §36). A rebase-onto-default secondary
+    action was offered alongside this for one release and then removed as
+    too dangerous to offer (D554 amendment); Switch stays the only
+    off-default action, and is preferred over rebasing the current branch
+    onto the default for the same reason that removal gave: it never
+    rewrites or replays a single commit of the user's work, so it can never
+    conflict and never needs the git panel's conflict view afterward — a
+    plain `git checkout` either succeeds outright or refuses, in git's own
+    words, exactly the way `_brief` already surfaces for `update_repo`.
+    Same preflight as `update_repo` (`include_untracked=False`): an
+    ordinary checkout only ever touches tracked paths and HEAD, so an
+    untracked scratch file no more blocks this than it blocks a pull.
 
     `allow_detached=True` too (task 9, code review 2026-08-27):
     `check_repo` reports a detached HEAD as `on_default: False`, which
@@ -563,7 +533,7 @@ def switch_repo(root):
     in the original task handoff for this function). `git checkout
     <branch> --` — `--` LAST, saying "no pathspecs follow" — switches
     branches exactly as intended, with the same disambiguation `--` gives
-    `update_repo`/`rebase_repo` their own revision arguments.
+    `update_repo`'s own revision argument.
 
     A LINKED WORKTREE (task 10) fails this deterministically, not
     occasionally: whenever `default_branch` is already checked out in
@@ -572,9 +542,9 @@ def switch_repo(root):
     with "already used by worktree at <path>", and every off-default row
     in such a worktree would otherwise get a primary button that always
     fails. Detected here (`_worktree_holding_branch`) rather than left as
-    raw git text, and refused (never silently swapped to Rebase — the
-    user asked for Switch; the fix is telling them Rebase is the one that
-    works here, not doing it on their behalf)."""
+    raw git text, and refused (never silently taking some other action on
+    the user's behalf; the fix is a terminal, the same as every other
+    refusal this module surfaces)."""
     branch, default_branch, refusal = _mutation_preflight(
         root, include_untracked=False, allow_detached=True)
     if refusal is not None:
@@ -597,8 +567,7 @@ def switch_repo(root):
                 "checked-out-elsewhere",
                 f"{default_branch} is already checked out in another "
                 f"worktree of this repository ({worktree}) - git will not "
-                "check out the same branch twice. Rebase is the action "
-                "that works from here instead.")
+                "check out the same branch twice.")
         return _refuse("git-failed", brief or "git checkout failed.")
     # `keep_on_failure=True` + `known_update`: see `_refresh_after_mutation`'s
     # own docstring for why switch alone survives a failed re-check, and why
@@ -718,7 +687,7 @@ def is_known_repo(root):
     """Whether `root` is a repo THIS module's own background check has
     recorded state for — the allowlist `POST /api/git-upstream` (server/
     routers/git_upstream.py) checks a client-supplied `root` against before
-    running `update_repo`/`rebase_repo`. Membership in `_state`, not
+    running `update_repo`/`switch_repo`. Membership in `_state`, not
     `known_repos()`'s filtered (behind > 0) view: a repo the check just
     brought up to date (behind == 0) is still a repo THIS server checked,
     and a card race (poll says behind, click lands after a concurrent

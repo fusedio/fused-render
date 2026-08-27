@@ -45,17 +45,17 @@ def _clone_with_remote_ahead(tmp_path, name="repo"):
     os.makedirs(local)
     git(local, "init", "-q")
     # A LOCAL (not just `_git_repo.git()`'s own per-invocation env) identity,
-    # persisted to this repo's own .git/config: `git_upstream.rebase_repo`
-    # shells out through its OWN subprocess call, with none of `_git_repo`'s
-    # identity env vars, exactly like a real user's rebase would — and a
-    # real user with local commits to rebase always has identity configured
-    # already (git would have refused to create those commits otherwise).
-    # A CI runner has no such ambient identity (no global config, and the
-    # `runner` user's /etc/passwd GECOS is empty, so even git's own
-    # name-from-hostname fallback fails with "empty ident name"), so
-    # without this, `rebase_repo`'s own commit-creation step fails in CI
-    # in a way that could never happen on a real machine — a test-rig gap,
-    # not a product bug.
+    # persisted to this repo's own .git/config: some tests below drive a raw
+    # `git rebase` (or other commit-creating command) directly against this
+    # repo, standing in for a terminal, with none of `_git_repo`'s identity
+    # env vars — exactly like a real user's own git commands, which always
+    # have identity configured already (git would have refused to create
+    # those commits otherwise). A CI runner has no such ambient identity (no
+    # global config, and the `runner` user's /etc/passwd GECOS is empty, so
+    # even git's own name-from-hostname fallback fails with "empty ident
+    # name"), so without this, a commit-creating step fails in CI in a way
+    # that could never happen on a real machine — a test-rig gap, not a
+    # product bug.
     git(local, "config", "user.name", "Fixture Author")
     git(local, "config", "user.email", "fixture@example.com")
     write(local, "a.txt", "1\n")
@@ -231,7 +231,7 @@ def test_a_mount_backed_path_is_refused(tmp_path, monkeypatch):
     assert git_upstream.known_repos() == []
 
 
-# ------------------------------------------------------------- update / rebase
+# -------------------------------------------------------------- update / switch
 
 
 def test_update_ff_only_pulls_on_a_clean_default_branch(tmp_path):
@@ -279,31 +279,6 @@ def test_update_refuses_a_repo_with_no_origin(tmp_path):
 
     assert res["ok"] is False
     assert res["reason"] == "no-remote"
-
-
-def test_rebase_replays_local_commits_onto_the_default_branch(tmp_path):
-    local = _clone_with_remote_ahead(tmp_path)
-    git(local, "checkout", "-q", "-b", "feature")
-    write(local, "c.txt", "mine\n")
-    git(local, "add", "-A")
-    git(local, "commit", "-q", "-m", "local work")
-
-    res = git_upstream.rebase_repo(local)
-
-    assert res["ok"] is True, res
-    subjects = git(local, "log", "--format=%s").splitlines()
-    assert subjects[:2] == ["local work", "c3"]
-
-
-def test_rebase_refuses_a_dirty_tree(tmp_path):
-    local = _clone_with_remote_ahead(tmp_path)
-    git(local, "checkout", "-q", "-b", "feature")
-    write(local, "c.txt", "uncommitted\n")
-
-    res = git_upstream.rebase_repo(local)
-
-    assert res["ok"] is False
-    assert res["reason"] == "dirty"
 
 
 def test_switch_checks_out_the_default_branch(tmp_path):
@@ -385,16 +360,6 @@ def test_update_still_refuses_a_detached_head(tmp_path):
     assert res["reason"] == "detached"
 
 
-def test_rebase_still_refuses_a_detached_head(tmp_path):
-    local = _clone_with_remote_ahead(tmp_path)
-    git(local, "checkout", "-q", "--detach")
-
-    res = git_upstream.rebase_repo(local)
-
-    assert res["ok"] is False
-    assert res["reason"] == "detached"
-
-
 def test_switch_successful_recheck_updates_the_stale_branch_and_on_default(tmp_path):
     # Bugbot finding (17a): a re-check that SUCCEEDS after switch has always
     # replaced the row wholesale via check_repo's own fresh result — this
@@ -423,8 +388,8 @@ def test_switch_successful_recheck_updates_the_stale_branch_and_on_default(tmp_p
 def test_switch_failed_recheck_keeps_the_row_instead_of_dropping_it(tmp_path, monkeypatch):
     # Bugbot finding (17a): switch's own checkout already succeeded by the
     # time `_refresh_after_mutation` runs — a re-check that then fails
-    # (network blip) must not delete the row the way update/rebase's own
-    # failed re-check correctly does (see
+    # (network blip) must not delete the row the way update's own failed
+    # re-check correctly does (see
     # test_a_successful_update_clears_a_stale_row_even_if_the_recheck_fails).
     # Deleting it here drops the follow-up "you're on main now, and it's
     # behind" Update row a user would otherwise see once they retry.
@@ -448,28 +413,6 @@ def test_switch_failed_recheck_keeps_the_row_instead_of_dropping_it(tmp_path, mo
     # No fresh ahead/behind was available (the re-check itself is what
     # failed); the pre-mutation numbers survive rather than being guessed.
     assert row["behind"] == 2
-
-
-def test_update_failed_recheck_still_drops_the_row(tmp_path, monkeypatch):
-    # Symmetric control for rebase_repo, mirroring the existing update_repo
-    # pin (test_a_successful_update_clears_a_stale_row_even_if_the_recheck_
-    # fails) — confirms rebase's own drop-on-failure posture is unchanged by
-    # the switch-only `keep_on_failure` fix.
-    local = _clone_with_remote_ahead(tmp_path)
-    git(local, "checkout", "-q", "-b", "feature")
-    write(local, "c.txt", "mine\n")
-    git(local, "add", "-A")
-    git(local, "commit", "-q", "-m", "local work")
-    root = os.path.realpath(local)
-    git_upstream._record({"root": root, "branch": "feature", "default_branch": "main",
-                          "on_default": False, "ahead": 1, "behind": 2, "checked_at": 0.0})
-
-    monkeypatch.setattr(git_upstream, "check_repo", lambda r: None)
-
-    res = git_upstream.rebase_repo(local)
-
-    assert res["ok"] is True, res
-    assert git_upstream._state.get(root) is None
 
 
 def test_switch_checkout_argument_order_does_not_read_the_branch_as_a_pathspec(tmp_path):
@@ -496,8 +439,11 @@ def test_switch_names_the_worktree_already_holding_the_default_branch(tmp_path):
     # fails deterministically with "already used by worktree at ...". Task
     # 10 (code review): every off-default row in such a worktree used to get
     # a primary button that always failed, surfacing raw git text instead of
-    # naming the worktree and pointing at the action that actually works
-    # there (Rebase).
+    # naming the worktree. A rebase-onto-default secondary action was once
+    # offered as the way out of this specific refusal too; it was removed as
+    # too dangerous to offer (D554 amendment), so the refusal now just names
+    # the fact and stops — the fix is a terminal, same as every other
+    # refusal this module surfaces.
     local = _clone_with_remote_ahead(tmp_path, name="wtswitch")
     worktree = str(tmp_path / "wtswitch-linked")
     git(local, "worktree", "add", "-q", "-b", "feature", worktree, "HEAD")
@@ -516,14 +462,14 @@ def test_switch_names_the_worktree_already_holding_the_default_branch(tmp_path):
     # Windows it turns `os.path.realpath`'s native backslash form and the
     # message's now-normalized backslash form into the same string.
     assert os.path.normpath(os.path.realpath(local)) in res["message"]
-    assert "Rebase" in res["message"]
     # ASCII only (code review, 2026-08-27): a CI log rendered this message's
     # em-dash as a mojibake replacement character on the Windows runner —
     # confirm nothing in it needs a code page wider than ASCII to survive a
     # console.
     res["message"].encode("ascii")
     # Not a silent action swap: switch_repo still tried `switch`, and still
-    # refused rather than quietly running a rebase on the user's behalf.
+    # refused rather than quietly taking some other action on the user's
+    # behalf.
     assert git(worktree, "symbolic-ref", "--short", "HEAD").strip() == "feature"
 
 
@@ -624,6 +570,32 @@ def test_post_switch_action_is_accepted(tmp_path, monkeypatch):
     assert body["op"] == "switch"
 
 
+def test_post_rebase_action_is_refused_bad_action(tmp_path, monkeypatch):
+    # A secondary Rebase button once posted `action: "rebase"` here; removed
+    # as too dangerous to offer (D554 amendment), along with the endpoint's
+    # own handling of it — this pins that a client still sending it (a stale
+    # tab, a hand-written request) is refused rather than falling through to
+    # some other mutation.
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    client = _client(tmp_path)
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    root = os.path.realpath(local)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert git_upstream.is_known_repo(root)
+
+    r = client.post("/api/git-upstream",
+                    json={"action": "rebase", "root": root},
+                    headers={"X-Fused": "1"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["reason"] == "bad-action"
+    # No mutation happened — the branch is exactly where it started.
+    assert git(local, "symbolic-ref", "--short", "HEAD").strip() == "feature"
+
+
 # --------------------------------------------- untracked files (finding #3)
 
 
@@ -638,29 +610,17 @@ def test_update_is_not_refused_by_an_unrelated_untracked_file(tmp_path):
         assert f.read() == "not tracked, not touched by the pull\n"
 
 
-def test_rebase_is_still_refused_by_an_untracked_file(tmp_path):
-    # rebase_repo keeps the stricter, untracked-inclusive check on purpose
-    # (module docstring / _is_clean's own doc) — an untracked file colliding
-    # with a path one of the replayed commits touches is a real way to lose
-    # it, so this stays conservative rather than matching update_repo.
-    local = _clone_with_remote_ahead(tmp_path)
-    git(local, "checkout", "-q", "-b", "feature")
-    write(local, "scratch.tmp", "untracked\n")
-
-    res = git_upstream.rebase_repo(local)
-
-    assert res["ok"] is False
-    assert res["reason"] == "dirty"
-
-
 # ---------------------------------------- mid-operation preflight (finding #4)
 
 
 def _rebase_conflict_repo(tmp_path, name="conflict"):
     """A repo whose current branch, rebased onto `origin/main`, genuinely
     conflicts on one line of `a.txt` — the same shape
-    tests/test_git_conflicts.py's `rebase_conflict_repo` builds for the
-    template-side twin of this op."""
+    tests/test_git_conflicts.py's `rebase_conflict_repo` builds. This module
+    offers no rebase mutation of its own (removed as too dangerous to offer
+    — D554 amendment); the tests below drive the rebase with a raw `git
+    rebase`, standing in for a terminal, since detecting a rebase already in
+    flight must work regardless of what started it."""
     remote = str(tmp_path / f"{name}.git")
     local = str(tmp_path / name)
     os.makedirs(local)
@@ -693,9 +653,8 @@ def _rebase_conflict_repo(tmp_path, name="conflict"):
 def test_update_reports_a_mid_rebase_repo_accurately_not_as_dirty(tmp_path):
     local = _rebase_conflict_repo(tmp_path)
 
-    first = git_upstream.rebase_repo(local)
-    assert first["ok"] is False
-    assert first["reason"] == "git-failed"  # the conflict itself
+    git(local, "fetch", "-q", "origin", "main")
+    git(local, "rebase", "origin/main", check=False)  # conflicts by construction
     assert os.path.isdir(os.path.join(local, ".git", "rebase-merge")) or \
         os.path.isdir(os.path.join(local, ".git", "rebase-apply"))
 
@@ -756,9 +715,8 @@ def test_a_conflicted_rebase_in_a_linked_worktree_is_named_rebase_not_dirty(tmp_
     assert not os.path.isdir(os.path.join(worktree, ".git")), (
         "fixture assumption: .git must be a FILE in a linked worktree")
 
-    first = git_upstream.rebase_repo(worktree)
-    assert first["ok"] is False
-    assert first["reason"] == "git-failed"  # the conflict itself
+    git(worktree, "fetch", "-q", "origin", "main")
+    git(worktree, "rebase", "origin/main", check=False)  # conflicts by construction
 
     res = git_upstream.update_repo(worktree)
 

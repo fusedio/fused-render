@@ -41,7 +41,7 @@ import subprocess
 
 import pytest
 
-from _git_repo import git, git_available, with_remote
+from _git_repo import git, git_available
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE = os.path.join(ROOT, "fused_render", "templates", "git", "template.html")
@@ -80,50 +80,6 @@ def clean_repo(root):
     git(root, "commit", "-qm", "first")
     _put(root, "pkg/mod.py", "one\ntwo\n")       # an unstaged change to list
     _put(root, "extra.txt", "untracked\n")       # and an untracked one
-    return root
-
-
-def diverged_repo(root, *, known_head=True):
-    """A local branch tracking a remote that has ALSO moved: `git pull
-    --ff-only` is refused (finding #2's own trigger — `_pull`'s
-    "not-fast-forward" message), so the toolbar's Rebase button is the one
-    surface that can resolve it from inside this view.
-
-    `known_head=True` (the default) leaves `refs/remotes/origin/HEAD` as a
-    modern `git fetch` sets it on its own once it can resolve the remote's
-    default branch — most callers want a repo where the reader can resolve
-    the default branch with no fallback involved. `known_head=False` is the
-    one deliberately UNUSUAL shape: the symref is explicitly REMOVED after
-    the fetch (`remote set-head --delete`) to reproduce the case an older
-    git, or a manually pruned symref, actually leaves — the repo the
-    fallback exists for, and the one the reader must never repair on its
-    own on a read."""
-    remote = os.path.join(os.path.dirname(root), "diverged-remote.git")
-    os.makedirs(root, exist_ok=True)
-    git(root, "init", "-q", root)
-    _put(root, "a.txt", "1\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    with_remote(root, remote)
-
-    other = os.path.join(os.path.dirname(root), "diverged-other")
-    git(os.path.dirname(root), "clone", "-q", remote, other)
-    _put(other, "b.txt", "2\n")
-    git(other, "add", "-A")
-    git(other, "commit", "-qm", "theirs")
-    git(other, "push", "-q", "origin", "HEAD:main")
-
-    _put(root, "c.txt", "3\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "ours")  # local commit origin has never seen
-    # The reader computes ahead/behind off LOCAL remote-tracking refs, not a
-    # live fetch (it is read-only, like every other GET in this view) — so
-    # `origin/main` has to be brought up to date explicitly, the same as a
-    # real user's own "Check for updates" would, or this repo reads as merely
-    # ahead (Send), never as diverged.
-    git(root, "fetch", "-q", "origin")
-    if not known_head:
-        git(root, "remote", "set-head", "origin", "--delete")
     return root
 
 
@@ -193,88 +149,6 @@ def test_a_conflicted_repo_paints(reader, tmp_path):
     out = render(reader, conflicted_repo(str(tmp_path / "conflicted")), tmp_path)
     _assert_painted(out, "conflicted repo")
     assert "mod.py" in out["viewText"], out["viewText"]
-
-
-def test_a_diverged_repo_paints_a_rebase_button(reader, tmp_path):
-    """Code review finding #2: `_pull`'s own divergence refusal ("...or use
-    Rebase to replay your commits onto the tracked default branch") pointed
-    at a button this view never actually rendered — `pendingConfirm`'s
-    `op === "rebase"` branch existed, but nothing ever set `?ask=rebase` and
-    nothing ever read its `where: "branch"` confirm bar. This is the toolbar
-    trigger's own paint check, the same shape `test_a_conflicted_repo_paints`
-    is for `resolveButton`."""
-    out = render(reader, diverged_repo(str(tmp_path / "diverged")), tmp_path)
-    _assert_painted(out, "diverged repo")
-    assert "Rebase" in out["viewText"], out["viewText"]
-    # Code review finding (High): `_rebase` (ops.py) always rebases onto
-    # `<remote>/<default branch>`, never onto `@{upstream}` — but the button's
-    # copy used to say "diverged from REMOTE" and count commits ahead of
-    # `@{upstream}`, which can be a DIFFERENT ref and a DIFFERENT count than
-    # what a click actually replays. The tooltip and the aria-label must both
-    # name the real target: `origin/main` in this fixture (the remote's
-    # default branch, which happens to equal this branch's own upstream
-    # here — see `default_branch` in log.py's overview).
-    assert "origin/main" in out["viewHTML"], out["viewHTML"]
-
-
-def test_a_diverged_repo_names_the_honest_rebase_target(reader, tmp_path):
-    """Same finding as the test above, from the reader side: `overview`'s
-    `repo` dict must expose the ACTUAL ref `_rebase` (ops.py) rebases onto —
-    the remote's default branch — not just the branch's own `@{upstream}`
-    (which `ahead`/`behind` are measured against, and which can differ from
-    the default branch on a repo with a published feature branch)."""
-    root = diverged_repo(str(tmp_path / "diverged-reader"))
-    out = reader.main(file=root, op="overview")
-    assert out["ok"] is True, out
-    repo = out["repo"]
-    assert repo["remote"] == "origin"
-    assert repo["rebase_target"] == "main"
-    assert repo["rebase_ahead"] == 1  # one local commit ("ours") not on origin/main
-
-
-def test_reading_a_diverged_repo_never_touches_refs_when_head_is_unresolved(reader, tmp_path):
-    """Code review follow-up on the finding above: the FIRST cut of
-    `_rebase_target` mirrored `ops.py::_default_branch`'s `remote set-head
-    --auto` fallback wholesale — including the network round trip and the
-    LOCAL REF WRITE that fallback does. That is fine in `ops.py`, which
-    only runs it from an explicit, user-triggered mutation that is already
-    about to touch the network. It is not fine here: `log.py` is the
-    read-only reader on the request path (SPEC GT-12 — "a read may never
-    contact a remote as a side effect"), so opening the git panel on any
-    repo whose `refs/remotes/<remote>/HEAD` symref is missing or stale must
-    never block on the network or rewrite the repo's own refs just because
-    the user looked at it.
-
-    `known_head=False` builds a repo that only ever did `remote add` +
-    `fetch` — never a `clone` or a `set-head` — which is exactly the shape
-    where that symref does not exist. The reader must still answer (with
-    `rebase_target` honestly None, which is the fallback the template was
-    already built to render), and the ref this used to create as a side
-    effect must still not exist afterward."""
-    root = diverged_repo(str(tmp_path / "diverged-no-head"), known_head=False)
-    ref_path = os.path.join(root, ".git", "refs", "remotes", "origin", "HEAD")
-    assert not os.path.exists(ref_path), (
-        "fixture assumption: refs/remotes/origin/HEAD must not exist yet")
-
-    out = reader.main(file=root, op="overview")
-
-    assert out["ok"] is True, out
-    repo = out["repo"]
-    assert repo["remote"] == "origin"
-    assert repo["rebase_target"] is None
-    assert repo["rebase_ahead"] is None
-    # The assertion that actually matters: reading the overview must not
-    # have created the symref as a side effect. `packed-refs` is checked
-    # too — `git remote set-head` can write there instead of a loose ref
-    # file depending on repack state, so a loose-file-only check could pass
-    # on a mutation that happened to land in the packed form.
-    assert not os.path.exists(ref_path), (
-        "reading the overview created refs/remotes/origin/HEAD as a "
-        "side effect — the reader must never mutate the repo it is reading")
-    packed = os.path.join(root, ".git", "packed-refs")
-    if os.path.exists(packed):
-        with open(packed, encoding="utf-8") as fh:
-            assert "refs/remotes/origin/HEAD" not in fh.read()
 
 
 def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):

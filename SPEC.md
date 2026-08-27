@@ -3948,23 +3948,16 @@ changes make the showcase an ordinary git work tree with an ordinary
   quotes, backticks, a `$(...)` — because there is no shell anywhere in the
   module for it to mean something to. A successful commit returns the new short
   sha and subject.
-- **GT-15** **No history rewriting the view decided FOR you, and no path to
-  it.** No `--amend`, no `reset --hard`, no force push, no `branch -D`, no
-  `--interactive`/`--onto` rebase. `branch_delete` is
+- **GT-15** **No history rewriting, and no path to it.** No `--amend`, no
+  `reset --hard`, no rebase, no force push, no `branch -D`. `branch_delete` is
   **`-d` only** — git refuses a branch whose commits are reachable from nowhere
   else, and that refusal is surfaced **verbatim**, because it *is* the safety
   property: the one thing a GUI must not make easy is throwing away commits.
-  `pull` is **`--ff-only`**, and a non-fast-forward is a **refusal**, never an
-  automatic merge — a divergence is a decision, and an automatic merge takes it
-  on the user's behalf (it writes a commit nobody asked for). It is not a
-  refusal pointing bare at a terminal any more, though (GT-20): `rebase` is now
-  a **named, confirmed op** (`DESTRUCTIVE_OPS`) reachable from exactly this
-  refusal's own wording, and it is the one narrow exception to "no rebase"
-  above — it rebases onto exactly one target, the remote's tracked DEFAULT
-  branch, never a user-chosen ref, never `--interactive`/`--onto`, and never
-  silently: it is offered, confirmed, and can conflict, which is why it needed
-  a confirmation step at all rather than being folded into `pull`. `push`
-  never forces. `discard`'s untracked half is `git clean -fd` and
+  `pull` is **`--ff-only`**, and a non-fast-forward is a **refusal pointing at a
+  terminal**, never an automatic merge or rebase — a divergence is a decision,
+  and both automatic answers take it on the user's behalf (a merge writes a
+  commit they did not ask for, a rebase rewrites commits they already have).
+  `push` never forces. `discard`'s untracked half is `git clean -fd` and
   **`-x` is forbidden**: an ignored path is where a `.env`, a virtualenv and a
   build tree live, a scale of loss completely unlike "throw away the edit I just
   made", and one no confirmation could meaningfully warn about because those
@@ -4237,44 +4230,41 @@ changes make the showcase an ordinary git work tree with an ordinary
   before any subprocess, the same rule GT-4 states for this view's own reads
   and writes.
 
-  **The check and its three mutations live server-side, in a NEW module
+  **The check and its two mutations live server-side, in a NEW module
   (`fused_render/git_upstream.py`), not in `ops.py`.** `ops.py` is reached
   only as `fused.runPython("./ops.py")` from inside THIS view's own iframe
   (GT-1) — the activity card (§36) that shows the result has no route to it.
   So the server-side module MIRRORS `ops.py`'s git plumbing and mount refusal
-  (GT-1's own reason: a template exec'd standalone must not be imported), and
-  `ops.py` gains the matching `rebase` op in lockstep — the same op, twice,
-  so this view can do from inside an open repo what the card's refusal
-  message tells the user is available. `update`/`rebase`/`switch` each check
-  `status --porcelain` FIRST and refuse a dirty tree with a structured
-  reason the card renders, matching GT-16's confirmation rule for the same
-  class of act.
+  (GT-1's own reason: a template exec'd standalone must not be imported).
+  `update`/`switch` each check `status --porcelain` FIRST and refuse a dirty
+  tree with a structured reason the card renders, matching GT-16's
+  confirmation rule for the same class of act. A third mutation, `rebase` —
+  replaying the current branch onto the default, offered as a secondary
+  action alongside Switch — was part of this card for one release and then
+  removed outright (D554 amendment, user call: "the rebase button is scary,
+  let's just remove it"), rather than left reachable only from a stale
+  client. `ops.py`'s own `_pull` refusal, which briefly pointed at that
+  button, points at a terminal again instead (GT-15).
 
-  **The action offered is BRANCH-shaped, not count-shaped, and (D554)
-  never rewrites the user's own commits by default.** On the repo's default
-  branch: **Update**, primary — an `--ff-only` pull, which can never
+  **The action offered is BRANCH-shaped, not count-shaped, and never
+  rewrites the user's own commits.** On the repo's default branch:
+  **Update**, the row's only action — an `--ff-only` pull, which can never
   conflict, matching this view's own `pull` (GT-15). Off the default
-  branch: **Switch**, primary — a plain `git checkout <default_branch>`,
-  which never touches a single commit on the branch the user is on and so
-  can only refuse, never conflict, matching this view's own `branch_checkout`
-  (GT-1's neighbour). **Rebase** — replaying the current branch onto the
-  default, the GT-15/GT-20 exception — is demoted to **secondary on the same
-  row**, for the user who genuinely wants that instead. Switch is preferred
-  because this whole feature exists to nudge a repo toward its default
-  branch without ever putting the user's own work at risk; after a
-  successful switch the repo is very likely behind again (that is why Switch
-  was offered), so the row reappearing with Update once the check re-runs is
-  intended, not a bug. A conflict from Rebase is left exactly where a
-  conflicting `stash apply` already leaves one, mid-operation, for this
-  view's existing conflict reader and `resolve` op (GT-19) to pick up —
-  never aborted, which would silently discard a decision the button just
-  took on the user's behalf. A refusal that is not a conflict (most commonly
-  `dirty`) instead offers **Fix with Claude** (§36), which navigates to the
-  repo and hands a Claude-capable surface there the same class of prompt
-  GT-19's operation-error case builds — the error, the branch, ahead/behind,
-  the dirty flag, the repo root — but through a staged cross-navigation ask
-  rather than `window._fusedAskClaude`, because no surface for that repo may
-  be mounted yet.
+  branch: **Switch**, the row's only action there — a plain `git checkout
+  <default_branch>`, which never touches a single commit on the branch the
+  user is on and so can only refuse, never conflict, matching this view's
+  own `branch_checkout` (GT-1's neighbour). Switch is preferred over ever
+  offering to rewrite the user's branch because this whole feature exists to
+  nudge a repo toward its default branch without ever putting the user's own
+  work at risk; after a successful switch the repo is very likely behind
+  again (that is why Switch was offered), so the row reappearing with
+  Update once the check re-runs is intended, not a bug. A refusal
+  (most commonly `dirty`) offers **Fix with Claude** (§36), which navigates
+  to the repo and hands a Claude-capable surface there the same class of
+  prompt GT-19's operation-error case builds — the error, the branch,
+  ahead/behind, the dirty flag, the repo root — but through a staged
+  cross-navigation ask rather than `window._fusedAskClaude`, because no
+  surface for that repo may be mounted yet.
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
@@ -5218,8 +5208,9 @@ stop it short of quitting the app.
   **Rejected: generalising `DownloadManager`'s `QueueSlot` to N slots.**
   Giving repo updates their own top-level card is the smaller change now
   that the card no longer needs the rows to share its ONE plate at all — see
-  GT-20 for why Switch, not Rebase, is this card's off-default primary
-  action (D554). **Rejected: modeling a repo row on the job registry.**
+  GT-20 for why Switch, never a history-rewriting action, is this card's
+  off-default action (D554). **Rejected: modeling a repo row on the job
+  registry.**
   `fused_render/jobs.py` models `queued → running → finished`, a progress
   fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
   an action fits none of those, and `clearFinishedJobs` would sweep it the

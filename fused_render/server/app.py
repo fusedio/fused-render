@@ -643,7 +643,7 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/git-upstream (routers/git_upstream.py): repos with a known
     # upstream update, for the activity card's repo-update rows. GET is
     # unguarded (the check that populates it runs off GET /render, D301,
-    # throttled per repo root); POST (the card's Update/Rebase buttons) is
+    # throttled per repo root); POST (the card's Update/Switch buttons) is
     # guarded by X-Fused (D3) and only accepts a `root` the GET side has
     # already recorded — never an arbitrary client-supplied path.
     app.include_router(git_upstream_router)

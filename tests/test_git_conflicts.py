@@ -188,12 +188,6 @@ def test_resolve_is_declared_destructive(ops):
     assert "resolve" in ops.DESTRUCTIVE_OPS
 
 
-def test_rebase_is_declared_destructive(ops):
-    # Rewrites this branch's own commits — the view's confirmation step is
-    # keyed off this tuple exactly like every other work-losing op.
-    assert "rebase" in ops.DESTRUCTIVE_OPS
-
-
 def rebase_conflict_repo(root, path="pkg/mod.py"):
     """A repo whose current branch, rebased onto `origin/main`, conflicts on
     one path: local HEAD has an uncommitted-free commit changing `path` one
@@ -227,43 +221,17 @@ def rebase_conflict_repo(root, path="pkg/mod.py"):
     return root
 
 
-def test_rebase_fast_forwards_when_there_is_nothing_local_to_replay(ops, tmp_path):
-    root = str(tmp_path / "ff")
-    remote = root + "-remote.git"
-    bare_repo(remote)
-    os.makedirs(root, exist_ok=True)
-    git(root, "init", "-q", root)
-    _put(root, "a.txt", "1\n")
-    git(root, "add", "-A")
-    git(root, "commit", "-qm", "base")
-    git(root, "remote", "add", "origin", remote)
-    git(root, "push", "-q", "-u", "origin", "HEAD:main")
-    git(root, "remote", "set-head", "origin", "--auto")
-
-    other = root + "-other"
-    git(os.path.dirname(root), "clone", "-q", remote, other)
-    _put(other, "b.txt", "2\n")
-    git(other, "add", "-A")
-    git(other, "commit", "-qm", "ahead")
-    git(other, "push", "-q", "origin", "HEAD:main")
-
-    payload = ops.main(file=root, op="rebase")
-
-    assert payload["ok"] is True, payload
-    assert git(root, "log", "-1", "--format=%s").strip() == "ahead"
-
-
-def test_a_rebase_conflict_leaves_the_repo_in_a_state_the_conflicts_reader_finds(
-        ops, reader, tmp_path):
+def test_a_rebase_conflict_leaves_the_repo_in_a_state_the_conflicts_reader_finds(reader, tmp_path):
+    # `ops.py` offers no rebase op of its own (removed as too dangerous to
+    # offer — D554 amendment); a rebase left mid-operation is still always
+    # possible from a terminal or another tool, and the conflict reader must
+    # still find and describe it accurately, which is what this pins — the
+    # rebase itself is driven with a raw `git rebase`, standing in for the
+    # terminal.
     root = rebase_conflict_repo(str(tmp_path / "rbconflict"))
+    git(root, "fetch", "-q", "origin", "main")
+    git(root, "rebase", "origin/main", check=False)
 
-    payload = ops.main(file=root, op="rebase")
-
-    assert payload["ok"] is False
-    assert payload["reason"] == "git-failed"
-    # The conflict is left IN PLACE — this op never aborts on failure — so the
-    # existing conflict reader and `resolve` op pick it up exactly as they
-    # would for a conflicting merge or stash apply.
     assert unmerged(root) == ["pkg/mod.py"]
     conflicts = reader.main(file=root, op="conflicts")
     assert conflicts["ok"] is True
