@@ -139,9 +139,15 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
-// The shell's own tab icon (frontend/index.html) — what every route shows
-// unless an app supplies its optional icon.svg.
-const DEFAULT_FAVICON = "/favicon.ico";
+// The shell's own tab icon: READ off the `<link rel="icon">` the document
+// arrived with, not spelled here. frontend/index.html says `/favicon.ico`,
+// but Vite rewrites that to the build's base (`/static/shell-dist/favicon.ico`,
+// vite.config.js) — a hard-coded `/favicon.ico` restore was a 404, which is
+// what the blank placeholder on the tab was (owner, 2026-08-27, second
+// report). Captured lazily on the first swap, so it is whatever the served
+// index.html linked, dev or packaged.
+const DEFAULT_FAVICON = Symbol("default favicon");
+let defaultHref: string | null = null;
 
 // The fused-render mark's own two colours (frontend/public/favicon.ico: the
 // #1b1d21 rounded square, the #e5ff44 glyph). An app's favicon is composed in
@@ -153,13 +159,24 @@ const FAVICON_FG = "#e5ff44";
 // its href: browsers (Chrome at least) do not reliably refetch when an existing
 // link's href flips back to a URL it showed before, which left the previous
 // app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
-// node is a fresh icon request every time.
-function setFaviconHref(href: string): void {
+// node is a fresh icon request every time. The default goes back with a unique
+// query string as well — Chrome's per-document favicon cache can answer a URL
+// it already holds without repainting; static serving ignores the query, so
+// the bytes are the same file under a new key.
+let restoreSeq = 0;
+function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
   const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (defaultHref === null && old) defaultHref = old.href;
   const link = document.createElement("link");
   link.rel = "icon";
-  link.href = href;
-  if (href === DEFAULT_FAVICON) link.setAttribute("sizes", "any");
+  if (href === DEFAULT_FAVICON) {
+    if (!defaultHref) return;
+    const sep = defaultHref.includes("?") ? "&" : "?";
+    link.href = `${defaultHref}${sep}r=${++restoreSeq}`;
+    link.setAttribute("sizes", "any");
+  } else {
+    link.href = href;
+  }
   if (old) old.replaceWith(link);
   else document.head.appendChild(link);
 }
