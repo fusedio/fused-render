@@ -2513,6 +2513,29 @@ def refresh_memory() -> None:
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):
             worker.resident_bytes = health["resident_bytes"]
+        # THE LIVE OS FOOTPRINT HAS TO BE RE-READ HERE (D599). It was assigned
+        # only in the LOAD loop, which exits the moment the worker reaches
+        # `ready` — so the value froze at whatever the last load-time poll saw,
+        # before MLX had faulted in its Metal buffers. Measured on a live FLUX
+        # worker: the row showed 436 MB against a real `phys_footprint` of
+        # 24 GB, and 436 MB was a genuine reading of a worker that had not yet
+        # allocated its GPU pool. This is the ONE function that keeps polling a
+        # ready worker, so a figure that changes after load has to be read
+        # here or it is never read again.
+        #
+        # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
+        # the two `isinstance`-gated fields around it. Those two feed
+        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
+        # holding the last known number through a failed poll is right. This
+        # one is display-only and describes RIGHT NOW, so a worker that
+        # answers "I have no such counter" (the non-Darwin fallback) must
+        # clear the cell rather than leave a stale number standing next to a
+        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
+        # the previous value alone, which is the transient case.
+        if health:
+            footprint_now = health.get("os_footprint_bytes")
+            worker.os_footprint_bytes = (
+                footprint_now if isinstance(footprint_now, int) else None)
         if health and isinstance(health.get("peak_resident_bytes"), int):
             worker.peak_resident_bytes = health["peak_resident_bytes"]
             # Best-effort (code review): `describe()` calls this

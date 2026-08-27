@@ -2813,18 +2813,15 @@ def test_describe_carries_the_os_footprint_without_coercing_null(
     assert row["residentBytes"] == 1234
 
 
-def test_describe_reports_a_real_os_footprint_when_the_runner_sends_one(
-        fake_runner, monkeypatch):
-    """The populated path: a runner that answers with a footprint has it
-    carried through verbatim, not rounded and not merged with RSS."""
-    supervisor.load("org/small", registry.TEXT_GENERATION)
-    worker = _wait_ready("org/small")
-    worker.os_footprint_bytes = 24_000_000_000
-
-    row = supervisor.describe()["loaded"][0]
-
-    assert row["osFootprintBytes"] == 24_000_000_000
-    assert row["residentBytes"] == 1234  # still its own, smaller, RSS number
+# The populated path is covered by
+# `test_refresh_memory_propagates_a_growing_os_footprint` above, which asserts
+# the same thing through the REAL path. The version that used to live here set
+# `worker.os_footprint_bytes` directly and then called `describe()` — a premise
+# D599 invalidated: `describe()` calls `refresh_memory()`, which now re-reads
+# the field from `/health` on every request, so a directly-assigned value is
+# correctly overwritten by what the worker actually reports. That the old test
+# passed BEFORE the fix and fails after it is the point — it was asserting the
+# frozen-value behaviour that was the bug.
 
 
 def test_describe_carries_the_machine_ceiling_once_not_per_row(fake_runner):
@@ -2895,6 +2892,91 @@ def test_an_unmeasured_model_reports_null_not_zero(fake_runner, monkeypatch):
     assert row["footprintBasis"] is None
     # ...and the live RSS is still there, which is what the row falls back to.
     assert row["residentBytes"] == 1234
+
+
+def _ready_worker():
+    """A ready worker in the table. Its `_health` is then put under the test's
+    control by the callers below.
+
+    `_health` is the seam because the defect these tests exist for lived in
+    `refresh_memory`'s own body, not in any runner: the field was read in the
+    LOAD loop and nowhere else, so nothing that only exercised loading could
+    see it. Driving `_health` directly is what lets a test assert what happens
+    on the polls that come AFTER ready.
+    """
+    supervisor.load("org/small", registry.TEXT_GENERATION)
+    return _wait_ready("org/small")
+
+
+def test_refresh_memory_propagates_a_growing_os_footprint(fake_runner, tmp_path, monkeypatch):
+    """D599, THE DEFECT: `os_footprint_bytes` was assigned only in the load
+    loop, which exits the moment the worker reaches `ready`. So the value froze
+    at whatever the last load-time poll saw — before MLX had faulted in its
+    Metal buffers — and every later poll left it untouched. Live, that showed
+    436 MB against a real `phys_footprint` of 24 GB.
+
+    The number MUST be able to grow after load, which is the whole reason the
+    field exists, so this asserts a post-ready INCREASE rather than merely that
+    the field is populated — the load path already populated it, and that is
+    exactly why the omission was invisible.
+    """
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 456_967_248  # the frozen load-time reading
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready",
+        "resident_bytes": 1_918_320_888,
+        "peak_resident_bytes": 12_912_055_206,
+        "os_footprint_bytes": 24_000_000_000,
+    })
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes == 24_000_000_000
+    assert supervisor.describe()["loaded"][0]["osFootprintBytes"] == 24_000_000_000
+
+    # ADDITIVE ONLY: the durable "measured" store still gets the PEAK, never
+    # the OS footprint — that store feeds `fit.py`'s measured rung, and a 24 GB
+    # figure landing there would re-verdict every model the user has run.
+    from fused_render.ai import footprints
+    assert footprints.read(registry.TEXT_GENERATION, "org/small") == 12_912_055_206
+
+
+def test_refresh_memory_clears_the_os_footprint_when_the_worker_has_no_counter(
+        fake_runner, tmp_path, monkeypatch):
+    """A worker that ANSWERS and reports no counter (the non-Darwin fallback)
+    must clear the cell, not leave a stale number beside a live one. Prefer
+    showing nothing over showing something old — this field claims to describe
+    RIGHT NOW."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 24_000_000_000
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: {
+        "state": "ready", "resident_bytes": 1234, "os_footprint_bytes": None,
+    })
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes is None
+    # ...and the fields that legitimately persist are untouched by that rule.
+    assert worker.resident_bytes == 1234
+
+
+def test_a_failed_poll_leaves_the_last_os_footprint_standing(
+        fake_runner, tmp_path, monkeypatch):
+    """The OTHER half, and why this is not simply "always assign": a poll that
+    failed outright tells us nothing about the worker, so the last known figure
+    stands rather than the cell blinking empty on one dropped request. `health`
+    falsy is the transient case; `health` present with a null field is the
+    definite one above."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    worker = _ready_worker()
+    worker.os_footprint_bytes = 24_000_000_000
+
+    monkeypatch.setattr(supervisor, "_health", lambda w: None)
+    supervisor.refresh_memory()
+
+    assert worker.os_footprint_bytes == 24_000_000_000
 
 
 def test_refresh_memory_writes_the_peak_into_footprints(fake_runner, tmp_path, monkeypatch):
