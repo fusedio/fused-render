@@ -372,7 +372,11 @@ export default function QueueDock() {
   // (the server refuses `sending`), so the button counts only what it can take —
   // and disappears when nothing left in the card is withdrawable. It is not the
   // card's Clear and never becomes it: Clear dismisses rows for work that ENDED.
-  const offerCancelAll = showCancelAll(rows);
+  //
+  // The threshold itself depends on whether the CARD is collapsed
+  // (`showCancelAll`'s own doc, D548) — and `collapsed` is state private to
+  // `DownloadManagerView`, not lifted up here, so `cancelAll` below is built as
+  // a FUNCTION of it rather than a node decided once at this render.
 
   const cancelAll = async () => {
     setBusy(true);
@@ -409,17 +413,18 @@ export default function QueueDock() {
             onNote={setNote}
           />
         )),
-        cancelAll: offerCancelAll ? (
-          <button
-            type="button"
-            className="q-all"
-            onClick={cancelAll}
-            disabled={busy}
-            title="Cancel every queued message"
-          >
-            Cancel all
-          </button>
-        ) : null,
+        cancelAll: (collapsed: boolean) =>
+          showCancelAll(rows, collapsed) ? (
+            <button
+              type="button"
+              className="q-all"
+              onClick={cancelAll}
+              disabled={busy}
+              title="Cancel every queued message"
+            >
+              Cancel all
+            </button>
+          ) : null,
         // Only ever the answer to a cancel pressed in this card, so it lives with
         // the card rather than as a toast that would outlive the rows it is about.
         note: note ? <div className="q-note">{note}</div> : null,

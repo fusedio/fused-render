@@ -5126,6 +5126,21 @@ stop it short of quitting the app.
   pointer when a short-lived neighbour expires. Top-level document only
   (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
   N times. Hidden entirely when there are no records.
+
+  **The collapse hides EVERY row, no exemption** (D548, user call
+  2026-08-27: "everything is foldable, even for the job cards"). It used to
+  be a PARTIAL fold — the queue's rows and a live scheduled run's stand-in
+  job row stayed on screen regardless of `collapsed`, because folding either
+  away took the only cancel a queued message or a live turn has with it, and
+  a card collapsed weeks ago left that work arriving with nothing on screen
+  to stop it. Reachability moved to the HEADER instead: `queue.cancelAll` is
+  a function of `collapsed`, not a pre-decided node — expanded it needs 2+
+  withdrawable rows (a single one's own ✕, right there on screen, is the
+  same action with a better name on it), collapsed it needs only 1+, since
+  collapsing removes that single row's own ✕ along with everything else.
+  `jobsSummary` keeps naming what is hidden (queued/running counts) and the
+  overall progress bar still shows while collapsed and something runs — the
+  fold hides the detail, never the fact that something is happening.
 - **BG-11** **Indeterminate is a first-class state.** A running job with no
   `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
   never a bar parked at an invented percentage: parking is what makes live work
@@ -5172,13 +5187,22 @@ stop it short of quitting the app.
   card's empty-card gate, header and Clear now only ever reason about jobs
   and the queue again.
 
-  **This card's own fold takes EVERY row**, unlike the jobs card's partial
-  fold (BG-10/BG-15's own history pins the queue's rows and a live-run
-  stand-in outside the collapse). That asymmetry does not apply here: a repo
-  row has no in-flight message a fold could strand mid-turn, the header
-  already names how many updates are waiting whether the list is open or
-  not, and every row now carries its own dismiss control — so collapsing
-  costs nothing a user cannot get back by expanding again or pressing ✕.
+  **This card's own fold takes EVERY row** — and, since D548 (user call,
+  2026-08-27: "everything is foldable, even for the job cards"), so does the
+  jobs card's. The two used to differ: the jobs card pinned the queue's rows
+  and a live-run stand-in outside its collapse (BG-10), on the reasoning
+  that folding away a queued message's or a live turn's only ✕ left a card
+  collapsed weeks ago with scheduled work arriving and nothing on screen to
+  stop it. That reasoning did not disappear — it moved. A repo row has no
+  in-flight message a fold could strand mid-turn, the header already names
+  how many updates are waiting whether the list is open or not, and every
+  row carries its own dismiss control, so collapsing this card costs
+  nothing a user cannot get back by expanding again or pressing ✕. The jobs
+  card now protects the SAME thing through its header instead of an
+  exemption: `queue.cancelAll`'s threshold drops from 2+ withdrawable rows
+  to 1+ the moment the card is collapsed (BG-10's own bullet), since
+  collapsing removes the single row's own ✕ that the 2+ threshold assumed
+  was still reachable.
 
   **Dismissing a row is scoped to the throttle window, not permanent
   (D524).** The payload already carries `checked_at`; a row stays hidden

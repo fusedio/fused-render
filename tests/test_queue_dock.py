@@ -291,25 +291,27 @@ def test_there_is_one_card_not_two(dock, card):
         assert f".{gone} {{" not in css, f"the second card's .{gone} rule survives"
     # the rows land in the card's one list, above the job rows
     assert "{queue?.rows}" in card
-    assert card.index("{queue?.rows}") < card.index("listed.map((job)")
+    assert card.index("{queue?.rows}") < card.index("jobs.map((job)")
     # and the one header count is told about them
     assert "jobsSummary(jobs, count)" in card
 
 
-def test_the_fold_takes_the_job_rows_and_not_the_queue_s(card):
-    """A queue row's ✕ is the only cancel a queued message or a live turn has, and
-    the collapse is a PERSISTED preference — so folding the whole list left a card
-    someone collapsed weeks ago showing scheduled work with no reachable way to stop
-    it. The fold takes the job rows (the download history it was set to fold away);
-    the queue's rows stay, in the same one list, with their controls."""
-    assert "rowsShown(effectiveCollapsed, count)" in card
-    assert "(shown.queue || listed.length > 0) &&" in card
-    assert "{queue?.rows}" in card, "the queue's rows must not sit behind the fold"
-    # exactly one half is folded, and it is the jobs' — minus the one job row that
-    # stands in for a missing queue row, which goes through the fold for the same
-    # reason a queue row does (jobs.ts `foldedJobRows`).
-    assert "shown.jobs ? jobs : foldedJobRows(jobs)" in card
-    assert ".dl-rows.is-folded {" in _read(_CSS), "the folded list needs its own cap"
+def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
+    """D548 (user call, 2026-08-27): 'everything is foldable, even for the job
+    cards' — reversing the earlier partial fold (D526/D527), which pinned the
+    queue's rows and a live-run stand-in outside the collapse. Collapsed now
+    renders no `.dl-rows` at all, no exemption; reachability while collapsed
+    moved to the header (Cancel all's threshold drops to one row, queue-dock-lib
+    `showCancelAll`'s own doc has the rule)."""
+    assert "rowsShown" not in card, "the two-field queue/jobs split is gone"
+    assert "foldedJobRows" not in card, "no row is exempt from the fold any more"
+    assert "!collapsed && (" in card, "the whole rows block is gated on collapsed alone"
+    assert "{queue?.rows}" in card, "the queue's rows still render, just not exempt"
+    jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
+    assert "export function rowsShown" not in jobs_ts
+    assert "export function foldedJobRows" not in jobs_ts
+    css = _read(_CSS)
+    assert ".dl-rows.is-folded" not in css, "no partial-height cap — collapsed omits the rows entirely"
 
 
 def test_the_job_half_is_told_which_runs_the_queue_draws(dock, card):
@@ -371,15 +373,17 @@ def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(doc
     assert 'r.role === "live" && ended.has(' in lib
 
 
-def test_a_stand_in_job_row_survives_the_fold(card):
-    """A live run the queue half is NOT drawing has exactly one row, and it is a job
-    row — so the fold must not take it, or the hole reopens for anybody whose card has
-    been collapsed since before any of this existed. Only unattended work in flight
-    goes through: a download's ✕ is a request for work the user started themselves,
-    and a finished run's row is a report, so both still fold."""
-    assert "foldedJobRows" in card
+def test_a_stand_in_job_row_folds_like_any_other_now(card):
+    """A live run the queue half is NOT drawing still gets exactly one row, and it
+    is a job row (`jobRows` — unaffected by D548, this is ownership, not fold).
+    It used to be exempt from the collapse specially (`foldedJobRows`); D548
+    (user call, 2026-08-27) removed every such exemption, so this row now folds
+    like any other — reachability while collapsed is Cancel all's job, not a
+    per-row carve-out."""
+    assert "foldedJobRows" not in card
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
-    assert "export function foldedJobRows(jobs: Job[]): Job[]" in jobs_ts
+    assert "export function foldedJobRows" not in jobs_ts
+    assert "export function jobRows(jobs: Job[], drawn?" in jobs_ts
 
 
 def test_the_stored_fold_is_only_ever_written_by_a_press(card):

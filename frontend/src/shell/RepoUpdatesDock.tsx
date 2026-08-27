@@ -259,30 +259,18 @@ function RepoRowView({
  * jobs card, for the same reason: no polling, no network, no
  * `window`/`document`, so RepoUpdatesDock.test.tsx can render it directly.
  *
- * THE FOLD TAKES EVERY ROW, unlike the jobs card's partial fold (which
- * pins the queue's rows and a live-run stand-in outside the collapse — see
- * DownloadManager.tsx's own comment on why). That asymmetry does not apply
- * here: a repo row has no in-flight message it would strand mid-turn by
- * being hidden, the header already names how many updates are waiting
- * (`repoUpdatesSummary`) whether or not the list is open, and every row is
- * individually dismissible — so collapsing this list loses nothing a user
- * cannot immediately recover by expanding it again or by pressing ✕. Folding
- * everything is therefore the simpler, honest choice for a card whose only
- * job is "how many, and do you want to see them right now".
- *
- * **Hiding is done in JS, not CSS** — the SAME rule `DownloadManagerView`
- * follows (its own `listed` / `shown.jobs` split): the `.dl-rows.is-folded`
- * CSS rule is a max-height CAP (172px), not a way to hide content, so
- * applying it to a `.dl-rows` that still had every row mapped underneath it
- * folded NOTHING for the 1-4 rows this card typically holds — the exact D527
- * bug this card was supposed to have been immune to, shipped anyway (code
- * review, 2026-08-27). Collapsed therefore renders NO rows at all — `shown`
- * below is `[]` — and the `.dl-rows` wrapper itself is omitted rather than
- * left as an empty box, mirroring how `DownloadManagerView` guards its own
- * list (`shown.queue || listed.length > 0`). So whenever the toggle is on
- * screen at all (the card returned non-null, meaning `visible.length > 0`),
- * pressing it always visibly hides or shows every row — there is no D527
- * state here where the button would be inert.
+ * THE FOLD TAKES EVERY ROW — no exemption, no partial fold. That was always
+ * this card's own rule (D525), and the jobs card has since adopted the exact
+ * same one (D548, user call 2026-08-27: "everything is foldable, even for
+ * the job cards" — reversing the exemptions D526/D527 had built there). The
+ * two cards now behave identically: collapsed renders NO rows at all — the
+ * `.dl-rows` wrapper itself is omitted rather than left as an empty box —
+ * and reachability while collapsed lives in the header (this card's rows are
+ * each individually dismissible via their own ✕, and the header keeps
+ * naming how many updates are waiting via `repoUpdatesSummary`). Whenever
+ * the toggle is on screen at all (the card returned non-null, meaning
+ * `visible.length > 0`), pressing it always visibly hides or shows every
+ * row.
  */
 export function RepoUpdatesCardView({
   rows,

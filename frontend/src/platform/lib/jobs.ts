@@ -182,43 +182,6 @@ export function jobRows(jobs: Job[], drawn?: Iterable<string> | null): Job[] {
   });
 }
 
-/**
- * The job rows the FOLD does not take — pass it what `jobRows` returned.
- *
- * A live scheduled run that reaches the job half is there because the queue half is
- * not drawing it (that is exactly what `jobRows` filtered on), so this row is the
- * only one that run has anywhere, and its ✕ is the only way to stop it. Folding it
- * away would re-create the bug `rowsShown` exists to prevent, one level down: a card
- * collapsed weeks ago, a turn running unattended, and nothing on screen to stop it
- * or to say that expanding would help.
- *
- * A SCHEDULED RUN'S OUTCOME SURVIVES TOO, and that is a reversal (Akshil,
- * 2026-08-21: a run showed "thinking" in the corner, then the row simply
- * disappeared and no surface ever said it had finished). A terminal row is a
- * report rather than a control, which was the reason to fold it — but folding
- * the ONLY report of unattended work leaves the collapsed card telling the story
- * backwards: a run appears, works, and vanishes mid-sentence. The row the user
- * watched has to be the row that says how it ended.
- *
- * `done` and `cancelled` only, never `error`. Not a hedge — the two are
- * self-retiring (jobs.py sweeps a finished row after FINISHED_TTL_S, a few
- * seconds), so the fold gains one closing frame and gives it back. An `error`
- * row is kept until it is dismissed BY DESIGN (it is the outcome someone may have to act
- * on), so piercing the fold with one would defeat the collapse preference for as
- * long as it sat there — and the card's header already carries the count that
- * says a run failed.
- *
- * Nothing else survives: a download's ✕ is a cancel REQUEST for work the user
- * started themselves and is one expand away, which is exactly what the
- * preference was set to fold.
- */
-export function foldedJobRows(jobs: Job[]): Job[] {
-  return jobs.filter((j) => {
-    if (scheduleEntryId(j.id) === "") return false;
-    return isRunning(j) || j.state === "done" || j.state === "cancelled";
-  });
-}
-
 // Fraction complete in 0..1, or null when there is nothing honest to draw.
 //
 // `total` of 0 is null, not 1: a reporter that has not learned the size yet
@@ -338,51 +301,6 @@ export interface QueueCount {
 }
 
 const NO_QUEUE: QueueCount = { waiting: 0, running: 0 };
-
-/** Which of the card's two kinds of row are on screen (see `rowsShown`). */
-export interface RowsShown {
-  /** The queue's rows — work about to run or running now. */
-  queue: boolean;
-  /** The job rows — everything a page reported, and the outcome of a run. */
-  jobs: boolean;
-}
-
-/**
- * What the FOLD takes, which is not the whole list — and this is the one place
- * that decides it, because getting it wrong hides a control rather than a detail.
- *
- * The collapse is a persisted preference (`fused-render:jobs-collapsed`), and it
- * was set against the card as it used to be: a download history that grows all
- * session and is worth folding away. Then the queue moved into this same card, and
- * folding the whole list started taking the ONLY cancel a queued message or a live
- * turn has with it — a card someone collapsed weeks ago left scheduled work
- * arriving with no reachable way to stop it, and nothing on screen to say that
- * expanding would give them one. That is the bug this split fixes.
- *
- * So the fold applies to the JOB rows only:
- *
- * * **queue rows always show** while there are any. They are bounded (past due
- *   and about to run, not a session's history), each one is a claim on attention
- *   the user did not make, and each carries the only control that can stop it —
- *   a queued message's withdrawal, or a live turn's stop. Three rows about to run
- *   is not what anybody folded a downloads card to avoid.
- * * **job rows fold**, which is what the preference was set for. A download's ✕ is
- *   a cancel REQUEST for work the user started themselves, one expand away; the
- *   header still counts it and the overall bar still says it is running.
- *
- * `jobs: false` is still not quite "no job rows": `foldedJobRows` keeps the one kind
- * that must not be folded — a live scheduled run the queue half is not drawing,
- * which is the same argument as above applied to the row that stands in for a queue
- * row when the queue read failed. Everything the preference was set for still folds.
- *
- * Nothing here writes the preference: the stored fold is only ever changed by the
- * user pressing the header, so a card folded on purpose stays folded — it just
- * stops swallowing the queue's controls. Both false means no list at all, which
- * with an empty queue is exactly the collapsed download card as it always was.
- */
-export function rowsShown(collapsed: boolean, queue: QueueCount = NO_QUEUE): RowsShown {
-  return { queue: queue.waiting + queue.running > 0, jobs: !collapsed };
-}
 
 // The one header line for the whole card — the queue's rows and the job rows
 // under a single count, because they are one list of one kind of thing and two

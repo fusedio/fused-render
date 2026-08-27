@@ -29,15 +29,21 @@
 // card owns everything shared — the plate, the one header, the one count, the one
 // scrolling list, the collapse, and Clear.
 //
-// THE FOLD TAKES THE JOB ROWS ONLY, and that is deliberate (jobs.ts `rowsShown`
-// holds the rule and the full argument). The collapse is a persisted preference,
-// so it was set against the card as it used to be — a download history worth
-// folding away — and once the queue arrived in the same card, folding the list
-// took the only cancel a queued message or a live turn has with it. A card
-// somebody collapsed weeks ago then left scheduled work arriving with nothing to
-// stop it. The queue's rows therefore stay on screen whatever the fold says; the
-// job rows are the half that folds; and nothing here rewrites the stored
-// preference, because the user set it on purpose.
+// EVERYTHING FOLDS NOW (D548, user call 2026-08-27, reversing D526/D527's
+// exemptions): collapsing hides the queue's rows exactly like the job rows,
+// with no kind of row pinned outside it. That used to be deliberately
+// asymmetric — the queue's rows and a live scheduled run's stand-in job row
+// were exempt, because folding away a queued message's or a live turn's only
+// ✕ left a card collapsed weeks ago with scheduled work arriving and nothing
+// on screen to stop it. The user's rule is that there is no such thing as a
+// "non-foldable card", full stop — so reachability is now the HEADER's job,
+// not an exemption's: `queue?.cancelAll` and `queue?.note` render outside
+// `.dl-rows` and so survive a collapse regardless, `clearable`/`jobsSummary`
+// keep naming what is hidden, and Cancel all's own threshold drops to a
+// single row once the card is collapsed (its own comment, below, has the
+// reasoning) — because collapsing is what makes that lone row's own ✕
+// unreachable in the first place. Nothing here rewrites the stored
+// preference; it is only ever changed by the user pressing the header.
 //
 // WHICH HALF OWNS A RUN IS TOLD, NOT GUESSED (`queue.drawn`, jobs.ts `jobRows`).
 // One row per unit of work needs the two halves to agree on who is drawing what, and
@@ -48,8 +54,9 @@
 // The slot now carries the entry ids its rows cover; this half drops exactly those
 // and draws the rest itself, which for a live run is a row with the same title, the
 // same status line and the same ✕, only without the Explorer link that needs shell.
-// `foldedJobRows` keeps that stand-in row through the fold, for the same reason the
-// queue's own rows go through it.
+// This stand-in row folds like any other now (D548) — reachability while
+// collapsed is the header's job (Cancel all's single-row threshold), not this
+// row's own exemption.
 //
 // AND IT IS TOLD ABOUT A RUN, NOT ABOUT A STATE: a drawn run is dropped here whether
 // its job is running or finished. The exemption terminal rows used to have was an
@@ -79,7 +86,6 @@ import {
   clearFinishedJobs,
   dismissJob,
   fetchJobs,
-  foldedJobRows,
   isRunning,
   jobAmount,
   jobFraction,
@@ -89,7 +95,6 @@ import {
   jobsSummary,
   overallFraction,
   pollInterval,
-  rowsShown,
   JOB_PING_KEY,
   SCHEDULE_JOB_PREFIX,
   type Job,
@@ -331,12 +336,12 @@ export function JobRow({
   };
 
   // Belt-and-braces, not the mechanism: `DownloadManager`'s `isVanishedOnSuccess`
-  // is what actually keeps a vanished job out of the header count, the fold and
+  // is what actually keeps a vanished job out of the header count, the rows and
   // the empty-card gate — this is a cheap second guard for any caller that
   // renders a `JobRow` directly (this file's own test does). Schedule-aware
   // for the same reason that filter is: a scheduled run's own outcome row
-  // (`sys:schedule:*`) is DELIBERATELY drawn through one closing frame
-  // (jobs.ts `foldedJobRows`), so this must not blanket-hide every "done" job.
+  // (`sys:schedule:*`) is DELIBERATELY drawn as a real row rather than vanishing
+  // on success, so this must not blanket-hide every "done" job.
   if (job.state === "done" && !job.id.startsWith(SCHEDULE_JOB_PREFIX)) return null;
 
   return (
@@ -422,17 +427,29 @@ export interface QueueSlot extends QueueCount {
    *  half is. It also spares the queue half a second forever-poll of the same
    *  endpoint, which is what it did before. */
   onJobs?: (jobs: Job[]) => void;
-  /** Cancel all, when the shell has 2+ genuinely withdrawable rows. */
-  cancelAll?: ReactNode;
+  /** Cancel all — a FUNCTION of whether the card is collapsed, not a
+   *  pre-decided node, because the threshold itself depends on it (D548,
+   *  user call 2026-08-27, reversing the fold exemptions D526/D527 built).
+   *  Expanded: 2+ genuinely withdrawable rows, since a single row's own ✕
+   *  is the same action with a better name on it and is right there on
+   *  screen. Collapsed: 1+, because collapsing now hides that ✕ along with
+   *  every other row — the reasoning the 2+ threshold rested on stops
+   *  applying the moment the row itself is out of view. `showCancelAll`
+   *  (queue-dock-lib.ts) owns the actual number; this is a function rather
+   *  than a lifted `collapsed` state so the card's own collapse preference
+   *  stays local to `DownloadManagerView`, exactly as before. */
+  cancelAll?: (collapsed: boolean) => ReactNode;
   /** What a cancel actually did, including the half that was refused. */
   note?: ReactNode;
 }
 
 // A successful job vanishes from this card entirely (PR #785 follow-up) —
 // EXCEPT a scheduled run's own outcome row (`sys:schedule:*`), which
-// deliberately survives one closing frame once folded (jobs.ts
-// `foldedJobRows`'s own reversal: "a run appears, works, and vanishes
-// mid-sentence" is the bug that exists to prevent). Everything else that
+// deliberately survives as a real row until `jobs.py`'s own retention sweeps
+// it (Akshil, 2026-08-21: "a run appears, works, and vanishes mid-sentence"
+// is the bug this reversal exists to prevent — a collapsed card used to show
+// the run thinking and then simply lose the row at the verdict, with no
+// surface ever saying it had finished). Everything else that
 // reaches `state: "done"` — an image/video/transcription render, a model
 // load, a benchmark row — has nothing to say once it has succeeded, so it
 // must not draw at all: not a row, not a header count, not a Clear button
@@ -510,43 +527,6 @@ export function DownloadManagerView({
   if (jobs.length === 0 && queued === 0) return null;
 
   const overall = overallFraction(jobs);
-  // Whether collapsing would hide anything AT ALL (D527). Reported as the toggle
-  // "does nothing" — traced to `rowsShown`'s own documented rule: queue rows
-  // always show regardless of `collapsed`, and `foldedJobRows` deliberately keeps
-  // a live scheduled run's stand-in row through the fold too. Both are correct on
-  // their own terms (folding either would take away the only cancel a queued
-  // message or a live turn has), but together they mean a card whose job rows are
-  // ENTIRELY queue-adjacent — no rows, or only a live stand-in — folds nothing no
-  // matter how many times the header is pressed. That is not a broken toggle, it
-  // is an honest one offered where it has no work to do, which reads exactly like
-  // a broken one. The fix is not forcing a fold that would hide a control (the
-  // very bug `rowsShown` exists to prevent) but not drawing the toggle as
-  // pressable when nothing on screen would move — comparing against ALL of
-  // `jobs`, never a value already filtered by the fold, or this would be circular.
-  const foldable = jobs.length > foldedJobRows(jobs).length;
-  // Effective collapse state (task 11, code review 2026-08-27): with
-  // `collapsed` persisted `true` from an earlier session and THIS render's
-  // job list entirely fold-exempt (`foldable` false), the header renders as
-  // a static span with no chevron and no onClick (the D527 fix above) —
-  // which means there is NO control anywhere left to un-collapse. Raw
-  // `collapsed` would still cap `.dl-rows` to the folded max-height and
-  // still draw the collapsed-only progress bar below, stranding the card.
-  // Falling back to expanded whenever nothing is foldable removes that dead
-  // end without touching the STORED preference (`collapsed` itself, and
-  // `saveCollapsed`) — a later job that IS foldable still starts folded,
-  // honoring what the user actually set.
-  const effectiveCollapsed = collapsed && foldable;
-  // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
-  // the rule and says why. Short version: the collapse is a persisted preference
-  // set against a growing download history, and once the queue moved into this
-  // card, folding the list took the only cancel a queued message or a live turn
-  // has with it. So the queue's rows stay whatever the fold says, and the job rows
-  // are the half that folds.
-  const shown = rowsShown(effectiveCollapsed, count);
-  // The job rows this card is DRAWING: all of them open, and folded only the ones
-  // the fold must not take — a live scheduled run standing in for a queue row that
-  // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
-  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
   // used to count here too; that silently orphaned live work behind the
@@ -578,44 +558,41 @@ export function DownloadManagerView({
   return (
     <div className="dl-host">
       <div className="dl-head">
-        {foldable ? (
-          <button
-            className="dl-toggle"
-            onClick={toggle}
-            aria-expanded={!collapsed}
-            title={collapsed ? "Show details" : "Hide details"}
-          >
-            <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-              ⌄
-            </span>
-            <span className="dl-summary">{jobsSummary(jobs, count)}</span>
-          </button>
-        ) : (
-          // No chevron, no button, no onClick: there is nothing a fold could
-          // hide right now (see `foldable`'s own comment), so offering a
-          // press here would be a control that visibly does nothing — worse
-          // than no control at all.
-          <span className="dl-toggle is-static">
-            <span className="dl-summary">{jobsSummary(jobs, count)}</span>
+        {/* ALWAYS a real button (D548, user call 2026-08-27): there is always
+            something to fold now that no row is exempt, so the toggle is never
+            offered where it would visibly do nothing — the D527 "static span"
+            mitigation this reverses existed only because SOME rows used to be
+            exempt. */}
+        <button
+          className="dl-toggle"
+          onClick={toggle}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Show details" : "Hide details"}
+        >
+          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
+            ⌄
           </span>
-        )}
+          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
+        </button>
         {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
         {/* Two actions, and they are not the same one twice: Cancel all withdraws
-            messages that have not gone yet (the shell's, and only when 2+ rows
-            genuinely can be), Clear dismisses rows for work that has ENDED. So a
-            terminal row is clearable without a live one being touched. */}
-        {queue?.cancelAll}
+            messages that have not gone yet (the shell's, and only when the shell
+            decides enough rows are genuinely withdrawable — see `queue.cancelAll`'s
+            own doc for the collapsed-drops-to-one-row rule), Clear dismisses rows
+            for work that has ENDED. So a terminal row is clearable without a live
+            one being touched. */}
+        {queue?.cancelAll?.(collapsed)}
         {clearable > 0 && (
           <button className="dl-clear" onClick={clear} title="Dismiss finished">
             Clear
           </button>
         )}
       </div>
-      {/* Collapsed still shows the overall bar: folding the job rows away should
-          hide the detail, not the fact that something is running. With nothing
-          running there is no bar — a sweep under a header reading "2 finished"
-          would animate work that is over. */}
-      {effectiveCollapsed && jobs.some(isRunning) && (
+      {/* Collapsed still shows the overall bar: folding the rows away should hide
+          the detail, not the fact that something is running. With nothing running
+          there is no bar — a sweep under a header reading "2 finished" would
+          animate work that is over. */}
+      {collapsed && jobs.some(isRunning) && (
         <div className="dl-bar">
           <div
             className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}
@@ -628,15 +605,17 @@ export function DownloadManagerView({
           starting, then waiting) and the job rows under them, which is where the
           same run lands once its turn has ended. A scheduled message therefore
           moves down this list rather than jumping between two cards.
-          Folded, the same list holds the queue's rows alone — `is-folded` caps it
-          shorter, so the fold still buys a small card even with a dozen entries
-          past due after a wake. Cancel all keeps its 2+ threshold precisely
-          because of this: for a single row the row's own ✕ is reachable either
-          way, and it is the same action with a better name on it. */}
-      {(shown.queue || listed.length > 0) && (
-        <div className={"dl-rows" + (shown.jobs ? "" : " is-folded")}>
+          Collapsed shows NO rows at all (D548) — not a shorter, capped list, an
+          absent one, and the wrapper itself is omitted rather than left as an
+          empty box (the same rule RepoUpdatesDock.tsx's own card already
+          follows). Reachability while collapsed is the HEADER's job now:
+          `queue?.cancelAll` and `queue?.note` render outside this block, so a
+          queued message's or a live turn's stop survives the collapse through
+          Cancel all rather than through this list staying open for it. */}
+      {!collapsed && (
+        <div className="dl-rows">
           {queue?.rows}
-          {listed.map((job) => (
+          {jobs.map((job) => (
             <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
           ))}
         </div>

@@ -239,11 +239,22 @@ export function withdrawableCount(rows: QueueRow[]): number {
   return rows.filter((r) => rowCancelKind(r) === "queued").length;
 }
 
-/** Whether the card shows Cancel all. Two or more withdrawable rows, because for
- *  a single one the row's own ✕ is the same action with a better name on it — and
- *  a card holding only live or claimed work shows nothing, since "all" would be
- *  a button for zero messages. The threshold lives here, next to the count, so
- *  the two cannot drift apart in the component. */
-export function showCancelAll(rows: QueueRow[]): boolean {
-  return withdrawableCount(rows) > 1;
+/** Whether the card shows Cancel all. Two or more withdrawable rows while
+ *  expanded, because for a single one the row's own ✕ — right there on
+ *  screen — is the same action with a better name on it; a card holding only
+ *  live or claimed work shows nothing either way, since "all" would be a
+ *  button for zero messages.
+ *
+ *  `collapsed` drops the threshold to ONE (D548, user call 2026-08-27:
+ *  "everything is foldable, even for the job cards" — reversing the fold
+ *  exemptions D526/D527 built). Collapsing now hides every row, including
+ *  that single one, so the "the row's own ✕ is reachable either way"
+ *  reasoning the 2+ threshold rests on stops holding the moment the card is
+ *  folded — the ✕ is not reachable any more, and Cancel all is the only
+ *  thing left standing in the header that can withdraw it. The threshold
+ *  lives here, next to the count, so it and the row buttons cannot drift
+ *  apart in the component. */
+export function showCancelAll(rows: QueueRow[], collapsed = false): boolean {
+  const min = collapsed ? 1 : 2;
+  return withdrawableCount(rows) >= min;
 }
