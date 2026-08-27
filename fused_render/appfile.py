@@ -171,11 +171,33 @@ class _IgnoreRoots:
         parent = self._by_dir.get(dirpath) or self._by_dir.get(
             os.path.dirname(dirpath), (None, False))
         root, in_repo = parent
-        if ".git" in names and dirpath != root:
+        if ".git" in names and dirpath != root and self._is_repo(dirpath):
             root, in_repo = dirpath, True
         elif not in_repo and root is None and ".gitignore" in names:
             root = dirpath
         self._by_dir[dirpath] = (root, in_repo)
+
+    def _is_repo(self, dirpath: str) -> bool:
+        """Whether a `.git` name at `dirpath` is a repository GIT accepts.
+
+        The NAME is not the fact. A `.git` directory with a HEAD git rejects
+        (a stub, a half-copied checkout, a folder someone named that) made
+        this re-root there and start an oracle git answers with "not a git
+        repository" — every query then read as the oracle breaking, and the
+        export refused a folder whose `.git` was going to be dropped by the
+        hidden-name rule anyway. So git is asked the same question the walk's
+        entry asks (`_repo_toplevel`, memoized), and a `.git` git will not
+        own leaves the parent's oracle in force: fail OPEN on the marker, as
+        an unreadable one always did, not closed on the export."""
+        from fused_render.server.gitignore import _repo_toplevel
+
+        top = _repo_toplevel(dirpath)
+        if top is None:
+            return False
+        try:
+            return os.path.realpath(top) == os.path.realpath(dirpath)
+        except OSError:
+            return False
 
     def ignored(self, dirpath: str, names: list[str]) -> set[str]:
         """Subset of `names` (children of `dirpath`) git ignores."""
