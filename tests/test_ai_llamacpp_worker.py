@@ -54,6 +54,13 @@ def worker(monkeypatch):
     # disk" and falls through to the networked listing, the same way the real
     # function does for a repo hf's cache has never heard of.
     base.repo_folder = lambda model_id, repo_type="model": None
+    # `_remote_gguf_sizes`'s one seam (SPEC AI-24 item 14's real wiring) —
+    # `worker_base._repo_files` returns `(sha, [(name, size), ...])` in real
+    # life; the fake defaults to an empty listing (so budget-aware
+    # resolution falls straight through to the curated recipe, its own "no
+    # listing, no verdict" branch) and a test overrides it to exercise the
+    # picker.
+    base._repo_files = lambda model_id, **kw: (None, [])
 
     monkeypatch.setitem(sys.modules, "worker_base", base)
     spec = importlib.util.spec_from_file_location(
@@ -62,6 +69,7 @@ def worker(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.worker_base = base
+    monkeypatch.delenv(module._MEMORY_BUDGET_ENV, raising=False)
     return module
 
 
@@ -173,6 +181,163 @@ def test_load_refuses_an_uncurated_repo_with_nothing_loadable_before_importing_l
     with pytest.raises(RuntimeError, match="no GGUF file"):
         worker.load("some-org/not-in-the-table", "/blobs/whatever.gguf")
     assert "llama_cpp" not in sys.modules
+
+
+# -- budget-aware curated resolution: item 14's REAL production wiring ------
+# (SPEC AI-24, code review 2026-08-27 — "wire it for real")
+#
+# `_resolve_curated_recipe` is the honest seam: `_GGUF_RECIPES`' hard-coded
+# filename is the FLOOR/DEFAULT, never silently swapped when it already
+# fits — these tests prove the PRODUCTION path (`worker.download`, which is
+# what a real "Download" click calls) picks by budget, not another isolated
+# unit test of `formats.select_gguf_recipe`.
+
+
+def test_the_curated_file_is_unchanged_when_no_budget_is_known(worker):
+    """No `FUSED_AI_MEMORY_BUDGET_BYTES` in the environment (an older
+    supervisor, or `fit.available_budget_bytes()` itself answered `None`) —
+    the curated recipe is the floor/default and nothing here may guess."""
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_the_curated_file_is_unchanged_when_it_already_fits_the_budget(
+        worker, monkeypatch):
+    """A GENEROUS budget must not change what downloads — the floor/default
+    guarantee: a machine for which the curated recipe always worked sees
+    ZERO behaviour change, even though a smaller quant also exists in the
+    same listing (`select_gguf_recipe` alone, unconstrained by this
+    guarantee, would happily pick the smaller one — this function must
+    NOT let it, once the curated file already fits)."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(100 * 1024 ** 3))
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q2_K.gguf", 2 * 1024 ** 3)])
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_a_tight_budget_downgrades_to_the_best_fitting_alternative(
+        worker, monkeypatch):
+    """The real behaviour change item 14 exists to make: a budget too small
+    for the curated file picks the best-quality ALTERNATIVE from the same
+    repo's own listing that fits — never a worse-than-necessary one, and
+    never the curated file it cannot hold."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(3 * 1024 ** 3))
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q3_K_M.gguf", 4 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q2_K.gguf", 2 * 1024 ** 3)])
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q2_K.gguf"
+
+
+def test_nothing_in_the_repo_fits_falls_back_to_the_curated_file(
+        worker, monkeypatch):
+    """No alternative fits either — the curated recipe is returned anyway
+    rather than refusing the download outright, matching `_offload_
+    schedule`'s existing "slower load, never a refused download" backoff
+    philosophy `formats.py`'s own module note gives for the uncurated
+    picker."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "1")
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q2_K.gguf", 2 * 1024 ** 3)])
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_no_listing_at_all_leaves_the_curated_recipe_unchanged(worker, monkeypatch):
+    """A budget IS known but the repo's listing could not be obtained
+    (nothing cached locally, the remote call fails) — nothing to pick FROM,
+    so this degrades to the curated default rather than raising."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(1 * 1024 ** 3))
+
+    def boom(model_id, **kw):
+        raise RuntimeError("offline")
+
+    worker.worker_base._repo_files = boom
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_a_local_cache_hit_is_preferred_over_a_remote_listing(
+        worker, monkeypatch, tmp_path):
+    """Local cache first, exactly like `_resolve_uncurated_repo` already
+    keeps for an uncurated repo — a repo already partly downloaded (a
+    previous run's downgraded pick, still on disk) must not repeat a
+    network listing to re-derive the same answer."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(3 * 1024 ** 3))
+    folder = tmp_path / "models--unsloth--gemma-4-E4B-it-GGUF"
+    snapshot = folder / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    local_file = snapshot / "gemma-4-E4B-it-Q2_K.gguf"
+    local_file.write_bytes(b"x" * 1024)
+    worker.worker_base.repo_folder = lambda model_id, repo_type="model": (
+        str(folder) if model_id == "unsloth/gemma-4-E4B-it-GGUF" else None)
+    # The REAL path this filename resolves to, so `os.path.getsize` reads
+    # the file actually created above — the fixture's own `_cached_file`
+    # fake returns a fabricated `/blobs/...` string unrelated to any real
+    # file on disk, which is fine for every OTHER test here (they never
+    # `os.path.getsize` it) but wrong for this one.
+    worker.worker_base._cached_file = lambda repo, filename: (
+        str(local_file) if (repo, filename) ==
+        ("unsloth/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q2_K.gguf") else None)
+
+    def boom(model_id, **kw):
+        pytest.fail("the local-cache-first fast path called the Hub anyway")
+
+    worker.worker_base._repo_files = boom
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q2_K.gguf"
+
+
+def test_a_downgraded_pick_is_deterministic_across_repeated_resolves(
+        worker, monkeypatch):
+    """Re-resolving the SAME curated id under the SAME budget and the SAME
+    listing must pick the SAME file every time — the self-consistency a
+    "Download" click and a later "Load" click both depend on, since each
+    calls `_resolve_model_id` independently."""
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(3 * 1024 ** 3))
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q2_K.gguf", 2 * 1024 ** 3)])
+    first = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    second = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert first == second == (
+        "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q2_K.gguf")
+
+
+def test_load_also_resolves_the_budget_aware_pick_without_raising(worker, monkeypatch):
+    """`load`'s own resolution must not regress independently of
+    `download`'s — both go through `_resolve_model_id`, and a curated id
+    whose budget-aware resolve picks an alternative must still pass `load`'s
+    curation gate (it only checks that resolution SUCCEEDS; `gguf_path`
+    itself is supplied separately by the caller, the same shape every other
+    `load` test here already uses)."""
+    _fake_llama_cpp(monkeypatch)
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", str(3 * 1024 ** 3))
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3),
+               ("gemma-4-E4B-it-Q2_K.gguf", 2 * 1024 ** 3)])
+    worker.load("gemma-4-E4B-it-Q4_K_M.gguf", "/blobs/whatever.gguf")
+    assert worker._loaded["llm"].kwargs["model_path"] == "/blobs/whatever.gguf"
+
+
+def test_a_zero_or_negative_budget_reads_as_unknown(worker, monkeypatch):
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "0")
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3)])
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
+
+
+def test_a_corrupt_budget_env_var_reads_as_unknown(worker, monkeypatch):
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "not-a-number")
+    worker.worker_base._repo_files = lambda model_id, **kw: (
+        "sha", [("gemma-4-E4B-it-Q4_K_M.gguf", 5 * 1024 ** 3)])
+    path = worker.download("gemma-4-E4B-it-Q4_K_M.gguf")
+    assert path == "/blobs/unsloth/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q4_K_M.gguf"
 
 
 def test_a_repo_id_resolves_to_its_already_cached_recipe(worker):

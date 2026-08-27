@@ -9011,6 +9011,41 @@ an AI Models page that could say what was on disk but not what was *running*.
     missed, and duplicating the same character-class logic a second way
     is not that.
 
+- **AI-30** **Item 14 wired for real: the CURATED GGUF download path
+  (`llama_text._resolve_model_id` -> `_resolve_curated_recipe`) now picks
+  by budget rather than always trusting `formats.GGUF_RECIPES`' hard-coded
+  filename** (code review 2026-08-27 -- "wire it for real"). The curated
+  recipe is the unconditional FLOOR/DEFAULT: `fit.available_budget_bytes()`
+  is computed SERVER-side (a worker's bare-module interpreter cannot
+  import `fit`/`hw_detect`) and threaded across the process boundary as
+  `FUSED_AI_MEMORY_BUDGET_BYTES` (`supervisor._child_env`, the same
+  per-spawn mechanism `FUSED_MODEL_MIRROR_OK` already established). When
+  the curated file's own REAL size (from a listing of its repo -- local
+  cache first via `_local_gguf_sizes`, else one Hub call via `_remote_
+  gguf_sizes`) already fits that budget, NOTHING changes: same file, same
+  bytes, same identity every other `GGUF_RECIPES` reader assumes. Only
+  when it does not fit does `formats.select_gguf_recipe` pick the
+  best-quality alternative from the SAME repo that does; if nothing fits
+  either, the curated file is still returned, relying on `_offload_
+  schedule`'s existing CPU-offload backoff rather than refusing the
+  download outright.
+
+  **Known, accepted gap, reported rather than hidden**: a downgraded pick
+  downloads under the SAME curated `model_id`, but `hub_cache.is_
+  downloaded`/the catalog's checkmark/the displayed `size_gb` have no
+  network access on the polled catalog route (code review finding 1) and
+  do not know the actual file differs -- the checkmark can under-report
+  "downloaded" for a budget-downgraded model. Worst case is a redundant,
+  harmless re-check (the local-cache-first branch answers instantly), not
+  data loss.
+
+  **`gguf_sources` (item 13) remains genuinely unwired** -- it answers a
+  different question (a cross-namespace GGUF COUNTERPART for a model
+  curated elsewhere) than `_resolve_curated_recipe` (picking a file
+  WITHIN one already-curated repo's own listing), and wiring it here would
+  not be an honest caller, only a way to make it non-inert. It stays ready
+  for a future UI that offers alternate quantizer conversions.
+
 ## 41. Scheduled Messages — Sending Claude a Message Later (D289, D290, D291)
 
 Goal: the app could start a Claude Code session on demand — the split-view chat,
