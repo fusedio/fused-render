@@ -486,9 +486,20 @@ def _worktree_holding_branch(brief):
     already used by worktree at '<path>'" — or None when `brief` doesn't
     say that (`switch_repo`'s own caller). Used ONLY to name the worktree in
     a refusal, never to decide what to do about it — the refusal always
-    still refuses (task 10)."""
+    still refuses (task 10).
+
+    `os.path.normpath` before returning (code review, 2026-08-27): git
+    reports this path with FORWARD slashes in its own message REGARDLESS OF
+    PLATFORM — confirmed by a Windows CI failure showing "C:/Users/..." —
+    so a Windows user reading the refusal built from it verbatim would see
+    a path in a form their own shell and Explorer never write. This is the
+    one place in the module a path parsed out of git's OWN text reaches an
+    app-authored, user-facing sentence (`_brief`'s raw-quote refusals are
+    git's own words, not ours, so they are not touched here); normalizing
+    at the source, rather than in every caller, is what keeps that true as
+    this function grows callers."""
     match = _WORKTREE_BRANCH_RE.search(brief or "")
-    return match.group(1) if match else None
+    return os.path.normpath(match.group(1)) if match else None
 
 
 def switch_repo(root):
@@ -547,10 +558,19 @@ def switch_repo(root):
         brief = _brief(result)
         worktree = _worktree_holding_branch(brief)
         if worktree:
+            # Plain ASCII (code review, 2026-08-27): a Windows CI run
+            # rendered this sentence's em-dash as a mojibake replacement
+            # character in the log — proven locally too (encoding this
+            # message as ASCII raises `UnicodeEncodeError` before this
+            # fix). This module's other app-authored refusal strings (the
+            # "in-progress"/"dirty" messages above) carry the same em-dash
+            # and are latent instances of the identical risk, left AS-IS
+            # here: scoped to the one message this review flagged, not a
+            # sweep of the whole module.
             return _refuse(
                 "checked-out-elsewhere",
                 f"{default_branch} is already checked out in another "
-                f"worktree of this repository ({worktree}) — git will not "
+                f"worktree of this repository ({worktree}) - git will not "
                 "check out the same branch twice. Rebase is the action "
                 "that works from here instead.")
         return _refuse("git-failed", brief or "git checkout failed.")

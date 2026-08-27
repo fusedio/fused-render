@@ -429,8 +429,22 @@ def test_switch_names_the_worktree_already_holding_the_default_branch(tmp_path):
 
     assert res["ok"] is False
     assert res["reason"] == "checked-out-elsewhere"
-    assert os.path.realpath(local) in res["message"]
+    # OS-NATIVE separators (code review, 2026-08-27): git's own "already used
+    # by worktree at '<path>'" always uses forward slashes, even on Windows
+    # (confirmed by the CI failure this pins: a Windows run reported
+    # "C:/Users/..." in git's text) — showing that raw to a Windows user is a
+    # path their own shell/Explorer never writes. `os.path.normpath` on BOTH
+    # sides is what makes this assertion pass on macOS AND Windows without an
+    # `os.name` branch: on POSIX it is a no-op for slash direction, and on
+    # Windows it turns `os.path.realpath`'s native backslash form and the
+    # message's now-normalized backslash form into the same string.
+    assert os.path.normpath(os.path.realpath(local)) in res["message"]
     assert "Rebase" in res["message"]
+    # ASCII only (code review, 2026-08-27): a CI log rendered this message's
+    # em-dash as a mojibake replacement character on the Windows runner —
+    # confirm nothing in it needs a code page wider than ASCII to survive a
+    # console.
+    res["message"].encode("ascii")
     # Not a silent action swap: switch_repo still tried `switch`, and still
     # refused rather than quietly running a rebase on the user's behalf.
     assert git(worktree, "symbolic-ref", "--short", "HEAD").strip() == "feature"
