@@ -234,18 +234,9 @@ function CurrentAppRow({
     >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.iconUrl ? (
-          // The app's own icon.svg in the generic mark's slot, as a CSS MASK
-          // over currentColor rather than an <img>: authors draw in black,
-          // and a black glyph on the dark theme vanished (owner, 2026-08-27).
-          // Masked, the shape takes the row's colour — muted, accent when
-          // active — exactly like the ▣ it replaces.
-          <span
-            className="current-app-icon"
-            style={{
-              maskImage: `url("${app.iconUrl}")`,
-              WebkitMaskImage: `url("${app.iconUrl}")`,
-            }}
-          />
+          // The app's own icon.svg in the generic mark's slot, drawn as is —
+          // the author's colours, no mask or tint (owner, 2026-08-27).
+          <img className="current-app-icon" src={app.iconUrl} alt="" />
         ) : (
           "▣"
         )}
