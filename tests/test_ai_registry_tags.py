@@ -1,4 +1,4 @@
-"""Tests for the orthogonal capability tags (SPEC AI-28, D531).
+"""Tests for the orthogonal capability tags (SPEC AI-28, D532).
 
 `registry.py`'s five capability constants are load-bearing RUNNER DISPATCH —
 `text-generation`, `text-to-image`, `automatic-speech-recognition`,

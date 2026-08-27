@@ -1,5 +1,5 @@
 """`~/.fused-render/models.json` — a user-extensible overlay on
-`catalog.SUGGESTIONS` (SPEC AI-25, D528).
+`catalog.SUGGESTIONS` (SPEC AI-25, D529).
 
 **Follows `server/templates.py`'s registry idiom exactly** (SPEC CT-5/CT-6,
 D73), because that module already answered every question this one would

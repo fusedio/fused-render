@@ -1,4 +1,4 @@
-"""Tests for GPU/VRAM detection beyond RAM (SPEC AI-18, D518).
+"""Tests for GPU/VRAM detection beyond RAM (SPEC AI-18, D519).
 
 `hw_detect.py` is a subprocess-driven probe (`nvidia-smi`, `rocm-smi`, a
 PowerShell WMI/registry query, `sysctl`) — exactly the kind of 50-500ms cold

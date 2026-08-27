@@ -8574,7 +8574,7 @@ an AI Models page that could say what was on disk but not what was *running*.
 - **AI-17** **A model's `config.json` is harvested from the Hub and cached with
   a TTL, so `fit`'s KV-cache/vision estimates and a picker's "does this take
   images?" question can be answered for a repo the user has not downloaded a
-  single byte of** (D517). `fused_render/ai/hub_metadata.py`'s `get(repo_id)`
+  single byte of** (D518). `fused_render/ai/hub_metadata.py`'s `get(repo_id)`
   fetches `huggingface.co/{repo}/resolve/main/config.json` — a few KB, no
   weights — and harvests `model_type`, `architectures[0]`, `num_hidden_layers`,
   `num_key_value_heads`, `num_attention_heads`, `head_dim`, `hidden_size`,
@@ -8603,7 +8603,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   metadata", never raised into the route this feeds.
 - **AI-18** **VRAM, a device name, multi-GPU aggregation, and a
   name -> memory-bandwidth table, kept off the verdict path the same way
-  **AI-16b**'s wired-limit read already is** (D518). `fit.py` judges a
+  **AI-16b**'s wired-limit read already is** (D519). `fit.py` judges a
   footprint against system RAM only, which is correct for CPU and
   Apple-Silicon unified-memory loads and silently wrong on a discrete
   CUDA/ROCm box, where the pool that actually holds the weights is VRAM — a
@@ -8644,7 +8644,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   constant, a quantization-aware weight-size table, a KV-cache term, and
   VRAM-vs-RAM pool selection with a run-mode concept — and the old
   `EASY_FRACTION = 0.6` cliff is replaced by a continuous Gaussian fit
-  score** (D519, D520, D521). One coherent change confined to the `download` rung's
+  score** (D520, D521, D522). One coherent change confined to the `download` rung's
   arithmetic: `measured` (**AI-16a**) and `declared` (a curator's
   `resident_gb`) are already real, observed numbers, so none of the four
   additions below touches either — only `download`, this module's one
@@ -8679,7 +8679,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   per-format byte cost.
 
   **A derived `params x bpp` estimate does not outrank a real `size_gb`
-  when the quantization string was NOT recognized** (D520 addendum): the
+  when the quantization string was NOT recognized** (D521 addendum): the
   first version of this wiring let `params x bpp` win unconditionally, and
   a real, curated `size_gb` was overridden by a bytes-per-param figure with
   no evidentiary basis whenever `_quant_key` answered `None` and
@@ -8773,7 +8773,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   every `_PEAK_SAMPLE_INTERVAL_S` (0.25s) DURING the pass and keeps the
   running max, bracketing only the timed measurement (never the discarded
   warm-up) and torn down unconditionally in the same `finally` that already
-  closes the measurement row.** (D522) Also gives `benchmark._total_memory_
+  closes the measurement row.** (D523) Also gives `benchmark._total_memory_
   bytes()` the `GlobalMemoryStatusEx` Windows fallback `fit.machine_ram_gb`
   already carries, ported rather than shared since one returns decimal GB
   cached forever and the other raw bytes, uncached, per `machine()` call.
@@ -8813,7 +8813,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   basis (`method`, `backend`, `bandwidthGbS`, `contextTokens`,
   `calibrated`, `calibrationFactor`) rather than a bare number. Wired into
   `ai_runtime.describe_catalog` as `entry["speedEstimate"]`, `text-
-  generation` entries only.** (D523, D524) A local calibration factor —
+  generation` entries only.** (D524, D525) A local calibration factor —
   `median(measured_tok_s / uncalibrated_estimate_tok_s)` over this
   machine's own `bench_store.py` `text-generation` runs, anchored only on
   `params_b >= 1.0 and not is_moe` (the comparative study's own anchor
@@ -8849,7 +8849,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   catalog`) but set by NOTHING — is populated for the two `ltx-video`
   rows, `dgrauet/ltx-2.3-mlx-q4` (`resident_gb: 20.5`) and `dgrauet/
   ltx-2.3-mlx-q8` (`resident_gb: 29.8`), and deliberately left absent on
-  every other curated row.** (D525) `ltx-video` is the row `fit.py`'s own
+  every other curated row.** (D526) `ltx-video` is the row `fit.py`'s own
   module docstring names as the reason `resident_gb` exists at all:
   `DistilledPipeline(low_memory=True)` frees the transformer and the
   Gemma-3 text encoder between stages, so the true resident peak is one
@@ -8883,7 +8883,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   `ggml-org`, `TheBloke`, `mradermacher`) for `{provider}/{basename}-GGUF`
   and verifies a hit against the candidate's own `base_model` card tag,
   falling back to +/-30% parameter-count similarity when no tag is
-  present** (D526). `catalog.COUNTERPART_IDS` was audited as this item's
+  present** (D527). `catalog.COUNTERPART_IDS` was audited as this item's
   migration target and turned out to answer a different question entirely
   (a curated id's counterpart in a different EXPORT FORMAT — ONNX — for the
   two ids the torch-runner removal orphaned; its own docstring disclaims
@@ -8898,7 +8898,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   picks the best-quality GGUF file a repo's own listing offers that still
   fits a known budget -- `GGUF_QUALITY_ORDER`'s full top-to-bottom ladder
   (`Q8_0` down to `IQ1_M`), a SEPARATE table from `GGUF_SUFFIX_PRIORITY`'s
-  hardware-blind default** (D527). A multi-part shard set collapses into
+  hardware-blind default** (D528). A multi-part shard set collapses into
   ONE candidate at the summed size before ranking, so a 3-shard model
   cannot look like it fits by judging one part alone. `pick_gguf_file`
   (D412) is untouched -- this is a new, opt-in entry point for a caller that
@@ -8909,7 +8909,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   path (a worker's interpreter) never pays for it.
 - **AI-25** **`~/.fused-render/models.json` overlays `catalog.SUGGESTIONS`,
   keyed by runner code, mirroring `server/templates.py`'s registry idiom**
-  (D528). An overlay row whose `id` matches a built-in row's REPLACES it in
+  (D529). An overlay row whose `id` matches a built-in row's REPLACES it in
   place (same list position); a new `id` APPENDS. Read fresh on every
   `catalog.for_runner` call (`catalog_overlay.apply`) rather than cached, so
   an edit applies on the next request with no restart -- the same reasoning
@@ -8923,7 +8923,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   user wants offered, not a fact about the machine that wrote it.
 - **AI-26** **`worker_base._ensure_disk_space(total_bytes, folder)` fails a
   download BEFORE it starts when the target volume's free space is already
-  known to be less than the listing's own total** (D529). Wired into
+  known to be less than the listing's own total** (D530). Wired into
   `download_snapshot` and `download_file`, right after each function's
   existing repo listing (which already computes the total the progress bar
   uses) and before either one opens a connection. Checked against the
@@ -8941,7 +8941,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   pre-download fallback: `hub_cache.has_vision_tower` stays the
   higher-precedence source when a snapshot IS cached
   (`hub_cache.has_cached_snapshot`), and only when nothing is cached does it
-  fall back to `hub_metadata.get(model_id)["hasVisionTower"]`** (D530). The
+  fall back to `hub_metadata.get(model_id)["hasVisionTower"]`** (D531). The
   new `has_cached_snapshot` splits `has_vision_tower`'s two different
   "False" cases apart -- "this checkpoint really has no tower" and "there is
   nothing on disk to read a tower off of" -- so the fallback only fires for
@@ -8956,7 +8956,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   command-r, hermes, llama-3+instruct, mistral+instruct, gemma-3/4+-it),
   never a regex reverse-engineered over an arbitrary repo id.
   `registry.capability_tags(...)` composes it with a caller-supplied
-  `has_vision` bool into `("tool-use", "vision")` (D531). Wired into
+  `has_vision` bool into `("tool-use", "vision")` (D532). Wired into
   `ai_runtime.describe_catalog` as `entry["tags"]`, TEXT_GENERATION only,
   via `_capability_tags` -- reusing `_accepts_image`'s exact cached-vs-
   pre-download precedence (AI-17 item 17) for the vision half, and passing
@@ -8966,7 +8966,7 @@ an AI Models page that could say what was on disk but not what was *running*.
   network itself, taking whatever evidence the caller already has instead.
 - **AI-29** **Path-hardening audit of the download paths** (`runners/
   worker_base.py`, `runners/mirror.py`, and items 13/14's own additions)
-  **(D532).** Findings:
+  **(D533).** Findings:
   - **`mirror.py` was already safe** -- `_safe_name` (repo-relative names:
     rejects a leading `/`, a backslash, a colon, and any `.`/`..` path
     segment), `_safe_filename` (a single URL path segment, a stricter

@@ -579,7 +579,7 @@ def _no_ai_idle_reaper_thread(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_ai_hardware_refresh_thread(monkeypatch):
     """`create_app` starts the background GPU/VRAM-detection thread
-    (`supervisor.start_hardware_refresh`, SPEC AI-18, D518); no test may let
+    (`supervisor.start_hardware_refresh`, SPEC AI-18, D519); no test may let
     it run.
 
     Same hazard, same fix, as `_no_ai_idle_reaper_thread` immediately above:

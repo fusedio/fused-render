@@ -1,4 +1,4 @@
-"""Tests for the GGUF quantizer-namespace resolver (SPEC AI-23, D526).
+"""Tests for the GGUF quantizer-namespace resolver (SPEC AI-23, D527).
 
 `gguf_sources.sources_for(repo_id)` replaces `catalog.COUNTERPART_IDS`'s old
 job of naming a llama.cpp-readable counterpart for a model this app curates

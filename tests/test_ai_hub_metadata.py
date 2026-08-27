@@ -1,4 +1,4 @@
-"""Tests for the Hub `config.json` metadata harvest (SPEC AI-17, D517).
+"""Tests for the Hub `config.json` metadata harvest (SPEC AI-17, D518).
 
 `hub_metadata.get()` answers "what does this repo's `config.json` say" for a
 model that may not be cached on disk at all — the whole reason it exists is to

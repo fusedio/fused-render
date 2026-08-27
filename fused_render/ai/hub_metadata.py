@@ -1,5 +1,5 @@
 """Hub `config.json` harvest, cached at ~/.fused-render/ai_hub_metadata.json
-(SPEC AI-17, D517).
+(SPEC AI-17, D518).
 
 **Why this exists.** `hub_cache.has_vision_tower` and every KV-cache/fit
 computation in `fit.py` need a model's architecture facts — layer count,

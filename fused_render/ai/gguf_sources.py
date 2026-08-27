@@ -1,5 +1,5 @@
 """Known-quantizer GGUF counterpart resolution, cached at
-`~/.fused-render/ai_gguf_sources.json` (SPEC AI-23, D526).
+`~/.fused-render/ai_gguf_sources.json` (SPEC AI-23, D527).
 
 **Why this exists, and what it replaces.** A model this app curates for one
 engine sometimes has no GGUF conversion on any curated list at all — the user

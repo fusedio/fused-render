@@ -1,4 +1,4 @@
-"""Tests for budget-aware GGUF quant selection (SPEC AI-24, D527).
+"""Tests for budget-aware GGUF quant selection (SPEC AI-24, D528).
 
 `formats.select_gguf_recipe` is the "which quant fits" half of item 14 —
 "best quality that still fits" against a machine's budget, over a repo's OWN

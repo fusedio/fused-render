@@ -302,7 +302,7 @@ class InsufficientDiskSpace(Exception):
     """
 
 
-# ---------------------------------------------------------- SPEC AI-26 (D529)
+# ---------------------------------------------------------- SPEC AI-26 (D530)
 def _ensure_disk_space(total_bytes, folder):
     """Raise `InsufficientDiskSpace` when `folder`'s volume is already known
     to have less free space than the bytes THIS DOWNLOAD STILL HAS TO WRITE
@@ -783,7 +783,7 @@ PART_SUFFIX = ".fusedpart"
 #: flag matters, so before `_appends_only` no `os.open` in this file had ever
 #: written a byte there. Windows CI found it the first time one did.
 _BINARY = getattr(os, "O_BINARY", 0)
-#: SPEC AI-29 (D532) — refuses to open a `.part` path that is a SYMLINK,
+#: SPEC AI-29 (D533) — refuses to open a `.part` path that is a SYMLINK,
 #: rather than a regular file, without rejecting a legitimate RESUME (the
 #: whole reason `O_EXCL`/`create_new` cannot be used here, unlike a one-shot
 #: temp file: a `.part` file is deliberately reopened across process
@@ -894,7 +894,7 @@ class _Unsegmentable(Exception):
     """
 
 
-# ---------------------------------------------------------- SPEC AI-29 (D532)
+# ---------------------------------------------------------- SPEC AI-29 (D533)
 #: `mirror.py`'s manifest reader already refuses `..`, an absolute path and a
 #: Windows separator in a repo-relative NAME (`_safe_name`, that module's own
 #: docstring gives the identical reasoning) — because a CDN manifest is
@@ -1973,7 +1973,7 @@ class _FileFetch:
             if self.fd is not None:
                 os.fsync(self.fd)
             tmp = self.sidecar + ".tmp"
-            # SPEC AI-29 (D532): `os.open` with `_NOFOLLOW` rather than a
+            # SPEC AI-29 (D533): `os.open` with `_NOFOLLOW` rather than a
             # plain `open(tmp, "w")` — the same symlink-planting defence the
             # `.part` file opens above already apply, extended to the
             # sidecar's own write-then-`os.replace` (an atomic rename does
@@ -2499,7 +2499,7 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
             # naming the Hub for a mirror manifest sends a reader to the wrong
             # place.
             raise _Unsegmentable(f"{name}: no size, etag or commit was reported")
-        # SPEC AI-29 (D532): a `name`/`etag` that would escape the snapshot
+        # SPEC AI-29 (D533): a `name`/`etag` that would escape the snapshot
         # or blobs directory is refused here, before a `_FileFetch` is ever
         # constructed — falling back to hf's own downloader (which does its
         # own, independently-maintained path handling) rather than joining

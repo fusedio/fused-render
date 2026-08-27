@@ -55,7 +55,7 @@ def test_weight_bytes_is_the_download_rungs_own_weight_size_figure():
     # A recognized quant with parseable params: params x bpp wins.
     assert fit.weight_bytes(4.0, "1.2B", "MLX 4-bit") == pytest.approx(
         1.2e9 * fit.QUANT_BYTES_PER_PARAM["mlx_4bit"])
-    # An unrecognized quant with a real size_gb: size_gb wins (D521's rule).
+    # An unrecognized quant with a real size_gb: size_gb wins (D522's rule).
     assert fit.weight_bytes(6.1, "27B", "Ternary 2-bit") == 6.1 * fit.GB_BYTES
     # Nothing at all: None, same as `_weight_bytes` itself.
     assert fit.weight_bytes(None, None, None) is None

@@ -420,7 +420,7 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.start_reaper()
 
-    # GPU/VRAM detection (SPEC AI-18, D518): `hw_detect.detect_hardware` is a
+    # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
     # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
     # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
     # per-request verdict path, which is why `fit.py`/`speed.py` only ever

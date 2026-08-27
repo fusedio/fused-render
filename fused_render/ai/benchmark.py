@@ -1,5 +1,5 @@
 """The fixed per-capability workloads a benchmark run executes (SPEC AI-14,
-AI-20, D522).
+AI-20, D523).
 
 A benchmark answers "how fast is this model, on this machine, in this app
 version" — and the only thing that makes two such answers comparable is that

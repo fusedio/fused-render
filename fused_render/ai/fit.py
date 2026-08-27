@@ -1,5 +1,5 @@
 """Will this model FIT on this machine? — fused_render/ai/fit.py (SPEC AI-16,
-AI-16b, AI-16c, AI-19, D497, D519, D520, D521, D540).
+AI-16b, AI-16c, AI-19, D497, D520, D521, D522, D541).
 
 `ai_runtime._fit_verdict` used to be handed `size_gb` and asked a memory
 question, which conflates two quantities that coincide only for a
@@ -424,7 +424,7 @@ def _kv_cache_bytes(*, num_hidden_layers: int | None = None,
 def weight_bytes(size_gb: float | None, params: float | str | None,
                  quantization: str | None) -> float | None:
     """Public wrapper over `_weight_bytes` — the same weight-size figure the
-    `download` rung's own arithmetic uses (SPEC item 4, and D521's "measured
+    `download` rung's own arithmetic uses (SPEC item 4, and D522's "measured
     beats guessed" precedence over it), exposed so a caller OUTSIDE this
     module can read a weight-size estimate without depending on a private
     name or re-deriving the recognized-quant-vs-real-`size_gb` precedence a

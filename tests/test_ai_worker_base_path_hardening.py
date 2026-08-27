@@ -1,4 +1,4 @@
-"""Tests for the path-hardening audit (SPEC AI-29, D532).
+"""Tests for the path-hardening audit (SPEC AI-29, D533).
 
 `mirror.py`'s manifest reader was already hardened (`_safe_name`/
 `_safe_filename`/`_safe_etag`) — a manifest is untrusted-origin by

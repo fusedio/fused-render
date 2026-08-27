@@ -1,4 +1,4 @@
-"""Tests for the pre-download disk-space check (SPEC AI-26, D529).
+"""Tests for the pre-download disk-space check (SPEC AI-26, D530).
 
 `worker_base._ensure_disk_space` is the fix for "no disk-space precheck
 anywhere" — a download that is known, before a single byte moves, to exceed

@@ -1,5 +1,5 @@
 """Tests for the `~/.fused-render/models.json` catalog overlay (SPEC AI-25,
-D528).
+D529).
 
 Mirrors `server/templates.py`'s registry idiom (SPEC CT-5/CT-6, D73): read
 per call (a tiny local file, edits apply on the next request with no

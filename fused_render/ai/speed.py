@@ -1,5 +1,5 @@
 """A tok/s speed estimate, with a recorded basis, and this machine's own
-local calibration of it (SPEC AI-21, D523, D524).
+local calibration of it (SPEC AI-21, D524, D525).
 
 `fit.py` answers "will this model fit"; this module answers "how fast, once
 it does" — a second, independent estimate over the same inputs (a weight
@@ -17,7 +17,7 @@ estimate — a memory-bandwidth-bound decode loop reads roughly one full pass
 over the resident weights per token, so tokens per second scales with how
 many WEIGHT-sized reads the memory bus can complete per second. `weight_gb`
 is `fit.weight_bytes`'s own figure (SPEC item 4's `params x bpp` estimate
-when the quantization is recognized, `size_gb` otherwise, D521's
+when the quantization is recognized, `size_gb` otherwise, D522's
 precedence) — the bytes actually read per token, not `fit.footprint_bytes`'s
 full figure, which also adds the KV term and the flat runtime overhead: real
 memory the model occupies, but not bandwidth the decode loop repeatedly

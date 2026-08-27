@@ -1,4 +1,4 @@
-"""Tests for the background GPU/VRAM-detection wiring (SPEC AI-18, D518).
+"""Tests for the background GPU/VRAM-detection wiring (SPEC AI-18, D519).
 
 `hw_detect.refresh_hardware()`/`detect_hardware()` had NO caller anywhere in
 `fused_render/` or `frontend/` outside their own module and tests (code

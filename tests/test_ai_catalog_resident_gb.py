@@ -1,4 +1,4 @@
-"""SPEC AI-22, D525: `resident_gb` populated for the two `ltx-video` rows.
+"""SPEC AI-22, D526: `resident_gb` populated for the two `ltx-video` rows.
 
 `resident_gb` is the `declared` rung of `fit.py`'s precedence ladder — an
 optional, curator-supplied resident-footprint estimate that outranks the

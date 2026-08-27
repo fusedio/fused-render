@@ -1091,7 +1091,7 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # worker's final pattern set excluded the second, unused transformer
     # copy; these are the re-derived figures the plan itself calls for).
     #
-    # **`resident_gb` (SPEC AI-22, D525) is the declared rung `fit.py`'s own
+    # **`resident_gb` (SPEC AI-22, D526) is the declared rung `fit.py`'s own
     # module docstring names THIS row as the motivating case for**:
     # `DistilledPipeline(low_memory=True)` frees the transformer and the
     # Gemma-3 text encoder between stages, so the true resident PEAK is one

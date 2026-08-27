@@ -1,4 +1,4 @@
-"""GPU/VRAM detection beyond RAM (SPEC AI-18, D518).
+"""GPU/VRAM detection beyond RAM (SPEC AI-18, D519).
 
 `fit.py` judges a footprint against system RAM only — correct for CPU and
 Apple-Silicon unified-memory loads, silently wrong on a discrete CUDA/ROCm

@@ -1833,7 +1833,7 @@ def start_reaper() -> None:
 
 
 #: How often the background hardware-detection thread re-probes once it has
-#: probed at least once (SPEC AI-18, D518; wiring per code review — the
+#: probed at least once (SPEC AI-18, D519; wiring per code review — the
 #: probe had no caller in production, so `hw_detect.cached_hardware()`
 #: always answered None and `fit._select_pool`/`speed._uncalibrated` always
 #: took their no-GPU-known branch). Unlike `_REAPER_TICK_S`'s 30s (evaluating
