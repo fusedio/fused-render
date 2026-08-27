@@ -349,11 +349,13 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
 function renderDockInstance(
   rows: RepoRow[],
   dismissed: Record<string, string> = {},
+  failed: Job[] = [],
 ): ReactTestRenderer {
   return create(
     <RepoUpdatesDockView
       rows={rows}
       dismissed={dismissed}
+      failed={failed}
       initialCollapsed={false}
       onDismiss={() => {}}
       onDismissAll={() => {}}
@@ -380,12 +382,14 @@ function updateDockInstance(
   renderer: ReactTestRenderer,
   rows: RepoRow[],
   dismissed: Record<string, string> = {},
+  failed: Job[] = [],
 ) {
   act(() => {
     renderer.update(
       <RepoUpdatesDockView
         rows={rows}
         dismissed={dismissed}
+        failed={failed}
         initialCollapsed={false}
         onDismiss={() => {}}
         onDismissAll={() => {}}
@@ -656,4 +660,45 @@ test("a repo row arriving still DOES auto-open — the suppression is failures o
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-panel")).toHaveLength(1);
+});
+
+// CODE REVIEW 2026-08-28, FINDING 1 — the other half of "failures are not in
+// the announce set". They were not in the OCCUPANCY set either, so the drain
+// gate could not see them: pressing Update on the last repo row emptied the
+// only list the hook had, and the panel slammed shut over failure rows the user
+// was reading. Failures now go in as `alsoDrawn` — they hold the panel, they
+// still never open it (the test above stays green as the proof of that half).
+test("the last repo row going does NOT close the panel over a failure row", () => {
+  const failure = failedJob();
+  const renderer = renderDockInstance(
+    repoRows([status({ root: "/a/one" })]),
+    {},
+    [failure],
+  );
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
+  // The repo row is gone (Updated, or dismissed) — the failure is not.
+  updateDockInstance(renderer, [], {}, [failure]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(1);
+});
+
+// The mirror, so the fix above cannot be "never close again": with both sources
+// empty the panel is genuinely showing nothing, and D580's close applies.
+test("the panel closes once the failure rows drain as well", () => {
+  const failure = failedJob();
+  const renderer = renderDockInstance(
+    repoRows([status({ root: "/a/one" })]),
+    {},
+    [failure],
+  );
+  updateDockInstance(renderer, [], {}, [failure]); // repo row goes, panel stays
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
+  updateDockInstance(renderer, [], {}, []); // and the failure is dismissed too
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
 });

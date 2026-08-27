@@ -20,8 +20,20 @@ interface Seen {
 
 function harness(opts: AutoExpandOptions = {}) {
   const seen: Seen[] = [];
-  function Section({ ids, collapsed }: { ids: string[]; collapsed: boolean }) {
-    const { autoOpen, autoClose } = useAutoExpandOnNew(ids, collapsed, true, opts);
+  function Section({
+    ids,
+    collapsed,
+    alsoDrawn,
+  }: {
+    ids: string[];
+    collapsed: boolean;
+    /** The panel's OTHER row source, when the test is about one (finding 1). */
+    alsoDrawn?: string[];
+  }) {
+    const { autoOpen, autoClose } = useAutoExpandOnNew(ids, collapsed, true, {
+      ...opts,
+      ...(alsoDrawn ? { alsoDrawn } : {}),
+    });
     // The exact rule every dock uses.
     seen.push({
       open: autoClose ? false : !collapsed || autoOpen,
@@ -31,10 +43,11 @@ function harness(opts: AutoExpandOptions = {}) {
     return null;
   }
   let renderer!: ReactTestRenderer;
-  const render = (ids: string[], collapsed: boolean) => {
+  const render = (ids: string[], collapsed: boolean, alsoDrawn?: string[]) => {
+    const el = <Section ids={ids} collapsed={collapsed} alsoDrawn={alsoDrawn} />;
     act(() => {
-      if (renderer) renderer.update(<Section ids={ids} collapsed={collapsed} />);
-      else renderer = create(<Section ids={ids} collapsed={collapsed} />);
+      if (renderer) renderer.update(el);
+      else renderer = create(el);
     });
   };
   return { seen, render, last: () => seen[seen.length - 1], unmount: () => act(() => renderer.unmount()) };
@@ -105,24 +118,59 @@ test("neverOpen KEEPS auto-close on drain — D580 was explicitly good", () => {
   h.unmount();
 });
 
-// ---------------------------------------------------------------- neverClose (failures)
+// ------------------------------------------------- alsoDrawn (a second source)
 
-// D586: a failure must touch visibility in NEITHER direction — it may not throw
-// a panel over the page, and an emptying error list must not shut a panel the
-// repo rows are still filling.
-test("neverOpen + neverClose leaves visibility alone in both directions", () => {
-  const h = harness({ neverOpen: true, neverClose: true });
-  h.render(["a"], false); // seeds, open by preference
-  h.render([], false); // the error list drains
+// CODE REVIEW 2026-08-28, FINDING 1. The drain gate means "the panel is
+// genuinely empty", but both real panels draw rows from TWO sources and the
+// hook could only see one of them — so the first source emptying force-closed a
+// panel that was still full. `alsoDrawn` is the other source's identities:
+// occupancy only, never an announcement. `neverClose` (which used to be how the
+// failures half was papered over) is deleted, because this is what its caller
+// actually wanted.
+test("a drain of `ids` does NOT close a panel `alsoDrawn` is still filling", () => {
+  const h = harness();
+  h.render(["a"], false, ["x"]); // seeds, open by preference, both sources full
+  h.render([], false, ["x"]); // the FIRST source drains; the other still draws
   expect(h.last().autoClose).toBe(false);
-  expect(h.last().open).toBe(true); // the panel the repo rows are filling stays
+  expect(h.last().open).toBe(true);
+  h.unmount();
+});
 
-  // Collapse FIRST, as its own step: changing the saved preference is the user
-  // speaking directly and deliberately clears any standing dot/override, so
-  // flipping `collapsed` in the same render as an arrival would wipe the very
-  // dot this asserts (real behaviour, not a quirk worth testing around).
-  h.render([], true);
-  h.render(["b"], true); // a failure arrives while collapsed
+// The mirror: the transition still has to fire, and it has to fire on whichever
+// source empties LAST. Tracking the seen set over the union is what buys this —
+// a hook that tracked only `ids` would have shrunk `prev` to empty on the tick
+// above and then had nothing left to notice.
+test("the panel closes once BOTH sources have drained, whichever went last", () => {
+  const h = harness();
+  h.render(["a"], false, ["x"]); // seeds, open, both full
+  h.render([], false, ["x"]); // ids drain — no close (above)
+  expect(h.last().open).toBe(true);
+  h.render([], false, []); // and now the other source goes too
+  expect(h.last().autoClose).toBe(true);
   expect(h.last().open).toBe(false);
+  h.unmount();
+});
+
+// D586's promise, now STRUCTURAL rather than a flag: a failure reaching
+// Notifications fills the circle and holds the panel, but must never throw a
+// panel over the page the user is looking at.
+test("an arrival in `alsoDrawn` never opens the panel", () => {
+  const h = harness();
+  h.render([], true, ["x"]); // seeds, collapsed
+  h.render([], true, ["x", "y"]); // a second failure lands
+  expect(h.last().autoOpen).toBe(false);
+  expect(h.last().open).toBe(false);
+  h.unmount();
+});
+
+// An arrival among `ids` is still news even while `alsoDrawn` is occupied —
+// widening the occupancy set must not narrow the announce set by putting the
+// other source's rows into the same "already seen" bucket.
+test("an arrival in `ids` still opens the panel while `alsoDrawn` is full", () => {
+  const h = harness();
+  h.render(["a"], true, ["x"]); // seeds, collapsed
+  h.render(["a", "b"], true, ["x"]);
+  expect(h.last().autoOpen).toBe(true);
+  expect(h.last().open).toBe(true);
   h.unmount();
 });

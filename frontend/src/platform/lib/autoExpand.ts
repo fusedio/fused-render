@@ -1,10 +1,9 @@
 // Signal a genuinely NEW item arriving in a folded notification card — and,
 // since D574, OPEN that card's own panel so the arrival is actually on screen
-// rather than only hinted at. Shared by all three status-bar sections that
-// track their own seen-id set — platform/ui/DownloadManager.tsx's
-// jobs/downloads card, shell/RepoUpdatesDock.tsx's repo-updates card, and
-// shell/ModelsDock.tsx's resident-models panel — since each needs the exact
-// same wiring around the same pure decision (jobs.ts `trackSeenIds`):
+// rather than only hinted at. Shared by all four status-bar sections —
+// shell/ModelsDock.tsx, shell/EnginesDock.tsx, platform/ui/DownloadManager.tsx
+// (Jobs) and shell/RepoUpdatesDock.tsx (Notifications) — since each needs the
+// exact same wiring around the same pure decision (jobs.ts `trackSeenIds`):
 // remember which ids were visible last render, and notice when the current
 // set contains one that wasn't.
 //
@@ -50,8 +49,9 @@ export interface AutoExpandState {
    *  dismissed. */
   autoOpen: boolean;
   /** The mirror of `autoOpen` (D580, user: "after a job finishes, ensure we
-   *  close the jobs popover if no jobs left"): true once the row list has
-   *  drained to empty while the panel was open. Equally transient — the
+   *  close the jobs popover if no jobs left"): true once EVERY row the panel
+   *  draws has drained away while it was open (`ids` plus `alsoDrawn` — see
+   *  that option, and code review finding 1). Equally transient — the
    *  saved preference is untouched, so the section reverts to whatever the
    *  user themselves last chose.
    *
@@ -59,9 +59,11 @@ export interface AutoExpandState {
    *  `open = autoClose ? false : !collapsed || autoOpen`, and they are
    *  mutually exclusive by construction (one `Override`, not two booleans). */
   autoClose: boolean;
-  /** Drop whichever override is standing and clear the dot — the caller's own
-   *  click / outside pointer-down / Escape path. Stable identity, so it is
-   *  safe in an effect's dependency list. */
+  /** Drop whichever override is standing, handing the panel back to the
+   *  caller's own `collapsed` — the click / outside pointer-down / Escape path.
+   *  There is no indicator to clear alongside it: D588 deleted `.dl-new-dot`
+   *  app-wide, so visibility is the only thing this hook has ever held since.
+   *  Stable identity, so it is safe in an effect's dependency list. */
   acknowledge: () => void;
   /** Force the panel shut TRANSIENTLY, leaving the saved preference alone —
    *  the same `"closed"` override a drain sets. Its caller is the one-panel-
@@ -100,33 +102,62 @@ export interface AutoExpandState {
 // yet" from "genuinely nothing" — the latter must still let the very first
 // real arrival through as news.
 /**
- * Per-caller opt-outs. Two independent flags rather than one "announce only"
- * boolean, because the two real callers want DIFFERENT halves suppressed
- * (D587) and collapsing them into one switch is what would make a future
- * caller pick the wrong behaviour by accident:
+ * Per-caller shaping of the two halves. There is no `neverClose` any more, and
+ * that removal is the point rather than a tidy-up: a caller that wanted its
+ * drain ignored actually wanted a drain of ITS OWN SOURCE not to be mistaken
+ * for the panel emptying, which is a question about what the panel DRAWS, not
+ * a switch to flip. `alsoDrawn` answers it directly, so the two remaining
+ * knobs are about genuinely different things:
  *
- *  - Models (`neverOpen`) must never open on its own but MUST still close on
- *    drain — closing is not opening, and Unload-the-last-row getting the panel
- *    out of the way was explicitly good (D580).
- *  - Failures in Notifications (`neverOpen` + `neverClose`) must touch
- *    visibility in neither direction: they may not throw a panel over the
- *    page, and an emptying error list must not shut a panel the repo rows are
- *    still filling.
+ *  - Models/Engines (`neverOpen`) must never open on their own but MUST still
+ *    close on drain — closing is not opening, and Unload-the-last-row getting
+ *    the panel out of the way was explicitly good (D580).
+ *  - Notifications (`alsoDrawn` = its failure rows) draws TWO row sources but
+ *    may only be opened by one of them: a repo falling behind is news (D574), a
+ *    background failure must never throw a panel over the page (D586). Feeding
+ *    the failures in as `alsoDrawn` keeps the "never opens for a failure" half
+ *    STRUCTURAL — they are not in `ids`, so there is no path from a failure to
+ *    `setOverride("open")` at all — while still letting them hold the panel
+ *    open against a repo-row drain.
  */
 export interface AutoExpandOptions {
-  /** Never auto-OPEN. The dot is still set — "never auto open" is about the
-   *  panel, not the indicator. Structural: with this set, `setOverride("open")`
-   *  is unreachable for this caller, so no future arrival can slip through. */
+  /** Never auto-OPEN. Structural: with this set, `setOverride("open")` is
+   *  unreachable for this caller, so no future arrival can slip through. There
+   *  is no separate indicator this leaves behind — D588 replaced every
+   *  "something NEW" mark with one per-chip circle for "is there anything
+   *  here", which each chip derives from its own list. */
   neverOpen?: boolean;
-  /** Never auto-CLOSE on drain. */
-  neverClose?: boolean;
+  /** MORE ROWS THIS PANEL DRAWS, which count for occupancy but never announce.
+   *
+   *  THE DEFECT THIS FIXES (code review 2026-08-28, finding 1). The drain gate
+   *  below has always meant "the panel is genuinely empty, so there is nothing
+   *  left to keep it open for" — but it could only ever see `ids`, and both
+   *  real panels draw rows from TWO sources. Jobs draws the scheduled queue's
+   *  rows above its job rows; Notifications draws failed jobs under its repo
+   *  rows. So the last download finishing force-closed the Jobs panel over a
+   *  live turn's rows — including that turn's only ✕ — and pressing Update on
+   *  the last repo row force-closed Notifications over failure rows the user
+   *  was reading.
+   *
+   *  Fed the UNION, the gate means what it says again. The seen set is built
+   *  from the union too, so the transition still fires exactly once whichever
+   *  source drains last, instead of being missed when the other source empties
+   *  a tick later.
+   *
+   *  IDENTITIES MUST BE DISJOINT ACROSS THE SOURCES, since a collision would
+   *  put a not-yet-seen row in `prev` and silently swallow its arrival. Every
+   *  call site prefixes per source (`job:` / `queue:` / `repo:`) rather than
+   *  relying on two id namespaces happening not to overlap. */
+  alsoDrawn?: readonly string[];
 }
+
+const NOTHING_ELSE: readonly string[] = [];
 
 export function useAutoExpandOnNew(
   ids: readonly string[],
   collapsed: boolean,
   ready = true,
-  { neverOpen = false, neverClose = false }: AutoExpandOptions = {},
+  { neverOpen = false, alsoDrawn = NOTHING_ELSE }: AutoExpandOptions = {},
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
   const [override, setOverride] = useState<Override>(null);
@@ -135,13 +166,21 @@ export function useAutoExpandOnNew(
     // Nothing is knowable before the first response — not even "the set is
     // empty" — so hold off entirely rather than seeding from a placeholder.
     if (!ready) return;
+    // EVERYTHING THE PANEL DRAWS, for occupancy; `ids` alone for announcing.
+    // See `alsoDrawn` above for why these are two lists and not one.
+    const drawn = alsoDrawn.length === 0 ? ids : [...ids, ...alsoDrawn];
     const prev = seenRef.current;
     if (prev === null) {
-      seenRef.current = new Set(ids);
+      seenRef.current = new Set(drawn);
       return;
     }
-    const { seen, hasNew: arrived } = trackSeenIds(ids, prev);
+    const { seen } = trackSeenIds(drawn, prev);
     seenRef.current = seen;
+    // `trackSeenIds`'s own `hasNew` is deliberately NOT used: it answers "is
+    // anything in the union new", and an arrival among `alsoDrawn` must not
+    // announce. Restricting the test to `ids` is what keeps the announce half
+    // narrow while the occupancy half stays wide.
+    const arrived = ids.some((id) => !prev.has(id));
 
     // EFFECTIVE visibility, not the persisted flag — the caller's own `open`
     // rule, computed once here because BOTH branches below need it (D584
@@ -157,8 +196,9 @@ export function useAutoExpandOnNew(
     const panelOpen = override === "closed" ? false : !collapsed || override === "open";
 
     // AN ARRIVAL WINS over a drain in the same tick (D580) — and it wins by
-    // construction, not by luck: `arrived` means `ids` contains something,
-    // so the drain test below (`ids.length === 0`) cannot also be true. The
+    // construction, not by luck: `arrived` means `ids` contains something, and
+    // `ids` is a subset of `drawn`, so the drain test below
+    // (`drawn.length === 0`) cannot also be true. The
     // early return makes that ordering explicit rather than leaving it to be
     // re-derived, so a new job landing as the last one finishes auto-OPENS
     // and there is no close-then-open flash.
@@ -174,18 +214,19 @@ export function useAutoExpandOnNew(
       return;
     }
 
-    // DRAINED: the list went non-empty -> empty. `trackSeenIds` returns a set
-    // built only from `currentIds`, so `prev` shrinks with the list and this
-    // fires exactly once on the transition — the tick after, `prev.size` is
-    // already 0. A section that was ALREADY empty is therefore never touched,
-    // which is what keeps this from fighting a user who deliberately opened an
-    // idle section to look at it.
+    // DRAINED: EVERYTHING THE PANEL DRAWS went non-empty -> empty (`drawn`, not
+    // `ids` — see `alsoDrawn`, which is the whole of code review finding 1).
+    // `trackSeenIds` returns a set built only from what was passed in, so
+    // `prev` shrinks with the union and this fires exactly once on the
+    // transition — the tick after, `prev.size` is already 0. A section that was
+    // ALREADY empty is therefore never touched, which is what keeps this from
+    // fighting a user who deliberately opened an idle section to look at it.
     //
     // Gated on `panelOpen` because there is nothing to close otherwise, and
     // because leaving a `"closed"` override standing on an already-closed
     // section would make the next chip click spend itself clearing it instead
     // of opening the panel.
-    if (prev.size > 0 && ids.length === 0 && panelOpen && !neverClose) {
+    if (prev.size > 0 && drawn.length === 0 && panelOpen) {
       setOverride("closed");
     }
   });
@@ -205,10 +246,12 @@ export function useAutoExpandOnNew(
     setOverride("closed");
   }, []);
 
-  // The dot and the auto-opened panel are never shown together (D577 defect 2:
-  // `Activity 1  46% ●` with the panel already open). Suppressed rather than
-  // never set, so dismissing the panel (`acknowledge`, which clears both) does
-  // not leave a dot behind for something the user just chose to close.
+  // ONE `Override`, projected as two mutually-exclusive booleans, so the
+  // caller's rule (`autoClose ? false : !collapsed || autoOpen`) cannot land in
+  // a state where both are true. There is no third value to return: D577's
+  // defect 2 was `Activity 1  46% ●` — a newness dot beside an already-open
+  // panel — and D588 removed the dot itself rather than the coincidence, so
+  // visibility is now the whole of this hook's output.
   return {
     autoOpen: override === "open",
     autoClose: override === "closed",

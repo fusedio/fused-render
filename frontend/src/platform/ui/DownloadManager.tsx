@@ -673,10 +673,27 @@ export function DownloadManagerView({
   // exists to fix). Called unconditionally, before the idle branch below,
   // same as every other hook in this component (rules of hooks: what a
   // render calls, not whether it later draws the idle state).
+  //
+  // BOTH ROW SOURCES DECIDE WHEN THIS PANEL IS EMPTY, only the job rows decide
+  // when it OPENS (code review 2026-08-28, finding 1). This panel draws the
+  // scheduled queue's rows above its job rows, and the hook used to be handed
+  // the job ids alone — so with one live scheduled message plus one download,
+  // the download finishing took the list to `[]` and FORCE-CLOSED the panel
+  // over the queue rows still rendered inside it, including a live turn's only
+  // ✕. `queue.drawn` is exactly the entry ids those rows cover (it comes off
+  // the same array they are rendered from, so the two cannot disagree), so it
+  // goes in as `alsoDrawn`: it holds the panel open, and it does not open it.
+  //
+  // PREFIXED PER SOURCE because the hook's two lists are merged into one seen
+  // set, and a collision there would swallow a real arrival. A scheduled run's
+  // job id (`sys:schedule:<entry id>`) literally embeds the entry id these
+  // queue rows are keyed by, so this is a live overlap rather than a
+  // theoretical one.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    jobs.map((j) => j.id),
+    jobs.map((j) => `job:${j.id}`),
     collapsed,
     ready,
+    { alsoDrawn: (queue?.drawn ?? []).map((id) => `queue:${id}`) },
   );
   // OPEN is the persisted preference OR a transient auto-open (D574) — never
   // `collapsed` alone from here down, and the auto-open half is deliberately

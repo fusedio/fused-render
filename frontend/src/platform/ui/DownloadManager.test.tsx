@@ -574,6 +574,52 @@ test("a section closed while EMPTY still auto-opens on its first arrival", () =>
   expect(findAll(after, "dl-row")).toHaveLength(1);
 });
 
+// CODE REVIEW 2026-08-28, FINDING 1 — the drain gate was fed the JOB ids only,
+// but this panel draws the scheduled queue's rows above them. So one live
+// scheduled message plus one download meant the download finishing took the
+// hook's list to `[]` and slammed the panel shut over the queue rows still
+// rendered inside it — including that live turn's only ✕, the one control the
+// user needs at exactly that moment. `queue.drawn` now goes in as `alsoDrawn`,
+// so "empty" means the panel is empty rather than one of its two sources being.
+test("a job draining does NOT close the panel while the queue is still drawing rows", () => {
+  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const queue = {
+    waiting: 0,
+    running: 1,
+    drawn: ["entry-1"],
+    rows: <div className="q-row">a live turn</div>,
+  };
+  const renderer = renderInstance([job], queue);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(1);
+
+  updateInstance(renderer, [], queue); // the download finished; the turn has not
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "q-row")).toHaveLength(1);
+});
+
+// The mirror, so the fix above cannot be "never close again": once the queue
+// half lets go too, the panel does close — whichever of the two sources emptied
+// last.
+test("the panel closes once the queue rows drain as well", () => {
+  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const queue = {
+    waiting: 0,
+    running: 1,
+    drawn: ["entry-1"],
+    rows: <div className="q-row">a live turn</div>,
+  };
+  const renderer = renderInstance([job], queue);
+  updateInstance(renderer, [], queue); // ids drain, panel stays (above)
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
+  updateInstance(renderer, [], { waiting: 0, running: 0, drawn: [], rows: null });
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
+});
+
 test("one job finishing while another still runs closes nothing", () => {
   const a: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const b: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };

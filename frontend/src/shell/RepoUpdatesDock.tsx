@@ -505,10 +505,12 @@ export function RepoUpdatesCardView({
  * 3), never a refreshed `checked_at` — a throttled re-check that moved
  * nothing used to resurrect the row every five minutes.
  *
- * FAILED JOBS ARE NOT IN THAT LIST (D586/D588): they reach this section as a
- * prop and fill the circle, but they are deliberately absent from the ids
- * above, which is what makes "a background failure never throws a panel over
- * the page" structural rather than a flag.
+ * FAILED JOBS CANNOT OPEN THIS PANEL (D586/D588): they reach this section as a
+ * prop and fill the circle, but they go to the hook as `alsoDrawn`, never as
+ * announceable ids — which is what makes "a background failure never throws a
+ * panel over the page" structural rather than a flag. They DO count for
+ * occupancy, so an emptying repo list no longer closes the panel out from under
+ * them (code review 2026-08-28, finding 1).
  */
 export function RepoUpdatesDockView({
   rows,
@@ -553,22 +555,32 @@ export function RepoUpdatesDockView({
   const [collapsed, setCollapsed] = useState(initialCollapsed ?? true);
 
   const visible = visibleRepoRows(rows, dismissed);
-  // A dot for a repo that fell behind while this chip was collapsed, AND
-  // (D574) a transient auto-open of this section's own panel. `autoOpen` is
-  // never persisted — autoExpand.ts's header on why that write, not the
-  // opening itself, was D567's real defect.
+  // A transient auto-open of this section's own panel for a repo that fell
+  // behind while the chip was collapsed (D574). `autoOpen` is never persisted —
+  // autoExpand.ts's header on why that write, not the opening itself, was
+  // D567's real defect.
+  //
+  // TWO ROW SOURCES, ONE OF THEM SILENT (code review 2026-08-28, finding 1).
+  // The repo rows announce; the failures only ever hold the panel open. Passing
+  // the repo roots alone meant the drain gate could not see the failures at
+  // all, so pressing Update on the LAST repo row force-closed this panel over
+  // failure rows the user was reading. `alsoDrawn` is the fix, and it keeps
+  // D586's promise structural rather than configured: a failure is not in
+  // `ids`, so there is no path from a failure to `setOverride("open")` — the
+  // same guarantee the deleted second hook's `neverOpen`/`neverClose` pair used
+  // to buy with two flags, now bought by feeding the hook what the panel
+  // actually draws.
+  //
+  // PREFIXED PER SOURCE so a repo root and a job id can never collide inside
+  // the hook's one seen set (a collision would put an unseen row in `prev` and
+  // swallow its arrival). They are different namespaces today; the prefix means
+  // nobody has to keep checking that.
   const { autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
-    visible.map((row) => row.repo.root),
+    visible.map((row) => `repo:${row.repo.root}`),
     collapsed,
     ready,
+    { alsoDrawn: failed.map((job) => `job:${job.id}`) },
   );
-  // NO SECOND HOOK for the failures any more (D588). It existed only to set
-  // `.dl-new-dot` for an error-sourced notification while never opening the
-  // panel (D586); with newness marks gone, the one circle below carries that
-  // signal directly off `failed.length`, and the "never opens" half is now
-  // STRUCTURAL rather than configured — failures are simply not among the ids
-  // the auto-open hook above is given, so there is no path from a failure to
-  // `setOverride("open")` at all.
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are
   // mutually exclusive by construction — autoExpand.ts holds one `Override`,
