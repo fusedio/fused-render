@@ -47,6 +47,7 @@ import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import DlChevron from "@platform/ui/DlChevron";
 import {
   repoActionLabel,
   repoFixPrompt,
@@ -262,7 +263,7 @@ function RepoRowView({
  *
  * ALWAYS PRESENT NOW (D565): a `visible.length === 0` card no longer returns
  * null — the bar's three sections stay on screen at all times, so this one
- * draws its own idle state ("Up to date") instead of vanishing. Idle is
+ * draws its own idle state ("No updates") instead of vanishing. Idle is
  * plain, muted text with no chevron — there is no panel behind it worth
  * opening — otherwise pressing the chip always visibly hides or shows the
  * panel and every row in it.
@@ -300,7 +301,7 @@ export function RepoUpdatesCardView({
           expanded. Idle draws no chevron at all — see this component's own
           doc comment. */}
       {idle ? (
-        <span className="dl-idle">Up to date</span>
+        <span className="dl-idle">No updates</span>
       ) : (
         <button
           className="dl-toggle"
@@ -308,9 +309,7 @@ export function RepoUpdatesCardView({
           aria-expanded={!collapsed}
           title={collapsed ? "Show updates" : "Hide updates"}
         >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌃
-          </span>
+          <DlChevron collapsed={collapsed} />
           <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
           {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
         </button>

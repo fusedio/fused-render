@@ -145,10 +145,16 @@
    accepted cost of the call. `tabular-nums` here, not per element, so every
    count and percentage anywhere in the bar inherits it — the numbers tick
    constantly and proportional digits would make the whole strip twitch. */
+/* `justify-content: flex-end` (D569, user: "the items must be right
+   aligned.") — left unset in round 2, chips packed left and left a large
+   void on the right in every screenshot the user showed. See `.dl-panel`
+   below: right-aligning the chips is not cosmetic-only, it flips which edge
+   a panel has to anchor to. */
 .status-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 4px;
   padding: 0 10px;
   min-height: 34px;
@@ -173,10 +179,12 @@
    ModelsDock.tsx's sibling sections share below.
 
    Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
-   `.dl-panel` (below) can float above it, anchored to its own LEFT edge (not
-   right — code review finding #2: chips pack left in this bar, unlike the old
-   right-anchored floating column, so a right-anchored panel grew off the left
-   edge of the viewport, over the sidebar) — collapsed, `.dl-toggle` inside it
+   `.dl-panel` (below) can float above it, anchored to its own RIGHT edge
+   (D569, user: "the items must be right aligned" — `.status-bar` now packs
+   chips against the bar's right edge with `justify-content: flex-end`; a
+   LEFT-anchored panel would grow off `#main`'s right edge the instant it
+   actually reached 340px, the same class of bug D568's fix (2) fixed in the
+   opposite direction when chips packed left) — collapsed, `.dl-toggle` inside it
    is the section's entire presence in the bar; expanded, `.dl-panel` opens
    above that same chip. Before D563 this element WAS the floating card (the
    plate, the header and the row list all lived directly in it); that plate —
@@ -227,11 +235,13 @@
   background: var(--row-bg-hover);
 }
 
-/* The panel: floats ABOVE the bar, anchored to its own chip's LEFT edge (code
-   review finding #2 — chips pack left in this bar, not right like the old
-   floating column; `right: 0` grew a 340px panel off the LEFT edge of the
-   viewport, over the sidebar, the moment finding #1's width fix let it
-   actually be 340px), and exists in the DOM only while expanded — collapsed,
+/* The panel: floats ABOVE the bar, anchored to its own chip's RIGHT edge
+   (D569, user: "the items must be right aligned" — chips now pack right via
+   `.status-bar`'s `justify-content: flex-end`, the mirror image of round 2's
+   layout; `left: 0` would grow a 340px panel off `#main`'s RIGHT edge the
+   moment a chip near that edge opened, the same class of bug as D568's
+   finding #2, just on the opposite side now that the alignment flipped),
+   and exists in the DOM only while expanded — collapsed,
    this class never renders at all, which is the whole reachability story
    (see DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
    longer survive a collapse the way they did as a short card). Carries the
@@ -255,7 +265,7 @@
 .dl-panel {
   position: absolute;
   bottom: 100%;
-  left: 0;
+  right: 0;
   margin-bottom: 8px;
   width: min(340px, calc(100vw - 32px));
   color: var(--fg);
@@ -290,19 +300,27 @@
   font-size: 12px;
 }
 
-/* Legible at a glance rather than merely present: a muted 11px glyph reads
-   as decoration, not as "this opens something". Full --fg and a bigger
-   glyph make the header's clickability obvious without touching the hit
-   area (still the whole `.dl-toggle`) or the collapse rotation below.
-   `⌃`, pointing UP, not `⌄` (code review finding #7): the panel opens
-   UPWARD (`.dl-panel`'s `bottom: 100%`), so the glyph now points toward
-   where expanding actually reveals content, the same correctness the old
-   downward glyph had for a card that opened downward. */
+/* Legible at a glance rather than merely present: full --fg and a real
+   15px-drawn glyph (not a muted, undersized one) make the header's
+   clickability obvious without touching the hit area (still the whole
+   `.dl-toggle`) or the collapse rotation below.
+   `DlChevron` (platform/ui/DlChevron.tsx) draws it as an inline SVG now —
+   round 3, user: "the collapsing arrow is very ugly" — replacing the text
+   glyph `⌃` that shipped in round 2. A typeset caret renders at whatever
+   weight and baseline the font stack gives it; this app's own convention
+   for a rotating disclosure is an inline lucide-style `<polyline>` (see
+   `shell/NewJobModal.tsx`'s `ICON_CHEVRON_DOWN`, `platform/ui/
+   MenuIcons.tsx`'s `chevron`), so this glyph now follows it instead of
+   inventing a fourth spelling. `color` still drives it (the SVG's own
+   `stroke="currentColor"`), so `.is-failure` below needs no change, and
+   this class still only ever supplies size, color and the collapse
+   rotation — never the shape, which lives in the component now. Pointing
+   UP, not down (D568 finding #6): the panel opens UPWARD (`.dl-panel`'s
+   `bottom: 100%`), so the glyph points toward where expanding actually
+   reveals content. */
 .dl-chevron {
   flex: 0 0 auto;
   color: var(--fg);
-  font-size: 15px;
-  line-height: 1;
   transition: transform var(--dur-med) var(--ease-out);
 }
 
@@ -392,6 +410,25 @@
 .dl-rows {
   max-height: min(46vh, 340px);
   overflow-y: auto;
+  /* ROUND 3, REAL BUG (user, with a screenshot: "the notification cards
+     should not be scrollable" — their panel had scrolled SIDEWAYS, cutting
+     off the left half of every row, to reach a Cancel button clipped on the
+     right). This rule declared `overflow-y` alone; per the CSS overflow
+     spec, a computed `visible` on one axis becomes `auto` on the other axis
+     the moment that axis is not `visible` — so `overflow-x` silently
+     computed to `auto` too, and any row wide enough to overflow (the
+     `.dl-title`/`.dl-model` fix above is the actual cause, not this rule)
+     turned the whole panel into a horizontal scroll container instead of
+     clipping or, better, genuinely fitting. `overflow-x: hidden` makes that
+     axis explicit and permanently closed — this panel must never scroll
+     sideways, whatever a row does — while `overflow-y` stays `auto` on
+     purpose: a long job list has to scroll vertically or it pushes its own
+     header off-screen, and that half of this rule is unchanged. This is
+     belt-and-braces alongside the row fix above, not a replacement for it —
+     clamping the axis alone would silently CLIP a control that overflows
+     instead of letting the user scroll to it, which is worse; the row
+     itself must still genuinely fit within `.dl-panel`'s width. */
+  overflow-x: hidden;
   border-top: 1px solid var(--border);
 }
 
@@ -433,16 +470,41 @@
 
 /* The model running this row (JobRow's `.dl-model`), a dimmed suffix after
    the title — never part of `title` itself, so it needs its own truncation
-   story. `.dl-title` is the row's only `flex-shrink`able child (flex: 1 1
-   auto); this, like `.dl-amount`/`.dl-pct`/`.dl-x` beside it, is `flex: 0 0
-   auto` and so cannot be squeezed — a long prompt ellipsizes in `.dl-title`
-   long before this would ever be asked to give up room. */
+   story.
+   ROUND 3, REAL BUG (measured: a running, cancellable row with a realistic
+   model name — `Downloading Qwen2.5-Coder-32B-Instruct-4bit` — pushed Cancel
+   33px past the panel's right edge, clipped in half by `.dl-panel`'s own
+   `overflow: hidden`). This class used to be `flex: 0 0 auto` with no
+   `min-width`, on the theory that `.dl-title` (the row's only OTHER
+   flex-shrinkable child) would always give up room first and this would
+   never be asked to. That theory holds for a long PROMPT — `.dl-title`
+   absorbs it — but not for a long MODEL NAME: this element carries its own
+   unrelated text and, `flex: 0 0 auto`, refused to shrink at all, so once
+   `.dl-title` had already given up every pixel down to its own `min-width:
+   0` the row's total content could still exceed the panel's width, and
+   `.dl-amount`/`.dl-pct`/`.dl-row-cancel`/`.dl-x` (still genuinely `flex: 0
+   0 auto`, and MUST stay that way — their own width is never optional) had
+   nowhere to go but past the panel's padding edge. `flex: 0 1 auto` plus
+   `min-width: 0` and the same overflow/ellipsis treatment `.dl-title` wears
+   makes this the row's SECOND shrinkable child rather than an unshrinkable
+   one — both it and the title can now be squeezed all the way to nothing
+   before anything protected is ever displaced, which is what actually
+   guarantees the protected controls stay inside the panel. */
 .dl-model {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
 }
 
+/* PROTECTED — never `flex-shrink`, per the fix above: the row's title (and,
+   now, its model suffix) are the only things allowed to give way. These
+   four (`.dl-amount`, `.dl-pct` here; `.dl-row-cancel`, `.dl-x` further
+   down) keep their intrinsic width unconditionally, which is what makes a
+   running row's Cancel button reachable rather than pushed off the edge. */
 .dl-amount,
 .dl-pct {
   flex: 0 0 auto;

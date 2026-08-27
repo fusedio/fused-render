@@ -5115,9 +5115,9 @@ stop it short of quitting the app.
   document only (`!IS_EMBED`): the list is global, so a copy per pane would say
   the same thing N times. ALWAYS PRESENT (D565, superseding the "hidden when
   there are no records" rule this used to state): nothing running and nothing
-  queued draws the IDLE state (`.dl-idle`, "Idle") instead of vanishing — the
-  bar's three sections are a fixed readout now, not a notification stack that
-  disappears when quiet.
+  queued draws the IDLE state (`.dl-idle`, "No activity" — D569; "Idle" alone
+  named no subject) instead of vanishing — the bar's three sections are a
+  fixed readout now, not a notification stack that disappears when quiet.
 
   **The collapse hides EVERY row, no exemption** (D562, user call
   2026-08-27: "everything is foldable, even for the job cards"). It used to
@@ -5170,8 +5170,8 @@ stop it short of quitting the app.
   `NotificationHost`'s fixed bottom-right column, whose overlay of page
   content even while collapsed is what the status bar redesign exists to
   fix). ALWAYS PRESENT (D565): no repo behind draws the IDLE state
-  (`.dl-idle`, "Up to date") rather than returning null, matching the other
-  two sections. **This supersedes the original shape**, where the rows were
+  (`.dl-idle`, "No updates" — D569) rather than returning null, matching the
+  other two sections. **This supersedes the original shape**, where the rows were
   a second named slot
   (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
   That placement broke the jobs card in four ways at once, discovered

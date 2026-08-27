@@ -9,7 +9,7 @@
 // cannot exercise without mocking `@platform/lib/api` — the exact
 // contamination risk DownloadManager.test.tsx's own header comment documents
 // for the identical reason.
-import { expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import StatusBar from "@platform/ui/StatusBar";
@@ -44,4 +44,38 @@ test("an omitted models or repoUpdates section renders nothing for that slot —
   // React drops `undefined` children outright — the bar has exactly the one
   // real section, no placeholder node standing in for the other two.
   expect(classesOf(bar.children as unknown as ReactTestRendererJSON[])).toEqual(["fake-activity"]);
+});
+
+// ---- right-aligned chips + the panel anchor that has to move with them ---------
+// D569 (user: "the items must be right aligned"). `react-test-renderer` has no
+// viewport — it is exactly what let a 130px crushed panel and a clipped Cancel
+// button both ship through a fully green suite last round (D568) — so this is a
+// STYLESHEET-LEVEL source pin, honest about what it can and cannot see: it proves
+// the two declarations exist and agree with each other, not that a browser lays
+// them out correctly. The real geometry was verified against a running dev
+// server, the same way D568's was.
+describe("right-aligned chips (D569) and the panel anchor that has to move with them", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const CSS = readFileSync(join(import.meta.dir, "../../styles/notifications.css"), "utf8");
+
+  function block(css: string, selector: string): string {
+    const at = css.indexOf(selector + " {");
+    expect(at).toBeGreaterThan(-1);
+    return css.slice(at, css.indexOf("}", at));
+  }
+
+  it("packs the bar's chips against its right edge", () => {
+    expect(block(CSS, ".status-bar")).toContain("justify-content: flex-end;");
+  });
+
+  it("anchors the panel to its own chip's RIGHT edge, not left — D568 finding #2's fix in reverse", () => {
+    // Chips packed left (round 2) needed a left-anchored panel; chips packed
+    // right (this round) need the mirror image, or a panel near the bar's
+    // right edge grows off `#main`'s right edge the moment it opens — the
+    // exact class of bug D568 fixed on the opposite side.
+    const panel = block(CSS, ".dl-panel");
+    expect(panel).toContain("right: 0;");
+    expect(panel).not.toContain("left: 0;");
+  });
 });

@@ -277,12 +277,14 @@ def test_an_empty_card_draws_the_idle_state_not_no_card(card):
     should be always present"): this used to return null outright — "a
     picture of work in progress has nothing to draw when there is none" —
     and that rule is gone on purpose, not merely relaxed. Both halves empty
-    now draws the IDLE readout ("Idle") instead of vanishing; the gate
-    still only ever reasons about jobs and queue, since repo updates are
-    their own sibling section (SPEC §36, RepoUpdatesDock.tsx)."""
+    now draws the IDLE readout ("No activity", D569 — round 2's bare "Idle"
+    named no subject, which is exactly what the user could not place)
+    instead of vanishing; the gate still only ever reasons about jobs and
+    queue, since repo updates are their own sibling section (SPEC §36,
+    RepoUpdatesDock.tsx)."""
     assert "const idle = jobs.length === 0 && queued === 0;" in card
     assert "if (jobs.length === 0 && queued === 0) return null;" not in card
-    assert '<span className="dl-idle">Idle</span>' in card
+    assert '<span className="dl-idle">No activity</span>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -449,14 +451,14 @@ def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
     better"). Round 1's `.status-bar:empty { display: none }` rule —
     collapsing the bar to nothing the moment both cards had nothing to show
     — is SUPERSEDED, not extended: the three categories are a fixed status
-    readout now, each drawing its own idle text (`No models loaded` / `Idle`
-    / `Up to date`) instead of vanishing. `#main` is therefore permanently
-    shorter by the bar's height on every page, which is the accepted cost
-    the user's own words call for."""
+    readout now, each drawing its own idle text (`No models loaded` /
+    `No activity` / `No updates`, D569) instead of vanishing. `#main` is
+    therefore permanently shorter by the bar's height on every page, which
+    is the accepted cost the user's own words call for."""
     css = _read(_CSS)
     bar_tsx = _read(_BAR)
     assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
-    assert '<span className="dl-idle">Idle</span>' in card, "the activity section's own idle text"
+    assert '<span className="dl-idle">No activity</span>' in card, "the activity section's own idle text"
 
 
 def test_the_shell_composes_the_card_and_the_bar_places_it(dock):

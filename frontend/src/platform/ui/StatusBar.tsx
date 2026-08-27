@@ -25,9 +25,11 @@
 // happens to sit at the bottom. `#main` is therefore permanently ~34px
 // shorter now, on every page, which is the accepted cost of that call. Each
 // section still draws its own IDLE state when it has nothing to say (`No
-// models loaded` / `Idle` / `Up to date`) — plain, muted text with no
-// chevron, since there is no panel behind an idle section worth opening —
-// rather than an empty box shouting for attention.
+// models loaded` / `No activity` / `No updates`, D569 — each names its own
+// category rather than the bare adjective round 2 shipped, which the user
+// could not place: "what is idle? what is up to date?") — plain, muted text
+// with no chevron, since there is no panel behind an idle section worth
+// opening — rather than an empty box shouting for attention.
 //
 // COLLAPSED IS A CHIP, EXPANDED IS A PANEL, for the two sections that have
 // rows to show (Activity, Updates — Models never expands past its own quick

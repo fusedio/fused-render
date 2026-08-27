@@ -116,7 +116,7 @@ test("renders the IDLE state, not nothing, when there are no rows (D565: always 
   const tree = renderView({ rows: [] });
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-idle")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("Up to date");
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("No updates");
   expect(findAll(tree, "dl-toggle")).toHaveLength(0);
 });
 
@@ -124,7 +124,7 @@ test("renders the IDLE state when every row is dismissed", () => {
   const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
   const tree = renderView({ rows, dismissed: { "/a/one": 1000 } });
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("Up to date");
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("No updates");
 });
 
 test("the header names how many updates are visible", () => {
@@ -367,7 +367,7 @@ test("a dismissed row that reappears later (a fresh checked_at) counts as new ag
   updateDockInstance(renderer, [first], { "/a/one": 1000 });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(dismissed, "q-row")).toHaveLength(0);
-  expect(text(findAll(dismissed, "dl-idle")[0])).toBe("Up to date");
+  expect(text(findAll(dismissed, "dl-idle")[0])).toBe("No updates");
 
   // Server re-checks and it's behind again: a newer checked_at makes it
   // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had

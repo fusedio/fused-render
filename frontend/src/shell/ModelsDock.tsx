@@ -37,6 +37,7 @@ import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import DlChevron from "@platform/ui/DlChevron";
 
 // This section's own persisted collapse preference — a THIRD independent key
 // beside `fused-render:jobs-collapsed` and `fused-render:repo-updates-collapsed`
@@ -154,9 +155,7 @@ export function ModelsCardView({
           aria-expanded={!collapsed}
           title={collapsed ? "Show loaded models" : "Hide loaded models"}
         >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌃
-          </span>
+          <DlChevron collapsed={collapsed} />
           {/* No label prefix ("Models: ") once there is a value to show — the
               value speaks for itself (code review revision); the label lives
               only in the idle string above. */}

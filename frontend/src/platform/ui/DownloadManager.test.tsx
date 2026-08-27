@@ -18,7 +18,7 @@
 // unrelated suite (`apps/ai_models/playground/client.test.ts`) the first
 // time this file tried it. `DownloadManagerView` needs no such thing: no
 // polling, no network, no `window`/`document`.
-import { expect, test } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
 import { DownloadManagerView, type QueueSlot } from "@platform/ui/DownloadManager";
@@ -115,7 +115,10 @@ test("a jobs list holding only a successful (done) job renders the IDLE state, n
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-idle")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("Idle");
+  // "Idle" -> "No activity" (round 3, user: "what is idle? what is up to
+  // date?" — the bare adjective named no subject; the idle string now names
+  // its own category, same as "No models loaded" always did).
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("No activity");
   // No chevron, no button — nothing to press over an idle section.
   expect(findAll(tree, "dl-toggle")).toHaveLength(0);
   expect(findAll(tree, "dl-chevron")).toHaveLength(0);
@@ -421,4 +424,60 @@ test("re-collapsing while the same ids are still present sets no dot either", ()
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-row")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
+});
+
+// ---- a running row's Cancel must never be pushed out of the panel --------------
+// D569, a measured real bug: a running, cancellable row with a realistic model
+// name (`Downloading Qwen2.5-Coder-32B-Instruct-4bit`) pushed `.dl-row-cancel`
+// 33px past `.dl-panel`'s right edge, clipped in half by the panel's own
+// `overflow: hidden`. `react-test-renderer` has no viewport — it cannot lay
+// out flex children or measure a pixel, which is exactly how this shipped
+// green in round 2 — so this is a STYLESHEET-LEVEL source pin: it proves the
+// row's protected controls stay `flex: 0 0 auto` and that the two elements
+// which now share the job of giving way (`.dl-title`, `.dl-model`) both carry
+// the full shrink-to-ellipsis contract, not that a browser renders it inside
+// the width. The real geometry was verified against a running dev server.
+describe("a running row's protected controls never give up their width (D569)", () => {
+  const { readFileSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const CSS = readFileSync(join(import.meta.dir, "../../styles/notifications.css"), "utf8");
+
+  function block(css: string, selector: string): string {
+    const at = css.indexOf(selector + " {");
+    expect(at).toBeGreaterThan(-1);
+    return css.slice(at, css.indexOf("}", at));
+  }
+
+  it("lets BOTH the title and the model suffix shrink to nothing and ellipsise", () => {
+    for (const selector of [".dl-title", ".dl-model"]) {
+      const rule = block(CSS, selector);
+      expect(rule).toContain("min-width: 0;");
+      expect(rule).toContain("overflow: hidden;");
+      expect(rule).toContain("text-overflow: ellipsis;");
+      expect(rule).toContain("white-space: nowrap;");
+    }
+  });
+
+  it("never lets the amount, percentage, Cancel or dismiss give up their intrinsic width", () => {
+    // A combined block: `.dl-amount, .dl-pct { flex: 0 0 auto; ... }`.
+    const amountPct = CSS.slice(
+      CSS.indexOf(".dl-amount,"),
+      CSS.indexOf("}", CSS.indexOf(".dl-amount,")),
+    );
+    expect(amountPct).toContain("flex: 0 0 auto;");
+    expect(block(CSS, ".dl-row-cancel")).toContain("flex: 0 0 auto;");
+    expect(block(CSS, ".dl-x")).toContain("flex: 0 0 auto;");
+  });
+
+  it("closes the panel's rows list to horizontal scroll — a row must fit, not scroll sideways", () => {
+    // User, with a screenshot: "the notification cards should not be
+    // scrollable" — the panel had scrolled SIDEWAYS to reach the clipped
+    // Cancel button, because `overflow-y: auto` alone computes `overflow-x:
+    // auto` too (CSS overflow's own "visible becomes auto" rule). Vertical
+    // scroll stays — a long job list must still not push its own header
+    // off-screen — only the horizontal axis is closed.
+    const rows = block(CSS, ".dl-rows");
+    expect(rows).toContain("overflow-y: auto;");
+    expect(rows).toContain("overflow-x: hidden;");
+  });
 });

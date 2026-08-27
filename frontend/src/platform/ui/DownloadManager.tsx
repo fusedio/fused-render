@@ -94,6 +94,7 @@
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import DlChevron from "@platform/ui/DlChevron";
 import {
   cancelJob,
   clearableCount,
@@ -624,7 +625,7 @@ export function DownloadManagerView({
           Everything else (the rows, Cancel queued, Clear, a cancel's own note)
           lives in the panel below, which exists only while expanded. */}
       {idle ? (
-        <span className="dl-idle">Idle</span>
+        <span className="dl-idle">No activity</span>
       ) : (
         <button
           className={"dl-toggle" + (hasFailure ? " is-failure" : "")}
@@ -632,9 +633,7 @@ export function DownloadManagerView({
           aria-expanded={!collapsed}
           title={collapsed ? "Show details" : "Hide details"}
         >
-          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-            ⌃
-          </span>
+          <DlChevron collapsed={collapsed} />
           <span className="dl-summary">{jobsSummary(jobs, count)}</span>
           {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
           {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
