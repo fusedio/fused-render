@@ -102,7 +102,7 @@ function useRepoUpdates() {
       // Cancel whatever is still pending from a PRIOR call to this same
       // `poll` — without this, `refresh()` (below) calling `pollRef.current()`
       // out of band, on top of the timer already ticking, forked a second
-      // setTimeout chain: every Update/Rebase/Switch click permanently
+      // setTimeout chain: every Update/Switch click permanently
       // doubled the number of concurrent /api/git-upstream poll loops for
       // the session, and only the LAST-assigned timer id was ever cleared
       // on unmount.
@@ -165,11 +165,14 @@ function RepoRowView({
   onDismiss: () => void;
 }) {
   // WHICH action is running, not just whether one is (task 12, code review
-  // 2026-08-27): a single shared `busy: boolean` relabeled the PRIMARY
-  // button "Working…" no matter which of the two buttons was actually
-  // pressed — pressing Rebase (secondary) made Switch (primary) claim to be
-  // the one running, while Rebase's own label never changed at all. Each
-  // button now only reads "Working…" when it is the one `busyAction` names.
+  // 2026-08-27, from back when a row could offer two buttons — Update/Switch
+  // primary plus a Rebase secondary, since removed as too dangerous to offer,
+  // D554 amendment): a single shared `busy: boolean` relabeled the button
+  // "Working…" no matter which of the two was actually pressed. Kept as
+  // `RepoAction | null` rather than collapsing back to a plain boolean —
+  // still correct, and still the cheaper property to reason about, for the
+  // one button a row offers today, and it costs nothing to leave general
+  // enough to survive this row ever growing a second action again.
   const [busyAction, setBusyAction] = useState<RepoAction | null>(null);
   const [failure, setFailure] = useState<MutationResult | null>(null);
 
@@ -204,8 +207,8 @@ function RepoRowView({
         <span className="q-title" title={row.repo.root}>
           {row.name}
         </span>
-        {/* Primary, then secondary when present, then the dismiss ✕ — the
-            same left-to-right order every row in this card follows. */}
+        {/* The one action, then the dismiss ✕ — the same left-to-right
+            order every row in this card follows. */}
         <button
           type="button"
           className="q-all"
@@ -216,18 +219,6 @@ function RepoRowView({
             ? "Working…"
             : repoActionLabel(row.primaryAction, row.repo.default_branch)}
         </button>
-        {row.secondaryAction && (
-          <button
-            type="button"
-            className="q-all"
-            onClick={() => run(row.secondaryAction as RepoAction)}
-            disabled={busyAction !== null}
-          >
-            {busyAction === row.secondaryAction
-              ? "Working…"
-              : repoActionLabel(row.secondaryAction, row.repo.default_branch)}
-          </button>
-        )}
         <button
           type="button"
           className="dl-x"

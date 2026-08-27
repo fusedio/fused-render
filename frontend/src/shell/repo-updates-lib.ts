@@ -21,26 +21,25 @@ export interface RepoStatus {
   checked_at: number;
 }
 
-export type RepoAction = "update" | "rebase" | "switch";
+// "rebase" was a member of this union, offered as a secondary action beside
+// Switch (replaying the current branch onto the default). Removed — user
+// call, D554 amendment: "the rebase button is scary, let's just remove it".
+// Every row now offers exactly one action, so there is no secondary slot
+// left to carry it.
+export type RepoAction = "update" | "switch";
 
 export interface RepoRow {
   repo: RepoStatus;
   /** The repo's own last path segment — a row has no room for the full
    *  path; that lives in the title tooltip instead. */
   name: string;
-  /** "update" — the ROW's primary action, on the default branch: an
+  /** "update" — the ROW's ONLY action, on the default branch: an
    *  --ff-only pull, which can never conflict.
    *  "switch" — everywhere else: a plain, non-destructive checkout of the
-   *  default branch, PRIMARY off the default branch because it can never
+   *  default branch, offered off the default branch because it can never
    *  conflict or touch the user's own commits — the whole point of this
-   *  card is to never override a user's work. `secondaryAction` carries
-   *  Rebase alongside it for the user who actually wants their current
-   *  branch replayed onto the default. */
+   *  card is to never override a user's work. */
   primaryAction: RepoAction;
-  /** "rebase" off the default branch (demoted from primary — it rewrites
-   *  the current branch's commits and can conflict), null on it (Update has
-   *  nothing to demote alongside it). */
-  secondaryAction: RepoAction | null;
 }
 
 /** The repo's own last path segment, forward-slash or backslash either way. */
@@ -62,7 +61,6 @@ export function repoRows(repos: RepoStatus[] | undefined): RepoRow[] {
     repo,
     name: repoName(repo.root),
     primaryAction: repo.on_default ? "update" : "switch",
-    secondaryAction: repo.on_default ? null : "rebase",
   }));
 }
 
@@ -70,15 +68,14 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/** The row's one line of status text — what `origin/<default>` has that this
- * branch does not, phrased against whichever branch is actually checked out. */
-export function repoStatusText(row: RepoRow): string {
-  const commits = plural(row.repo.behind, "commit");
-  if (row.primaryAction === "update") {
-    return `origin/${row.repo.default_branch} is ${commits} ahead`;
-  }
-  const branch = row.repo.branch || "this branch";
-  return `origin/${row.repo.default_branch} is ${commits} ahead of ${branch}`;
+/** The row's one line of status text. Deliberately generic — no remote name,
+ * no branch name, no commit count: "origin/main is 1 commit ahead" reads as
+ * a git status line to anyone who isn't fluent in git, and the row already
+ * has a button that says what to do about it. The technical detail this
+ * drops still reaches Claude in full via `repoFixPrompt` below, which is
+ * written for a git-literate reader, not this one. */
+export function repoStatusText(_row: RepoRow): string {
+  return "Newer changes available";
 }
 
 /** A row's button label. `defaultBranch` is only consulted for "switch" —
@@ -86,7 +83,6 @@ export function repoStatusText(row: RepoRow): string {
  * `row.repo.default_branch` at every call site that can offer switch. */
 export function repoActionLabel(action: RepoAction, defaultBranch?: string): string {
   if (action === "update") return "Update";
-  if (action === "rebase") return "Rebase";
   return `Switch to ${defaultBranch || "default"}`;
 }
 
@@ -146,7 +142,7 @@ function workingTreeClause(reason?: string): string {
 }
 
 /**
- * The "Fix with Claude" prompt for a refused update/rebase — the same
+ * The "Fix with Claude" prompt for a refused update/switch — the same
  * material `templates/git/template.html`'s `askClaudeOnError` assembles for
  * the git companion's own button (template.html:2580-2605): the error, the
  * branch, ahead/behind, the working-tree state (only ever what the refusal

@@ -72,45 +72,32 @@ describe("repoRows", () => {
     expect(row.primaryAction).toBe("switch");
   });
 
-  it("demotes rebase to secondary off the default branch", () => {
-    const [row] = repoRows([status({ on_default: false, branch: "feature" })]);
-    expect(row.secondaryAction).toBe("rebase");
-  });
-
-  it("has no secondary action on the default branch", () => {
-    const [row] = repoRows([status({ on_default: true })]);
-    expect(row.secondaryAction).toBeNull();
-  });
 });
 
 describe("repoStatusText", () => {
-  it("names the default branch and the count on the default branch", () => {
-    const [row] = repoRows([status({ on_default: true, default_branch: "main", behind: 3 })]);
-    expect(repoStatusText(row)).toBe("origin/main is 3 commits ahead");
-  });
+  // Deliberately generic — no remote name, no branch name, no commit count
+  // (D554 amendment, user feedback: "origin/main is 1 commit ahead" reads
+  // as a git status line, not a sentence for a non-technical reader).
+  it("is the same generic sentence regardless of branch shape or count", () => {
+    const [onDefault] = repoRows([status({ on_default: true, default_branch: "main", behind: 3 })]);
+    expect(repoStatusText(onDefault)).toBe("Newer changes available");
 
-  it("singularizes one commit", () => {
-    const [row] = repoRows([status({ on_default: true, behind: 1 })]);
-    expect(repoStatusText(row)).toBe("origin/main is 1 commit ahead");
-  });
-
-  it("names the current branch too when off the default branch", () => {
-    const [row] = repoRows([
+    const [offDefault] = repoRows([
       status({ on_default: false, branch: "feature", default_branch: "main", behind: 2 }),
     ]);
-    expect(repoStatusText(row)).toBe("origin/main is 2 commits ahead of feature");
-  });
+    expect(repoStatusText(offDefault)).toBe("Newer changes available");
 
-  it("falls back to a generic label for a detached HEAD", () => {
-    const [row] = repoRows([status({ on_default: false, branch: null })]);
-    expect(repoStatusText(row)).toContain("ahead of this branch");
+    const [singular] = repoRows([status({ on_default: true, behind: 1 })]);
+    expect(repoStatusText(singular)).toBe("Newer changes available");
+
+    const [detached] = repoRows([status({ on_default: false, branch: null })]);
+    expect(repoStatusText(detached)).toBe("Newer changes available");
   });
 });
 
 describe("repoActionLabel", () => {
   it("labels each action", () => {
     expect(repoActionLabel("update")).toBe("Update");
-    expect(repoActionLabel("rebase")).toBe("Rebase");
   });
 
   it("names the repo's actual default branch for switch, never a literal main", () => {
@@ -183,11 +170,12 @@ describe("repoFixPrompt", () => {
     expect(repoFixPrompt(row, "err", "dirty")).toContain("working tree dirty");
   });
 
-  it("never claims a clean tree for a rebase-conflict-shaped git-failed refusal", () => {
-    // The rebase path exists because the tree may already be conflicted by
-    // the time this prompt is built — asserting "clean" here would be
-    // handing Claude a false fact in exactly the case most likely to have
-    // caused the refusal.
+  it("never claims a clean tree for a conflict-shaped git-failed refusal", () => {
+    // A mutation's own git command can fail after the preflight passed
+    // clean — most commonly a conflict left mid-operation by a rebase the
+    // terminal or the git companion started, not this card. Asserting
+    // "clean" here would be handing Claude a false fact in exactly the
+    // case most likely to have caused the refusal.
     const [row] = repoRows([status()]);
     const prompt = repoFixPrompt(row, "err", "git-failed");
     expect(prompt).not.toContain("working tree clean");

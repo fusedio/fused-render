@@ -135,11 +135,12 @@ test("a row on the default branch offers Update as the only button, plus dismiss
   expect(findAll(tree, "dl-x")).toHaveLength(1);
 });
 
-test("a row off the default branch offers Switch primary and Rebase secondary", () => {
+test("a row off the default branch offers Switch as the only button, plus dismiss", () => {
   const rows = repoRows([status({ on_default: false, branch: "feature", default_branch: "main" })]);
   const tree = renderView({ rows });
   const buttons = findAll(tree, "q-all").map((n) => text(n));
-  expect(buttons).toEqual(["Switch to main", "Rebase"]);
+  expect(buttons).toEqual(["Switch to main"]);
+  expect(findAll(tree, "dl-x")).toHaveLength(1);
 });
 
 test("Clear calls onDismissAll with exactly the visible rows", () => {
@@ -191,11 +192,16 @@ test("expanded shows every row", () => {
   expect(findAll(tree, "q-row")).toHaveLength(2);
 });
 
-test("pressing the secondary action does not relabel the primary as Working (task 12)", async () => {
-  // One shared `busy` boolean used to cover BOTH buttons, with only the
-  // primary swapping its label — so pressing Rebase (secondary) made the
-  // Switch button (primary) read "Working…" for an action the user never
-  // pressed. Fixed by tracking WHICH action is running.
+test("pressing a row's action shows Working… on that row's own button, mid-flight", async () => {
+  // task 12's regression (code review, 2026-08-27) needed TWO buttons on one
+  // row to reproduce: a shared `busy` boolean covered both, with only the
+  // primary swapping its label, so pressing the secondary (a Rebase button,
+  // since removed as too dangerous to offer — D554 amendment) made the
+  // primary read "Working…" for an action the user never pressed. A row
+  // offers exactly one button now, so that exact two-button mix-up is no
+  // longer reachable — this keeps only what's still true: the pressed
+  // button reads "Working…" while its own request is in flight, tracked by
+  // WHICH action is running rather than a plain boolean.
   //
   // `fetch` (not `@platform/lib/api`) is what gets stubbed, and only for
   // this one test — see the file header comment on why a shared module mock
@@ -211,23 +217,19 @@ test("pressing the secondary action does not relabel the primary as Working (tas
     const renderer = renderInstance({ rows });
 
     const before = renderer.toJSON() as ReactTestRendererJSON;
-    const rebaseBtn = findAll(before, "q-all").find((n) => text(n) === "Rebase");
-    expect(rebaseBtn).toBeDefined();
+    const switchBtn = findAll(before, "q-all").find((n) => text(n) === "Switch to main");
+    expect(switchBtn).toBeDefined();
 
     // `run`'s `setBusyAction(action)` happens synchronously before its first
     // `await`, so a plain (non-async) act() flushes it — the fetch itself
     // stays pending, which is exactly the mid-flight state under test.
     act(() => {
-      (rebaseBtn as ReactTestRendererJSON).props.onClick();
+      (switchBtn as ReactTestRendererJSON).props.onClick();
     });
 
     const mid = renderer.toJSON() as ReactTestRendererJSON;
     const buttons = findAll(mid, "q-all").map((n) => text(n));
-    // The PRESSED button reads Working…; the untouched primary keeps its own
-    // label rather than being relabeled by a shared boolean.
-    expect(buttons).toContain("Working…");
-    expect(buttons).toContain("Switch to main");
-    expect(buttons).not.toContain("Rebase"); // the pressed one, mid-flight
+    expect(buttons).toEqual(["Working…"]);
 
     // Settle the pending fetch with a real Response-shaped object (postJson
     // calls `res.json()` then reads `res.ok`) so the test doesn't leak an
@@ -238,7 +240,7 @@ test("pressing the secondary action does not relabel the primary as Working (tas
       pendingFetches.pop()?.({
         ok: true,
         status: 200,
-        json: async () => ({ ok: true, op: "rebase", root: rows[0].repo.root }),
+        json: async () => ({ ok: true, op: "switch", root: rows[0].repo.root }),
       } as unknown as Response);
     });
   } finally {
