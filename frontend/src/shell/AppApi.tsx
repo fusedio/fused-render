@@ -43,9 +43,10 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
-import { ChevronRight, FileCode2, Play, TriangleAlert } from "lucide-react";
+import { Check, ChevronRight, Copy, FileCode2, Play, TriangleAlert } from "lucide-react";
 import {
   collectParams,
+  curlCommand,
   defaultLabel,
   defaultText,
   endpointKind,
@@ -329,6 +330,16 @@ function EndpointRow({
   const crumb = cut >= 0 ? ep.rel.slice(0, cut + 1) : "";
   const name = ep.rel.slice(cut + 1);
   const bodyId = `app-api-body-${ep.rel.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+  // "Copy as curl": the form as it stands, or an empty body when it does not
+  // validate — a snippet with a blank required field is still worth pasting.
+  const [copied, setCopied] = useState(false);
+  const copyCurl = async () => {
+    const collected = collectParams(params, values);
+    const sent = collected.ok ? collected.params : {};
+    await navigator.clipboard.writeText(curlCommand(location.origin, ep.path, sent));
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
 
   return (
     <li className={cn("app-api-row group/row", open && "bg-muted/30")}>
@@ -462,6 +473,10 @@ function EndpointRow({
               >
                 <Play data-icon="inline-start" />
                 {run?.kind === "running" ? "Running…" : "Execute"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={copyCurl}>
+                {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                {copied ? "Copied" : "Copy as curl"}
               </Button>
               {run?.kind === "failed" && (
                 <span className="text-[12.5px] text-destructive">{run.message}</span>

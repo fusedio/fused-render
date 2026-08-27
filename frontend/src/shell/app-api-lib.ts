@@ -146,3 +146,22 @@ export function safeRel(raw: string | null): string | null {
   if (parts.some((p) => !p || p === "." || p === "..")) return null;
   return raw;
 }
+
+/** Single-quote a string for a POSIX shell: the only unsafe byte inside single
+ *  quotes is the quote itself, which becomes '\'' (close, escaped quote, reopen). */
+function shQuote(s: string): string {
+  return "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+/** The curl equivalent of Execute: the same POST /api/run the page sends, with
+ *  the X-Fused header the server's write guard demands (without it: 403).
+ *  `origin` is passed in, not read from `location`, so this stays DOM-free. */
+export function curlCommand(origin: string, py: string, params: Record<string, unknown>): string {
+  const body = JSON.stringify({ py, params });
+  return [
+    `curl -X POST ${shQuote(origin + "/api/run")}`,
+    `  -H 'Content-Type: application/json'`,
+    `  -H 'X-Fused: 1'`,
+    `  -d ${shQuote(body)}`,
+  ].join(" \\\n");
+}
