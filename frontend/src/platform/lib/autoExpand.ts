@@ -69,6 +69,12 @@ export interface AutoExpandState {
    *  click / outside pointer-down / Escape path. Stable identity, so it is
    *  safe in an effect's dependency list. */
   acknowledge: () => void;
+  /** Force the panel shut TRANSIENTLY, leaving the saved preference alone —
+   *  the same `"closed"` override a drain sets. Its caller is the one-panel-
+   *  at-a-time arbiter (`exclusiveSection.ts`, D582): closing this section
+   *  because the user opened a different one is the app deciding, not the
+   *  user, so it must not persist. Stable identity. */
+  forceClose: () => void;
 }
 
 // The FIRST render seeds `seen` from whatever is already there rather than
@@ -166,6 +172,11 @@ export function useAutoExpandOnNew(
     setOverride(null);
   }, []);
 
+  const forceClose = useCallback(() => {
+    setHasNew(false);
+    setOverride("closed");
+  }, []);
+
   // The dot and the auto-opened panel are never shown together (D577 defect 2:
   // `Activity 1  46% ●` with the panel already open). Suppressed rather than
   // never set, so dismissing the panel (`acknowledge`, which clears both) does
@@ -175,5 +186,6 @@ export function useAutoExpandOnNew(
     autoOpen: override === "open",
     autoClose: override === "closed",
     acknowledge,
+    forceClose,
   };
 }

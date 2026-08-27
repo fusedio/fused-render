@@ -395,6 +395,32 @@
   font-weight: 400;
 }
 
+/* A RESERVED, FIXED-WIDTH COUNT SLOT for the Jobs and Notifications chips
+   (D581, user: "can we do something on jobs and notifications so that there is
+   no content layout shift when new jobs or notifications show up?").
+   ALWAYS RENDERED, empty at zero — reserving the width is the entire point, so
+   the element cannot be conditional.
+   `2ch` is EXACT, not a guess: `.status-bar` sets `font-variant-numeric:
+   tabular-nums` for the whole bar, so every digit is one `ch` wide and two
+   digits fit precisely. Three digits overflow gracefully (the chip grows once,
+   at 100 jobs) rather than being a case worth designing for.
+   `padding-left` rather than leaning on `.dl-toggle`'s `gap`: the gap would
+   apply to the slot even while it is empty, so the reserved width and a
+   visible 6px gap would compound into obvious dead space. As padding it is
+   part of the slot's own reserved box.
+   ONLY THESE TWO SECTIONS, and Models is fluid ON PURPOSE (do not "fix" it):
+   the bar is `justify-content: flex-end`, so a chip's width change moves
+   itself and everything to its LEFT and nothing to its right. Notifications
+   is rightmost, so its count shifts Jobs and Models both; Jobs' count shifts
+   Models. Models is leftmost, so its `· 628 MB` grows into empty bar space and
+   shifts nothing at all — a reserved slot there would buy no stability and
+   only cost permanent dead space. */
+.dl-count {
+  display: inline-block;
+  min-width: 2ch;
+  padding-left: 0.4em;
+}
+
 /* The panel's own EMPTY state — `No models loaded` / `No jobs` /
    `No notifications` (D579) — for a section with nothing to show (D573). This text used
    to live in the CHIP itself (a separate unpressable `.dl-idle` span, no

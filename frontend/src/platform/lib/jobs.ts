@@ -345,35 +345,6 @@ export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
   return queue.waiting === 0 ? head : `${head} · ${queue.waiting} queued`;
 }
 
-// Overall progress across the running jobs — or null when not every one of
-// them can say how far along it is. Averaged over jobs rather than summed over
-// bytes on purpose: summing lets one 8GB model download swallow a 40MB one
-// entirely, so the bar would sit still while a whole other job ran start to
-// finish.
-//
-// ONLY MEANINGFUL FOR A SINGLE RUNNING JOB, and its caller now enforces that
-// (D577, user: "if there are multiple activities, what does the percentages
-// mean?" — the honest answer was "nothing useful"). The unweighted mean
-// averages INCOMMENSURABLE work: a 4.6GB download at 10% beside a 2MB
-// thumbnail task at 90% reads as `50%`, i.e. "halfway", when nearly all the
-// real work remains, and the more the sizes diverge the more it lies. The
-// `some(f => f === null)` guard below compounds it — ONE indeterminate job
-// blanks the aggregate for everything running beside it.
-//
-// Byte-weighting was considered and rejected: it fixes only the
-// download-vs-download case, still cannot compare a byte total against a task
-// that has no byte count at all, and leaves the null-poisoning in place.
-// Deleting the misleading number from the chip is the smaller, honest change,
-// so this function is left exactly as it was and simply not asked when more
-// than one job is running (`DownloadManagerView`'s own `overall`).
-export function overallFraction(jobs: Job[]): number | null {
-  const running = jobs.filter(isRunning);
-  if (running.length === 0) return null;
-  const fractions = running.map(jobFraction);
-  if (fractions.some((f) => f === null)) return null;
-  return (fractions as number[]).reduce((a, b) => a + b, 0) / running.length;
-}
-
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
 // discover is a job STARTED by some other document (a page in another browser

@@ -11,7 +11,6 @@ import {
   jobsAfterClear,
   jobStatusLine,
   jobsSummary,
-  overallFraction,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
@@ -186,25 +185,6 @@ test("an id that disappears and later reappears counts as new again", () => {
 });
 
 // ---------------------------------------------------------- overall fraction
-
-test("overall progress averages the jobs so a small one is not swallowed", () => {
-  const jobs = [
-    job({ id: "big", done: 1e9, total: 8e9 }), // 12.5%
-    job({ id: "small", done: 3.5e7, total: 4e7 }), // 87.5%
-  ];
-  // A byte SUM would read ~12.9% and barely move while the small job finished.
-  expect(overallFraction(jobs)).toBeCloseTo(0.5, 5);
-});
-
-test("one job with no numbers makes the overall bar indeterminate, not optimistic", () => {
-  const jobs = [job({ id: "a", done: 5, total: 10 }), job({ id: "b" })];
-  expect(overallFraction(jobs)).toBe(null);
-});
-
-test("finished jobs are not averaged into the running total", () => {
-  const jobs = [job({ id: "a", done: 2, total: 10 }), job({ id: "b", state: "done" })];
-  expect(overallFraction(jobs)).toBeCloseTo(0.2, 5);
-});
 
 // ---------------------------------------------------------------- poll pacing
 

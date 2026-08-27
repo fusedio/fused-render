@@ -94,6 +94,7 @@
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   cancelJob,
@@ -107,7 +108,6 @@ import {
   jobRows,
   jobsAfterClear,
   jobStatusLine,
-  overallFraction,
   pollInterval,
   JOB_PING_KEY,
   SCHEDULE_JOB_PREFIX,
@@ -617,7 +617,7 @@ export function DownloadManagerView({
   // exists to fix). Called unconditionally, before the idle branch below,
   // same as every other hook in this component (rules of hooks: what a
   // render calls, not whether it later draws the idle state).
-  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     jobs.map((j) => j.id),
     collapsed,
     ready,
@@ -633,6 +633,11 @@ export function DownloadManagerView({
   // drained list beats a stale auto-open that the same drain is retiring.
   const open = autoClose ? false : !collapsed || autoOpen;
 
+  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
+  // section, and only transiently — see `exclusiveSection.ts` on why the
+  // arbiter must not touch the saved preference.
+  useExclusiveSection("jobs", open, forceClose);
+
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
   // used to describe): the bar's three sections are always on screen, this
   // one included, so "nothing happening" draws an IDLE chip — same button,
@@ -642,15 +647,6 @@ export function DownloadManagerView({
   // the old early return.
   const idle = jobs.length === 0 && queued === 0;
 
-  // ONE RUNNING JOB ONLY (D577, user: "if there are multiple activities, what
-  // does the percentages mean?"). With two or more the aggregate is an
-  // unweighted mean of incommensurable work and reads as a confident lie —
-  // `overallFraction`'s own doc now carries the full argument, including why
-  // byte-weighting was rejected rather than attempted. The chip falls back to
-  // the bare count (`Activity 2`), and the panel's per-row percentages are
-  // where real per-job progress lives; those were always correct.
-  const runningJobs = jobs.filter(isRunning).length;
-  const overall = runningJobs === 1 ? overallFraction(jobs) : null;
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
   // used to count here too; that silently orphaned live work behind the
@@ -743,8 +739,21 @@ export function DownloadManagerView({
             everything this section shows without over- or underclaiming.
             `Activity` was the vaguest of the three labels and half of why it
             collided with the old `Updates`. */}
-        <span className="dl-summary">{idle ? "Jobs" : `Jobs ${totalCount}`}</span>
-        {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
+        {/* A RESERVED count slot, always rendered (D581, user: "can we do
+            something on jobs and notifications so that there is no content
+            layout shift when new jobs or notifications show up?"). Empty at
+            zero rather than a literal `Jobs 0` — an explicit zero is noise,
+            and the label alone already says the section is quiet. `.dl-count`
+            holds a fixed `2ch` (see notifications.css), so the chip's width
+            never changes as the count appears, changes digits, or goes away.
+            NO PERCENTAGE any more: it appeared and disappeared right here and
+            so shifted the bar on its own, and reserving ~4ch for it
+            permanently would leave obvious dead space in a 22px bar. Per-job
+            progress lives in the panel, which draws a percentage AND a bar on
+            every row. */}
+        <span className="dl-summary">
+          Jobs<span className="dl-count">{totalCount > 0 ? totalCount : ""}</span>
+        </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored

@@ -37,6 +37,7 @@ import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 
 // This section's own persisted collapse preference — a THIRD independent key
@@ -207,7 +208,7 @@ export default function ModelsDock() {
   // model that loaded while this chip was collapsed, AND (D574) a transient
   // auto-open of this section's own panel so the arrival is on screen rather
   // than only hinted at. `autoOpen` is never persisted — see autoExpand.ts.
-  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     runtime.loaded.map((m) => m.model),
     collapsed,
     // Not `runtime.loaded.length > 0` — an idle machine must still announce
@@ -220,6 +221,11 @@ export default function ModelsDock() {
   // not two independent booleans). `autoClose` is tested first because a
   // drained list beats a stale auto-open that the same drain is retiring.
   const open = autoClose ? false : !collapsed || autoOpen;
+
+  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
+  // section, and only transiently — see `exclusiveSection.ts` on why the
+  // arbiter must not touch the saved preference.
+  useExclusiveSection("models", open, forceClose);
 
   // ONE unified toggle for a chip whose visible state may be the SAVED
   // preference or either transient override (D580). It acts on what the user

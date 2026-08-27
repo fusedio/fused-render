@@ -47,6 +47,7 @@ import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   repoActionLabel,
@@ -338,8 +339,13 @@ export function RepoUpdatesCardView({
             all still say "repo updates", which is exactly what they hold —
             `Notifications` is the extensible CATEGORY, so an alert that is
             not a repo update gets a home here without a fourth section. */}
+        {/* Reserved, always-rendered count slot — see the jobs chip's own
+            comment (D581). This section matters MOST for that: `.status-bar`
+            is `justify-content: flex-end`, so the rightmost chip growing
+            pushes BOTH of its neighbours leftward. */}
         <span className="dl-summary">
-          {idle ? "Notifications" : `Notifications ${visible.length}`}
+          Notifications
+          <span className="dl-count">{visible.length > 0 ? visible.length : ""}</span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
@@ -427,7 +433,7 @@ export function RepoUpdatesDockView({
   // (D574) a transient auto-open of this section's own panel. `autoOpen` is
   // never persisted — autoExpand.ts's header on why that write, not the
   // opening itself, was D567's real defect.
-  const { hasNew, autoOpen, autoClose, acknowledge } = useAutoExpandOnNew(
+  const { hasNew, autoOpen, autoClose, acknowledge, forceClose } = useAutoExpandOnNew(
     visible.map((row) => row.repo.root),
     collapsed,
     ready,
@@ -438,6 +444,11 @@ export function RepoUpdatesDockView({
   // not two independent booleans). `autoClose` is tested first because a
   // drained list beats a stale auto-open that the same drain is retiring.
   const open = autoClose ? false : !collapsed || autoOpen;
+
+  // ONE panel at a time across the whole bar (D582). Only ever CLOSES this
+  // section, and only transiently — see `exclusiveSection.ts` on why the
+  // arbiter must not touch the saved preference.
+  useExclusiveSection("notifications", open, forceClose);
 
   // ONE unified toggle for a chip whose visible state may be the SAVED
   // preference or either transient override (D580). It acts on what the user
