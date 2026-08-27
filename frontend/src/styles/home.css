@@ -329,6 +329,10 @@
   min-width: 0;
   flex: 0 1 auto;
   overflow-x: auto;
+  /* Keep a flick that reaches the end of the chips inside the strip: the page
+     itself leaves the x-axis open for swipe-back, and overscrolling a chip row
+     into a browser-history navigation would be a nasty surprise. */
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
   /* A scrolled chip should stop flush with the edge of its own row rather than
      half-clipped mid-label. */

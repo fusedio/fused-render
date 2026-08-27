@@ -339,6 +339,14 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
   // picked in the 30-odd mixed pool is meaningless in a five-brief capability
   // slice — modulo would keep it in range but land somewhere arbitrary.
   useEffect(() => setSampleOffset(0), [annotation?.capability]);
+  // ...and so does the strip's sideways scroll, on EITHER kind of change. The
+  // chips are swapped inside a scroll container that keeps its offset, so a
+  // row the user had scrolled to the end would show the new batch's tail
+  // instead of its first idea — the one thing shuffle is for.
+  const stripRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    stripRef.current?.scrollTo({ left: 0 });
+  }, [sampleOffset, annotation?.capability]);
 
   // The chip's detail is instructions for the CLAUDE SESSION, not something
   // the user typed — spliced in ahead of what they wrote so it reads as
@@ -596,7 +604,7 @@ export function HeroComposer({ onCreated }: { onCreated: () => void }) {
         </div>
       </div>
       <div className="home-composer-samples">
-        <div className="home-composer-sample-strip">
+        <div className="home-composer-sample-strip" ref={stripRef}>
           {Array.from(
             { length: Math.min(SAMPLE_ROW, samples.length) },
             (_, i) => {
