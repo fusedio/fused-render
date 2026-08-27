@@ -306,6 +306,45 @@ def test_rebase_refuses_a_dirty_tree(tmp_path):
     assert res["reason"] == "dirty"
 
 
+def test_switch_checks_out_the_default_branch(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    assert res["op"] == "switch"
+    assert git(local, "symbolic-ref", "--short", "HEAD").strip() == "main"
+
+
+def test_switch_refuses_a_dirty_tree(tmp_path):
+    # A TRACKED-file edit, like test_update_refuses_a_dirty_tree — switch_repo
+    # uses the same include_untracked=False preflight as update_repo, so an
+    # untracked file must not block it (that is the whole point of the
+    # looser check), but a change to a tracked file must still refuse.
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    write(local, "a.txt", "uncommitted\n")
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is False
+    assert res["reason"] == "dirty"
+    assert git(local, "symbolic-ref", "--short", "HEAD").strip() == "feature"
+
+
+def test_switch_is_not_refused_by_an_unrelated_untracked_file(tmp_path):
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    write(local, "scratch.tmp", "not tracked, not touched by the checkout\n")
+
+    res = git_upstream.switch_repo(local)
+
+    assert res["ok"] is True, res
+    with open(os.path.join(local, "scratch.tmp"), encoding="utf-8") as f:
+        assert f.read() == "not tracked, not touched by the checkout\n"
+
+
 # ------------------------------------------------------------- is_known_repo
 
 
@@ -382,6 +421,25 @@ def test_post_for_a_recorded_root_is_accepted(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True, body
+
+
+def test_post_switch_action_is_accepted(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(tmp_path / "Fused"))
+    client = _client(tmp_path)
+    local = _clone_with_remote_ahead(tmp_path)
+    git(local, "checkout", "-q", "-b", "feature")
+    root = os.path.realpath(local)
+    assert git_upstream.note_app_opened(local, _runner=_sync)
+    assert git_upstream.is_known_repo(root)
+
+    r = client.post("/api/git-upstream",
+                    json={"action": "switch", "root": root},
+                    headers={"X-Fused": "1"})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True, body
+    assert body["op"] == "switch"
 
 
 # --------------------------------------------- untracked files (finding #3)

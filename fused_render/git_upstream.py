@@ -458,6 +458,36 @@ def rebase_repo(root):
             "message": f"Rebased onto origin/{default_branch}."}
 
 
+def switch_repo(root):
+    """Check out the default branch — the card's PRIMARY action off the
+    default branch (decision D, SPEC §36), with `rebase_repo` demoted to
+    secondary on the same row. Preferred over rebasing the current branch
+    onto the default: it never rewrites or replays a single commit of the
+    user's work, so it can never conflict and never needs the git panel's
+    conflict view afterward — a plain `git checkout` either succeeds
+    outright or refuses, in git's own words, exactly the way `_brief`
+    already surfaces for the other two mutations. Same preflight as
+    `update_repo` (`include_untracked=False`): an ordinary checkout only
+    ever touches tracked paths and HEAD, so an untracked scratch file no
+    more blocks this than it blocks a pull.
+
+    After a successful switch the repo is very likely BEHIND (that is the
+    whole reason the row offered Switch), so `_refresh_after_mutation`
+    finding it behind and the row reappearing with Update is intended, not
+    a bug — the user is now on the default branch and Update runs from
+    there."""
+    branch, default_branch, refusal = _mutation_preflight(
+        root, include_untracked=False)
+    if refusal is not None:
+        return refusal
+    result = _run(root, "checkout", default_branch, timeout=TIMEOUT_S)
+    if not _ok(result):
+        return _refuse("git-failed", _brief(result) or "git checkout failed.")
+    _refresh_after_mutation(root)
+    return {"ok": True, "op": "switch", "root": root,
+            "message": f"Switched to {default_branch}."}
+
+
 # ------------------------------------------------------------------- the throttle
 
 _checked_lock = threading.Lock()

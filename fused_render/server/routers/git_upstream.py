@@ -7,8 +7,9 @@ GET /render's D301 block. It only reads the in-memory result that check
 populates — never shells out to git, never blocks — so it is a plain sync
 def polled by the frontend dock.
 
-POST runs one of the two mutations (`action: "update"` or `"rebase"`) the
-card's buttons call, each against one `root`. Two guards, not one:
+POST runs one of the three mutations (`action: "update"`, `"rebase"`, or
+`"switch"`) the card's buttons call, each against one `root`. Two guards,
+not one:
 `X-Fused` (D3) so a blind cross-origin POST from an unrelated open page
 can't reach it at all — the same guard every other mutating POST carries
 (`server/common.py::_require_fused`, e.g. `routers/ai_models.py`'s delete
@@ -53,5 +54,7 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
         return git_upstream.update_repo(root)
     if action == "rebase":
         return git_upstream.rebase_repo(root)
+    if action == "switch":
+        return git_upstream.switch_repo(root)
     return {"ok": False, "reason": "bad-action",
             "message": f"unknown action {action!r}"}
