@@ -360,6 +360,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           const r = await getTaskChanges(generationRef.current, 25, controller.signal);
           if (stopped) return;
           if (r.full) {
+            // "Reload everything" includes a server that restarted and counts
+            // from zero again: forget our generation FIRST, or the stale-listing
+            // guard in reload() would refuse the very listing that catches us
+            // up, forever (bugbot #892).
+            generationRef.current = -1;
             reload();
             await sleep(1000);
             continue;
