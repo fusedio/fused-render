@@ -68,6 +68,7 @@ import {
   Files,
   GitBranch,
   ListTodo,
+  Maximize2,
   Plug,
   Webhook,
   type LucideIcon,
@@ -137,11 +138,23 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     keepMounted: true,
     render: ({ slug, entry, folderHref }) =>
       entry ? (
-        <iframe
-          className="app-page-frame"
-          src={`/render?path=${encodeURIComponent(entry)}`}
-          title={`App: ${slug}`}
-        />
+        <div className="app-page-frame-wrap">
+          <iframe
+            className="app-page-frame"
+            src={`/render?path=${encodeURIComponent(entry)}`}
+            title={`App: ${slug}`}
+          />
+          {/* Floats over the frame's top-right: the app full-size in the
+              explorer, the same address the header path opens. */}
+          <a
+            className="app-page-fullscreen"
+            href={urlForFsPath(entry)}
+            title="Open full screen"
+            aria-label="Open full screen"
+          >
+            <Maximize2 />
+          </a>
+        </div>
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}
@@ -373,9 +386,14 @@ export default function AppPage({
       <header className="app-page-head">
         <div className="app-page-title">
           <h1>{slug}</h1>
-          {/* The folder, as a link: the one door from this page into the
-              explorer, for when the files are the question. */}
-          <a className="app-page-folder" href={folderHref} title={dir}>
+          {/* Reads as the folder, opens the entry page (index.html) in the
+              explorer — the app itself, not its listing. Falls back to the
+              folder when there is no entry yet. */}
+          <a
+            className="app-page-folder"
+            href={entry ? urlForFsPath(entry) : folderHref}
+            title={entry ?? dir}
+          >
             {tildePath(dir, home)}
           </a>
         </div>
@@ -398,7 +416,7 @@ export default function AppPage({
                 <TabsTrigger
                   key={id}
                   value={id}
-                  className="flex-none px-2 py-1.5"
+                  className="flex-none px-4 py-2.5"
                   // Base UI assumes a native <button> unless told otherwise:
                   // without this the anchor gets type="button" and Space
                   // does not activate it (Bugbot on #851).
