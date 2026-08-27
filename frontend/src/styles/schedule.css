@@ -2452,6 +2452,26 @@ input.schedule-when-field {
   padding: 0 22px;
 }
 
+/* The ⌘↩ pill inside Save. Drawn in the button's own ink at a lower alpha so
+   it reads as a caption on the verb, not a second control; the right padding
+   is pulled in because the pill already ends the pill. */
+.schedule-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 14px;
+}
+.schedule-save-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: inherit;
+  opacity: 0.85;
+}
+
 /* The description hangs from a top-aligned icon (multi-line row), and grows
    only by the user's hand. */
 .schedule-form-line--top {

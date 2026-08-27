@@ -2245,6 +2245,12 @@ function TaskNode({
               }
               activate();
             }}
+            // Middle-click never reaches onClick (it is `auxclick`), and on the
+            // <a> it is the browser's own new-tab; the mark owes the same
+            // (Bugbot, 2026-08-27).
+            onAuxClick={(e) => {
+              if (e.button === 1 && href) window.open(href, "_blank", "noopener");
+            }}
           >
             {ICON_FILE}
           </span>

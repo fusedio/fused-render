@@ -253,8 +253,10 @@ describe("what the card's face keeps, and what the (i) takes", () => {
     // that tells them apart, and the name itself then ellipsises. The owner is
     // not lost — it leads the line directly below.
     expect(CARD).toContain("{modelName(repo.id)}");
-    expect(CARD).toContain('<div className="am-card-sub" data-hint={repo.id}>');
-    expect(CARD).toContain('<span className="am-card-slug cc-mono">{repo.id}</span>');
+    // The hint rides the ID, not the whole line: the line spans the card, and a
+    // hint on it fired over the empty space between id and size.
+    expect(CARD).toContain('<div className="am-card-sub">');
+    expect(CARD).toContain('<span className="am-card-slug cc-mono" data-hint={repo.id}>{repo.id}</span>');
     // The FIGURE ends that line, pinned to the card's right edge, and is NOT
     // in the head (Akshil, 2026-08-25: "the size should not be after the model
     // name checkmark, it should be right below it"; 2026-08-27: "move the size
@@ -378,7 +380,8 @@ describe("every card on the page has the same bones", () => {
 
   it("name, then a caption line of size + repo id, in that order", () => {
     // The shared skeleton draws it once for both of the not-on-disk cards.
-    expect(REC).toContain('<div className="am-card-sub" data-hint={slug}>');
+    expect(REC).toContain('<div className="am-card-sub">');
+    expect(REC).toContain('<span className="am-card-slug cc-mono" data-hint={slug}>{slug}</span>');
     const sub = REC.slice(REC.indexOf('<div className="am-card-sub"'));
     expect(sub.indexOf("am-card-slug")).toBeLessThan(sub.indexOf("{size.text}"));
     // Both callers hand it the same two things the disk card shows.

@@ -425,8 +425,12 @@ export function RepoCard({
           Ellipsised on the id, which is the half that can be arbitrarily long,
           with the whole thing on hover — a wrapped second line would set every
           card's height from the longest repo name in the section. */}
-      <div className="am-card-sub" data-hint={repo.id}>
-        <span className="am-card-slug cc-mono">{repo.id}</span>
+      {/* THE HINT IS ON THE ID, not the line (Akshil, 2026-08-27: "this tooltip
+          should only appear when I'm hovering on the ... model name text, not on
+          the empty space between model and size"). The line spans the card, so
+          a hint on it fired over the gap the figure's right-pin opened up. */}
+      <div className="am-card-sub">
+        <span className="am-card-slug cc-mono" data-hint={repo.id}>{repo.id}</span>
         <span
           className="am-card-size"
           data-hint={repo.mtime ? `Last changed ${formatMtimeFull(repo.mtime)}` : undefined}

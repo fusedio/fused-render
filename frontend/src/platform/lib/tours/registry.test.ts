@@ -199,7 +199,7 @@ describe("tasks tour", () => {
     // page. It explains the one mark the list uses for read-state — a dot in
     // the ring is unread, hollow is read — and is a plain pointer.
     expect(steps[0].advanceOn).toBeUndefined();
-    expect(steps[0].popover?.description).toMatch(/dot inside/i);
+    expect(steps[0].popover?.description).toMatch(/dot in the ring/i);
     expect(steps[0].popover?.description).toMatch(/hollow/i);
     // The row's press is the stretched link, not the row div — so that is what
     // the step waits for and what its action button clicks.

@@ -151,8 +151,12 @@ function ModelCard({
           should be same".
           Id first, figure pinned to the right edge (2026-08-27: "move the size
           all the way to the right in the card"). */}
-      <div className="am-card-sub" data-hint={slug}>
-        <span className="am-card-slug cc-mono">{slug}</span>
+      {/* THE HINT IS ON THE ID, not the line (Akshil, 2026-08-27: "this tooltip
+          should only appear when I'm hovering on the ... model name text, not on
+          the empty space between model and size"). The line spans the card, so
+          a hint on it fired over the gap the figure's right-pin opened up. */}
+      <div className="am-card-sub">
+        <span className="am-card-slug cc-mono" data-hint={slug}>{slug}</span>
         <span className="am-card-size" data-hint={size.title}>
           {size.text}
         </span>

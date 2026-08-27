@@ -86,8 +86,9 @@ export const tasksTour: Tour = {
           element: ".tasks-row .tasks-rowmark .schedule-ring",
           popover: {
             title: "Read or unread",
-            description:
-              "The ring is the task's status. A dot inside it means there's output you haven't seen yet; once you've looked, the ring goes hollow.",
+            // ONE phrase (Akshil, screenshot, 2026-08-27: "too much wording ...
+            // one line max").
+            description: "A dot in the ring means unread; hollow means read.",
           },
         },
         {
