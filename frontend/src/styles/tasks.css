@@ -40,9 +40,17 @@
   overscroll-behavior: contain;
 }
 
-.tasks-list {
+/* The border is on a FRAME inside the scroller, not on the scroller. A bordered
+   scroller wears its bar inside its own border, which leaves a bar-wide column
+   between the rows' edge and the frame — every hairline stopped 10px short of
+   the box (Akshil, screenshot, 2026-08-27). With the frame inside, the bar
+   stands beside the frame and the rows run edge to edge. */
+.tasks-list-frame {
   border: 1px solid var(--border);
   border-radius: 8px;
+  /* The scroller used to clip the row washes to the corners; now the frame
+     has to, or a hovered first row pokes square corners out of a round box. */
+  overflow: hidden;
 }
 
 /* Hairlines between TASKS only. A task and its thread are one thing, and a
@@ -644,7 +652,10 @@ button.tasks-caret,
   padding-left: 4px;
   margin-right: -4px;
 }
-.tasks-row-file:hover { opacity: 1; }
+/* NO HOVER SKIN OF ITS OWN (Akshil, 2026-08-27: "when I hover over the file
+   icon, it changes color and it feels like a button"). It is a caption on the
+   row, and a mark that brightens under the pointer promises a press the row's
+   press does not make. The row's own hover is the only hover here. */
 
 /* THE FOLDER CHIP AS A TAG (2026-08-23). A press filters the page to that
    folder, so on the List the chip is a real <button> — and it has to look like

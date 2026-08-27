@@ -190,17 +190,24 @@ describe("tasks tour", () => {
     // List row, board card, calendar grid — mutually exclusive on screen, so
     // presentSteps keeps exactly the one the user is looking at.
     expect(steps.map((s) => s.element)).toEqual([
+      ".tasks-row .tasks-rowmark .schedule-ring",
       ".tasks-row",
       ".schedule-tv-board .tasks-card-wrap",
       ".schedule-cal",
     ]);
+    // The ring step comes BEFORE the row step: the row's action leaves the
+    // page. It explains the one mark the list uses for read-state — a dot in
+    // the ring is unread, hollow is read — and is a plain pointer.
+    expect(steps[0].advanceOn).toBeUndefined();
+    expect(steps[0].popover?.description).toMatch(/dot inside/i);
+    expect(steps[0].popover?.description).toMatch(/hollow/i);
     // The row's press is the stretched link, not the row div — so that is what
     // the step waits for and what its action button clicks.
-    expect(steps[0].advanceOn).toBe(".tasks-rowlink");
-    expect(steps[0].actionText).toBe("Open it");
-    expect(steps[1].advanceOn).toBe(".schedule-tv-board .schedule-tv-card");
+    expect(steps[1].advanceOn).toBe(".tasks-rowlink");
+    expect(steps[1].actionText).toBe("Open it");
+    expect(steps[2].advanceOn).toBe(".schedule-tv-board .schedule-tv-card");
     // The calendar step is a plain pointer — a chip opens through a popover.
-    expect(steps[2].advanceOn).toBeUndefined();
+    expect(steps[3].advanceOn).toBeUndefined();
     // End of the chain.
     expect(chain?.followUp).toBeUndefined();
   });

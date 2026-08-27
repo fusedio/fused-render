@@ -3090,6 +3090,20 @@ export default function NewJobModal({
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            // ENTER MOVES DOWN, into the instructions (Akshil, 2026-08-27: "when
+            // I am typing in the title, when I click enter, it should go to
+            // additional instructions"). The two fields are one message and the
+            // title is its first line, so Enter at the end of the first line
+            // means what it means in any editor: start the next one. It does
+            // NOT submit — a single-line field that fires Save on Enter would
+            // create a task on the way to describing it. An IME composition's
+            // Enter commits the candidate, not the line, and is left alone.
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                askRef.current?.focus();
+              }
+            }}
             autoFocus
           />
 
