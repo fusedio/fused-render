@@ -3127,11 +3127,13 @@ export default function NewJobModal({
             // NOT submit — a single-line field that fires Save on Enter would
             // create a task on the way to describing it. An IME composition's
             // Enter commits the candidate, not the line, and is left alone.
+            // A MODIFIED Enter is not this field's: ⌘↩ / Ctrl+Enter is the
+            // form's Save chord (the wrap's onKeyDown), and it must bubble there
+            // untouched rather than also walk the caret down (Bugbot).
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                e.preventDefault();
-                askRef.current?.focus();
-              }
+              if (e.key !== "Enter" || e.nativeEvent.isComposing || isMod(e)) return;
+              e.preventDefault();
+              askRef.current?.focus();
             }}
             autoFocus
           />
