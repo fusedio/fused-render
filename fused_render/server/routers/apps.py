@@ -39,6 +39,12 @@ with no new machinery — the same row a task scheduled by hand would get.
 "local" is just this feature's own tag — nothing about the listing side treats
 it specially.
 
+Both paths also materialise the app's ``.fused/`` state folder — ``data/``,
+``cache/`` and ``meta.json`` (``app_fused_dir``, D548, SPEC §47). Creation
+hangs off ``record_app_open`` rather than off creation alone, because the
+convention has to hold for every app authored before it existed, and a page
+carrying the fused-app marker being rendered IS the app being opened (D301).
+
 An app folder carries no ``.claude/`` of its own (D185); the starter
 ``CLAUDE.md`` references the canonical skills by name and fused-render supplies
 them. The scaffolding session below gets them the way every session
@@ -386,8 +392,30 @@ def record_app_open(path: str, title: str | None = None) -> bool:
     the workspace the open lands in the recents store (keyed workspace-
     relative); outside, opening IS registering — `registered_apps.record_open`
     puts the folder on the /apps hub and stores the open time itself.
+
+    Opening an app is also where its ``.fused/`` folder comes into being
+    (``app_fused_dir.ensure``, D548): the convention has to hold for the apps
+    that existed before it, and the render path is the one moment the server
+    knows a folder is being used AS an app. Deliberately ahead of the
+    workspace/registered fork — a linked folder outside ~/Fused is just as much
+    an app — and deliberately not part of this function's return value, which
+    answers "was the open recorded?" and nothing else.
+
+    Gated on ``app_listing.app_entry`` rather than on reaching this function,
+    so the folder is created for APPS and nothing else. GET /render has already
+    established the marker by the time it calls here, so the gate never changes
+    that path's answer; what it rules out is the legacy POST endpoint below,
+    whose ``path`` is an arbitrary caller-supplied directory that no branch
+    validates before the fork.
     """
+    from fused_render import app_fused_dir, app_listing
     from fused_render.shell import storage
+
+    try:
+        if app_listing.app_entry(path) is not None:
+            app_fused_dir.ensure(path)
+    except OSError:
+        pass  # unreadable dir — the recency question below answers itself
 
     rel = _workspace_rel(fused_dir(), path)
     if rel is None:
@@ -609,6 +637,19 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         # retry sees a clean slate and the exists-check stays meaningful.
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
+
+    # The `.fused/` state folder, before git rather than after: `init_repo`'s
+    # first commit is "the untouched starter", and `.fused/` is not starter
+    # content — creating it first means the freshly written `.gitignore` is
+    # already excluding it when `add -A` runs, instead of the boilerplate
+    # commit capturing an empty `data/`/`cache/` pair that later has to be
+    # untracked. (The starter kit itself cannot carry the folder: git does not
+    # store empty directories, so a copytree of the packaged kit would produce
+    # nothing.) Opening the app would create it anyway (`record_app_open`);
+    # doing it here means it is there for the scaffolding turn that runs first.
+    from fused_render import app_fused_dir
+
+    app_fused_dir.ensure(dest)
 
     # Refresh the plugin root the scaffolding session below is handed (D216).
     # Startup already synced it; doing it again here repairs a deletion in the

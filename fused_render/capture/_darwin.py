@@ -295,6 +295,35 @@ def _display(display_id) -> object:
     raise CaptureError(f"no such display: {wanted} (this machine has {known})")
 
 
+def locate(rect, dpr: float):
+    """`capture.shot_region`'s hook: which display a global rect sits on, and
+    the same rect in that display's own coordinates.
+
+    A browser's `screenX`/`getBoundingClientRect` are CSS pixels of the screen,
+    and on the Mac those are POINTS — the unit `CGDisplayBounds` reports and
+    the unit `sourceRect` wants — so `dpr` is deliberately unused here (the
+    panel's backing scale is `_configure`'s business, from the display mode).
+    Both spaces share the main display's top-left as origin, so the map is one
+    subtraction. A rect not entirely inside one display is REFUSED, not
+    clipped: the caller is about to bake the answer into an artifact.
+    """
+    from fused_render.capture import CaptureError
+
+    x, y, w, h = rect
+    err, ids, count = Quartz.CGGetActiveDisplayList(16, None, None)
+    if err != 0:                                          # pragma: no cover
+        raise RuntimeError("could not list displays")
+    for display_id in list(ids)[:count]:
+        b = Quartz.CGDisplayBounds(display_id)
+        bx, by = b.origin.x, b.origin.y
+        bw, bh = b.size.width, b.size.height
+        if bx <= x and by <= y and x + w <= bx + bw and y + h <= by + bh:
+            return int(display_id), (x - bx, y - by, w, h)
+    raise CaptureError(
+        "the region to photograph is not entirely on one display — move the "
+        "window fully on screen and export again")
+
+
 def _display_scale(display) -> int:
     """Backing pixels per point for this display — 2 on a Retina panel, 1 else."""
     mode = Quartz.CGDisplayCopyDisplayMode(display.displayID())
