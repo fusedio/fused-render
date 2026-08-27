@@ -311,7 +311,10 @@
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
-  justify-content: flex-start;
+  /* Centred under the composer box, not left-flush: the strip is shrink-to-fit,
+     so a row narrower than the composer sits centred and only goes edge-to-edge
+     once the chips actually overflow. */
+  justify-content: center;
   gap: 8px;
   min-width: 0;
 }
