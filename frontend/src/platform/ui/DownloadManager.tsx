@@ -510,17 +510,6 @@ export function DownloadManagerView({
   if (jobs.length === 0 && queued === 0) return null;
 
   const overall = overallFraction(jobs);
-  // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
-  // the rule and says why. Short version: the collapse is a persisted preference
-  // set against a growing download history, and once the queue moved into this
-  // card, folding the list took the only cancel a queued message or a live turn
-  // has with it. So the queue's rows stay whatever the fold says, and the job rows
-  // are the half that folds.
-  const shown = rowsShown(collapsed, count);
-  // The job rows this card is DRAWING: all of them open, and folded only the ones
-  // the fold must not take — a live scheduled run standing in for a queue row that
-  // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
-  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
   // Whether collapsing would hide anything AT ALL (D526). Reported as the toggle
   // "does nothing" — traced to `rowsShown`'s own documented rule: queue rows
   // always show regardless of `collapsed`, and `foldedJobRows` deliberately keeps
@@ -533,9 +522,31 @@ export function DownloadManagerView({
   // a broken one. The fix is not forcing a fold that would hide a control (the
   // very bug `rowsShown` exists to prevent) but not drawing the toggle as
   // pressable when nothing on screen would move — comparing against ALL of
-  // `jobs`, not `listed`, because `listed` already depends on `collapsed` and
-  // would make this circular.
+  // `jobs`, never a value already filtered by the fold, or this would be circular.
   const foldable = jobs.length > foldedJobRows(jobs).length;
+  // Effective collapse state (task 11, code review 2026-08-27): with
+  // `collapsed` persisted `true` from an earlier session and THIS render's
+  // job list entirely fold-exempt (`foldable` false), the header renders as
+  // a static span with no chevron and no onClick (the D526 fix above) —
+  // which means there is NO control anywhere left to un-collapse. Raw
+  // `collapsed` would still cap `.dl-rows` to the folded max-height and
+  // still draw the collapsed-only progress bar below, stranding the card.
+  // Falling back to expanded whenever nothing is foldable removes that dead
+  // end without touching the STORED preference (`collapsed` itself, and
+  // `saveCollapsed`) — a later job that IS foldable still starts folded,
+  // honoring what the user actually set.
+  const effectiveCollapsed = collapsed && foldable;
+  // WHAT THE FOLD TAKES, and it is not the whole list — jobs.ts `rowsShown` owns
+  // the rule and says why. Short version: the collapse is a persisted preference
+  // set against a growing download history, and once the queue moved into this
+  // card, folding the list took the only cancel a queued message or a live turn
+  // has with it. So the queue's rows stay whatever the fold says, and the job rows
+  // are the half that folds.
+  const shown = rowsShown(effectiveCollapsed, count);
+  // The job rows this card is DRAWING: all of them open, and folded only the ones
+  // the fold must not take — a live scheduled run standing in for a queue row that
+  // is not there (`foldedJobRows`). Nothing the preference was set for survives it.
+  const listed = shown.jobs ? jobs : foldedJobRows(jobs);
   // What "Clear" would actually take — TERMINAL rows only, mirroring the
   // server's own rule (jobs.py `clear_finished`). A stalled-but-running row
   // used to count here too; that silently orphaned live work behind the
@@ -604,7 +615,7 @@ export function DownloadManagerView({
           hide the detail, not the fact that something is running. With nothing
           running there is no bar — a sweep under a header reading "2 finished"
           would animate work that is over. */}
-      {collapsed && jobs.some(isRunning) && (
+      {effectiveCollapsed && jobs.some(isRunning) && (
         <div className="dl-bar">
           <div
             className={"dl-bar-fill" + (overall === null ? " is-indeterminate" : "")}

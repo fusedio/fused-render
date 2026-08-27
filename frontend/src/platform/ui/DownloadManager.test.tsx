@@ -199,3 +199,43 @@ test("a lone scheduled run's stand-in job row survives the fold, so the toggle s
   expect(toggles).toHaveLength(1);
   expect(toggles[0].type).not.toBe("button");
 });
+
+test("a persisted collapsed=true with nothing foldable renders as if expanded (task 11)", () => {
+  // Persisted from an earlier session, with THIS render's job list entirely
+  // fold-exempt (a live schedule stand-in): the toggle renders as the
+  // static, non-interactive span (the D526 fix, above), which means there
+  // is NO control left anywhere to un-collapse — so `collapsed` must not be
+  // allowed to strand the card folded. Fixed by falling back to expanded
+  // whenever nothing is foldable, without touching the STORED preference.
+  const original = (globalThis as unknown as { localStorage?: unknown }).localStorage;
+  (globalThis as unknown as { localStorage: Storage }).localStorage = {
+    getItem: () => "1",
+    setItem: () => {},
+    removeItem: () => {},
+    clear: () => {},
+    key: () => null,
+    length: 0,
+  } as Storage;
+  try {
+    const liveSchedule: Job = {
+      ...BASE,
+      id: "sys:schedule:entry-1",
+      state: "running",
+      stalled: false,
+    };
+    const tree = renderCard([liveSchedule]);
+    expect(tree).not.toBeNull();
+    const rows = findAll(tree, "dl-rows");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].props.className.split(" ")).not.toContain("is-folded");
+    // Only the row's own progress bar — no second, collapsed-only bar
+    // rendered at the head (the branch this fix must also gate).
+    expect(findAll(tree, "dl-bar")).toHaveLength(1);
+  } finally {
+    if (original === undefined) {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    } else {
+      (globalThis as { localStorage: unknown }).localStorage = original;
+    }
+  }
+});

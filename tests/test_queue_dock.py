@@ -302,7 +302,7 @@ def test_the_fold_takes_the_job_rows_and_not_the_queue_s(card):
     someone collapsed weeks ago showing scheduled work with no reachable way to stop
     it. The fold takes the job rows (the download history it was set to fold away);
     the queue's rows stay, in the same one list, with their controls."""
-    assert "rowsShown(collapsed, count)" in card
+    assert "rowsShown(effectiveCollapsed, count)" in card
     assert "(shown.queue || listed.length > 0) &&" in card
     assert "{queue?.rows}" in card, "the queue's rows must not sit behind the fold"
     # exactly one half is folded, and it is the jobs' — minus the one job row that
