@@ -208,7 +208,7 @@ export default function AppApi({
           )}
 
           {endpoints.length > 0 && (
-            <div className="flex min-h-0 flex-1 flex-col overflow-auto rounded-xl border border-border bg-background">
+            <div className="flex min-h-0 flex-1 flex-col overflow-auto rounded-xl border border-border">
               <ul className="m-0 list-none divide-y divide-border p-0">
                 {endpoints.map((ep) => (
                   <EndpointRow
