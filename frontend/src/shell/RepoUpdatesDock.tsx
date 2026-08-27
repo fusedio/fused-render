@@ -541,7 +541,7 @@ export function RepoUpdatesDockView({
     failed.map((job) => job.id),
     collapsed,
     true,
-    true,
+    { neverOpen: true, neverClose: true },
   );
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are

@@ -39,12 +39,21 @@ const closers = new Map<SectionKey, { current: () => void }>();
 
 // A tick shared by everything that happens in one React commit. Every section
 // that starts wanting to be open in the SAME commit gets the SAME `seq`, so
-// such a clash is a genuine tie and falls to `SECTION_ORDER` (Models first) —
-// which is what makes both of the awkward cases deterministic rather than
-// dependent on effect-execution order: two sections auto-opening on the same
-// poll response, and a reload where two sections' PERSISTED preferences both
-// say open. A later commit gets a higher tick, so an ordinary user click always
-// beats whatever was already open, whichever section it is.
+// such a clash is a genuine tie and falls to `SECTION_ORDER` — which is what
+// makes the awkward cases deterministic rather than dependent on
+// effect-execution order. A later commit gets a higher tick, so an ordinary
+// user click always beats whatever was already open, whichever section it is.
+//
+// WHICH TIES ACTUALLY HAPPEN (narrowed by D587):
+//  - A RELOAD where two or more sections' PERSISTED preferences say open.
+//    Models can win this one and should — a saved preference is the user's own
+//    choice, and D587 forbids Models AUTO-opening, not being open.
+//  - TWO SECTIONS AUTO-OPENING on one poll response. Since D587 this contest
+//    is only ever Jobs vs Notifications: Models has no auto-open path left
+//    (`autoExpand.ts`'s `neverOpen`), so the "Models first" half of the order
+//    can no longer decide an auto-open tie. `SECTION_ORDER` is unchanged and
+//    still correct for both cases — Jobs simply happens to be the first
+//    *eligible* section for the second one.
 //
 // The microtask is what bounds a "commit": React runs layout/passive effects
 // synchronously within a commit, before the microtask queue drains.

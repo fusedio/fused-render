@@ -214,6 +214,17 @@ export default function ModelsDock() {
     // Not `runtime.loaded.length > 0` — an idle machine must still announce
     // its first real load (autoExpand.ts's `ready`).
     aiRuntimeSettled(),
+    // NEVER AUTO-OPENS (D587, user: "the models popover should never auto
+    // open. that is user only"). A model becoming resident is a CONSEQUENCE of
+    // something the user already did, or of an app quietly loading one — a
+    // state readout, not an event worth covering the page for. Structural
+    // rather than merely unlikely: with `neverOpen`, this section has no code
+    // path to `setOverride("open")` at all, so no future arrival can slip
+    // through. `hasNew` still flows (the quiet dot costs nothing), `autoClose`
+    // is untouched (D580's Unload-the-last-row behaviour was explicitly good,
+    // and closing is not opening), and the persisted preference still reopens
+    // it on reload because that IS the user's own choice.
+    { neverOpen: true },
   );
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are

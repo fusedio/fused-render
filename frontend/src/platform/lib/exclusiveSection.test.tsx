@@ -40,6 +40,9 @@ async function nextTick() {
   });
 }
 
+// The RELOAD case: two persisted preferences both say open. Models is a
+// legitimate winner here — D587 forbids Models auto-OPENING, not being open,
+// and a saved preference is the user's own choice.
 test("two sections wanting open in the SAME commit resolve to Models, deterministically", () => {
   const closed: SectionKey[] = [];
   const renderer = mount(
@@ -118,5 +121,27 @@ test("a section that merely STAYS open cannot keep out-bidding a sibling", async
   act(() => renderer.update(<Bar n={4} jobsOpen />));
 
   expect(closed).toEqual(["models"]);
+  act(() => renderer.unmount());
+});
+
+// The AUTO-OPEN case, narrowed by D587: Models has no auto-open path any more
+// (`autoExpand.ts`'s `neverOpen`), so a same-tick auto-open contest is only
+// ever Jobs vs Notifications, and Jobs is the first ELIGIBLE section rather
+// than the first section outright. Pinned separately from the reload test
+// above because the two now resolve to different winners for different
+// reasons, and one test asserting "Models wins ties" would hide that.
+test("a Jobs vs Notifications tie resolves to Jobs — Models cannot enter this contest", () => {
+  const closed: SectionKey[] = [];
+  const renderer = mount(
+    <>
+      <Section sectionKey="jobs" wantOpen onForceClose={() => closed.push("jobs")} />
+      <Section
+        sectionKey="notifications"
+        wantOpen
+        onForceClose={() => closed.push("notifications")}
+      />
+    </>,
+  );
+  expect(closed).toEqual(["notifications"]);
   act(() => renderer.unmount());
 });

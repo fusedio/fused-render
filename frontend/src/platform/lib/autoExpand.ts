@@ -105,21 +105,34 @@ export interface AutoExpandState {
 // `ready` rather than `ids.length > 0` is what distinguishes "nothing here
 // yet" from "genuinely nothing" — the latter must still let the very first
 // real arrival through as news.
-// `announceOnly` — set the DOT and never touch visibility (D586). Failures
-// re-routed into Notifications must not throw a panel over the page: a pyramid
-// build failing in the background is worth a mark on the chip, not an
-// interruption, and it is the one case where D574's "always show the
-// notification" is the wrong instinct. A section can therefore run TWO
-// instances of this hook: one ordinary (its repo rows, which do auto-open) and
-// one announce-only (its error rows, which only ever set the dot). It disables
-// the drain-close as well as the auto-open — "never touch visibility" has to
-// mean both, or an error list draining would close a panel the repo rows are
-// still filling.
+/**
+ * Per-caller opt-outs. Two independent flags rather than one "announce only"
+ * boolean, because the two real callers want DIFFERENT halves suppressed
+ * (D587) and collapsing them into one switch is what would make a future
+ * caller pick the wrong behaviour by accident:
+ *
+ *  - Models (`neverOpen`) must never open on its own but MUST still close on
+ *    drain — closing is not opening, and Unload-the-last-row getting the panel
+ *    out of the way was explicitly good (D580).
+ *  - Failures in Notifications (`neverOpen` + `neverClose`) must touch
+ *    visibility in neither direction: they may not throw a panel over the
+ *    page, and an emptying error list must not shut a panel the repo rows are
+ *    still filling.
+ */
+export interface AutoExpandOptions {
+  /** Never auto-OPEN. The dot is still set — "never auto open" is about the
+   *  panel, not the indicator. Structural: with this set, `setOverride("open")`
+   *  is unreachable for this caller, so no future arrival can slip through. */
+  neverOpen?: boolean;
+  /** Never auto-CLOSE on drain. */
+  neverClose?: boolean;
+}
+
 export function useAutoExpandOnNew(
   ids: readonly string[],
   collapsed: boolean,
   ready = true,
-  announceOnly = false,
+  { neverOpen = false, neverClose = false }: AutoExpandOptions = {},
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
   const [hasNew, setHasNew] = useState(false);
@@ -161,8 +174,9 @@ export function useAutoExpandOnNew(
       // is also what CLEARS a standing `"closed"` override, which is the half
       // the old `collapsed`-only test could never reach.
       if (!panelOpen) {
+        // The DOT always; the panel only if this caller allows it (D587).
         setHasNew(true);
-        if (!announceOnly) setOverride("open");
+        if (!neverOpen) setOverride("open");
       }
       return;
     }
@@ -178,7 +192,7 @@ export function useAutoExpandOnNew(
     // because leaving a `"closed"` override standing on an already-closed
     // section would make the next chip click spend itself clearing it instead
     // of opening the panel.
-    if (prev.size > 0 && ids.length === 0 && panelOpen && !announceOnly) {
+    if (prev.size > 0 && ids.length === 0 && panelOpen && !neverClose) {
       setHasNew(false);
       setOverride("closed");
     }
