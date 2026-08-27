@@ -164,8 +164,15 @@
   align-items: center;
   justify-content: flex-end;
   gap: 0;
-  padding: 0 2px;
-  min-height: 24px;
+  padding: 0 8px;
+  /* FIXED 22px, VS Code's own status-bar height (D576, user: "lets follow
+     exactly what vscode is doing for the status bar") — `height`, not
+     `min-height`, because every item is now full-height and nothing inside
+     is allowed to grow the strip. 8px at the ends so the first and last item
+     are not flush against the window edge; NO `gap`, since each item's own
+     5px of side padding is the entire separation and adjacent items touch,
+     which is what VS Code does. */
+  height: 22px;
   color: var(--fg);
   background: var(--bg-alt);
   border-top: 1px solid var(--border);
@@ -207,6 +214,7 @@
    the way every other truncated label in this app already does under
    pressure, rather than overflowing. */
 .dl-host {
+  height: 100%; /* D576: the item inside fills the bar's full height. */
   position: relative;
   flex: 0 1 auto;
   min-width: 0;
@@ -229,13 +237,20 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 3px 8px;
-  margin: -3px 0; /* vertical only — a horizontal negative margin here made
-                      adjacent chips overlap by 2x the padding minus the
-                      (near-zero) bar gap, clipping neighbour text */
-  border-radius: 6px;
+  /* A FULL-HEIGHT SQUARE RECTANGLE (D576) — the single biggest difference from
+     round 4, which drew an inset pill: `padding: 3px 8px` with a compensating
+     `-3px` vertical margin plus a 6px radius made these read as chips or
+     badges floating in the bar. A VS Code status-bar item is the full height of
+     the bar with 5px of side padding and no radius at all, so its hover fill
+     runs edge to edge vertically. The negative margin is gone along with the
+     inset it was compensating for. */
+  height: 100%;
+  padding: 0 5px;
+  border-radius: 0;
   font: inherit;
-  font-size: 11px;
+  /* 12px regular — VS Code's status bar runs 12px at normal weight; round 4's
+     11px was a guess at "denser". `.dl-summary`'s weight goes with it, below. */
+  font-size: 12px;
   color: var(--fg);
   background: none;
   border: none;
@@ -245,7 +260,7 @@
 }
 
 .dl-toggle:hover {
-  background: var(--row-bg-hover);
+  background: var(--status-item-hover);
 }
 
 /* An OPEN item reads as open (D573): without a chevron to rotate, the only
@@ -254,19 +269,19 @@
    `aria-expanded` (already correct for every section — a real DOM fact this
    button already carries) rather than a second className duplicating it.
 
-   `--row-bg-active`, NOT `--row-bg-hover` (D574): round 4 used the hover wash
-   for both, so an open chip and a merely-hovered chip were pixel-identical
-   and "is a panel up?" was unanswerable without looking away from the bar.
-   That got worse the moment D574's auto-open landed — a panel can now open
-   with the user having touched nothing at all, so the open marker is the ONLY
-   thing saying which section did it. `--row-bg-active` is the app's existing
-   engaged/selected token (an accent 0.13 wash over `--bg-alt`, the same one
-   sidebar.css uses for a selected row) — it reads as deliberate rather than
-   as a pointer passing over, and it needs no new token. It also outranks the
-   hover rule above at equal specificity by sitting later in the cascade, so
-   hovering an already-open chip does not knock it back to looking closed. */
+   A DIFFERENT TOKEN FROM HOVER (D574, retuned to VS Code's own pair in D576):
+   round 4 used the hover wash for both, so an open item and a merely-hovered
+   one were pixel-identical and "is a panel up?" was unanswerable without
+   looking away from the bar. That got worse the moment D574's auto-open
+   landed — a panel can now open with the user having touched nothing at all,
+   so the open marker is the ONLY thing saying which section did it.
+   `--status-item-active` is VS Code's `statusBarItem.activeBackground` (a
+   0.18 alpha overlay) against `--status-item-hover`'s 0.12 — deliberately
+   well clear of it. It also outranks the hover rule above at equal
+   specificity by sitting later in the cascade, so hovering an already-open
+   item does not knock it back to looking closed. */
 .dl-toggle[aria-expanded="true"] {
-  background: var(--row-bg-active);
+  background: var(--status-item-active);
 }
 
 /* The panel: floats ABOVE the bar, anchored to its own chip's RIGHT edge
@@ -338,10 +353,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 500, not 600 (code review: the round-1 chip "reads like a heading" over
-     a bar this thin) — enough weight to read as the bar's own subject, not
-     enough to compete with an actual heading anywhere else on the page. */
-  font-weight: 500;
+  /* REGULAR (D576): VS Code's status-bar items carry no extra weight at all.
+     Round 1 went 600 ("reads like a heading", per code review), round 4 walked
+     it back to 500; matching VS Code exactly takes it to 400, and at 12px on a
+     22px bar the bolder text was the loudest thing on screen. */
+  font-weight: 400;
 }
 
 /* The panel's own EMPTY state — `No models loaded` / `No activity` /
