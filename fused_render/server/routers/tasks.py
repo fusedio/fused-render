@@ -1570,10 +1570,13 @@ def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
     # written costs an app on the sidebar, never the listing.
-    try:
-        current_apps.observe(rows)
-    except OSError:
-        pass
+    # Not from a partial listing: `observe` reads its argument as EVERY live
+    # task and prunes what it does not see (bugbot, PR #892).
+    if only is None:
+        try:
+            current_apps.observe(rows)
+        except OSError:
+            pass
     return rows
 
 

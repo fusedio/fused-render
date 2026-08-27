@@ -137,6 +137,32 @@ def test_registry_row_with_dead_pid_is_not_live(claude_home):
     assert tasks_watch.tick() == set()
 
 
+def test_a_crashed_claude_is_noticed_without_its_file_changing(claude_home, monkeypatch):
+    tasks_watch.tick()
+    _registry(claude_home, SID, status="busy")
+    tasks_watch.tick()
+    assert tasks_watch.live_from_registry(SID) == (True, 1787824059.664)
+    # The process dies; the file is left exactly as it was.
+    monkeypatch.setattr(tasks_watch, "_pid_alive", lambda pid: False)
+    assert tasks_watch.tick() == {SID}
+    assert tasks_watch.live_from_registry(SID) == (False, 0.0)
+    assert tasks_watch.tick() == set()  # said once
+
+
+def test_changes_listing_does_not_prune_current_apps(claude_home, monkeypatch):
+    from fused_render import current_apps
+    calls = []
+    monkeypatch.setattr(current_apps, "observe", lambda rows: calls.append(len(rows)))
+    _transcript(claude_home, SID)
+    _transcript(claude_home, SID2)
+    with TestClient(create_app(str(claude_home))) as client:
+        gen = client.get("/api/tasks").json()["generation"]
+        assert calls == [2]
+        tasks_watch.notify({SID})
+        client.get(f"/api/tasks/changes?since={gen}&wait=0")
+        assert calls == [2]  # the partial listing told the desk nothing
+
+
 def test_registry_row_without_status_has_no_opinion(claude_home):
     tasks_watch.tick()
     (claude_home / "sessions" / "p.json").write_text(

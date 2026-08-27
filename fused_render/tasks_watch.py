@@ -237,6 +237,21 @@ def _read_registry() -> set[str]:
             continue
         seen.add(path)
         if _sess_mtimes.get(path) == mtime:
+            # Unchanged file — but a crash or a kill leaves the file behind
+            # untouched, so the pid is asked every tick, not only on rewrite
+            # (bugbot, PR #892). One kill(pid, 0) per live session.
+            sid = _sess_sids.get(path)
+            if sid:
+                with _cond:
+                    pid = (_registry.get(sid) or {}).get("pid")
+                if not _pid_alive(pid):
+                    _sess_sids.pop(path, None)
+                    with _cond:
+                        _registry.pop(sid, None)
+                        _departed[sid] = time.time()
+                    _tr_paths.pop(sid, None)
+                    _tr_sizes.pop(sid, None)
+                    keys.add(sid)
             continue
         _sess_mtimes[path] = mtime
         try:
