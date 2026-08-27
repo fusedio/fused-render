@@ -194,6 +194,30 @@ def test_a_diverged_repo_paints_a_rebase_button(reader, tmp_path):
     out = render(reader, diverged_repo(str(tmp_path / "diverged")), tmp_path)
     _assert_painted(out, "diverged repo")
     assert "Rebase" in out["viewText"], out["viewText"]
+    # Code review finding (High): `_rebase` (ops.py) always rebases onto
+    # `<remote>/<default branch>`, never onto `@{upstream}` — but the button's
+    # copy used to say "diverged from REMOTE" and count commits ahead of
+    # `@{upstream}`, which can be a DIFFERENT ref and a DIFFERENT count than
+    # what a click actually replays. The tooltip and the aria-label must both
+    # name the real target: `origin/main` in this fixture (the remote's
+    # default branch, which happens to equal this branch's own upstream
+    # here — see `default_branch` in log.py's overview).
+    assert "origin/main" in out["viewHTML"], out["viewHTML"]
+
+
+def test_a_diverged_repo_names_the_honest_rebase_target(reader, tmp_path):
+    """Same finding as the test above, from the reader side: `overview`'s
+    `repo` dict must expose the ACTUAL ref `_rebase` (ops.py) rebases onto —
+    the remote's default branch — not just the branch's own `@{upstream}`
+    (which `ahead`/`behind` are measured against, and which can differ from
+    the default branch on a repo with a published feature branch)."""
+    root = diverged_repo(str(tmp_path / "diverged-reader"))
+    out = reader.main(file=root, op="overview")
+    assert out["ok"] is True, out
+    repo = out["repo"]
+    assert repo["remote"] == "origin"
+    assert repo["rebase_target"] == "main"
+    assert repo["rebase_ahead"] == 1  # one local commit ("ours") not on origin/main
 
 
 def test_the_view_reads_the_reader_on_distinct_channels(reader, tmp_path):

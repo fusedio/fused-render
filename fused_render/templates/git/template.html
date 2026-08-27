@@ -1705,15 +1705,28 @@ function toolbar(data, branchAsk) {
        Distinct from the activity card's own Rebase (git_upstream.py,
        RepoUpdatesDock.tsx): that one is a passive, cross-repo notice; this
        one is the same op reached from inside the repo the divergence is
-       IN, right where the failed Pull would otherwise leave a dead end. */
+       IN, right where the failed Pull would otherwise leave a dead end.
+
+       The `ahead` gate above is still upstream-relative (it is only asking
+       "would Pull refuse?"), but the COPY below never uses `ahead`/`remote`
+       alone to describe the rebase itself: `ops.py::_rebase` always rebases
+       onto `<remote>/<default branch>`, which is NOT necessarily this
+       branch's `@{upstream}` — a published feature branch can track
+       something else entirely. `repo.rebase_target`/`repo.rebase_ahead`
+       (log.py's own `rev-list --count <remote>/<default>..HEAD`, alongside
+       the ordinary ahead/behind) name the REAL target and the REAL count, so
+       the button can never advertise a ref or a number the click does not
+       use (code review finding, High). */
     if (ahead && !repo.detached) {
+      const rebaseRef = repo.rebase_target ? remote + "/" + repo.rebase_target
+        : remote + "'s default branch";
+      const rebaseCount = repo.rebase_ahead != null
+        ? plural(repo.rebase_ahead, "commit") : "your commits";
       group.append(confirmable("rebase",
         [icon(PULL_GLYPH, 14), btnLabel("Rebase")],
-        "Your branch and " + remote + " have diverged — replay your "
-          + plural(ahead, "commit") + " on top of theirs.",
-        { label: "Rebase onto " + remote
-            + "'s tracked branch — replays your " + plural(ahead, "commit")
-            + " on top of it" }));
+        "Rebase replays " + rebaseCount + " onto " + rebaseRef + ".",
+        { label: "Rebase onto " + rebaseRef + " — replays " + rebaseCount
+            + " onto it" }));
     }
   } else if (ahead && canPush) {
     group.append(action("push", [icon(PUSH_GLYPH, 14), btnLabel("Send")], {
