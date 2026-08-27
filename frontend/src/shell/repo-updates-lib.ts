@@ -20,7 +20,7 @@ export interface RepoStatus {
   checked_at: number;
 }
 
-export type RepoAction = "update" | "rebase";
+export type RepoAction = "update" | "rebase" | "switch";
 
 export interface RepoRow {
   repo: RepoStatus;
@@ -29,10 +29,17 @@ export interface RepoRow {
   name: string;
   /** "update" — the ROW's primary action, on the default branch: an
    *  --ff-only pull, which can never conflict.
-   *  "rebase" — everywhere else: the row is informational (it names how far
-   *  behind the default branch is) with Rebase as a SECONDARY action, since
-   *  rebasing rewrites the current branch's commits and can conflict. */
+   *  "switch" — everywhere else: a plain, non-destructive checkout of the
+   *  default branch, PRIMARY off the default branch because it can never
+   *  conflict or touch the user's own commits — the whole point of this
+   *  card is to never override a user's work. `secondaryAction` carries
+   *  Rebase alongside it for the user who actually wants their current
+   *  branch replayed onto the default. */
   primaryAction: RepoAction;
+  /** "rebase" off the default branch (demoted from primary — it rewrites
+   *  the current branch's commits and can conflict), null on it (Update has
+   *  nothing to demote alongside it). */
+  secondaryAction: RepoAction | null;
 }
 
 /** The repo's own last path segment, forward-slash or backslash either way. */
@@ -53,7 +60,8 @@ export function repoRows(repos: RepoStatus[] | undefined): RepoRow[] {
   return (repos || []).map((repo) => ({
     repo,
     name: repoName(repo.root),
-    primaryAction: repo.on_default ? "update" : "rebase",
+    primaryAction: repo.on_default ? "update" : "switch",
+    secondaryAction: repo.on_default ? null : "rebase",
   }));
 }
 
@@ -72,9 +80,39 @@ export function repoStatusText(row: RepoRow): string {
   return `origin/${row.repo.default_branch} is ${commits} ahead of ${branch}`;
 }
 
-/** The primary button's label. */
-export function repoActionLabel(action: RepoAction): string {
-  return action === "update" ? "Update" : "Rebase";
+/** A row's button label. `defaultBranch` is only consulted for "switch" —
+ * the repo's ACTUAL default branch name (never a literal "main"), so pass
+ * `row.repo.default_branch` at every call site that can offer switch. */
+export function repoActionLabel(action: RepoAction, defaultBranch?: string): string {
+  if (action === "update") return "Update";
+  if (action === "rebase") return "Rebase";
+  return `Switch to ${defaultBranch || "default"}`;
+}
+
+/**
+ * Which rows a dismissal (decision C) still hides: `dismissed` maps repo
+ * root -> the `checked_at` the user's ✕ click was looking at. A row stays
+ * hidden only while the server hasn't re-checked that repo since — once the
+ * throttled background check runs again (`git_upstream.CHECK_TTL_S`) and
+ * produces a NEWER `checked_at`, the dismissal no longer covers it and the
+ * row returns. No server state is needed for this: `checked_at` already
+ * carries the information a client-side dismissal needs to expire itself.
+ */
+export function visibleRepoRows(
+  rows: RepoRow[],
+  dismissed: Record<string, number>
+): RepoRow[] {
+  return rows.filter((row) => {
+    const at = dismissed[row.repo.root];
+    return at === undefined || at < row.repo.checked_at;
+  });
+}
+
+/** The new card's header text — never emits a zero: the card doesn't render
+ * at all with no visible rows (RepoUpdatesDock returns null), so this is
+ * only ever called with at least one row. */
+export function repoUpdatesSummary(rows: RepoRow[]): string {
+  return `${plural(rows.length, "update")} available`;
 }
 
 /**

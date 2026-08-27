@@ -7,6 +7,8 @@ import {
   repoName,
   repoRows,
   repoStatusText,
+  repoUpdatesSummary,
+  visibleRepoRows,
   type RepoStatus,
 } from "./repo-updates-lib";
 
@@ -58,16 +60,26 @@ describe("repoRows", () => {
     expect(row.primaryAction).toBe("update");
   });
 
-  it("picks rebase as the primary action off the default branch", () => {
+  it("picks switch as the primary action off the default branch", () => {
     const [row] = repoRows([status({ on_default: false, branch: "feature" })]);
-    expect(row.primaryAction).toBe("rebase");
+    expect(row.primaryAction).toBe("switch");
   });
 
   it("decides the action from branch shape alone, never from the behind count", () => {
     // A feature branch one commit behind is still a feature branch — the
     // action must not flip to update just because the count is small.
     const [row] = repoRows([status({ on_default: false, behind: 1 })]);
-    expect(row.primaryAction).toBe("rebase");
+    expect(row.primaryAction).toBe("switch");
+  });
+
+  it("demotes rebase to secondary off the default branch", () => {
+    const [row] = repoRows([status({ on_default: false, branch: "feature" })]);
+    expect(row.secondaryAction).toBe("rebase");
+  });
+
+  it("has no secondary action on the default branch", () => {
+    const [row] = repoRows([status({ on_default: true })]);
+    expect(row.secondaryAction).toBeNull();
   });
 });
 
@@ -99,6 +111,52 @@ describe("repoActionLabel", () => {
   it("labels each action", () => {
     expect(repoActionLabel("update")).toBe("Update");
     expect(repoActionLabel("rebase")).toBe("Rebase");
+  });
+
+  it("names the repo's actual default branch for switch, never a literal main", () => {
+    expect(repoActionLabel("switch", "trunk")).toBe("Switch to trunk");
+  });
+});
+
+describe("visibleRepoRows", () => {
+  it("shows every row when nothing is dismissed", () => {
+    const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
+    expect(visibleRepoRows(rows, {})).toEqual(rows);
+  });
+
+  it("hides a row dismissed at or after its own checked_at", () => {
+    const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
+    expect(visibleRepoRows(rows, { "/a/one": 1000 })).toEqual([]);
+    expect(visibleRepoRows(rows, { "/a/one": 1500 })).toEqual([]);
+  });
+
+  it("shows a row again once checked_at has advanced past its dismissal", () => {
+    // The server re-checked (CHECK_TTL_S elapsed) and produced a NEWER
+    // checked_at than the dismissal recorded — the throttle window this
+    // row was dismissed for has passed, so it returns.
+    const rows = repoRows([status({ root: "/a/one", checked_at: 2000 })]);
+    expect(visibleRepoRows(rows, { "/a/one": 1000 })).toEqual(rows);
+  });
+
+  it("only affects the dismissed repo's own row", () => {
+    const rows = repoRows([
+      status({ root: "/a/one", checked_at: 1000 }),
+      status({ root: "/a/two", checked_at: 1000 }),
+    ]);
+    const visible = visibleRepoRows(rows, { "/a/one": 1000 });
+    expect(visible.map((r) => r.repo.root)).toEqual(["/a/two"]);
+  });
+});
+
+describe("repoUpdatesSummary", () => {
+  it("singularizes one update", () => {
+    const rows = repoRows([status()]);
+    expect(repoUpdatesSummary(rows)).toBe("1 update available");
+  });
+
+  it("pluralizes more than one", () => {
+    const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
+    expect(repoUpdatesSummary(rows)).toBe("2 updates available");
   });
 });
 
