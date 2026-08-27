@@ -1174,3 +1174,51 @@ def test_rendering_an_external_marked_page_registers_the_folder(
     # ...and the folder now lists on the hub under the reserved tag.
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     assert apps["myapp"]["tag"] == registered_apps.REGISTERED_TAG
+
+
+# ------------------------------------------------------------ set preview
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+def test_set_preview_writes_and_then_replaces_preview_png(client, workspace):
+    """The path-bar's "Set Current View as Preview": first call creates the
+    file under the one name the card reads, second call replaces it and says
+    so — the client's confirm-before-overwrite reads `replaced`."""
+    d = _app_dir(workspace, "lens")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"path": str(d / "preview.png"), "replaced": False}
+    assert (d / "preview.png").read_bytes() == _PNG
+    assert app_listing.app_preview_image(str(d)) == str(d / "preview.png")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG + b"\x01", "image/png")})
+    assert r.json()["replaced"] is True
+    assert (d / "preview.png").read_bytes() == _PNG + b"\x01"
+    # No temp file left behind.
+    assert sorted(os.listdir(d)) == ["index.html", "preview.png"]
+
+
+def test_set_preview_refuses_non_apps_non_pngs_and_unguarded_calls(client, workspace, tmp_path):
+    d = _app_dir(workspace, "lens")
+    png = {"preview": ("preview.png", _PNG, "image/png")}
+    # A folder with no tagged page is not an app; nothing would read the file.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<html></html>")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(plain)}, files=png)
+    assert r.status_code == 400 and "not an app" in r.json()["error"]
+    assert not (plain / "preview.png").exists()
+    # Not a PNG.
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)},
+                    files={"preview": ("preview.png", b"GIF89a....", "image/gif")})
+    assert r.status_code == 400 and "PNG" in r.json()["error"]
+    # Missing file, relative path, missing folder.
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)}).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": "rel"}, files=png).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                       data={"path": str(tmp_path / "gone")}, files=png).status_code == 404
+    # A write route: the X-Fused guard applies.
+    assert client.post("/api/apps/preview", data={"path": str(d)}, files=png).status_code != 200
+    assert not (d / "preview.png").exists()

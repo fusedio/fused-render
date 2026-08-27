@@ -2045,6 +2045,27 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
+// Write (or replace) an app folder's authored still, `preview.png`, from a
+// capture of what the preview frame is showing (appShot.captureAppPreview).
+// The path-bar's "Set Current View as Preview". `replaced` says which verb it
+// was; the caller asks before the overwrite, not after.
+export async function setAppPreview(
+  dir: string,
+  preview: Blob,
+): Promise<{ path: string; replaced: boolean }> {
+  const form = new FormData();
+  form.set("path", dir);
+  form.set("preview", preview, "preview.png");
+  const res = await fetch("/api/apps/preview", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; path?: string; replaced?: boolean };
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return { path: body.path ?? dir + "/preview.png", replaced: !!body.replaced };
+}
+
 export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   return getJson<{ entry: string | null }>(
     `/api/apps/entry?path=${encodeURIComponent(path)}`,

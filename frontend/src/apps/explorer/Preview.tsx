@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
+  setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
   rawUrl,
@@ -21,7 +22,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { captureAppPreview, exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -522,6 +523,75 @@ function usePreviewFileMenu(
     });
   };
 
+  // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
+  // (/api/apps/entry) exactly as ExportAppButton asks it — under the marker
+  // rule a filename says nothing. Only an entry gets "Set Current View as
+  // Preview": a preview.png beside a plain html file has no card to show it.
+  const [isAppEntry, setIsAppEntry] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setIsAppEntry(false);
+    if (stat.is_dir) return;
+    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+    getAppEntry(parent)
+      .then((r) => {
+        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no verb for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, parent, stat.is_dir]);
+
+  // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
+  // frame is showing and write it as the folder's preview.png. Same capture
+  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
+  // to the shown frame), so the same one-time share prompt.
+  //
+  // ORDER: the share prompt needs the click's own transient activation, which
+  // Chrome expires a few seconds out. The one thing awaited before it is a stat
+  // of preview.png (milliseconds) — and when that says a still already exists,
+  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
+  // overwriting), which is a fresh activation of its own. Nothing is written
+  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  const shootPreview = async (replacing: boolean) => {
+    const name = basename(parent);
+    const blob = await captureAppPreview(fsPath, document.querySelector(".preview-frame.is-shown"));
+    if (!blob) {
+      pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
+      return;
+    }
+    try {
+      await setAppPreview(parent, blob);
+      pushToast({
+        msg: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
+        tone: "info",
+      });
+    } catch (e) {
+      pushToast({ msg: "Could not save preview: " + (e as Error).message, tone: "error" });
+    }
+  };
+  const doSetPreview = () => {
+    statPath(join(parent, "preview.png")).then(
+      (s) => {
+        if (s.is_dir) {
+          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
+          return;
+        }
+        setDialog({
+          kind: "confirm",
+          title: "Replace preview?",
+          message: `"${basename(parent)}" already has a preview.png. Replace it with what the app shows now?`,
+          confirmLabel: "Replace",
+          onConfirm: () => void shootPreview(true),
+        });
+      },
+      () => void shootPreview(false),
+    );
+  };
+
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
   // lib/bar-menus for what it leaves out and why). The splits are offered on the
   // same condition TemplatePreview uses for its own split affordances: a single
@@ -533,6 +603,7 @@ function usePreviewFileMenu(
       onCopyPath: doCopyPath,
       onReveal: doReveal,
       onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+      onSetPreview: isAppEntry ? doSetPreview : undefined,
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });
