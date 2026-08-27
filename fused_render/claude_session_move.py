@@ -136,14 +136,43 @@ def _live_session_ids(sessions_dir: str) -> set:
         pid, sid = entry.get("pid"), entry.get("sessionId")
         if not isinstance(pid, int) or not isinstance(sid, str):
             continue
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            continue
-        except OSError:
-            pass  # alive but not ours (EPERM) — still alive
-        live.add(sid)
+        if _pid_alive(pid):
+            live.add(sid)
     return live
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is the process still going. Mirrors `templates/shared/procutil.pid_alive`
+    (which server code may not import, D166): on Windows `os.kill(pid, 0)` is
+    NOT a probe — signal 0 aliases CTRL_C_EVENT and reaches the process — so
+    the exit code is asked for through the Win32 API instead. A probe that
+    cannot answer says alive: the cost of a wrong "alive" is a deferred move,
+    the cost of a wrong "gone" is a split conversation."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not handle:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return True
+                return code.value == STILL_ACTIVE
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 — a failed probe must not free the move
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        pass  # alive but not ours (EPERM) — still alive
+    return True
 
 
 def _rewrite_cwd(src: str, dst: str, old_root: str, new_root: str) -> None:
