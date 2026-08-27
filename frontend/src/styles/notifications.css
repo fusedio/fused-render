@@ -463,6 +463,13 @@
    there is nothing to list. */
 .dl-panel-empty {
   padding: 10px;
+  /* Centred (D592, user: "also make the 'no jobs' etc text center aligned in
+     the popover"). One rule covers all four sections because they already
+     share this class — `No models loaded` / `No engines running` / `No jobs` /
+     `No notifications`. A one-line sentence in a 340px panel reads as a
+     stranded fragment left-aligned; centred it reads as the panel's own
+     state. */
+  text-align: center;
   font-size: 12px;
   color: var(--fg-muted);
 }
