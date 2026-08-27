@@ -5128,24 +5128,32 @@ stop it short of quitting the app.
   to stop it. D562 first moved reachability to the header — `queue.cancelAll`
   became a function of `collapsed`, dropping its threshold from 2+
   withdrawable rows to 1+ once folded. **Superseded by D563** (status bar
-  redesign): collapsed is now a CHIP with no controls at all —
-  `jobsSummary`, the aggregate percentage (`dl-pct`, replacing the old
-  collapsed-only progress bar) and the chevron, nothing else — so there is
-  no folded-but-visible header left for a control to answer, and
-  `queue.cancelAll` is a plain pre-decided node again, rendered only inside
-  the panel that opens on expand. The fold still hides the detail, never
-  the fact that something is happening: the chip's percentage says so where
-  the bar used to.
+  redesign), and then stripped further: collapsed is now a CHIP with no
+  controls at all, and by D588/D590 no readout either — the label `Jobs` plus
+  ONE circle, outlined when the section holds nothing and filled when it holds
+  anything (user: "no count. just a circle outlined or filled"). The chevron
+  went in D573, the aggregate percentage (`dl-pct`) in D581, the count in
+  D588/D590. So there is no folded-but-visible header left for a control to
+  answer, and `queue.cancelAll` is a plain pre-decided node again, rendered
+  only inside the panel that opens on expand. The fold hides every detail
+  INCLUDING how much is happening; the filled circle says only that something
+  is, and the panel is where the rest lives.
 - **BG-11** **Indeterminate is a first-class state.** A running job with no
   `total` (or a `total` of 0 — a size not learned yet) draws a travelling fill,
   never a bar parked at an invented percentage: parking is what makes live work
   read as frozen (the install loader's D213 lesson). Under
   `prefers-reduced-motion` the sweep is replaced by a dimmed full-width bar
   rather than left as a stub the blanket rule stopped mid-travel.
-- **BG-12** **Overall progress averages the running jobs**, it does not sum
-  their bytes: a sum lets one 8GB download swallow a 40MB one, so the header bar
-  would sit still while a whole other job ran start to finish. Any running job
-  with no numbers makes the overall bar indeterminate rather than optimistic.
+- **BG-12** **There is no aggregate progress figure.** `jobs.ts::overallFraction`
+  and the collapsed header bar it fed are DELETED (D581). They used to AVERAGE
+  the running jobs rather than sum their bytes — a sum lets one 8GB download
+  swallow a 40MB one, so the bar sat still while a whole other job ran start to
+  finish — and a running job with no numbers made the aggregate indeterminate
+  rather than optimistic. That reasoning was sound and is kept here only to say
+  why nobody should reintroduce the average either: the status-bar chip carries
+  no number at all now (BG-10), so there is nothing left for an aggregate to
+  render into. PER-ROW progress is untouched — each `.dl-row` keeps its own bar,
+  including BG-11's indeterminate state, inside the expanded panel.
 - **BG-13** **Poll cadence** is 1s while anything runs, 5s otherwise, and paused
   while the document is hidden. A same-origin `localStorage` ping
   (`fused-render:jobs-ping`, written by the runtime on every report and heard
@@ -5196,19 +5204,36 @@ stop it short of quitting the app.
   moved it into the header, dropping `queue.cancelAll`'s threshold from 2+
   withdrawable rows to 1+ once collapsed. D563's status bar redesign then
   retired that move rather than carrying it forward: collapsed is now a
-  CHIP with no controls at all — the summary, the aggregate percentage, the
-  chevron, nothing else — so there is no folded-but-visible header left for
-  a lowered threshold to reach, and `queue.cancelAll`/Clear/every row now
-  render only inside the panel that opens on expand. A repo row has no
-  in-flight message a fold could strand mid-turn, so this card needed
-  neither move: the chip already names how many updates are waiting, and
-  every row carries its own dismiss control once the panel is open.
+  CHIP with no controls and no readout — the label `Notifications` plus one
+  circle, outlined or filled (D588/D590; the chevron went in D573, the
+  percentage in D581, the count in D588) — so there is no folded-but-visible
+  header left for a lowered threshold to reach, and `queue.cancelAll`/Clear/
+  every row now render only inside the panel that opens on expand. A repo row
+  has no in-flight message a fold could strand mid-turn, so this card needed
+  neither move: the filled circle says something is waiting, and every row
+  carries its own dismiss control once the panel is open.
 
-  **Dismissing a row is scoped to the throttle window, not permanent
-  (D556).** The payload already carries `checked_at`; a row stays hidden
-  while `dismissed[root] >= repo.checked_at` and reappears once the
-  server's own throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces
-  a newer one — no server-side dismissal state is needed. The dismissed map
+  **Dismissing a row is scoped to the repo's POSITION, not to the clock
+  (D556, corrected by D584 review finding 3).** A row stays hidden for as
+  long as its `branch@behind` signature is unchanged
+  (`repo-updates-lib.ts::repoDismissSignature`), and reappears exactly when
+  the claim it makes changes: new upstream commits arrive, or the user checks
+  out something else. `RepoStatus` carries no HEAD sha, so `behind` is the
+  closest honest proxy for "upstream moved", and it needs no server change.
+
+  **The original `checked_at` rule was a BUG, and this is the record of why
+  so nobody reimplements it.** It said a row stays hidden while
+  `dismissed[root] >= repo.checked_at` and returns once the server's own
+  throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces a newer one.
+  But `check_repo` stamps a fresh `checked_at` on EVERY throttled recheck
+  whether or not anything moved — so a dismissed row came back every five
+  minutes on its own, and because leaving `visible` also drops it from
+  `trackSeenIds`' seen set, the return read as a genuine arrival and (since
+  D574) POPPED THE PANEL OPEN over whatever the user was doing. For anyone on
+  a long-lived feature branch, permanently behind, dismissal was durably
+  useless. No server-side dismissal state is needed under either rule; the
+  signature is simply the field that actually answers the question. The
+  dismissed map
   is held at MODULE level in `RepoUpdatesDock.tsx`, not component state, so
   a remount (switching panes or panels) does not forget it; a full page
   reload resurrecting a dismissed row inside the throttle window is an
