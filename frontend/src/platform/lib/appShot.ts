@@ -208,20 +208,6 @@ export async function captureAppPreview(
     const r = cropRect(source);
     if (!r) return undefined;
     const rect = screenRect(r);
-    // What the browser sees vs what is asked for — the one place a wrong
-    // crop can be diagnosed from (DevTools console, verbose level): the
-    // window frame, the chrome the outer/inner split implies, the origin the
-    // click taught us, and the element's own box.
-    console.debug("[appShot] shot-region", {
-      window: [window.screenX, window.screenY, window.outerWidth, window.outerHeight],
-      viewport: [window.innerWidth, window.innerHeight],
-      chromeGuess: [(window.outerWidth - window.innerWidth) / 2,
-        window.outerHeight - window.innerHeight],
-      pointerOrigin: viewportOrigin ?? null,
-      element: [r.left, r.top, r.width, r.height],
-      dpr: window.devicePixelRatio,
-      rect,
-    });
     const res = await fetch("/api/capture/shot-region", {
       method: "POST",
       headers: { "X-Fused": "1", "Content-Type": "application/json" },
