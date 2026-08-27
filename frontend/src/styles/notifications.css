@@ -222,6 +222,41 @@
   align-items: center;
 }
 
+/* A `|` BETWEEN sections (D578, user: "can we keep the | between them?" —
+   their original framing was `models (x count) | notifications | downloads`,
+   so this is the second time they have asked for it). A DELIBERATE DEVIATION
+   FROM VS CODE, which genuinely draws no dividers between status-bar items,
+   and therefore a partial reversal of D573's "no divider" call — the user's
+   own request outranks the reference here.
+   ON THE HOST, NOT INSIDE THE BUTTON, which is the whole reason this can work
+   at all now: `.dl-toggle` is a full-height rectangle that takes a hover and
+   an open background wash (D576), so a separator drawn inside it would be
+   washed along with the label and read as part of the item rather than as the
+   chrome between two of them.
+   A 1px HAIRLINE, not the literal `|` character: this project has already
+   learned that a typeset glyph renders at whatever weight and baseline the
+   font stack gives it (the round-2 `⌃`, which is why the chevron went to SVG
+   before being deleted outright), and at 12px a `|` sits off-centre and
+   inherits the label's own weight. A fixed 11px tall block against the bar's
+   22px is deliberately SHORT — a rule spanning the full height would read as
+   a structural division of the bar rather than a light separation of items.
+   `content: ""` on a pseudo-element is already outside the accessibility tree
+   and unclickable, so no `aria-hidden` or `pointer-events` is needed.
+   `3px` of margin each side puts it in the 10px of dead space between two
+   neighbours' `padding: 0 5px`, so it crowds neither label and — since this
+   ADDS space rather than removing it — it cannot bring back the 12px hover-
+   wash overlap that the old negative margin caused: the two washes now end
+   3px short of the separator on either side. */
+.status-bar > .dl-host:not(:last-child)::after {
+  content: "";
+  flex: 0 0 auto;
+  width: 1px;
+  height: 11px;
+  margin: 0 3px;
+  background: var(--fg-muted);
+  opacity: 0.5;
+}
+
 /* The chip: this card's whole presence in the bar, and — D573 — ALWAYS a
    real, clickable `<button>`, idle sections included: a status-bar item in
    VS Code/Cursor is a label you click, and hover (not a disclosure chevron)
