@@ -43,7 +43,14 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { Input } from "@platform/shadcn/ui/input";
 import { Textarea } from "@platform/shadcn/ui/textarea";
-import { Check, ChevronRight, Copy, FileCode2, Play, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Copy,
+  FileCode2,
+  Play,
+  TriangleAlert,
+} from "lucide-react";
 import {
   collectParams,
   curlCommand,
@@ -64,7 +71,12 @@ type Load =
 
 type Run =
   | { kind: "running"; startedAt: number }
-  | { kind: "done"; result: RunResult; ms: number; sent: Record<string, unknown> }
+  | {
+      kind: "done";
+      result: RunResult;
+      ms: number;
+      sent: Record<string, unknown>;
+    }
   | { kind: "failed"; message: string };
 
 // What a row says about its kind, in words — only where the kind is unusual.
@@ -85,10 +97,20 @@ const KIND_NOTE: Record<EndpointKind, string | null> = {
  *  is the only colour on the list. */
 function KindGlyph({ kind }: { kind: EndpointKind }) {
   if (kind === "error" || kind === "unreadable") {
-    return <TriangleAlert aria-hidden className="size-4 flex-none text-destructive" />;
+    return (
+      <TriangleAlert
+        aria-hidden
+        className="size-4 flex-none text-destructive"
+      />
+    );
   }
   if (kind === "none") {
-    return <FileCode2 aria-hidden className="size-4 flex-none text-muted-foreground/60" />;
+    return (
+      <FileCode2
+        aria-hidden
+        className="size-4 flex-none text-muted-foreground/60"
+      />
+    );
   }
   return (
     <Play
@@ -119,7 +141,9 @@ export default function AppApi({
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   // Per-endpoint scratch, keyed by rel: what the form holds, what the last run
   // said. Kept across open/close so a reader can compare two files' outputs.
-  const [values, setValues] = useState<Record<string, Record<string, string>>>({});
+  const [values, setValues] = useState<Record<string, Record<string, string>>>(
+    {},
+  );
   const [runs, setRuns] = useState<Record<string, Run>>({});
   const [invalid, setInvalid] = useState<Record<string, string | null>>({});
 
@@ -128,7 +152,10 @@ export default function AppApi({
     setLoad({ kind: "loading" });
     getAppPy(dir)
       .then((data) => live && setLoad({ kind: "ok", data }))
-      .catch((e) => live && setLoad({ kind: "error", message: (e as Error).message }));
+      .catch(
+        (e) =>
+          live && setLoad({ kind: "error", message: (e as Error).message }),
+      );
     return () => {
       live = false;
     };
@@ -143,7 +170,10 @@ export default function AppApi({
   };
 
   const setValue = (rel: string, name: string, v: string) => {
-    setValues((prev) => ({ ...prev, [rel]: { ...(prev[rel] ?? {}), [name]: v } }));
+    setValues((prev) => ({
+      ...prev,
+      [rel]: { ...(prev[rel] ?? {}), [name]: v },
+    }));
     setInvalid((prev) => (prev[rel] ? { ...prev, [rel]: null } : prev));
   };
 
@@ -152,7 +182,10 @@ export default function AppApi({
     const collected = collectParams(params, values[ep.rel] ?? {});
     if (!collected.ok) {
       setInvalid((prev) => ({ ...prev, [ep.rel]: collected.field }));
-      setRuns((prev) => ({ ...prev, [ep.rel]: { kind: "failed", message: collected.message } }));
+      setRuns((prev) => ({
+        ...prev,
+        [ep.rel]: { kind: "failed", message: collected.message },
+      }));
       return;
     }
     const startedAt = performance.now();
@@ -171,7 +204,10 @@ export default function AppApi({
     } catch (e) {
       setRuns((prev) => ({
         ...prev,
-        [ep.rel]: { kind: "failed", message: (e as Error).message || "request failed" },
+        [ep.rel]: {
+          kind: "failed",
+          message: (e as Error).message || "request failed",
+        },
       }));
     }
   };
@@ -191,7 +227,9 @@ export default function AppApi({
   // The project's declared dependencies are the FOLDER's, so every file reports
   // the same list; shown once, above the list, rather than on every row.
   const deps = useMemo(
-    () => endpoints.find((e) => e.dependencies && e.dependencies.length)?.dependencies ?? [],
+    () =>
+      endpoints.find((e) => e.dependencies && e.dependencies.length)
+        ?.dependencies ?? [],
     [endpoints],
   );
 
@@ -200,8 +238,12 @@ export default function AppApi({
   // scrolls here. The list inside hugs its rows (flex-none).
   return (
     <div className="app-api flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-      {load.kind === "loading" && <SkeletonLines rows={3} label="Reading Python files" />}
-      {load.kind === "error" && <ErrorBanner>Could not read the folder: {load.message}</ErrorBanner>}
+      {load.kind === "loading" && (
+        <SkeletonLines rows={3} label="Reading Python files" />
+      )}
+      {load.kind === "error" && (
+        <ErrorBanner>Could not read the folder: {load.message}</ErrorBanner>
+      )}
 
       {data && (
         <>
@@ -214,7 +256,8 @@ export default function AppApi({
                 {callable === 0
                   ? "Nothing to run yet"
                   : `${callable} ${callable === 1 ? "endpoint" : "endpoints"} you can run`}
-                {helpers > 0 && ` · ${helpers} helper ${helpers === 1 ? "module" : "modules"}`}
+                {helpers > 0 &&
+                  ` · ${helpers} helper ${helpers === 1 ? "module" : "modules"}`}
                 {broken > 0 && (
                   <>
                     {" · "}
@@ -246,8 +289,9 @@ export default function AppApi({
               <FileCode2 className="size-7 opacity-60" aria-hidden />
               <p className="m-0">No Python files in this app yet.</p>
               <p className="m-0">
-                Add a <code className={MONO}>.py</code> with a <code className={MONO}>main()</code>{" "}
-                and it shows up here as an endpoint.
+                Add a <code className={MONO}>.py</code> with a{" "}
+                <code className={MONO}>main()</code> and it shows up here as an
+                endpoint.
               </p>
             </div>
           )}
@@ -336,7 +380,9 @@ function EndpointRow({
   const copyCurl = async () => {
     const collected = collectParams(params, values);
     const sent = collected.ok ? collected.params : {};
-    await navigator.clipboard.writeText(curlCommand(location.origin, ep.path, sent));
+    await navigator.clipboard.writeText(
+      curlCommand(location.origin, ep.path, sent),
+    );
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
@@ -344,72 +390,98 @@ function EndpointRow({
   return (
     <li className={cn("app-api-row group/row", open && "bg-muted/30")}>
       {/* The route line: a glyph for what the file is, its name, one sentence
-          about it, and — on hover — the invitation. The signature is NOT here:
-          types and defaults belong to the open form, and a wall of them made
-          the list read as code. */}
-      <button
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        aria-controls={bodyId}
-        className={cn(
-          "flex w-full items-center gap-3 border-0 bg-transparent px-4 py-3 text-left text-foreground",
-          "cursor-pointer hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
-          !runnable && "text-muted-foreground",
-        )}
-      >
-        <KindGlyph kind={kind} />
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
-          <span
-            className={cn(MONO, "flex-none truncate", runnable && "font-medium")}
-            title={ep.path}
-          >
-            {crumb && <span className="text-muted-foreground">{crumb}</span>}
-            {name}
-          </span>
-          {kindNote && (
-            <span className="flex-none text-[11px] tracking-[0.04em] text-muted-foreground uppercase">
-              {kindNote}
-            </span>
-          )}
-          <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
-            {summary || paramHint}
-          </span>
-        </span>
-        {runnable && !open && (
-          <span
-            className={cn(
-              "flex-none text-[12px] text-muted-foreground opacity-0 transition-opacity",
-              "group-hover/row:opacity-100 group-focus-within/row:opacity-100 motion-reduce:transition-none",
-            )}
-            aria-hidden
-          >
-            Try it
-          </span>
-        )}
-        <ChevronRight
-          aria-hidden
+          about it, and — on hover, or always once open — "Copy as cURL". The
+          signature is NOT here: types and defaults belong to the open form, and
+          a wall of them made the list read as code. The copy control is a
+          sibling of the toggle (a button cannot nest a button), floated over a
+          gap the toggle reserves for it. */}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={open}
+          aria-controls={bodyId}
           className={cn(
-            "size-3.5 flex-none text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
-            open && "rotate-90",
+            "flex w-full items-center gap-3 border-0 bg-transparent px-4 py-3 text-left text-foreground",
+            "cursor-pointer hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring focus-visible:-outline-offset-2",
+            !runnable && "text-muted-foreground",
           )}
-        />
-      </button>
+        >
+          <KindGlyph kind={kind} />
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-3">
+            <span
+              className={cn(
+                MONO,
+                "flex-none truncate",
+                runnable && "font-medium",
+              )}
+              title={ep.path}
+            >
+              {crumb && <span className="text-muted-foreground">{crumb}</span>}
+              {name}
+            </span>
+            {kindNote && (
+              <span className="flex-none text-[11px] tracking-[0.04em] text-muted-foreground uppercase">
+                {kindNote}
+              </span>
+            )}
+            <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground">
+              {summary || paramHint}
+            </span>
+          </span>
+          {/* Room for the floated "Copy as cURL" button. */}
+          {runnable && <span className="w-[124px] flex-none" aria-hidden />}
+          <ChevronRight
+            aria-hidden
+            className={cn(
+              "size-3.5 flex-none text-muted-foreground/70 transition-transform duration-150 motion-reduce:transition-none",
+              open && "rotate-90",
+            )}
+          />
+        </button>
+        {runnable && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={copyCurl}
+            title="Copy this call as a curl command"
+            className={cn(
+              "absolute top-1/2 right-[42px] -translate-y-1/2 bg-transparent transition-opacity",
+              "group-hover/row:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none",
+              open ? "opacity-100" : "opacity-0",
+            )}
+          >
+            {copied ? (
+              <Check data-icon="inline-start" />
+            ) : (
+              <Copy data-icon="inline-start" />
+            )}
+            {copied ? "Copied" : "Copy as cURL"}
+          </Button>
+        )}
+      </div>
 
       {open && (
-        <div id={bodyId} className="flex flex-col gap-4 border-t border-border px-4 pt-3 pb-4">
+        <div
+          id={bodyId}
+          className="flex flex-col gap-4 border-t border-border px-4 pt-3 pb-4"
+        >
           {fn && (
             <p className={cn(MONO, "m-0 text-muted-foreground")}>
               <Signature fn={fn} />
             </p>
           )}
           {kind === "error" && (
-            <pre className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}>
+            <pre
+              className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}
+            >
               Syntax error — {ep.parse_error}
             </pre>
           )}
           {kind === "unreadable" && (
-            <pre className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}>
+            <pre
+              className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}
+            >
               Could not read this file — {ep.read_error}
             </pre>
           )}
@@ -417,7 +489,9 @@ function EndpointRow({
           {(ep.module_docstring || fn?.docstring) && (
             <div className="flex flex-col gap-2 text-[13px] leading-relaxed text-foreground/85">
               {ep.module_docstring && (
-                <p className="m-0 whitespace-pre-wrap">{ep.module_docstring.trim()}</p>
+                <p className="m-0 whitespace-pre-wrap">
+                  {ep.module_docstring.trim()}
+                </p>
               )}
               {fn?.docstring && fn.docstring !== ep.module_docstring && (
                 <p className="m-0 whitespace-pre-wrap">{fn.docstring.trim()}</p>
@@ -427,16 +501,16 @@ function EndpointRow({
 
           {kind === "none" && (
             <p className="m-0 text-[12.5px] text-muted-foreground">
-              No <code className={MONO}>main()</code> here — a helper module, imported by the
-              others rather than called on its own. Define <code className={MONO}>main()</code> to
-              make it an endpoint.
+              No <code className={MONO}>main()</code> here — a helper module,
+              imported by the others rather than called on its own. Define{" "}
+              <code className={MONO}>main()</code> to make it an endpoint.
             </p>
           )}
 
           {kind === "result" && (
             <p className="m-0 text-[12.5px] text-muted-foreground">
-              Static script — assigns <code className={MONO}>result</code> at the top level, no
-              parameters.
+              Static script — assigns <code className={MONO}>result</code> at
+              the top level, no parameters.
             </p>
           )}
 
@@ -475,7 +549,9 @@ function EndpointRow({
                 {run?.kind === "running" ? "Running…" : "Execute"}
               </Button>
               {run?.kind === "failed" && (
-                <span className="text-[12.5px] text-destructive">{run.message}</span>
+                <span className="text-[12.5px] text-destructive">
+                  {run.message}
+                </span>
               )}
               {run?.kind === "done" && (
                 <span className="text-[12px] text-muted-foreground tabular-nums">
@@ -483,22 +559,12 @@ function EndpointRow({
                   {formatMs(run.result.duration_ms ?? run.ms)}
                 </span>
               )}
-              {/* Far right and quiet, the way Swagger / Stripe docs park the
-                  snippet: a secondary door, not a second Execute. */}
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={copyCurl}
-                title="Copy this call as a curl command"
-                className="ml-auto bg-transparent hover:bg-transparent"
-              >
-                {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
-                {copied ? "Copied" : "curl"}
-              </Button>
             </div>
           )}
 
-          {run?.kind === "running" && <SkeletonLines rows={2} label="Running" />}
+          {run?.kind === "running" && (
+            <SkeletonLines rows={2} label="Running" />
+          )}
           {run?.kind === "done" && <Response run={run} py={ep.path} />}
         </div>
       )}
@@ -543,17 +609,31 @@ function ParamRow({
   const dflt = defaultLabel(p);
   return (
     <>
-      <label htmlFor={id} className={cn(MONO, "flex items-baseline gap-1 pt-1.5 leading-snug")}>
+      <label
+        htmlFor={id}
+        className={cn(MONO, "flex items-baseline gap-1 pt-1.5 leading-snug")}
+      >
         <span className="text-foreground">{p.name}</span>
         {required && (
-          <span className="text-destructive" title="required" aria-label="required">
+          <span
+            className="text-destructive"
+            title="required"
+            aria-label="required"
+          >
             *
           </span>
         )}
       </label>
-      <div className={cn(MONO, "flex flex-col gap-0.5 pt-1.5 text-[11.5px] leading-snug")}>
+      <div
+        className={cn(
+          MONO,
+          "flex flex-col gap-0.5 pt-1.5 text-[11.5px] leading-snug",
+        )}
+      >
         <span className="text-primary">{p.annotation ?? "any"}</span>
-        {dflt !== null && <span className="text-muted-foreground">= {dflt}</span>}
+        {dflt !== null && (
+          <span className="text-muted-foreground">= {dflt}</span>
+        )}
       </div>
       <div className="min-w-0">
         {kind === "bool" && (
@@ -623,13 +703,17 @@ function Response({
             className={cn(
               MONO,
               "h-[18px] rounded-md border-transparent px-1.5 text-[10.5px] font-semibold tracking-[0.06em]",
-              result.ok ? "bg-primary/10 text-primary" : "bg-destructive/10 text-destructive",
+              result.ok
+                ? "bg-primary/10 text-primary"
+                : "bg-destructive/10 text-destructive",
             )}
           >
             {result.ok ? "OK" : "ERROR"}
           </Badge>
           {!result.ok && result.error?.type && (
-            <span className={cn(MONO, "text-muted-foreground")}>{result.error.type}</span>
+            <span className={cn(MONO, "text-muted-foreground")}>
+              {result.error.type}
+            </span>
           )}
           <span className="ml-auto text-[11.5px] text-muted-foreground tabular-nums">
             {formatMs(result.duration_ms ?? run.ms)}
@@ -672,7 +756,12 @@ function Fold({
       <summary className="cursor-pointer select-none px-3 py-1.5 text-[12px] text-muted-foreground hover:text-foreground">
         {label}
       </summary>
-      <pre className={cn(MONO, "m-0 max-h-[280px] overflow-auto px-3 pb-2.5 leading-relaxed")}>
+      <pre
+        className={cn(
+          MONO,
+          "m-0 max-h-[280px] overflow-auto px-3 pb-2.5 leading-relaxed",
+        )}
+      >
         {children}
       </pre>
     </details>
