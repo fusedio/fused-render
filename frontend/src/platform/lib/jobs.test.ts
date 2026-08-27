@@ -193,7 +193,7 @@ test("the poll idles once the grace window has elapsed", () => {
 
 // --------------------------------------------------------------------- clear
 //
-// Mirrors the server's rule (jobs.py `clear_finished`, D525): Clear takes
+// Mirrors the server's rule (jobs.py `clear_finished`, D526): Clear takes
 // TERMINAL records only. A stalled-but-RUNNING row used to be swept too —
 // the work does not actually stop when its record does, so that silently
 // orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still

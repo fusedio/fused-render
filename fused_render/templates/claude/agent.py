@@ -141,9 +141,12 @@ SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 # reading a path out of one turn's message, so a crop stops mattering when its
 # conversation does. The TTL is generously longer than a session anyone would
 # keep scrolling back through, and the count is the backstop for a machine that
-# never idles long enough for the TTL to fire.
-SHOTS_TTL = 12 * 3600
-SHOTS_KEEP = 200
+# never idles long enough for the TTL to fire. Was 12h / 200: a restored turn
+# re-reads its shots through /api/fs/raw, and a picture gone from a week-old
+# conversation reads as a bug, so both were raised (2026-08-27) to 30 days /
+# 1000 files — still bounded, no longer visible in ordinary use.
+SHOTS_TTL = 30 * 24 * 3600
+SHOTS_KEEP = 1000
 
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where

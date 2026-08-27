@@ -1,6 +1,6 @@
 ---
 name: fused-render-usage
-description: How to run and use a fused-render project — open files and views in the FusedRender desktop app and browse the filesystem. Use this whenever the user wants to open, run, launch, start, show, or explore a fused-render project or its views/files; asks to "open this in fused-render", "run fused-render", "show me this view", "look at this file in the explorer"; or is orienting inside a fused-render repo without yet authoring code. For creating/editing/debugging an .html view or .py data file, use fused-render-authoring instead; for registering custom preview templates, use fused-render-custom-templates.
+description: Open and run a fused-render project — launching the FusedRender desktop app, opening files and views, browsing the filesystem. Use when the user wants to open, run or show a project or view rather than author one.
 ---
 
 # Using a fused-render project
@@ -33,7 +33,7 @@ The filesystem path rides in the URL after a **mode prefix**, with its **leading
 | `/explorer/view/<path>` | **Full-shell mode** — the page wrapped in explorer chrome (sidebar, breadcrumb, preview header). What the app opens when you hand it a path. |
 | `/explorer/embed/<path>` | **Embed mode** — the page chrome-free (no sidebar/breadcrumb/header). Best for opening a specific view on its own or for a screenshot. |
 
-Legacy prefixes `/view/<path>` and `/embed/<path>` (pre-rename) still redirect to the `/explorer/...` forms, so old links keep working — but write the new ones.
+`/view/<path>` and `/embed/<path>` still redirect to the `/explorer/...` forms, so old links keep working — but write the new ones.
 
 View vs embed is a fixed page-load mode set by the prefix — it can't toggle without a full navigation. Both serve the same page and sync URL params the same way; embed just hides the chrome.
 

@@ -1,6 +1,6 @@
 ---
 name: fused-render-index
-description: Read fused-render's machine-wide file index instead of walking the filesystem — the `fused.fileIndex.search/query` JS bridge, and a copy-paste duckdb reader for bulk Python. Use for a file search box, a disk-usage or file-type breakdown, a repos list, SQL over the filesystem, or any mention of the index, a scan, partitions.json or /api/index/*.
+description: Read fused-render's machine-wide file index instead of walking the filesystem — the fused.fileIndex.search/query bridge and a copy-paste duckdb reader for bulk Python. Use for a file search box, a disk-usage or file-type breakdown, or SQL over the filesystem.
 ---
 
 # Reading the fused-render file index
@@ -319,15 +319,15 @@ That is precisely why the repo list is a ROUTE and not a `fileIndex.query()` you
 
 When you need a *different* kind, the query is yours and `fileIndex.query()` is the tool — but the screening lesson is not optional, and a new kind that needs `junk_path`/`MountGuard` belongs in a server route beside `git_repos.py`, not in a page.
 
-## E. Migrating an app that carries its own index engine
+## E. Replacing an app's own index engine
 
-If an app ships its own scanner, it is now duplicating `fused_render/index/` — which was **ported from exactly such an app** (the `Ported from OpenIndex` docstrings in `fused_render/index/{store,scan,fsevents,query}.py`). The migration is a deletion, not a rewrite:
+An app shipping its own scanner is duplicating `fused_render/index/`, and the migration is a deletion, not a rewrite:
 
-- **Delete the scan engine wholesale** — the walk, the parquet sink, compaction, FSEvents replay, run bookkeeping (~1300 lines in the original) and the reader module beside it (~190). All of it is in `fused_render/index/` now, behind `/api/index/*`.
-- **The app becomes pure HTML + JS**, talking to `fused.fileIndex.*`. What was a `sql` action is now `fused.fileIndex.query()` — strictly better, because the original had *no allowlist and no read-only flag* and the port deliberately dropped it for that reason. A scan button becomes a raw `POST /api/index/scan` with `X-Fused: 1` (section C).
+- **Delete the scan engine wholesale** — the walk, the parquet sink, compaction, FSEvents replay, run bookkeeping, and the reader module beside it. All of it lives behind `/api/index/*` now.
+- **The app becomes pure HTML + JS** talking to `fused.fileIndex.*`. A `sql` action becomes `fused.fileIndex.query()` — which, unlike a hand-rolled one, is allowlisted and read-only. A scan button becomes a raw `POST /api/index/scan` with `X-Fused: 1` (section C).
 - **Anything genuinely bulk stays in Python**, using the direct reader in section B rather than a re-implemented store.
 
-One genuine gap, so nobody discovers it mid-migration: **relocating the index directory is not supported.** `IndexConfig.dir` is fixed to `home_dir()/index`, settable only via `FUSED_RENDER_HOME` at process start, with no runtime API — `POST /api/index/config` takes `roots` and `ignore`, not `location`. An app that let the user pick where the index lives loses that.
+One gap to know before you start: **the index directory cannot be relocated.** `IndexConfig.dir` is fixed to `home_dir()/index`, settable only via `FUSED_RENDER_HOME` at process start; `POST /api/index/config` takes `roots` and `ignore`, not `location`.
 
 ## Pitfalls checklist
 

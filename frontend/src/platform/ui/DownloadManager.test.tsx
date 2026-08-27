@@ -130,7 +130,7 @@ test("a scheduled run's own terminal row still counts and draws — the exemptio
 });
 
 test("a stalled but still-running job alone offers no Clear button", () => {
-  // D525: Clear used to count a stalled row as clearable — mirroring
+  // D526: Clear used to count a stalled row as clearable — mirroring
   // clear_finished's own old bug — which meant pressing it could sweep the
   // RECORD of a job that was still genuinely running. The row itself is
   // still shown (dimmed via is-stalled); only the bulk button's count
@@ -151,7 +151,7 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
   expect(findAll(tree, "dl-clear")).toHaveLength(1);
 });
 
-// -------------------------------------------------- the collapse toggle (D526)
+// -------------------------------------------------- the collapse toggle (D527)
 //
 // The user reported the collapse toggle "does nothing". Investigating: with
 // queue rows present, `rowsShown.queue` is TRUE regardless of `collapsed`
@@ -203,7 +203,7 @@ test("a lone scheduled run's stand-in job row survives the fold, so the toggle s
 test("a persisted collapsed=true with nothing foldable renders as if expanded (task 11)", () => {
   // Persisted from an earlier session, with THIS render's job list entirely
   // fold-exempt (a live schedule stand-in): the toggle renders as the
-  // static, non-interactive span (the D526 fix, above), which means there
+  // static, non-interactive span (the D527 fix, above), which means there
   // is NO control left anywhere to un-collapse — so `collapsed` must not be
   // allowed to strand the card folded. Fixed by falling back to expanded
   // whenever nothing is foldable, without touching the STORED preference.

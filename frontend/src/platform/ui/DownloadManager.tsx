@@ -510,7 +510,7 @@ export function DownloadManagerView({
   if (jobs.length === 0 && queued === 0) return null;
 
   const overall = overallFraction(jobs);
-  // Whether collapsing would hide anything AT ALL (D526). Reported as the toggle
+  // Whether collapsing would hide anything AT ALL (D527). Reported as the toggle
   // "does nothing" — traced to `rowsShown`'s own documented rule: queue rows
   // always show regardless of `collapsed`, and `foldedJobRows` deliberately keeps
   // a live scheduled run's stand-in row through the fold too. Both are correct on
@@ -527,7 +527,7 @@ export function DownloadManagerView({
   // Effective collapse state (task 11, code review 2026-08-27): with
   // `collapsed` persisted `true` from an earlier session and THIS render's
   // job list entirely fold-exempt (`foldable` false), the header renders as
-  // a static span with no chevron and no onClick (the D526 fix above) —
+  // a static span with no chevron and no onClick (the D527 fix above) —
   // which means there is NO control anywhere left to un-collapse. Raw
   // `collapsed` would still cap `.dl-rows` to the folded max-height and
   // still draw the collapsed-only progress bar below, stranding the card.
@@ -566,7 +566,7 @@ export function DownloadManagerView({
   const clear = async () => {
     try {
       await clearFinishedJobs();
-      // Mirrors the server's rule (jobs.py `clear_finished`, D525): every
+      // Mirrors the server's rule (jobs.py `clear_finished`, D526): every
       // running row survives, stalled included — see `clearableCount`'s doc.
       patch((js) => jobsAfterClear(js));
     } catch {

@@ -2512,8 +2512,8 @@ def test_no_runner_declares_a_dependency_that_has_to_be_BUILT():
 
     Read through `projectenv.dependencies_of` — the app's own manifest reader,
     which is markers-and-all verbatim (what a packaging invariant wants) and
-    which already carries the `tomli` fallback for the 3.10 that
-    `requires-python` still promises.
+    which still carries a `tomli` fallback, now unreachable: `requires-python`
+    is >=3.11, so `tomllib` is always there.
     """
     from fused_render import projectenv
 
@@ -6654,7 +6654,7 @@ def test_a_LIVE_transcription_row_is_never_absent_at_all():
     # Every removal path was walked against a row of this exact shape and none
     # of them reaches it: cap eviction (exempt), the age sweep (`_QUEUE_TICK_S`
     # is far inside `STALE_DROP_S`), `clear_finished` (refuses every RUNNING
-    # row unconditionally, stalled included — D525) and `dismiss` (refuses a
+    # row unconditionally, stalled included — D526) and `dismiss` (refuses a
     # RUNNING row that is not stalled). ONE remote path survives — a tick
     # thread starved past `STALE_AFTER_S` makes the row dismissible one at a
     # time, and a user looking at "no longer reporting" may well dismiss it —

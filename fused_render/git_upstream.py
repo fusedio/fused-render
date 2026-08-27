@@ -239,7 +239,7 @@ def check_repo(root):
 
 # --------------------------------------------------------------- the mutations
 #
-# The three actions the repo-updates card's rows offer (SPEC §36, D522):
+# The three actions the repo-updates card's rows offer (SPEC §36, D523):
 # Update (an --ff-only pull, primary, on the default branch); Switch (a
 # plain checkout of the default branch, primary everywhere else — offered
 # exactly where Update would refuse to fast-forward, and never touching a

@@ -63,14 +63,11 @@ import re
 import pytest
 
 
-# tomllib is 3.11+, and so is the engine these tests describe: the `[fused]`
-# extra's wheel is marked `python_version >= "3.11"`, so on 3.10 the package is
-# never installed, `engine.available()` is False and no script venv is ever
-# built. There is nothing here for 3.10 to constrain, so skipping the whole
-# module is the honest answer rather than a workaround — the same reasoning as
-# `test_engine.py`'s `requires_tomllib`, applied at import time because this
-# module needs the parser to collect at all. The `fused-engine` CI job runs on
-# 3.11, so the module still runs where it means something.
+# tomllib is 3.11+, which is now the floor, so this never actually skips. Kept
+# as importorskip rather than flattened to a bare `import tomllib`: the reason it
+# was written this way was that the module needs the parser to COLLECT at all,
+# and a bare module-scope import errored a whole suite out when 3.10 was still
+# supported. The `fused-engine` CI job runs on 3.11.
 tomllib = pytest.importorskip(
     "tomllib", reason="tomllib (PEP 723 parsing) needs Python 3.11+"
 )

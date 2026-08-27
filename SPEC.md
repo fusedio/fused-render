@@ -3520,7 +3520,7 @@ view does not opt out). `log.py`'s `op="log"` and `op="commit"` remain for a
 caller that wants the log on purpose.
 
 **The community showcase clone (`~/Fused/showcase`) is a repo like any
-other from here** (D517-D519). It used to be managed on the app's behalf —
+other from here** (D518-D520). It used to be managed on the app's behalf —
 fetched and fast-forwarded on every server start — and is not any more:
 `fused_render/community.py` clones it once, if missing, and never touches it
 again. There is also no second, INSTALLED copy any more (`~/Fused/local/
@@ -4222,7 +4222,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   gate never offers the view (GT-4 / MD-11).
 
 - **GT-20** **A repo the user opens an app in gets a passive "origin has
-  moved" notice, opt-in from outside this view (D517-D520).** Every app open
+  moved" notice, opt-in from outside this view (D518-D521).** Every app open
   through `GET /render` (D301's own definition of "this app is being
   opened") triggers a throttled check — per repo ROOT, not per app, so
   several apps in one repo cost one fetch — of whether the remote's default
@@ -4250,7 +4250,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   reason the card renders, matching GT-16's confirmation rule for the same
   class of act.
 
-  **The action offered is BRANCH-shaped, not count-shaped, and (D522)
+  **The action offered is BRANCH-shaped, not count-shaped, and (D523)
   never rewrites the user's own commits by default.** On the repo's default
   branch: **Update**, primary — an `--ff-only` pull, which can never
   conflict, matching this view's own `pull` (GT-15). Off the default
@@ -5154,7 +5154,7 @@ stop it short of quitting the app.
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
 - **BG-15** **Repo updates (GT-20) are their own sibling notification card**
-  (D517-D520, revised D522-D524) — one row per repo with a known upstream
+  (D518-D521, revised D523-D525) — one row per repo with a known upstream
   update, in a SECOND card `NotificationHost` places between the jobs/queue
   activity card and `FdaCard` (the column's lifetime order: a repo update
   outlives a job but not the FDA nudge or the server card). **This
@@ -5181,7 +5181,7 @@ stop it short of quitting the app.
   costs nothing a user cannot get back by expanding again or pressing ✕.
 
   **Dismissing a row is scoped to the throttle window, not permanent
-  (D523).** The payload already carries `checked_at`; a row stays hidden
+  (D524).** The payload already carries `checked_at`; a row stays hidden
   while `dismissed[root] >= repo.checked_at` and reappears once the
   server's own throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces
   a newer one — no server-side dismissal state is needed. The dismissed map
@@ -5195,7 +5195,7 @@ stop it short of quitting the app.
   Giving repo updates their own top-level card is the smaller change now
   that the card no longer needs the rows to share its ONE plate at all — see
   GT-20 for why Switch, not Rebase, is this card's off-default primary
-  action (D522). **Rejected: modeling a repo row on the job registry.**
+  action (D523). **Rejected: modeling a repo row on the job registry.**
   `fused_render/jobs.py` models `queued → running → finished`, a progress
   fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
   an action fits none of those, and `clearFinishedJobs` would sweep it the
@@ -9226,6 +9226,40 @@ our vocabulary, with nowhere to go. Four failures, one answer.
   repair that held.
 - **TR-10** **The install command is pinned by a test**, because it is shown as
   a thing to copy into a terminal and a wrong one there is worse than none.
+  **Two commands now**, one per platform: the strip attached the macOS/Linux
+  `curl … | bash` line to every not-found card regardless of platform, so a
+  Windows user with no Claude Code was handed a command their shell cannot run
+  and the PowerShell one was reachable only through the help link. The server
+  states `platform` and `install_command` on the health snapshot and the UI
+  stops guessing (D517).
+- **TR-12** **Where the app can apply the fix, it applies it** (D517). Three of
+  the setup findings are mechanisable and are mechanised: a missing install runs
+  the native installer as a background job, an install that will not report its
+  version runs `claude doctor` and shows its warning/fix pairs in the CLI's own
+  words, and an outdated CLI runs `claude update`. The strip stops being a place
+  that describes a fix and becomes the place that performs one.
+- **TR-13** **An update is offered only where updating would do something.**
+  Homebrew, WinGet, apt, dnf and apk own their own binary and answer
+  `claude update` with "Claude is up to date!" while changing nothing, so those
+  installs get the owning manager's real upgrade line and NO button;
+  `DISABLE_UPDATES` withholds it too. The refusal is enforced server-side as a
+  409 naming the command that would work, so it holds even against a caller that
+  ignores the flag. **An unknown install method still gets the offer** — the
+  same rule TR-2 makes about sign-in, from the other side: only an authoritative
+  negative may withhold an offer, and not knowing is not a negative.
+- **TR-14** **`claude doctor` is the diagnosis, not us.** A resolved, runnable
+  binary that will not report a version was measured all along and said nothing,
+  which was right — one failed probe is not a cause — and left the user with a
+  dead app and no sentence anywhere. Doctor is read-only, starts no session, and
+  names the cause itself, so the card quotes it rather than inferring. It is
+  gated to the broken and outdated cases: a ~1.2s spawn is worth paying for a
+  card that renders while something is wrong, and is not worth paying on every
+  health read of a machine that is fine.
+- **TR-15** **The one fix deliberately left as a sentence** is a dead
+  `FUSED_RENDER_CLAUDE_BIN`. It lives in a shell profile or a launchd plist the
+  app cannot durably edit, and `adopt()` already refuses to overwrite a setting
+  the user made on purpose. A button that silently does nothing is worse than
+  the sentence it would replace.
 - **TR-11** **The agent brief always says WHERE, and when it cannot state the
   path it says how to find it.** TR-8's degradation is right for the report — a
   person reading a paste does not need labels with nothing after them — but it

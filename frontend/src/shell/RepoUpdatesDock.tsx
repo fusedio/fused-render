@@ -274,14 +274,14 @@ function RepoRowView({
  * follows (its own `listed` / `shown.jobs` split): the `.dl-rows.is-folded`
  * CSS rule is a max-height CAP (172px), not a way to hide content, so
  * applying it to a `.dl-rows` that still had every row mapped underneath it
- * folded NOTHING for the 1-4 rows this card typically holds — the exact D526
+ * folded NOTHING for the 1-4 rows this card typically holds — the exact D527
  * bug this card was supposed to have been immune to, shipped anyway (code
  * review, 2026-08-27). Collapsed therefore renders NO rows at all — `shown`
  * below is `[]` — and the `.dl-rows` wrapper itself is omitted rather than
  * left as an empty box, mirroring how `DownloadManagerView` guards its own
  * list (`shown.queue || listed.length > 0`). So whenever the toggle is on
  * screen at all (the card returned non-null, meaning `visible.length > 0`),
- * pressing it always visibly hides or shows every row — there is no D526
+ * pressing it always visibly hides or shows every row — there is no D527
  * state here where the button would be inert.
  */
 export function RepoUpdatesCardView({
