@@ -24,6 +24,7 @@ and make the assertions depend on the developer's disk.
 """
 import ast
 import json
+import multiprocessing
 import os
 import subprocess
 import threading
@@ -1393,6 +1394,30 @@ def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
     assert lib.log()[0]["message"] == "Enable — plugin ✔"
 
 
+def _config_lock_commit_worker(claude_dir: str) -> None:
+    """Module-level (picklable under `multiprocessing`'s default `spawn`
+    start method) so it can run in its OWN process for
+    test_config_lock_held_commit_does_not_deadlock -- see that test for why a
+    thread is not enough. Sets CLAUDE_DIR via the environment BEFORE
+    importing `lib`, the same mechanism production uses (`lib.CLAUDE_DIR` is
+    read from `os.environ.get("CLAUDE_DIR")` once at import), and the same
+    devnull/fixture git identity the `claude_dir` fixture sets -- this
+    process gets none of that fixture's `monkeypatch` state, only what it
+    sets up for itself here."""
+    os.environ["CLAUDE_DIR"] = claude_dir
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
+    os.environ["GIT_AUTHOR_NAME"] = "Fixture Author"
+    os.environ["GIT_AUTHOR_EMAIL"] = "fixture@example.com"
+    os.environ["GIT_COMMITTER_NAME"] = "Fixture Author"
+    os.environ["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
+    from fused_render.claude_config import lib as _lib
+
+    with _lib.config_lock():
+        _lib.write_json(_lib.SETTINGS_PATH, {"model": "opus"})
+        _lib.commit("test edit")
+
+
 # -- ensure_repo(): the first-run `git init` TOCTOU race ---------------------
 
 
@@ -1432,6 +1457,51 @@ def test_ensure_repo_survives_concurrent_first_run(claude_dir):
     assert not any(t.is_alive() for t in threads)
     assert errors == [], errors
     assert os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    # Not just "no exception" -- the SEED COMMIT is its own TOCTOU (several
+    # threads read an unborn HEAD before any of them commits, then race `git
+    # add -A` + `git commit`), and it kept failing here one step later than
+    # the `git init` race even after that race was fixed. A test that only
+    # checks `.git` isdir would still pass with the seed commit moved back
+    # outside the lock -- this is what actually catches that regression.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the_dir(
+        claude_dir):
+    """`.git` existing is NOT proof `git init` succeeded -- the original bug
+    report proves it: the user's error was `cannot copy ... to
+    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    i.e. `.git/hooks/` already existed while init was genuinely still
+    failing. git creates the `.git` directory FIRST, then writes
+    `HEAD`/`config`, then copies hook templates -- so a real failure partway
+    through (disk full, permissions) leaves `.git` behind too, same as a won
+    race would.
+
+    No concurrency needed to prove this: forces `git init` itself to create
+    an empty `.git` (mimicking git's own first step) and then fail, and
+    confirms ensure_repo() still raises rather than treating the directory's
+    mere existence as "someone else already won"."""
+    real_run = subprocess.run
+    git_dir = os.path.join(str(claude_dir), ".git")
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            os.makedirs(git_dir, exist_ok=True)
+            return subprocess.CompletedProcess(
+                argv, 128,
+                "", "fatal: cannot copy '...pre-applypatch.sample': File exists")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed into a half-built repo: git itself does not
+    # recognise this directory (no HEAD/config/objects/refs were ever
+    # written), so a later call will retry rather than proceeding as if
+    # init had actually finished.
+    assert lib.git("rev-parse", "--git-dir", check=False).strip() == ""
 
 
 @pytest.mark.skipif(not git_available(), reason="needs git")
@@ -1440,20 +1510,26 @@ def test_config_lock_held_commit_does_not_deadlock(claude_dir):
     threading.Lock, then commit() calls ensure_repo(). If ensure_repo() ever
     routed its init check back through config_lock(), preferences.py's
     action=patch (which holds config_lock() before calling commit()) would
-    self-deadlock on the very first edit. Runs on its own thread with a
-    timeout so a regression fails this test instead of hanging the suite."""
-    done = threading.Event()
+    self-deadlock on the very first edit.
 
-    def worker():
-        with lib.config_lock():
-            (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
-            lib.commit("test edit")
-        done.set()
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    finished = done.wait(timeout=10)
-    assert finished, "config_lock() -> commit() -> ensure_repo() deadlocked"
+    Runs in a SEPARATE PROCESS, not a daemon thread. A thread-based version
+    that only waited on a timeout would not actually protect the suite: on a
+    regression the worker blocks while HOLDING `_THREAD_LOCK`, which is
+    module-level and never released, so every later test in the same pytest
+    worker that touches `config_lock()` would hang too -- the suite would
+    still die, just in some unrelated victim test with no pointer back here.
+    A subprocess takes the poisoned lock down with it when this test kills
+    it, so a regression fails HERE, cleanly, instead of hanging the run."""
+    proc = multiprocessing.Process(
+        target=_config_lock_commit_worker, args=(str(claude_dir),))
+    proc.start()
+    proc.join(timeout=15)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+        pytest.fail("config_lock() -> commit() -> ensure_repo() deadlocked "
+                    "(worker process did not finish within 15s)")
+    assert proc.exitcode == 0
 
 
 @pytest.mark.skipif(not git_available(), reason="needs git")
