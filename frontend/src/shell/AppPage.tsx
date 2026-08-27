@@ -17,18 +17,15 @@
 //   API       every .py in the folder as an endpoint, Swagger-style
 //             (shell/AppApi.tsx): entrypoint, parameters as a form, Execute,
 //             response — the api template's view, for the whole app at once.
-//   MCP       the folder's `mcp` template (templates/mcp) in a frame — the
-//             tool curation panel the explorer offers on an app folder, here
-//             as a tab. Offered whenever the template exists; the template's
-//             own empty state covers a folder that is not (yet) an app.
 //   Git       the folder's `git` template (templates/git) in a frame — the
 //             working-tree view. Offered ONLY when the folder is inside a
 //             work tree (the template's condition.py verdict, CT-12), so a
 //             plain folder never shows a Git tab that could only say "no".
 //
-// The two companion tabs render the EXISTING templates rather than a second
-// panel of their own: the templates are the mcp.toml / git contract's one
-// UI, and a rebuild here would be a second one to keep in step.
+// The Git tab renders the EXISTING template rather than a second panel of
+// its own: the template is the git contract's one UI, and a rebuild here
+// would be a second one to keep in step. (An MCP tab framed templates/mcp the
+// same way until 2026-08-27; the owner dropped it.)
 //
 // Opened from the sidebar's "Current apps" rows and NOWHERE ELSE (owner's
 // brief): the hub's cards and the explorer keep opening the entry page as they
@@ -67,13 +64,13 @@ import {
   AppWindow,
   Files,
   GitBranch,
+  ExternalLink,
   ListTodo,
-  Maximize2,
-  Plug,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { Button } from "@platform/shadcn/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { basename } from "@platform/lib/format";
@@ -104,8 +101,7 @@ type TabCtx = {
   dir: string;
   entry: string | null;
   folderHref: string;
-  /** The folder's `mcp` / `git` template entries, when offered (null = not). */
-  mcpTpl: TemplateEntry | null;
+  /** The folder's `git` template entry, when offered (null = not). */
   gitTpl: TemplateEntry | null;
 };
 
@@ -144,16 +140,6 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
             src={`/render?path=${encodeURIComponent(entry)}`}
             title={`App: ${slug}`}
           />
-          {/* Floats over the frame's top-right: the app full-size in the
-              explorer, the same address the header path opens. */}
-          <a
-            className="app-page-fullscreen"
-            href={urlForFsPath(entry)}
-            title="Open full screen"
-            aria-label="Open full screen"
-          >
-            <Maximize2 />
-          </a>
         </div>
       ) : (
         <p className="app-page-empty">
@@ -182,18 +168,6 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Not keepMounted: the open row is in the URL (`?ep=`), and a return costs
     // one folder inspection — form values and responses are session scratch.
     render: ({ dir, folderHref }) => <AppApi dir={dir} folderHref={folderHref} />,
-  },
-  mcp: {
-    label: "MCP",
-    Icon: Plug,
-    // Not keepMounted: the panel re-reads mcp.toml on return, which is the
-    // freshness a config surface wants after an edit elsewhere.
-    render: ({ dir, slug, mcpTpl }) =>
-      mcpTpl ? (
-        templateFrame(dir, mcpTpl, `MCP tools: ${slug}`)
-      ) : (
-        <p className="app-page-empty">The MCP template is not installed.</p>
-      ),
   },
   git: {
     label: "Git",
@@ -303,7 +277,6 @@ export default function AppPage({
     };
   }, [dir]);
 
-  const mcpTpl = tpls.find((t) => t.mode === "mcp" && t.path) ?? null;
   const gitTplRaw = tpls.find((t) => t.mode === "git" && t.path) ?? null;
   // Git is offered only where its gate says yes: a `conditional` entry waits
   // for the verdict (pending reads as "not yet"), an unconditional one is in.
@@ -318,11 +291,10 @@ export default function AppPage({
   const visibleTabs = useMemo(
     () =>
       APP_PAGE_TABS.filter((id) => {
-        if (id === "mcp") return mcpTpl !== null;
         if (id === "git") return gitAllowed;
         return true;
       }),
-    [mcpTpl, gitAllowed],
+    [gitAllowed],
   );
   const visibleRef = useRef(visibleTabs);
   visibleRef.current = visibleTabs;
@@ -386,17 +358,25 @@ export default function AppPage({
       <header className="app-page-head">
         <div className="app-page-title">
           <h1>{slug}</h1>
-          {/* Reads as the folder, opens the entry page (index.html) in the
-              explorer — the app itself, not its listing. Falls back to the
-              folder when there is no entry yet. */}
-          <a
-            className="app-page-folder"
-            href={entry ? urlForFsPath(entry) : folderHref}
-            title={entry ?? dir}
-          >
+          {/* Reads as the folder and IS the folder: opens its listing in the
+              explorer. The app itself is the "Open app" button opposite. */}
+          <a className="app-page-folder" href={folderHref} title={dir}>
             {tildePath(dir, home)}
           </a>
         </div>
+        {entry && (
+          /* The app full-size in the explorer (its entry page), in a new tab
+             so this page and its live frame stay put. */
+          <Button
+            size="sm"
+            variant="outline"
+            className="app-page-open"
+            onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
+          >
+            Open app
+            <ExternalLink data-icon="inline-end" />
+          </Button>
+        )}
       </header>
 
       <div className="app-page-body">
@@ -464,7 +444,7 @@ export default function AppPage({
                 role="tabpanel"
                 aria-hidden={!active}
               >
-                {def.render({ slug, dir, entry, folderHref, mcpTpl, gitTpl })}
+                {def.render({ slug, dir, entry, folderHref, gitTpl })}
               </section>
             );
           })}
