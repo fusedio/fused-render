@@ -391,30 +391,49 @@ def ensure_repo() -> None:
     `git add -A` + `git commit` and collide on git's own `index.lock`), and
     proving that needed nothing more exotic than the SAME concurrent-first-run
     test that caught the `git init` race — it just kept failing one step later
-    until this whole block was under the lock. Double-checked with a cheap
-    upfront read (git_dir isdir + the .gitignore content already matching) so
-    the fast path — true for the entire life of the repo after the first run —
-    never touches the lock; read-only actions (status, log, diff) aren't
-    serialized behind each other for the process's whole life over this.
+    until this whole block was under the lock.
+
+    Double-checked with a cheap upfront read so the fast path — true for the
+    entire life of the repo after the first run — never touches the lock;
+    read-only actions (status, log, diff) aren't serialized behind each other
+    for the process's whole life over this. The fast path checks THREE things,
+    not two: `.git` isdir, the .gitignore content already matching, AND a born
+    HEAD (`git rev-parse --verify HEAD`). Omitting the HEAD check was an
+    earlier version of this fix and it was wrong — it let the seed commit
+    stay permanently un-retried: if that commit ever failed for a real
+    reason, the first two conditions would already be true forever after, so
+    the fast path would return early on every subsequent call and nothing
+    would heal or report the missing HEAD. A rev-parse against the local
+    on-disk repo is a stat-class git operation (no network, no working-tree
+    walk), so paying it on every call is worth the guarantee.
 
     That still only serializes threads INSIDE this process. config_lock() also
     takes an flock, which is a no-op on Windows (fcntl is None — see the import
     guard above), so on Windows a SECOND process (another desktop instance, a
     CLI invocation of these modules) racing this bootstrap on the same fresh
     CLAUDE_DIR is not covered by any lock this module holds. Belt-and-braces
-    for that gap: a `git init` failure is treated as benign if `.git` is a
-    valid directory afterward — the signature of "someone else already won
-    this race" rather than a real failure. A real failure (permissions, a
-    corrupt/read-only CLAUDE_DIR, git missing) still leaves no `.git` behind
-    and re-raises. The seed-commit collision has no such fallback because it
-    needs none: `check=False` on `git commit` means a losing thread's collision
-    there just leaves HEAD as whichever thread committed first — no exception,
-    no corruption, nothing to tolerate.
+    for that gap: both `git init` and the seed `git commit` treat their own
+    failure as benign ONLY if the post-condition they exist to establish
+    already holds afterward — `.git` being a valid directory, HEAD being born
+    — the signature of "someone else already won this race" rather than a
+    real failure. That symmetry matters: an earlier version of this fix ran
+    the seed commit with `check=False`, reasoning that a losing thread's
+    collision "just leaves HEAD as whichever thread committed first." True
+    for the race, but `check=False` also swallows a REAL failure (a bad local
+    identity, a failing `commit-msg`/`pre-commit` hook someone dropped into
+    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
+    crashed process) with no exception and no report — the config page would
+    then show no history, forever, with nothing to say why. Re-checking HEAD
+    before swallowing the error is what tells the two apart.
     """
     os.makedirs(CLAUDE_DIR, exist_ok=True)
     git_dir = os.path.join(CLAUDE_DIR, ".git")
     gi_path = os.path.join(CLAUDE_DIR, ".gitignore")
-    if os.path.isdir(git_dir) and read_text(gi_path) == GITIGNORE:
+    if (
+        os.path.isdir(git_dir)
+        and read_text(gi_path) == GITIGNORE
+        and git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
+    ):
         return
     with _INIT_LOCK:
         if not os.path.isdir(git_dir):
@@ -434,7 +453,11 @@ def ensure_repo() -> None:
         if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
             git("add", "-A")
             if git("status", "--porcelain").strip():
-                git("commit", "-m", "Initial snapshot of Claude config", check=False)
+                try:
+                    git("commit", "-m", "Initial snapshot of Claude config")
+                except RuntimeError:
+                    if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
+                        raise  # a real failure, not a lost race
 
 
 def read_text(path: str) -> Optional[str]:

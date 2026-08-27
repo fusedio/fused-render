@@ -1456,6 +1456,48 @@ def test_config_lock_held_commit_does_not_deadlock(claude_dir):
     assert finished, "config_lock() -> commit() -> ensure_repo() deadlocked"
 
 
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_seed_commit_failure(claude_dir):
+    """The seed commit tolerates a LOST RACE (another thread already got HEAD
+    born) but must not tolerate a real failure -- a bad local identity, a
+    `commit-msg`/`pre-commit` hook someone dropped into
+    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
+    crashed process. An earlier version of this fix used `check=False` on the
+    seed `git commit`, which swallowed BOTH cases identically: the config
+    page would show no history, forever, with no exception and nothing to
+    say why.
+
+    Forces the `git commit` call specifically to fail (everything else --
+    init, identity, add, status -- runs for real), and confirms ensure_repo()
+    still raises rather than returning normally with the repo permanently
+    HEAD-less.
+
+    Uses mock.patch.object as its own context manager rather than the
+    `monkeypatch` fixture: `claude_dir` already uses `monkeypatch` to redirect
+    CLAUDE_DIR/HOME/GIT_CONFIG_* away from the developer's real ~/.claude, and
+    `monkeypatch` is function-scoped -- calling `.undo()` on the SAME instance
+    here would undo those redirects too, and the read below would land on the
+    developer's real repo instead of the scratch one (caught in review of this
+    test, not in CI: the read is harmless, but the mechanism is the kind of
+    mistake that silently stops being harmless).
+    """
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "commit" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "commit-msg hook rejected the commit")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed: HEAD is still unborn, so a later call will retry
+    # rather than treating this dir as done forever.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() == ""
+
+
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(
         client, catalog_home, monkeypatch):
     def offline():
