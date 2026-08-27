@@ -131,3 +131,29 @@ def test_both_gate_the_shapes_on_the_message_being_about_claude():
     was missing."""
     assert "ABOUT_CLAUDE" in _shell()
     assert "TROUBLE_ABOUT_CLAUDE" in _template()
+
+
+def test_the_install_command_matches_the_server_s_own_constant():
+    """THREE copies of this line now, not two: the shell, the chat template, and
+    `claude_health.INSTALL_COMMAND_POSIX` — which is what the app itself RUNS
+    when the user presses Install, and what it discloses beside that button.
+
+    A drift here is worse than the two-copy version it replaces: the user would
+    be shown one command and have a different one run on their behalf."""
+    from fused_render import claude_health
+
+    command = "curl -fsSL https://claude.ai/install.sh | bash"
+    assert claude_health.INSTALL_COMMAND_POSIX == command
+    assert command in _shell()
+    assert command in _template()
+
+
+def test_the_windows_install_command_is_pinned_too():
+    """It is shown to Windows users and piped into PowerShell on their behalf,
+    which is exactly the reason TR-10 pins the POSIX one. Absent this, the
+    Windows half of D517's platform fix could be silently reworded — and the one
+    platform that had the wrong command for longest is the one nobody developing
+    this runs."""
+    from fused_render import claude_health
+
+    assert claude_health.INSTALL_COMMAND_WINDOWS == "irm https://claude.ai/install.ps1 | iex"

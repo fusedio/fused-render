@@ -213,7 +213,59 @@ export interface ClaudeHealth {
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
   config_dir: string;
+  /** `sys.platform`. Here so the UI never guesses which install line to show —
+      it used to, and it guessed wrong on Windows. */
+  platform: string;
+  /** The native install line for THIS platform, stated by the server rather
+      than reconstructed here. */
+  install_command: string;
+  /** Found, and runnable-looking, but it would not report its own version.
+      Silent before this existed; `doctor` is what makes it sayable. */
+  broken: boolean;
+  /** "native" | "npm" | "brew" | "winget" | "system" | … , or null when we
+      could not tell. Only ever set from `claude doctor` or, failing that, the
+      shape of the resolved path. */
+  install_method: string | null;
+  /** Whether `claude update` would actually change anything.
+      `false` means it is a documented no-op here — a package manager owns the
+      binary, or updates are switched off — and the UI must NOT offer to run it.
+      `null` means we could not tell, which is not evidence against it. */
+  updatable: boolean | null;
+  /** What to actually run: `claude update`, or the owning manager's own upgrade
+      line. null when we know the CLI cannot update itself and cannot name the
+      command that would. */
+  update_command: string | null;
+  update_manager: string | null;
+  /** Why an update would not work, in a sentence, when `updatable` is false. */
+  update_blocked_reason: string | null;
+  /** `claude doctor`'s own report, when it was run. Only measured while
+      something already looks wrong — a healthy machine never pays for it. */
+  doctor: ClaudeDoctor | null;
   checked_at: number;
+}
+
+/** What `claude doctor` said about its own installation. */
+export interface ClaudeDoctor {
+  install_method: string | null;
+  /** The CLI's own problem/fix pairs, verbatim. Better than anything we could
+      infer, and the reason the broken-install card has something to show. */
+  warnings: { problem: string; fix: string }[];
+  text: string;
+}
+
+/** One run of the installer or of `claude update`, as the server holds it. */
+export interface ClaudeInstallStatus {
+  action: "install" | "update" | null;
+  state: "idle" | "running" | "done" | "error";
+  detail: string;
+  /** The child's own output, verbatim — a 403 from downloads.claude.ai and a
+      proxy eating the TLS handshake are different problems with different
+      fixes, and a reworded message throws both away. */
+  output: string;
+  error: string | null;
+  command: string | null;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export function getClaudeHealth(): Promise<ClaudeHealth> {
@@ -224,6 +276,29 @@ export function getClaudeHealth(): Promise<ClaudeHealth> {
     gone and installed or signed into something. */
 export function refreshClaudeHealth(): Promise<ClaudeHealth> {
   return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
+}
+
+/** Run the native installer, or `claude update`, on this machine.
+    Rejects with the server's own sentence when it refuses — an update that
+    would no-op comes back as a 409 naming the command that would work. */
+export function startClaudeInstall(
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>("/api/claude/install", { action });
+}
+
+export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** `claude doctor` on demand — what the CLI thinks of its own installation. */
+export function runClaudeDoctor(): Promise<{
+  ok: boolean;
+  doctor: ClaudeDoctor | null;
+  path?: string;
+  error?: string;
+}> {
+  return postJson("/api/claude/doctor", {});
 }
 
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
