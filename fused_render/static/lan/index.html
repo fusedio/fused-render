@@ -73,7 +73,7 @@
       }
       const name = document.createElement("div");
       name.className = "name";
-      name.textContent = app.name;
+      name.textContent = app.title || app.name;
       a.append(icon, name);
       grid.appendChild(a);
     }

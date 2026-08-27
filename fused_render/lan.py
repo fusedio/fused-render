@@ -364,35 +364,42 @@ def _entry_for(folder: str) -> str | None:
 
 
 def lan_apps() -> list[dict]:
-    """The apps under ``~/Fused/local`` as the grid shows them: name, the
-    ``/render`` URL of the entry page, and the icon URL when ``icon.svg``
-    exists. Read from disk each time — the list is small and a phone opens the
-    grid rarely."""
-    root = local_root()
+    """The apps under ``~/Fused/local`` as the grid shows them, in the /apps
+    hub's order: the hub's own listing (``_workspace_apps`` — entry, title,
+    ``opened_at`` from the recents store, ``updated_at`` from the folder)
+    filtered to the local root, sorted by the hub's rule (frontend
+    ``sortApps``: ``opened_at ?? updated_at ?? 0`` newest first, then title,
+    then name). Same source and same rule so the two grids cannot drift. Read
+    each time — a phone opens the grid rarely."""
+    from fused_render.server.routers.apps import _workspace_apps
+
+    root = os.path.realpath(local_root())
     rows = []
     try:
-        names = sorted(os.listdir(root), key=str.lower)
-    except OSError:
+        apps = _workspace_apps()
+    except Exception:  # noqa: BLE001 — an unreadable workspace is an empty grid
+        logger.warning("lan: workspace listing failed", exc_info=True)
         return rows
-    for name in names:
-        if name.startswith("."):
+    for app in apps:
+        folder = app.get("path") or ""
+        if not (folder == root or folder.startswith(root + os.sep)):
             continue
-        folder = os.path.join(root, name)
-        if not os.path.isdir(folder):
+        entry_path = app.get("entry") or app.get("entry_html")
+        if not entry_path:
             continue
-        entry = _entry_for(folder)
-        if not entry:
-            continue
-        entry_path = os.path.join(folder, entry)
-        row = {
-            "name": name,
+        opened, updated = app.get("opened_at"), app.get("updated_at")
+        recency = opened if opened is not None else (updated if updated is not None else 0)
+        rows.append({
+            "name": app.get("name") or os.path.basename(folder),
+            "title": app.get("title"),
+            "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The SVG bytes themselves via /api/fs/raw (an <img> subresource,
             # so the route's document-load downgrade does not apply).
             "icon": ("/api/fs/raw?" + urlencode({"path": os.path.join(folder, "icon.svg")})
                      if os.path.isfile(os.path.join(folder, "icon.svg")) else None),
-        }
-        rows.append(row)
+        })
+    rows.sort(key=lambda r: (-r["recency"], (r["title"] or r["name"]).lower(), r["name"].lower()))
     return rows
 
 
