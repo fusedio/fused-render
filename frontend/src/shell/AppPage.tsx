@@ -390,9 +390,7 @@ export default function AppPage({
             size="sm"
             variant="outline"
             className="app-page-open"
-            render={
-              <a href={urlForFsPath(entry)} target="_blank" rel="noopener" />
-            }
+            onClick={() => window.open(urlForFsPath(entry), "_blank", "noopener")}
           >
             Open app
             <ExternalLink data-icon="inline-end" />
