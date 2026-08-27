@@ -209,6 +209,42 @@ _PARAMS_UNIT_MULTIPLIER: dict[str, float] = {"k": 1e3, "m": 1e6, "b": 1e9, "t": 
 #: match, though nothing in the catalog is shaped like that today.
 _PARAMS_VALUE_PATTERN = re.compile(r"([\d.]+)\s*([kmbt])\b", re.IGNORECASE)
 
+#: The parenthetical `"(~<number><unit> active)"` qualifier `parse_params`
+#: deliberately skips (see its own docstring: it parses the LEADING, total
+#: figure for a memory/footprint question) — the ACTIVE-per-token figure,
+#: for a compute/bandwidth question instead. `\(` anchors it to the
+#: parenthetical specifically, so a hypothetical future string naming an
+#: active count OUTSIDE parens would not silently match here.
+_PARAMS_ACTIVE_PATTERN = re.compile(
+    r"\(~?([\d.]+)\s*([kmbt])\b[^)]*active\)", re.IGNORECASE)
+
+
+def parse_active_params(params: float | int | str | None) -> float | None:
+    """The ACTIVE-per-token parameter count out of an MoE `params` display
+    string (`"8B (~1B active)"` -> `1e9`) — the figure `speed.py`'s
+    bandwidth-bound decode formula needs, as opposed to `parse_params`'s
+    TOTAL (resident) figure that `fit.py`'s footprint/weight-size arithmetic
+    correctly keeps using (all experts are resident in memory even though
+    only some stream per token — see that function's own docstring for why
+    it deliberately parses the leading, total number).
+
+    `None` for a dense model's string (no `"(...active)"` qualifier to
+    parse — the caller falls back to `parse_params`'s total, which for a
+    dense checkpoint already equals the active count) and for anything that
+    is not a string at all (a bare numeric `params` never carries this
+    qualifier, by construction — `parse_params` accepts it directly with no
+    string to search)."""
+    if not isinstance(params, str) or not params:
+        return None
+    match = _PARAMS_ACTIVE_PATTERN.search(params.lower())
+    if not match:
+        return None
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return None
+    return value * _PARAMS_UNIT_MULTIPLIER[match.group(2).lower()]
+
 
 def parse_params(params: float | int | str | None) -> float | None:
     """A raw parameter COUNT — the unit `_weight_bytes` multiplies by

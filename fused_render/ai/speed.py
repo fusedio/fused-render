@@ -235,6 +235,22 @@ def estimate_tok_s(size_gb: float | None = None, *, params: float | str | None =
     LATER request still pick up a change a cache would have hidden.
     """
     weight = fit.weight_bytes(size_gb, params, quantization)
+    # MoE (code review): decode only streams the ACTIVE experts, not the
+    # whole checkpoint — `weight` above is `fit.weight_bytes`'s TOTAL-param
+    # figure, correct for a footprint question but wrong for THIS one, the
+    # exact reason `recalibrate` already excludes MoE rows from its own
+    # ratio rather than trust this formula's total-weight reading for them
+    # (`_is_moe`, this module). `fit.parse_active_params` answers the
+    # active-per-token count when the catalog's `params` string names one
+    # (`"8B (~1B active)"`); `None` for a dense model, which leaves `weight`
+    # exactly as computed above. `fit.weight_bytes`'s own recognized-quant-
+    # vs-real-`size_gb` precedence does not apply here: `size_gb` is the
+    # TOTAL checkpoint's resident size and has no "active-only" reading to
+    # fall back to, so a recognized quantization's bytes-per-param is used
+    # directly against the active count.
+    active_params = fit.parse_active_params(params)
+    if active_params is not None and active_params > 0:
+        weight = active_params * fit.quant_bytes_per_param(quantization)
     if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight <= 0:
         return None
     weight_gb = weight / fit.GB_BYTES

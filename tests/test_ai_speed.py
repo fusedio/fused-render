@@ -199,6 +199,50 @@ def test_estimate_prefers_a_recognized_quant_params_x_bpp_weight_size(monkeypatc
         1555.0 / weight_gb * speed.BANDWIDTH_FRACTION)
 
 
+def test_estimate_uses_the_active_param_count_for_an_moe_row(monkeypatch):
+    """Code review finding: `estimate_tok_s` fed `fit.weight_bytes` the raw
+    `params` string, and `fit.parse_params` deliberately parses the LEADING
+    (TOTAL) figure out of `"8B (~1B active)"` — correct for a footprint
+    question (every expert is resident in memory) but wrong for THIS
+    bandwidth-bound decode formula, which only streams the ACTIVE experts
+    per token. `recalibrate` already excludes MoE rows from its own ratio
+    on exactly this basis (`_is_moe`) — the live `estimate_tok_s` figure
+    must not go on publishing the total-weight-derived number that
+    exclusion says is wrong.
+
+    Proven the same way `test_estimate_prefers_a_recognized_quant_params_x_
+    bpp_weight_size` proves the dense case: a recognized quantization, and
+    the resulting tok/s figure must reflect the ACTIVE 1B figure's weight,
+    not the TOTAL 8B figure's."""
+    monkeypatch.setattr(speed.hw_detect, "cached_hardware",
+                        lambda: _hardware("NVIDIA A100", bandwidth_gb_s=1555.0))
+    result = speed.estimate_tok_s(999.0, params="8B (~1B active)",
+                                  quantization="MLX 4-bit")
+    assert result is not None
+    active_weight_gb = (1e9 * speed.fit.QUANT_BYTES_PER_PARAM["mlx_4bit"]) / speed.fit.GB_BYTES
+    total_weight_gb = (8e9 * speed.fit.QUANT_BYTES_PER_PARAM["mlx_4bit"]) / speed.fit.GB_BYTES
+    assert result["tokensPerSecond"] == pytest.approx(
+        1555.0 / active_weight_gb * speed.BANDWIDTH_FRACTION)
+    # The bug this test catches would have produced the (much lower)
+    # total-weight-derived figure instead.
+    assert result["tokensPerSecond"] != pytest.approx(
+        1555.0 / total_weight_gb * speed.BANDWIDTH_FRACTION)
+
+
+def test_estimate_falls_back_to_total_params_for_a_dense_model(monkeypatch):
+    """`fit.parse_active_params` answers `None` for a dense model's plain
+    `"4B"` string (no `"(...active)"` qualifier) — `estimate_tok_s` must
+    fall straight through to the SAME total-weight figure it always used,
+    unchanged for every non-MoE row."""
+    monkeypatch.setattr(speed.hw_detect, "cached_hardware",
+                        lambda: _hardware("NVIDIA A100", bandwidth_gb_s=1555.0))
+    result = speed.estimate_tok_s(999.0, params="4B", quantization="MLX 4-bit")
+    assert result is not None
+    weight_gb = (4e9 * speed.fit.QUANT_BYTES_PER_PARAM["mlx_4bit"]) / speed.fit.GB_BYTES
+    assert result["tokensPerSecond"] == pytest.approx(
+        1555.0 / weight_gb * speed.BANDWIDTH_FRACTION)
+
+
 # -- hardware threading (code review: don't re-read per catalog row) ---------------
 
 
