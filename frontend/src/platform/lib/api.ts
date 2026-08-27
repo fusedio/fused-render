@@ -922,6 +922,19 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   canvases: { enabled: boolean };
+  // Local-network sharing of ~/Fused/local (lan.py, opt-in, default off):
+  // the stored switch plus the live listener — `url` once it is serving
+  // (http://render.fused.local/), `error` when the bind or mDNS failed.
+  lan: {
+    enabled: boolean;
+    running: boolean;
+    url: string | null;
+    host: string;
+    alias: string;
+    ip: string | null;
+    port: number | null;
+    error: string | null;
+  };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -1112,6 +1125,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putLanEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { lan_enabled: enabled });
 }
 
 export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {

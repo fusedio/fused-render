@@ -45,6 +45,7 @@ import {
   getHfAuth,
   hfLogout,
   putCanvasesEnabled,
+  putLanEnabled,
   putDefaultModel,
   putReaderEnabled,
   startHfLogin,
@@ -204,6 +205,64 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
           <b>Show Canvases</b> in the sidebar and the Settings menu.
         </span>
       </label>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </section>
+  );
+}
+
+// Local-network sharing (lan.py): off by default, this is the only place it
+// turns on. Same one-checkbox section shape as Canvases above. Shows the
+// address a phone types once the listener is up, and the bind/mDNS error
+// when it is not — the server reports both in the same prefs payload.
+function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const lan = prefs.lan;
+  const enabled = lan?.enabled ?? false;
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      onChange(await putLanEnabled(!enabled));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="prefs-section">
+      <h2>Share on local network</h2>
+      <p className="deploy-muted">
+        Open the apps in <code>~/Fused/local</code> from a phone or another computer on the same
+        Wi-Fi. While this is on, <b>anyone on your network</b> can open and run those apps — nothing
+        else on this computer is reachable. Plain http: on iPhone the live microphone and clipboard
+        paste stay off; everything else works.
+      </p>
+      <label className="prefs-radio">
+        <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
+        <span>
+          <b>Share ~/Fused/local</b> on this network.
+        </span>
+      </label>
+      {enabled && lan?.running && lan.url && (
+        <p className="deploy-muted">
+          On your phone, open <a href={lan.url} target="_blank" rel="noreferrer"><b>{lan.url}</b></a>
+          {lan.ip && (
+            <>
+              {" "}(or <code>http://{lan.ip}{lan.port && lan.port !== 80 ? `:${lan.port}` : ""}/</code> if
+              the name does not resolve)
+            </>
+          )}
+          .
+        </p>
+      )}
+      {enabled && !lan?.running && (
+        <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
+      )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
   );
@@ -637,6 +696,7 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
+                <LanSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
             {tab === "ai" && (

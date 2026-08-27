@@ -343,6 +343,12 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
+    # Local-network sharing of ~/Fused/local (lan.py): a second listener the
+    # `lan_enabled` preference controls; the loopback bind above is not touched.
+    from fused_render import lan
+
+    lan.attach(app)
+    lan.start_if_enabled()
     return server, thread
 
 

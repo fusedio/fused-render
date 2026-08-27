@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fused">
+<meta name="theme-color" content="#0f0f10" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f7f7f5" media="(prefers-color-scheme: light)">
+<title>Fused apps</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f5; --fg: #17181a; --muted: #6b6f76; --card: #ffffff; --line: #e4e4e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f0f10; --fg: #ececec; --muted: #8b8f96; --card: #18191c; --line: #26272b; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%; }
+  main { padding: max(16px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom)); max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 18px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  .host { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+  a.card { display: flex; flex-direction: column; gap: 10px; padding: 14px; text-decoration: none; color: inherit;
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px; min-height: 120px;
+    -webkit-tap-highlight-color: transparent; }
+  a.card:active { transform: scale(0.98); }
+  .icon { width: 44px; height: 44px; border-radius: 11px; display: grid; place-items: center;
+    background: var(--line); font-weight: 600; font-size: 18px; overflow: hidden; }
+  .icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .name { font-weight: 600; font-size: 15px; word-break: break-word; }
+  .empty, .error { color: var(--muted); padding: 32px 8px; text-align: center; }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fused apps</h1>
+    <span class="host" id="host"></span>
+  </header>
+  <div class="grid" id="grid"></div>
+  <p class="empty" id="empty" hidden>No apps in <code>~/Fused/local</code> yet.</p>
+  <p class="error" id="error" hidden></p>
+</main>
+<script>
+(async () => {
+  const grid = document.getElementById("grid");
+  const empty = document.getElementById("empty");
+  const err = document.getElementById("error");
+  document.getElementById("host").textContent = location.host;
+  try {
+    const r = await fetch("/api/lan/apps", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const { apps } = await r.json();
+    if (!apps.length) { empty.hidden = false; return; }
+    for (const app of apps) {
+      const a = document.createElement("a");
+      a.className = "card";
+      a.href = app.url;
+      const icon = document.createElement("div");
+      icon.className = "icon";
+      if (app.icon) {
+        const img = document.createElement("img");
+        img.src = app.icon; img.alt = "";
+        icon.appendChild(img);
+      } else {
+        icon.textContent = (app.name.trim()[0] || "?").toUpperCase();
+      }
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = app.name;
+      a.append(icon, name);
+      grid.appendChild(a);
+    }
+  } catch (e) {
+    err.textContent = "Could not load apps: " + (e && e.message || e);
+    err.hidden = false;
+  }
+})();
+</script>
+</body>
+</html>

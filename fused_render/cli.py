@@ -183,6 +183,12 @@ def _run_serve(args: argparse.Namespace) -> None:
 
     server = uvicorn.Server(uvicorn.Config(app, host=_HOST, port=port))
     app.state.uvicorn_server = server
+    # Local-network sharing of ~/Fused/local (lan.py): a second listener the
+    # `lan_enabled` preference controls; this loopback bind is not touched.
+    from fused_render import lan
+
+    lan.attach(app)
+    lan.start_if_enabled()
     server.run()
 
 
