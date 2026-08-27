@@ -204,26 +204,50 @@ def _after_move(app_dir: str, recorded: str) -> None:
         return
     from fused_render import claude_session_move
 
-    result = claude_session_move.relocate(recorded, os.path.abspath(app_dir))
-    if not result["complete"]:
-        logger.info("app moved %s -> %s: %d session(s) still live, retrying "
-                    "on the next open", recorded, app_dir, len(result["pending"]))
-        return
+    new = os.path.abspath(app_dir)
     meta = read_meta(app_dir) or {}
     migrations = meta.get("migrations")
     if not isinstance(migrations, list):
         migrations = []
-    migrations.append({
+    # Every place the sessions may be sitting: the recorded origin, plus the
+    # destination of each earlier hop that could not finish (a live session
+    # held it, the folder moved again before it ended). Those hops already
+    # carried the idle transcripts to their intermediate path, so a search
+    # from the origin alone would never see them again.
+    sources = [recorded] + [m["to"] for m in migrations
+                            if isinstance(m, dict) and m.get("pending")
+                            and isinstance(m.get("to"), str)]
+    moved, pending = [], []
+    for source in dict.fromkeys(sources):
+        if os.path.normcase(os.path.abspath(source)) == os.path.normcase(new):
+            continue
+        result = claude_session_move.relocate(source, new)
+        moved += result["moved"]
+        pending += result["pending"]
+    entry = {
         "from": recorded,
-        "to": os.path.abspath(app_dir),
+        "to": new,
         "at": datetime.now(timezone.utc).isoformat(),
-        "sessions": len(result["moved"]),
-    })
-    meta.update(app_dir=os.path.abspath(app_dir), migrations=migrations)
+        "sessions": len(moved),
+    }
+    if pending:
+        # Recorded so the next hop knows to look here too; `app_dir` stays
+        # at the origin so the witness keeps firing until this is settled.
+        entry["pending"] = pending
+        migrations.append(entry)
+        meta["migrations"] = migrations
+        logger.info("app moved %s -> %s: %d session(s) still live, retrying "
+                    "on the next open", recorded, app_dir, len(pending))
+    else:
+        for m in migrations:
+            if isinstance(m, dict):
+                m.pop("pending", None)
+        migrations.append(entry)
+        meta.update(app_dir=new, migrations=migrations)
+        logger.info("app moved %s -> %s: %d Claude session(s) carried over",
+                    recorded, app_dir, len(moved))
     tmp = meta_path(app_dir) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
         f.write("\n")
     os.replace(tmp, meta_path(app_dir))
-    logger.info("app moved %s -> %s: %d Claude session(s) carried over",
-                recorded, app_dir, len(result["moved"]))

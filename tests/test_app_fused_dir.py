@@ -198,8 +198,74 @@ def test_a_live_session_holds_the_move_back(app, claude_store):
 
     from fused_render.claude_session_move import munge
     assert (projects / munge(old) / "live-1.jsonl").exists()
-    assert json.loads(meta_file.read_text())["app_dir"] == old
-    assert "migrations" not in json.loads(meta_file.read_text())
+    m = json.loads(meta_file.read_text())
+    assert m["app_dir"] == old
+    assert m["migrations"][0]["pending"] == ["live-1"]
+
+
+def test_a_rename_the_munge_cannot_see_rewrites_in_place(app, claude_store):
+    """`de_mo` -> `de-mo` lands in the SAME bucket: src is dst. The file
+    stays and only its cwd lines move — it must not be mistaken for an
+    already-carried copy and left pointing at the missing folder."""
+    from fused_render.claude_session_move import munge
+
+    projects, _ = claude_store
+    app_fused_dir.ensure(str(app))
+    old = os.path.join(os.path.dirname(str(app)), "de_mo")
+    new_dir = app.parent / "de-mo"
+    app.rename(new_dir)
+    meta = json.loads((new_dir / ".fused" / "meta.json").read_text())
+    meta["app_dir"] = old
+    (new_dir / ".fused" / "meta.json").write_text(json.dumps(meta))
+    assert munge(old) == munge(str(new_dir))
+    _transcript(projects, old, "same-1")
+
+    assert app_fused_dir.ensure(str(new_dir)) is True
+
+    lines = (projects / munge(old) / "same-1.jsonl").read_text().splitlines()
+    assert json.loads(lines[1])["cwd"] == os.path.abspath(str(new_dir))
+    assert (projects / munge(old) / "same-1" / "tool-results" / "x.txt").exists()
+    fixed = json.loads((new_dir / ".fused" / "meta.json").read_text())
+    assert fixed["app_dir"] == os.path.abspath(str(new_dir))
+    assert fixed["migrations"][0]["sessions"] == 1
+
+
+def test_a_second_move_before_the_live_session_ends_loses_nothing(app, claude_store):
+    """Hop 1 carries the idle transcript but a live one holds the record at
+    the origin. Hop 2 (folder moved again) must look at hop 1's destination
+    too, or the transcript already carried there is never found again."""
+    from fused_render.claude_session_move import munge
+
+    projects, sessions = claude_store
+    app_fused_dir.ensure(str(app))
+    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    meta = json.loads((app / ".fused" / "meta.json").read_text())
+    meta["app_dir"] = old
+    (app / ".fused" / "meta.json").write_text(json.dumps(meta))
+    _transcript(projects, old, "idle-1")
+    _transcript(projects, old, "live-2")
+    (sessions / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": "live-2"}))
+
+    assert app_fused_dir.ensure(str(app)) is True   # hop 1: incomplete
+    mid = os.path.abspath(str(app))
+    assert (projects / munge(mid) / "idle-1.jsonl").exists()
+    m = json.loads((app / ".fused" / "meta.json").read_text())
+    assert m["app_dir"] == old
+    assert m["migrations"][0]["pending"] == ["live-2"]
+
+    (sessions / "1.json").unlink()                 # session ends...
+    final = app.parent / "final"
+    app.rename(final)                              # ...and the folder moves again
+    assert app_fused_dir.ensure(str(final)) is True
+
+    dst = projects / munge(str(final))
+    assert (dst / "idle-1.jsonl").exists()
+    assert (dst / "live-2.jsonl").exists()
+    assert json.loads((dst / "idle-1.jsonl").read_text().splitlines()[1])["cwd"] == str(final)
+    m = json.loads((final / ".fused" / "meta.json").read_text())
+    assert m["app_dir"] == str(final)
+    assert all("pending" not in e for e in m["migrations"])
+    assert len(m["migrations"]) == 2
 
 
 def test_recorded_app_dir_matches_when_the_app_has_not_moved(app):

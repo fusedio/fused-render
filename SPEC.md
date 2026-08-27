@@ -10502,8 +10502,12 @@ the rules around it.
   already exists at the destination (a copy-on-resume got there first) is left
   to the destination. Only a complete relocate repoints `app_dir`, appending
   `{"from", "to", "at", "sessions"}` to a `migrations` list so the evidence is
-  kept rather than erased; an incomplete one leaves the record stale and the
-  next open retries. Not carried: `~/.claude.json`'s `projects` map (the CLI
+  kept rather than erased; an incomplete one leaves `app_dir` at the origin
+  but still appends the hop with its `pending` ids, so if the folder moves
+  AGAIN before the live session ends the next relocate searches that
+  intermediate path too, and the transcripts already carried there are not
+  lost. A rename the munge cannot see (`my_app` → `my-app`, same bucket)
+  rewrites the transcript's `cwd` lines in place. Not carried: `~/.claude.json`'s `projects` map (the CLI
   owns it), `history.jsonl`, and the session-id-keyed `file-history/` and
   `todos/`.
 - **A `.fused/meta.json` that exists but does not parse is left alone.** It is

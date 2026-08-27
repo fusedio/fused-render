@@ -60,7 +60,9 @@ from fused_render import session_liveness
 
 logger = logging.getLogger(__name__)
 
-CLAUDE_DIR = os.path.join(os.path.expanduser("~"), ".claude")
+#: CLAUDE_CONFIG_DIR wins where set — the same rule (and the same deliberate
+#: local copy) as session_liveness, claude_artifacts and tasks_store.
+CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 #: Claude Code's registry of live interactive sessions: one `<pid>.json` per
 #: process with `pid`, `sessionId` and `cwd`. Entries outlive their process.
@@ -246,6 +248,7 @@ def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
         except OSError:
             continue
         targets = {}
+        held = []  # this bucket's own pending — tidy is decided per bucket
         for name in names:
             if not name.endswith(".jsonl"):
                 continue
@@ -260,13 +263,20 @@ def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
             targets[target] = new_cwd
             dst = os.path.join(target, name)
             if sid in live:
-                pending.append(sid)
+                held.append(sid)
                 logger.info("session %s is live; leaving its transcript at %s", sid, src)
                 continue
             try:
                 if session_liveness.transcript_turn_open(src, now):
-                    pending.append(sid)
+                    held.append(sid)
                     logger.info("session %s is mid-turn; leaving %s", sid, src)
+                    continue
+                if _norm(target) == _norm(bucket):
+                    # A rename the munge cannot see (`my_app` -> `my-app`):
+                    # same bucket, so the file stays and only its cwd lines
+                    # move. Nothing else to carry.
+                    _rewrite_cwd(src, src, old_root, new_root)
+                    moved.append(sid)
                     continue
                 if os.path.exists(dst):
                     # A copy-on-resume already carried it; the continuation
@@ -281,13 +291,14 @@ def relocate(old_root: str, new_root: str, *, projects_dir: str | None = None,
             except FileNotFoundError:
                 continue  # a concurrent relocate got there first
             except OSError:
-                pending.append(sid)
+                held.append(sid)
                 logger.debug("moving session %s failed", sid, exc_info=True)
+        pending.extend(held)
         # Whatever else the bucket held (memory/, unknown files) follows the
         # transcripts when they all went to one place and NO transcript is
         # left behind — one still there (live, or another cwd's under the
         # same munge) may own that memory too, so it stays with it.
-        if len(targets) == 1 and not pending:
+        if len(targets) == 1 and not held:
             target = next(iter(targets))
             try:
                 left = os.listdir(bucket)
