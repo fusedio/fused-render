@@ -48,6 +48,17 @@ const model = (over: Partial<AiLoadedModel> = {}): AiLoadedModel => ({
   ...over,
 });
 
+
+/** D590: every chip carries the SAME circle (`StatusDot`) — outlined when the
+ *  section holds nothing, filled (`.is-on`) when it holds something. Asserted
+ *  through a helper so both states are always checked as one element's two
+ *  forms, never as two elements that could drift apart. */
+function circleFilled(tree: ReactTestRendererJSON | null): boolean {
+  const dots = findAll(tree, "dl-dot");
+  expect(dots).toHaveLength(1);
+  return ((dots[0].props.className as string) ?? "").split(" ").includes("is-on");
+}
+
 function renderInstance(
   props: Partial<Parameters<typeof ModelsCardView>[0]> = {},
 ): ReactTestRenderer {
@@ -83,11 +94,14 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
   expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
   // The idle sentence now lives in the panel, not the chip.
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
-  // D588: Models carries NO indicator — neither the circle Jobs and
-  // Notifications show nor the old filled dot. Label, optional size, nothing.
-  expect(findAll(tree, "dl-dot")).toHaveLength(0);
+  // D590 (user: "lets just stick to a circle for all items") reverses D588's
+  // removal of the indicator from this chip alone: Models carries the same
+  // circle as every other chip, outlined here because nothing is resident.
+  expect(circleFilled(tree)).toBe(false);
+  // The retired marks stay retired.
   expect(findAll(tree, "dl-zero")).toHaveLength(0);
   expect(findAll(tree, "dl-new-dot")).toHaveLength(0);
+  expect(findAll(tree, "dl-count")).toHaveLength(0);
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
@@ -217,18 +231,39 @@ test("a failed unload says so in the panel — it does not fail silently", async
   expect(text(findAll(after, "dl-row-cancel")[0])).toBe("Unload");
 });
 
-// SUPERSEDED BY D588 (user: "lets just remove the circle from models item",
-// after "I see many different states for the model item ... this is
-// confusing"). There is no arrival indicator on this chip at all now — and
-// none app-wide: `hasNew` is deleted from the hook, since each chip shows one
-// circle for "is there anything here" rather than a mark for "is it new".
-// Asserted as an absence so a future edit cannot quietly reintroduce one.
-test("Models renders no arrival indicator, whatever it holds", () => {
+// D590: ONE circle, and it tracks "is there anything here" — never newness.
+// `hasNew` is deleted from the hook app-wide, so no chip has an arrival mark
+// any more; asserted as an absence so a future edit cannot reintroduce one
+// alongside the circle, which is the ambiguity D588 removed.
+test("the circle tracks whether anything is resident, and is the only indicator", () => {
+  expect(circleFilled(renderView({ models: [] }))).toBe(false);
+  expect(circleFilled(renderView({ models: [model()] }))).toBe(true);
+  // A bring-up counts as "something here" — D589 keys this off the row list,
+  // so there is no third state for a model without a reported size.
+  expect(
+    circleFilled(renderView({ models: [model({ state: "loading", residentBytes: null })] })),
+  ).toBe(true);
+
   for (const models of [[], [model()], [model({ state: "loading", residentBytes: null })]]) {
     const tree = renderView({ models });
     expect(findAll(tree, "dl-new-dot")).toHaveLength(0);
-    expect(findAll(tree, "dl-dot")).toHaveLength(0);
-    expect(findAll(tree, "dl-zero")).toHaveLength(0);
+    expect(findAll(tree, "dl-count")).toHaveLength(0);
+  }
+});
+
+// The user's rule, verbatim: "no count. just a circle outlined or filled".
+// Pinned as a property of the whole chip rather than of one state: nothing in
+// the collapsed summary may render a digit, in any of the reachable cases.
+test("no chip state renders a digit anywhere in the summary", () => {
+  for (const models of [
+    [] as AiLoadedModel[],
+    [model()],
+    [model(), model({ model: "org/b" }), model({ model: "org/c" })],
+    [model({ state: "loading", residentBytes: null })],
+  ]) {
+    const tree = renderView({ models });
+    expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+    expect(text(findAll(tree, "dl-toggle")[0])).not.toMatch(/[0-9]/);
   }
 });
 

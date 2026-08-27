@@ -38,6 +38,7 @@ import { formatSize, repoName } from "@platform/lib/format";
 import { aiRuntimeSettled, publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
+import StatusDot from "@platform/ui/StatusDot";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 
 // This section's own persisted collapse preference — a THIRD independent key
@@ -187,20 +188,20 @@ export function ModelsCardView({
         aria-expanded={!collapsed}
         title={collapsed ? "Show loaded models" : "Hide loaded models"}
       >
-        {/* NO INDICATOR OF ANY KIND (D588, user: "lets just remove the circle
-            from models item", after "I see many different states for the
-            model item ... this is confusing"). Not the outlined circle Jobs
-            and Notifications carry — Models has no count, so it has no
-            emptiness to indicate that its own muted label does not already
-            say — and not the filled `.dl-new-dot` either, which is deleted
-            app-wide: D587 had already established this chip as a state
-            READOUT that never auto-opens, because a resident model is a
-            consequence of an action the user just took, and an indicator
-            announcing that same event contradicted it. This settles the
-            question rather than reopening it: label, optional size, nothing
-            else. The only treatments left are `.is-idle`'s muting and the
-            hover / `aria-expanded` wash. */}
+        {/* THE SAME CIRCLE AS EVERY OTHER CHIP (D590, user: "lets just stick
+            to a circle for all items") — reversing D588's removal of it from
+            this chip alone. That removal answered a real complaint ("I see
+            many different states for the model item ... this is confusing"),
+            but the user's own remedy is UNIFORMITY across the bar rather than
+            a per-chip judgment, and with the size gone (D589) the states this
+            chip can show are now just the two every other chip has. So the
+            outstanding treatments are identical everywhere: outlined vs
+            filled, `.is-idle` muting, and the hover / `aria-expanded` wash. */}
         <span className="dl-summary">Models</span>
+        <StatusDot
+          on={models.length > 0}
+          label={models.length > 0 ? "models loaded" : "no models loaded"}
+        />
       </button>
       {!collapsed && (
         <div className="dl-panel">

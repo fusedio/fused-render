@@ -94,6 +94,7 @@
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
+import StatusDot from "@platform/ui/StatusDot";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
@@ -753,23 +754,11 @@ export function DownloadManagerView({
             everything this section shows without over- or underclaiming.
             `Activity` was the vaguest of the three labels and half of why it
             collided with the old `Updates`. */}
-        {/* THE LABEL, and ONE CIRCLE beside it (D588, user: "jobs and
-            notifications can have a empty/filled circle - no need for
-            count"). No digits: outlined means this section holds nothing,
-            filled means it holds something. Losing the count means 1 job and
-            12 jobs look alike from the bar — the user's explicit trade, and
-            the panel below is where the rows are. Deliberately NOT hedged by
-            putting the count in `title` as a consolation.
-            A SIBLING of `.dl-summary`, not nested inside it: `.dl-toggle` is
-            already `display: flex; align-items: center`, so a direct child is
-            centred on the chip's box, which is what fixes the circle reading
-            as bottom-aligned (notifications.css `.dl-dot` has the full
-            argument). */}
+        {/* The label, and the bar's one shared indicator beside it (D588,
+            D590). `StatusDot` must stay a DIRECT child of this button — that
+            is what centres it (its own header has the argument). */}
         <span className="dl-summary">Jobs</span>
-        <span
-          className={"dl-dot" + (totalCount > 0 ? " is-on" : "")}
-          aria-hidden="true"
-        />
+        <StatusDot on={totalCount > 0} label={totalCount > 0 ? "jobs running" : "no jobs"} />
       </button>
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed

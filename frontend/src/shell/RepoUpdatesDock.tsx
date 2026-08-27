@@ -48,6 +48,7 @@ import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
+import StatusDot from "@platform/ui/StatusDot";
 // `JobRow` reused verbatim for a failed job (D586) — shell may import
 // platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
 // forbidden, which is also why the failures reach this section as a PROP
@@ -380,15 +381,16 @@ export function RepoUpdatesCardView({
             all still say "repo updates", which is exactly what they hold —
             `Notifications` is the extensible CATEGORY, so an alert that is
             not a repo update gets a home here without a fourth section. */}
-        {/* THE LABEL, and ONE CIRCLE (D588) — see the jobs chip's own comment.
-            Filled when this section holds anything: a repo update, a failed
-            job, or both. It is also the QUIET SIGNAL for an error-sourced
-            notification (D586): a background failure fills this circle and
-            opens no panel, since failures never feed the auto-open hook. That
-            used to be `.dl-new-dot`'s job; the circle absorbs it, which is
-            what let a second filled mark meaning "new" be deleted. */}
+        {/* The label and the shared indicator (D590). Filled when this section
+            holds anything — a repo update, a failed job, or both. It is also
+            the QUIET SIGNAL for an error-sourced notification (D586): a
+            background failure fills it and opens no panel, since failures are
+            absent from the ids the auto-open hook is given. */}
         <span className="dl-summary">Notifications</span>
-        <span className={"dl-dot" + (total > 0 ? " is-on" : "")} aria-hidden="true" />
+        <StatusDot
+          on={total > 0}
+          label={total > 0 ? "notifications waiting" : "no notifications"}
+        />
       </button>
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
           exists only while expanded. Collapsed shows no panel at all — see
