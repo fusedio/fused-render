@@ -232,7 +232,21 @@ function CurrentAppRow({
       {...drag}
     >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
-        {app.running ? <span className="sidebar-rail-dot is-running" /> : "▣"}
+        {app.running ? (
+          <span className="sidebar-rail-dot is-running" />
+        ) : app.iconUrl ? (
+          // The app's own icon.svg in the generic mark's slot. `draggable`
+          // off: the row is the drag handle, and a bare <img> would hijack
+          // the drag ghost (the <a> below carries the same guard).
+          <img
+            className="current-app-icon"
+            src={app.iconUrl}
+            alt=""
+            draggable={false}
+          />
+        ) : (
+          "▣"
+        )}
       </span>
       <a
         className="bookmark-name"

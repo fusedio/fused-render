@@ -139,6 +139,32 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
+// The shell's own tab icon (frontend/index.html) — what every route shows
+// unless an app supplies its optional icon.svg.
+const DEFAULT_FAVICON = "/favicon.ico";
+
+// Tab icon: swap the shell's `<link rel="icon">` for an app's own icon.svg
+// while a route inside that app is on screen, and put the default back when
+// the route leaves (cleanup) or the href goes null (no icon for this app).
+// One writer at a time by construction — the callers (AppPage, StatView) are
+// mutually exclusive mounts — so there is no arbitration, only the restore.
+// The `type` attribute is set only for the svg and removed on restore: the
+// .ico link in index.html carries none, and a stale `image/svg+xml` on it
+// makes some browsers refuse the default.
+export function useFavicon(href: string | null): void {
+  useEffect(() => {
+    if (!href) return;
+    const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!link) return;
+    link.href = href;
+    link.type = "image/svg+xml";
+    return () => {
+      link.href = DEFAULT_FAVICON;
+      link.removeAttribute("type");
+    };
+  }, [href]);
+}
+
 // The builtin-mount readiness hook lived here: a bounded /api/config poll that
 // answered "is the bundled zip mount attached and browsable yet", seeded from
 // the boot-time config snapshot because the one-shot fetch (main.tsx) lands

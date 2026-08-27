@@ -1193,6 +1193,16 @@ a.bookmark-name::after {
   position: static;
 }
 
+/* The app's own icon.svg, filling the 14px glyph slot. Drawn at its authored
+   colours — the active-row accent recolour cannot reach an <img>, the same
+   way it leaves a bookmark's custom emoji alone. */
+.current-app-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
 .current-app-archive:disabled {
   opacity: 0.5;
   cursor: default;

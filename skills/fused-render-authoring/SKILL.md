@@ -34,6 +34,8 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <meta name="fused-app" />
 ```
 
+**Optional app icon: `icon.svg`.** Drop an `icon.svg` (that exact lowercase name) next to the entry page and the shell picks it up with no registration: it becomes the app's glyph in the sidebar's Projects list and the browser-tab favicon on the app's page (`/apps/<folder>`) and on any of its files opened in the explorer. Skip it and the generic mark is used. Keep it simple and legible at 14–16 px — a single flat shape, no text; it is drawn at its own colours on both light and dark backgrounds, so avoid relying on a transparent-background-only contrast.
+
 Three primitives — `runPython`, `params`, and the file IO helpers — are the core API; the table below has the rest. Everything else is ordinary HTML/CSS/JS: no framework, no build step, ES2020 fine.
 
 Four neighbouring skills own the bigger surfaces, and this one keeps only enough to know when you need them: **`fused-render-ai`** (`fused.ai` and every model call), **`fused-render-capture`** (native screen/audio/screenshot), **`fused-render-jobs`** (work longer than one call, and the download manager), **`fused-render-theming`** (light/dark).
