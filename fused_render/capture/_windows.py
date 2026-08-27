@@ -96,7 +96,7 @@ def _monitors() -> list[dict]:
                                ctypes.POINTER(_RECT), ctypes.c_ssize_t)
     primary = (_u32().GetSystemMetrics(0), _u32().GetSystemMetrics(1))
 
-    def each(_handle, _dc, rect, _data):
+    def each(handle, _dc, rect, _data):
         box = rect.contents
         found.append({
             "id": len(found) + 1,
@@ -105,14 +105,33 @@ def _monitors() -> list[dict]:
             "width": int(box.right - box.left),
             "height": int(box.bottom - box.top),
             "main": bool(box.left == 0 and box.top == 0),
+            # This monitor's own DPI scale (1.0 at 96 dpi), for `locate`: on a
+            # mixed-DPI desk each monitor has its own, and the page's
+            # `devicePixelRatio` only describes the one the page is on.
+            "scale": _monitor_scale(handle),
         })
         return 1
 
     _u32().EnumDisplayMonitors(None, None, proto(each), 0)
     if not found:                                        # pragma: no cover
         found.append({"id": 1, "x": 0, "y": 0, "width": primary[0],
-                      "height": primary[1], "main": True})
+                      "height": primary[1], "main": True, "scale": 1.0})
     return found
+
+
+def _monitor_scale(handle) -> float:
+    """`GetDpiForMonitor(MDT_EFFECTIVE_DPI) / 96`, or 1.0 where shcore is
+    missing (pre-8.1) — the fallback that keeps `_monitors()` an answer."""
+    try:
+        dpi_x = ctypes.c_uint()
+        dpi_y = ctypes.c_uint()
+        if ctypes.windll.shcore.GetDpiForMonitor(
+                ctypes.c_void_p(handle), 0, ctypes.byref(dpi_x),
+                ctypes.byref(dpi_y)) == 0 and dpi_x.value:
+            return dpi_x.value / 96.0
+    except (AttributeError, OSError):                    # pragma: no cover
+        pass
+    return 1.0
 
 
 def _pick(display, monitors: list[dict]) -> dict:
@@ -162,6 +181,95 @@ def _region(monitor: dict, rect) -> tuple[int, int, int, int]:
         return monitor["x"], monitor["y"], monitor["width"], monitor["height"]
     x, y, w, h = rect
     return (monitor["x"] + int(x), monitor["y"] + int(y), int(w), int(h))
+
+
+def locate(rect, dpr: float):
+    """`capture.shot_region`'s hook: the monitor a browser-measured rect is on,
+    and the rect in that monitor's PHYSICAL pixels."""
+    return _locate(rect, _monitors(), dpr)
+
+
+def _locate(rect, monitors: list[dict], dpr: float):
+    """The arithmetic behind `locate`, off-platform testable.
+
+    The browser measures in DIPs; `_monitors()` reports physical pixels. With
+    one DPI everywhere the map is one multiplication by the page's
+    `devicePixelRatio`. On a MIXED-DPI desk it is not: Chromium lays its DIP
+    desktop out per display — each monitor is its physical size divided by
+    ITS OWN scale, placed ADJACENT to the neighbour it touches (`_dip_layout`)
+    — so a window on a 100% external beside a 200% laptop panel reports DIPs
+    that, multiplied by the page's dpr, land inside the wrong monitor's
+    physical bounds and pass containment there. So containment runs in that
+    DIP layout, and the local rect is scaled by the matched monitor's scale,
+    not the page's. `dpr` stands in only for a monitor whose scale could not
+    be read.
+    """
+    from fused_render.capture import CaptureError
+
+    x, y, w, h = (float(n) for n in rect)
+    for m, (dx, dy, dw, dh) in zip(monitors, _dip_layout(monitors, dpr)):
+        if dx <= x and dy <= y and x + w <= dx + dw and y + h <= dy + dh:
+            s = float(m.get("scale") or dpr or 1.0)
+            return m["id"], ((x - dx) * s, (y - dy) * s, w * s, h * s)
+    raise CaptureError(
+        "the region to photograph is not entirely on one monitor — move the "
+        "window fully on screen and export again")
+
+
+def _dip_layout(monitors: list[dict], dpr: float) -> list[tuple]:
+    """Each monitor's bounds in the browser's DIP desktop, same order.
+
+    Chromium's rule (ScreenWin): the primary sits at the origin at its own
+    scale; every other display is placed against the display it TOUCHES in
+    physical space, on that same edge, its offset along the edge scaled by the
+    PARENT's factor (the edge belongs to the parent). Walked outward from the primary so a chain of monitors places
+    in order; one that touches nothing (a gap in the arrangement) falls back to
+    physical/scale, which is exact whenever all scales are equal.
+    """
+    def scale(m):
+        return float(m.get("scale") or dpr or 1.0)
+
+    n = len(monitors)
+    dip: list = [None] * n
+    order = sorted(range(n), key=lambda i: not monitors[i].get("main"))
+    if n:
+        first = order[0]
+        m = monitors[first]
+        dip[first] = (0.0, 0.0, m["width"] / scale(m), m["height"] / scale(m))
+    changed = True
+    while changed:
+        changed = False
+        for i in range(n):
+            if dip[i] is not None:
+                continue
+            m, s = monitors[i], scale(monitors[i])
+            mw, mh = m["width"] / s, m["height"] / s
+            for j in range(n):
+                if dip[j] is None:
+                    continue
+                p, (px, py, pw, ph) = monitors[j], dip[j]
+                # The offset ALONG the shared edge is a distance on the
+                # parent's edge, so it scales by the PARENT's factor
+                # (Chromium ScreenWin `ScaleOffset`: offset / parent_scale),
+                # not the child's.
+                ps = scale(p)
+                if m["x"] == p["x"] + p["width"]:            # right of p
+                    dip[i] = (px + pw, py + (m["y"] - p["y"]) / ps, mw, mh)
+                elif m["x"] + m["width"] == p["x"]:          # left of p
+                    dip[i] = (px - mw, py + (m["y"] - p["y"]) / ps, mw, mh)
+                elif m["y"] == p["y"] + p["height"]:         # below p
+                    dip[i] = (px + (m["x"] - p["x"]) / ps, py + ph, mw, mh)
+                elif m["y"] + m["height"] == p["y"]:         # above p
+                    dip[i] = (px + (m["x"] - p["x"]) / ps, py - mh, mw, mh)
+                else:
+                    continue
+                changed = True
+                break
+    for i in range(n):
+        if dip[i] is None:
+            m, s = monitors[i], scale(monitors[i])
+            dip[i] = (m["x"] / s, m["y"] / s, m["width"] / s, m["height"] / s)
+    return dip
 
 
 # ------------------------------------------------------------------- the probe

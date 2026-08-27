@@ -295,17 +295,15 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
       // folder carries an authored preview.png; the probe below is only so a
-      // pointless share prompt isn't raised for a capture the server would
-      // discard anyway (stat failure reads as "no authored still" — worst
-      // case is that redundant prompt, never a lost export).
+      // pointless native shot (and, on a Mac that has not granted Screen
+      // Recording, its permission dialog) isn't taken for a capture the
+      // server would discard anyway (stat failure reads as "no authored
+      // still" — worst case is that redundant shot, never a lost export).
       //
-      // ONE cheap local probe, and it must stay that: appShot raises the share
-      // prompt on this click's transient user activation, which Chrome expires
-      // a few seconds out, so anything slow awaited here spends the activation
-      // and loses the prompt. `.is-shown` satisfies appShot's crop-source
-      // contract (pixels that ARE the app, not a box it may fill): the class
-      // rides `shown`, which the frame swap only sets once that frame paints —
-      // the same guarantee `data-fused-annotate-target` below relies on.
+      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
+      // the app, not a box it may fill): the class rides `shown`, which the
+      // frame swap only sets once that frame paints — the same guarantee
+      // `data-fused-annotate-target` below relies on.
       const authored = await statPath(dir + "/preview.png").then(
         (s) => !s.is_dir,
         () => false,
