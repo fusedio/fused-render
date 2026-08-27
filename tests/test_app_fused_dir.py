@@ -73,23 +73,133 @@ def test_ensure_completes_a_half_made_folder(app):
 
 # ------------------------------------------------------- meta.json as a witness
 
-def test_a_moved_app_keeps_its_recorded_path(app, caplog):
-    """THE decision (D548): the recorded `app_dir` is evidence that the folder
-    moved, so `ensure` reports it and leaves it. Rewriting on sight would erase
-    the divergence in the same moment an app could act on it."""
+@pytest.fixture()
+def claude_store(tmp_path, monkeypatch):
+    """A private ~/.claude/{projects,sessions} — `ensure` on a moved app
+    relocates transcripts, and the suite must never touch the real store."""
+    from fused_render import claude_session_move as csm
+
+    projects = tmp_path / "claude" / "projects"
+    sessions = tmp_path / "claude" / "sessions"
+    projects.mkdir(parents=True)
+    sessions.mkdir(parents=True)
+    monkeypatch.setattr(csm, "PROJECTS_DIR", str(projects))
+    monkeypatch.setattr(csm, "SESSIONS_DIR", str(sessions))
+    return projects, sessions
+
+
+def _transcript(projects, cwd, sid, extra_line=None):
+    from fused_render.claude_session_move import munge
+
+    bucket = projects / munge(cwd)
+    bucket.mkdir(exist_ok=True)
+    lines = [
+        json.dumps({"type": "permission-mode", "permissionMode": "auto"}),
+        json.dumps({"type": "user", "cwd": cwd, "message": {"content": "hi"}}),
+        json.dumps({"type": "assistant", "cwd": cwd, "message": {"content": "ok"}}),
+    ]
+    if extra_line is not None:
+        # Mid-file, not last: a half-written LAST line on a fresh transcript is
+        # session_liveness's own "turn in flight" signal, and would hold it.
+        lines.insert(1, extra_line)
+    (bucket / f"{sid}.jsonl").write_text("\n".join(lines) + "\n")
+    (bucket / sid / "tool-results").mkdir(parents=True)
+    (bucket / sid / "tool-results" / "x.txt").write_text("r")
+    return bucket
+
+
+def test_a_copied_app_keeps_its_recorded_path(app, caplog, claude_store):
+    """The witness half of D548: the recorded folder still exists, so this is
+    a copy — the sessions belong to the original and the record is left as
+    evidence for the app to act on."""
     app_fused_dir.ensure(str(app))
     meta_file = app / ".fused" / "meta.json"
+    original = app.parent / "original"
+    original.mkdir()
     stale = json.loads(meta_file.read_text())
-    stale["app_dir"] = os.path.join(os.sep, "somewhere", "else", "demo")
+    stale["app_dir"] = str(original)
     meta_file.write_text(json.dumps(stale))
 
     with caplog.at_level("INFO", logger="fused_render.app_fused_dir"):
         assert app_fused_dir.ensure(str(app)) is True
 
-    assert json.loads(meta_file.read_text())["app_dir"] == stale["app_dir"]
-    assert app_fused_dir.recorded_app_dir(str(app)) == stale["app_dir"]
-    assert "moved or copied" in caplog.text
-    assert stale["app_dir"] in caplog.text
+    assert json.loads(meta_file.read_text())["app_dir"] == str(original)
+    assert "a copy, not a move" in caplog.text
+
+
+def test_a_moved_app_carries_its_claude_sessions_and_repoints_meta(app, claude_store):
+    """The move half: the recorded folder is gone, so every transcript whose
+    own cwd was the old path or under it goes to the bucket for the new path,
+    cwd repointed, side dir along — and only then is `app_dir` fixed, with
+    the move kept in `migrations`."""
+    from fused_render.claude_session_move import munge
+
+    projects, _ = claude_store
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta["custom"] = "kept"
+    meta_file.write_text(json.dumps(meta))
+
+    _transcript(projects, old, "aaaa-1", extra_line="not json {")
+    _transcript(projects, os.path.join(old, "sub", "deeper"), "bbbb-2")
+    # A sibling whose bucket name shares the prefix — NOT under the old root.
+    sibling = _transcript(projects, old + "-old", "cccc-3")
+    # Another cwd colliding into the same bucket as `old` (munge is lossy).
+    collide = old.replace(os.sep + "demo", ".demo")
+    bucket = projects / munge(old)
+    (bucket / "dddd-4.jsonl").write_text(json.dumps({"type": "user", "cwd": collide}) + "\n")
+    (bucket / "memory").mkdir()
+    (bucket / "memory" / "MEMORY.md").write_text("# m")
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    new_root = os.path.abspath(str(app))
+    dst = projects / munge(new_root)
+    moved = (dst / "aaaa-1.jsonl").read_text().splitlines()
+    assert moved[0] == json.dumps({"type": "permission-mode", "permissionMode": "auto"})
+    assert moved[1] == "not json {"
+    assert json.loads(moved[2])["cwd"] == new_root
+    assert (dst / "aaaa-1" / "tool-results" / "x.txt").read_text() == "r"
+    sub = projects / munge(os.path.join(new_root, "sub", "deeper"))
+    assert json.loads((sub / "bbbb-2.jsonl").read_text().splitlines()[1])["cwd"] == \
+        os.path.join(new_root, "sub", "deeper")
+    assert not (bucket / "aaaa-1.jsonl").exists()
+    assert (sibling / "cccc-3.jsonl").exists()
+    assert (bucket / "dddd-4.jsonl").exists()      # the collider stays
+    assert (bucket / "memory" / "MEMORY.md").exists()  # bucket not emptied → memory stays
+
+    fixed = json.loads(meta_file.read_text())
+    assert fixed["app_dir"] == new_root
+    assert fixed["custom"] == "kept"
+    assert fixed["created_at"] == meta["created_at"]
+    assert fixed["migrations"][0]["from"] == old
+    assert fixed["migrations"][0]["to"] == new_root
+    assert fixed["migrations"][0]["sessions"] == 2
+
+
+def test_a_live_session_holds_the_move_back(app, claude_store):
+    """A running session's transcript is being appended to; moving it would
+    split the conversation. It stays, and so does the stale record — the next
+    open retries."""
+    projects, sessions = claude_store
+    app_fused_dir.ensure(str(app))
+    meta_file = app / ".fused" / "meta.json"
+    old = os.path.join(os.sep, "somewhere", "else", "demo")
+    meta = json.loads(meta_file.read_text())
+    meta["app_dir"] = old
+    meta_file.write_text(json.dumps(meta))
+    _transcript(projects, old, "live-1")
+    (sessions / "1.json").write_text(json.dumps({"pid": os.getpid(), "sessionId": "live-1", "cwd": old}))
+
+    assert app_fused_dir.ensure(str(app)) is True
+
+    from fused_render.claude_session_move import munge
+    assert (projects / munge(old) / "live-1.jsonl").exists()
+    assert json.loads(meta_file.read_text())["app_dir"] == old
+    assert "migrations" not in json.loads(meta_file.read_text())
 
 
 def test_recorded_app_dir_matches_when_the_app_has_not_moved(app):
