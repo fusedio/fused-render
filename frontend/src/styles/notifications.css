@@ -289,6 +289,32 @@
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
 
+/* A running, cancellable row's own control — text, not the ✕ glyph, so the two
+   intents ("stop this" vs "take it off my screen") read as different actions
+   rather than the same cross with a different tooltip. `.dl-clear`'s quiet
+   outline button, shrunk to fit a row head instead of the card head: same
+   visual language, one size down. */
+.dl-row-cancel {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.dl-row-cancel:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--fg-muted);
+}
+
+.dl-row-cancel:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
    the whole list instead of stepping 4px sideways where the row kind changes. */
 .dl-x {
@@ -485,6 +511,7 @@
    make the job rows below them look unreachable. */
 .dl-toggle:focus-visible,
 .dl-clear:focus-visible,
+.dl-row-cancel:focus-visible,
 .dl-x:focus-visible,
 .q-all:focus-visible,
 .q-open:focus-visible,

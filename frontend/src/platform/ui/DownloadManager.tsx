@@ -305,10 +305,15 @@ export function JobRow({
   const amount = jobAmount(job);
   const status = jobStatusLine(job);
 
-  // One ✕ with two meanings, because they are the same intent at two points in
-  // a job's life: stop this / take it off my screen. A running job that its
-  // reporter never marked cancellable has no ✕ at all rather than a dead one —
-  // the flag would be set and nothing would ever read it.
+  // Two controls, one meaning each — because "stop this" and "take it off my
+  // screen" read as the same gesture when both hide behind an identical ✕, and
+  // that is exactly the confusion users hit: sometimes the cross cancels,
+  // sometimes it dismisses, with nothing but a tooltip to tell them apart. A
+  // running, cancellable row now gets a text `Cancel`; the ✕ glyph is reserved
+  // for dismiss and means only that, everywhere in the notification stack. A
+  // running job that its reporter never marked cancellable has no control at
+  // all rather than a dead one — the flag would be set and nothing would ever
+  // read it.
   //
   // A STALLED row dismisses rather than cancels: there is nobody left to hear a
   // cancel request, and the row is the app admitting it has stopped knowing —
@@ -316,18 +321,26 @@ export function JobRow({
   const canCancel = running && job.cancellable && !job.cancel_requested && !job.stalled;
   const canDismiss = !running || job.stalled;
 
-  const act = async () => {
+  const cancel = async () => {
     setBusy(true);
     try {
-      if (canCancel) {
-        await cancelJob(job.id);
-        // The row stays — the work has not stopped — but the label has to move
-        // to "Cancelling…" now, or the ✕ reads as having done nothing.
-        onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
-      } else {
-        await dismissJob(job.id);
-        onPatch((js) => js.filter((j) => j.id !== job.id));
-      }
+      await cancelJob(job.id);
+      // The row stays — the work has not stopped — but the label has to move
+      // to "Cancelling…" now, or the button reads as having done nothing.
+      onPatch((js) => js.map((j) => (j.id === job.id ? { ...j, cancel_requested: true } : j)));
+    } catch {
+      /* nothing applied locally — the refresh below is the source of truth */
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
+  const dismiss = async () => {
+    setBusy(true);
+    try {
+      await dismissJob(job.id);
+      onPatch((js) => js.filter((j) => j.id !== job.id));
     } catch {
       /* nothing applied locally — the refresh below is the source of truth */
     } finally {
@@ -370,13 +383,24 @@ export function JobRow({
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
-        {(canCancel || canDismiss) && (
+        {canCancel && (
+          <button
+            className="dl-row-cancel"
+            onClick={cancel}
+            disabled={busy}
+            title="Cancel"
+            aria-label={`Cancel ${job.title}`}
+          >
+            Cancel
+          </button>
+        )}
+        {canDismiss && (
           <button
             className="dl-x"
-            onClick={act}
+            onClick={dismiss}
             disabled={busy}
-            title={canCancel ? "Cancel" : "Dismiss"}
-            aria-label={canCancel ? `Cancel ${job.title}` : `Dismiss ${job.title}`}
+            title="Dismiss"
+            aria-label={`Dismiss ${job.title}`}
           >
             ✕
           </button>
@@ -431,11 +455,12 @@ export interface QueueSlot extends QueueCount {
   /** Cancel all — a FUNCTION of whether the card is collapsed, not a
    *  pre-decided node, because the threshold itself depends on it (D561,
    *  user call 2026-08-27, reversing the fold exemptions D557/D558 built).
-   *  Expanded: 2+ genuinely withdrawable rows, since a single row's own ✕
-   *  is the same action with a better name on it and is right there on
-   *  screen. Collapsed: 1+, because collapsing now hides that ✕ along with
-   *  every other row — the reasoning the 2+ threshold rested on stops
-   *  applying the moment the row itself is out of view. `showCancelAll`
+   *  Expanded: 2+ genuinely withdrawable rows, since a single row's own
+   *  cancel control is the same action with a better name on it and is
+   *  right there on screen. Collapsed: 1+, because collapsing now hides
+   *  that control along with every other row — the reasoning the 2+
+   *  threshold rested on stops applying the moment the row itself is out
+   *  of view. `showCancelAll`
    *  (queue-dock-lib.ts) owns the actual number; this is a function rather
    *  than a lifted `collapsed` state so the card's own collapse preference
    *  stays local to `DownloadManagerView`, exactly as before. */
