@@ -15,6 +15,7 @@ owner of ~/.fused-render in this codebase and the reason FUSED_RENDER_HOME
 redirects the override for tests for free.
 """
 import contextlib
+import itertools
 import json
 import os
 import shutil
@@ -108,6 +109,20 @@ SUBPROCESS_KWARGS = {
 # in this order, so the pair can't deadlock.
 _LOCK_PATH = os.path.join(CLAUDE_DIR, ".config-ui.lock")
 _THREAD_LOCK = threading.Lock()
+
+# A SEPARATE lock, only for ensure_repo()'s first-run `git init` — deliberately
+# NOT config_lock()/_THREAD_LOCK. commit() calls ensure_repo(), and every
+# config_lock()-holding caller that mutates settings (preferences patch,
+# memory writes, profile branch ops, …) already holds _THREAD_LOCK when it
+# calls commit(). _THREAD_LOCK is a plain (non-reentrant) threading.Lock, so
+# routing the init check through config_lock() would self-deadlock on the very
+# first edit: config_lock() acquires _THREAD_LOCK, calls commit(), which calls
+# ensure_repo(), which would try to acquire _THREAD_LOCK again on the SAME
+# thread and block forever (see test_config_lock_held_commit_does_not_deadlock).
+# A dedicated lock sidesteps that: it is never held by config_lock(), so
+# ensure_repo() can always take it, whether or not the caller already holds
+# config_lock().
+_INIT_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
@@ -229,16 +244,66 @@ def read_settings() -> dict:
     return read_json(SETTINGS_PATH, {})
 
 
+def _tmp_path(path: str) -> str:
+    """A sibling temp path for the atomic write below, unique to this CALL —
+    not just this process. A bare f"{path}.tmp-{os.getpid()}" was a second,
+    smaller instance of the same TOCTOU family as ensure_repo()'s `git init`
+    race: two threadpool workers in the same server process share a pid, so
+    they'd race the SAME tmp file (one thread's open()/write() clobbering the
+    other's, one thread's os.replace() removing it out from under the other) —
+    surfaced by ensure_repo() unconditionally rewriting .gitignore on every
+    call, concurrently, from preferences.get() and gitOps.status() on first
+    paint. threading.get_ident() (unique among live threads in this process)
+    plus a counter (unique across nested/successive calls a single thread
+    makes with the same pid+tid, however unlikely) closes it."""
+    return f"{path}.tmp-{os.getpid()}-{threading.get_ident()}-{next(_tmp_counter)}"
+
+
+_tmp_counter = itertools.count()
+
+
+@contextlib.contextmanager
+def _atomic_write(path: str) -> Generator[str, None, None]:
+    """mkdir -p, yield a fresh sibling temp path to write into, then
+    os.replace it over `path` (atomic on the same filesystem) on a clean
+    exit. Uniqueness per call (`_tmp_path`) closed the cross-thread name
+    collision; this closes the other half — an ORPHAN. Before this, a
+    repeating failure between `open()` and `os.replace()` (ENOSPC, a
+    `json.dump` error on a value that turns out not to be serialisable, the
+    process killed mid-write) left the per-call tmp file behind forever,
+    where the old pid-only name would at least have been reused by the next
+    attempt. `CLAUDE_DIR`'s own `.gitignore` (`/*`, ignore-everything) hides
+    the ones written there, but `catalog_override_path()` writes under
+    `~/.fused-render`, which has no such rule and nothing that ever cleans
+    orphaned tmp files up.
+
+    `os.replace` itself is INSIDE the try, not after it — a version that
+    only guarded the write and let `os.replace` run unguarded afterward
+    would leave exactly the orphan class this docstring claims to close: on
+    Windows, `os.replace` over a target another process still holds open (an
+    editor, an AV scanner, a search indexer) raises `PermissionError`
+    rather than replacing, and a cross-device `path` raises too — both
+    leave `tmp` fully written and orphaned if the exception isn't caught
+    here."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = _tmp_path(path)
+    try:
+        yield tmp
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
 def write_json(path: str, value: Any) -> None:
     """Atomic write (config-store.md §4): mkdir -p, write a sibling temp file,
     then os.replace over the target (atomic on the same filesystem). Pretty
     2-space + trailing newline keeps git diffs clean (version-control.md §3)."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(value, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
+    with _atomic_write(path) as tmp:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(value, f, indent=2, ensure_ascii=False)
+            f.write("\n")
 
 
 # Dotted-path helpers for nested settings keys like "permissions.defaultMode"
@@ -333,23 +398,154 @@ def git(*args: str, check: bool = True) -> str:
 
 def ensure_repo() -> None:
     """version-control.md §1. Idempotent; safe to call at the top of every git
-    action (there is no persistent server to bootstrap once)."""
+    action (there is no persistent server to bootstrap once).
+
+    The init step (this function's own docstring used to just say "idempotent"
+    and leave it there) was a bare check-then-act: `os.path.isdir(.git)` then
+    `git init`, with no lock. server/routers/claude_config.py dispatches every
+    module through `run_in_threadpool` — genuine concurrency inside one
+    process — and on the Claude config page's first paint, PreferencesSection's
+    preferences.get() and useGitStatus's gitOps.status() both land here
+    UNGUARDED by config_lock() (neither action mutates anything, so neither
+    takes the lock). Two threads racing `git init` on the same fresh
+    CLAUDE_DIR: the loser dies mid-template-copy with "File exists" — git's
+    copy_file() lstats each destination and skips existing entries, then opens
+    with O_CREAT|O_EXCL, so EEXIST can only happen in that window. Windows just
+    has a far wider window because process spawn is much slower there.
+
+    Fixed with _INIT_LOCK (see its own comment for why it is a lock separate
+    from config_lock()'s _THREAD_LOCK — routing this through config_lock()
+    would deadlock the moment an edit's config_lock()-held commit() call
+    re-enters ensure_repo()). The WHOLE bootstrap — `git init`, identity, the
+    .gitignore write, the seed commit — has to live inside that one lock, not
+    just the `git init` call: the seed commit is its own TOCTOU (several
+    threads all read an unborn HEAD before any of them commits, then all run
+    `git add -A` + `git commit` and collide on git's own `index.lock`), and
+    proving that needed nothing more exotic than the SAME concurrent-first-run
+    test that caught the `git init` race — it just kept failing one step later
+    until this whole block was under the lock.
+
+    Double-checked with a cheap upfront read so the fast path — true for the
+    entire life of the repo after the first run — never touches the lock;
+    read-only actions (status, log, diff) aren't serialized behind each other
+    for the process's whole life over this. The fast path checks THREE things,
+    not two: `.git` isdir, the .gitignore content already matching, AND a born
+    HEAD (`git rev-parse --verify HEAD`). Omitting the HEAD check was an
+    earlier version of this fix and it was wrong — it let the seed commit
+    stay permanently un-retried: if that commit ever failed for a real
+    reason, the first two conditions would already be true forever after, so
+    the fast path would return early on every subsequent call and nothing
+    would heal or report the missing HEAD. A rev-parse against the local
+    on-disk repo is a stat-class git operation (no network, no working-tree
+    walk), so paying it on every call is worth the guarantee.
+
+    That still only serializes threads INSIDE this process. config_lock() also
+    takes an flock, which is a no-op on Windows (fcntl is None — see the import
+    guard above), so on Windows a SECOND process (another desktop instance, a
+    CLI invocation of these modules) racing this bootstrap on the same fresh
+    CLAUDE_DIR is not covered by any lock this module holds. Belt-and-braces
+    for that gap: `git init` and the seed `git commit` treat their own
+    failure as benign ONLY if the post-condition they exist to establish
+    already holds afterward — a valid git dir, HEAD being born — the signature
+    of "someone else already won this race" rather than a real failure.
+
+    That post-condition for `git init` is deliberately NOT `os.path.isdir(.git)`
+    — checking that would be wrong, and the ORIGINAL bug report is the proof:
+    the user's error was `cannot copy … to
+    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    i.e. `.git/hooks/` already existed while `git init` was genuinely still
+    failing. `git init` creates the `.git` directory FIRST, then writes
+    `HEAD`/`config`, then copies hook templates — so `.git` existing is not
+    proof init finished; a real failure partway through (`ENOSPC`, `EPERM`)
+    leaves it behind too, and checking isdir alone would swallow that error
+    and fall into `git config user.email` against a half-built repo.
+
+    It is ALSO deliberately not `git rev-parse --git-dir` — an earlier
+    version of this fix used exactly that, and a second review round caught
+    why it is wrong: `--git-dir` performs git's normal repository DISCOVERY,
+    which walks UP the filesystem looking for a `.git` directory in any
+    ancestor. Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override)
+    inside a versioned dotfiles or home repo — from a `CLAUDE_DIR` with no
+    valid `.git` of its own but a repo somewhere above it, `--git-dir` exits
+    0 and prints the ANCESTOR's git dir, so a genuinely failed init there
+    would have looked like a won race and every git() call after this —
+    identity, the seed `git add -A` + `git commit`, and every later
+    commit()/status()/log()/diff() — would have run against that ancestor
+    repo instead: rewriting its config and committing the user's whole
+    dotfiles tree. The property this needs is "THIS EXACT DIRECTORY is a
+    valid repo", never "some repo is reachable by walking up from here". `git
+    rev-parse --resolve-git-dir <path>` is the command that asks exactly
+    that question — it validates the literal path given (no discovery, no
+    walking) and fails (128) on anything short of a genuinely complete repo:
+    an absent directory, an empty one, or one missing `HEAD`/`config`. That
+    still passes for a genuinely won race (the other side's init is
+    functionally done even if it hasn't finished copying every hook
+    template, since templates come last) while correctly failing on a
+    half-built directory OR an ancestor's repo bleeding through.
+
+    An earlier version of this fix ran the seed commit with `check=False`,
+    reasoning that a losing thread's collision "just leaves HEAD as whichever
+    thread committed first." True for the race, but `check=False` also
+    swallows a REAL failure (a bad local identity, a failing
+    `commit-msg`/`pre-commit` hook someone dropped into
+    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
+    crashed process) with no exception and no report — the config page would
+    then show no history, forever, with nothing to say why. Re-checking HEAD
+    before swallowing the error is what tells the two apart, symmetric with
+    `git init`'s own re-check.
+
+    NOT given the same treatment: the identity `git config` writes, `git add
+    -A`, and `git status --porcelain` inside this same block still run with
+    `check=True` unguarded. All three CAN fail on a second process's
+    `index.lock`/`config.lock` in that same cross-process window, and that
+    failure would surface as a plain `RuntimeError` out of `status()`/`log()`
+    — narrower than the bug this function exists to fix (it needs two
+    concurrent PROCESSES racing a still-empty CLAUDE_DIR, not merely two
+    threads in one), but not covered by the reasoning above. Left as a known
+    gap rather than papered over with speculative tolerance for calls that
+    have no cheap, honest post-condition to re-check (there is no equivalent
+    of "is HEAD born" for "did `git add -A` succeed") — worth hardening if it
+    is ever observed for real, not worth guessing at here.
+    """
     os.makedirs(CLAUDE_DIR, exist_ok=True)
-    if not os.path.isdir(os.path.join(CLAUDE_DIR, ".git")):
-        git("init")
-        # local identity so commits work without a global git config
-        if not git("config", "user.email", check=False).strip():
-            git("config", "user.email", "config-ui@local")
-        if not git("config", "user.name", check=False).strip():
-            git("config", "user.name", "Claude Config UI")
+    git_dir = os.path.join(CLAUDE_DIR, ".git")
     gi_path = os.path.join(CLAUDE_DIR, ".gitignore")
-    if read_text(gi_path) != GITIGNORE:
-        write_text(gi_path, GITIGNORE)
-    # seed commit if the repo has no HEAD yet
-    if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
-        git("add", "-A")
-        if git("status", "--porcelain").strip():
-            git("commit", "-m", "Initial snapshot of Claude config")
+    if (
+        os.path.isdir(git_dir)
+        and read_text(gi_path) == GITIGNORE
+        and git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
+    ):
+        return
+    with _INIT_LOCK:
+        if not os.path.isdir(git_dir):
+            try:
+                git("init")
+            except RuntimeError:
+                # `.git` existing is NOT proof `git init` succeeded (see the
+                # docstring), and `git rev-parse --git-dir` is NOT a safe
+                # substitute — it walks UP to an ancestor repo, so a failed
+                # init inside a versioned dotfiles/home repo would read as
+                # "already done" and every git() call below would run
+                # against the WRONG repository. `--resolve-git-dir` checks
+                # the exact given path, no discovery.
+                if git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == "":
+                    raise  # a real failure, not a lost race
+            # local identity so commits work without a global git config
+            if not git("config", "user.email", check=False).strip():
+                git("config", "user.email", "config-ui@local")
+            if not git("config", "user.name", check=False).strip():
+                git("config", "user.name", "Claude Config UI")
+        if read_text(gi_path) != GITIGNORE:
+            write_text(gi_path, GITIGNORE)
+        # seed commit if the repo has no HEAD yet
+        if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
+            git("add", "-A")
+            if git("status", "--porcelain").strip():
+                try:
+                    git("commit", "-m", "Initial snapshot of Claude config")
+                except RuntimeError:
+                    if git("rev-parse", "--verify", "HEAD", check=False).strip() == "":
+                        raise  # a real failure, not a lost race
 
 
 def read_text(path: str) -> Optional[str]:
@@ -361,11 +557,9 @@ def read_text(path: str) -> Optional[str]:
 
 
 def write_text(path: str, content: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    with _atomic_write(path) as tmp:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
 
 
 def commit(message: str, pathspec: Optional[str] = None) -> Optional[str]:

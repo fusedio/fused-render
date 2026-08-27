@@ -10019,6 +10019,27 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
+- **MC-12** **The registration entry's `command` is the resolved `fused`
+  path, VERBATIM — including the bare `fused.cmd` `inspect_app._fused_cli()`
+  reports on Windows — never routed through a `cmd.exe /c` hop we add
+  ourselves (D549).** A `.cmd` cannot be handed to `CreateProcess` directly,
+  which reads as an obvious bug to a reader who has not checked how the MCP
+  host actually spawns it — the fix a `cmd.exe` hop resembles is real for a
+  process THIS codebase spawns itself, and wrong here: the MCP TS SDK's
+  stdio transport spawns via `cross-spawn` with `shell: false`, and
+  cross-spawn decides whether to build its OWN safe `cmd.exe /c` hop by
+  reading the command's file extension (only `.com`/`.exe` skip it) — naming
+  `cmd.exe` ourselves makes that check see an `.exe` and skip the hop
+  cross-spawn would otherwise have applied correctly, which is a regression,
+  not a fix, under that theory, and still not reliably safer under the
+  alternative one (a spaced path breaks a hand-rolled `cmd.exe /c` too, once
+  both the wrapper path and the served path need their own quoting). Neither
+  host theory has been verified against a real Windows Claude Code install —
+  D549 names the check that would. Extracted into a pure
+  `registrationDefinition(fused, path)` function specifically so
+  `tests/test_mcp_panel.py` can pin the shape (no `cmd.exe`, no `/c`, for
+  both a POSIX- and a Windows-shaped `fused` path) and turn a well-meaning
+  revert of this decision into a loud, specific test failure.
 
 ## 45. Native Capture — Recording the Screen, the Mic and a Still (D409, D410)
 
