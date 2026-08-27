@@ -124,29 +124,29 @@
    over whatever the app draws there, so it must bring its own backdrop. */
 .app-page-fullscreen {
   position: absolute;
-  top: 10px;
-  right: 10px;
+  top: 12px;
+  right: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 9px;
   background: var(--bg);
-  color: var(--fg-muted);
-  opacity: 0.75;
-  transition: opacity 120ms, color 120ms;
+  color: var(--fg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transition: background 120ms, border-color 120ms;
 }
 
 .app-page-fullscreen:hover {
-  opacity: 1;
-  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
+  border-color: var(--fg-muted);
 }
 
 .app-page-fullscreen svg {
-  width: 14px;
-  height: 14px;
+  width: 18px;
+  height: 18px;
 }
 
 /* The nested Tasks page brings its own 22px page padding and a 1050px column
