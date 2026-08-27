@@ -149,12 +149,13 @@ function ModelCard({
           from the cached card drawn next to it in the same row — "why are they
           not the same? at least the name, the mlx-community thing and the size
           should be same".
-          Cost first, then the address of the thing it is the cost of. */}
+          Id first, figure pinned to the right edge (2026-08-27: "move the size
+          all the way to the right in the card"). */}
       <div className="am-card-sub" data-hint={slug}>
+        <span className="am-card-slug cc-mono">{slug}</span>
         <span className="am-card-size" data-hint={size.title}>
           {size.text}
         </span>
-        <span className="am-card-slug cc-mono">{slug}</span>
       </div>
       {what && <div className="am-card-what">{what}</div>}
       {progress}

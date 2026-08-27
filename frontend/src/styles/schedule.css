@@ -2636,6 +2636,18 @@ input.schedule-when-field {
    overlaps something it is about, while above the first row of a scroller there
    is nothing but the scroller's own clipped edge.
 
+   BELOW only WHILE SHOWN, though. `visibility: hidden` keeps a box in layout,
+   and a hidden panel hanging under the mark is scrollable overflow: the List's
+   LAST row carried a tooltip-height of phantom scroll, so a four-task list wore
+   a scrollbar thumb over empty space (Akshil, screenshot, 2026-08-27: "when
+   there are less items there is a scroll bar that still appears"). At rest the
+   panel parks ON its own element — top-left, untranslated, inside the row it
+   already occupies — and takes the below-the-mark position as part of the
+   reveal. The geometry legs of the transition are 0s-with-a-delay bookkeeping,
+   not animation: on the way in the panel is seated before the fade starts, and
+   on the way out it holds that seat until the fade-out has finished rather than
+   snapping home mid-fade.
+
    Not a component, because this app has none — no tooltip primitive exists in
    src/platform/ui, and one built for two call sites would be a portal, a
    positioner and a state machine to say four characters. If a real one arrives,
@@ -2647,9 +2659,8 @@ input.schedule-when-field {
 [data-tip]:not([data-tip=""])::before {
   content: attr(data-tip);
   position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: 0;
+  left: 0;
   z-index: 30;
   padding: 3px 7px;
   font-size: 11px;
@@ -2663,12 +2674,20 @@ input.schedule-when-field {
   box-shadow: 0 2px 8px var(--shadow-sm);
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.1s ease, visibility 0.1s ease;
+  transition:
+    opacity 0.1s ease,
+    visibility 0.1s ease,
+    top 0s 0.1s,
+    left 0s 0.1s,
+    transform 0s 0.1s;
   pointer-events: none;
 }
 
 [data-tip]:not([data-tip=""]):hover::before,
 [data-tip]:not([data-tip=""]):focus-visible::before {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
   opacity: 1;
   visibility: visible;
   transition-delay: 0.3s;

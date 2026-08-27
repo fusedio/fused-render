@@ -411,17 +411,12 @@ export function RepoCard({
             top-right corner whatever the name's length. */}
         <ModelInfoButton repo={repo} />
       </div>
-      {/* WHAT IT COSTS, THEN WHICH REPO IT IS — one line, directly under the
+      {/* WHICH REPO IT IS, THEN WHAT IT COSTS — one line, directly under the
           name (Akshil, 2026-08-25: "the size should not be after the model name
-          checkmark, it should be right below it").
-
-          The figure spent an hour up in the head, beside the name, on the
-          argument that the recommendation cards drawn next to these keep it
-          there. Those cards have no second line to put it on — their head IS
-          their only line — so matching them there bought consistency with a
-          card that had no choice, and cost the disk card the one arrangement
-          that reads as a caption: cost first, then the address of the thing it
-          is the cost of.
+          checkmark, it should be right below it"; 2026-08-27: "move the size
+          all the way to the right in the card"). The id continues the name
+          above it, and the figure sits pinned to the card's right edge, where
+          a column of cards lines its figures up against a shared margin.
 
           No separator between them: a middot in `--border` at 11px on a card
           wash is a mark nobody can see ("the dot here is barely visible, let's
@@ -431,13 +426,13 @@ export function RepoCard({
           with the whole thing on hover — a wrapped second line would set every
           card's height from the longest repo name in the section. */}
       <div className="am-card-sub" data-hint={repo.id}>
+        <span className="am-card-slug cc-mono">{repo.id}</span>
         <span
           className="am-card-size"
           data-hint={repo.mtime ? `Last changed ${formatMtimeFull(repo.mtime)}` : undefined}
         >
           {formatSize(repo.size)}
         </span>
-        <span className="am-card-slug cc-mono">{repo.id}</span>
       </div>
       {/* THE TWO TAGS THAT ARE STATE, not identity — and nothing else.
           This row held five chips (engine, task, parameters, quantization,
