@@ -55,11 +55,12 @@ import tempfile
 
 _MANIFEST = "mcp.toml"
 
-# Said to the user when neither parser is importable — a project venv (SPEC
-# PY-16) declares its own dependencies and need not carry `tomli`.
+# Said to the user when `tomllib` is not importable at all — a template backend
+# may be running in a project venv (SPEC PY-16) on an interpreter this file did
+# not choose.
 _NO_PARSER = "%s" % (
-    "no TOML parser is available: tomllib needs Python 3.11+, and tomli is not "
-    "installed in this folder's environment")
+    "no TOML parser is available: reading this manifest needs tomllib, which is "
+    "stdlib from Python 3.11")
 _DEFAULT_ENTRYPOINT = "main"
 
 # The keys this module owns in `mcp.toml`. Everything else in the file is the
@@ -81,29 +82,26 @@ _HEADER = (
 
 
 def _toml():
-    """The TOML parser, or None: stdlib `tomllib` on 3.11+, else `tomli`.
+    """The TOML parser, or None if this interpreter has no `tomllib`.
 
-    `requires-python` is >=3.10 and `tomllib` only became stdlib in 3.11, so on
-    3.10 the `tomli` dependency supplies it — the same two-name lookup
-    `fused_render/projectenv.py::_load_manifest` does, and for the same reason a
-    template cannot just import the package's copy (SPEC PY-15).
+    `requires-python` is >=3.11, where `tomllib` is stdlib, so this normally just
+    succeeds. The `tomli` fallback that used to sit here is GONE, and not merely
+    because it became unreachable: `tests/test_engine_requirements.py` forbids a
+    template importing a distribution no packaged app ships, and dropping the
+    `tomli` dependency turned that import into exactly such a violation. A
+    template cannot import the package's own copy either (SPEC PY-15).
 
-    None rather than a raise, because a template backend may also be running in a
-    PROJECT venv (SPEC PY-16), which declares its own dependencies and need not
-    carry `tomli`. Every caller has a payload for "no parser" — the module's
-    contract is that no exception escapes `main`.
+    None rather than a raise, because a template backend may be running in a
+    PROJECT venv (SPEC PY-16) or some interpreter this file did not choose. Every
+    caller has a payload for "no parser" — the module's contract is that no
+    exception escapes `main`.
     """
     try:
         import tomllib
 
         return tomllib
     except ImportError:
-        try:
-            import tomli
-
-            return tomli
-        except ImportError:
-            return None
+        return None
 
 
 def _ok(**extra) -> dict:

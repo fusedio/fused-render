@@ -41,6 +41,7 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.app_api import router as app_api_router
 from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
@@ -599,6 +600,9 @@ def create_app(start_dir: str) -> FastAPI:
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # The app page's API tab (routers/app_api.py): every .py in one app folder
+    # described by the api template's inspector, one request per folder.
+    app.include_router(app_api_router)
     # Background apps (routers/background_apps.py): enable/disable/stop/
     # restart/status for a folder's declared long-running daemon, backed by
     # engine_host's "background" child kind + background_apps.py's enabled
