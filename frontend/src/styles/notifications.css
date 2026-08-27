@@ -673,25 +673,44 @@
   font-variant-numeric: tabular-nums; /* the percentage must not jitter as it counts */
 }
 
-/* A running, cancellable row's own control — text, not the ✕ glyph, so the two
-   intents ("stop this" vs "take it off my screen") read as different actions
-   rather than the same cross with a different tooltip. `.dl-clear`'s quiet
-   outline button, shrunk to fit a row head instead of the card head: same
-   visual language, one size down. */
+/* A row's own action — Unload (Models), Stop (Engines), Cancel (a running
+   job). Text, not a glyph, so "stop this" and "take it off my screen" (the
+   row's ✕) read as different intents rather than the same cross with a
+   different tooltip.
+   PROMINENT SINCE D593 (user: "can we make the unload button on the model row
+   more prominent. it is easy to miss right now"). It used to be `.dl-clear`'s
+   quiet outline shrunk down — 10px, `--fg-muted`, `background: none` — which
+   at the end of a row full of muted metadata read as more metadata. Three
+   changes, all aimed at "clearly a control" and none at "warning": a FILLED
+   resting background (`--row-bg-hover`, i.e. the panel's own `--bg-alt` under
+   a neutral wash, so it sits slightly raised against the panel rather than
+   flush in it), `--fg` text at 11px instead of muted 10px, and real padding
+   for a hit target instead of a 1px squeeze.
+   DELIBERATELY NOT DESTRUCTIVE STYLING — no `--error`, no red. Unloading a
+   model reloads on next use, and every Engines kind respawns (routers/
+   engines.py's own docstring), so a danger treatment would overstate what
+   these do. Prominent, not alarming.
+   ONE CLASS COVERS ALL THREE, which is why Cancel gets the same lift: having
+   Unload prominent and its neighbours faint would read as a hierarchy that
+   does not exist between them. */
 .dl-row-cancel {
   flex: 0 0 auto;
-  padding: 1px 6px;
-  font-size: 10px;
-  color: var(--fg-muted);
-  background: none;
-  border: 1px solid var(--border);
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--row-bg-hover);
+  border: 1px solid var(--fg-muted);
   border-radius: 5px;
   cursor: pointer;
 }
 
+/* Hover moves the BACKGROUND, not the opacity — `--row-bg-active` is the app's
+   existing engaged token (an accent wash over `--bg-alt`, the same one a
+   selected sidebar row wears), so the feedback is a real state change and
+   needs no new token. */
 .dl-row-cancel:hover:not(:disabled) {
-  color: var(--fg);
-  border-color: var(--fg-muted);
+  background: var(--row-bg-active);
+  border-color: var(--fg);
 }
 
 .dl-row-cancel:disabled {
