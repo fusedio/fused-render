@@ -406,7 +406,13 @@ def _remote_gguf_sizes(repo_id):
     except Exception:  # noqa: BLE001 - a listing failure here must fall
         # back to the curated recipe, never abort the download outright.
         return {}
-    return {name: size for name, size in files if isinstance(size, int)}
+    # An unsized entry is kept as `None`, never dropped (code review): a
+    # missing key here reads as "this file does not exist", while
+    # `formats.select_gguf_recipe`'s partial-shard estimate needs the key
+    # present with `size=None` to average it from its known siblings —
+    # dropping it instead undercounts a partially-sized shard set exactly
+    # the way that function's own docstring says its estimate must not.
+    return {name: size if isinstance(size, int) else None for name, size in files}
 
 
 def _resolve_curated_recipe(model_id, recipe):
@@ -458,9 +464,18 @@ def _resolve_curated_recipe(model_id, recipe):
     if budget is None:
         return model_id, recipe
 
-    sizes = _local_gguf_sizes(recipe["repo"])
-    if not sizes:
-        sizes = _remote_gguf_sizes(recipe["repo"])
+    # A local listing is only trustworthy STANDING IN for the full remote
+    # one when it already includes the curated file's own size (code
+    # review): a leftover smaller quant from a prior downgraded pick, still
+    # on disk, is a NON-EMPTY listing that says nothing about whether the
+    # curated file itself fits — treating it as complete skipped the floor
+    # check below (curated_size stayed None) and asked `select_gguf_recipe`
+    # to choose from evidence about ONE file when the repo may offer many.
+    # Only once the curated file's real size is locally known does the
+    # local-cache-first fast path (`_locally_cached_gguf_files`'s own
+    # reasoning) apply without a network call.
+    local_sizes = _local_gguf_sizes(recipe["repo"])
+    sizes = local_sizes if recipe["file"] in local_sizes else _remote_gguf_sizes(recipe["repo"])
     if not sizes:
         return model_id, recipe
 
