@@ -430,7 +430,7 @@ function EndpointRow({
             </span>
           </span>
           {/* Room for the floated "Copy as cURL" button. */}
-          {runnable && <span className="w-[124px] flex-none" aria-hidden />}
+          {runnable && <span className="w-[104px] flex-none" aria-hidden />}
           <ChevronRight
             aria-hidden
             className={cn(
@@ -441,12 +441,12 @@ function EndpointRow({
         </button>
         {runnable && (
           <Button
-            size="sm"
-            variant="outline"
+            size="xs"
+            variant="ghost"
             onClick={copyCurl}
             title="Copy this call as a curl command"
             className={cn(
-              "absolute top-1/2 right-[42px] -translate-y-1/2 bg-transparent transition-opacity",
+              "absolute top-1/2 right-[42px] -translate-y-1/2 text-muted-foreground transition-opacity",
               "group-hover/row:opacity-100 focus-visible:opacity-100 motion-reduce:transition-none",
               open ? "opacity-100" : "opacity-0",
             )}
