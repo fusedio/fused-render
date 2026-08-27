@@ -474,10 +474,6 @@ function EndpointRow({
                 <Play data-icon="inline-start" />
                 {run?.kind === "running" ? "Running…" : "Execute"}
               </Button>
-              <Button size="sm" variant="outline" onClick={copyCurl}>
-                {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
-                {copied ? "Copied" : "Copy as curl"}
-              </Button>
               {run?.kind === "failed" && (
                 <span className="text-[12.5px] text-destructive">{run.message}</span>
               )}
@@ -487,6 +483,18 @@ function EndpointRow({
                   {formatMs(run.result.duration_ms ?? run.ms)}
                 </span>
               )}
+              {/* Far right and quiet, the way Swagger / Stripe docs park the
+                  snippet: a secondary door, not a second Execute. */}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={copyCurl}
+                title="Copy this call as a curl command"
+                className="ml-auto text-muted-foreground hover:text-foreground"
+              >
+                {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+                {copied ? "Copied" : "curl"}
+              </Button>
             </div>
           )}
 
