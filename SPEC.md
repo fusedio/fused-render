@@ -9745,10 +9745,12 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   never extract fresh, never rebuild, never record recency; the entry iframe
   carries `_preview=1&_nofocus=1`). A never-opened file stays the empty
   thumb — a peek must not be the first run of a stranger's pages.
-  Export can BAKE one in: `exportAppFile` captures a tab screenshot
-  (getDisplayMedia with current-tab hints — the annotation shots' mechanism,
-  chosen over DOM serialization because canvas/WebGL apps rasterize blank)
-  when and only when the folder has no authored `preview.png`. The crop
+  Export can BAKE one in: `exportAppFile` takes a NATIVE screen shot of
+  the app's on-screen rect (`POST /api/capture/shot-region`, the §45 still
+  behind `fused.capture.screenshot()` pointed at a browser-measured rect,
+  PNG bytes back and no file in `<home>/recordings`; chosen over DOM
+  serialization because canvas/WebGL apps rasterize blank) when and only
+  when the folder has no authored `preview.png`. The crop
   source is the card's own thumbnail when it is on screen AND HAS PAINTED
   the app — a card without a preview.png renders the live app there, so
   nothing navigates or flashes, but only two card previews start at a time
@@ -9758,18 +9760,21 @@ experience and nothing else: no editor, no Claude, no explorer chrome.
   (`data-capture-ready`, set on the body iframe's load) because the surface
   that opens the context menu is not the one holding that state; the
   full-viewport stage is the fallback for a missing, off-screen or unpainted
-  thumb. **The share prompt goes up FIRST**, before the stage is mounted and
-  before anything is awaited: `getDisplayMedia` spends the click's transient
-  user activation, which expires seconds later, so asking after a stage
-  iframe's load-and-settle wait would lose the prompt for every app slower
-  than a beat — and lose it indistinguishably from a dismissal. A tab-capture
-  stream is continuous, so the stage mounts and settles against a stream
-  already running. The prompt itself cannot be silenced — that is
-  getDisplayMedia's contract. The
+  thumb, sized so its shot lands under the width cap at this DPR (so nothing
+  downscales). The browser reports the rect in its screen units
+  (`screenX` + chrome + the element's box) plus `devicePixelRatio`; the
+  backend's `locate` hook maps that onto ONE display in its own units
+  (points on macOS, physical pixels on Windows/Linux) and REFUSES a rect that
+  is not entirely on one display rather than clipping it — a sliver baked
+  in is a valid PNG nothing later can catch. No share prompt and nothing
+  hinging on the click's transient user activation (the earlier tab-capture
+  version's whole ordering problem); on a Mac without Screen Recording
+  granted the first shot raises the TCC dialog and that export ships plain.
+  The
   X-Fused `POST /api/appfile/export` variant writes it as
   `files/preview.png` (PNG magic + 8 MiB cap; the authored still always
-  wins; every capture failure — unsupported, prompt dismissed, blank,
-  over-cap — exports plain: the route drops a too-big screenshot rather than
+  wins; every capture failure — unsupported, permission denied, off-display,
+  blank, over-cap — exports plain: the route drops a too-big screenshot rather than
   failing the download, where `export_app_file` itself still raises for a
   caller that meant to supply a still). An injected preview extracts as a
   real file in the app's read-only extract dir like any other member.

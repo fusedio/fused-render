@@ -164,6 +164,29 @@ def _region(monitor: dict, rect) -> tuple[int, int, int, int]:
     return (monitor["x"] + int(x), monitor["y"] + int(y), int(w), int(h))
 
 
+def locate(rect, dpr: float):
+    """`capture.shot_region`'s hook: the monitor a browser-measured rect is on,
+    and the rect in that monitor's PHYSICAL pixels.
+
+    The browser measures in DIPs from the primary monitor's origin; this
+    process is per-monitor DPI aware and `_monitors()` reports physical pixels
+    from the same origin, so the scale is the page's `devicePixelRatio`. One
+    ratio for the whole rect is exact on the monitor the page is on and only
+    approximate where a window straddles monitors of different DPI — which
+    the containment test below refuses anyway.
+    """
+    from fused_render.capture import CaptureError
+
+    x, y, w, h = (float(n) * dpr for n in rect)
+    for m in _monitors():
+        if (m["x"] <= x and m["y"] <= y and x + w <= m["x"] + m["width"]
+                and y + h <= m["y"] + m["height"]):
+            return m["id"], (x - m["x"], y - m["y"], w, h)
+    raise CaptureError(
+        "the region to photograph is not entirely on one monitor — move the "
+        "window fully on screen and export again")
+
+
 # ------------------------------------------------------------------- the probe
 
 

@@ -157,6 +157,16 @@ def refuse(mode: str, spec: dict) -> str | None:
     return _sink_refuse(mode, spec)
 
 
+def locate(rect, dpr: float):
+    """`capture.shot_region`'s hook: the portal shoots the whole screen in
+    physical pixels, so a browser rect (DIPs from the screen origin) is scaled
+    by the page's `devicePixelRatio` and nothing else. No display to choose
+    (`refuse` says why), and no bounds to check against — `displays` is empty
+    here by design, so an off-screen rect surfaces later as Pillow's crop of
+    nothing rather than as a refusal."""
+    return None, tuple(float(n) * dpr for n in rect)
+
+
 # --------------------------------------------------------------------- still
 
 
