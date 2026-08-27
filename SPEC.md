@@ -4237,7 +4237,7 @@ changes make the showcase an ordinary git work tree with an ordinary
   before any subprocess, the same rule GT-4 states for this view's own reads
   and writes.
 
-  **The check and its two mutations live server-side, in a NEW module
+  **The check and its three mutations live server-side, in a NEW module
   (`fused_render/git_upstream.py`), not in `ops.py`.** `ops.py` is reached
   only as `fused.runPython("./ops.py")` from inside THIS view's own iframe
   (GT-1) — the activity card (§36) that shows the result has no route to it.
@@ -4245,27 +4245,36 @@ changes make the showcase an ordinary git work tree with an ordinary
   (GT-1's own reason: a template exec'd standalone must not be imported), and
   `ops.py` gains the matching `rebase` op in lockstep — the same op, twice,
   so this view can do from inside an open repo what the card's refusal
-  message tells the user is available. `update`/`rebase` each check
+  message tells the user is available. `update`/`rebase`/`switch` each check
   `status --porcelain` FIRST and refuse a dirty tree with a structured
   reason the card renders, matching GT-16's confirmation rule for the same
   class of act.
 
-  **The action offered is BRANCH-shaped, not count-shaped.** On the repo's
-  default branch: **Update**, primary — an `--ff-only` pull, which can never
-  conflict, matching this view's own `pull` (GT-15). Off the default branch:
-  informational text naming how far behind, with **Rebase**, secondary — the
-  GT-15/GT-20 exception, onto the tracked default branch only. A conflict
-  from either is left exactly where a conflicting `stash apply` already
-  leaves one, mid-operation, for this view's existing conflict reader and
-  `resolve` op (GT-19) to pick up — never aborted, which would silently
-  discard a decision the button just took on the user's behalf. A refusal
-  that is not a conflict (most commonly `dirty`) instead offers **Fix with
-  Claude** (§36), which navigates to the repo and hands a Claude-capable
-  surface there the same class of prompt GT-19's operation-error case builds
-  — the error, the branch, ahead/behind, the dirty flag, the repo root — but
-  through a staged cross-navigation ask rather than
-  `window._fusedAskClaude`, because no surface for that repo may be mounted
-  yet.
+  **The action offered is BRANCH-shaped, not count-shaped, and (D522)
+  never rewrites the user's own commits by default.** On the repo's default
+  branch: **Update**, primary — an `--ff-only` pull, which can never
+  conflict, matching this view's own `pull` (GT-15). Off the default
+  branch: **Switch**, primary — a plain `git checkout <default_branch>`,
+  which never touches a single commit on the branch the user is on and so
+  can only refuse, never conflict, matching this view's own `branch_checkout`
+  (GT-1's neighbour). **Rebase** — replaying the current branch onto the
+  default, the GT-15/GT-20 exception — is demoted to **secondary on the same
+  row**, for the user who genuinely wants that instead. Switch is preferred
+  because this whole feature exists to nudge a repo toward its default
+  branch without ever putting the user's own work at risk; after a
+  successful switch the repo is very likely behind again (that is why Switch
+  was offered), so the row reappearing with Update once the check re-runs is
+  intended, not a bug. A conflict from Rebase is left exactly where a
+  conflicting `stash apply` already leaves one, mid-operation, for this
+  view's existing conflict reader and `resolve` op (GT-19) to pick up —
+  never aborted, which would silently discard a decision the button just
+  took on the user's behalf. A refusal that is not a conflict (most commonly
+  `dirty`) instead offers **Fix with Claude** (§36), which navigates to the
+  repo and hands a Claude-capable surface there the same class of prompt
+  GT-19's operation-error case builds — the error, the branch, ahead/behind,
+  the dirty flag, the repo root — but through a staged cross-navigation ask
+  rather than `window._fusedAskClaude`, because no surface for that repo may
+  be mounted yet.
 
 **See also §34** (`file_history`), the other history view. It is complementary
 rather than an alternative: this one drives the repository's own commit graph and
@@ -5144,24 +5153,57 @@ stop it short of quitting the app.
   written against it needs no hosted-only branch. **This is an obligation on a
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
-- **BG-15** **A second named slot, `RepoUpdatesSlot`, for the repos GT-20's
-  background check has flagged** (D517-D520) — one row per repo with a known
-  upstream update, above the job rows and, like the queue's own rows (BG-10),
-  **outside the fold**: a card collapsed weeks ago must not hide a live
-  "origin has moved" action any more than it may hide a queued message.
-  **Rejected: generalising `QueueSlot` to N slots.** One more named slot is
-  the smaller change — this card was deliberately consolidated down to ONE
-  plate (BG-10's own history), and a slot mechanism built for an unbounded
-  count would be solving a problem this feature does not have. **Rejected:
-  modeling a repo row on the job registry.** `fused_render/jobs.py` models
-  `queued → running → finished`, a progress fraction, a cancel-request and a
-  `Clear` sweep; a standing CONDITION with an action fits none of those, and
-  `clearFinishedJobs` would sweep it the moment it next ran. `shell/
-  RepoUpdatesDock.tsx` therefore polls its own endpoint (`GET
-  /api/git-upstream`) the same way `QueueDock.tsx` polls its own, and — since
-  `QueueDock` is the one place `<DownloadManager>` is instantiated — hands
-  its slot to `QueueDock` to render in the SAME instance, rather than a
-  second top-level card composed elsewhere.
+- **BG-15** **Repo updates (GT-20) are their own sibling notification card**
+  (D517-D520, revised D522-D524) — one row per repo with a known upstream
+  update, in a SECOND card `NotificationHost` places between the jobs/queue
+  activity card and `FdaCard` (the column's lifetime order: a repo update
+  outlives a job but not the FDA nudge or the server card). **This
+  supersedes the original shape**, where the rows were a second named slot
+  (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
+  That placement broke the jobs card in four ways at once, discovered
+  together: with zero jobs and zero queue but one repo row, the header fell
+  through to a job-count sentence and read **"0 finished"**; the jobs card's
+  collapse toggle did nothing (repo rows were exempt from the fold and there
+  were no job rows left to fold); Clear disappeared (its count was jobs
+  only); and there was no way to dismiss a repo row at all — all four the
+  same root cause, a second kind of row wedged inside a header, a fold and a
+  Clear button that were never built to know about it. Giving it its own
+  card fixes the class of bug rather than patching each symptom: the jobs
+  card's empty-card gate, header and Clear now only ever reason about jobs
+  and the queue again.
+
+  **This card's own fold takes EVERY row**, unlike the jobs card's partial
+  fold (BG-10/BG-15's own history pins the queue's rows and a live-run
+  stand-in outside the collapse). That asymmetry does not apply here: a repo
+  row has no in-flight message a fold could strand mid-turn, the header
+  already names how many updates are waiting whether the list is open or
+  not, and every row now carries its own dismiss control — so collapsing
+  costs nothing a user cannot get back by expanding again or pressing ✕.
+
+  **Dismissing a row is scoped to the throttle window, not permanent
+  (D523).** The payload already carries `checked_at`; a row stays hidden
+  while `dismissed[root] >= repo.checked_at` and reappears once the
+  server's own throttled recheck (`git_upstream.CHECK_TTL_S`, 300s) produces
+  a newer one — no server-side dismissal state is needed. The dismissed map
+  is held at MODULE level in `RepoUpdatesDock.tsx`, not component state, so
+  a remount (switching panes or panels) does not forget it; a full page
+  reload resurrecting a dismissed row inside the throttle window is an
+  accepted, deliberate trade against reaching for `localStorage` for
+  something this ephemeral.
+
+  **Rejected: generalising `DownloadManager`'s `QueueSlot` to N slots.**
+  Giving repo updates their own top-level card is the smaller change now
+  that the card no longer needs the rows to share its ONE plate at all — see
+  GT-20 for why Switch, not Rebase, is this card's off-default primary
+  action (D522). **Rejected: modeling a repo row on the job registry.**
+  `fused_render/jobs.py` models `queued → running → finished`, a progress
+  fraction, a cancel-request and a `Clear` sweep; a standing CONDITION with
+  an action fits none of those, and `clearFinishedJobs` would sweep it the
+  moment it next ran. `shell/RepoUpdatesDock.tsx` therefore polls its own
+  endpoint (`GET /api/git-upstream`) the same way `QueueDock.tsx` polls its
+  own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
+  `NotificationHost`'s separate `repoUpdates` prop rather than a slot on
+  `DownloadManager`.
 
 ---
 
