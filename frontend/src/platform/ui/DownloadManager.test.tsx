@@ -144,7 +144,11 @@ test("a done job beside a running one renders exactly one visible row and no Cle
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
-test("an error job beside a done one still draws and is clearable — only the success vanishes", () => {
+// SUPERSEDED BY D586, and both halves of the old assertion are now the
+// opposite: the success still vanishes (unchanged), and the error row no
+// longer draws HERE either — it moved to Notifications, taking its Clear with
+// it. So a list of one success plus one failure leaves this section empty.
+test("a done job and a failed job together leave this section with nothing to draw", () => {
   const done = { ...BASE, id: "sys:ai-image:done" };
   const errored: Job = {
     ...BASE,
@@ -154,11 +158,12 @@ test("an error job beside a done one still draws and is clearable — only the s
   };
   const tree = renderCard([done, errored]);
   expect(tree).not.toBeNull();
-  // Exactly the error row — the done one drew nothing.
-  expect(findAll(tree, "dl-row")).toHaveLength(1);
-  // A terminal row nobody can act on but Clear (it is not running, and it is
-  // the only row the card is showing) — dismissible unlike the vanished one.
-  expect(findAll(tree, "dl-clear")).toHaveLength(1);
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+  // No Clear either: with the failure gone there is no terminal row left for
+  // it to take, and offering a button that would do nothing is the exact
+  // blank-band problem code review finding #3 fixed below.
+  expect(findAll(tree, "dl-clear")).toHaveLength(0);
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
 });
 
 test("a scheduled run's own terminal row still counts and draws — the exemption is for stand-ins, not for AI rows", () => {
@@ -186,13 +191,19 @@ test("a stalled but still-running job alone offers no Clear button", () => {
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
-test("a terminal row beside a stalled running one offers Clear, counting only the terminal one", () => {
+// Also superseded by D586: the "terminal row" this used to pair with a stalled
+// one was an ERROR row, which no longer lives here. A stalled row is still
+// `running`, so it is not clearable — `clearableCount`'s own rule, which D586
+// did not change — and with the failure gone there is nothing for Clear to
+// take. Kept (rather than deleted) because the stalled-row half is still worth
+// pinning: a stalled row draws, and it is not swept up by Clear.
+test("a stalled running row draws and is NOT clearable, with no failure beside it", () => {
   const stalled: Job = { ...BASE, id: "sys:ai-image:stalled", state: "running", stalled: true };
-  const done = { ...BASE, id: "sys:ai-image:errored", state: "error" as const, message: "boom" };
-  const tree = renderCard([stalled, done]);
+  const errored = { ...BASE, id: "sys:ai-image:errored", state: "error" as const, message: "boom" };
+  const tree = renderCard([stalled, errored]);
   expect(tree).not.toBeNull();
-  expect(findAll(tree, "dl-row")).toHaveLength(2);
-  expect(findAll(tree, "dl-clear")).toHaveLength(1);
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
 test("the panel's head is OMITTED, not a blank band, when nothing to offer — code review finding #3", () => {
@@ -208,16 +219,41 @@ test("the panel's head is OMITTED, not a blank band, when nothing to offer — c
   expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
-test("everything terminal and failed colours the chip — everything terminal and clean does not", () => {
+// D586 (user: "maybe we can have a flow like running activities are shown in
+// jobs and after done, a completed message goes to notifications?"): a failure
+// is not work in progress, so it LEAVES this section entirely — rows, count,
+// and the failure tint that used to colour this chip. Notifications draws it
+// now (RepoUpdatesDock.test.tsx covers the receiving end).
+test("a failed job is drawn NOWHERE in this section — not a row, not the count, no tint", () => {
   const errored: Job = { ...BASE, id: "sys:ai-image:errored", state: "error", message: "boom" };
-  const failedTree = renderCard([errored]);
-  const failedToggle = findAll(failedTree, "dl-toggle")[0];
-  expect((failedToggle.props.className as string).split(" ")).toContain("is-failure");
+  const tree = renderCard([errored]);
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-row")).toHaveLength(0);
+  // The count is the number this section actually holds, so a lone failure
+  // leaves it at zero — the outlined dot, not `1`. A count that still
+  // included failures was the likeliest bug in this change.
+  expect(findAll(tree, "dl-zero")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
+  const toggle = findAll(tree, "dl-toggle")[0];
+  expect((toggle.props.className as string).split(" ")).not.toContain("is-failure");
+});
 
+test("a failure beside live work leaves only the live row and a count of one", () => {
+  const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
+  const errored: Job = { ...BASE, id: "sys:ai-image:errored", state: "error", message: "boom" };
+  const tree = renderCard([running, errored]);
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-count")[0])).toBe("1");
+});
+
+test("cancelled and done rows do NOT move — only failures did", () => {
+  // The scope of D586 is `state === "error"` and nothing else: a cancel is
+  // user-initiated and ages out on its own, and a success has its artefact on
+  // disk. `sys:schedule:*` survives success where an ordinary AI row vanishes,
+  // which is what makes it usable as the "still here" case.
   const done: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
-  const cleanTree = renderCard([done]); // sys:schedule:* survives success, unlike an ordinary AI row
-  const cleanToggle = findAll(cleanTree, "dl-toggle")[0];
-  expect((cleanToggle.props.className as string).split(" ")).not.toContain("is-failure");
+  const tree = renderCard([done]);
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
 });
 
 // -------------------------------------------------- the collapse toggle (D562)

@@ -48,6 +48,12 @@ import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
 import { useExclusiveSection } from "@platform/lib/exclusiveSection";
+// `JobRow` reused verbatim for a failed job (D586) — shell may import
+// platform (frontend/scripts/check-boundaries.mjs); the reverse is what is
+// forbidden, which is also why the failures reach this section as a PROP
+// from the shell rather than by this file reaching into the jobs poll.
+import { JobRow } from "@platform/ui/DownloadManager";
+import type { Job } from "@platform/lib/jobs";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 import {
   repoActionLabel,
@@ -67,6 +73,10 @@ import {
 // is throttled server-side (git_upstream.CHECK_TTL_S), so polling faster
 // than that would only ever re-read the same cached answer.
 const NOOP = () => {};
+/** `JobRow`'s optimistic-patch seam, defaulted for callers that hand in a
+ *  fixed `failed` list (the tests). A real one comes from the shell, which
+ *  owns the state these rows are drawn from (D586). */
+const NOOP_PATCH = () => {};
 const POLL_MS = 6000;
 
 // This card's own persisted collapse preference — a DISTINCT key from the
@@ -302,9 +312,18 @@ export function RepoUpdatesCardView({
   onDismiss,
   onDismissAll,
   onDone,
+  failed = [],
+  onJobsChanged,
+  onFailedPatch,
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
+  /** Failed jobs re-routed here from the Jobs section (D586). */
+  failed?: Job[];
+  /** A failed row was acted on — ask the jobs poll to re-read. */
+  onJobsChanged?: () => void;
+  /** Remove a dismissed failure from the shell's own list, immediately. */
+  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
   collapsed: boolean;
   /** An unacknowledged repo arrived while collapsed — drawn as a quiet dot on
    *  the chip, never as a forced expansion (`lib/autoExpand.ts`'s own doc,
@@ -319,7 +338,18 @@ export function RepoUpdatesCardView({
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
-  const idle = visible.length === 0;
+  // BOTH SOURCES DECIDE EVERY DERIVED NUMBER (D586). The count on the chip,
+  // the idle predicate and the empty state all read this one total, so none of
+  // them can disagree about what this section holds — a count that still
+  // counted only repo rows was the likeliest bug in this change.
+  const total = visible.length + failed.length;
+  const idle = total === 0;
+  // The failure tint MOVED HERE from the Jobs chip (D586): this is the section
+  // that holds failures now, so it is the one worth colouring. Unconditional on
+  // there being a failure at all, rather than Jobs' old "everything terminal
+  // and something failed" — an `error` row in here is always terminal, so the
+  // extra clause had nothing left to say.
+  const hasFailure = failed.length > 0;
   // Wraps the chip AND the panel — dismissOnOutside.ts explains why the whole
   // host, not just the panel, is what counts as "inside".
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -338,7 +368,9 @@ export function RepoUpdatesCardView({
           claiming this card does not draw with zero rows (finding 8, code
           review 2026-08-27). */}
       <button
-        className={"dl-toggle" + (idle ? " is-idle" : "")}
+        className={
+          "dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")
+        }
         onClick={onToggle}
         aria-expanded={!collapsed}
         title={collapsed ? "Show notifications" : "Hide notifications"}
@@ -360,7 +392,7 @@ export function RepoUpdatesCardView({
         <span className="dl-summary">
           Notifications
           <span className="dl-count">
-            {visible.length > 0 ? visible.length : <span className="dl-zero" aria-hidden="true" />}
+            {total > 0 ? total : <span className="dl-zero" aria-hidden="true" />}
           </span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
@@ -378,15 +410,32 @@ export function RepoUpdatesCardView({
             <div className="dl-panel-empty">No notifications</div>
           ) : (
             <>
-              <div className="dl-head">
-                <button
-                  className="dl-clear"
-                  onClick={() => onDismissAll(visible)}
-                  title="Dismiss every visible update"
-                >
-                  Clear
-                </button>
-              </div>
+              {/* Clear takes only the REPO rows — the ones this card's own
+                  client-side dismissal model covers. A failed job's dismissal
+                  is server-side and permanent (`dismissJob`), so sweeping both
+                  under one button would hide two different promises behind it;
+                  a failure is dismissed by its own row's ✕ (D586). Omitted
+                  entirely when there is no repo row to clear, rather than
+                  offering a button that would do nothing. */}
+              {visible.length > 0 && (
+                <div className="dl-head">
+                  <button
+                    className="dl-clear"
+                    onClick={() => onDismissAll(visible)}
+                    title="Dismiss every visible update"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              {/* ONE list, TWO row kinds (D586). Repo updates first, then
+                  failures: the repo rows are the actionable ones (Update /
+                  Switch), and a failure is a record of something that already
+                  ended. `JobRow` is reused verbatim rather than a new row shape
+                  being invented for this — it already draws the title, the
+                  failure sentence and the ✕, and it already carries D572's
+                  rejected-request surfacing, which is the behaviour a dismiss
+                  here most needs to keep. */}
               <div className="dl-rows">
                 {visible.map((row) => (
                   <RepoRowView
@@ -394,6 +443,21 @@ export function RepoUpdatesCardView({
                     row={row}
                     onDone={onDone}
                     onDismiss={() => onDismiss(row.repo.root, repoDismissSignature(row.repo))}
+                  />
+                ))}
+                {failed.map((job) => (
+                  <JobRow
+                    key={job.id}
+                    job={job}
+                    onChanged={onJobsChanged ?? NOOP}
+                    // A REAL patcher (D586): `JobRow`'s dismiss calls
+                    // `onPatch(js => js.filter(...))` on success, and the
+                    // shell's own `failed` state is exactly that list — so the
+                    // row goes the instant the server confirms, instead of
+                    // lingering until the next poll. D572's rejected-request
+                    // sentence still shows on failure, because the patch only
+                    // runs when the request landed.
+                    onPatch={onFailedPatch ?? NOOP_PATCH}
                   />
                 ))}
               </div>
@@ -429,18 +493,30 @@ export function RepoUpdatesDockView({
   rows,
   dismissed,
   ready,
+  failed = [],
   onDismiss,
   onDismissAll,
   onDone,
+  onJobsChanged,
+  onFailedPatch,
 }: {
   rows: RepoRow[];
   dismissed: Record<string, string>;
   /** Has the upstream read answered once (autoExpand.ts's `ready`)? Optional
    *  so a caller that mounts this with a fixed list keeps the old behaviour. */
   ready?: boolean;
+  /** FAILED JOBS (D586) — `state: "error"` rows re-routed out of the Jobs
+   *  section, drawn beside the repo rows. Optional and defaulted so every
+   *  existing caller and test keeps working unchanged. */
+  failed?: Job[];
   onDismiss: (root: string, signature: string) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
+  /** A failed row was cancelled/dismissed — ask the jobs poll to re-read.
+   *  Optional: a caller with no jobs of its own has nothing to refresh. */
+  onJobsChanged?: () => void;
+  /** Remove a dismissed failure from the shell's own list, immediately. */
+  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
 }) {
   const [collapsed, setCollapsed] = useState(loadCollapsed);
 
@@ -453,6 +529,19 @@ export function RepoUpdatesDockView({
     visible.map((row) => row.repo.root),
     collapsed,
     ready,
+  );
+  // FAILURES SET THE DOT AND NEVER OPEN THE PANEL (D586, `announceOnly`) —
+  // the one place D574's "always show the notification" is the wrong
+  // instinct. A background pyramid build failing deserves a mark on the chip,
+  // not a panel thrown over the page the user is working in. A second hook
+  // instance rather than merging the id lists, because the two sources want
+  // opposite visibility behaviour from the same machinery; `ready` is `true`
+  // here since the jobs poll's own snapshot is what produced this list.
+  const { hasNew: hasFailureNew } = useAutoExpandOnNew(
+    failed.map((job) => job.id),
+    collapsed,
+    true,
+    true,
   );
   // The saved preference, overridden in EITHER direction by whichever
   // transient flag is standing (D580 adds the closing half; the two are
@@ -499,10 +588,13 @@ export function RepoUpdatesDockView({
     <RepoUpdatesCardView
       rows={rows}
       dismissed={dismissed}
+      failed={failed}
       collapsed={!open}
-      hasNew={hasNew}
+      hasNew={hasNew || hasFailureNew}
       onToggle={toggle}
       onClose={close}
+      onJobsChanged={onJobsChanged}
+      onFailedPatch={onFailedPatch}
       onDismiss={onDismiss}
       onDismissAll={onDismissAll}
       onDone={onDone}
@@ -510,7 +602,13 @@ export function RepoUpdatesDockView({
   );
 }
 
-export default function RepoUpdatesDock() {
+export default function RepoUpdatesDock({
+  failed = [],
+  onFailedPatch,
+}: {
+  failed?: Job[];
+  onFailedPatch?: (fn: (jobs: Job[]) => Job[]) => void;
+} = {}) {
   const { repos, settled, refresh } = useRepoUpdates();
   const rows = repoRows(repos);
   const { dismissed, dismissOne, dismissAll } = useDismissed();
@@ -520,6 +618,8 @@ export default function RepoUpdatesDock() {
       rows={rows}
       dismissed={dismissed}
       ready={settled}
+      failed={failed}
+      onFailedPatch={onFailedPatch}
       onDismiss={dismissOne}
       onDismissAll={dismissAll}
       onDone={() => refresh()}

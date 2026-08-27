@@ -12,6 +12,7 @@
 // `globalThis.fetch` stub in the one test that presses a row's own button.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
+import type { Job } from "@platform/lib/jobs";
 
 // NEITHER "@platform/lib/router" NOR "@platform/lib/api" is `mock.module`d
 // here — found the hard way, live: an earlier version of this file DID mock
@@ -77,6 +78,31 @@ function text(node: ReactTestRendererJSON | null): string {
   return (node.children ?? []).map((c) => text(c as ReactTestRendererJSON)).join("");
 }
 
+// A FAILED job, for the D586 rows this section now also draws. Only
+// `state: "error"` is re-routed here; running/done/cancelled stay in Jobs.
+const failedJob = (over: Partial<Job> = {}): Job => ({
+  id: "sys:ai-image:boom",
+  title: "Pyramid build",
+  detail: "",
+  model: "",
+  kind: "task",
+  state: "error",
+  done: null,
+  total: null,
+  total_scope: "phase",
+  unit: "",
+  message: "GDAL ran out of memory",
+  page: "",
+  owner: "server",
+  cancellable: false,
+  cancel_requested: false,
+  started_at: 0,
+  updated_at: 0,
+  finished_at: 0,
+  stalled: false,
+  ...over,
+});
+
 const status = (over: Partial<RepoStatus> = {}): RepoStatus => ({
   root: "/Users/me/Work/widget",
   branch: "main",
@@ -96,6 +122,7 @@ function renderInstance(
     <RepoUpdatesCardView
       rows={rows}
       dismissed={props.dismissed ?? {}}
+      failed={props.failed ?? []}
       collapsed={props.collapsed ?? false}
       hasNew={props.hasNew ?? false}
       onToggle={props.onToggle ?? (() => {})}
@@ -436,4 +463,117 @@ test("a re-check that moved NOTHING leaves a dismissed row dismissed and the pan
   expect(findAll(after, "q-row")).toHaveLength(0);
   expect(findAll(after, "dl-panel")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
+});
+
+
+// ---------------------------------------------------------------- D586: failures land here
+//
+// User: "maybe we can have a flow like running activities are shown in jobs and
+// after done, a completed message goes to notifications?" — the cheap version,
+// with no notification store: `fused_render/jobs.py`'s `_sweep` already keeps
+// `error` rows until they are explicitly dismissed, so this is a client-side
+// re-route of rows that already exist.
+
+test("a failed job draws as a row here, with its failure message", () => {
+  const tree = renderView({ rows: [], failed: [failedJob()] });
+  expect(tree).not.toBeNull();
+  const rows = findAll(tree, "dl-row");
+  expect(rows).toHaveLength(1);
+  expect(text(rows[0])).toContain("Pyramid build");
+  expect(text(rows[0])).toContain("GDAL ran out of memory");
+});
+
+test("the count is repo rows PLUS failures — not either one alone", () => {
+  const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
+  const tree = renderView({
+    rows,
+    failed: [failedJob(), failedJob({ id: "sys:ai-image:boom2" })],
+  });
+  expect(text(findAll(tree, "dl-count")[0])).toBe("4");
+});
+
+test("failures alone still make the section non-idle", () => {
+  const tree = renderView({ rows: [], failed: [failedJob()] });
+  expect(findAll(tree, "dl-panel-empty")).toHaveLength(0);
+  expect(text(findAll(tree, "dl-count")[0])).toBe("1");
+  expect((findAll(tree, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+    "is-idle",
+  );
+});
+
+test("both sources empty is what draws the one empty sentence", () => {
+  const tree = renderView({ rows: [], failed: [] });
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
+  expect(findAll(tree, "dl-zero")).toHaveLength(1);
+});
+
+test("a failure colours the chip — the tint moved here from Jobs (D586)", () => {
+  const withFailure = renderView({ rows: [], failed: [failedJob()] });
+  expect(
+    (findAll(withFailure, "dl-toggle")[0].props.className as string).split(" "),
+  ).toContain("is-failure");
+
+  const repoOnly = renderView({ rows: repoRows([status()]), failed: [] });
+  expect((findAll(repoOnly, "dl-toggle")[0].props.className as string).split(" ")).not.toContain(
+    "is-failure",
+  );
+});
+
+test("Clear is offered for repo rows only — a failure is dismissed by its own row", () => {
+  // Two dismissal models, deliberately NOT unified (D586): a repo dismissal is
+  // client-side and expires when the repo moves (D585 finding 3), while a
+  // failure's dismissal is server-side and permanent. One Clear cannot honestly
+  // promise both.
+  const failuresOnly = renderView({ rows: [], failed: [failedJob()] });
+  expect(findAll(failuresOnly, "dl-clear")).toHaveLength(0);
+  // The row still carries its own dismiss control.
+  expect(findAll(failuresOnly, "dl-x")).toHaveLength(1);
+
+  const withRepo = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
+  expect(findAll(withRepo, "dl-clear")).toHaveLength(1);
+});
+
+test("repo rows come before failures — the actionable rows first", () => {
+  const tree = renderView({ rows: repoRows([status({ root: "/a/one" })]), failed: [failedJob()] });
+  const panel = findAll(tree, "dl-rows")[0];
+  const kinds = (panel.children ?? []).map((c) =>
+    ((c as ReactTestRendererJSON).props?.className as string) ?? "",
+  );
+  expect(kinds[0]).toContain("q-row");
+  expect(kinds[1]).toContain("dl-row");
+});
+
+// THE ONE PLACE D574 IS WRONG (D586): a background build failing must set the
+// dot, not throw a panel over the page the user is working in. Repo arrivals
+// keep their auto-open; failures are announce-only.
+test("a failure arriving does NOT auto-open the panel — it only sets the dot", () => {
+  const renderer = renderDockInstance([]);
+  clickDockToggle(renderer); // collapse
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(0);
+
+  act(() => {
+    renderer.update(
+      <RepoUpdatesDockView
+        rows={[]}
+        dismissed={{}}
+        failed={[failedJob()]}
+        onDismiss={() => {}}
+        onDismissAll={() => {}}
+        onDone={() => {}}
+      />,
+    );
+  });
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+});
+
+test("a repo row arriving still DOES auto-open — the suppression is failures only", () => {
+  const renderer = renderDockInstance([]);
+  clickDockToggle(renderer); // collapse
+  updateDockInstance(renderer, repoRows([status({ root: "/a/one" })]));
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
 });

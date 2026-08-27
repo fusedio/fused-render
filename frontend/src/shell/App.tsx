@@ -15,6 +15,7 @@
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { Job } from "@platform/lib/jobs";
 import {
   IS_EMBED,
   IS_PREVIEW,
@@ -460,6 +461,16 @@ function ClaudeConfigView() {
 
 export default function App({ config }: { config: Config }) {
   const epoch = useNavEpoch();
+
+  // FAILED JOBS, ON THEIR WAY FROM Jobs TO Notifications (D586). `QueueDock`
+  // already receives `DownloadManager`'s full jobs snapshot on every poll and
+  // forwards just the `error` rows here; `RepoUpdatesDock` draws them beside
+  // its repo rows. This lives in `App` because it is the only place both
+  // sections are in scope — `StatusBar` deliberately takes them as opaque
+  // `ReactNode`s and must not learn what its children are. `QueueDock` only
+  // calls up when the error-id SET changes, so this does not re-render the
+  // shell on every poll.
+  const [failedJobs, setFailedJobs] = useState<Job[]>([]);
 
   // Background mount-health poll → global disconnect/reconnect toasts. Mounted
   // once here for the page's lifetime (no-ops in embed); renders via NotificationHost.
@@ -993,8 +1004,15 @@ export default function App({ config }: { config: Config }) {
         {!IS_EMBED && (
           <StatusBar
             models={<ModelsDock />}
-            activity={<QueueDock />}
-            repoUpdates={<RepoUpdatesDock />}
+            /* D586: failures are re-routed from Jobs to Notifications, and
+               this is the one place both sections are in scope. Plain prop
+               wiring on purpose — the alternative was a shared store, which
+               would be a new subsystem for a list that one section already
+               polls and the other only reads. */
+            activity={<QueueDock onFailed={setFailedJobs} />}
+            repoUpdates={
+              <RepoUpdatesDock failed={failedJobs} onFailedPatch={setFailedJobs} />
+            }
           />
         )}
       </div>

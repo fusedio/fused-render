@@ -106,6 +106,7 @@ import {
   jobAmount,
   jobFraction,
   jobRows,
+  inFlightJobs,
   jobsAfterClear,
   jobStatusLine,
   pollInterval,
@@ -605,7 +606,19 @@ export function DownloadManagerView({
   // nothing visible inside it (the bug this comment used to leave standing:
   // `JobRow` alone returning null for a "done" job left every one of those
   // still counting it).
-  const jobs = jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j));
+  // `inFlightJobs` — FAILURES ARE NOT DRAWN HERE ANY MORE (D586, user: "maybe
+  // we can have a flow like running activities are shown in jobs and after
+  // done, a completed message goes to notifications?"). An `error` row is not
+  // work in progress, which is what this section claims to be, so it moves to
+  // Notifications; `done`/`cancelled` are untouched and keep their existing
+  // vanish-on-success and TTL behaviour. Applied HERE, upstream of every
+  // derived number below — the count, `clearableCount`, the idle predicate,
+  // the fold — so none of them can disagree about what this section holds
+  // (the likeliest bug in this change was a count that still included
+  // failures).
+  const jobs = inFlightJobs(
+    jobRows(reported, queue?.drawn).filter((j) => !isVanishedOnSuccess(j)),
+  );
   const count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };
   const queued = count.waiting + count.running;
 
@@ -655,14 +668,12 @@ export function DownloadManagerView({
   // quietly abandon, and the per-row ✕ stays reachable for a stalled row
   // someone wants gone right now.
   const clearable = clearableCount(jobs);
-  // Colour means STATE, not decoration (code review revision): everything
-  // terminal and nothing left running or queued, with at least one row that
-  // failed, is the one case worth a different colour from the ordinary
-  // "things are happening" chip. Mirrors `jobsSummary`'s own "N failed"
-  // branch exactly (jobs.ts) rather than pattern-matching its returned
-  // string, so the two can never silently drift apart.
-  const active = jobs.filter(isRunning).length + count.running + count.waiting;
-  const hasFailure = active === 0 && jobs.some((j) => j.state === "error");
+  // THE FAILURE TINT IS GONE FROM THIS CHIP (D586). It used to colour the chip
+  // `--error` when everything was terminal and something had failed — but
+  // failures no longer appear in this section at all, so the condition could
+  // never fire again and keeping it would have been dead code pretending to be
+  // a state. The tint moved WITH the rows, to the Notifications chip
+  // (RepoUpdatesDock.tsx), which is now the section that actually holds them.
 
   // ONE unified toggle for a chip whose visible state may be the SAVED
   // preference or either transient override (D580). It acts on what the user
@@ -728,7 +739,7 @@ export function DownloadManagerView({
           same hover wash — now that the idle SENTENCE ("No jobs", D579) has
           moved into the panel below rather than living in the chip. */}
       <button
-        className={"dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")}
+        className={"dl-toggle" + (idle ? " is-idle" : "")}
         onClick={toggle}
         aria-expanded={open}
         title={open ? "Hide jobs" : "Show jobs"}

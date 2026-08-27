@@ -104,6 +104,41 @@ export function isRunning(job: Job): boolean {
  * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
  * what any of its rows are.
  */
+/**
+ * A FAILURE belongs to Notifications, not Jobs (D586, user: "maybe we can have
+ * a flow like running activities are shown in jobs and after done, a completed
+ * message goes to notifications?").
+ *
+ * `Jobs` claims to be work IN PROGRESS, and an `error` row is not in progress —
+ * it sat there indefinitely while being the one thing that actually wanted
+ * attention. Only `error` moves: a `cancelled` row is user-initiated (they
+ * already know) and ages out on its own, and a `done` row has its artefact on
+ * disk, so neither becomes a notification.
+ *
+ * This needs no notification store, and that is why the cheap version works:
+ * `fused_render/jobs.py`'s `_sweep` already keeps `error` rows until they are
+ * explicitly dismissed (where `done`/`cancelled` age out via `first_read_at` +
+ * `FINISHED_TTL_S`), so the server-side lifetime, the dismissal endpoint and
+ * its `X-Fused` guard all already exist. This is a client-side re-route of
+ * rows that are already there.
+ */
+export function isFailure(job: Job): boolean {
+  return job.state === "error";
+}
+
+/** What the Jobs section draws: everything EXCEPT failures. Deliberately not
+ *  "only running" — `done` and `cancelled` rows keep behaving exactly as they
+ *  did (vanish-on-success, then the server's TTL), because D586 moves failures
+ *  and nothing else. */
+export function inFlightJobs(jobs: Job[]): Job[] {
+  return jobs.filter((j) => !isFailure(j));
+}
+
+/** What the Notifications section draws alongside its repo rows. */
+export function failedJobs(jobs: Job[]): Job[] {
+  return jobs.filter(isFailure);
+}
+
 export function clearableCount(jobs: Job[]): number {
   return jobs.filter((j) => !isRunning(j)).length;
 }

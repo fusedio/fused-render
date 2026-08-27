@@ -54,6 +54,7 @@ import {
   type ScheduledMessage,
 } from "@platform/lib/api";
 import {
+  failedJobs,
   cancelJob,
   isRunning,
   jobStatusLine,
@@ -309,7 +310,7 @@ function Row({
   );
 }
 
-export default function QueueDock() {
+export default function QueueDock({ onFailed }: { onFailed?: (jobs: Job[]) => void } = {}) {
   const { snap, refresh } = useQueue();
   // The card's own job snapshot, handed up on every one of its polls — about once a
   // second while anything is live, against this half's six. It is what the status
@@ -337,7 +338,29 @@ export default function QueueDock() {
   // in-flight run pokes on every shell mount (Bugbot, PR #648).
   const sawEcho = useRef(false);
   const sawJobs = useRef(false);
+  // FAILURES GO TO NOTIFICATIONS (D586). This half already receives
+  // `DownloadManager`'s full, unfiltered snapshot on every poll, so the
+  // re-route needs no second poller and no store — it forwards the error rows
+  // to the shell, which hands them to `RepoUpdatesDock`. Through a ref so the
+  // callback below keeps its stable `[]` identity (it is `DownloadManager`'s
+  // `queue.onJobs`, and re-creating it would re-arm that effect every render).
+  const onFailedRef = useRef(onFailed);
+  onFailedRef.current = onFailed;
+  // Only ANNOUNCE a change, never every poll: the snapshot arrives about once
+  // a second while anything is live, and calling up unconditionally would set
+  // state in `App` — re-rendering the whole shell — on every one of those.
+  // Compared by id set, since a failed job's own fields no longer move.
+  const failedIds = useRef("");
+  const forwardFailed = useCallback((next: Job[]) => {
+    const failed = failedJobs(next);
+    const key = failed.map((j) => j.id).join("\u0000");
+    if (key === failedIds.current) return;
+    failedIds.current = key;
+    onFailedRef.current?.(failed);
+  }, []);
+
   const onJobs = useCallback((next: Job[]) => {
+    forwardFailed(next);
     if (!sawEcho.current) {
       sawEcho.current = true;
       setJobs(next);
@@ -351,7 +374,7 @@ export default function QueueDock() {
     sawJobs.current = true;
     prevJobs.current = next;
     setJobs(next);
-  }, []);
+  }, [forwardFailed]);
 
   // What this half still owns: its rows minus any live one whose run the registry
   // says has ended. Without that the outcome row would wait for the next queue read

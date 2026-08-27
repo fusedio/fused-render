@@ -105,10 +105,21 @@ export interface AutoExpandState {
 // `ready` rather than `ids.length > 0` is what distinguishes "nothing here
 // yet" from "genuinely nothing" — the latter must still let the very first
 // real arrival through as news.
+// `announceOnly` — set the DOT and never touch visibility (D586). Failures
+// re-routed into Notifications must not throw a panel over the page: a pyramid
+// build failing in the background is worth a mark on the chip, not an
+// interruption, and it is the one case where D574's "always show the
+// notification" is the wrong instinct. A section can therefore run TWO
+// instances of this hook: one ordinary (its repo rows, which do auto-open) and
+// one announce-only (its error rows, which only ever set the dot). It disables
+// the drain-close as well as the auto-open — "never touch visibility" has to
+// mean both, or an error list draining would close a panel the repo rows are
+// still filling.
 export function useAutoExpandOnNew(
   ids: readonly string[],
   collapsed: boolean,
   ready = true,
+  announceOnly = false,
 ): AutoExpandState {
   const seenRef = useRef<Set<string> | null>(null);
   const [hasNew, setHasNew] = useState(false);
@@ -151,7 +162,7 @@ export function useAutoExpandOnNew(
       // the old `collapsed`-only test could never reach.
       if (!panelOpen) {
         setHasNew(true);
-        setOverride("open");
+        if (!announceOnly) setOverride("open");
       }
       return;
     }
@@ -167,7 +178,7 @@ export function useAutoExpandOnNew(
     // because leaving a `"closed"` override standing on an already-closed
     // section would make the next chip click spend itself clearing it instead
     // of opening the panel.
-    if (prev.size > 0 && ids.length === 0 && panelOpen) {
+    if (prev.size > 0 && ids.length === 0 && panelOpen && !announceOnly) {
       setHasNew(false);
       setOverride("closed");
     }

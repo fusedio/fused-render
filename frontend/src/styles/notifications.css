@@ -475,11 +475,14 @@
 }
 
 /* FAILURE: the one state worth a colour other than the ordinary "things are
-   happening" ink — everything terminal, nothing left running or queued, and
-   at least one row failed (DownloadManagerView's own `hasFailure`, mirroring
-   `jobsSummary`'s "N failed" branch exactly rather than guessing from the
-   rendered string). Applied to the whole chip, so the whole line reads as
-   needing a look rather than just the count inside it. */
+   happening" ink. ON THE NOTIFICATIONS CHIP NOW, not Jobs (D586) — failures
+   were re-routed out of Jobs, so the condition there could never fire again;
+   the tint moved with the rows, to the section that actually holds them
+   (`RepoUpdatesCardView`'s own `hasFailure`). It is also simpler there: an
+   `error` row is always terminal, so Jobs' old "everything terminal and
+   nothing left running" clause had nothing left to say and is gone. Applied to
+   the whole chip, so the whole line reads as needing a look rather than just
+   the count inside it. */
 .dl-toggle.is-failure {
   color: var(--error);
 }
