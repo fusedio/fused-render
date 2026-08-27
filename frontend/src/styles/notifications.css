@@ -168,26 +168,39 @@
 }
 
 /* The whole summary is the collapse target, not a lone chevron: the header is
-   already a row-height hit area and a 12px glyph is not. */
+   already a row-height hit area and a 12px glyph is not. The hover wash on
+   the whole button (not just the chevron) is what tells the eye that hit
+   area is real, rather than leaving the header looking like plain text. */
 .dl-toggle {
   flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 0;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border-radius: 6px;
   font: inherit;
   color: var(--fg);
   background: none;
   border: none;
   cursor: pointer;
   text-align: left;
+  transition: background-color var(--dur-med) var(--ease-out);
 }
 
+.dl-toggle:hover {
+  background: var(--row-bg-hover);
+}
+
+/* Legible at a glance rather than merely present: a muted 11px glyph reads
+   as decoration, not as "this opens something". Full --fg and a bigger
+   glyph make the header's clickability obvious without touching the hit
+   area (still the whole `.dl-toggle`) or the collapse rotation below. */
 .dl-chevron {
   flex: 0 0 auto;
-  color: var(--fg-muted);
-  font-size: 11px;
+  color: var(--fg);
+  font-size: 15px;
   line-height: 1;
   transition: transform var(--dur-med) var(--ease-out);
 }
