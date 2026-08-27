@@ -30,8 +30,9 @@
 //   2. A stage (scrim + fresh iframe of the entry under `_preview=1` /
 //      `_nofocus=1`), only when no usable thumb element was offered or it is
 //      off-screen/too small to be worth photographing. The frame is sized so
-//      its shot lands under MAX_SHOT_WIDTH at this DPR, which is why there is
-//      no downscale step anywhere: the server writes exactly the pixels asked.
+//      its shot lands under MAX_SHOT_WIDTH at this DPR; only a crop source
+//      that is itself wider than that (the explorer's preview pane) gets
+//      re-encoded down (`capWidth`).
 //
 // Every failure — no server, permission denied, the app failing to load, the
 // window straddling displays, an empty body — resolves to undefined, never a
@@ -63,7 +64,7 @@ const SETTLE_MS = 1500;
 // The captured PNG's width cap. A shot lands at the display's own pixel
 // scale — a 5k-wide preview.png inside every .fused is waste; card thumbs
 // render ~400px wide. The stage sizes its frame from this; a thumb crop is
-// always under it.
+// always under it; a wider crop source is scaled down to it (`capWidth`).
 const MAX_SHOT_WIDTH = 1600;
 
 // The stage frame's shape — the card thumb's own (appfile.MAX_PREVIEW_BYTES
@@ -133,11 +134,18 @@ function cropRect(el: Element | null | undefined): DOMRect | null {
 // stopPropagation in a menu cannot hide it).
 let viewportOrigin: { x: number; y: number } | undefined;
 if (typeof window !== "undefined") {
-  const learn = (e: MouseEvent) => {
-    viewportOrigin = { x: e.screenX - e.clientX, y: e.screenY - e.clientY };
-  };
-  window.addEventListener("pointerdown", learn, { capture: true, passive: true });
-  window.addEventListener("click", learn, { capture: true, passive: true });
+  // `pointerdown` only, never `click`: a keyboard-activated click is a real
+  // MouseEvent with screenX/clientX all ZERO, which would teach an origin of
+  // (0,0) and send viewport coordinates to the server as screen ones. No
+  // pointer ever produces a pointerdown, so a keyboard export falls through
+  // to the outer/inner arithmetic below instead.
+  window.addEventListener(
+    "pointerdown",
+    (e: PointerEvent) => {
+      viewportOrigin = { x: e.screenX - e.clientX, y: e.screenY - e.clientY };
+    },
+    { capture: true, passive: true },
+  );
 }
 
 // A viewport rect as the SCREEN sees it, in the browser's own screen units
@@ -155,13 +163,47 @@ function screenRect(r: DOMRect): [number, number, number, number] {
 }
 
 // Two frames, so whatever the click that reached here was tearing down — the
-// context menu over the thumb, the hover chip — has been painted away before
-// the screen is photographed. Tab capture never needed this: its grab came
-// long after the prompt; a native shot is immediate.
+// context menu over the thumb — has been painted away before the screen is
+// photographed. Tab capture never needed this: its grab came long after the
+// prompt; a native shot is immediate.
 function nextPaint(): Promise<void> {
   return new Promise((res) =>
     requestAnimationFrame(() => requestAnimationFrame(() => res())),
   );
+}
+
+// While a shot is being taken the body carries this attribute, and the
+// stylesheet hides the overlay UI that sits ON the thumb — the card's hover
+// export chip (`.app-pcard-export`, apps.css). Clicking that chip does not end
+// the hover, so without this the chip is in the pixels and becomes part of
+// the artifact's permanent thumbnail. An attribute rather than a class on
+// the card so any surface with overlay UI over its capture source can join
+// the same rule.
+const SHOOTING_ATTR = "data-capture-shooting";
+
+// A PNG wider than the cap, re-encoded narrower. The thumb and stage paths
+// never need this — a card thumb is ~400 CSS px and the stage is sized to
+// the cap — but the explorer's preview pane is the crop source there and
+// fills whatever the pane is; at 2x on a wide window that is a 4k-wide still,
+// which can cross the export route's 8 MiB cap and ship the .fused with no
+// preview at all. Decode → canvas → encode only in that case.
+async function capWidth(blob: Blob, maxWidth: number): Promise<Blob | undefined> {
+  const bitmap = await createImageBitmap(blob);
+  try {
+    if (bitmap.width <= maxWidth) return blob;
+    const scale = maxWidth / bitmap.width;
+    const canvas = document.createElement("canvas");
+    canvas.width = maxWidth;
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return undefined;
+    ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return await new Promise<Blob | undefined>((res) =>
+      canvas.toBlob((b) => res(b ?? undefined), "image/png"),
+    );
+  } finally {
+    bitmap.close();
+  }
 }
 
 export async function captureAppPreview(
@@ -202,6 +244,7 @@ export async function captureAppPreview(
       await new Promise((res) => setTimeout(res, SETTLE_MS));
       source = frame;
     }
+    document.body.setAttribute(SHOOTING_ATTR, "");
     await nextPaint();
     // Re-read at shoot time: cheap insurance against layout shifting while
     // the stage settled.
@@ -218,12 +261,13 @@ export async function captureAppPreview(
     if (!res.ok) return undefined;
     const blob = await res.blob();
     if (!blob.size || !blob.type.startsWith("image/png")) return undefined;
-    return blob;
+    return await capWidth(blob, MAX_SHOT_WIDTH);
   } catch {
     // Server unreachable, frame refused — all the same outcome: export
     // without a preview.
     return undefined;
   } finally {
+    document.body.removeAttribute(SHOOTING_ATTR);
     stage?.remove();
   }
 }
