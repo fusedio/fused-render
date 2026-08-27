@@ -68,6 +68,7 @@ function renderInstance(
   return create(
     <ModelsCardView
       models={props.models ?? [model()]}
+      ceilingBytes={props.ceilingBytes ?? null}
       collapsed={props.collapsed ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onUnload={props.onUnload ?? (async () => {})}
@@ -150,16 +151,90 @@ test("muting tracks whether there are rows at all, not whether bytes were report
   }
 });
 
-// The panel is where cost still lives, and per-worker it is a real comparable
-// figure even though the aggregate was not — so this row keeps its number
-// (D589 deliberately left `.dl-amount` alone). The LIVE figure is
-// `osFootprintBytes` since D597, not `residentBytes`: RSS does not see Metal
-// buffers, so it under-reported an MLX worker by more than a factor of ten.
-test("the panel row reports the OS footprint, not RSS", () => {
+// D600 (the user's own pick): BOTH figures, both instantaneous, RSS leading
+// and the OS footprint parenthetical — `1.8 GB now (24 GB held)`. RSS is a
+// strict subset of the footprint, which is what makes the pair read as one
+// fact rather than as the contradiction D597's cost-vs-live pairing produced.
+test("the panel row reads RSS first and the OS footprint in parentheses", () => {
   const tree = renderView({
-    models: [model({ osFootprintBytes: 4 * 1024 ** 3, residentBytes: 172_000_000 })],
+    models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: 25_676_453_144 })],
   });
-  expect(text(findAll(findAll(tree, "dl-row")[0], "dl-amount")[0])).toBe("4.0 GB");
+  expect(text(findAll(findAll(tree, "dl-row")[0], "dl-amount")[0])).toBe(
+    "1.7 GB now (24 GB held)",
+  );
+});
+
+// The measured COST left the row for the hover title (D600) — it is still in
+// the payload for `fit.py` and the AI Models page, it just stopped competing
+// for the row's one visible slot.
+test("the measured cost moves into the title, with its basis and the ceiling", () => {
+  const tree = renderView({
+    models: [
+      model({
+        residentBytes: 1_850_960_734,
+        osFootprintBytes: 25_676_453_144,
+        footprintBytes: 14_134_928_062,
+        footprintBasis: "measured",
+      }),
+    ],
+    ceilingBytes: 25_769_803_776,
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  const title = cell.props.title as string;
+  expect(title).toContain("13 GB");
+  expect(title).toContain("measured on this machine");
+  expect(title).toContain("Machine ceiling 24 GB"); // the ceiling, finally named
+  // ...and NOT on the row's visible text.
+  expect(text(cell)).not.toContain("13 GB");
+});
+
+// THE BAND IS ON THE PARENTHETICAL (D600, the coordinator's deliberate
+// deviation): it is computed from `osFootprintBytes` against the ceiling, so it
+// must be painted on that figure and not on the leading RSS. Banding the
+// primary coloured a 1.8 GB RSS green while the machine sat at 24 GB of 24 GB.
+test("the colour band sits on the held figure, never on the leading one", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: 25_676_453_144 })],
+    ceilingBytes: 25_769_803_776, // ~100% used -> not "easy"
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  // The primary carries no band class at all.
+  expect((cell.props.className as string).split(" ")).toEqual(["dl-amount"]);
+  const heldSpan = findAll(cell, "dl-mem-live")[0];
+  expect((heldSpan.props.className as string).split(" ")).toContain("is-mem-tight");
+});
+
+test("a model comfortably under the ceiling bands its held figure easy", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 500_000_000, osFootprintBytes: 4 * 1024 ** 3 })],
+    ceilingBytes: 25_769_803_776,
+  });
+  const heldSpan = findAll(findAll(tree, "dl-row")[0], "dl-mem-live")[0];
+  expect((heldSpan.props.className as string).split(" ")).toContain("is-mem-easy");
+});
+
+// NO FIGURE, NO COLOUR — and specifically no falling back to banding the
+// primary, which would look identical while silently changing what the colour
+// means. `osFootprintBytes` is null off Darwin and on a worker with no counter.
+test("no OS footprint means no colour anywhere, not a default band", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: null })],
+    ceilingBytes: 25_769_803_776,
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).toBe("1.7 GB now");
+  expect(cell.props.className as string).not.toContain("is-mem-");
+  expect(findAll(cell, "dl-mem-live")).toHaveLength(0);
+});
+
+// ...and with no ceiling to divide by, same rule: a figure but no judgement.
+test("no machine ceiling means no colour either", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 500_000_000, osFootprintBytes: 4 * 1024 ** 3 })],
+    ceilingBytes: null,
+  });
+  const heldSpan = findAll(findAll(tree, "dl-row")[0], "dl-mem-live")[0];
+  expect(heldSpan.props.className as string).not.toContain("is-mem-");
 });
 
 // A bring-up is legitimately listed in the panel, with its state standing in
@@ -181,16 +256,22 @@ test("collapsed shows no panel at all — no gauge, no rows, just the chip", () 
   expect(findAll(tree, "dl-row")).toHaveLength(0);
 });
 
-test("expanded draws one row per model — its name, its live footprint, an Unload button, no gauge", () => {
+test("expanded draws one row per model — its name, its memory figures, an Unload button, no gauge", () => {
   const tree = renderView({
     models: [
-      model({ model: "mlx-community/Qwen3-8B-MLX-4bit", osFootprintBytes: 4_200_000_000 }),
+      model({
+        model: "mlx-community/Qwen3-8B-MLX-4bit",
+        residentBytes: null,
+        osFootprintBytes: 4_200_000_000,
+      }),
     ],
   });
   const row = findAll(tree, "dl-row")[0];
   expect(text(findAll(row, "dl-title")[0])).toBe("Qwen3-8B-MLX-4bit"); // owner trimmed, matching repoName()
   expect(findAll(row, "dl-title")[0].props.title).toBe("mlx-community/Qwen3-8B-MLX-4bit");
-  expect(text(findAll(row, "dl-amount")[0])).toBe("3.9 GB");
+  // No RSS reported, so the held figure stands alone rather than stranded in
+  // parentheses with nothing in front of it.
+  expect(text(findAll(row, "dl-amount")[0])).toBe("3.9 GB held");
   expect(text(findAll(row, "dl-row-cancel")[0])).toBe("Unload");
   // No gauge, no progress fill — this is a quick-info popover (user call).
   expect(findAll(tree, "dl-bar")).toHaveLength(0);

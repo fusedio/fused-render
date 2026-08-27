@@ -90,23 +90,28 @@ function saveCollapsed(collapsed: boolean): void {
 // (round 1: two controls, one meaning each) — Unload is a distinct verb
 // from Cancel, but the same visual language: a row-scoped, quietly-styled
 // text button, not a glyph.
-/** THE ROW'S MEMORY FIGURES (D594, user: "lets also color code the memory
- *  usage of the model in relation to the user's total memory. if possible lets
- *  also add the real resident memory in a parenthesis next to it").
+/** THE ROW'S MEMORY FIGURES. Both are INSTANTANEOUS now, and one is a genuine
+ *  subset of the other, which is what makes the pair readable at all (D600 —
+ *  the user's own pick from three spelled-out options): `1.8 GB now (24 GB
+ *  held)`.
  *
- *  ORDER IS THE POINT: the model's measured COST is primary and colour-coded,
- *  the live worker RSS is parenthetical. That is what makes the pair honest —
- *  the primary answers "what does this model cost me" and the parenthetical
- *  answers "what is it holding this instant". Reversed, the figure we already
- *  agreed is inaccurate (RSS: "not the model's size") would sit in the
- *  position of authority, which is exactly why D589 took the RSS-summed
- *  aggregate off the chip.
+ *  `residentBytes` LEADS and `osFootprintBytes` is parenthetical, the reverse
+ *  of D594/D597 where the primary was the measured COST. Pairing a durable
+ *  cost with a live reading put two numbers on different time axes side by
+ *  side, and on MLX they disagreed by ~11 GB for no visible reason (13 GB cost
+ *  against 24 GB held). RSS and `phys_footprint` are both "right now", and RSS
+ *  is a strict subset of the footprint, so the pair now reads as "this much
+ *  resident, this much held in total" rather than as a contradiction.
  *
- *  NO FOOTPRINT, NO PRIMARY: a model with nothing measured and nothing
- *  declared falls back to RSS alone, UNCOLOURED — never a coloured guess and
- *  never a `0`. `title` carries the basis in the vocabulary `AiFitVerdict`
- *  already set, so a measured figure reads as fact and the other two as
- *  hedges.
+ *  THE MEASURED COST IS NOT GONE — it moved into the hover `title` with its
+ *  basis. The field stays in the payload because `fit.py` and the AI Models
+ *  page both read it; it simply stopped competing for the row's one visible
+ *  slot. See D601 for why that figure under-reports on MLX and why fixing it
+ *  is deliberately not this change.
+ *
+ *  LABELLED IN WORDS (`now` / `held`): two byte figures side by side are
+ *  otherwise indistinguishable, and the entire point of this pairing is that
+ *  they answer different questions.
  */
 function MemoryCell({
   model,
@@ -115,46 +120,61 @@ function MemoryCell({
   model: AiLoadedModel;
   ceilingBytes: number | null;
 }) {
-  const band = memoryBand(model.footprintBytes, ceilingBytes);
-  // `osFootprintBytes`, NOT `residentBytes` (D597, user: "i see a 12gb (1.8gb)
-  // for flux, but my system monitor says 23gb?"). RSS does not see Metal
-  // buffers at all — a live FLUX worker measured 172 MB of RSS against 23 GB
-  // of dirty IOAccelerator regions — so the old parenthetical was reporting a
-  // number the user could directly observe to be false, in the one slot whose
-  // whole job is to explain memory pressure they can see. This field is the
-  // task's `phys_footprint`: what Activity Monitor shows.
-  const live = formatSize(model.osFootprintBytes);
-  // LABELLED IN WORDS, not bare parentheses (D597): two byte figures side by
-  // side are otherwise indistinguishable, and these two answer different
-  // questions — "what does this model cost" vs "what is the process holding
-  // right now". `now` is short enough for a 340px panel and unambiguous.
-  const liveCell = live ? <span className="dl-mem-live"> ({live} now)</span> : null;
-  if (model.footprintBytes === null) {
-    // Nothing to colour and nothing to compare — the live figure stands alone,
-    // and its `title` says which figure it is so it cannot be read as a cost.
+  // THE BAND IS COMPUTED FROM — AND PAINTED ON — THE PARENTHETICAL (D600,
+  // the coordinator's one deliberate deviation from the option as worded).
+  // Banding the primary would colour a 1.8 GB RSS green while the machine sat
+  // at 24 GB of 24 GB: a signal that is actively false exactly when it matters
+  // most, a model pinning the machine while glowing "comfortable". Against the
+  // ceiling, `osFootprintBytes` is the only figure on this row a colour can
+  // honestly answer "how close is this to the limit" for — so the class goes
+  // on the figure it DESCRIBES, never on its neighbour.
+  const band = memoryBand(model.osFootprintBytes, ceilingBytes);
+  const bandClass = band ? ` is-mem-${band}` : "";
+  const now = formatSize(model.residentBytes);
+  const held = formatSize(model.osFootprintBytes);
+  const cost = formatSize(model.footprintBytes);
+
+  // Everything the row used to show, plus the denominator it was always judged
+  // against but never named.
+  const basisWord =
+    model.footprintBasis === "measured"
+      ? "measured on this machine"
+      : model.footprintBasis === "declared"
+        ? "estimated from the model's declared size"
+        : "estimated from the download size";
+  const title =
+    [
+      now ? `${now} resident right now` : null,
+      held ? `${held} held in total, including the GPU pool` : null,
+      cost ? `Measured cost ${cost}, ${basisWord}` : null,
+      ceilingBytes ? `Machine ceiling ${formatSize(ceilingBytes)}` : null,
+    ]
+      .filter(Boolean)
+      .join(" · ") || undefined;
+
+  // NO FIGURE, NO COLOUR — and no default band either. `osFootprintBytes` is
+  // null off Darwin and on a worker with no counter, which means we do not
+  // know the pressure, and an uncoloured row is the correct rendering of that.
+  // It must never fall back to banding the primary instead: that would keep
+  // the row looking identical while silently changing what the colour MEANS.
+  const heldCell = held ? (
+    <span className={"dl-mem-live" + bandClass}>{held} held</span>
+  ) : null;
+
+  // Three shapes rather than one clever expression, because the degenerate
+  // cases are where a memory cell tells its worst lies: a lone "0", or a
+  // stranded "(… held)" with nothing in front of it.
+  if (!now) {
     return (
-      <span className="dl-amount" title="Held by the process right now">
-        {live}
+      <span className="dl-amount" title={title}>
+        {heldCell}
       </span>
     );
   }
-  const basis =
-    model.footprintBasis === "measured"
-      ? "Measured on this machine"
-      : model.footprintBasis === "declared"
-        ? "Estimated from the model's declared size"
-        : "Estimated from the download size";
   return (
-    <span
-      className={"dl-amount" + (band ? ` is-mem-${band}` : "")}
-      title={
-        `Cost: ${basis.toLowerCase()}` +
-        (ceilingBytes ? `, against ${formatSize(ceilingBytes)} usable` : "") +
-        (live ? ` — ${live} held by the process right now` : "")
-      }
-    >
-      {formatSize(model.footprintBytes)}
-      {liveCell}
+    <span className="dl-amount" title={title}>
+      {`${now} now`}
+      {held ? <> ({heldCell})</> : null}
     </span>
   );
 }

@@ -641,36 +641,37 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* THE MEMORY BANDS (D594, user: "lets also color code the memory usage of the
-   model in relation to the user's total memory"). Three steps matching
-   `AiFitVerdict`'s existing easy/tight/no vocabulary — the AI Models page's fit
-   badge already speaks it, and a second scale for the same concept would be a
-   regression.
+/* THE MEMORY BANDS. Three steps matching `AiFitVerdict`'s existing
+   easy/tight/no vocabulary — the AI Models page's fit badge already speaks it,
+   and a second scale for the same concept would be a regression.
    EXISTING STATUS TOKENS, no new hex: `--success`/`--warning`/`--error` are
    what this palette reserves for exactly this ("--success/--warning/--error say
    what a thing IS", tokens.css's own note), so they theme correctly for free.
    `no` — the model genuinely EXCEEDS the ceiling — is the ONLY band that gets
    the error colour. A large model that fits is not an error, which is the
-   distinction `tight` exists to draw. */
-.dl-amount.is-mem-easy {
+   distinction `tight` exists to draw.
+
+   ON `.dl-mem-live` — THE PARENTHETICAL — NOT `.dl-amount` (D600), moved off
+   the primary deliberately. The band is computed from `osFootprintBytes`
+   against the machine ceiling, so it belongs on the figure it DESCRIBES.
+   Painted on the primary it coloured a 1.8 GB RSS green while the machine sat
+   at 24 GB of 24 GB — a false signal at the one moment the colour matters.
+   `.dl-amount` keeps the row's ordinary muted ink, so the leading "now" figure
+   is never tinted by a judgement about a different number. */
+.dl-mem-live {
+  color: var(--fg-muted);
+}
+
+.dl-mem-live.is-mem-easy {
   color: var(--success);
 }
 
-.dl-amount.is-mem-tight {
+.dl-mem-live.is-mem-tight {
   color: var(--warning);
 }
 
-.dl-amount.is-mem-no {
+.dl-mem-live.is-mem-no {
   color: var(--error);
-}
-
-/* The live RSS, parenthetical beside the cost. Always muted, never banded —
-   it is the "right now" reading, not the figure being judged against the
-   ceiling, and colouring both would make the row's own hierarchy unreadable.
-   `currentColor` is deliberately NOT used for the same reason: this must stay
-   quiet even when the cost beside it is red. */
-.dl-mem-live {
-  color: var(--fg-muted);
 }
 
 /* PROTECTED — never `flex-shrink`: `.dl-pct` here, `.dl-row-cancel` and
