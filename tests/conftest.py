@@ -576,6 +576,59 @@ def _no_ai_idle_reaper_thread(monkeypatch):
     monkeypatch.setattr(supervisor, "start_reaper", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _no_ai_hardware_refresh_thread(monkeypatch):
+    """`create_app` starts the background GPU/VRAM-detection thread
+    (`supervisor.start_hardware_refresh`, SPEC AI-18, D519); no test may let
+    it run.
+
+    Same hazard, same fix, as `_no_ai_idle_reaper_thread` immediately above:
+    the thread fires one probe immediately and then sleeps
+    `_HARDWARE_REFRESH_INTERVAL_S` (hours) — the immediate probe alone is
+    enough to matter here, since `hw_detect.detect_hardware` spawns REAL
+    subprocesses (`nvidia-smi`, `rocm-smi`, `powershell`, `sysctl`) and
+    writes `~/.fused-render/ai_hardware.json` under whatever
+    `FUSED_RENDER_HOME` happens to be current when the daemon thread gets
+    scheduled — not necessarily the tmp home of the test that triggered
+    `create_app`, for the identical race the reaper fixture's docstring
+    demonstrates. A suite that let this run would also be spawning a real
+    `nvidia-smi`/`rocm-smi`/`powershell` process per `TestClient` on any
+    machine that has one, which is both slow and a false positive waiting to
+    happen in CI.
+
+    No test asserts `start_hardware_refresh` spawns a thread; the test that
+    is ABOUT the probe cycle (`tests/test_ai_supervisor_hardware_refresh.py`)
+    drives `_hardware_refresh_tick()` directly, never the thread — matching
+    how `reap_idle`/`idle_workers` are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hub_metadata_refresh_thread(monkeypatch):
+    """`create_app` starts the background Hub-metadata-warming thread
+    (`supervisor.start_hub_metadata_refresh`, code review finding 1 on top
+    of SPEC AI-17); no test may let it run.
+
+    Same hazard, same fix, as `_no_ai_hardware_refresh_thread` immediately
+    above: the thread fires one sweep of `catalog.all_suggested_ids()`
+    immediately, and each id can be a REAL `urllib` fetch to
+    `huggingface.co` (`hub_metadata._fetch_raw`, unmonkeypatched here) under
+    whatever `FUSED_RENDER_HOME` happens to be current when the daemon
+    thread gets scheduled — the identical race the two fixtures above
+    already demonstrate, and here it would also mean this whole SUITE
+    reaching the real network once per `TestClient` construction.
+
+    No test asserts `start_hub_metadata_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_metadata_refresh.py`)
+    drives `_hub_metadata_refresh_tick()` directly, never the thread —
+    matching how the reaper/hardware-refresh siblings are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.

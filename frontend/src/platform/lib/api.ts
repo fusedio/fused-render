@@ -2932,6 +2932,50 @@ export interface AiFitVerdict {
   verdict: "easy" | "tight" | "no";
   basis: "measured" | "declared" | "download";
   footprintBytes: number;
+  /** 0-100, SPEC AI-19: the continuous Gaussian fit score `verdict` is now
+   *  DERIVED from — 100 at or under a comfortable utilization, easing down
+   *  smoothly past it, 0 once the footprint exceeds the selected pool
+   *  outright. Optional so an object built by hand (a test literal, an
+   *  older cached response shape) does not have to carry it. */
+  score?: number;
+  /** How the footprint would run, over whichever pool (VRAM, a combined
+   *  VRAM+RAM offload budget, or system RAM) it was judged against — SPEC
+   *  AI-19 item 6. `"gpu"` also covers Apple Silicon's unified memory and a
+   *  non-Apple unified-memory APU, both of which draw from system RAM
+   *  rather than a separate VRAM carveout. Optional for the same reason
+   *  `score` is. */
+  runMode?: "gpu" | "cpu-offload" | "cpu-only";
+}
+
+/** A tok/s speed estimate for a TEXT GENERATION catalog entry, with its own
+ *  basis — SPEC AI-21. `null` when even the weight size is unknown (no
+ *  `size_gb`, no `params`), mirroring `AiFitVerdict`'s own "unknown is a
+ *  dash, never a guess" contract. Server-side only for `text-generation`
+ *  entries (`ai_runtime.describe_catalog`) — the formula is a tok/s figure,
+ *  and every OTHER capability reports a differently-shaped throughput metric
+ *  (`secondsPerStep`, `realtimeFactor`, `textsPerSecond`), so this field is
+ *  always `null` there rather than a number under a misleading unit. */
+export interface AiSpeedEstimate {
+  tokensPerSecond: number;
+  /** `"bandwidth"` when this machine's cached hardware reported a real
+   *  memory-bandwidth figure for its device; `"backend-constant"` when it
+   *  fell back to a flat per-backend guess (`bandwidthGbS` is then `null`). */
+  method: "bandwidth" | "backend-constant";
+  /** Which backend bucket this machine was judged as — inferred from cached
+   *  hardware/platform, not from the runner that will actually load this
+   *  specific model (no caller threads one through yet). */
+  backend: "cuda" | "metal-mlx" | "metal-other" | "rocm" | "sycl" | "cpu-arm" | "cpu-x86";
+  /** The bandwidth figure actually used, or `null` on the `backend-constant`
+   *  path. */
+  bandwidthGbS: number | null;
+  /** The context length this whole family of estimates assumes — the SAME
+   *  constant `fit.py`'s own KV-cache term uses (8192), stated here because
+   *  this formula does not otherwise model context-length pressure at all. */
+  contextTokens: number;
+  /** Whether this machine's own measured benchmark history adjusted the raw
+   *  formula. */
+  calibrated: boolean;
+  calibrationFactor: number | null;
 }
 
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
@@ -2981,6 +3025,11 @@ export interface AiCatalogModel {
    *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
    *  follows. */
   fit?: AiFitVerdict | null;
+  /** A tok/s speed estimate — see `AiSpeedEstimate`. Only ever non-null on a
+   *  `text-generation` entry; `null` on every other capability and wherever
+   *  the weight size itself is unknown. Optional so an older cached response
+   *  shape (a test literal, a stale client) does not have to carry it. */
+  speedEstimate?: AiSpeedEstimate | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
@@ -3051,6 +3100,22 @@ export interface AiCatalogModel {
    *  change nothing about the vectors. So a control drawn off the truthiness of
    *  this field and the route's own refusal are keyed on the same fact. */
   promptScheme?: string | null;
+  /** Orthogonal capability tags — `"tool-use"` / `"vision"` (SPEC AI-28) — ON
+   *  TOP OF `capability`, never a replacement for it: a model can be
+   *  `text-generation` AND carry either or both tags. `"tool-use"` comes off a
+   *  known-family allowlist (`registry.TOOL_USE_FAMILIES` — Qwen3, Qwen2.5,
+   *  Command R, Hermes, Llama 3/Mistral instruct, Gemma 3/4 `-it`), never a
+   *  regex over the repo id. `"vision"` restates the same fact `acceptsImage`
+   *  already gates on for a `text-generation` row (a cached checkpoint's own
+   *  `has_vision_tower`, or `hub_metadata`'s pre-download reading when nothing
+   *  is cached yet) as a tag rather than a permission. Always an array — empty
+   *  rather than absent when neither applies, and always `[]` on every
+   *  non-`text-generation` capability, so a consumer can test membership
+   *  (`tags?.includes("tool-use")`). Optional, matching every other field
+   *  added to this interface (`score`/`runMode`/`speedEstimate`): a stale
+   *  client, a test literal, or an older cached response shape does not have
+   *  to carry it. */
+  tags?: string[];
 }
 
 export interface AiCatalogCapability {

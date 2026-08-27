@@ -1090,6 +1090,20 @@ SUGGESTIONS: dict[str, list[dict]] = {
     # (the plan's own estimate — ~29.9/~39.2 GB — was written before the
     # worker's final pattern set excluded the second, unused transformer
     # copy; these are the re-derived figures the plan itself calls for).
+    #
+    # **`resident_gb` (SPEC AI-22, D526) is the declared rung `fit.py`'s own
+    # module docstring names THIS row as the motivating case for**:
+    # `DistilledPipeline(low_memory=True)` frees the transformer and the
+    # Gemma-3 text encoder between stages, so the true resident PEAK is one
+    # stage — the larger of the two components above — never their sum.
+    # `size_gb` is correct as the download figure (every byte both repos
+    # fetch, per this file's own rule); `resident_gb` is `max(weights bytes,
+    # gemma bytes) / 1e9`, rounded to the same one decimal `size_gb` uses,
+    # computed from the exact figures stated above rather than a fresh
+    # guess — real evidence this rung requires, not an estimate invented
+    # for it. The weights component is the larger one at BOTH tiers (gemma
+    # is a fixed 8,068,021,302 B either way), so `resident_gb` here is
+    # simply the weights half of the sum above: int4 20.5, int8 29.8.
     "ltx-video": [
         {
             "id": "dgrauet/ltx-2.3-mlx-q4",
@@ -1111,6 +1125,11 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "22B",
             "quantization": "MLX 4-bit",
             "size_gb": 28.5,
+            # See this list's own header comment for where 20.5 comes from —
+            # the larger of the two components DistilledPipeline ever holds
+            # resident at once (20,479,309,067 B weights, the larger of the
+            # pair), not the 28.5 GB sum both downloads fetch.
+            "resident_gb": 20.5,
             "note": "Text-to-video with audio, 8 denoising steps, on a "
                     "16 GB+ Mac. Diverges from the bf16 sample at this "
                     "tier — upstream's own ladder calls it a different "
@@ -1138,6 +1157,10 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "params": "22B",
             "quantization": "MLX 8-bit",
             "size_gb": 37.8,
+            # See the int4 entry above (and this list's header comment) —
+            # 29.8 is the larger single-stage component (29,754,496,331 B
+            # weights), not the 37.8 GB sum both downloads fetch.
+            "resident_gb": 29.8,
             "note": "The same LTX-2 Community License, for the tier that "
                     "reproduces the bf16 sample — a 32 GB+ machine and "
                     "roughly 9 GB more download than the int4 default.",
@@ -1212,12 +1235,32 @@ def _runner_for(capability: str) -> registry.Runner | None:
 
 
 def for_runner(code: str) -> list[dict]:
-    """The curated list for a runner, following the hardware-variant alias.
+    """The curated list for a runner, following the hardware-variant alias,
+    with the user's `~/.fused-render/models.json` overlay merged in
+    (`catalog_overlay.apply`, SPEC AI-25) — an overlay row whose `id`
+    matches a built-in one overrides it, a new `id` appends.
+
+    **The overlay is looked up under the same RESOLVED key `builtin` is**
+    (code review finding 3) — `_SHARED_SUGGESTIONS.get(code, code)`, not the
+    raw `code` a caller passed in. `for_runner("llamacpp-text-vulkan")`
+    reads the built-in `llamacpp-text` list; an overlay keyed by `code`
+    alone would look for `models.json["llamacpp-text-vulkan"]` and find
+    nothing there even when the user wrote the entry under
+    `"llamacpp-text"` (the only name that appears anywhere in the built-in
+    curation a user could plausibly have copied), silently doing nothing on
+    every Vulkan/CUDA/ROCm/DirectML machine — exactly the scenario
+    `catalog_overlay.py`'s own module docstring gives as the motivating
+    example. Every hardware variant of a runner shares ONE overlay
+    namespace, matching how they already share one built-in list.
 
     A copy of the list, as it always was — callers append to it (the router's
     cached-repo union does) and must not be editing the curation.
     """
-    return list(SUGGESTIONS.get(_SHARED_SUGGESTIONS.get(code, code), ()))
+    from fused_render.ai import catalog_overlay
+
+    canonical = _SHARED_SUGGESTIONS.get(code, code)
+    builtin = SUGGESTIONS.get(canonical, ())
+    return catalog_overlay.apply(canonical, list(builtin))
 
 
 def for_capability(capability: str) -> list[dict]:

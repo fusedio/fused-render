@@ -19,6 +19,12 @@
 // judged against is what was LEFT after the reserve — so "Ran here, over
 // budget" describes a run that happened while nothing else was competing for
 // memory, worded as what it is rather than as a prediction of failure.
+//
+// SPEC AI-19 adds `score` (0-100, a continuous fit score) and `runMode`
+// ("gpu" | "cpu-offload" | "cpu-only") to `AiFitVerdict`, but neither is a
+// new `basis` or a new `verdict` value — the copy table below is keyed on
+// exactly those two, unchanged, and needs no new branch. `score` is left
+// for a future bar-style rendering to consume; this badge stays text-only.
 import { formatSize } from "@platform/lib/format";
 import type { AiFitVerdict } from "@platform/lib/api";
 
