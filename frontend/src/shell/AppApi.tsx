@@ -108,7 +108,12 @@ export default function AppApi({
   folderHref: string;
 }) {
   useUrlVersion();
-  const openRel = safeRel(new URLSearchParams(location.search).get("ep"));
+  // Absent `ep` means "nothing chosen yet" — the first endpoint opens so the
+  // page lands on a form, not a list of closed rows (resolved below once the
+  // list is loaded). Present-but-empty `ep=` is the reader having closed
+  // that row: nothing open, and it stays that way.
+  const rawEp = new URLSearchParams(location.search).get("ep");
+  const chosenRel = safeRel(rawEp);
 
   const [load, setLoad] = useState<Load>({ kind: "loading" });
   // Per-endpoint scratch, keyed by rel: what the form holds, what the last run
@@ -130,7 +135,7 @@ export default function AppApi({
 
   const toggle = (rel: string) => {
     const next = new URLSearchParams(location.search);
-    if (openRel === rel) next.delete("ep");
+    if (openRel === rel) next.set("ep", "");
     else next.set("ep", rel);
     const q = next.toString();
     replaceSearch(location.pathname + (q ? "?" + q : ""));
@@ -172,6 +177,7 @@ export default function AppApi({
 
   const data = load.kind === "ok" ? load.data : null;
   const endpoints = data?.endpoints ?? [];
+  const openRel = rawEp === null ? (endpoints[0]?.rel ?? null) : chosenRel;
   const callable = endpoints.filter(isRunnable).length;
   // Three counts, not two: a file that will not parse or cannot be read is not
   // a helper module, and calling it one would hide exactly the files a reader
