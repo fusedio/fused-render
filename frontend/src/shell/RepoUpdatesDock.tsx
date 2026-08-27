@@ -47,13 +47,11 @@ import { stageClaudeAsk } from "@apps/explorer/lib/pending-claude-ask";
 import { getJson, postJson } from "@platform/lib/api";
 import { navigate } from "@platform/lib/router";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import DlChevron from "@platform/ui/DlChevron";
 import {
   repoActionLabel,
   repoFixPrompt,
   repoRows,
   repoStatusText,
-  repoUpdatesSummary,
   visibleRepoRows,
   type RepoAction,
   type RepoRow,
@@ -262,11 +260,13 @@ function RepoRowView({
  * status bar rather than pinned inside a header that survives the fold.
  *
  * ALWAYS PRESENT NOW (D565): a `visible.length === 0` card no longer returns
- * null — the bar's three sections stay on screen at all times, so this one
- * draws its own idle state ("No updates") instead of vanishing. Idle is
- * plain, muted text with no chevron — there is no panel behind it worth
- * opening — otherwise pressing the chip always visibly hides or shows the
- * panel and every row in it.
+ * null — the bar's three sections stay on screen at all times, this one
+ * included. D573 moved WHERE that shows: the chip is a real, always-
+ * clickable button either way now (VS Code/Cursor status-bar idiom — hover
+ * is the affordance, not a disclosure chevron), muted text (`.is-idle`) is
+ * the one remaining "nothing here" signal, and the idle sentence itself
+ * ("No updates") lives in the panel that opens beneath it rather than in
+ * the chip, which only ever shows the category name and a count now.
  */
 export function RepoUpdatesCardView({
   rows,
@@ -295,51 +295,57 @@ export function RepoUpdatesCardView({
 
   return (
     <div className="dl-host">
-      {/* The chip — this card's entire presence in the status bar while
-          collapsed (D563): the chevron and the summary, nothing else. Clear
-          and every row live in the panel below, which exists only while
-          expanded. Idle draws no chevron at all — see this component's own
-          doc comment. */}
-      {idle ? (
-        <span className="dl-idle">No updates</span>
-      ) : (
-        <button
-          className="dl-toggle"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show updates" : "Hide updates"}
-        >
-          <DlChevron collapsed={collapsed} />
-          <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
-          {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
-        </button>
-      )}
+      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
+          doesn't belong to the status bar. lets follow vscode/cursor for
+          inspiration" — the bar shows the category NAME plus a count, and
+          the idle sentence moves into the panel below; see
+          `DownloadManagerView`'s own header comment for the fuller
+          reasoning, identical here). `repoUpdatesSummary`'s richer "N
+          updates available" phrasing stays a pure, tested function
+          (repo-updates-lib.test.ts) but no longer renders in the chip. */}
+      <button
+        className={"dl-toggle" + (idle ? " is-idle" : "")}
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show updates" : "Hide updates"}
+      >
+        <span className="dl-summary">{idle ? "Updates" : `Updates ${visible.length}`}</span>
+        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+      </button>
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
-          exists only while expanded. Collapsed (or idle) shows no panel at
-          all — see this component's own doc comment on why the fold takes
-          every row, no exemption, including Clear now that it lives here
-          rather than in a header that used to survive the fold. */}
-      {!idle && !collapsed && (
+          exists only while expanded. Collapsed shows no panel at all — see
+          this component's own doc comment on why the fold takes every row,
+          no exemption, including Clear now that it lives here rather than
+          in a header that used to survive the fold. An idle section now
+          opens a panel too (D573) — the idle sentence ("No updates") lives
+          there instead of in the chip, which no longer has room for it. */}
+      {!collapsed && (
         <div className="dl-panel">
-          <div className="dl-head">
-            <button
-              className="dl-clear"
-              onClick={() => onDismissAll(visible)}
-              title="Dismiss every visible update"
-            >
-              Clear
-            </button>
-          </div>
-          <div className="dl-rows">
-            {visible.map((row) => (
-              <RepoRowView
-                key={row.repo.root}
-                row={row}
-                onDone={onDone}
-                onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
-              />
-            ))}
-          </div>
+          {idle ? (
+            <div className="dl-panel-empty">No updates</div>
+          ) : (
+            <>
+              <div className="dl-head">
+                <button
+                  className="dl-clear"
+                  onClick={() => onDismissAll(visible)}
+                  title="Dismiss every visible update"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="dl-rows">
+                {visible.map((row) => (
+                  <RepoRowView
+                    key={row.repo.root}
+                    row={row}
+                    onDone={onDone}
+                    onDismiss={() => onDismiss(row.repo.root, row.repo.checked_at)}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

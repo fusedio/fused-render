@@ -130,7 +130,7 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Status bar (SPEC §36, D563, redesigned D565) ------------------------- */
+/* ---- Status bar (SPEC §36, D563, redesigned D565, D573) ------------------- */
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
@@ -144,7 +144,15 @@
    gone and `#main` is permanently shorter by this bar's height, which is the
    accepted cost of the call. `tabular-nums` here, not per element, so every
    count and percentage anywhere in the bar inherits it — the numbers tick
-   constantly and proportional digits would make the whole strip twitch. */
+   constantly and proportional digits would make the whole strip twitch.
+
+   D573 (user: "the chevron doesn't belong to the status bar. lets follow
+   vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
+   LABEL you click, not a tree/accordion row with a disclosure triangle — the
+   only affordance is a hover wash across the item's own hit area, at rest
+   there is nothing. `min-height` drops 34px -> 24px (VS Code's own bar is
+   ~22px) and the chip text drops to 11px (below, `.dl-toggle`) to bring the
+   whole strip toward that density — it is a status bar, not a toolbar. */
 /* `justify-content: flex-end` (D569, user: "the items must be right
    aligned.") — left unset in round 2, chips packed left and left a large
    void on the right in every screenshot the user showed. See `.dl-panel`
@@ -155,21 +163,13 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 4px;
-  padding: 0 10px;
-  min-height: 34px;
+  gap: 0;
+  padding: 0 2px;
+  min-height: 24px;
   color: var(--fg);
   background: var(--bg-alt);
   border-top: 1px solid var(--border);
   font-variant-numeric: tabular-nums;
-}
-
-/* A quiet vertical rule between sections, not around them — the first
-   section gets none, so the bar's own left padding is the only inset. */
-.status-bar > .dl-host + .dl-host {
-  margin-left: 6px;
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
 }
 
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
@@ -192,6 +192,12 @@
    piece of this card that still floats over page content, and only while the
    user has it open.
 
+   NO DIVIDER between sections any more (D573 retires the vertical rule this
+   comment used to describe) — VS Code separates status-bar items by padding
+   and the hover wash alone, no border between them; `.dl-toggle`'s own
+   padding (below) is what gives each chip a hit area, and there is nothing
+   left here to draw a rule between.
+
    `flex: 0 1 auto; min-width: 0` (code review finding #6, was `0 0 auto` with
    no `min-width`): a section never GREW to fill spare room in the bar — that
    part was fine — but it also never SHRANK, so `.dl-summary`'s own
@@ -208,21 +214,28 @@
   align-items: center;
 }
 
-/* The chip: this card's whole presence in the bar. The whole summary is the
-   collapse target, not a lone chevron — a compact hit area still needs to be
-   a real one. The hover wash on the whole button (not just the chevron) is
-   what tells the eye that hit area is real, rather than leaving the bar
-   looking like plain text. */
+/* The chip: this card's whole presence in the bar, and — D573 — ALWAYS a
+   real, clickable `<button>`, idle sections included: a status-bar item in
+   VS Code/Cursor is a label you click, and hover (not a disclosure chevron)
+   is the entire "this does something" signal. `min-width: 0` lets it
+   ellipsize under pressure (`.dl-host`'s own comment); the compact hit area
+   still needs to be a real one, which is what the hover wash below is for.
+   11px, not 12px (D573, "denser than what we have" — VS Code's own bar runs
+   ~12px text at ~22px tall; ours matches the app's existing small-chrome
+   size, the same 11px `.dl-amount`/`.dl-model` already use, rather than
+   inventing a fourth text size for this one strip). */
 .dl-toggle {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 4px 6px;
-  margin: -4px -6px;
+  padding: 3px 8px;
+  margin: -3px 0; /* vertical only — a horizontal negative margin here made
+                      adjacent chips overlap by 2x the padding minus the
+                      (near-zero) bar gap, clipping neighbour text */
   border-radius: 6px;
   font: inherit;
-  font-size: 12px;
+  font-size: 11px;
   color: var(--fg);
   background: none;
   border: none;
@@ -232,6 +245,15 @@
 }
 
 .dl-toggle:hover {
+  background: var(--row-bg-hover);
+}
+
+/* An OPEN item reads as open (D573): without a chevron to rotate, the only
+   way to say "this panel is up" is to hold the same hover wash while it is —
+   the VS Code/Cursor convention for an engaged status-bar item. Keyed off
+   `aria-expanded` (already correct for every section — a real DOM fact this
+   button already carries) rather than a second className duplicating it. */
+.dl-toggle[aria-expanded="true"] {
   background: var(--row-bg-hover);
 }
 
@@ -286,8 +308,8 @@
 }
 
 /* The panel's own header — action buttons only now (Cancel queued / Clear),
-   never the chevron or the summary, which live in the chip outside the
-   panel. Right-aligned: with no toggle left inside to push them there via
+   never the summary, which lives in the chip outside the panel.
+   Right-aligned: with no toggle left inside to push them there via
    `flex: 1 1 auto`, this row would otherwise pack its buttons against the
    left edge instead of the trailing edge every other header in this corner
    uses. */
@@ -300,53 +322,6 @@
   font-size: 12px;
 }
 
-/* `DlChevron` (platform/ui/DlChevron.tsx) draws it as an inline SVG —
-   round 3, user: "the collapsing arrow is very ugly" — replacing the text
-   glyph `⌃` that shipped in round 2. A typeset caret renders at whatever
-   weight and baseline the font stack gives it; this app's own convention
-   for a rotating disclosure is an inline lucide-style `<polyline>` (see
-   `shell/NewJobModal.tsx`'s `ICON_CHEVRON_DOWN`, `platform/ui/
-   MenuIcons.tsx`'s `chevron`), so this glyph now follows it instead of
-   inventing a fourth spelling. `color` drives it (the SVG's own
-   `stroke="currentColor"`), and this class still only ever supplies size,
-   color and the collapse rotation — never the shape, which lives in the
-   component. Pointing UP, not down (D568 finding #6): the panel opens
-   UPWARD (`.dl-panel`'s `bottom: 100%`), so the glyph points toward where
-   expanding actually reveals content.
-
-   REST STATE IS `--fg-muted`, not `--fg` (D570, user on the round-3 SVG:
-   "the up arrow is glaring") — the SAME over-correction shape D568 finding
-   #7 fixed the opposite direction on (an 11px `--fg-muted` text glyph that
-   was too QUIET). A crisp 15px SVG stroke at full `--fg` next to `.dl-
-   summary`'s 500-weight text reads as the loudest thing in the bar, wrong
-   for a disclosure affordance whose job is to be found, not to shout.
-   `stroke-width` also drops 2 -> 1.5 (see the component) for the same
-   reason. `--fg` is not gone, it moved to the chip's OWN hover/focus below
-   — the chevron now brightens exactly when the row it belongs to is
-   interactive, which is also the hover feedback this affordance should
-   have carried from round 1 and never did. */
-.dl-chevron {
-  flex: 0 0 auto;
-  color: var(--fg-muted);
-  transition:
-    transform var(--dur-med) var(--ease-out),
-    color var(--dur-med) var(--ease-out);
-}
-
-.dl-toggle:hover .dl-chevron,
-.dl-toggle:focus-visible .dl-chevron {
-  color: var(--fg);
-}
-
-/* Collapsed still reads as "closed, click to open" by rotating to point
-   RIGHT — the same landmark direction the old down-based glyph rotated to.
-   `90deg`, not the old `-90deg`: the base glyph flipped from down to up, so
-   the rotation that lands back on "right" flips with it (down -90deg ->
-   right; up +90deg -> right — opposite bases, opposite sign, same target). */
-.dl-chevron.is-collapsed {
-  transform: rotate(90deg);
-}
-
 .dl-summary {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -357,17 +332,27 @@
   font-weight: 500;
 }
 
-/* IDLE: plain, muted, unpressable text for a section with nothing to say —
-   `No models loaded` / `Idle` / `Up to date`. Same padding as `.dl-toggle`
-   (not `.dl-toggle` itself: no button, no hover wash, no chevron slot) so an
-   idle section takes exactly the same vertical room a chip would, and the
-   bar's height never jumps as a section moves between the two. Muted colour
-   is the only thing that has to say "there is nothing here" — no chevron
-   affordance implying a panel worth opening, because there is not one. */
-.dl-idle {
-  display: block;
-  padding: 4px 6px;
+/* The panel's own EMPTY state — `No models loaded` / `No activity` /
+   `No updates` — for a section with nothing to show (D573). This text used
+   to live in the CHIP itself (a separate unpressable `.dl-idle` span, no
+   button, no panel behind it) — the user's own words moved it: "lets have
+   simpler stuff like models (x count) | notifications | downloads etc and
+   the no xyz part in the popover thing that opens". The chip now always
+   shows a category name (plus a count once there is one to show) and is
+   always a real button; this is what its panel draws instead of rows when
+   there is nothing to list. */
+.dl-panel-empty {
+  padding: 10px;
   font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* IDLE CHIP TEXT: the section has nothing in it (D573) — the chip is still a
+   real button (hover wash, opens the panel above to show the empty state),
+   only its text goes muted. This is now the ONLY signal in the bar that a
+   section has content: no separate element, no chevron, nothing else
+   changes shape between idle and active. */
+.dl-toggle.is-idle {
   color: var(--fg-muted);
 }
 
@@ -375,10 +360,9 @@
    happening" ink — everything terminal, nothing left running or queued, and
    at least one row failed (DownloadManagerView's own `hasFailure`, mirroring
    `jobsSummary`'s "N failed" branch exactly rather than guessing from the
-   rendered string). Applied to the whole chip, chevron included, so the
-   whole line reads as needing a look rather than just the count inside it. */
-.dl-toggle.is-failure,
-.dl-toggle.is-failure .dl-chevron {
+   rendered string). Applied to the whole chip, so the whole line reads as
+   needing a look rather than just the count inside it. */
+.dl-toggle.is-failure {
   color: var(--error);
 }
 
@@ -706,8 +690,16 @@
   font-size: 12px;
 }
 
+/* `flex: 0 1 auto`, NOT `1 1 auto` (D573, user: the trailing ✕ "sits after a
+   wide gap of dead space"): a grow factor stretched the title across the whole
+   panel width, shoving the row's action and its dismiss ✕ hard against the
+   right edge with an empty void between them and the name they belong to. With
+   no grow, the controls FOLLOW the text — the row reads as one group, and
+   spare width falls after the ✕ instead of inside the row. Shrink stays `1`
+   (with `min-width: 0` below) so a long repo name still ellipsizes rather than
+   pushing those controls off the panel edge. */
 .q-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

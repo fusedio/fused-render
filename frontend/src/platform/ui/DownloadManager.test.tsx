@@ -107,21 +107,15 @@ function renderInstance(reported: Job[], queue?: Partial<QueueSlot>): ReactTestR
   );
 }
 
-test("a jobs list holding only a successful (done) job renders the IDLE state, not nothing (D565: always present)", () => {
-  // The section used to return null here — D565 (user verdict: "different
-  // categories of status bar should be always present") replaced the whole
-  // empty-card gate with an idle readout instead, so this is no longer a
-  // "renders nothing" case at all.
+test("a jobs list holding only a successful (done) job renders the IDLE chip, not nothing (D565/D573)", () => {
+  // The section used to return null here — D565 replaced the whole
+  // empty-card gate with an idle readout; D573 moved that readout from a
+  // separate `.dl-idle` span into the panel a real, always-clickable chip
+  // opens (VS Code/Cursor status-bar idiom — no chevron, hover only).
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
   expect(tree).not.toBeNull();
-  expect(findAll(tree, "dl-idle")).toHaveLength(1);
-  // "Idle" -> "No activity" (round 3, user: "what is idle? what is up to
-  // date?" — the bare adjective named no subject; the idle string now names
-  // its own category, same as "No models loaded" always did).
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("No activity");
-  // No chevron, no button — nothing to press over an idle section.
-  expect(findAll(tree, "dl-toggle")).toHaveLength(0);
-  expect(findAll(tree, "dl-chevron")).toHaveLength(0);
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {

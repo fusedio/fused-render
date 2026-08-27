@@ -41,8 +41,8 @@
 // COLLAPSED IS NOW A CHIP, NOT A SHORT CARD (D563, status bar redesign, user
 // call: "the collapsed notification is also taking too much space... it is
 // impossible to use the claude template with it"). `.dl-toggle` — the
-// chevron, `jobsSummary`, the aggregate percentage — is the WHOLE of what
-// renders while collapsed; `queue?.cancelAll` and `queue?.note`, along with
+// category name, its count (D573), the aggregate percentage — is the WHOLE
+// of what renders while collapsed; `queue?.cancelAll` and `queue?.note`, along with
 // Clear and every row, render only inside the panel that opens when the
 // card is expanded, and so no longer survive a collapse the way D562's own
 // paragraph here used to promise. That reachability requirement is gone on
@@ -94,7 +94,6 @@
 // queue row's ✕ is a different promise and the shell owns it.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import DlChevron from "@platform/ui/DlChevron";
 import {
   cancelJob,
   clearableCount,
@@ -107,7 +106,6 @@ import {
   jobRows,
   jobsAfterClear,
   jobStatusLine,
-  jobsSummary,
   overallFraction,
   pollInterval,
   JOB_PING_KEY,
@@ -608,9 +606,11 @@ export function DownloadManagerView({
 
   // ALWAYS PRESENT NOW (D565, superseding the empty-card gate this comment
   // used to describe): the bar's three sections are always on screen, this
-  // one included, so "nothing happening" draws an IDLE state — plain,
-  // muted, no chevron, nothing to press — rather than vanishing. Both
-  // halves empty is what decides idle, same test as the old early return.
+  // one included, so "nothing happening" draws an IDLE chip — same button,
+  // same hover wash, muted text (D573 retires the separate unpressable
+  // `.dl-idle` span this used to render; see `.is-idle` below) — rather
+  // than vanishing. Both halves empty is what decides idle, same test as
+  // the old early return.
   const idle = jobs.length === 0 && queued === 0;
 
   const overall = overallFraction(jobs);
@@ -650,74 +650,83 @@ export function DownloadManagerView({
     refresh();
   };
 
+  // D573: the bar shows the category NAME plus a count, never a sentence —
+  // `jobsSummary`'s richer "2 running · 1 queued" phrasing stays a pure,
+  // fully-tested function (jobs.test.ts, queue-dock-lib.test.ts) but no
+  // longer renders here; the count is simply every row this section is
+  // showing, running/queued/terminal alike, which is also exactly what
+  // `.dl-rows` below draws.
+  const totalCount = jobs.length + queued;
+
   return (
     <div className="dl-host">
-      {/* IDLE draws plain, muted, unpressable text — no chevron, since there is
-          no panel behind it worth opening (code review: "no chevron affordance
-          suggesting an empty panel is worth opening"). Otherwise the chip is
-          this card's ENTIRE presence in the status bar (D563) while collapsed:
-          the chevron, the summary, the aggregate percentage, a quiet dot for an
-          unacknowledged arrival — nothing else fits a bar this thin, and a
-          control on it would be a second thing competing for that one line.
-          Everything else (the rows, Cancel queued, Clear, a cancel's own note)
-          lives in the panel below, which exists only while expanded. */}
-      {idle ? (
-        <span className="dl-idle">No activity</span>
-      ) : (
-        <button
-          className={"dl-toggle" + (hasFailure ? " is-failure" : "")}
-          onClick={toggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show details" : "Hide details"}
-        >
-          <DlChevron collapsed={collapsed} />
-          <span className="dl-summary">{jobsSummary(jobs, count)}</span>
-          {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
-          {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
-        </button>
-      )}
+      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
+          doesn't belong to the status bar. lets follow vscode/cursor for
+          inspiration" — a status-bar item there is a label you click, not a
+          disclosure triangle; hover is the only affordance, at rest and
+          idle alike). `.is-idle` is the ONE remaining signal that this
+          section has nothing in it — muted text, same clickable chip,
+          same hover wash — now that the idle SENTENCE ("No activity") has
+          moved into the panel below rather than living in the chip. */}
+      <button
+        className={"dl-toggle" + (idle ? " is-idle" : "") + (hasFailure ? " is-failure" : "")}
+        onClick={toggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show details" : "Hide details"}
+      >
+        <span className="dl-summary">{idle ? "Activity" : `Activity ${totalCount}`}</span>
+        {overall !== null && <span className="dl-pct">{Math.round(overall * 100)}%</span>}
+        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+      </button>
       {/* The panel — floats ABOVE the status bar (notifications.css), anchored
           to this chip, and exists only while expanded: opening it IS collapsed
-          turning false, there is no separate "peek" state. Collapsed (or
-          idle) shows NO panel at all (D562's "no exemption" carried forward
-          into D563) — not a shorter one, an absent one, so `queue?.cancelAll`
-          and `queue?.note` do NOT survive a collapse any more (they used to,
-          when this was a short card rather than a chip — see this file's own
-          header comment for why that promise was dropped on purpose rather
-          than left broken in practice). */}
-      {!idle && !collapsed && (
+          turning false, there is no separate "peek" state. Collapsed shows NO
+          panel at all (D562's "no exemption" carried forward into D563) — not
+          a shorter one, an absent one, so `queue?.cancelAll` and `queue?.note`
+          do NOT survive a collapse any more. UNLIKE round 3, the panel now
+          opens on an IDLE section too (D573) — that is the one thing that
+          changed here: an idle section used to skip the panel outright
+          ("no panel behind it worth opening"); now the idle SENTENCE lives
+          inside it, because the chip itself no longer has room to say it. */}
+      {!collapsed && (
         <div className="dl-panel">
-          {/* Omitted outright, not left as a blank padded band (code review
-              finding #3), when neither child has anything to offer — e.g.
-              exactly one job running, nothing queued, nothing terminal yet. */}
-          {(queue?.cancelAll || clearable > 0) && (
-            <div className="dl-head">
-              {/* Two actions, and they are not the same one twice: Cancel queued
-                  withdraws messages that have not gone yet (the shell's, and only
-                  when the shell decides enough rows are genuinely withdrawable —
-                  `queue.cancelAll`'s own doc), Clear dismisses rows for work that
-                  has ENDED. So a terminal row is clearable without a live one
-                  being touched. */}
-              {queue?.cancelAll}
-              {clearable > 0 && (
-                <button className="dl-clear" onClick={clear} title="Dismiss finished">
-                  Clear
-                </button>
+          {idle ? (
+            <div className="dl-panel-empty">No activity</div>
+          ) : (
+            <>
+              {/* Omitted outright, not left as a blank padded band (code review
+                  finding #3), when neither child has anything to offer — e.g.
+                  exactly one job running, nothing queued, nothing terminal yet. */}
+              {(queue?.cancelAll || clearable > 0) && (
+                <div className="dl-head">
+                  {/* Two actions, and they are not the same one twice: Cancel queued
+                      withdraws messages that have not gone yet (the shell's, and only
+                      when the shell decides enough rows are genuinely withdrawable —
+                      `queue.cancelAll`'s own doc), Clear dismisses rows for work that
+                      has ENDED. So a terminal row is clearable without a live one
+                      being touched. */}
+                  {queue?.cancelAll}
+                  {clearable > 0 && (
+                    <button className="dl-clear" onClick={clear} title="Dismiss finished">
+                      Clear
+                    </button>
+                  )}
+                </div>
               )}
-            </div>
+              {/* ONE list, in lifecycle order: the queue's rows first (running, then
+                  starting, then waiting) and the job rows under them, which is where
+                  the same run lands once its turn has ended. A scheduled message
+                  therefore moves down this list rather than jumping between two
+                  cards. */}
+              <div className="dl-rows">
+                {queue?.rows}
+                {jobs.map((job) => (
+                  <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
+                ))}
+              </div>
+              {queue?.note}
+            </>
           )}
-          {/* ONE list, in lifecycle order: the queue's rows first (running, then
-              starting, then waiting) and the job rows under them, which is where
-              the same run lands once its turn has ended. A scheduled message
-              therefore moves down this list rather than jumping between two
-              cards. */}
-          <div className="dl-rows">
-            {queue?.rows}
-            {jobs.map((job) => (
-              <JobRow key={job.id} job={job} onChanged={refresh} onPatch={patch} />
-            ))}
-          </div>
-          {queue?.note}
         </div>
       )}
     </div>

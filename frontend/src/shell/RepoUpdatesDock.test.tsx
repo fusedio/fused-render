@@ -112,25 +112,36 @@ function renderView(
   return renderInstance(props).toJSON() as ReactTestRendererJSON | null;
 }
 
-test("renders the IDLE state, not nothing, when there are no rows (D565: always present)", () => {
+// D573 (user: "lets have simpler stuff like models (x count) | notifications
+// | downloads etc and the no xyz part in the popover thing that opens", then
+// "the chevron doesn't belong to the status bar. lets follow vscode/cursor
+// for inspiration"): the chip is now ALWAYS a real, clickable button — idle
+// included, VS Code/Cursor style — and the idle sentence moved into the
+// panel it opens.
+test("renders a real, clickable chip when there are no rows — the idle sentence lives in its panel (D565/D573)", () => {
   const tree = renderView({ rows: [] });
   expect(tree).not.toBeNull();
-  expect(findAll(tree, "dl-idle")).toHaveLength(1);
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("No updates");
-  expect(findAll(tree, "dl-toggle")).toHaveLength(0);
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  expect(toggles[0].type).toBe("button");
+  expect((toggles[0].props.className as string).split(" ")).toContain("is-idle");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates");
+  expect(findAll(tree, "dl-idle")).toHaveLength(0);
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No updates");
 });
 
-test("renders the IDLE state when every row is dismissed", () => {
+test("renders the IDLE chip and panel sentence when every row is dismissed", () => {
   const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
   const tree = renderView({ rows, dismissed: { "/a/one": 1000 } });
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("No updates");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No updates");
 });
 
-test("the header names how many updates are visible", () => {
+test("the chip names the category and the count of visible updates", () => {
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("2 updates available");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates 2");
 });
 
 test("a row on the default branch offers Update as the only button, plus dismiss", () => {
@@ -367,7 +378,6 @@ test("a dismissed row that reappears later (a fresh checked_at) counts as new ag
   updateDockInstance(renderer, [first], { "/a/one": 1000 });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(dismissed, "q-row")).toHaveLength(0);
-  expect(text(findAll(dismissed, "dl-idle")[0])).toBe("No updates");
 
   // Server re-checks and it's behind again: a newer checked_at makes it
   // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had

@@ -37,7 +37,6 @@ import { unloadAiModel, type AiLoadedModel } from "@platform/lib/api";
 import { formatSize, repoName } from "@platform/lib/format";
 import { publishAiRuntime, useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { useAutoExpandOnNew } from "@platform/lib/autoExpand";
-import DlChevron from "@platform/ui/DlChevron";
 
 // This section's own persisted collapse preference — a THIRD independent key
 // beside `fused-render:jobs-collapsed` and `fused-render:repo-updates-collapsed`
@@ -146,33 +145,39 @@ export function ModelsCardView({
 
   return (
     <div className="dl-host">
-      {idle ? (
-        <span className="dl-idle">No models loaded</span>
-      ) : (
-        <button
-          className="dl-toggle"
-          onClick={onToggle}
-          aria-expanded={!collapsed}
-          title={collapsed ? "Show loaded models" : "Hide loaded models"}
-        >
-          <DlChevron collapsed={collapsed} />
-          {/* No label prefix ("Models: ") once there is a value to show — the
-              value speaks for itself (code review revision); the label lives
-              only in the idle string above. */}
-          <span className="dl-summary">
-            {models.length === 1 ? "1 model" : `${models.length} models`}
-            {totalResidentBytes ? ` · ${formatSize(totalResidentBytes)}` : ""}
-          </span>
-          {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
-        </button>
-      )}
-      {!idle && !collapsed && (
+      {/* ALWAYS a real, clickable button now (D573, user: "the chevron
+          doesn't belong to the status bar. lets follow vscode/cursor for
+          inspiration" — the bar shows the category NAME plus a count, and
+          the idle sentence moves into the panel; see `DownloadManagerView`'s
+          own header comment for the fuller reasoning, identical here). No
+          label prefix once there is a value beyond the bare count (code
+          review revision, still true): the name IS "Models" either way now,
+          so the only thing that changes between idle and active is the
+          trailing count and cost. */}
+      <button
+        className={"dl-toggle" + (idle ? " is-idle" : "")}
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        title={collapsed ? "Show loaded models" : "Hide loaded models"}
+      >
+        <span className="dl-summary">
+          {idle
+            ? "Models"
+            : `Models ${models.length}${totalResidentBytes ? ` · ${formatSize(totalResidentBytes)}` : ""}`}
+        </span>
+        {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+      </button>
+      {!collapsed && (
         <div className="dl-panel">
-          <div className="dl-rows">
-            {models.map((m) => (
-              <ModelRow key={m.model} model={m} onUnload={onUnload} />
-            ))}
-          </div>
+          {idle ? (
+            <div className="dl-panel-empty">No models loaded</div>
+          ) : (
+            <div className="dl-rows">
+              {models.map((m) => (
+                <ModelRow key={m.model} model={m} onUnload={onUnload} />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -71,27 +71,37 @@ function renderView(
   return renderInstance(props).toJSON() as ReactTestRendererJSON | null;
 }
 
-test("no models loaded draws the IDLE state, no chevron, nothing to press", () => {
-  const tree = renderView({ models: [], totalResidentBytes: null });
+// D573 (user: "lets have simpler stuff like models (x count) | notifications
+// | downloads etc and the no xyz part in the popover thing that opens", then
+// "the chevron doesn't belong to the status bar. lets follow vscode/cursor
+// for inspiration"): the chip is now ALWAYS a real button — idle sections
+// included, VS Code/Cursor style, hover is the only affordance — and the
+// idle sentence moved out of the chip into the panel it opens.
+test("no models loaded still draws a real, clickable chip — just muted, and its panel holds the idle sentence", () => {
+  const tree = renderView({ models: [], totalResidentBytes: null, collapsed: false });
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-idle")[0])).toBe("No models loaded");
-  expect(findAll(tree, "dl-toggle")).toHaveLength(0);
-  expect(findAll(tree, "dl-chevron")).toHaveLength(0);
+  const toggles = findAll(tree, "dl-toggle");
+  expect(toggles).toHaveLength(1);
+  expect(toggles[0].type).toBe("button");
+  expect((toggles[0].props.className as string).split(" ")).toContain("is-idle");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
+  // The idle sentence now lives in the panel, not the chip.
+  expect(findAll(tree, "dl-idle")).toHaveLength(0);
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
-test("the chip is plain text — count and cost, no 'Models:' label prefix", () => {
+test("the chip names the category and the count, plus cost once there is one to show", () => {
   const tree = renderView({
     models: [model(), model({ model: "org/other-model" })],
     totalResidentBytes: 18 * 1024 ** 3, // formatSize's own base-1024 steps
   });
   const summary = text(findAll(tree, "dl-summary")[0]);
-  expect(summary).toBe("2 models · 18 GB");
-  expect(summary).not.toContain("Models");
+  expect(summary).toBe("Models 2 · 18 GB");
 });
 
-test("singularizes one model, and omits the cost when nothing is measured", () => {
+test("a single model still reads 'Models 1', not a singularized sentence", () => {
   const tree = renderView({ models: [model()], totalResidentBytes: null });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("1 model");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models 1");
 });
 
 test("collapsed shows no panel at all — no gauge, no rows, just the chip", () => {

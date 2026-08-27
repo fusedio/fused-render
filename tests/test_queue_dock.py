@@ -284,7 +284,10 @@ def test_an_empty_card_draws_the_idle_state_not_no_card(card):
     RepoUpdatesDock.tsx)."""
     assert "const idle = jobs.length === 0 && queued === 0;" in card
     assert "if (jobs.length === 0 && queued === 0) return null;" not in card
-    assert '<span className="dl-idle">No activity</span>' in card
+    # D573: the idle SENTENCE moved from a chip-level `.dl-idle` span into
+    # the panel a real, always-clickable chip opens (VS Code/Cursor status
+    # bar idiom — no separate idle markup any more).
+    assert '<div className="dl-panel-empty">No activity</div>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -299,8 +302,10 @@ def test_there_is_one_card_not_two(dock, card):
     # the rows land in the card's one list, above the job rows
     assert "{queue?.rows}" in card
     assert card.index("{queue?.rows}") < card.index("jobs.map((job)")
-    # and the one header count is told about them
-    assert "jobsSummary(jobs, count)" in card
+    # and the one header count is told about them (D573: the chip itself no
+    # longer renders `jobsSummary`'s sentence, but the count still comes off
+    # the same `count`/`jobs` the card computes right here)
+    assert "count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };" in card
 
 
 def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
@@ -458,7 +463,8 @@ def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
     css = _read(_CSS)
     bar_tsx = _read(_BAR)
     assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
-    assert '<span className="dl-idle">No activity</span>' in card, "the activity section's own idle text"
+    # D573: idle text moved from the chip into the panel it opens.
+    assert '<div className="dl-panel-empty">No activity</div>' in card, "the activity section's own idle text"
 
 
 def test_the_shell_composes_the_card_and_the_bar_places_it(dock):
