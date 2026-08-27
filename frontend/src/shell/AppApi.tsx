@@ -173,6 +173,14 @@ export default function AppApi({
   const data = load.kind === "ok" ? load.data : null;
   const endpoints = data?.endpoints ?? [];
   const callable = endpoints.filter(isRunnable).length;
+  // Three counts, not two: a file that will not parse or cannot be read is not
+  // a helper module, and calling it one would hide exactly the files a reader
+  // most needs to notice.
+  const broken = endpoints.filter((e) => {
+    const k = endpointKind(e);
+    return k === "error" || k === "unreadable";
+  }).length;
+  const helpers = endpoints.length - callable - broken;
   // The project's declared dependencies are the FOLDER's, so every file reports
   // the same list; shown once, above the list, rather than on every row.
   const deps = useMemo(
@@ -199,10 +207,15 @@ export default function AppApi({
                 {callable === 0
                   ? "Nothing to run yet"
                   : `${callable} ${callable === 1 ? "endpoint" : "endpoints"} you can run`}
-                {endpoints.length > callable &&
-                  ` · ${endpoints.length - callable} helper ${
-                    endpoints.length - callable === 1 ? "module" : "modules"
-                  }`}
+                {helpers > 0 && ` · ${helpers} helper ${helpers === 1 ? "module" : "modules"}`}
+                {broken > 0 && (
+                  <>
+                    {" · "}
+                    <span className="text-destructive">
+                      {broken} {broken === 1 ? "file" : "files"} with problems
+                    </span>
+                  </>
+                )}
               </p>
               {deps.length > 0 && (
                 <p className="m-0 flex flex-wrap items-baseline gap-x-1.5 gap-y-1">

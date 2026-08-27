@@ -133,7 +133,13 @@ def api_app_py(path: str):
     # Sync on purpose: FastAPI runs it in the threadpool, and the walk plus the
     # per-file parse are blocking filesystem work.
     root = path.replace("\\", "/").rstrip("/")
-    if not root or not os.path.isdir(root):
+    if not root:
+        return _error("path is required", status=400)
+    # No kernel stat under a mount: os.path.isdir there is the GETATTR that
+    # lists the whole parent prefix and can wedge the mount (/api/fs/walk has
+    # the same guard). _walk_bfs lists mount dirs via the rc API and yields
+    # nothing for a non-directory root, so the check is local-only.
+    if not shell_mounts.is_mount_backed(root) and not os.path.isdir(root):
         return _error(f"not a directory: {path}", status=404)
     try:
         return describe_folder(root)
