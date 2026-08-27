@@ -239,6 +239,42 @@ test("a stalled running row draws and is NOT clearable, with no failure beside i
   expect(findAll(tree, "dl-clear")).toHaveLength(0);
 });
 
+// D604, THE BOUNDARY for the Jobs footer, both directions. `Clear` is
+// dismiss-all, so at exactly one terminal row it duplicates that row's own
+// dismiss — and the band cost 32px of an 88px card to say so.
+// `queue-dock-lib.ts`'s `showCancelAll` already required two withdrawable rows
+// for the same reason, so this aligns the sibling control with a rule the
+// codebase had already settled.
+test("Clear is absent at one clearable row and present at two", () => {
+  const done = (id: string): Job => ({ ...BASE, id, state: "done", detail: "Saved" });
+  // `sys:schedule:*` survives success where an ordinary AI row vanishes, which
+  // is what makes it usable as a terminal row that actually draws.
+  const one = renderCard([done("sys:schedule:a")]);
+  expect(findAll(one, "dl-row")).toHaveLength(1);
+  expect(findAll(one, "dl-head")).toHaveLength(0);
+  expect(findAll(one, "dl-clear")).toHaveLength(0);
+  // The row's own dismiss is what covers the single case.
+  expect(findAll(one, "dl-x")).toHaveLength(1);
+
+  const two = renderCard([done("sys:schedule:a"), done("sys:schedule:b")]);
+  expect(findAll(two, "dl-head")).toHaveLength(1);
+  expect(findAll(two, "dl-clear")).toHaveLength(1);
+});
+
+// `queue?.cancelAll` is a SEPARATE control with its own threshold, decided by
+// the shell (`showCancelAll`, already >= 2). The band renders if EITHER guard
+// is true, so a cancelAll node must still bring the footer up on its own even
+// with no clearable row at all.
+test("a cancelAll node alone still brings the footer up", () => {
+  const cancelAll = <button className="q-all">Cancel queued</button>;
+  const running: Job = { ...BASE, id: "sys:ai-image:live", state: "running", stalled: false };
+  const tree = renderCardWithQueue([running], { waiting: 2, cancelAll });
+  expect(findAll(tree, "dl-head")).toHaveLength(1);
+  expect(findAll(tree, "q-all")).toHaveLength(1);
+  // ...and no Clear beside it, since nothing is clearable.
+  expect(findAll(tree, "dl-clear")).toHaveLength(0);
+});
+
 test("the panel's head is OMITTED, not a blank band, when nothing to offer — code review finding #3", () => {
   // One job running, nothing queued, nothing terminal: `queue?.cancelAll`
   // is undefined (no queue slot at all here) and `clearable` is 0, so

@@ -211,9 +211,13 @@ test("a row off the default branch offers Switch as the only button, plus dismis
 });
 
 test("Clear calls onDismissAll with exactly the visible rows", () => {
+  // THREE rows, one dismissed, so TWO remain visible: since D604 the footer
+  // needs a plurality to render at all, and this test is about WHICH rows
+  // Clear passes on — not about the threshold.
   const rows = repoRows([
     status({ root: "/a/one", checked_at: 1000 }),
     status({ root: "/a/two", checked_at: 1000 }),
+    status({ root: "/a/three", checked_at: 1000 }),
   ]);
   let seen: unknown = null;
   const tree = renderView({
@@ -225,7 +229,10 @@ test("Clear calls onDismissAll with exactly the visible rows", () => {
   });
   const clear = findAll(tree, "dl-clear")[0];
   clear.props.onClick();
-  expect((seen as { repo: RepoStatus }[]).map((r) => r.repo.root)).toEqual(["/a/two"]);
+  expect((seen as { repo: RepoStatus }[]).map((r) => r.repo.root)).toEqual([
+    "/a/two",
+    "/a/three",
+  ]);
 });
 
 // D584 finding 3: the ✕ reports the row's POSITION signature, not its
@@ -573,8 +580,35 @@ test("Clear is offered for repo rows only — a failure is dismissed by its own 
   // The row still carries its own dismiss control.
   expect(findAll(failuresOnly, "dl-x")).toHaveLength(1);
 
-  const withRepo = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
-  expect(findAll(withRepo, "dl-clear")).toHaveLength(1);
+  // TWO repo rows, because a single one no longer earns the footer (D604) —
+  // the point here is that failures do not count toward it either way.
+  const withRepos = renderView({
+    rows: repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]),
+    failed: [failedJob()],
+  });
+  expect(findAll(withRepos, "dl-clear")).toHaveLength(1);
+
+  // ...and a plurality made up of one repo row plus one failure does NOT earn
+  // it: Clear only ever acts on repo rows, so only those may be counted.
+  const oneEach = renderView({ rows: repoRows([status()]), failed: [failedJob()] });
+  expect(findAll(oneEach, "dl-clear")).toHaveLength(0);
+});
+
+// D604, THE BOUNDARY, asserted in both directions: the whole band — hairline
+// included — is absent at one row and present at two. One row cost 32px of an
+// 88px card for a button its own ✕ already duplicates.
+test("the footer is absent at one repo row and present at two", () => {
+  const one = renderView({ rows: repoRows([status({ root: "/a/one" })]) });
+  expect(findAll(one, "dl-head")).toHaveLength(0);
+  expect(findAll(one, "dl-clear")).toHaveLength(0);
+  // The row's own dismiss is what covers the single case.
+  expect(findAll(one, "dl-x")).toHaveLength(1);
+
+  const two = renderView({
+    rows: repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]),
+  });
+  expect(findAll(two, "dl-head")).toHaveLength(1);
+  expect(findAll(two, "dl-clear")).toHaveLength(1);
 });
 
 test("repo rows come before failures — the actionable rows first", () => {

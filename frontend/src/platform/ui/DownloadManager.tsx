@@ -840,7 +840,20 @@ export function DownloadManagerView({
                   offer (code review finding #3) — a footer with nothing in it
                   is the same defect one position lower. This panel's footer can
                   hold TWO buttons, so nothing here may assume a single child. */}
-              {(queue?.cancelAll || clearable > 0) && (
+              {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
+                  one-row panel: "the notification card size is still not
+                  done"). Clear is dismiss-ALL, so at exactly one row it is
+                  redundant — that row's own ✕ does the identical thing in one
+                  click, adjacent to the thing it affects — and the band it
+                  needs cost 32px of an 88px card, ~36% of the height, most of
+                  it empty to the left of one small button with a hairline
+                  making the emptiness look deliberate.
+                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
+                  withdrawable rows for exactly this reason ("for a single one
+                  the row's own ✕ — right there on screen — is the same action
+                  with a better name on it"); this brings the sibling controls
+                  into line with a rule the codebase had already settled. */}
+              {(queue?.cancelAll || clearable > 1) && (
                 <div className="dl-head">
                   {/* Two actions, and they are not the same one twice: Cancel queued
                       withdraws messages that have not gone yet (the shell's, and only
@@ -849,7 +862,7 @@ export function DownloadManagerView({
                       has ENDED. So a terminal row is clearable without a live one
                       being touched. */}
                   {queue?.cancelAll}
-                  {clearable > 0 && (
+                  {clearable > 1 && (
                     <button className="dl-clear" onClick={clear} title="Dismiss finished">
                       Clear
                     </button>

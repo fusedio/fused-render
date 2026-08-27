@@ -451,7 +451,20 @@ export function RepoUpdatesCardView({
                   a failure is dismissed by its own row's ✕ (D586). Omitted
                   entirely when there is no repo row to clear, rather than
                   offering a button that would do nothing. */}
-              {visible.length > 0 && (
+              {/* PLURALITY, NOT PRESENCE (D604, user with a screenshot of a
+                  one-row panel: "the notification card size is still not
+                  done"). Clear is dismiss-ALL, so at exactly one row it is
+                  redundant — that row's own ✕ does the identical thing in one
+                  click, adjacent to the thing it affects — and the band it
+                  needs cost 32px of an 88px card, ~36% of the height, most of
+                  it empty to the left of one small button with a hairline
+                  making the emptiness look deliberate.
+                  `queue-dock-lib.ts`'s `showCancelAll` ALREADY required two
+                  withdrawable rows for exactly this reason ("for a single one
+                  the row's own ✕ — right there on screen — is the same action
+                  with a better name on it"); this brings the sibling controls
+                  into line with a rule the codebase had already settled. */}
+              {visible.length > 1 && (
                 <div className="dl-head">
                   <button
                     className="dl-clear"
