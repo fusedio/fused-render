@@ -565,7 +565,8 @@ def resident_bytes():
     `IOAccelerator (graphics)` regions, which are charged to the task's
     `phys_footprint` and never appear in `resident_size`. So RSS is a FLOOR
     here, not an honest total, and `os_footprint_bytes()` below is what answers
-    "what is this process actually holding".
+    "what is this process actually holding" — as a LOWER BOUND, since neither
+    counter it can read is a superset of the other (see its own docstring).
     This function's RETURN VALUE is deliberately unchanged all the same: it
     feeds `peak_resident_bytes` -> `footprints.py` -> `fit.py`'s "measured"
     rung, so redefining it would silently re-verdict every model the user has
@@ -615,23 +616,46 @@ def resident_bytes():
 #: safe across OS revisions (this field arrived in "rev1" and every supported
 #: macOS fills well past it).
 _TASK_VM_INFO = 22
+_RESIDENT_SIZE_OFFSET = 16
 _PHYS_FOOTPRINT_OFFSET = 144
 
 
 def os_footprint_bytes():
-    """What the OS says this process is holding RIGHT NOW, or None (D597).
+    """A LOWER BOUND on what this process is holding RIGHT NOW, or None (D597).
 
-    THE NUMBER ACTIVITY MONITOR SHOWS, which is the whole point: on macOS that
-    is the task's `phys_footprint`, and for an MLX worker it is the only figure
-    that includes the Metal buffers. Measured on a live FLUX worker:
-    `phys_footprint` 24 GB (23 GB of it dirty `IOAccelerator` regions) against
-    172 MB of RSS and 1.79 GB of `mx.get_active_memory()`. A user watching
-    their system monitor sees the 24 GB, so a "right now" column that reports
-    either of the other two is telling them something they can directly
-    observe to be false.
+    **`max(phys_footprint, resident_size)`, NOT `phys_footprint` alone** — code
+    review 2026-08-28, finding 3, which corrected a claim this docstring and
+    `ModelsDock.tsx`'s `MemoryCell` both used to make: that RSS is a strict
+    subset of the footprint. It is not. `phys_footprint` deliberately EXCLUDES
+    clean file-backed pages, and those are counted in `resident_size`. Measured
+    here, in a plain interpreter with no framework loaded: `resident_size`
+    19.2 MB against `phys_footprint` 9.3 MB. So for any runner that maps its
+    weights read-only — GGUF/llama.cpp, torch with `mmap=True` — the footprint
+    is the SMALLER of the two by roughly the size of the model file, and
+    reporting it alone rendered a row as `8.2 GB now (1.1 GB held)`: a visible
+    contradiction, with the status bar's colour band painted off the smaller
+    number while the machine held the larger.
+
+    NEITHER COUNTER IS THE TOTAL, which is why `max` rather than a choice
+    between them: RSS misses the Metal pool (measured on a live MLX FLUX
+    worker: 172 MB of RSS against 24 GB of `phys_footprint`, 23 GB of it dirty
+    `IOAccelerator` regions), and the footprint misses clean file pages. Their
+    max is a strictly better lower bound than either, and it restores the one
+    invariant the UI pair depends on — "held" can never read as less than
+    "now". A true total would need to add the disjoint parts, which needs a
+    region-by-region walk this probe deliberately does not do; hence "lower
+    bound" in the first line rather than "what it holds".
+
+    STILL THE NUMBER ACTIVITY MONITOR SHOWS in the case that motivated it: on
+    an MLX worker `phys_footprint` dominates by three orders of magnitude, so
+    the max IS the footprint and a user watching their system monitor sees the
+    figure this reports. The correction only ever raises the answer, and only
+    where RSS is the bigger of the two.
 
     NOT `resident_bytes()`, and not a redefinition of it — see that function's
-    own docstring for why its value is frozen. This is additive.
+    own docstring for why its value is frozen. This is additive, and it does
+    not feed `peak_resident_bytes` -> `footprints.py` -> `fit.py`, so no
+    model's "measured" verdict moves because of it.
 
     NOT `get_active_memory()` either, which is what the framework has handed
     out of its pool. After a render finishes MLX returns buffers to its own
@@ -642,11 +666,16 @@ def os_footprint_bytes():
     reports what it allocated, not the driver's reservation. It simply does not
     apply to a live reading.
 
-    STDLIB ONLY, via `ctypes` — no psutil, whose `memory_full_info()` does not
-    expose this counter on darwin. Falls back to RSS wherever no such counter
-    exists (every non-macOS platform), and to None if even that is
-    unavailable: never a guess, the same rule the other two probes follow.
+    STDLIB ONLY on darwin, via `ctypes` — no psutil, whose `memory_full_info()`
+    does not expose `phys_footprint`. Both figures come out of the SAME
+    `task_vm_info` read (offsets 16 and 144), so they describe the same instant
+    and the max cannot be taken across two moments. Falls back to psutil's RSS
+    wherever no such counter exists (every non-macOS platform, and any darwin
+    failure above), and to None if even that is unavailable: never a guess, the
+    same rule the other two probes follow.
     """
+    footprint = None
+    resident = None
     if sys.platform == "darwin":
         try:
             import ctypes
@@ -665,22 +694,25 @@ def os_footprint_bytes():
                 ctypes.byref(count),
             )
             filled = count.value * 4
+            raw = bytes(buf)
             if rc == 0 and filled >= _PHYS_FOOTPRINT_OFFSET + 8:
-                value = struct.unpack_from("<Q", bytes(buf), _PHYS_FOOTPRINT_OFFSET)[0]
-                if value > 0:
-                    return int(value)
+                footprint = struct.unpack_from("<Q", raw, _PHYS_FOOTPRINT_OFFSET)[0]
+            if rc == 0 and filled >= _RESIDENT_SIZE_OFFSET + 8:
+                resident = struct.unpack_from("<Q", raw, _RESIDENT_SIZE_OFFSET)[0]
         except Exception:  # noqa: BLE001 - a memory probe must never break /health
-            pass
-    # Every other platform, and any darwin failure above: RSS is the best
-    # available, and is exactly what this function would have reported anyway
-    # where there is no separate GPU pool hiding outside it.
-    try:
-        import psutil
+            footprint = resident = None
+    if resident is None:
+        # Every other platform, and any darwin failure above. On a machine with
+        # no separate GPU pool hiding outside RSS this is exactly what this
+        # function would have reported anyway.
+        try:
+            import psutil
 
-        rss = int(psutil.Process(os.getpid()).memory_info().rss)
-        return rss if rss > 0 else None
-    except Exception:  # noqa: BLE001 - psutil raises its own family
-        return None
+            resident = int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:  # noqa: BLE001 - psutil raises its own family
+            resident = None
+    candidates = [n for n in (footprint, resident) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
 
 
 def peak_resident_bytes():

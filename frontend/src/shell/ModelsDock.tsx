@@ -82,13 +82,44 @@ const NOOP = () => {};
  *  the user's own pick from three spelled-out options): `1.8 GB now (24 GB
  *  held)`.
  *
- *  `residentBytes` LEADS and `osFootprintBytes` is parenthetical, the reverse
+ *  `residentBytes` LEADS and the held figure is parenthetical, the reverse
  *  of D594/D597 where the primary was the measured COST. Pairing a durable
  *  cost with a live reading put two numbers on different time axes side by
  *  side, and on MLX they disagreed by ~11 GB for no visible reason (13 GB cost
- *  against 24 GB held). RSS and `phys_footprint` are both "right now", and RSS
- *  is a strict subset of the footprint, so the pair now reads as "this much
- *  resident, this much held in total" rather than as a contradiction.
+ *  against 24 GB held). Both figures here are "right now", which is what makes
+ *  the pair readable at all.
+ *
+ *  THE HELD FIGURE IS `max(residentBytes, osFootprintBytes)`, NOT
+ *  `osFootprintBytes` (code review 2026-08-28, finding 3, correcting a claim
+ *  this docstring used to make: that RSS is a strict SUBSET of the footprint).
+ *  It is not a subset in either direction. `phys_footprint` excludes clean
+ *  file-backed pages and `resident_size` counts them, so a runner that maps its
+ *  weights read-only — GGUF/llama.cpp, torch with `mmap=True` — has the SMALLER
+ *  footprint of the two, by roughly the size of the model file. Measured in a
+ *  plain interpreter with nothing loaded: 19.2 MB resident against 9.3 MB of
+ *  footprint. Rendering the raw footprint there gave `8.2 GB now (1.1 GB held)`
+ *  — a pair that reads as a contradiction, and a colour band (below) painted
+ *  off the SMALLER number while the machine held the larger.
+ *
+ *  `max` RATHER THAN PICKING ONE, because neither counter is the total: RSS
+ *  misses the Metal pool (172 MB of RSS against 24 GB of footprint on a live
+ *  MLX FLUX worker), the footprint misses clean file pages. Their max is a
+ *  strictly better LOWER BOUND than either, and it is the only cheap value that
+ *  restores the invariant this pair depends on — "held" is never less than
+ *  "now". `worker_base.os_footprint_bytes` now applies the same max on the
+ *  measuring side, against the kernel's own `resident_size` from the same
+ *  `task_vm_info` read; this one is applied again HERE because
+ *  `residentBytes` is `resident_bytes()`, which can itself exceed RSS when a
+ *  runner supplies its own framework probe, so only the display side can
+ *  guarantee the invariant against the two numbers actually on screen.
+ *
+ *  THE PARENTHETICAL IS OMITTED WHEN THE TWO ARE EQUAL, which the max makes a
+ *  common case rather than a rarity (every worker whose footprint is at or
+ *  below its RSS, and every platform where `os_footprint_bytes` IS RSS). `1.2
+ *  GB now (1.2 GB held)` carries no information and invites the reader to hunt
+ *  for a difference that is not there; the bare `1.2 GB now` says the same
+ *  thing. This is also what a machine with no footprint counter at all has
+ *  always rendered, so the two degenerate cases now agree.
  *
  *  THE MEASURED COST IS NOT GONE — it moved into the hover `title` with its
  *  basis. The field stays in the payload because `fit.py` and the AI Models
@@ -107,19 +138,39 @@ function MemoryCell({
   model: AiLoadedModel;
   ceilingBytes: number | null;
 }) {
+  // THE HELD FIGURE, `max`ed against the resident one — this docstring's own
+  // section on why. `null` stays `null`: no counter means we do not know, and
+  // the row must not invent a held figure out of RSS alone.
+  const heldBytes =
+    model.osFootprintBytes === null
+      ? null
+      : Math.max(model.osFootprintBytes, model.residentBytes ?? 0);
+
   // THE BAND IS COMPUTED FROM — AND PAINTED ON — THE PARENTHETICAL (D600,
   // the coordinator's one deliberate deviation from the option as worded).
   // Banding the primary would colour a 1.8 GB RSS green while the machine sat
   // at 24 GB of 24 GB: a signal that is actively false exactly when it matters
   // most, a model pinning the machine while glowing "comfortable". Against the
-  // ceiling, `osFootprintBytes` is the only figure on this row a colour can
-  // honestly answer "how close is this to the limit" for — so the class goes
-  // on the figure it DESCRIBES, never on its neighbour.
-  const band = memoryBand(model.osFootprintBytes, ceilingBytes);
+  // ceiling, the HELD figure is the only one on this row a colour can honestly
+  // answer "how close is this to the limit" for — so the class goes on the
+  // figure it DESCRIBES, never on its neighbour.
+  //
+  // AND IT IS `heldBytes`, NOT `model.osFootprintBytes` (finding 3): banding
+  // the raw footprint painted "easy" off the smaller of two counters for every
+  // mmap-heavy runner, while the machine held the larger. A band computed from
+  // a number below the resident figure is the exact false comfort D600's
+  // comment above says the band exists to avoid, arriving through the other
+  // door.
+  const band = memoryBand(heldBytes, ceilingBytes);
   const bandClass = band ? ` is-mem-${band}` : "";
   const now = formatSize(model.residentBytes);
-  const held = formatSize(model.osFootprintBytes);
+  const held = formatSize(heldBytes);
   const cost = formatSize(model.footprintBytes);
+  // NOTHING TO SAY when the two figures agree — see the docstring. Compared as
+  // BYTES, not as formatted strings: `formatSize` rounds, so two genuinely
+  // different figures can print alike, and suppressing on the strings would
+  // hide a real difference the band is still being computed from.
+  const heldAddsSomething = heldBytes !== null && heldBytes > (model.residentBytes ?? 0);
 
   // Everything the row used to show, plus the denominator it was always judged
   // against but never named.
@@ -132,7 +183,11 @@ function MemoryCell({
   const title =
     [
       now ? `${now} resident right now` : null,
-      held ? `${held} held in total, including the GPU pool` : null,
+      // Same suppression as the visible parenthetical, for the same reason: two
+      // identical byte figures in one sentence read as a mistake.
+      heldAddsSomething
+        ? `at least ${held} held in total, including the GPU pool`
+        : null,
       cost ? `Measured cost ${cost}, ${basisWord}` : null,
       ceilingBytes ? `Machine ceiling ${formatSize(ceilingBytes)}` : null,
     ]
@@ -140,7 +195,7 @@ function MemoryCell({
       .join(" · ") || undefined;
 
   // NO FIGURE, NO COLOUR — and no default band either. `osFootprintBytes` is
-  // null off Darwin and on a worker with no counter, which means we do not
+  // null on any worker whose counter could not be read, which means we do not
   // know the pressure, and an uncoloured row is the correct rendering of that.
   // It must never fall back to banding the primary instead: that would keep
   // the row looking identical while silently changing what the colour MEANS.
@@ -161,28 +216,48 @@ function MemoryCell({
   return (
     <span className="dl-amount" title={title}>
       {`${now} now`}
-      {held ? <> ({heldCell})</> : null}
+      {heldAddsSomething ? <> ({heldCell})</> : null}
     </span>
   );
 }
 
-/** Which colour band a model's cost falls in against this machine's ceiling
- *  (D594) — or null when there is nothing honest to colour: no footprint, or
- *  no readable ceiling.
+/** Which colour band a byte figure falls in against this machine's ceiling
+ *  (D594) — or null when there is nothing honest to colour: no figure, or no
+ *  readable ceiling.
  *
- *  THE SAME THREE STEPS `AiFitVerdict` already uses — easy / tight / no — so
- *  the status bar and the AI Models page's fit badge cannot disagree about the
- *  same model. The thresholds are utilization of the ceiling, and `no` means
- *  the model genuinely EXCEEDS it: a large model that fits is not an error,
- *  which is why `no` is the only band that gets the error colour.
+ *  THE SAME THREE STEPS `AiFitVerdict` uses — easy / tight / no — but NOT the
+ *  same input, and the two CAN therefore disagree about the same model (code
+ *  review 2026-08-28, finding 12, correcting this comment's previous claim that
+ *  they cannot). Since D600 the status bar bands what the worker is HOLDING
+ *  right now, while the AI Models page's fit badge bands what the model COST to
+ *  run — `footprintBytes`, off `fit.py`'s ladder. On MLX those differ by ~11 GB
+ *  by this branch's own measurement (13 GB cost against 24 GB held, D601).
+ *
+ *  THAT DIVERGENCE IS THE POINT, not a bug to reconcile: the badge answers "can
+ *  I run this here", a durable claim about a model, and it has to stay stable
+ *  across the run for a user comparing models on a catalogue page. The bar
+ *  answers "what is this costing me right now", which has to move as the worker
+ *  allocates or a colour on a live readout means nothing. Sharing the THRESHOLDS
+ *  is what keeps them comparable — the same utilization means the same colour —
+ *  and forcing them to share an INPUT would make one of the two lie. See D601
+ *  for the separate, already-scoped work on the measured cost's own
+ *  under-report; nothing here changes the badge.
+ *
+ *  The thresholds are utilization of the ceiling, and `no` means the figure
+ *  genuinely EXCEEDS it: a large model that fits is not an error, which is why
+ *  `no` is the only band that gets the error colour.
  *
  *  Pure and exported so the rule is testable without rendering a row. */
 export function memoryBand(
-  footprintBytes: number | null,
+  /** The figure to band. NOT necessarily a footprint — its one call site passes
+   *  the row's HELD figure, `max(residentBytes, osFootprintBytes)`, which is a
+   *  live reading rather than a cost (finding 12: the parameter used to be
+   *  named `footprintBytes`, which no caller has passed since D600). */
+  bytes: number | null,
   ceilingBytes: number | null,
 ): "easy" | "tight" | "no" | null {
-  if (!footprintBytes || !ceilingBytes) return null;
-  const used = footprintBytes / ceilingBytes;
+  if (!bytes || !ceilingBytes) return null;
+  const used = bytes / ceilingBytes;
   if (used > 1) return "no";
   return used > 0.7 ? "tight" : "easy";
 }

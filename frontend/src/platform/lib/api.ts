@@ -2946,18 +2946,22 @@ export interface AiLoadedModel {
   state: string;
   detail: string | null;
   error: string | null;
-  /** RSS of the worker process. Not the model's size — see SPEC AI-8. Shown
-   *  as the PARENTHETICAL "right now" figure on a status-bar row (D594), with
-   *  `footprintBytes` in the position of authority, since this one is real but
-   *  measures the wrong thing to answer "what does this model cost me". */
+  /** RSS of the worker process (`worker_base.resident_bytes`, so a runner's own
+   *  framework probe can raise it above the kernel's RSS). Not the model's size
+   *  — see SPEC AI-8. It LEADS a status-bar model row since D600: `1.7 GB now
+   *  (24 GB held)`. */
   residentBytes: number | null;
-  /** What the OS says the worker process is holding RIGHT NOW — macOS
-   *  `phys_footprint`, the figure Activity Monitor shows; RSS elsewhere
-   *  (D597). THIS is the parenthetical "right now" number, not
-   *  `residentBytes`: on Apple Silicon the Metal pool is charged to
-   *  `phys_footprint` and never appears in RSS, so a live FLUX worker read
-   *  172 MB of RSS against 23 GB of dirty IOAccelerator regions. Null where
-   *  no counter could be read. */
+  /** A LOWER BOUND on what the worker process is holding RIGHT NOW —
+   *  `max(phys_footprint, resident_size)` on macOS, RSS elsewhere (D597, and
+   *  `worker_base.os_footprint_bytes`, whose docstring owns the argument).
+   *  Neither counter is a superset of the other: the Metal pool is charged to
+   *  `phys_footprint` and never appears in RSS (a live FLUX worker read 172 MB
+   *  of RSS against 23 GB of dirty IOAccelerator regions), while
+   *  `phys_footprint` excludes clean file-backed pages that RSS counts, so an
+   *  mmap-heavy runner has the SMALLER footprint of the two. The status-bar row
+   *  applies the same max again against `residentBytes` above, and omits the
+   *  parenthetical when the two coincide. Null where no counter could be read at
+   *  all — which must stay null, since a row cannot invent a held figure. */
   osFootprintBytes: number | null;
   /** What this model actually COSTS on this machine, in bytes — the primary
    *  figure on a status-bar row, colour-coded against

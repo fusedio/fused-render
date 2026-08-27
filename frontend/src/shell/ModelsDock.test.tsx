@@ -10,7 +10,7 @@
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
 
-import { ModelsCardView } from "@shell/ModelsDock";
+import { memoryBand, ModelsCardView } from "@shell/ModelsDock";
 import type { AiLoadedModel } from "@platform/lib/api";
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
@@ -152,9 +152,11 @@ test("muting tracks whether there are rows at all, not whether bytes were report
 });
 
 // D600 (the user's own pick): BOTH figures, both instantaneous, RSS leading
-// and the OS footprint parenthetical — `1.8 GB now (24 GB held)`. RSS is a
-// strict subset of the footprint, which is what makes the pair read as one
-// fact rather than as the contradiction D597's cost-vs-live pairing produced.
+// and the held figure parenthetical — `1.8 GB now (24 GB held)`. Both are "right
+// now", which is what makes the pair read as one fact rather than as the
+// contradiction D597's cost-vs-live pairing produced. The held figure is
+// `max(residentBytes, osFootprintBytes)` (code review finding 3) — see the
+// mmap-shape tests below for why it is not the footprint alone.
 test("the panel row reads RSS first and the OS footprint in parentheses", () => {
   const tree = renderView({
     models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: 25_676_453_144 })],
@@ -213,9 +215,66 @@ test("a model comfortably under the ceiling bands its held figure easy", () => {
   expect((heldSpan.props.className as string).split(" ")).toContain("is-mem-easy");
 });
 
+// ------------------------------------------------ the mmap-heavy shape
+//
+// CODE REVIEW 2026-08-28, FINDING 3. `phys_footprint` EXCLUDES clean
+// file-backed pages, which `resident_size` counts — so a runner that maps its
+// weights read-only (GGUF/llama.cpp, torch with `mmap=True`) reports a footprint
+// SMALLER than its RSS by roughly the size of the model file. The row used to
+// render that as `8.2 GB now (1.1 GB held)` — a visible contradiction — and band
+// "easy" off the 1.1 GB while the machine held 8.2 GB, which is the exact false
+// comfort the band exists to prevent.
+test("a footprint BELOW the resident figure never renders a contradictory pair", () => {
+  const tree = renderView({
+    models: [
+      model({ residentBytes: 8_804_682_956, osFootprintBytes: 1_181_116_006 }),
+    ],
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  // `max` makes the two equal, and an equal parenthetical carries no
+  // information — so it is omitted, exactly as a machine with no counter at all
+  // already renders.
+  expect(text(cell)).toBe("8.2 GB now");
+  expect(findAll(cell, "dl-mem-live")).toHaveLength(0);
+  expect(cell.props.title as string).not.toContain("held");
+});
+
+test("...and the band comes off the LARGER figure, never a false green", () => {
+  const tree = renderView({
+    // 8.2 GB resident of a 12 GB ceiling is 68%+ — but the raw footprint alone
+    // is 1.1 GB, which would have banded "easy".
+    models: [
+      model({ residentBytes: 11_300_000_000, osFootprintBytes: 1_181_116_006 }),
+    ],
+    ceilingBytes: 12 * 1024 ** 3,
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  // With no parenthetical to paint, the band has nowhere to go — and that is
+  // correct: an absent colour is not a false one. What must never happen is
+  // `is-mem-easy` appearing anywhere on this row.
+  expect(cell.props.className as string).not.toContain("is-mem-");
+  expect(findAll(cell, "dl-mem-live")).toHaveLength(0);
+  // The rule itself, at the unit: the held figure is what gets banded.
+  expect(memoryBand(11_300_000_000, 12 * 1024 ** 3)).toBe("tight");
+  expect(memoryBand(1_181_116_006, 12 * 1024 ** 3)).toBe("easy"); // the old, false answer
+});
+
+// The ordinary MLX case is untouched by the max: the footprint dominates by
+// orders of magnitude, so it still leads the parenthetical and still bands.
+test("an MLX worker's footprint still wins the max and still carries the band", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 180_000_000, osFootprintBytes: 25_676_453_144 })],
+    ceilingBytes: 25_769_803_776,
+  });
+  const cell = findAll(findAll(tree, "dl-row")[0], "dl-amount")[0];
+  expect(text(cell)).toBe("172 MB now (24 GB held)");
+  expect((findAll(cell, "dl-mem-live")[0].props.className as string)).toContain("is-mem-tight");
+});
+
 // NO FIGURE, NO COLOUR — and specifically no falling back to banding the
 // primary, which would look identical while silently changing what the colour
-// means. `osFootprintBytes` is null off Darwin and on a worker with no counter.
+// means. `osFootprintBytes` is null on any worker whose counter could not be
+// read.
 test("no OS footprint means no colour anywhere, not a default band", () => {
   const tree = renderView({
     models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: null })],

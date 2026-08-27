@@ -2772,6 +2772,68 @@ def test_os_footprint_probe_returns_a_plausible_figure_or_none():
     del blob
 
 
+def test_os_footprint_is_never_below_the_resident_size():
+    """CODE REVIEW 2026-08-28, FINDING 3 — the mmap-heavy shape.
+
+    `phys_footprint` EXCLUDES clean file-backed pages, which `resident_size`
+    counts, so the footprint alone is the SMALLER of the two for any runner that
+    maps its weights read-only (GGUF/llama.cpp, torch with `mmap=True`).
+    Measured in a plain interpreter with no framework loaded at all:
+    `resident_size` 19.2 MB against `phys_footprint` 9.3 MB — so this is not an
+    exotic case, it is the default one.
+
+    Reporting the footprint alone rendered the model row as
+    `8.2 GB now (1.1 GB held)` — a pair that reads as a contradiction — and
+    painted the status bar's colour band off the smaller of the two numbers,
+    the exact false-comfort signal the band exists to prevent. The probe now
+    returns `max(footprint, resident)`, so "held" can never come back below
+    "now". Asserted against the kernel's OWN `resident_size` where the counter
+    exists, so the test cannot pass by measuring the same thing twice.
+    """
+    import importlib.util
+    import struct
+
+    spec = importlib.util.spec_from_file_location(
+        "wb_probe_floor", "fused_render/ai/runners/worker_base.py")
+    wb = importlib.util.module_from_spec(spec)
+    sys.modules["wb_probe_floor"] = wb
+    spec.loader.exec_module(wb)
+
+    if sys.platform != "darwin":
+        pytest.skip("task_vm_info's resident_size is the darwin path only")
+
+    import ctypes
+    import ctypes.util
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+    libc.mach_task_self.restype = ctypes.c_uint32
+    buf = (ctypes.c_uint8 * 1024)()
+    count = ctypes.c_uint32(1024 // 4)
+    rc = libc.task_info(
+        ctypes.c_uint32(libc.mach_task_self()),
+        ctypes.c_int(wb._TASK_VM_INFO),
+        ctypes.byref(buf),
+        ctypes.byref(count),
+    )
+    assert rc == 0, "the premise: this machine has task_vm_info"
+    raw = bytes(buf)
+    resident = struct.unpack_from("<Q", raw, wb._RESIDENT_SIZE_OFFSET)[0]
+    footprint = struct.unpack_from("<Q", raw, wb._PHYS_FOOTPRINT_OFFSET)[0]
+    assert resident > 0 and footprint > 0
+
+    held = wb.os_footprint_bytes()
+    assert held is not None
+    # A tolerance rather than equality: the probe takes its own reading a moment
+    # after this one, and an interpreter allocates between the two. The claim
+    # under test is that it is not the SMALLER counter — the gap it must clear
+    # is the size of a model file, so 2 MiB of slack cannot hide it.
+    assert held >= min(resident, footprint), "the probe must never report below either counter"
+    assert held + 2 * 1024 * 1024 >= resident, (
+        f"os_footprint_bytes() {held} came back under resident_size {resident} — "
+        "the mmap-heavy shape is back"
+    )
+
+
 def test_os_footprint_falls_back_cleanly_when_no_counter_exists(monkeypatch):
     """The non-macOS path, and any darwin failure: RSS, or None — never a raise
     and never a guess. Forced by claiming a platform with no `task_info`, which
