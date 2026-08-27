@@ -58,7 +58,10 @@
   border-top-left-radius: 7px;
   border-top-right-radius: 7px;
 }
-.tasks-list-frame > .tasks-node:last-child > .tasks-row {
+/* The last node's LAST CHILD, not its row: an open task's row is not the
+   frame's bottom — its thread (or note, or loading line) is — and a curve on
+   the row there would sit mid-group over square frame corners (Bugbot). */
+.tasks-list-frame > .tasks-node:last-child > :last-child {
   border-bottom-left-radius: 7px;
   border-bottom-right-radius: 7px;
 }
