@@ -68,6 +68,7 @@ import {
   Files,
   GitBranch,
   ListTodo,
+  Maximize2,
   Plug,
   Webhook,
   type LucideIcon,
@@ -137,11 +138,23 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     keepMounted: true,
     render: ({ slug, entry, folderHref }) =>
       entry ? (
-        <iframe
-          className="app-page-frame"
-          src={`/render?path=${encodeURIComponent(entry)}`}
-          title={`App: ${slug}`}
-        />
+        <div className="app-page-frame-wrap">
+          <iframe
+            className="app-page-frame"
+            src={`/render?path=${encodeURIComponent(entry)}`}
+            title={`App: ${slug}`}
+          />
+          {/* Floats over the frame's top-right: the app full-size in the
+              explorer, the same address the header path opens. */}
+          <a
+            className="app-page-fullscreen"
+            href={urlForFsPath(entry)}
+            title="Open full screen"
+            aria-label="Open full screen"
+          >
+            <Maximize2 />
+          </a>
+        </div>
       ) : (
         <p className="app-page-empty">
           This folder has no entry page yet.{" "}

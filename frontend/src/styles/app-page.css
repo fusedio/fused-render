@@ -101,6 +101,16 @@
   display: none;
 }
 
+/* The frame plus the button floating over it. The wrap takes the frame's flex
+   share so the iframe can fill it, and anchors the absolute button. */
+.app-page-frame-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .app-page-frame {
   flex: 1 1 auto;
   min-height: 0;
@@ -108,6 +118,35 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
+}
+
+/* Full-screen door in the frame's top-right corner: quiet until hovered,
+   over whatever the app draws there, so it must bring its own backdrop. */
+.app-page-fullscreen {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg-muted);
+  opacity: 0.75;
+  transition: opacity 120ms, color 120ms;
+}
+
+.app-page-fullscreen:hover {
+  opacity: 1;
+  color: var(--fg);
+}
+
+.app-page-fullscreen svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* The nested Tasks page brings its own 22px page padding and a 1050px column
