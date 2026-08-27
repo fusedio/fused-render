@@ -248,15 +248,54 @@ def test_a_child_that_will_not_start_is_reported_not_raised(monkeypatch):
     assert "no bash" in rec["error"]
 
 
-def test_a_run_that_overruns_is_killed_and_says_so(monkeypatch):
-    monkeypatch.setattr(claude_install, "TIMEOUT_S", 0)
-    proc = _FakeProc(["still going\n", "and going\n"])
+def test_a_run_that_overruns_is_killed_and_keeps_what_it_said(monkeypatch):
+    """A child that talks, then stalls: killed, and the tail survives into the
+    error — the output is most of what makes a failed install actionable.
+
+    THE CHILD BLOCKS UNTIL THE WATCHDOG KILLS IT rather than the test racing a
+    short timeout. The first version handed a fake two lines and set TIMEOUT_S
+    to 0, hoping the deadline would be noticed before the iterator ran dry;
+    that is a race against the clock and it lost on Windows, where time.time()
+    advances in ~15ms steps and the two lines were consumed inside one tick
+    (CI on 029f4b0: `assert 'done' == 'error'`). Nothing about the product was
+    wrong; the test was asking whether a scheduler happened to get there first.
+    Blocking makes the kill the only thing that can end the loop, so the
+    assertion is causal on every platform.
+    """
+    released = threading.Event()
+
+    class _TalksThenStalls:
+        def __init__(self):
+            self.killed = False
+            self.stdout = self
+            self._lines = iter(["downloading…\n"])
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._lines)
+            except StopIteration:
+                released.wait(30)  # ...and then says nothing, forever
+                raise
+
+        def wait(self, timeout=None):
+            return -9
+
+        def kill(self):
+            self.killed = True
+            released.set()
+
+    proc = _TalksThenStalls()
+    monkeypatch.setattr(claude_install, "TIMEOUT_S", 0.2)
     monkeypatch.setattr(claude_install.subprocess, "Popen", lambda *a, **k: proc)
     claude_install._run("install", ["bash", "-c", "true"], "…")
     rec = claude_install.status()
+    assert proc.killed is True
     assert rec["state"] == "error"
     assert "was stopped" in rec["error"]
-    assert proc.killed is True
+    assert "downloading" in rec["output"]
 
 
 def test_a_wait_that_times_out_is_caught(monkeypatch):
@@ -393,7 +432,7 @@ def test_a_silent_stall_is_killed_by_the_watchdog_not_left_running(monkeypatch):
             return self
 
         def __next__(self):
-            released.wait(5)
+            released.wait(30)
             raise StopIteration
 
         def wait(self, timeout=None):
@@ -422,7 +461,7 @@ def test_two_concurrent_starts_only_ever_launch_one_worker(monkeypatch):
     overlapping POSTs could both pass the check and both spawn an installer over
     the same files."""
     spawned = []
-    at_the_gate = threading.Barrier(2, timeout=5)
+    at_the_gate = threading.Barrier(2, timeout=30)
 
     def _slow_install_argv():
         # Stand in for the resolve/plan work that used to happen with the lock
@@ -447,7 +486,7 @@ def test_two_concurrent_starts_only_ever_launch_one_worker(monkeypatch):
     for t in threads:
         t.start()
     for t in threads:
-        t.join(timeout=10)
+        t.join(timeout=30)
     assert len(spawned) == 1
     assert len(refused) == 1
 
