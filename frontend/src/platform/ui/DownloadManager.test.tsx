@@ -337,10 +337,13 @@ test("cancelled and done rows do NOT move — only failures did", () => {
 // Collapsed is now a CHIP in the status bar, not a short card (D563): the
 // toggle IS the chip, and it carries no controls — `queue.cancelAll` and
 // Clear render only in the panel that opens when expanded, so neither
-// survives a collapse any more. What DOES survive is what the chip itself
-// draws: `jobsSummary` names what is hidden, and `dl-pct` keeps naming the
-// aggregate percentage (replacing the old collapsed-state progress bar,
-// which had no home once the header shrank to one line).
+// survives a collapse any more. What the chip itself draws has since been
+// stripped to the bone: the label `Jobs` plus ONE circle, outlined when the
+// section holds nothing and filled when it holds anything (D588/D590, user:
+// "no count. just a circle outlined or filled"). `jobsSummary`'s sentence went
+// in D573 (and the function itself is now deleted), the aggregate percentage
+// `dl-pct` in D581, the count in D588/D590. A collapsed section says THAT
+// something is happening and nothing more; the panel is where the rest lives.
 
 function clickToggle(renderer: ReactTestRenderer) {
   const before = renderer.toJSON() as ReactTestRendererJSON;

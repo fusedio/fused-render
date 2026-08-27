@@ -777,12 +777,17 @@ export function DownloadManagerView({
     refresh();
   };
 
-  // D573: the bar shows the category NAME plus a count, never a sentence —
-  // `jobsSummary`'s richer "2 running · 1 queued" phrasing stays a pure,
-  // fully-tested function (jobs.test.ts, queue-dock-lib.test.ts) but no
-  // longer renders here; the count is simply every row this section is
-  // showing, running/queued/terminal alike, which is also exactly what
-  // `.dl-rows` below draws.
+  // IS THERE ANYTHING HERE — that is the whole question the chip asks now
+  // (D588/D590, user: "no count. just a circle outlined or filled"). D573 had
+  // already reduced the bar to a category NAME plus a count, retiring
+  // `jobsSummary`'s richer "2 running · 1 queued" sentence; D588/D590 then took
+  // the count too, and `jobsSummary` itself is deleted (code review finding 8) —
+  // it had outlived its last caller by four decisions.
+  //
+  // Still a SUM rather than a boolean, because both halves have to be able to
+  // fill the circle on their own: every row this section shows, running/queued/
+  // terminal alike, which is exactly what `.dl-rows` below draws. The name says
+  // count, but nothing renders the number — see the `StatusDot` call site.
   const totalCount = jobs.length + queued;
 
   return (

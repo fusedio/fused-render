@@ -7,7 +7,6 @@ import { describe, expect, it } from "bun:test";
 import type { ScheduledMessage } from "@platform/lib/api";
 import {
   jobRows,
-  jobsSummary,
   SCHEDULE_JOB_PREFIX,
   type Job,
 } from "@platform/lib/jobs";
@@ -191,37 +190,10 @@ describe("queueCount", () => {
   });
 });
 
-describe("one card, one count", () => {
-  // The header the merged card prints. Its counts come from the queue's rows and
-  // its job rows together, because there is one list and one header over it.
-  it("says queued, not running, when nothing has actually begun", () => {
-    const waiting = queueCount(queueRows([], [], [entry({ id: "c" }), entry({ id: "d" })]));
-    expect(jobsSummary([], waiting)).toBe("2 queued");
-    expect(jobsSummary([], { waiting: 1, running: 0 })).toBe("1 queued");
-  });
-
-  it("names the running and the waiting halves separately in a mix", () => {
-    const mixed = queueCount(queueRows([entry({ id: "a", state: "sent" })], [], [entry({ id: "c" })]));
-    // One live turn + one running download are underway; the past-due message is
-    // not. Adding all three into "3 running" claimed the queue had already begun
-    // — the same lie the pure-queue case above exists to avoid.
-    expect(jobsSummary([job({ id: "d", kind: "download" })], mixed)).toBe("2 running · 1 queued");
-  });
-
-  it("keeps 'downloading' for a card whose work really is only downloads", () => {
-    const jobs = [job({ id: "d", kind: "download" })];
-    expect(jobsSummary(jobs, { waiting: 0, running: 0 })).toBe("1 downloading");
-    // one scheduled message alongside it and the noun has to generalise
-    expect(jobsSummary(jobs, { waiting: 1, running: 0 })).toBe("1 running · 1 queued");
-  });
-
-  it("describes what finished only when nothing is happening at all", () => {
-    const done = [job({ id: "a", state: "done" }), job({ id: "b", state: "done" })];
-    expect(jobsSummary(done, { waiting: 0, running: 0 })).toBe("2 finished");
-    // a queued message outranks the finished rows: it is the news
-    expect(jobsSummary(done, { waiting: 1, running: 0 })).toBe("1 queued");
-  });
-});
+// `jobsSummary`'s "one card, one count" block is DELETED with the function
+// itself (code review finding 8): nothing has rendered that sentence since the
+// chip became a label plus one circle. `queueCount` keeps its own tests above —
+// the card still computes it, and the queue rows still need it.
 
 // The fold used to keep the queue rows and a live stand-in job row on screen
 // regardless of `collapsed` (jobs.ts `rowsShown`, deleted) — the user rejected
@@ -496,13 +468,14 @@ describe("one scheduled run, one row, at every step of its life", () => {
     }
   });
 
-  it("counts the stand-in row in the one header, and leaves no empty card", () => {
-    // The count comes off the same two numbers as the rows. With the queue read
-    // failing, the run is a job row — so the header must say "1 running" from the
-    // job side rather than falling through to "0 finished" and drawing a card with
-    // no rows in it. Nothing anywhere ⇒ nothing at all, exactly as before.
-    const failed = jobRows([liveJob()], drawnIds([]));
-    expect(jobsSummary(failed, queueCount([]))).toBe("1 running");
+  it("leaves the stand-in row as a real row, and leaves no empty card", () => {
+    // With the queue read failing, the run has to be a JOB row — one row
+    // somewhere rather than none anywhere. The old version of this also asserted
+    // `jobsSummary` said "1 running" instead of falling through to
+    // "0 finished"; that function is deleted (code review finding 8) and the
+    // chip carries no sentence at all now, so what remains to pin is the rows.
+    // Nothing anywhere ⇒ nothing at all, exactly as before.
+    expect(jobRows([liveJob()], drawnIds([])).length).toBe(1);
     expect(shownRows([], []).length).toBe(0);
     expect(jobRows([], drawnIds([]))).toEqual([]);
   });

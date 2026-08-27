@@ -302,9 +302,10 @@ def test_there_is_one_card_not_two(dock, card):
     # the rows land in the card's one list, above the job rows
     assert "{queue?.rows}" in card
     assert card.index("{queue?.rows}") < card.index("jobs.map((job)")
-    # and the one header count is told about them (D573: the chip itself no
-    # longer renders `jobsSummary`'s sentence, but the count still comes off
-    # the same `count`/`jobs` the card computes right here)
+    # and the section's own occupancy signal is told about them. The chip renders
+    # no sentence (D573, `jobsSummary` since deleted) and no number
+    # (D588/D590 — one circle, outlined or filled), but whether it is FILLED
+    # still comes off the same `count`/`jobs` the card computes right here.
     assert "count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };" in card
 
 

@@ -10,7 +10,6 @@ import {
   jobFraction,
   jobsAfterClear,
   jobStatusLine,
-  jobsSummary,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
@@ -131,26 +130,12 @@ test("stalled outranks a pending cancel, and says both", () => {
   expect(line).toContain("nothing is reporting");
 });
 
-// ------------------------------------------------------------------- summary
-
-test("the header counts what is running, not what is on the list", () => {
-  const jobs = [job({ id: "a" }), job({ id: "b", state: "done" }), job({ id: "c", state: "done" })];
-  expect(jobsSummary(jobs)).toBe("1 downloading");
-});
-
-test("mixed kinds fall back to the neutral verb", () => {
-  const jobs = [job({ id: "a" }), job({ id: "b", kind: "task" })];
-  expect(jobsSummary(jobs)).toBe("2 running");
-});
-
-test("with nothing running, failures are the news", () => {
-  const jobs = [job({ id: "a", state: "done" }), job({ id: "b", state: "error" })];
-  expect(jobsSummary(jobs)).toBe("1 failed");
-});
-
-test("with nothing running and nothing failed, it counts what finished", () => {
-  expect(jobsSummary([job({ id: "a", state: "done" })])).toBe("1 finished");
-});
+// NO SUMMARY TESTS ANY MORE — `jobsSummary` is deleted (code review finding 8).
+// Nothing has rendered its sentence since D579 moved the idle line into the
+// panel and D588/D590 reduced the chip to a label plus one circle; it stayed on
+// as a fully-tested function with no caller, which reads to the next person like
+// something load-bearing. Its whole test block goes with it rather than pinning
+// a rule the app no longer has.
 
 // --------------------------------------------------------------- auto-expand
 

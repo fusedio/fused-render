@@ -92,19 +92,6 @@ export function isRunning(job: Job): boolean {
 }
 
 /**
- * What the card's bulk "Clear" button would actually take, and what it
- * leaves — mirroring the server's own rule (`fused_render/jobs.py`
- * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
- * row is deliberately NOT clearable in bulk any more: `is_stalled` only
- * means "no report in `STALE_AFTER_S`", and the work behind it does not
- * stop just because its row does — a Clear press used to silently orphan
- * a still-running AI job, telling the user it had been cancelled when
- * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
- * takes a stalled row one at a time, unchanged: that is a user closing a
- * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
- * what any of its rows are.
- */
-/**
  * A FAILURE belongs to Notifications, not Jobs (D586, user: "maybe we can have
  * a flow like running activities are shown in jobs and after done, a completed
  * message goes to notifications?").
@@ -139,6 +126,23 @@ export function failedJobs(jobs: Job[]): Job[] {
   return jobs.filter(isFailure);
 }
 
+/**
+ * What the card's bulk "Clear" button would actually take, and what it
+ * leaves — mirroring the server's own rule (`fused_render/jobs.py`
+ * `clear_finished`) exactly, TERMINAL rows only. A stalled-but-`running`
+ * row is deliberately NOT clearable in bulk any more: `is_stalled` only
+ * means "no report in `STALE_AFTER_S`", and the work behind it does not
+ * stop just because its row does — a Clear press used to silently orphan
+ * a still-running AI job, telling the user it had been cancelled when
+ * nothing had touched it. The per-row ✕ (`JobRow`'s `dismiss` path) still
+ * takes a stalled row one at a time, unchanged: that is a user closing a
+ * SPECIFIC row they usually recognize, not a bulk sweep that cannot know
+ * what any of its rows are.
+ *
+ * (This block sat two functions further up until code review finding 4 —
+ * `DownloadManager.tsx` cites "`clearableCount`'s own doc has the full
+ * argument" twice, and the doc was over `isFailure`.)
+ */
 export function clearableCount(jobs: Job[]): number {
   return jobs.filter((j) => !isRunning(j)).length;
 }
@@ -340,46 +344,19 @@ export interface QueueCount {
   running: number;
 }
 
-const NO_QUEUE: QueueCount = { waiting: 0, running: 0 };
-
-// The one header line for the whole card — the queue's rows and the job rows
-// under a single count, because they are one list of one kind of thing and two
-// headers over one corner is what this replaced.
-//
-// Counts what is HAPPENING, and falls back to describing what finished only when
-// nothing is: a header reading "2 running" over a list of four finished rows is
-// the common case, and the running ones are the news. Terminal rows are still
-// reachable — they are in the list, and Clear counts them.
-//
-// The NOUN is the honest one for the mix. Nothing has actually begun yet ⇒
-// "queued", never "running": a past-due message the scheduler has not claimed is
-// waiting, and calling that running is the kind of small lie that makes a user
-// stop believing the corner. "downloading" survives only for a card whose active
-// work is entirely downloads, which is what it always meant.
-//
-// A MIX names both halves instead of adding them up, for that same reason: one
-// live turn beside two unclaimed messages reads "1 running · 2 queued", never
-// "3 running". The sum was the same lie in a shorter sentence — it inflated how
-// much work is underway at exactly the moment a reader glances at the corner to
-// judge that.
-export function jobsSummary(jobs: Job[], queue: QueueCount = NO_QUEUE): string {
-  const running = jobs.filter(isRunning);
-  const live = running.length + queue.running;
-  const active = live + queue.waiting;
-  if (active === 0) {
-    const failed = jobs.filter((j) => j.state === "error").length;
-    if (failed > 0) return failed === 1 ? "1 failed" : `${failed} failed`;
-    return jobs.length === 1 ? "1 finished" : `${jobs.length} finished`;
-  }
-  if (live === 0) return active === 1 ? "1 queued" : `${active} queued`;
-  const downloads = running.filter((j) => j.kind === "download").length;
-  const pureDownloads =
-    queue.waiting === 0 && queue.running === 0 && downloads === running.length;
-  const noun = pureDownloads ? "downloading" : "running";
-  const head = `${live} ${noun}`;
-  return queue.waiting === 0 ? head : `${head} · ${queue.waiting} queued`;
-}
-
+// `jobsSummary` AND `NO_QUEUE` ARE DELETED (code review 2026-08-28, finding 8),
+// along with `overallFraction`, `rowsShown`, `RowsShown`, `foldedJobRows` and
+// `repoUpdatesSummary` before them. `jobsSummary` printed the card's one header
+// line — "2 running · 1 queued", with a genuinely careful set of rules behind it
+// (name both halves rather than summing them, since one live turn beside two
+// unclaimed messages is not "3 running"; keep "downloading" only for a card
+// whose active work really is all downloads; fall back to what FINISHED only
+// when nothing is happening). D579 moved the idle sentence into the panel and
+// D588/D590 reduced the chip to a label plus one circle, which left nothing in
+// the bar for a sentence to render into. It survived that as a "pure, fully
+// tested function" with no non-test caller, which is the shape a future reader
+// mistakes for something load-bearing. `QueueCount` above STAYS — the card still
+// computes it, and the queue rows still need it.
 // Poll cadence. Fast while anything is live — a progress bar that steps once a
 // second reads as stuck — and slow otherwise, where the only thing a poll can
 // discover is a job STARTED by some other document (a page in another browser

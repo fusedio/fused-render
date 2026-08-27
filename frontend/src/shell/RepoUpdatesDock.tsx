@@ -6,7 +6,7 @@
 // It used to be rows PINNED INSIDE the jobs/downloads card, exempt from that
 // card's fold and invisible to its header and its Clear button. That shape
 // broke the jobs card in four ways at once: with zero jobs and zero queue
-// but one repo row, `jobsSummary` fell through to "0 finished"; the jobs
+// but one repo row, `jobsSummary` (since deleted) fell through to "0 finished"; the jobs
 // card's collapse toggle did nothing (repo rows were exempt from the fold,
 // and there were no job rows left to fold); Clear disappeared (`clearable`
 // counted jobs only); and there was no way to dismiss a repo row at all. All
