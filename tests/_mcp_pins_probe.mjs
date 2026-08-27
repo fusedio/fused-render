@@ -1,15 +1,16 @@
-// Runs the MCP panel's OWN pure functions (SPEC §44 / MC-3, MC-7).
+// Runs the MCP panel's OWN pure functions (SPEC §44 / MC-8, MC-12).
 //
 // * The three functions that decide what a pin's VALUE is — `pinKind`,
 //   `seedPin`, `coercePin` — are the whole of the "a pinned `False` must not
-//   become the string \"False\"" contract. A source assertion could say they
-//   exist; only running them can say a boolean default seeds a boolean.
+//   become the string \"False\"" contract (MC-8). A source assertion could
+//   say they exist; only running them can say a boolean default seeds a
+//   boolean.
 // * `registrationDefinition` is the {command, args} shape written into the
-//   user's GLOBAL ~/.claude.json on Register — the shape a Windows "fix"
-//   would silently corrupt by routing `command` through a `cmd.exe` hop (see
-//   its own comment in template.html). Running it, not just grepping the
-//   literal, is what makes that revert fail loudly regardless of how it's
-//   phrased.
+//   user's GLOBAL ~/.claude.json on Register (MC-12) — the shape a Windows
+//   "fix" would silently corrupt by routing `command` through a `cmd.exe`
+//   hop (see its own comment in template.html, D549). Running it, not just
+//   grepping the literal, is what makes that revert fail loudly regardless
+//   of how it's phrased.
 //
 // The panel's script cannot be evaluated whole (its top level touches
 // `document` and `window.fused` and starts a load), so this slices out those

@@ -506,8 +506,9 @@ async function refreshRegistration() {
 // this with no useful cwd and no shell PATH assumptions.
 //
 // On Windows `fused` is a bare `fused.cmd` path (a batch file, not a
-// `CreateProcess`-executable) — that is DELIBERATE, not an oversight. Do not
-// "fix" it by routing through `cmd.exe` yourself (`command: "cmd.exe", args:
+// `CreateProcess`-executable) — that is DELIBERATE, not an oversight
+// (DECISIONS.md D549, SPEC.md MC-12). Do not "fix" it by routing through
+// `cmd.exe` yourself (`command: "cmd.exe", args:
 // ["/c", fused, ...]`): investigated and rejected for this exact spot. The
 // MCP TS SDK's stdio transport spawns via `cross-spawn` with `shell: false`,
 // and cross-spawn decides whether to build its own safe `cmd.exe /c` hop by
