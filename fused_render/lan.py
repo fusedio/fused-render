@@ -202,6 +202,33 @@ def _not_found() -> Response:
     return PlainTextResponse("not found", status_code=404)
 
 
+_RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")
+_PHONE_PATH = os.path.join(_STATIC_DIR, "runtime-phone.js")
+_runtime_cache: tuple[tuple[float, float], bytes] | None = None
+
+
+def _phone_runtime() -> Response:
+    """``/static/runtime.js`` for the phone: the stock runtime followed by
+    ``static/lan/runtime-phone.js``, which replaces the members that mean
+    something different on a phone (``fused.capture.*``, ``fused.fileIndex``,
+    ``fused.device``). Same URL the ``/render`` injection already emits, so no
+    HTML rewriting; the desktop's loopback server keeps serving the stock file.
+    Concatenated once per (mtime, mtime) so a dev edit shows on reload."""
+    global _runtime_cache
+    try:
+        key = (os.path.getmtime(_RUNTIME_PATH), os.path.getmtime(_PHONE_PATH))
+    except OSError:
+        return _not_found()
+    if _runtime_cache is None or _runtime_cache[0] != key:
+        with open(_RUNTIME_PATH, "rb") as f:
+            stock = f.read()
+        with open(_PHONE_PATH, "rb") as f:
+            phone = f.read()
+        _runtime_cache = (key, stock + b"\n\n" + phone)
+    return Response(_runtime_cache[1], media_type="application/javascript",
+                    headers={"Cache-Control": "no-cache"})
+
+
 class LanApp:
     """ASGI wrapper: answers lifespan itself (never forwarded — the inner app's
     startup/shutdown handlers belong to the loopback server; forwarding them
@@ -247,6 +274,8 @@ class LanApp:
             return JSONResponse({"apps": lan_apps(), "host": HOSTNAME})
         if path.startswith("/a/"):
             return self._app_shortcut(path[3:])
+        if path == "/static/runtime.js" and method in ("GET", "HEAD"):
+            return _phone_runtime()
 
         if any(path.startswith(p) for p in _PREFIXES):
             return None
