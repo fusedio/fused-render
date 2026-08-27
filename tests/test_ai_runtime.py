@@ -9808,6 +9808,43 @@ def test_a_worker_with_no_model_gets_no_permission(monkeypatch, tmp_path):
     assert "FUSED_MODEL_MIRROR_OK" not in supervisor._child_env("t")
 
 
+# -- FUSED_AI_MEMORY_BUDGET_BYTES: the item 14 wiring's budget seam ----------
+#
+# `fit.available_budget_bytes()` runs SERVER-side (it needs `hw_detect.
+# cached_hardware()`, which lives in the `fused_render` package a worker's
+# bare-module interpreter cannot import — see `formats.py`'s own top-of-file
+# note). This env var is how the number crosses that process boundary, the
+# identical shape `FUSED_MODEL_MIRROR_OK` already establishes for a
+# per-model, computed-server-side fact a worker needs but cannot derive
+# itself.
+
+
+def test_child_env_carries_the_computed_budget(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: 12_345_678_901.0)
+    env = supervisor._child_env("t")
+    assert env["FUSED_AI_MEMORY_BUDGET_BYTES"] == "12345678901"
+
+
+def test_child_env_omits_the_budget_when_it_cannot_be_computed(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    env = supervisor._child_env("t")
+    assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
+
+
+def test_an_inherited_budget_is_stripped_rather_than_passed_on(monkeypatch, tmp_path):
+    """The same non-negotiable rule `FUSED_MODEL_MIRROR_OK` already keeps:
+    this environment is a COPY of the server's, and a stale or operator-set
+    value must not silently outlive the computation that is supposed to
+    produce it fresh on every spawn."""
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("FUSED_AI_MEMORY_BUDGET_BYTES", "999")
+    monkeypatch.setattr(fit, "available_budget_bytes", lambda: None)
+    env = supervisor._child_env("t")
+    assert "FUSED_AI_MEMORY_BUDGET_BYTES" not in env
+
+
 def test_an_inherited_permission_is_stripped_rather_than_passed_on(monkeypatch,
                                                                    tmp_path):
     """This environment is a COPY of the server's.

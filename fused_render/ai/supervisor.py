@@ -702,6 +702,20 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     mirror" — this permission is what still keeps that default from widening
     anything: a base URL alone names no repo, and only a suggested model's id
     ever reaches `FUSED_MODEL_MIRROR_OK`.
+
+    **`FUSED_AI_MEMORY_BUDGET_BYTES` carries `fit.available_budget_bytes()`
+    across the identical process boundary** (SPEC AI-24 item 14's real
+    wiring) — a worker's bare-module interpreter cannot import
+    `fused_render.ai.fit`/`hw_detect` (see `formats.py`'s own top-of-file
+    note on why it stays stdlib-only), so the one place this figure CAN be
+    computed is here, server-side, on every spawn — never once and cached,
+    since `hw_detect`'s own background refresh means the answer can
+    genuinely change between one worker's bring-up and the next. `llama_
+    text.py`'s curated-recipe resolver is the one reader today. POPPED when
+    the computation answers `None` (RAM itself unreadable), for the same
+    "this environment is a copy of the server's" reason `FUSED_MODEL_
+    MIRROR_OK` is: a stale or operator-set value must not silently outlive
+    the fresh computation that is supposed to produce it.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
@@ -714,6 +728,11 @@ def _child_env(token: str, model: str = "", capability: str = "") -> dict:
         env["FUSED_MODEL_MIRROR_OK"] = permitted
     else:
         env.pop("FUSED_MODEL_MIRROR_OK", None)
+    budget = fit.available_budget_bytes()
+    if budget is not None:
+        env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
+    else:
+        env.pop("FUSED_AI_MEMORY_BUDGET_BYTES", None)
     return env
 
 
