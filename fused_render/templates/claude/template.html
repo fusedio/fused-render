@@ -11306,6 +11306,7 @@ document.getElementById("back").onclick = () => {
 
 function enterChat() {
   chatEl.classList.remove("home");
+  stopWatchRecent();
   // The strip belongs to ONE conversation. Chips from the previous chat are
   // hidden on the home screen but still in the map — a new chat must not
   // inherit them (nor a late poll's leftovers).
@@ -16170,8 +16171,20 @@ for (const p of LIST_PANELS) {
 // sit it out, a failed call backs off, and leaving the landing ends the loop —
 // the seat number is the same idiom loadRecent uses.
 let recentWatchSeat = 0;
+let recentWatchAbort = null;
+/** The session ids the list last painted — what a `gone` key has to be one of
+ *  to concern this folder (a `gone` key carries no project of its own). */
+const recentIds = new Set();
+/** Stop the watcher: abort the in-flight long-poll rather than letting it run
+ *  out its 25s, so a quick enter-and-back never has two loops going and a
+ *  leave frees the connection at once (bugbot #892). */
+function stopWatchRecent() {
+  recentWatchSeat += 1;
+  if (recentWatchAbort) { recentWatchAbort.abort(); recentWatchAbort = null; }
+}
 async function watchRecent() {
-  const seat = ++recentWatchSeat;
+  stopWatchRecent();
+  const seat = recentWatchSeat;
   let gen = -1;
   const onLanding = () => seat === recentWatchSeat && chatEl.classList.contains("home");
   while (onLanding()) {
@@ -16180,13 +16193,18 @@ async function watchRecent() {
       continue;
     }
     let r;
+    const ctl = new AbortController();
+    recentWatchAbort = ctl;
     try {
-      const res = await fetch(`/api/tasks/changes?since=${gen}&wait=25`);
+      const res = await fetch(`/api/tasks/changes?since=${gen}&wait=25`, { signal: ctl.signal });
       if (!res.ok) throw new Error(String(res.status));
       r = await res.json();
     } catch {
+      if (ctl.signal.aborted) return;
       await sleep(3000);
       continue;
+    } finally {
+      if (recentWatchAbort === ctl) recentWatchAbort = null;
     }
     if (!onLanding()) return;
     const handshake = gen < 0;
@@ -16194,7 +16212,8 @@ async function watchRecent() {
     if (handshake) continue;
     const rows = r.rows || [];
     const here = (p) => typeof p === "string" && p && (FILE === p || FILE.startsWith(p + "/"));
-    if (r.full || (r.gone || []).length || rows.some((row) => here(row.project))) loadRecent();
+    const mine = rows.some((row) => here(row.project)) || (r.gone || []).some((k) => recentIds.has(k));
+    if (r.full || mine) loadRecent();
   }
 }
 
@@ -16224,8 +16243,10 @@ async function loadRecent() {
     // in its project dir, and the reverse — an empty session list is still an
     // answer the snapshots panel wants (it means "name nothing"), not a reason
     // to skip.
+    recentIds.clear();
     let named = false;
     for (const s of sessions) {
+      if (s && s.id) recentIds.add(s.id);
       // The SAME string the row is labelled with (sessionTitle, not the raw
       // preview): the comment above says these two must match, and a heading
       // reading "<pane-shot> The user attached a pi…" while its row reads the
