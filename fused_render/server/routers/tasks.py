@@ -1614,8 +1614,19 @@ def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MA
         return {"generation": gen, "rows": [], "gone": []}
     rows = _task_rows(only=keys)
     listed = {row["key"] for row in rows}
-    return {"generation": gen, "rows": rows,
-            "gone": sorted(key for key in keys if key not in listed)}
+    gone = {key for key in keys if key not in listed}
+    # A pending message that has just RUN is now filed under its session id
+    # (§5): the watcher names the session, the session is listed, and the
+    # `pending:<entry>` row the client still shows is nobody's key. Name it
+    # gone, or two rows stand for one task until the full poll (bugbot #892).
+    tasks = _collect()
+    for key in listed:
+        task = tasks.get(key)
+        for entry in (task or {}).get("entries", ()):
+            pending = tasks_store.pending_key(str(entry.get("id") or ""))
+            if pending != key:
+                gone.add(pending)
+    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
 
 
 # `project` rides along for the sidebar's Current apps section (D487): the

@@ -222,6 +222,29 @@ def test_wait_returns_union_since_and_full_when_too_far_back(monkeypatch):
     assert tasks_watch.wait(0, 0) == (5, None)
 
 
+def test_wait_with_a_since_from_a_previous_process_asks_for_a_full_reload():
+    tasks_watch.tick()
+    tasks_watch.notify({"a"})
+    assert tasks_watch.wait(99, 0) == (1, None)  # client ahead: reload now, no wait
+
+
+def test_changes_names_the_pending_key_a_run_message_left_behind(claude_home, monkeypatch):
+    from fused_render import schedule
+    entry_id = "e1"
+    entry = {"id": entry_id, "state": schedule.SENT, "session_id": SID,
+             "created": "2026-08-27T09:00:00Z", "due": "2026-08-27T09:00:00Z",
+             "target": "/proj", "message": "hi"}
+    monkeypatch.setattr(schedule, "list_entries", lambda: [entry])
+    monkeypatch.setattr(tasks_mod, "_entry_session", lambda e: SID)
+    _transcript(claude_home, SID)
+    with TestClient(create_app(str(claude_home))) as client:
+        gen = client.get("/api/tasks").json()["generation"]
+        tasks_watch.notify({SID})
+        r = client.get(f"/api/tasks/changes?since={gen}&wait=0").json()
+        assert [t["key"] for t in r["rows"]] == [SID]
+        assert r["gone"] == [tasks_store.pending_key(entry_id)]
+
+
 def test_wait_wakes_on_bump():
     tasks_watch.tick()
     out = {}

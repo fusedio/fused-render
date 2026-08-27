@@ -275,6 +275,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     );
     getTasks().then(
       (r) => {
+        // A full listing that left before a delta landed is OLDER than what
+        // is on screen; applying it would roll the rows back and the
+        // generation with them (bugbot #892). The next poll catches up.
+        if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
         if (typeof r.generation === "number") generationRef.current = r.generation;

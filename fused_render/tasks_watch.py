@@ -132,6 +132,11 @@ def wait(since: int, timeout: float = MAX_WAIT_SEC) -> tuple[int, frozenset | No
     ring remembers (the caller should reload everything)."""
     deadline = time.monotonic() + max(0.0, min(timeout, MAX_WAIT_SEC))
     with _cond:
+        if since > _generation:
+            # The client is ahead of us: this process restarted (or was
+            # hot-reloaded) and counts from zero again. Its rows may be stale
+            # in ways the ring cannot name — reload, don't wait (bugbot #892).
+            return _generation, None
         while _generation <= since:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
