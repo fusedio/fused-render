@@ -1318,16 +1318,23 @@ def select_gguf_recipe(files: dict[str, int | None], budget_bytes: float | None,
     applies — an `mmproj` file ranking as though it were a smaller chat-model
     quant would be the same wrong offer that function already refuses to make.
 
-    **A missing size (`None`) is estimated from `params x bytes_per_param`,
-    sharing `fit.QUANT_BYTES_PER_PARAM` rather than a second, driftable copy
-    of the same table** (SPEC item 14's own instruction) — imported lazily so
-    a bare `import formats` (the shape a worker's interpreter loads this
-    module in, per the module's own top-of-file note) never pays for
-    `fused_render.ai.fit`'s import unless this function is actually called,
-    which no worker path does. Estimated only when `params` is supplied;
-    otherwise an unsized file is excluded from candidacy outright — a
-    caller-facing default of "no size, no evidence" rather than a silent
-    zero that would make an unsized file look free.
+    A missing size (`None`) is estimated two ways, in precedence order.
+    **A PARTIALLY-known shard set** (some parts sized, some not -- code
+    review) estimates the missing parts from the KNOWN parts' own average:
+    shards of one quantization are near-equal size by construction, so a
+    sibling's real, measured size is better evidence than a formula, and
+    this needs no `params` at all. Dropping the unsized shards from the sum
+    instead (this function's own bug until the fix) always UNDERCOUNTS the
+    real download -- exactly backwards for a budget picker. **A FULLY-unsized
+    group** falls back to `params x bytes_per_param`, sharing `fit.QUANT_
+    BYTES_PER_PARAM` rather than a second, driftable copy of the same table
+    (SPEC item 14's own instruction) -- imported lazily so a bare `import
+    formats` (the shape a worker's interpreter loads this module in, per the
+    module's own top-of-file note) never pays for `fused_render.ai.fit`'s
+    import unless this function is actually called, which no worker path
+    does. With no known size AND no `params`, the group is excluded from
+    candidacy outright -- a caller-facing default of "no size, no evidence"
+    rather than a silent zero that would make an unsized file look free.
     """
     groups: dict[str, list[str]] = {}
     for name in files:
@@ -1344,14 +1351,28 @@ def select_gguf_recipe(files: dict[str, int | None], budget_bytes: float | None,
     for token, names in groups.items():
         names.sort()
         sizes = [files[name] for name in names]
-        if all(size is None for size in sizes):
-            if params is None:
-                continue
+        known = [size for size in sizes if size is not None]
+        if known:
+            # A PARTIALLY-known shard set estimates the MISSING members from
+            # the known ones' own average, rather than silently dropping
+            # them from the sum (the bug this branch fixes, code review) --
+            # shards of one quantization are near-equal size by
+            # construction (llama.cpp splits a GGUF by byte offset, not by
+            # tensor boundary), so a sibling's real, MEASURED size is
+            # better evidence for an unmeasured shard than the params x bpp
+            # table below, and needs no `params` argument to use at all.
+            # Dropping the missing shard entirely (the old behaviour) always
+            # UNDERCOUNTS the real download -- exactly backwards for a
+            # budget picker, whose whole job is never recommending a quant
+            # that does not actually fit.
+            average = sum(known) / len(known)
+            total = sum(known) + average * (len(sizes) - len(known))
+        elif params is not None:
             from fused_render.ai import fit  # lazy: see docstring above
 
             total = params * fit.quant_bytes_per_param(token)
         else:
-            total = sum(size for size in sizes if size is not None)
+            continue
         candidates.append((token, names[0], total))
 
     ranked = sorted(candidates, key=lambda c: GGUF_QUALITY_ORDER.index(c[0]))

@@ -146,3 +146,39 @@ def test_an_unknown_size_with_no_params_is_excluded():
     files = {"model-Q4_K_M.gguf": None, "model-Q2_K.gguf": 3 * GB}
     name, total = formats.select_gguf_recipe(files, budget_bytes=None)
     assert name == "model-Q2_K.gguf"
+
+
+# -- partial shard sizes must not undercount (Bugbot finding 1) -------------
+
+
+def test_a_partially_known_shard_set_estimates_the_missing_members():
+    """A 3-part shard set with 2 known sizes and 1 missing must not silently
+    drop the missing member from the total -- that undercounts the real
+    download and can make a budget picker recommend a quant that does not
+    actually fit, the exact failure item 14 exists to prevent."""
+    files = {
+        "model-Q4_K_M-00001-of-00003.gguf": 4 * GB,
+        "model-Q4_K_M-00002-of-00003.gguf": 4 * GB,
+        "model-Q4_K_M-00003-of-00003.gguf": None,
+    }
+    assert formats.select_gguf_recipe(files, budget_bytes=9 * GB) is None
+
+
+def test_the_missing_shard_is_estimated_from_its_known_siblings_average():
+    files = {
+        "model-Q4_K_M-00001-of-00003.gguf": 4 * GB,
+        "model-Q4_K_M-00002-of-00003.gguf": 6 * GB,
+        "model-Q4_K_M-00003-of-00003.gguf": None,
+    }
+    name, total = formats.select_gguf_recipe(files, budget_bytes=None)
+    assert total == 15 * GB
+    assert "00001" in name
+
+
+def test_a_fully_known_shard_set_is_unaffected_by_the_estimate_path():
+    files = {
+        "model-Q4_K_M-00001-of-00002.gguf": 4 * GB,
+        "model-Q4_K_M-00002-of-00002.gguf": 4 * GB,
+    }
+    name, total = formats.select_gguf_recipe(files, budget_bytes=None)
+    assert total == 8 * GB
