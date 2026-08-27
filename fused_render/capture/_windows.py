@@ -221,8 +221,8 @@ def _dip_layout(monitors: list[dict], dpr: float) -> list[tuple]:
 
     Chromium's rule (ScreenWin): the primary sits at the origin at its own
     scale; every other display is placed against the display it TOUCHES in
-    physical space, on that same edge, its offset along the edge scaled by its
-    own factor. Walked outward from the primary so a chain of monitors places
+    physical space, on that same edge, its offset along the edge scaled by the
+    PARENT's factor (the edge belongs to the parent). Walked outward from the primary so a chain of monitors places
     in order; one that touches nothing (a gap in the arrangement) falls back to
     physical/scale, which is exact whenever all scales are equal.
     """
@@ -248,14 +248,19 @@ def _dip_layout(monitors: list[dict], dpr: float) -> list[tuple]:
                 if dip[j] is None:
                     continue
                 p, (px, py, pw, ph) = monitors[j], dip[j]
+                # The offset ALONG the shared edge is a distance on the
+                # parent's edge, so it scales by the PARENT's factor
+                # (Chromium ScreenWin `ScaleOffset`: offset / parent_scale),
+                # not the child's.
+                ps = scale(p)
                 if m["x"] == p["x"] + p["width"]:            # right of p
-                    dip[i] = (px + pw, py + (m["y"] - p["y"]) / s, mw, mh)
+                    dip[i] = (px + pw, py + (m["y"] - p["y"]) / ps, mw, mh)
                 elif m["x"] + m["width"] == p["x"]:          # left of p
-                    dip[i] = (px - mw, py + (m["y"] - p["y"]) / s, mw, mh)
+                    dip[i] = (px - mw, py + (m["y"] - p["y"]) / ps, mw, mh)
                 elif m["y"] == p["y"] + p["height"]:         # below p
-                    dip[i] = (px + (m["x"] - p["x"]) / s, py + ph, mw, mh)
+                    dip[i] = (px + (m["x"] - p["x"]) / ps, py + ph, mw, mh)
                 elif m["y"] + m["height"] == p["y"]:         # above p
-                    dip[i] = (px + (m["x"] - p["x"]) / s, py - mh, mw, mh)
+                    dip[i] = (px + (m["x"] - p["x"]) / ps, py - mh, mw, mh)
                 else:
                     continue
                 changed = True
