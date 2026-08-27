@@ -1187,20 +1187,33 @@ a.bookmark-name::after {
   justify-content: center;
 }
 
-/* The running dot rides the glyph slot rather than the rail icon it was drawn
-   for: unposition it so it centres in the 14px slot. */
-.current-app-glyph > .sidebar-rail-dot {
-  position: static;
-}
-
-/* The app's own icon.svg, filling the 14px glyph slot. Drawn at its authored
-   colours — the active-row accent recolour cannot reach an <img>, the same
-   way it leaves a bookmark's custom emoji alone. */
+/* The app's own icon.svg, filling the 14px glyph slot as a mask over
+   currentColor: the shape is the author's, the colour is the row's (muted,
+   accent when active), so a black-drawn svg reads on the dark theme. */
 .current-app-icon {
   display: block;
   width: 14px;
   height: 14px;
-  object-fit: contain;
+  background: currentColor;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+}
+
+/* The running dot sits after the name, in flow: the name gives up its
+   stretch so the dot hugs the text instead of drifting to the row's end
+   (under the hover-only actions). */
+.current-app-row.is-running .bookmark-name {
+  flex: 0 1 auto;
+}
+
+.current-app-running {
+  position: static;
+  flex: 0 0 auto;
+  margin-left: 6px;
 }
 
 .current-app-archive:disabled {
