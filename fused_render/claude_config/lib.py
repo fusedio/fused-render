@@ -275,17 +275,25 @@ def _atomic_write(path: str) -> Generator[str, None, None]:
     attempt. `CLAUDE_DIR`'s own `.gitignore` (`/*`, ignore-everything) hides
     the ones written there, but `catalog_override_path()` writes under
     `~/.fused-render`, which has no such rule and nothing that ever cleans
-    orphaned tmp files up."""
+    orphaned tmp files up.
+
+    `os.replace` itself is INSIDE the try, not after it — a version that
+    only guarded the write and let `os.replace` run unguarded afterward
+    would leave exactly the orphan class this docstring claims to close: on
+    Windows, `os.replace` over a target another process still holds open (an
+    editor, an AV scanner, a search indexer) raises `PermissionError`
+    rather than replacing, and a cross-device `path` raises too — both
+    leave `tmp` fully written and orphaned if the exception isn't caught
+    here."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = _tmp_path(path)
     try:
         yield tmp
+        os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
-    else:
-        os.replace(tmp, path)
 
 
 def write_json(path: str, value: Any) -> None:
@@ -450,13 +458,30 @@ def ensure_repo() -> None:
     `HEAD`/`config`, then copies hook templates — so `.git` existing is not
     proof init finished; a real failure partway through (`ENOSPC`, `EPERM`)
     leaves it behind too, and checking isdir alone would swallow that error
-    and fall into `git config user.email` against a half-built repo. The real
-    post-condition is `git rev-parse --git-dir` succeeding, which needs
-    `HEAD`/`config`/`objects`/`refs` — the essential structure git writes
-    BEFORE it touches hook templates, so this still passes for a genuinely
-    won race (the other side's init is functionally done even if it hasn't
-    finished copying every template) while correctly failing on a half-built
-    directory.
+    and fall into `git config user.email` against a half-built repo.
+
+    It is ALSO deliberately not `git rev-parse --git-dir` — an earlier
+    version of this fix used exactly that, and a second review round caught
+    why it is wrong: `--git-dir` performs git's normal repository DISCOVERY,
+    which walks UP the filesystem looking for a `.git` directory in any
+    ancestor. Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override)
+    inside a versioned dotfiles or home repo — from a `CLAUDE_DIR` with no
+    valid `.git` of its own but a repo somewhere above it, `--git-dir` exits
+    0 and prints the ANCESTOR's git dir, so a genuinely failed init there
+    would have looked like a won race and every git() call after this —
+    identity, the seed `git add -A` + `git commit`, and every later
+    commit()/status()/log()/diff() — would have run against that ancestor
+    repo instead: rewriting its config and committing the user's whole
+    dotfiles tree. The property this needs is "THIS EXACT DIRECTORY is a
+    valid repo", never "some repo is reachable by walking up from here". `git
+    rev-parse --resolve-git-dir <path>` is the command that asks exactly
+    that question — it validates the literal path given (no discovery, no
+    walking) and fails (128) on anything short of a genuinely complete repo:
+    an absent directory, an empty one, or one missing `HEAD`/`config`. That
+    still passes for a genuinely won race (the other side's init is
+    functionally done even if it hasn't finished copying every hook
+    template, since templates come last) while correctly failing on a
+    half-built directory OR an ancestor's repo bleeding through.
 
     An earlier version of this fix ran the seed commit with `check=False`,
     reasoning that a losing thread's collision "just leaves HEAD as whichever
@@ -497,9 +522,13 @@ def ensure_repo() -> None:
                 git("init")
             except RuntimeError:
                 # `.git` existing is NOT proof `git init` succeeded (see the
-                # docstring) — the real post-condition is that git itself now
-                # recognises this as a repository.
-                if git("rev-parse", "--git-dir", check=False).strip() == "":
+                # docstring), and `git rev-parse --git-dir` is NOT a safe
+                # substitute — it walks UP to an ancestor repo, so a failed
+                # init inside a versioned dotfiles/home repo would read as
+                # "already done" and every git() call below would run
+                # against the WRONG repository. `--resolve-git-dir` checks
+                # the exact given path, no discovery.
+                if git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == "":
                     raise  # a real failure, not a lost race
             # local identity so commits work without a global git config
             if not git("config", "user.email", check=False).strip():
