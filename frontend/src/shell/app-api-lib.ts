@@ -106,14 +106,19 @@ export function collectParams(
 
 // ---- what kind of endpoint a file is ----------------------------------------
 
-/** The badge on the row: which entrypoint the active engine would call.
- *  `udf` is only ever reported under the fused engine (the inspector's pick);
- *  `result` is a parameterless static script; `none` has nothing to run;
- *  `error` did not parse. */
-export type EndpointKind = "udf" | "main" | "result" | "none" | "error";
+/** What the row is: which entrypoint the active engine would call. `udf` is
+ *  only ever reported under the fused engine (the inspector's pick); `result`
+ *  is a parameterless static script; `none` has nothing to run; `error` did
+ *  not parse; `unreadable` could not be opened at all — the filesystem's
+ *  fault, not the file's, and said so. */
+export type EndpointKind = "udf" | "main" | "result" | "none" | "error" | "unreadable";
 
 export function endpointKind(ep: PyEndpoint): EndpointKind {
+  if (ep.read_error) return "unreadable";
   if (ep.parse_error) return "error";
+  // The server says which rule picked the function (a `@fused.udf` may be
+  // named `main`); the name is only the fallback for an older payload.
+  if (ep.entrypoint === "udf" || ep.entrypoint === "main") return ep.entrypoint;
   if (ep.function) return ep.function.name === "main" ? "main" : "udf";
   if (ep.static_result) return "result";
   return "none";

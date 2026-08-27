@@ -739,7 +739,13 @@ export interface PyParam {
 export interface PyEndpoint {
   rel: string;
   path: string;
+  /** The file's fault: a syntax error, a null byte. */
   parse_error: string | null;
+  /** The filesystem's fault: permissions, a vanished file. Not a syntax error. */
+  read_error?: string | null;
+  /** Which rule picked the entrypoint — a `@fused.udf` may itself be named
+   *  `main`, so the function's name cannot say. null = nothing to run. */
+  entrypoint?: "udf" | "main" | "result" | null;
   module_docstring?: string | null;
   dependencies?: string[];
   project?: string | null;

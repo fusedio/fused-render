@@ -75,6 +75,7 @@ const KIND_NOTE: Record<EndpointKind, string | null> = {
   result: "static result",
   none: null,
   error: "won't parse",
+  unreadable: "can't read",
 };
 
 /** The row's leading glyph: a play mark for anything Execute works on, a file
@@ -82,7 +83,7 @@ const KIND_NOTE: Record<EndpointKind, string | null> = {
  *  rest; the play mark takes the primary colour when the row is hovered, which
  *  is the only colour on the list. */
 function KindGlyph({ kind }: { kind: EndpointKind }) {
-  if (kind === "error") {
+  if (kind === "error" || kind === "unreadable") {
     return <TriangleAlert aria-hidden className="size-4 flex-none text-destructive" />;
   }
   if (kind === "none") {
@@ -179,8 +180,11 @@ export default function AppApi({
     [endpoints],
   );
 
+  // The tab body is the scroller (the shell is a fixed-height frame whose
+  // document never scrolls): a long list, or an open row with a tall response,
+  // scrolls here. The list inside hugs its rows (flex-none).
   return (
-    <div className="app-api flex min-h-0 flex-1 flex-col gap-3">
+    <div className="app-api flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
       {load.kind === "loading" && <SkeletonLines rows={3} label="Reading Python files" />}
       {load.kind === "error" && <ErrorBanner>Could not read the folder: {load.message}</ErrorBanner>}
 
@@ -372,6 +376,11 @@ function EndpointRow({
           {kind === "error" && (
             <pre className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}>
               Syntax error — {ep.parse_error}
+            </pre>
+          )}
+          {kind === "unreadable" && (
+            <pre className={cn(MONO, "m-0 whitespace-pre-wrap text-destructive")}>
+              Could not read this file — {ep.read_error}
             </pre>
           )}
 

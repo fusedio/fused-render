@@ -29,6 +29,7 @@ from fastapi import APIRouter
 from fused_render.core_templates import PACKAGE_TEMPLATES_DIR
 from fused_render.server import walk as _server_walk
 from fused_render.server.common import _error
+from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
 
 router = APIRouter()
@@ -83,14 +84,48 @@ def describe_folder(root: str) -> dict:
     endpoints = []
     for rel in sorted(rels, key=str.lower):
         path = root + "/" + rel
-        try:
-            info = inspector.main(path, engine)
-        except OSError as e:
-            info = {"parse_error": f"could not read: {e.strerror or e}"}
-        info["rel"] = rel
-        info["path"] = path
-        endpoints.append(info)
+        endpoints.append(_describe_file(inspector, path, rel, engine))
     return {"engine": engine, "endpoints": endpoints, "truncated": truncated}
+
+
+def _describe_file(inspector, path: str, rel: str, engine: str) -> dict:
+    """One file's entry. Never raises: one unreadable or unparseable file must
+    not take the rest of the list down with it. Two distinct failure fields —
+    ``parse_error`` is the file's fault (a syntax error, a null byte),
+    ``read_error`` is the filesystem's (permissions, a vanished file) — so the
+    tab can say which, instead of calling every failure a syntax error."""
+    try:
+        info = inspector.main(path, engine)
+    except OSError as e:
+        info = {"parse_error": None, "read_error": e.strerror or str(e)}
+    except ValueError as e:
+        # ast.parse raises this for source it refuses outright (null bytes).
+        info = {"parse_error": str(e)}
+    except Exception as e:  # noqa: BLE001 — display-only; report, don't propagate
+        info = {"parse_error": None, "read_error": f"{type(e).__name__}: {e}"}
+    info["rel"] = rel
+    info["path"] = path
+    info["entrypoint"] = _entrypoint_kind(inspector, info, path, engine)
+    return info
+
+
+def _entrypoint_kind(inspector, info: dict, path: str, engine: str):
+    """``"udf"`` | ``"main"`` | ``"result"`` | None — WHICH rule picked the
+    function, which the inspector's payload does not say. A ``@fused.udf``
+    function may itself be named ``main``, so the name cannot tell. The builtin
+    executor never returns a decorated function (inspector._find_entrypoint),
+    so under the fused engine a second, builtin-rules pass distinguishes the
+    two: a function fused picks that builtin does not is the UDF."""
+    fn = info.get("function")
+    if fn is None:
+        return "result" if info.get("static_result") else None
+    if engine != "fused":
+        return "main"
+    try:
+        builtin_fn = inspector.main(path, "builtin").get("function")
+    except Exception:  # noqa: BLE001 — the first pass succeeded; be lenient
+        return "main" if fn["name"] == "main" else "udf"
+    return "main" if builtin_fn and builtin_fn["name"] == fn["name"] else "udf"
 
 
 @router.get("/api/apps/py")
@@ -100,4 +135,9 @@ def api_app_py(path: str):
     root = path.replace("\\", "/").rstrip("/")
     if not root or not os.path.isdir(root):
         return _error(f"not a directory: {path}", status=404)
-    return describe_folder(root)
+    try:
+        return describe_folder(root)
+    except shell_mounts.RcListError as e:
+        # A mount-backed app folder whose listing failed (dead mount, timeout):
+        # the same structured answer /api/fs/walk gives, not a bare 500.
+        return _server_walk._mount_list_error_response(root, e)
