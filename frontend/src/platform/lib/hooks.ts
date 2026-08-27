@@ -153,11 +153,16 @@ let defaultHref: string | null = null;
 // its href: browsers (Chrome at least) do not reliably refetch when an existing
 // link's href flips back to a URL it showed before, which left the previous
 // app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
-// node is a fresh icon request every time. The default goes back with a unique
-// query string as well — Chrome's per-document favicon cache can answer a URL
-// it already holds without repainting; static serving ignores the query, so
-// the bytes are the same file under a new key.
-let restoreSeq = 0;
+// node is a fresh icon request every time. EVERY href — the default and an
+// app's icon alike — also carries a unique query string: Chrome's per-document
+// favicon cache can answer a URL it already holds without repainting (the
+// app's raw URL is stable across visits, so it hits the same cache). The
+// server ignores the query, so the bytes are the same file under a new key.
+let faviconSeq = 0;
+function bust(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}r=${++faviconSeq}`;
+}
 function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
   const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
   if (defaultHref === null && old) defaultHref = old.href;
@@ -165,11 +170,10 @@ function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
   link.rel = "icon";
   if (href === DEFAULT_FAVICON) {
     if (!defaultHref) return;
-    const sep = defaultHref.includes("?") ? "&" : "?";
-    link.href = `${defaultHref}${sep}r=${++restoreSeq}`;
+    link.href = bust(defaultHref);
     link.setAttribute("sizes", "any");
   } else {
-    link.href = href;
+    link.href = bust(href);
   }
   if (old) old.replaceWith(link);
   else document.head.appendChild(link);

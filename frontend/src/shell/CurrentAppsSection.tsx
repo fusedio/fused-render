@@ -235,8 +235,15 @@ function CurrentAppRow({
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.iconUrl ? (
           // The app's own icon.svg in the generic mark's slot, drawn as is —
-          // the author's colours, no mask or tint (owner, 2026-08-27).
-          <img className="current-app-icon" src={app.iconUrl} alt="" />
+          // the author's colours, no mask or tint (owner, 2026-08-27). Not
+          // draggable: an <img> drags natively, and the glyph is the natural
+          // handle for the row reorder (same as the name's draggable={false}).
+          <img
+            className="current-app-icon"
+            src={app.iconUrl}
+            alt=""
+            draggable={false}
+          />
         ) : (
           "▣"
         )}
