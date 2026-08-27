@@ -16,8 +16,9 @@ talking to loopback. The LAN listener serves ``LanApp``, an ASGI wrapper
 around the same FastAPI app that admits ONLY what an app page needs and
 refuses everything else with 404 — the explorer, the shell, Claude sessions,
 the file index, mounts, git, config writes, and any path outside
-``~/Fused/local``. Nothing on the LAN side can widen what the wrapper forwards
-without editing the allowlist below.
+``~/Fused/local`` or the app state dir ``~/.fused-render`` (``allowed_roots``;
+apps keep per-install data there). Nothing on the LAN side can widen what the
+wrapper forwards without editing the allowlist below.
 
 Scoping rule: every path-bearing argument (``path``, ``base``, ``py``,
 ``html``, ``image``, ``images``, ``paths``) is resolved the way the inner
@@ -75,13 +76,28 @@ def local_root() -> str:
 # ---- path scoping -----------------------------------------------------------
 
 
+def allowed_roots() -> list[str]:
+    """The folders the LAN side may reach: the apps themselves, and the app's
+    own state dir (``~/.fused-render`` — where apps keep their per-install data
+    beside prefs/bookmarks; ``FUSED_RENDER_HOME`` moves it, so both the default
+    and the effective dir are listed)."""
+    from fused_render.shell.storage import home_dir
+
+    roots = [local_root(), os.path.expanduser("~/.fused-render"), home_dir()]
+    seen: list[str] = []
+    for root in roots:
+        if root not in seen:
+            seen.append(root)
+    return seen
+
+
 def _inside_root(path: str) -> bool:
     try:
-        root = os.path.realpath(local_root())
         real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        roots = [os.path.realpath(r) for r in allowed_roots()]
     except (OSError, ValueError):
         return False
-    return real == root or real.startswith(root + os.sep)
+    return any(real == root or real.startswith(root + os.sep) for root in roots)
 
 
 def _resolve(value, anchor) -> str | None:
