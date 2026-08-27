@@ -286,6 +286,60 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     assert apps[0]["tag"] == "local"
 
 
+def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
+    """D518 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
+    boilerplate commit never sees it — assert both halves: the layout is there,
+    and the `.gitignore` git init just wrote already excludes it."""
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
+    client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
+
+    dest = workspace / "local" / "demo"
+    assert (dest / ".fused" / "data").is_dir()
+    assert (dest / ".fused" / "cache").is_dir()
+    meta = json.loads((dest / ".fused" / "meta.json").read_text())
+    assert meta["app_dir"] == os.path.abspath(str(dest))
+    assert ".fused/" in (dest / ".gitignore").read_text()
+
+
+def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):
+    """The convention has to hold for apps that predate it, which is most of
+    them — so creation hangs off the OPEN (record_app_open, reached from GET
+    /render whenever a marker-carrying page is served), not off scaffolding."""
+    d = _app_dir(workspace, "old-app")
+    assert not (d / ".fused").exists()
+
+    assert apps_mod.record_app_open(str(d)) is True
+
+    assert (d / ".fused" / "data").is_dir()
+    assert (d / ".fused" / "cache").is_dir()
+    assert json.loads((d / ".fused" / "meta.json").read_text())["app_dir"] == \
+        os.path.abspath(str(d))
+
+
+def test_a_dot_fused_that_cannot_be_made_never_fails_the_open(client, workspace):
+    """`record_app_open` is on the render path, and its answer is about
+    RECENCY — the state folder is a side effect that may not influence it. A
+    plain FILE at `.fused` is the cheapest way to make creation genuinely
+    impossible without touching permissions."""
+    d = _app_dir(workspace, "old-app")
+    (d / ".fused").write_text("in the way")
+
+    assert apps_mod.record_app_open(str(d)) is True
+    assert (d / ".fused").is_file()  # untouched, not clobbered
+
+
+def test_a_folder_that_is_not_an_app_gets_no_dot_fused(client, workspace):
+    """The gate is `app_listing.app_entry` (D301's marker), not "this function
+    was reached" — the legacy open endpoint takes an arbitrary path."""
+    d = workspace / "local" / "notanapp"
+    d.mkdir(parents=True)
+    (d / "page.html").write_text("<html><body>no marker</body></html>")
+
+    apps_mod.record_app_open(str(d))
+
+    assert not (d / ".fused").exists()
+
+
 def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
     client, workspace, tmp_path, monkeypatch
 ):

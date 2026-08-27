@@ -113,6 +113,83 @@ curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
   -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,duckdb,geopandas"}}'
 ```
 
+## Where an app keeps state: the `.fused/` folder
+
+An app folder is authored content — the entry page, its `.py` files, assets. Anything the app *accumulates while running* goes in one hidden folder at the app's root, created for you the first time the app is opened (you never `makedirs` it, and apps written before this convention have one too):
+
+```
+<app>/.fused/
+  data/       state the app owns and cannot rebuild
+  cache/      derived bytes the app can rebuild — deletable at any time
+  meta.json   {"version": 1, "app_dir": "<absolute path>", "created_at": "<iso>"}
+```
+
+There is no `fused.dataDir` and no Python helper: the paths are a **convention**, so you build them yourself.
+
+```python
+import os
+
+APP = os.path.dirname(os.path.abspath(__file__))   # a .py at the app root
+DATA = os.path.join(APP, ".fused", "data")
+CACHE = os.path.join(APP, ".fused", "cache")
+```
+
+(A `.py` in a subfolder walks up to the folder containing `.fused` — or, more simply, doesn't: keep the two or three lines above in one module at the app root and import it.) From the page side there is no direct access; go through a `.py`.
+
+**Persistent state goes in `data/`.** Not a JSON file beside `index.html` — that is authored content and it lands in the app's git history. Not `~/.myapp`, not the system temp dir. A saved list, user settings, an accumulated log, a small SQLite/DuckDB file: `data/`.
+
+**The split is a promise, not a naming preference.** Everything under `cache/` must be reconstructible from `data/` plus the outside world, so that deleting `cache/` outright costs the user nothing but time. If deleting it would lose something, it is data. Nothing sweeps `cache/` automatically — an unbounded cache needs your own cap or TTL.
+
+**`meta.json` records where the app was set up, and nothing ever rewrites it.** So when its `app_dir` disagrees with where the app actually is, the folder was moved or copied since its state was created — the moment to distrust anything keyed by an absolute path. Read it and decide; there is no automatic repair.
+
+```python
+import json, os
+meta = json.load(open(os.path.join(APP, ".fused", "meta.json")))
+if os.path.abspath(meta["app_dir"]) != APP:
+    ...  # moved or copied: repoint stored paths, or drop the cache
+```
+
+`.fused/` is **machine-local**: gitignored, and excluded from a `.fused` app-file export. Never put something there that the app needs in order to work on a fresh machine — that belongs in the folder proper.
+
+### Cache heavy work — more than feels necessary
+
+Every `runPython` call is a fresh subprocess. No globals survive, no import cost is amortised, and the 60 s kill is waiting for anything that recomputes what it already computed. Caching to `.fused/cache/` is the single highest-leverage thing a data-heavy page does, and the bar for "worth caching" is far lower than it looks: a network fetch, a parsed multi-MB file, an aggregation over a large table, a rendered tile, a model response, a geocode.
+
+Key by a hash of everything the result depends on, and treat a corrupt or unreadable entry as a miss:
+
+```python
+import hashlib, json, os
+
+def cached(key: str, compute):
+    """Return compute()'s JSON result, memoised on disk under .fused/cache/."""
+    name = hashlib.sha256(key.encode()).hexdigest()[:32] + ".json"
+    path = os.path.join(CACHE, name)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        pass                       # absent, unreadable or truncated: recompute
+    value = compute()
+    tmp = path + f".{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)          # atomic: a concurrent reader never sees half
+    return value
+
+
+def main(city: str = "Berlin", days: int = 7):
+    return cached(f"forecast/v1/{city}/{days}",
+                  lambda: fetch_forecast(city, days))
+```
+
+Three things that decide whether a cache helps or hurts:
+
+- **Version the key.** `forecast/v1/…` above — bump the `v` when the shape of what you store changes, so an old entry becomes a miss instead of feeding the page a value it can no longer read. Never rely on deleting the folder by hand.
+- **Write atomically** (`os.replace`, as above). Calls overlap: a slider drag can have two subprocesses writing the same key, and a half-written file read by the next call is a `ValueError` at best and wrong data at worst.
+- **Cache the expensive part, not the request.** Memoising `main()` wholesale defeats the URL-param wiring the page depends on; memoise the fetch, the parse, the aggregation.
+
+For bytes rather than JSON — a rendered PNG, a Parquet extract — the same shape applies: hashed filename under `cache/`, `os.replace` into place, and hand the page a `fused.rawUrl()` of the cached file instead of loading it through Python.
+
 ## The HTML side: `window.fused` API
 
 The runtime is injected automatically when the explorer renders the page. Never add a script tag for it; just use the global.
@@ -352,7 +429,7 @@ The per-platform matrix, the recording handle, and the rejection types → **`fu
 
 ## Long-running work and the 60 s timeout
 
-Every `fused.runPython` call runs `main()` in a fresh subprocess the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`), and there is no per-call override — an uncaught timeout becomes the red overlay. Design around it: precompute and cache to disk, chunk behind an `offset` param, move a genuinely long build out of band into a separate process, and cut per-call import cost.
+Every `fused.runPython` call runs `main()` in a fresh subprocess the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`), and there is no per-call override — an uncaught timeout becomes the red overlay. Design around it: precompute and cache to disk (**`.fused/cache/`** — see "Where an app keeps state"), chunk behind an `offset` param, move a genuinely long build out of band into a separate process, and cut per-call import cost.
 
 Work that outlives one call needs to be *visible* once the user browses away, because the shell replaces your page's frame: report it to the download manager with `fused.trackJob`, from the detached worker as well as from the page. The strategies, the job API, and the worker-side reporter → **`fused-render-jobs`**.
 
@@ -369,7 +446,11 @@ Nothing here holds state indefinitely — even `fused.engine(py)`, the warm vari
 - Mounting your own iframe in a preview without forwarding `?_preview=1&_nofocus=1` → the inner page does all the work you just skipped.
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
 - Missing annotation on a numeric param → `main` receives `"50"` and comparisons silently misbehave.
-- Expecting module state to persist between `runPython` calls → each call is a fresh process.
+- Expecting module state to persist between `runPython` calls → each call is a fresh process. On-disk memoisation under `.fused/cache/` is the replacement.
+- Writing app state next to `index.html`, into `~/.myapp`, or into the system temp dir → it belongs in `.fused/data/` (git history, portability, and a temp dir that vanishes are three separate bugs).
+- Putting something in `.fused/cache/` that cannot be rebuilt → a cache sweep destroys it. If losing it hurts, it is `data/`.
+- Writing a cache entry with a plain `open(...,"w")` → overlapping calls leave a half-written file the next call reads back. `os.replace` a temp file into place.
+- A cache key with no version segment → a changed result shape is served from stale entries forever.
 - Importing outside the bundled set without a folder `pyproject.toml` → `ModuleNotFoundError` in the packaged app.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
 - Heavy import + slider wired without debounce → one full subprocess per tick; debounce ~150 ms when `main` is slow.

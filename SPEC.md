@@ -9960,3 +9960,82 @@ background apps are the third.
 - **Sequenced-after, deliberately absent here**: the OpenWhisper port this
   feature exists to support, macOS start-at-login, and any widget surface
   for a background app.
+
+## 47. The `.fused/` Folder — An App's Own Data, Cache and Identity (D518)
+
+An app folder is authored content: its entry `.html`, its `.py` data files, its
+assets. Anything the app *accumulates while running* had no home, and pages
+invented one each time — a JSON file dropped beside `index.html`, a scratch dir
+under the workspace, `~/.myapp`. Every one of those is wrong the same way: the
+bytes are not authored content, they are not portable, and nothing else in the
+system knows to leave them alone. §47 is one hidden folder at the app root and
+the rules around it.
+
+```
+<app>/.fused/
+    data/       state the app owns and cannot rebuild
+    cache/      derived bytes the app can rebuild — deletable at any time
+    meta.json   {"version": 1, "app_dir": "<abs>", "created_at": "<iso>"}
+```
+
+- **`data` vs `cache` is a promise, not a naming preference.** Everything under
+  `cache/` must be reconstructible from `data/` plus the outside world, so a
+  sweep of it — by the user, by us, by a disk cleaner — can never destroy
+  something the app cannot get back. Anything failing that test is data. The
+  app owns the size of both: nothing sweeps `cache/` automatically, so an
+  unbounded cache needs the app's own cap or TTL.
+- **The server creates it, not the app.** `app_fused_dir.ensure(folder)` is
+  called from `record_app_open` (`server/routers/apps.py`), i.e. from GET
+  /render whenever a page carrying the fused-app marker is served (D301) —
+  so the convention holds for every app authored before it existed, which is
+  most of them, and an app never has to `makedirs` before its first write.
+  It is gated on `app_listing.app_entry` — the D301 marker, not "this code was
+  reached" — so a `.fused/` is made for APP folders and nothing else; /render
+  has already established the marker by then, and the gate exists for the
+  legacy `POST /api/apps/recents/open`, whose path is arbitrary.
+  `POST /api/apps/new` also calls it directly, before `app_git.init_repo`, so
+  the boilerplate commit never captures the folder. It is additive and
+  idempotent; existing directories are left as they are.
+- **`meta.json` is a witness, never a lookup key.** Every path is resolved from
+  the live folder, so the recorded `app_dir` exists only to be *compared*
+  against it: a mismatch means the folder was moved or copied since its state
+  was created — the one fact an app cannot otherwise learn about itself, and
+  exactly when a path-keyed cache entry or an absolute path stored in `data/`
+  has gone stale. `ensure` therefore NEVER rewrites the field (rewriting on
+  sight erases the evidence); it logs at INFO and leaves it. What a move MEANS
+  is the app's call — a photo index repoints, a scratchpad does not care.
+- **A `.fused/meta.json` that exists but does not parse is left alone.** It is
+  a user-writable file in the user's folder; overwriting it would destroy
+  whatever they (or a future version) put there, and nothing here needs it.
+  Creation is `open(..., "x")` rather than check-then-write, so two concurrent
+  renders of the same app cannot race — losing is a normal outcome, the winner
+  wrote the same three fields.
+- **Mount-backed folders are refused outright.** A remote mount is not an app's
+  private disk, `makedirs` on one is a network round trip on the render path,
+  and this codebase has repeatedly killed a mount with exactly this shape of
+  access. The check is a string prefix test, so the local case pays nothing.
+- **Machine-local, in all four places that would otherwise carry it away.**
+  `.fused/` is in `app_git._GITIGNORE` (so new repos ignore it) and in the
+  `.git/info/exclude` sweeps of `app_git._ensure_excludes` and
+  `templates/claude/agent.py` (so repos predating this do too, and a Claude
+  turn's `add -A` cannot commit a cache). It is dropped from a `.fused` app
+  file by `appfile._iter_app_files`' existing hidden-name rule — the exported
+  artifact carries the app, not the machine's copy of its state. And `.fused`
+  is in `index/ignore.DEFAULT_IGNORE_NAMES`: `~/Fused` is indexed, an app cache
+  has no size bound, and one page caching tiles could spend the whole
+  200k-row corpus on rows nobody searches for.
+- **No API surface, deliberately.** There is no `fused.dataDir`, no
+  `fused.cacheDir`, and no shared Python helper for apps: the paths are three
+  string joins off the app root, and every helper added here would be a second
+  thing to keep in step with the convention. `fused_render/app_fused_dir.py`
+  exists for the SERVER's use; apps build the paths themselves, which the
+  authoring skill and the starter `CLAUDE.md` both show.
+- **Naming.** The folder shares its name with the `.fused` app-file extension
+  (§43) and collides with neither: the index records `ext` for files only, and
+  `os.path.splitext(".fused")` yields no extension anyway, so no `.fused/`
+  directory can ever surface as a phantom exported-app card. The `.fused/`
+  gitignore pattern carries a trailing slash for the same separation — an
+  exported `<name>.fused` file stays tracked like any other artifact.
+- **Sequenced-after, deliberately absent here**: any cache eviction the app
+  does not write itself, any UI that shows or clears an app's `.fused/`, and
+  any `window.fused` accessor for the paths.

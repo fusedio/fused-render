@@ -98,7 +98,7 @@ CLONE_TIMEOUT = 180  # the full clone (every app + preview.png) is the long call
 # while the clone is still legitimately holding the lock.
 LOCK_TIMEOUT = CLONE_TIMEOUT + 20
 IDENTITY = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
-GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n"
+GITIGNORE = "*.html.json\n.claude-split.json\n.venv/\n.fused/\n"
 
 
 class ActionError(Exception):

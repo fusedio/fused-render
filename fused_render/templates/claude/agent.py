@@ -2047,11 +2047,14 @@ def _commit_turn(file: str, message: str) -> None:
             encoding="utf-8", errors="replace")
 
     try:
-        # Legacy defense: nothing writes these files any more — the sidecar
-        # they belonged to is deleted outright (D359), and it had already moved
-        # out of the app dir before that (D83-reversal, D205) — but a repo from
-        # either era may still have one sitting in its tree, and this sweep's
-        # add -A would commit it into app history. Mirror
+        # The two sidecar patterns are a LEGACY defense: nothing writes those
+        # files any more — the sidecar they belonged to is deleted outright
+        # (D359), and it had already moved out of the app dir before that
+        # (D83-reversal, D205) — but a repo from either era may still have one
+        # sitting in its tree, and this sweep's add -A would commit it into app
+        # history. `.fused/` is the LIVE one: the app's own state folder (D518)
+        # is written continuously by the running app, so a turn's add -A would
+        # otherwise sweep a whole cache into the commit. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
@@ -2062,7 +2065,8 @@ def _commit_turn(file: str, message: str) -> None:
                     have = {ln.strip() for ln in fh}
             except OSError:
                 have = set()
-            missing = [p for p in ("*.html.json", ".claude-split.json")
+            missing = [p for p in ("*.html.json", ".claude-split.json",
+                                   ".fused/")
                        if p not in have]
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:

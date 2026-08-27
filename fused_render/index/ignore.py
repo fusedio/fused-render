@@ -200,6 +200,13 @@ DEFAULT_IGNORE_NAMES = [
     ".svn", ".hg", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
     ".gradle", ".terraform", ".next", ".nuxt", ".parcel-cache", ".turbo",
     ".cache", "Pods", ".Trash", "*.egg-info",
+    # An app's own state folder (D518). It belongs here for the same reason
+    # `.cache` does, only more so: `~/Fused` IS indexed, and `.fused/cache/` is
+    # an app-managed dir with no size bound at all — one page caching tiles or
+    # model responses could spend the whole 200k-row corpus on rows nobody
+    # searches for. The app addresses its own files by path, never through the
+    # index, so nothing is lost by making them invisible to search.
+    ".fused",
 ]
 
 
