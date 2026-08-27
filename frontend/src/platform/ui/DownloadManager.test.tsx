@@ -114,8 +114,14 @@ test("a jobs list holding only a successful (done) job renders the IDLE chip, no
   // opens (VS Code/Cursor status-bar idiom — no chevron, hover only).
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Activity");
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No activity");
+  // D579: `Activity` -> `Jobs` (user: "what about jobs?") — this codebase's
+  // own word for exactly this set (`fused_render/jobs.py`, `/api/jobs`).
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Jobs0"); // label + always-rendered zero (D583)
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No jobs");
+  // D583: the count is ALWAYS rendered, zero included — nothing appears or
+  // disappears, so the chip's width is stable without reserving dead space.
+  expect(findAll(tree, "dl-count")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {
@@ -287,13 +293,12 @@ test("the header still names the hidden work once collapsed", () => {
   expect(after.length).toBeGreaterThan(0);
 });
 
-test("the chip keeps naming the aggregate percentage once collapsed — D563's chip replaces the old collapsed bar", () => {
-  // D563 (status bar redesign): a collapsed card used to keep drawing a mini
-  // aggregate progress bar directly under its header, so folding the rows
-  // away hid the detail without hiding the fact that something was running.
-  // That bar had no home once collapsed became a one-line chip in the status
-  // bar — the numeric `.dl-pct` next to the summary carries the same fact
-  // now, in the one line the chip has room for.
+// D581 REMOVES the aggregate percentage from the chip (it appeared and
+// disappeared in place, shifting the whole bar, and reserving ~4ch for it
+// permanently would leave obvious dead space in a 22px bar). It was already
+// the third telling of the same fact: the panel draws a percentage AND a
+// progress bar on every row, which is where per-job progress belongs.
+test("the collapsed chip carries NO aggregate percentage — per-row progress lives in the panel", () => {
   const running: Job = {
     ...BASE,
     id: "sys:ai-image:running",
@@ -303,10 +308,21 @@ test("the chip keeps naming the aggregate percentage once collapsed — D563's c
     stalled: false,
   };
   const renderer = renderInstance([running]);
-  clickToggle(renderer);
+
+  // Expanded: the row itself still carries both the percentage and the bar.
+  const expanded = renderer.toJSON() as ReactTestRendererJSON;
+  const row = findAll(expanded, "dl-row")[0];
+  expect(text(findAll(row, "dl-pct")[0])).toBe("50%");
+  expect(findAll(row, "dl-bar")).toHaveLength(1);
+
+  clickToggle(renderer); // collapse
+
+  // Collapsed: the chip is all that is left, and it holds neither. The count
+  // slot is the only thing that ever changes width, and it is reserved.
   const after = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(after, "dl-bar")).toHaveLength(0);
-  expect(text(findAll(after, "dl-pct")[0])).toBe("50%");
+  expect(findAll(after, "dl-pct")).toHaveLength(0);
+  expect(text(findAll(after, "dl-count")[0])).toBe("1");
 });
 
 test("Cancel queued renders only inside the expanded panel — the collapsed chip carries no controls (D563)", () => {
@@ -355,7 +371,12 @@ function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Pa
   });
 }
 
-test("collapsing, then a genuinely new job id arriving, sets a quiet dot WITHOUT opening the panel", () => {
+// D574 REVERSES D567 (user: "when we have something new, always show the
+// notification. don't keep no activity displayed") — a new job arriving into
+// a collapsed section OPENS that section's panel, and the dot is suppressed
+// while it is open, since a dot pointing at a panel the user is already
+// looking at announces nothing.
+test("a genuinely new job id arriving OPENS the collapsed panel, and shows no dot beside it", () => {
   const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([first]);
   clickToggle(renderer); // collapse
@@ -368,24 +389,52 @@ test("collapsing, then a genuinely new job id arriving, sets a quiet dot WITHOUT
   updateInstance(renderer, [first, second]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  // Still collapsed — nothing here is allowed to reach in and reopen it.
-  expect(findAll(after, "dl-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(2);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });
 
-test("opening the panel — the user's own click — is what clears the dot", () => {
+test("the chip's own click dismisses an auto-opened panel, leaving no dot behind", () => {
   const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([first]);
   clickToggle(renderer); // collapse
   const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
   updateInstance(renderer, [first, second]);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-new-dot")).toHaveLength(1);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-row")).toHaveLength(2);
 
-  clickToggle(renderer); // expand
+  clickToggle(renderer); // dismiss the auto-opened panel
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-row")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
-  expect(findAll(after, "dl-row")).toHaveLength(2);
+});
+
+// D580, the mirror of the above (user: "after a job finishes, ensure we close
+// the jobs popover if no jobs left"): the list draining to empty closes the
+// panel, so an auto-opened section cannot be left sitting on screen showing
+// `No jobs`. Fires only on the non-empty -> empty EDGE.
+test("the list draining to empty closes the panel instead of leaving it showing 'No jobs'", () => {
+  const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const renderer = renderInstance([job]);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-panel")).toHaveLength(1);
+
+  updateInstance(renderer, []); // the job finished and was cleared
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(0);
+  // The chip itself stays — the bar's three sections are always present
+  // (D565) — and reads its idle label.
+  expect(text(findAll(after, "dl-summary")[0])).toBe("Jobs0"); // label + always-rendered zero (D583)
+});
+
+test("one job finishing while another still runs closes nothing", () => {
+  const a: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const b: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
+  const renderer = renderInstance([a, b]);
+  updateInstance(renderer, [b]);
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-panel")).toHaveLength(1);
+  expect(findAll(after, "dl-row")).toHaveLength(1);
 });
 
 test("collapsing, then an EXISTING job merely changing, sets no dot", () => {
@@ -442,14 +491,47 @@ describe("a running row's protected controls never give up their width (D569)", 
     return css.slice(at, css.indexOf("}", at));
   }
 
-  it("lets BOTH the title and the model suffix shrink to nothing and ellipsise", () => {
-    for (const selector of [".dl-title", ".dl-model"]) {
+  // D577 (user: "the UI is not readable") INVERTS what gives way. The row had
+  // rendered `Downloa…  2100000000 / 4600000000  46%  [Cancel]`: with a `0`
+  // floor on the title and every other element refusing to shrink at all,
+  // "the title gives way" meant it surrendered EVERYTHING before anything
+  // else surrendered anything. The title now holds a readable floor and the
+  // AMOUNT is what collapses — it is the most redundant thing in the row,
+  // since the bar and `.dl-pct` each already say how far along the job is.
+  it("gives the title a readable floor instead of letting it vanish", () => {
+    const rule = block(CSS, ".dl-title");
+    expect(rule).toContain("min-width: 15ch;");
+    expect(rule).not.toContain("min-width: 0;");
+    expect(rule).toContain("overflow: hidden;");
+    expect(rule).toContain("text-overflow: ellipsis;");
+    expect(rule).toContain("white-space: nowrap;");
+  });
+
+  it("still lets the model suffix and the amount shrink to nothing and ellipsise", () => {
+    for (const selector of [".dl-model", ".dl-amount"]) {
       const rule = block(CSS, selector);
       expect(rule).toContain("min-width: 0;");
       expect(rule).toContain("overflow: hidden;");
       expect(rule).toContain("text-overflow: ellipsis;");
       expect(rule).toContain("white-space: nowrap;");
     }
+  });
+
+  // The ORDER is the subtle part and the whole point of D577, so it is pinned
+  // explicitly rather than left implied by three separate `flex` assertions:
+  // amount collapses first, then the model suffix, and the title only starts
+  // giving up characters once there is nothing left of either to take.
+  it("shrinks amount FIRST, then the model suffix, and the title LAST", () => {
+    const shrink = (selector: string): number => {
+      const m = block(CSS, selector).match(/flex:\s*\d+\s+(\d+)\s+auto;/);
+      expect(m).not.toBeNull();
+      return Number(m![1]);
+    };
+    const amount = shrink(".dl-amount");
+    const model = shrink(".dl-model");
+    const title = shrink(".dl-title");
+    expect(amount).toBeGreaterThan(model);
+    expect(model).toBeGreaterThan(title);
   });
 
   // D571 follow-up: proportional shrink cut BOTH identifying fields to
@@ -462,15 +544,14 @@ describe("a running row's protected controls never give up their width (D569)", 
     expect(block(CSS, ".dl-model")).toContain("flex: 0 999 auto;");
   });
 
-  it("never lets the amount, percentage, Cancel or dismiss give up their intrinsic width", () => {
-    // A combined block: `.dl-amount, .dl-pct { flex: 0 0 auto; ... }`.
-    const amountPct = CSS.slice(
-      CSS.indexOf(".dl-amount,"),
-      CSS.indexOf("}", CSS.indexOf(".dl-amount,")),
-    );
-    expect(amountPct).toContain("flex: 0 0 auto;");
-    expect(block(CSS, ".dl-row-cancel")).toContain("flex: 0 0 auto;");
-    expect(block(CSS, ".dl-x")).toContain("flex: 0 0 auto;");
+  // D577 moved `.dl-amount` OUT of this protected group; the other three stay,
+  // which is what keeps a running row's Cancel reachable rather than pushed
+  // past the panel's edge (D571's goal, still standing).
+  it("never lets the percentage, Cancel or dismiss give up their intrinsic width", () => {
+    for (const selector of [".dl-pct", ".dl-row-cancel", ".dl-x"]) {
+      expect(block(CSS, selector)).toContain("flex: 0 0 auto;");
+    }
+    expect(block(CSS, ".dl-amount")).not.toContain("flex: 0 0 auto;");
   });
 
   it("closes the panel's rows list to horizontal scroll — a row must fit, not scroll sideways", () => {

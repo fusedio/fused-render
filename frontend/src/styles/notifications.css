@@ -395,29 +395,23 @@
   font-weight: 400;
 }
 
-/* A RESERVED, FIXED-WIDTH COUNT SLOT for the Jobs and Notifications chips
-   (D581, user: "can we do something on jobs and notifications so that there is
-   no content layout shift when new jobs or notifications show up?").
-   ALWAYS RENDERED, empty at zero — reserving the width is the entire point, so
-   the element cannot be conditional.
-   `2ch` is EXACT, not a guess: `.status-bar` sets `font-variant-numeric:
-   tabular-nums` for the whole bar, so every digit is one `ch` wide and two
-   digits fit precisely. Three digits overflow gracefully (the chip grows once,
-   at 100 jobs) rather than being a case worth designing for.
-   `padding-left` rather than leaning on `.dl-toggle`'s `gap`: the gap would
-   apply to the slot even while it is empty, so the reserved width and a
-   visible 6px gap would compound into obvious dead space. As padding it is
-   part of the slot's own reserved box.
-   ONLY THESE TWO SECTIONS, and Models is fluid ON PURPOSE (do not "fix" it):
-   the bar is `justify-content: flex-end`, so a chip's width change moves
-   itself and everything to its LEFT and nothing to its right. Notifications
-   is rightmost, so its count shifts Jobs and Models both; Jobs' count shifts
-   Models. Models is leftmost, so its `· 628 MB` grows into empty bar space and
-   shifts nothing at all — a reserved slot there would buy no stability and
-   only cost permanent dead space. */
+/* The Jobs and Notifications counts. NO RESERVED WIDTH (D583, user on D581's
+   version: "this is ugly") — `min-width: 2ch` is deliberately GONE. D581 held
+   an empty 2ch slot open so the bar could not reflow when a count appeared;
+   the count is now always rendered including zero, so there is nothing to
+   appear and nothing to reserve, and the dead space that made `Jobs` sit back
+   from its separator while `Models` sat tight against its own goes with it.
+   Only the separation from the label is left. `padding-left` rather than
+   `.dl-toggle`'s `gap` because this is a child of `.dl-summary`, not a flex
+   item of the toggle — the gap would never have applied to it anyway, and as
+   padding it travels with the number.
+   Digits stay non-jittery through `.status-bar`'s own `font-variant-numeric:
+   tabular-nums`, which the whole bar inherits, so 1 -> 2 does not shuffle
+   glyph widths.
+   MODELS DELIBERATELY HAS NO COUNT (D575, user: "lets just have [model ·
+   memory size] and remove the count") — it shows `· 628 MB` instead, and an
+   idle Models shows its bare label. Do not add `Models 0` here. */
 .dl-count {
-  display: inline-block;
-  min-width: 2ch;
   padding-left: 0.4em;
 }
 

@@ -339,13 +339,12 @@ export function RepoUpdatesCardView({
             all still say "repo updates", which is exactly what they hold —
             `Notifications` is the extensible CATEGORY, so an alert that is
             not a repo update gets a home here without a fourth section. */}
-        {/* Reserved, always-rendered count slot — see the jobs chip's own
-            comment (D581). This section matters MOST for that: `.status-bar`
-            is `justify-content: flex-end`, so the rightmost chip growing
-            pushes BOTH of its neighbours leftward. */}
+        {/* Always rendered, zero included — see the jobs chip's own comment
+            (D583). This section is the one that mattered most for stability:
+            `.status-bar` is `justify-content: flex-end`, so the rightmost chip
+            growing pushes BOTH of its neighbours leftward. */}
         <span className="dl-summary">
-          Notifications
-          <span className="dl-count">{visible.length > 0 ? visible.length : ""}</span>
+          Notifications<span className="dl-count">{visible.length}</span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>

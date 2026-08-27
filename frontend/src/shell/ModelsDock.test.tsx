@@ -90,18 +90,40 @@ test("no models loaded still draws a real, clickable chip — just muted, and it
   expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No models loaded");
 });
 
-test("the chip names the category and the count, plus cost once there is one to show", () => {
+// D575 (user: "lets just have [model · memory size] and remove the count"):
+// the label and the resident TOTAL, never a count. The size is the number
+// being watched, and it is already the total across every resident model.
+test("the chip names the category and the resident total — never a count", () => {
   const tree = renderView({
     models: [model(), model({ model: "org/other-model" })],
     totalResidentBytes: 18 * 1024 ** 3, // formatSize's own base-1024 steps
   });
   const summary = text(findAll(tree, "dl-summary")[0]);
-  expect(summary).toBe("Models 2 · 18 GB");
+  expect(summary).toBe("Models · 18 GB");
+  // The count is the specific thing D575 removed — guard it by value, not by
+  // the whole string, so a future size-format change cannot mask a regression.
+  expect(summary).not.toContain("2");
 });
 
-test("a single model still reads 'Models 1', not a singularized sentence", () => {
+// The whole point of dropping the count (D575): the chip reads IDENTICALLY
+// for one resident model and for five, so nothing in it moves as models come
+// and go — only the total changes.
+test("one model and five models read the same, and only the total distinguishes them", () => {
+  const one = renderView({ models: [model()], totalResidentBytes: 4 * 1024 ** 3 });
+  const five = renderView({
+    models: [1, 2, 3, 4, 5].map((n) => model({ model: `org/m${n}` })),
+    totalResidentBytes: 4 * 1024 ** 3,
+  });
+  expect(text(findAll(one, "dl-summary")[0])).toBe("Models · 4.0 GB");
+  expect(text(findAll(five, "dl-summary")[0])).toBe("Models · 4.0 GB");
+});
+
+// A resident model with no size reported falls back to the bare label — the
+// same string the idle chip shows. `.is-idle` (not the text) is what tells
+// them apart, which is why that class is asserted separately above.
+test("a model with no reported size reads the bare label", () => {
   const tree = renderView({ models: [model()], totalResidentBytes: null });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models 1");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Models");
 });
 
 test("collapsed shows no panel at all — no gauge, no rows, just the chip", () => {

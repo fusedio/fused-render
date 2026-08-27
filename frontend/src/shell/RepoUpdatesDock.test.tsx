@@ -125,23 +125,35 @@ test("renders a real, clickable chip when there are no rows — the idle sentenc
   expect(toggles).toHaveLength(1);
   expect(toggles[0].type).toBe("button");
   expect((toggles[0].props.className as string).split(" ")).toContain("is-idle");
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates");
+  // D579: `Updates` -> `Notifications` (user: "git updates does not make
+  // sense out of an app. it belongs to 'notifications'").
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications0"); // label + always-rendered zero (D583)
   expect(findAll(tree, "dl-idle")).toHaveLength(0);
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No updates");
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
+  // D583: the count is ALWAYS rendered, zero included (VS Code's own
+  // errors/warnings item reads `0` rather than going blank).
+  expect(findAll(tree, "dl-count")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
 });
 
 test("renders the IDLE chip and panel sentence when every row is dismissed", () => {
   const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
   const tree = renderView({ rows, dismissed: { "/a/one": 1000 } });
   expect(tree).not.toBeNull();
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates");
-  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No updates");
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications0"); // label + always-rendered zero (D583)
+  expect(text(findAll(tree, "dl-panel-empty")[0])).toBe("No notifications");
+  expect(text(findAll(tree, "dl-count")[0])).toBe("0");
 });
 
-test("the chip names the category and the count of visible updates", () => {
+test("the chip names the category, and the count lives in its own reserved slot", () => {
   const rows = repoRows([status({ root: "/a/one" }), status({ root: "/a/two" })]);
   const tree = renderView({ rows });
-  expect(text(findAll(tree, "dl-summary")[0])).toBe("Updates 2");
+  // Asserted as label + slot rather than one joined string (D581): the count
+  // is a separate element now, and the space between them is CSS padding on
+  // the slot, so a joined assertion would read `Notifications2` and pin the
+  // absence of a space that is not the markup's job.
+  expect(text(findAll(tree, "dl-summary")[0])).toBe("Notifications2");
+  expect(text(findAll(tree, "dl-count")[0])).toBe("2");
 });
 
 test("a row on the default branch offers Update as the only button, plus dismiss", () => {
@@ -321,7 +333,12 @@ function clickDockToggle(renderer: ReactTestRenderer) {
   });
 }
 
-test("collapsing, then a genuinely new repo row arriving, sets a quiet dot WITHOUT opening the panel", () => {
+// D574 REVERSES D567 (user: "when we have something new, always show the
+// notification. don't keep no activity displayed") — a new row arriving into
+// a collapsed section OPENS that section's panel, and the dot is suppressed
+// while it is open, because a dot pointing at a panel the user is already
+// looking at announces nothing.
+test("a genuinely new repo row arriving OPENS the collapsed panel, and shows no dot beside it", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
   const renderer = renderDockInstance([one]);
   clickDockToggle(renderer); // collapse
@@ -334,24 +351,23 @@ test("collapsing, then a genuinely new repo row arriving, sets a quiet dot WITHO
   updateDockInstance(renderer, [one, two]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  // Still collapsed — nothing here is allowed to reach in and reopen it.
-  expect(findAll(after, "q-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+  expect(findAll(after, "q-row")).toHaveLength(2);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });
 
-test("opening the panel — the user's own click — is what clears the dot", () => {
+test("the chip's own click dismisses an auto-opened panel, leaving no dot behind", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
   const renderer = renderDockInstance([one]);
   clickDockToggle(renderer); // collapse
   const two = repoRows([status({ root: "/a/two" })])[0];
   updateDockInstance(renderer, [one, two]);
-  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-new-dot")).toHaveLength(1);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "q-row")).toHaveLength(2);
 
-  clickDockToggle(renderer); // expand
+  clickDockToggle(renderer); // dismiss the auto-opened panel
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "q-row")).toHaveLength(0);
   expect(findAll(after, "dl-new-dot")).toHaveLength(0);
-  expect(findAll(after, "q-row")).toHaveLength(2);
 });
 
 test("collapsing, then an EXISTING row merely changing (behind count ticking), sets no dot", () => {
@@ -382,11 +398,11 @@ test("a dismissed row that reappears later (a fresh checked_at) counts as new ag
   // Server re-checks and it's behind again: a newer checked_at makes it
   // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had
   // fallen out of the seen set on dismissal this is a genuine re-arrival —
-  // a quiet dot, same as any other new row, never a forced reopen.
+  // so it auto-opens the panel exactly like any other new row (D574).
   const again = repoRows([status({ root: "/a/one", checked_at: 2000 })])[0];
   updateDockInstance(renderer, [again], { "/a/one": 1000 });
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(0);
-  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+  expect(findAll(after, "q-row")).toHaveLength(1);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });

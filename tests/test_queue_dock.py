@@ -319,7 +319,14 @@ def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
     at (queue-dock-lib.ts's own doc has the current rule)."""
     assert "rowsShown" not in card, "the two-field queue/jobs split is gone"
     assert "foldedJobRows" not in card, "no row is exempt from the fold any more"
-    assert "!collapsed && (" in card, "the whole rows block is gated on collapsed alone"
+    # D574/D580: the gate is no longer `collapsed` alone — it is `open`, which
+    # is the saved preference overridden in either direction by a transient
+    # auto-open (a new job arrived) or auto-close (the list drained). Still ONE
+    # gate over the whole panel, which is what this test is really about.
+    assert "{open && (" in card, "the whole rows block is gated on one `open` flag"
+    assert (
+        "const open = autoClose ? false : !collapsed || autoOpen;" in card
+    ), "and `open` is the override-aware derivation, not a second stored flag"
     assert "{queue?.rows}" in card, "the queue's rows still render, just not exempt"
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
     assert "export function rowsShown" not in jobs_ts
@@ -401,11 +408,30 @@ def test_a_stand_in_job_row_folds_like_any_other_now(card):
 
 
 def test_the_stored_fold_is_only_ever_written_by_a_press(card):
-    """No auto-expand and no silent rewrite: the preference is the user's. A card
-    folded on purpose stays folded — it just stops swallowing the queue's cancels.
-    One setter call (the header toggle) and one write beside it."""
-    assert card.count("setCollapsed(") == 1
-    assert card.count("saveCollapsed(") == 2  # the writer, and its one call site
+    """No silent rewrite: the preference is the user's alone. This is the D567
+    guard, and it has SURVIVED every reversal since — D574 put auto-open back
+    (the panel opens on a new arrival), D580 added auto-close (it shuts when the
+    list drains), and D582 lets one section close another for exclusivity, but
+    NONE of the three may write localStorage. Only a user action does: the
+    chip's own click (`toggle`) and an outside-click/Escape dismiss (`close`).
+
+    Two `setCollapsed` call sites now, not one — `toggle` and `close` — and both
+    are user-driven. The stronger half of this test is the second assertion:
+    the automatic machinery has no persistence code in it at all."""
+    assert card.count("setCollapsed(") == 2, "toggle and close — both user-driven"
+    # the writer, plus exactly those two call sites
+    assert card.count("saveCollapsed(") == 3
+    # The real invariant, checked where it cannot hide: the hook that decides to
+    # auto-open/auto-close and the arbiter that enforces one-panel-at-a-time
+    # never touch the stored preference. A comment may MENTION localStorage;
+    # a call is what would break the guard.
+    for module in ("autoExpand.ts", "exclusiveSection.ts"):
+        src = _read(os.path.join(_FRONT, "platform", "lib", module))
+        code = "\n".join(
+            line for line in src.splitlines() if not line.strip().startswith(("//", "*", "/*"))
+        )
+        assert "localStorage" not in code, f"{module} must not persist anything"
+        assert "saveCollapsed" not in code, f"{module} must not write the fold"
 
 
 def test_the_column_owns_where_it_sits(dock, card):

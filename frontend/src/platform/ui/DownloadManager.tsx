@@ -739,20 +739,22 @@ export function DownloadManagerView({
             everything this section shows without over- or underclaiming.
             `Activity` was the vaguest of the three labels and half of why it
             collided with the old `Updates`. */}
-        {/* A RESERVED count slot, always rendered (D581, user: "can we do
-            something on jobs and notifications so that there is no content
-            layout shift when new jobs or notifications show up?"). Empty at
-            zero rather than a literal `Jobs 0` — an explicit zero is noise,
-            and the label alone already says the section is quiet. `.dl-count`
-            holds a fixed `2ch` (see notifications.css), so the chip's width
-            never changes as the count appears, changes digits, or goes away.
-            NO PERCENTAGE any more: it appeared and disappeared right here and
-            so shifted the bar on its own, and reserving ~4ch for it
-            permanently would leave obvious dead space in a 22px bar. Per-job
-            progress lives in the panel, which draws a percentage AND a bar on
-            every row. */}
+        {/* ALWAYS RENDER THE COUNT, ZERO INCLUDED (D583, user on D581's
+            reserved-slot version: "this is ugly"). D581 reserved an empty 2ch
+            slot to stop the bar reflowing when a count appeared; it worked and
+            paid for it in visible dead space, which left `Jobs` sitting well
+            back from its separator while `Models` sat tight against its own,
+            so the separators read as unevenly spaced. An always-present number
+            buys the same stability with nothing reserved-but-empty: it never
+            appears or disappears, so the only width change left is 9 -> 10.
+            It is also what the reference actually does — VS Code's own
+            errors/warnings item reads `0` rather than going blank. `.is-idle`
+            is what keeps `Jobs 0` reading as quiet rather than as an alert.
+            NO PERCENTAGE here (D581, still): it appeared and disappeared in
+            this exact spot and shifted the bar by itself. Per-job progress
+            lives in the panel, which draws a percentage AND a bar per row. */}
         <span className="dl-summary">
-          Jobs<span className="dl-count">{totalCount > 0 ? totalCount : ""}</span>
+          Jobs<span className="dl-count">{totalCount}</span>
         </span>
         {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
       </button>
