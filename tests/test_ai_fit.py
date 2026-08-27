@@ -710,3 +710,76 @@ def test_verdict_is_no_when_score_is_zero():
     assert result is not None
     assert result["score"] == 0.0
     assert result["verdict"] == "no"
+
+
+# -- available_budget_bytes: the reusable ceiling for a download-time picker
+# (SPEC AI-24 item 14 wiring) -------------------------------------------------
+#
+# The ONE memory-budget notion this codebase computes -- RESERVE_BYTES, the
+# Apple wired-limit ceiling, and VRAM-vs-RAM pool selection via _select_pool
+# -- exposed as a plain number a caller with no specific footprint yet (a
+# GGUF file picker, deciding WHICH file to fetch in the first place) can
+# reuse, rather than inventing a second notion of "how much memory do I
+# have" that could disagree with fit.verdict's own answer.
+
+
+def test_available_budget_bytes_is_ram_minus_reserve_with_no_gpu(monkeypatch):
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+    monkeypatch.setattr(fit, "_wired_limit_bytes", lambda ram_gb: None)
+    budget = fit.available_budget_bytes(hardware=None)
+    assert budget == 32.0 * fit.GB_BYTES - fit.RESERVE_BYTES
+
+
+def test_available_budget_bytes_is_the_combined_offload_ceiling_with_a_discrete_gpu(monkeypatch):
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+    monkeypatch.setattr(fit, "_wired_limit_bytes", lambda ram_gb: None)
+    info = hw_detect.HardwareInfo(
+        gpus=[hw_detect.GpuDevice(name="NVIDIA GeForce RTX 4090", vram_gb=24.0)],
+        total_vram_gb=24.0, bandwidth_gb_s=1008.0, detected_at=0.0)
+    budget = fit.available_budget_bytes(hardware=info)
+    # The COMBINED VRAM+RAM offload ceiling -- the true maximum this machine
+    # could ever hold via _offload_schedule's CPU-offload backoff, not just
+    # the VRAM-alone figure a specific small footprint might fit inside.
+    expected = 24.0 * fit.GB_BYTES + (32.0 * fit.GB_BYTES - fit.RESERVE_BYTES)
+    assert budget == expected
+
+
+def test_available_budget_bytes_respects_the_apple_wired_limit_ceiling(monkeypatch):
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 32.0)
+    usable = 32.0 * fit.GB_BYTES - fit.RESERVE_BYTES
+    monkeypatch.setattr(fit, "_wired_limit_bytes", lambda ram_gb: usable / 2)
+    budget = fit.available_budget_bytes(hardware=None)
+    assert budget == usable / 2
+
+
+def test_available_budget_bytes_is_none_when_ram_is_unreadable(monkeypatch):
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: None)
+    assert fit.available_budget_bytes(hardware=None) is None
+
+
+def test_available_budget_bytes_reads_the_hardware_cache_itself_by_default(monkeypatch):
+    calls = []
+    real_cached_hardware = hw_detect.cached_hardware
+
+    def _counting(*a, **k):
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(hw_detect, "cached_hardware", _counting)
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 16.0)
+    fit.available_budget_bytes()
+    assert len(calls) == 1
+
+
+def test_available_budget_bytes_does_not_read_the_cache_again_when_threaded_through(monkeypatch):
+    calls = []
+    real_cached_hardware = hw_detect.cached_hardware
+
+    def _counting(*a, **k):
+        calls.append(1)
+        return real_cached_hardware()
+
+    monkeypatch.setattr(hw_detect, "cached_hardware", _counting)
+    monkeypatch.setattr(fit, "machine_ram_gb", lambda: 16.0)
+    fit.available_budget_bytes(hardware=None)
+    assert len(calls) == 0

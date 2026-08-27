@@ -895,3 +895,64 @@ def verdict(capability: str, model_id: str, size_gb: float | None = None,
         result = "no"
     return {"verdict": result, "basis": basis, "footprintBytes": footprint,
             "score": score, "runMode": run_mode}
+
+
+# ---------------------------------------------------------- item 14 wiring
+def available_budget_bytes(*, hardware: hw_detect.HardwareInfo | None = _NOT_GIVEN
+                           ) -> float | None:
+    """The largest footprint this machine could plausibly hold, in bytes —
+    the ONE reusable memory-budget notion this module already computes
+    (`RESERVE_BYTES`, the Apple wired-limit ceiling, VRAM-vs-RAM pool
+    selection via `_select_pool`), exposed for a caller that needs a
+    budget BEFORE it has a specific footprint to judge — a GGUF file
+    picker (`formats.select_gguf_recipe`) deciding WHICH file to fetch in
+    the first place, not `verdict()`'s own job of judging one footprint
+    already chosen.
+
+    **Reusing this rather than a second computation is the point.** Two
+    independent "how much memory do I have" answers that could disagree —
+    this function computing one figure, `verdict()` computing a different
+    one for the SAME machine — would be strictly worse than the single
+    hard-coded recipe table item 14 replaces: a picker that fetches by ONE
+    budget and a fit badge that judges by ANOTHER would show a model as
+    both "the one we picked for your machine" and "tight"/"no" in the
+    same breath. So this shares every input `verdict()` does: the wired-
+    limit ceiling on Apple Silicon (checked first, exactly like `verdict()`
+    — MLX cannot allocate past it regardless of the pool arithmetic below),
+    and `_select_pool` off Apple.
+
+    **The COMBINED VRAM+RAM offload ceiling, not VRAM alone, on a discrete
+    GPU.** `_select_pool` normally picks between the two by comparing a
+    SPECIFIC footprint against VRAM — but a budget computed before any
+    footprint exists has nothing to compare, so this asks for the ceiling
+    `_select_pool` would report for a footprint too large to fit VRAM by
+    itself (`math.inf`), which is exactly its COMBINED-pool branch: the
+    true maximum this machine could ever hold via `llama_text._offload_
+    schedule`'s existing CPU-offload backoff. A caller that then picks a
+    file BELOW even the VRAM-alone figure loses nothing — `_select_pool`'s
+    branches only change how much of that pool is GPU-resident, not
+    whether the bytes fit somewhere on the machine at all, which is the
+    only question a pre-footprint budget can honestly answer.
+
+    `hardware` mirrors `verdict()`'s own keyword exactly: a caller
+    answering many entries in one request threads ONE `hw_detect.cached_
+    hardware()` reading through every call; a lone caller (the default)
+    reads the cache itself, the same `_NOT_GIVEN` sentinel shape `verdict()`
+    already uses.
+
+    `None` when RAM itself cannot be read — the same "nothing to judge
+    against" answer `verdict()` gives for the identical reason.
+    """
+    ram_gb = machine_ram_gb()
+    if ram_gb is None or ram_gb <= 0:
+        return None
+    ram_bytes = ram_gb * GB_BYTES
+    wired_limit = _wired_limit_bytes(ram_gb)
+    is_apple = wired_limit is not None
+    usable = max(0.0, ram_bytes - RESERVE_BYTES)
+    resolved_hardware = hw_detect.cached_hardware() if hardware is _NOT_GIVEN else hardware
+    pool, _run_mode = _select_pool(math.inf, usable, is_apple_unified=is_apple,
+                                   hardware=resolved_hardware)
+    if is_apple:
+        pool = min(pool, wired_limit)
+    return pool
