@@ -147,6 +147,70 @@ def test_generated_asset_route_serves_bytes(tmp_path, monkeypatch):
     assert missing.media_type == "text/plain"
 
 
+def test_materialize_publishes_atomically_and_leaves_no_staging(tmp_path, monkeypatch):
+    """Concurrent cold starts must never read a half-extracted tree.
+
+    Every route of an app shares one digest and one archive, and each route is
+    its own process, so the first load of an app with two Python routes has
+    them racing on the same directory. Extraction happens in a private staging
+    dir that is renamed into place whole; the published path is never written
+    into.
+    """
+    import tempfile
+    import threading
+
+    scratch = tmp_path / "tmpdir"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    compiled = compile_workbench_app(str(_app(tmp_path)), "Concurrent")
+    run_slug = compiled.entrypoints["./calc.py"]
+    udf = _load(compiled, f"{run_slug}.py", monkeypatch)
+
+    results: list = []
+    errors: list = []
+
+    def call(value: int) -> None:
+        try:
+            results.append(json.loads(udf(value=str(value)).body))
+        except Exception as exc:  # pragma: no cover - only on a real race
+            errors.append(exc)
+
+    threads = [threading.Thread(target=call, args=(index,)) for index in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert sorted(item["answer"] for item in results) == [0, 2, 4, 6, 8, 10, 12, 14]
+
+    # One published tree, and nothing half-built left beside it.
+    published = scratch / "fused-render-workbench"
+    assert [entry.name for entry in published.iterdir()] == [compiled.digest]
+
+
+def test_materialize_yields_to_a_tree_that_is_already_published(tmp_path, monkeypatch):
+    """Losing the rename race is not an error: the trees are identical."""
+    import tempfile
+
+    scratch = tmp_path / "tmpdir"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    compiled = compile_workbench_app(str(_app(tmp_path)), "Winner")
+    run_slug = compiled.entrypoints["./calc.py"]
+    udf = _load(compiled, f"{run_slug}.py", monkeypatch)
+
+    # Stand in for the process that got there first.
+    published = scratch / "fused-render-workbench" / compiled.digest
+    published.mkdir(parents=True)
+    (published / "calc.py").write_text("def main(value: int = 2):\n    return {'answer': 99}\n")
+
+    assert json.loads(udf(value="7").body) == {"answer": 99}
+    assert [entry.name for entry in published.parent.iterdir()] == [compiled.digest]
+
+
 def test_compile_is_deterministic(tmp_path):
     page = _app(tmp_path)
     first = compile_workbench_app(str(page), "Stable")

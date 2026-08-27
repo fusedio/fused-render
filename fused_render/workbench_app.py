@@ -156,6 +156,7 @@ import io as _fr_io
 import json as _fr_json_mod
 import os as _fr_os
 import runpy as _fr_runpy
+import shutil as _fr_shutil
 import sys as _fr_sys
 import tempfile as _fr_tempfile
 import zipfile as _fr_zipfile
@@ -223,15 +224,42 @@ def _fr_bind(fn, params):
 
 
 def _fr_materialize():
-    root = _fr_os.path.join(_fr_tempfile.gettempdir(), "fused-render-workbench", _FR_DIGEST)
-    ready = _fr_os.path.join(root, ".ready")
-    if _fr_os.path.isfile(ready):
+    """Publish the app tree at a digest-keyed path, atomically.
+
+    Every route of one app shares this digest and this archive, and each route
+    is its own UDF hence its own process, so the first load of an app with two
+    Python routes has them racing to populate the same directory.  Extracting
+    in place lost that race badly: extractall reopens each member "wb", so a
+    second extractor would truncate and refill a module a first reader was
+    already importing — an intermittent SyntaxError on the first load after a
+    deploy, self-healing and therefore unreproducible.
+
+    So nothing is ever written into the published path.  Extraction happens in
+    a private staging directory that is renamed into place whole; losing the
+    rename race is fine, because every copy of a digest-keyed tree is
+    byte-identical.  The directory's existence is the completion signal, which
+    is why there is no marker file any more.
+    """
+    parent = _fr_os.path.join(_fr_tempfile.gettempdir(), "fused-render-workbench")
+    root = _fr_os.path.join(parent, _FR_DIGEST)
+    if _fr_os.path.isdir(root):
         return root
-    _fr_os.makedirs(root, exist_ok=True)
-    with _fr_zipfile.ZipFile(_fr_io.BytesIO(_fr_base64.b64decode(_FR_ARCHIVE)), "r") as archive:
-        archive.extractall(root)
-    with open(ready, "w") as marker:
-        marker.write(_FR_DIGEST)
+    _fr_os.makedirs(parent, exist_ok=True)
+    staging = _fr_tempfile.mkdtemp(prefix=_FR_DIGEST + ".", dir=parent)
+    try:
+        with _fr_zipfile.ZipFile(
+            _fr_io.BytesIO(_fr_base64.b64decode(_FR_ARCHIVE)), "r"
+        ) as archive:
+            archive.extractall(staging)
+        # Same filesystem, so this is atomic: readers see the tree complete or
+        # not at all. It fails when another process got there first, which is
+        # not an error — their tree is ours.
+        _fr_os.rename(staging, root)
+    except OSError:
+        if not _fr_os.path.isdir(root):
+            raise
+    finally:
+        _fr_shutil.rmtree(staging, ignore_errors=True)
     return root
 
 
