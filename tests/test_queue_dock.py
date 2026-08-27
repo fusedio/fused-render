@@ -272,14 +272,17 @@ def test_a_refusal_is_spoken(dock):
     assert 'cancelQueued("all")' in dock, "Cancel queued lives here and nowhere else"
 
 
-def test_an_empty_card_is_no_card(card):
-    """Not an empty state, not a header saying "nothing queued": a picture of work
-    in progress has nothing to draw when there is none. The rule applies once —
-    both halves have to be empty, because a queue row with no jobs is still work
-    worth a card and a job with no queue row always was. Repo updates are no
-    longer a third half here — they draw their own sibling card (SPEC §36,
-    RepoUpdatesDock.tsx) — so this gate only ever reasons about jobs and queue."""
-    assert "if (jobs.length === 0 && queued === 0) return null;" in card
+def test_an_empty_card_draws_the_idle_state_not_no_card(card):
+    """SUPERSEDED by D565 (user verdict: "different categories of status bar
+    should be always present"): this used to return null outright — "a
+    picture of work in progress has nothing to draw when there is none" —
+    and that rule is gone on purpose, not merely relaxed. Both halves empty
+    now draws the IDLE readout ("Idle") instead of vanishing; the gate
+    still only ever reasons about jobs and queue, since repo updates are
+    their own sibling section (SPEC §36, RepoUpdatesDock.tsx)."""
+    assert "const idle = jobs.length === 0 && queued === 0;" in card
+    assert "if (jobs.length === 0 && queued === 0) return null;" not in card
+    assert '<span className="dl-idle">Idle</span>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -414,11 +417,17 @@ def test_the_bar_reserves_space_inside_main_not_the_floating_column(dock, card):
     bar mounted inside `#main`, which reserves layout space for it instead of
     overlaying whatever is under it. Toasts, FdaCard and ServerStatusBanner —
     all short-lived or exceptional enough that overlaying the page is still
-    the right call — are the ones left in NotificationHost's column."""
+    the right call — are the ones left in NotificationHost's column.
+
+    The real BEHAVIOUR this bar composition produces — three sections in
+    order, an omitted slot rendering nothing rather than an empty wrapper —
+    is a `frontend/src/platform/ui/StatusBar.test.tsx` render test now
+    (code review finding #8: a source-literal grep here cannot see whether
+    a component actually behaves the way its source claims). This function
+    stays a structural/placement check only."""
     app = _read(_APP)
     host = _read(_HOST)
     bar = _read(_BAR)
-    css = _read(_CSS)
     # StatusBar is mounted INSIDE #main, alongside the routed content, not as
     # a sibling of it the way NotificationHost is.
     main_at = app.index('<div id="main">')
@@ -431,11 +440,23 @@ def test_the_bar_reserves_space_inside_main_not_the_floating_column(dock, card):
     assert "DownloadManager" not in host, "the bare-manager fallback moved to StatusBar"
     assert "activity?: ReactNode" in bar
     assert "repoUpdates?: ReactNode" in bar
-    # #main already reserves the bar's height for free (explorer.css's own
-    # #main rule); the bar collapses to nothing, not a thin empty strip, once
-    # both cards have nothing to show.
-    assert ".status-bar:empty" in css
-    assert "display: none" in css[css.index(".status-bar:empty"):css.index(".status-bar:empty") + 60]
+    assert "models?: ReactNode" in bar, "D565: a third, always-present section"
+
+
+def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
+    """D565 (user verdict on the shipped round-1 bar: "this is very ugly.
+    different categories of status bar should be always present and look
+    better"). Round 1's `.status-bar:empty { display: none }` rule —
+    collapsing the bar to nothing the moment both cards had nothing to show
+    — is SUPERSEDED, not extended: the three categories are a fixed status
+    readout now, each drawing its own idle text (`No models loaded` / `Idle`
+    / `Up to date`) instead of vanishing. `#main` is therefore permanently
+    shorter by the bar's height on every page, which is the accepted cost
+    the user's own words call for."""
+    css = _read(_CSS)
+    bar_tsx = _read(_BAR)
+    assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
+    assert '<span className="dl-idle">Idle</span>' in card, "the activity section's own idle text"
 
 
 def test_the_shell_composes_the_card_and_the_bar_places_it(dock):

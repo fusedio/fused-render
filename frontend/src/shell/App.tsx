@@ -49,6 +49,7 @@ import GlobalSidebar from "@shell/GlobalSidebar";
 import { appPathFromPath } from "@shell/current-apps-lib";
 import NotificationHost from "@platform/ui/NotificationHost";
 import StatusBar from "@platform/ui/StatusBar";
+import ModelsDock from "@shell/ModelsDock";
 import QueueDock from "@shell/QueueDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import { pokeOnChatActivity, pokeTasks } from "@shell/tasksPulse";
@@ -976,18 +977,26 @@ export default function App({ config }: { config: Config }) {
       {!IS_EMBED && sidebar}
       <div id="main">
         {main}
-        {/* ONE work-in-progress card in the bar, not two: QueueDock is the
-            shell's wrapper around the platform activity card (it fills that
-            card's queue slot), handed in from here rather than imported there
+        {/* Three sections, not three surfaces: QueueDock is the shell's
+            wrapper around the platform activity card (it fills that card's
+            queue slot), handed in from here rather than imported there
             because it speaks explorerUrl, which lives in this layer.
-            RepoUpdatesDock is its own sibling card (SPEC §36), handed in the
-            same way and for the same reason: it speaks explorer/lib's
-            staged-Claude-ask store, which platform may not import
-            (frontend/scripts/check-boundaries.mjs). Inside `#main` (D563, not
-            NotificationHost's fixed column) and behind the same `!IS_EMBED`
-            guard as the sidebar, so a pane in panel/tab mode does not grow
-            its own bar. */}
-        {!IS_EMBED && <StatusBar activity={<QueueDock />} repoUpdates={<RepoUpdatesDock />} />}
+            RepoUpdatesDock is its own sibling section (SPEC §36), handed in
+            the same way and for the same reason: it speaks explorer/lib's
+            staged-Claude-ask store, which platform may not import. ModelsDock
+            (D565) needs apps/ai_models/lib's shared runtime poll, which
+            platform may not import either (frontend/scripts/
+            check-boundaries.mjs) — shell may import anything, so all three
+            live here. Inside `#main` (D563, not NotificationHost's fixed
+            column) and behind the same `!IS_EMBED` guard as the sidebar, so
+            a pane in panel/tab mode does not grow its own bar. */}
+        {!IS_EMBED && (
+          <StatusBar
+            models={<ModelsDock />}
+            activity={<QueueDock />}
+            repoUpdates={<RepoUpdatesDock />}
+          />
+        )}
       </div>
       <NotificationHost />
       {shortcutsOpen && (

@@ -130,15 +130,21 @@
   border-color: var(--fg-muted);
 }
 
-/* ---- Status bar (SPEC §36, D563) ------------------------------------------ */
+/* ---- Status bar (SPEC §36, D563, redesigned D565) ------------------------- */
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
-   which overlaid page content even collapsed. Two entries only, `activity` and
-   `repoUpdates` (StatusBar.tsx), each a `.dl-host` chip+panel pair; `:empty`
-   collapses the strip to nothing the moment both return null, the same pattern
-   `#topbar-mode-slot:empty` already uses for the identical reason: an empty bar
-   still reserving space is worse than the overlap problem it exists to fix. */
+   which overlaid page content even collapsed. Three entries, left to right by
+   lifetime (StatusBar.tsx's own doc has the ordering principle): `models`
+   (persistent), `activity` and `repoUpdates` (transient), each a `.dl-host`
+   chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different categories
+   of status bar should be always present") — there used to be a `:empty {
+   display: none }` rule collapsing the strip to nothing when both sections
+   were empty; the three categories are a fixed readout now, so that rule is
+   gone and `#main` is permanently shorter by this bar's height, which is the
+   accepted cost of the call. `tabular-nums` here, not per element, so every
+   count and percentage anywhere in the bar inherits it — the numbers tick
+   constantly and proportional digits would make the whole strip twitch. */
 .status-bar {
   flex: 0 0 auto;
   display: flex;
@@ -149,29 +155,47 @@
   color: var(--fg);
   background: var(--bg-alt);
   border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
 }
 
-.status-bar:empty {
-  display: none;
+/* A quiet vertical rule between sections, not around them — the first
+   section gets none, so the bar's own left padding is the only inset. */
+.status-bar > .dl-host + .dl-host {
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
 }
 
 /* ---- Activity card (SPEC §36) -------------------------------------------- */
 /* ONE card for work in progress: every long-running operation a page reported
    (.dl-row) and every scheduled message about to run or running now (.q-row,
-   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's sibling card
-   shares below.
+   further down). Same `dl-`/`q-` prefixes RepoUpdatesDock.tsx's and
+   ModelsDock.tsx's sibling sections share below.
 
    Each `.dl-host` is one BAR SEGMENT, not a card: `position: relative` so its
-   `.dl-panel` (below) can float above it, anchored to its own right edge —
-   collapsed, `.dl-toggle` inside it is the card's entire presence in the bar;
-   expanded, `.dl-panel` opens above that same chip. Before D563 this element
-   WAS the floating card (the plate, the header and the row list all lived
-   directly in it); that plate — --bg-alt, 8px radius, the toast shadow — moved
-   to `.dl-panel`, the only piece of this card that still floats over page
-   content, and only while the user has it open. */
+   `.dl-panel` (below) can float above it, anchored to its own LEFT edge (not
+   right — code review finding #2: chips pack left in this bar, unlike the old
+   right-anchored floating column, so a right-anchored panel grew off the left
+   edge of the viewport, over the sidebar) — collapsed, `.dl-toggle` inside it
+   is the section's entire presence in the bar; expanded, `.dl-panel` opens
+   above that same chip. Before D563 this element WAS the floating card (the
+   plate, the header and the row list all lived directly in it); that plate —
+   --bg-alt, 8px radius, the toast shadow — moved to `.dl-panel`, the only
+   piece of this card that still floats over page content, and only while the
+   user has it open.
+
+   `flex: 0 1 auto; min-width: 0` (code review finding #6, was `0 0 auto` with
+   no `min-width`): a section never GREW to fill spare room in the bar — that
+   part was fine — but it also never SHRANK, so `.dl-summary`'s own
+   `text-overflow: ellipsis` had no narrower box to ellipsize into, and a
+   second chip in a narrow window was pushed straight past `#main`'s right
+   edge instead. Letting the section shrink is what lets its summary ellipsize
+   the way every other truncated label in this app already does under
+   pressure, rather than overflowing. */
 .dl-host {
   position: relative;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
 }
@@ -203,10 +227,13 @@
   background: var(--row-bg-hover);
 }
 
-/* The panel: floats ABOVE the bar, anchored to its own chip's right edge, and
-   exists in the DOM only while expanded — collapsed, this class never
-   renders at all, which is the whole reachability story (see
-   DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
+/* The panel: floats ABOVE the bar, anchored to its own chip's LEFT edge (code
+   review finding #2 — chips pack left in this bar, not right like the old
+   floating column; `right: 0` grew a 340px panel off the LEFT edge of the
+   viewport, over the sidebar, the moment finding #1's width fix let it
+   actually be 340px), and exists in the DOM only while expanded — collapsed,
+   this class never renders at all, which is the whole reachability story
+   (see DownloadManager.tsx's own header comment on why `cancelAll`/`note` no
    longer survive a collapse the way they did as a short card). Carries the
    plate `.dl-host` used to wear before this card was split into a chip and a
    panel: same width cap for the same reason (a card left to its content
@@ -214,14 +241,23 @@
    that width "1.21 / 7.54 GB" and its percentage crowd the title into an
    ellipsis), same --bg-alt/8px-radius/shadow plate a toast wears, so an open
    panel still reads as the same system rather than a different kind of
-   popover. */
+   popover.
+
+   NO `max-width: 100%` (code review finding #1, HIGH — this is what caused
+   the user's screenshot): a percentage `max-width` on an absolutely
+   positioned element resolves against its CONTAINING BLOCK, which after the
+   chip/panel split is `.dl-host` — content-sized to the chip alone (finding
+   #6 above), roughly 100–180px, not the bar or the viewport. `width: min(340px,
+   calc(100vw - 32px))` already caps the panel correctly on its own; the
+   `max-width: 100%` line only ever clamped that number back DOWN to the
+   chip's width, which is exactly the crushed ~130px panel, ellipsised repo
+   name and wrapped Clear button the screenshot showed. */
 .dl-panel {
   position: absolute;
   bottom: 100%;
-  right: 0;
+  left: 0;
   margin-bottom: 8px;
   width: min(340px, calc(100vw - 32px));
-  max-width: 100%;
   color: var(--fg);
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -229,10 +265,14 @@
   box-shadow: 0 6px 20px var(--shadow-lg);
   animation: toast-in var(--dur-med) var(--ease-out);
   overflow: hidden;
-  /* Above ordinary page content, the same reason the old floating column
-     needed it — this is the one piece of the card still capable of
-     overlaying the page, and only because the user opened it. */
-  z-index: 2000;
+  /* Above `.notif-host`'s own 2000 (code review finding #5): `#main` — this
+     panel's ancestor — precedes `<NotificationHost />` in App.tsx's markup,
+     so on an EQUAL z-index the later sibling wins regardless of which one
+     the user actually opened, and a toast, FdaCard or the server banner
+     painted over an open panel. One higher is enough to always win against
+     that column while it is open, without reaching for anything above the
+     app's own stacking scale. */
+  z-index: 2001;
 }
 
 /* The panel's own header — action buttons only now (Cancel queued / Clear),
@@ -253,7 +293,11 @@
 /* Legible at a glance rather than merely present: a muted 11px glyph reads
    as decoration, not as "this opens something". Full --fg and a bigger
    glyph make the header's clickability obvious without touching the hit
-   area (still the whole `.dl-toggle`) or the collapse rotation below. */
+   area (still the whole `.dl-toggle`) or the collapse rotation below.
+   `⌃`, pointing UP, not `⌄` (code review finding #7): the panel opens
+   UPWARD (`.dl-panel`'s `bottom: 100%`), so the glyph now points toward
+   where expanding actually reveals content, the same correctness the old
+   downward glyph had for a card that opened downward. */
 .dl-chevron {
   flex: 0 0 auto;
   color: var(--fg);
@@ -262,15 +306,63 @@
   transition: transform var(--dur-med) var(--ease-out);
 }
 
+/* Collapsed still reads as "closed, click to open" by rotating to point
+   RIGHT — the same landmark direction the old down-based glyph rotated to.
+   `90deg`, not the old `-90deg`: the base glyph flipped from down to up, so
+   the rotation that lands back on "right" flips with it (down -90deg ->
+   right; up +90deg -> right — opposite bases, opposite sign, same target). */
 .dl-chevron.is-collapsed {
-  transform: rotate(-90deg);
+  transform: rotate(90deg);
 }
 
 .dl-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-weight: 600;
+  /* 500, not 600 (code review: the round-1 chip "reads like a heading" over
+     a bar this thin) — enough weight to read as the bar's own subject, not
+     enough to compete with an actual heading anywhere else on the page. */
+  font-weight: 500;
+}
+
+/* IDLE: plain, muted, unpressable text for a section with nothing to say —
+   `No models loaded` / `Idle` / `Up to date`. Same padding as `.dl-toggle`
+   (not `.dl-toggle` itself: no button, no hover wash, no chevron slot) so an
+   idle section takes exactly the same vertical room a chip would, and the
+   bar's height never jumps as a section moves between the two. Muted colour
+   is the only thing that has to say "there is nothing here" — no chevron
+   affordance implying a panel worth opening, because there is not one. */
+.dl-idle {
+  display: block;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* FAILURE: the one state worth a colour other than the ordinary "things are
+   happening" ink — everything terminal, nothing left running or queued, and
+   at least one row failed (DownloadManagerView's own `hasFailure`, mirroring
+   `jobsSummary`'s "N failed" branch exactly rather than guessing from the
+   rendered string). Applied to the whole chip, chevron included, so the
+   whole line reads as needing a look rather than just the count inside it. */
+.dl-toggle.is-failure,
+.dl-toggle.is-failure .dl-chevron {
+  color: var(--error);
+}
+
+/* An unacknowledged arrival while this section was collapsed
+   (`lib/autoExpand.ts` `useAutoExpandOnNew`) — a quiet dot, never a forced
+   expansion (code review finding #4). Accent, not muted or --fg: this is a
+   deliberate "look here" cue, the same ink `.dl-bar-fill`'s own progress
+   already wears, not the ordinary chip text this file's colour rule
+   otherwise reserves for state. Cleared the moment the section is opened
+   (the hook's own doc), so it never lingers on something already seen. */
+.dl-new-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
 }
 
 .dl-clear {

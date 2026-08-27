@@ -97,6 +97,7 @@ function renderInstance(
       rows={rows}
       dismissed={props.dismissed ?? {}}
       collapsed={props.collapsed ?? false}
+      hasNew={props.hasNew ?? false}
       onToggle={props.onToggle ?? (() => {})}
       onDismiss={props.onDismiss ?? (() => {})}
       onDismissAll={props.onDismissAll ?? (() => {})}
@@ -111,14 +112,19 @@ function renderView(
   return renderInstance(props).toJSON() as ReactTestRendererJSON | null;
 }
 
-test("renders no card at all when there are no rows", () => {
-  expect(renderView({ rows: [] })).toBeNull();
+test("renders the IDLE state, not nothing, when there are no rows (D565: always present)", () => {
+  const tree = renderView({ rows: [] });
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-idle")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("Up to date");
+  expect(findAll(tree, "dl-toggle")).toHaveLength(0);
 });
 
-test("renders no card at all when every row is dismissed", () => {
+test("renders the IDLE state when every row is dismissed", () => {
   const rows = repoRows([status({ root: "/a/one", checked_at: 1000 })]);
   const tree = renderView({ rows, dismissed: { "/a/one": 1000 } });
-  expect(tree).toBeNull();
+  expect(tree).not.toBeNull();
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("Up to date");
 });
 
 test("the header names how many updates are visible", () => {
@@ -248,16 +254,20 @@ test("pressing a row's action shows Working… on that row's own button, mid-fli
   }
 });
 
-// ---------------------------------------------- auto-expand on a new arrival
+// ------------------------------------- a quiet dot on a new arrival (D567)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562
-// follow-up). The shared decision (`trackSeenIds`) is tested on its own in
-// jobs.test.ts; these pin `RepoUpdatesDockView` — the stateful half that
-// owns collapse for this card — actually wiring it in. Assertions are on
-// the rendered rows (`q-row`) themselves, never a class name alone: a
-// className-only check is exactly how an earlier fold bug on this same card
-// shipped green while the rows kept rendering underneath it (see the
-// "collapsed hides every row" test above).
+// follow-up) USED TO force the panel open — code review finding #4 caught
+// that this recreates the complaint the whole status-bar redesign exists to
+// fix (a background arrival popping a floating panel over the page,
+// uninvited, and persisting the expansion). `useAutoExpandOnNew` no longer
+// touches `collapsed` (its own doc has the reasoning); these pin
+// `RepoUpdatesDockView` — the stateful half that owns collapse for this
+// card — wiring the DOT in instead. Assertions are on the rendered rows
+// (`q-row`) themselves, never a class name alone: a className-only check is
+// exactly how an earlier fold bug on this same card shipped green while the
+// rows kept rendering underneath it (see the "collapsed hides every row"
+// test above).
 
 function renderDockInstance(
   rows: RepoRow[],
@@ -300,34 +310,50 @@ function clickDockToggle(renderer: ReactTestRenderer) {
   });
 }
 
-test("collapsing, then a genuinely new repo row arriving, re-opens the card", () => {
+test("collapsing, then a genuinely new repo row arriving, sets a quiet dot WITHOUT opening the panel", () => {
   const one = repoRows([status({ root: "/a/one" })])[0];
   const renderer = renderDockInstance([one]);
   clickDockToggle(renderer); // collapse
 
   const collapsed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(collapsed, "q-row")).toHaveLength(0);
+  expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0);
 
   const two = repoRows([status({ root: "/a/two" })])[0];
   updateDockInstance(renderer, [one, two]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
+  // Still collapsed — nothing here is allowed to reach in and reopen it.
+  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+});
+
+test("opening the panel — the user's own click — is what clears the dot", () => {
+  const one = repoRows([status({ root: "/a/one" })])[0];
+  const renderer = renderDockInstance([one]);
+  clickDockToggle(renderer); // collapse
+  const two = repoRows([status({ root: "/a/two" })])[0];
+  updateDockInstance(renderer, [one, two]);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-new-dot")).toHaveLength(1);
+
+  clickDockToggle(renderer); // expand
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
   expect(findAll(after, "q-row")).toHaveLength(2);
 });
 
-test("collapsing, then an EXISTING row merely changing (behind count ticking), does not re-open", () => {
+test("collapsing, then an EXISTING row merely changing (behind count ticking), sets no dot", () => {
   const one = repoRows([status({ root: "/a/one", behind: 1 })])[0];
   const renderer = renderDockInstance([one]);
   clickDockToggle(renderer); // collapse
 
-  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(collapsed, "q-row")).toHaveLength(0);
-
   const changed = repoRows([status({ root: "/a/one", behind: 5 })])[0];
   updateDockInstance(renderer, [changed]);
 
-  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(stillCollapsed, "q-row")).toHaveLength(0);
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });
 
 test("a dismissed row that reappears later (a fresh checked_at) counts as new again", () => {
@@ -336,16 +362,21 @@ test("a dismissed row that reappears later (a fresh checked_at) counts as new ag
   clickDockToggle(renderer); // collapse
 
   // Dismiss it — visible drops to zero even though `rows` still holds it.
+  // The card is idle now (no rows), so there is no toggle/dot to inspect —
+  // only that it stays idle.
   updateDockInstance(renderer, [first], { "/a/one": 1000 });
   const dismissed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(dismissed, "q-row")).toHaveLength(0);
+  expect(text(findAll(dismissed, "dl-idle")[0])).toBe("Up to date");
 
   // Server re-checks and it's behind again: a newer checked_at makes it
   // visible again (repo-updates-lib.ts `visibleRepoRows`), and since it had
-  // fallen out of the seen set on dismissal this is a genuine re-arrival.
+  // fallen out of the seen set on dismissal this is a genuine re-arrival —
+  // a quiet dot, same as any other new row, never a forced reopen.
   const again = repoRows([status({ root: "/a/one", checked_at: 2000 })])[0];
   updateDockInstance(renderer, [again], { "/a/one": 1000 });
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(after, "q-row")).toHaveLength(1);
+  expect(findAll(after, "q-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
 });

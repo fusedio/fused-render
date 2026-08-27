@@ -107,9 +107,18 @@ function renderInstance(reported: Job[], queue?: Partial<QueueSlot>): ReactTestR
   );
 }
 
-test("a jobs list holding only a successful (done) job renders no card at all", () => {
+test("a jobs list holding only a successful (done) job renders the IDLE state, not nothing (D565: always present)", () => {
+  // The section used to return null here — D565 (user verdict: "different
+  // categories of status bar should be always present") replaced the whole
+  // empty-card gate with an idle readout instead, so this is no longer a
+  // "renders nothing" case at all.
   const tree = renderCard([{ ...BASE, id: "sys:ai-image:only-done" }]);
-  expect(tree).toBeNull();
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-idle")).toHaveLength(1);
+  expect(text(findAll(tree, "dl-idle")[0])).toBe("Idle");
+  // No chevron, no button — nothing to press over an idle section.
+  expect(findAll(tree, "dl-toggle")).toHaveLength(0);
+  expect(findAll(tree, "dl-chevron")).toHaveLength(0);
 });
 
 test("a done job beside a running one renders exactly one visible row and no Clear button", () => {
@@ -177,6 +186,31 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
   expect(tree).not.toBeNull();
   expect(findAll(tree, "dl-row")).toHaveLength(2);
   expect(findAll(tree, "dl-clear")).toHaveLength(1);
+});
+
+test("the panel's head is OMITTED, not a blank band, when nothing to offer — code review finding #3", () => {
+  // One job running, nothing queued, nothing terminal: `queue?.cancelAll`
+  // is undefined (no queue slot at all here) and `clearable` is 0, so
+  // before this fix `.dl-head` still rendered — an empty ~30px padded band
+  // over the row list, since the header used to always hold at least the
+  // toggle before the chip/panel split moved the toggle out of it.
+  const running: Job = { ...BASE, id: "sys:ai-image:running", state: "running", stalled: false };
+  const tree = renderCard([running]);
+  expect(tree).not.toBeNull();
+  expect(findAll(tree, "dl-head")).toHaveLength(0);
+  expect(findAll(tree, "dl-row")).toHaveLength(1);
+});
+
+test("everything terminal and failed colours the chip — everything terminal and clean does not", () => {
+  const errored: Job = { ...BASE, id: "sys:ai-image:errored", state: "error", message: "boom" };
+  const failedTree = renderCard([errored]);
+  const failedToggle = findAll(failedTree, "dl-toggle")[0];
+  expect((failedToggle.props.className as string).split(" ")).toContain("is-failure");
+
+  const done: Job = { ...BASE, id: "sys:schedule:entry-1", title: "Nightly digest" };
+  const cleanTree = renderCard([done]); // sys:schedule:* survives success, unlike an ordinary AI row
+  const cleanToggle = findAll(cleanTree, "dl-toggle")[0];
+  expect((cleanToggle.props.className as string).split(" ")).not.toContain("is-failure");
 });
 
 // -------------------------------------------------- the collapse toggle (D562)
@@ -297,14 +331,19 @@ test("Cancel queued renders only inside the expanded panel — the collapsed chi
   expect(findAll(after, "q-all")).toHaveLength(0);
 });
 
-// ---------------------------------------------- auto-expand on a new arrival
+// ------------------------------------- a quiet dot on a new arrival (D567)
 //
 // "we can make the notifications 'un collapse' when a new one comes" (D562
-// follow-up). The shared decision (`trackSeenIds`) is tested on its own in
-// jobs.test.ts; these pin the CARD actually wiring it in, asserting on the
-// rendered rows themselves rather than a class name — an earlier fold bug
-// shipped green on a className-only assertion while the rows underneath
-// kept rendering.
+// follow-up) USED TO force the panel open here — code review finding #4
+// caught that this recreates the exact complaint the whole status-bar
+// redesign exists to fix: a background job popping a floating panel over
+// whatever page the user is looking at, uninvited, and PERSISTING the
+// expansion to localStorage so it survives a reload. `useAutoExpandOnNew`
+// no longer touches `collapsed` at all (its own doc has the full
+// reasoning) — it only answers whether something arrived unacknowledged,
+// drawn here as `.dl-new-dot`. The shared decision (`trackSeenIds`) is
+// tested on its own in jobs.test.ts; these pin the CARD actually wiring it
+// in.
 
 function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Partial<QueueSlot>) {
   act(() => {
@@ -319,22 +358,40 @@ function updateInstance(renderer: ReactTestRenderer, reported: Job[], queue?: Pa
   });
 }
 
-test("collapsing, then a genuinely new job id arriving, re-opens the card", () => {
+test("collapsing, then a genuinely new job id arriving, sets a quiet dot WITHOUT opening the panel", () => {
   const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([first]);
   clickToggle(renderer); // collapse
 
   const collapsed = renderer.toJSON() as ReactTestRendererJSON;
   expect(findAll(collapsed, "dl-row")).toHaveLength(0);
+  expect(findAll(collapsed, "dl-new-dot")).toHaveLength(0);
 
   const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
   updateInstance(renderer, [first, second]);
 
   const after = renderer.toJSON() as ReactTestRendererJSON;
+  // Still collapsed — nothing here is allowed to reach in and reopen it.
+  expect(findAll(after, "dl-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(1);
+});
+
+test("opening the panel — the user's own click — is what clears the dot", () => {
+  const first: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
+  const renderer = renderInstance([first]);
+  clickToggle(renderer); // collapse
+  const second: Job = { ...BASE, id: "sys:ai-image:b", state: "running", stalled: false };
+  updateInstance(renderer, [first, second]);
+  expect(findAll(renderer.toJSON() as ReactTestRendererJSON, "dl-new-dot")).toHaveLength(1);
+
+  clickToggle(renderer); // expand
+
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
   expect(findAll(after, "dl-row")).toHaveLength(2);
 });
 
-test("collapsing, then an EXISTING job merely changing, does not re-open the card", () => {
+test("collapsing, then an EXISTING job merely changing, sets no dot", () => {
   const job: Job = {
     ...BASE,
     id: "sys:ai-image:a",
@@ -346,27 +403,22 @@ test("collapsing, then an EXISTING job merely changing, does not re-open the car
   const renderer = renderInstance([job]);
   clickToggle(renderer); // collapse
 
-  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
-
   // Same id, progress ticking (and even finishing) — not a new arrival.
   updateInstance(renderer, [{ ...job, done: 9, state: "running" }]);
-  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(stillCollapsed, "dl-row")).toHaveLength(0);
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });
 
-test("re-collapsing while the same ids are still present stays collapsed", () => {
-  // Rule: an id already in the seen set never re-triggers, so a user who
-  // folds the card back up while nothing new has arrived keeps it folded.
+test("re-collapsing while the same ids are still present sets no dot either", () => {
+  // Rule: an id already in the seen set never re-triggers.
   const job: Job = { ...BASE, id: "sys:ai-image:a", state: "running", stalled: false };
   const renderer = renderInstance([job]);
   updateInstance(renderer, [job]); // a poll re-reports the same id
   clickToggle(renderer); // collapse
 
-  const collapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(collapsed, "dl-row")).toHaveLength(0);
-
   updateInstance(renderer, [job]); // another poll, still the same id
-  const stillCollapsed = renderer.toJSON() as ReactTestRendererJSON;
-  expect(findAll(stillCollapsed, "dl-row")).toHaveLength(0);
+  const after = renderer.toJSON() as ReactTestRendererJSON;
+  expect(findAll(after, "dl-row")).toHaveLength(0);
+  expect(findAll(after, "dl-new-dot")).toHaveLength(0);
 });

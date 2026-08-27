@@ -5110,11 +5110,14 @@ stop it short of quitting the app.
   1.5s is ~160 records describing nothing that happened, and they would spend
   the rate budget the calls they annotate need.
 - **BG-10** **The download manager** (`platform/ui/DownloadManager.tsx`) renders
-  as one card in the status bar (`platform/ui/StatusBar.tsx`, D563), inside
-  `#main` beside the repo-updates card. Top-level document only
-  (`!IS_EMBED`): the list is global, so a copy per pane would say the same thing
-  N times. Hidden entirely when there are no records (`.status-bar:empty`
-  collapses the bar itself the moment both its cards are).
+  as the Activity section in the status bar (`platform/ui/StatusBar.tsx`,
+  D563), inside `#main` beside the Models and repo-updates sections. Top-level
+  document only (`!IS_EMBED`): the list is global, so a copy per pane would say
+  the same thing N times. ALWAYS PRESENT (D565, superseding the "hidden when
+  there are no records" rule this used to state): nothing running and nothing
+  queued draws the IDLE state (`.dl-idle`, "Idle") instead of vanishing — the
+  bar's three sections are a fixed readout now, not a notification stack that
+  disappears when quiet.
 
   **The collapse hides EVERY row, no exemption** (D562, user call
   2026-08-27: "everything is foldable, even for the job cards"). It used to
@@ -5161,12 +5164,15 @@ stop it short of quitting the app.
   DIFFERENT repo**: adding to the bridge here is not done until that copy has
   the same name.
 - **BG-15** **Repo updates (GT-20) are their own sibling notification card**
-  (D550-D553, revised D555-D557, D563) — one row per repo with a known
-  upstream update, in a SECOND card `StatusBar` places beside the jobs/queue
-  activity card, inside `#main` (D563 — no longer `NotificationHost`'s fixed
-  bottom-right column, whose overlay of page content even while collapsed is
-  what the status bar redesign exists to fix). **This supersedes the
-  original shape**, where the rows were a second named slot
+  (D550-D553, revised D555-D557, D563, D565) — one row per repo with a known
+  upstream update, in the Updates section `StatusBar` places beside Models
+  and the jobs/queue Activity section, inside `#main` (D563 — no longer
+  `NotificationHost`'s fixed bottom-right column, whose overlay of page
+  content even while collapsed is what the status bar redesign exists to
+  fix). ALWAYS PRESENT (D565): no repo behind draws the IDLE state
+  (`.dl-idle`, "Up to date") rather than returning null, matching the other
+  two sections. **This supersedes the original shape**, where the rows were
+  a second named slot
   (`RepoUpdatesSlot`) rendered INSIDE the jobs card, pinned outside its fold.
   That placement broke the jobs card in four ways at once, discovered
   together: with zero jobs and zero queue but one repo row, the header fell
@@ -5223,6 +5229,42 @@ stop it short of quitting the app.
   own, and is mounted directly by `App.tsx` beside `QueueDock`, filling
   `StatusBar`'s separate `repoUpdates` prop (D563 — `NotificationHost`'s,
   before the status bar redesign) rather than a slot on `DownloadManager`.
+- **BG-16** **The status bar's third section, Models (D566,
+  `shell/ModelsDock.tsx`), reads what is resident right now and what it
+  costs — `GET /api/ai/runtime`, the same shared poll (`apps/ai_models/lib/
+  aiRuntime.ts` `useAiRuntime`) `GlobalSidebar`'s own resident-model dot
+  already reads, so this section opens no second connection to the
+  server.** Idle: "No models loaded". Active: plain text, no label prefix —
+  `2 models · 18 GB` — the chip's whole vocabulary once there is a value to
+  show. The panel is a QUICK-INFO POPOVER, never a management console (user
+  call, cutting an earlier gauge/progress-bar draft: "we don't need a gauge
+  if too complicated. just a quick info upon clicking which we have a list
+  of loaded models we can unload"): one row per resident model — its name
+  (owner trimmed, full id on hover, `repoName()`), its own resident bytes,
+  an Unload button — no proportional fill, no RAM-fraction indicator.
+  Unload (`POST /api/ai/runtime/unload`, the D3 `X-Fused`-guarded mutation
+  that already existed for the AI Models page) carries no confirmation —
+  the action is recoverable by loading again — but the row reflects being
+  in flight ("Unloading…", disabled) and a failure says so inline rather
+  than doing nothing visible; a success publishes the response's fresh
+  runtime snapshot back through `aiRuntime.ts`'s shared store so every
+  reader updates on the click rather than the next poll tick. Ordered
+  LEFTMOST of the three sections: Models is PERSISTENT status, true the
+  instant anything is resident, where Activity and Updates are TRANSIENT
+  work that appears and resolves (BG-10's own lifetime-ordering principle,
+  restated for what is always true versus what is currently happening).
+
+  **Every section's chip carries a quiet `.dl-new-dot` for an
+  unacknowledged arrival while collapsed, never a forced expansion
+  (D567).** `lib/autoExpand.ts`'s `useAutoExpandOnNew` used to call
+  `setCollapsed(false)` (and persist it) the instant a new id showed up —
+  code review finding #4 caught that this recreated the exact complaint
+  the status-bar redesign exists to fix: a background job popping a
+  floating panel over whatever page the user had open, uninvited, and
+  surviving a reload because the forced expansion was written to
+  `localStorage`. The hook now only answers whether something arrived
+  unacknowledged; opening the panel — the user's own click, for any
+  reason — is what clears it.
 
 ---
 

@@ -259,14 +259,19 @@ function RepoRowView({
  * else (D563, status bar redesign) — no rows, no Clear, no per-row ✕ — and
  * expanding it is what opens the panel those live in, floating above the
  * status bar rather than pinned inside a header that survives the fold.
- * Whenever the chip is on screen at all (the card returned non-null, meaning
- * `visible.length > 0`), pressing it always visibly hides or shows the panel
- * and every row in it.
+ *
+ * ALWAYS PRESENT NOW (D565): a `visible.length === 0` card no longer returns
+ * null — the bar's three sections stay on screen at all times, so this one
+ * draws its own idle state ("Up to date") instead of vanishing. Idle is
+ * plain, muted text with no chevron — there is no panel behind it worth
+ * opening — otherwise pressing the chip always visibly hides or shows the
+ * panel and every row in it.
  */
 export function RepoUpdatesCardView({
   rows,
   dismissed,
   collapsed,
+  hasNew,
   onToggle,
   onDismiss,
   onDismissAll,
@@ -275,40 +280,47 @@ export function RepoUpdatesCardView({
   rows: RepoRow[];
   dismissed: Record<string, number>;
   collapsed: boolean;
+  /** An unacknowledged repo arrived while collapsed — drawn as a quiet dot on
+   *  the chip, never as a forced expansion (`lib/autoExpand.ts`'s own doc,
+   *  code review finding #4). */
+  hasNew: boolean;
   onToggle: () => void;
   onDismiss: (root: string, checkedAt: number) => void;
   onDismissAll: (visible: RepoRow[]) => void;
   onDone: (result: MutationResult) => void;
 }) {
   const visible = visibleRepoRows(rows, dismissed);
-  // Nothing to say — render nothing at all, no chrome, matching the jobs
-  // card's own empty-card rule: a picture of what is happening now, so an
-  // empty one is not an empty state with a header, it is no card.
-  if (visible.length === 0) return null;
+  const idle = visible.length === 0;
 
   return (
     <div className="dl-host">
       {/* The chip — this card's entire presence in the status bar while
           collapsed (D563): the chevron and the summary, nothing else. Clear
           and every row live in the panel below, which exists only while
-          expanded. */}
-      <button
-        className="dl-toggle"
-        onClick={onToggle}
-        aria-expanded={!collapsed}
-        title={collapsed ? "Show updates" : "Hide updates"}
-      >
-        <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
-          ⌄
-        </span>
-        <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
-      </button>
+          expanded. Idle draws no chevron at all — see this component's own
+          doc comment. */}
+      {idle ? (
+        <span className="dl-idle">Up to date</span>
+      ) : (
+        <button
+          className="dl-toggle"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Show updates" : "Hide updates"}
+        >
+          <span className={"dl-chevron" + (collapsed ? " is-collapsed" : "")} aria-hidden="true">
+            ⌃
+          </span>
+          <span className="dl-summary">{repoUpdatesSummary(visible)}</span>
+          {hasNew && <span className="dl-new-dot" aria-hidden="true" />}
+        </button>
+      )}
       {/* The panel — floats ABOVE the status bar, anchored to this chip, and
-          exists only while expanded. Collapsed shows no panel at all — see
-          this component's own doc comment on why the fold takes every row,
-          no exemption, including Clear now that it lives here rather than in
-          a header that used to survive the fold. */}
-      {!collapsed && (
+          exists only while expanded. Collapsed (or idle) shows no panel at
+          all — see this component's own doc comment on why the fold takes
+          every row, no exemption, including Clear now that it lives here
+          rather than in a header that used to survive the fold. */}
+      {!idle && !collapsed && (
         <div className="dl-panel">
           <div className="dl-head">
             <button
@@ -342,16 +354,18 @@ export function RepoUpdatesCardView({
  * fixed row list (RepoUpdatesDock.test.tsx), the same split
  * `DownloadManagerView` uses in its own file for the identical reason.
  *
- * Auto-expand (D562 follow-up, "un collapse when a new one comes") keys off
+ * Auto-expand's old name, kept for the id-tracking it still does — but code
+ * review finding #4 stopped it actually expanding anything. `hasNew` keys off
  * `row.repo.root` per row — a repo not seen before, while the card is
- * collapsed, opens it exactly like the user's own toggle would
- * (`lib/autoExpand.ts` `useAutoExpandOnNew`, shared with DownloadManager.tsx
- * since both cards need the identical wiring around the same pure decision,
- * `jobs.ts` `trackSeenIds`). Fed `visible` — the same post-dismissal list
- * `RepoUpdatesCardView` itself renders — so a row a user just dismissed
- * falls out of the seen set with it: dismissing IS a disappearance, and a
- * repo that goes behind again later (a fresh `checked_at` past the
- * dismissal) is a genuine re-arrival, not a re-trigger of an old one.
+ * collapsed, sets a quiet dot on the chip (`lib/autoExpand.ts`
+ * `useAutoExpandOnNew`, shared with DownloadManager.tsx since both cards need
+ * the identical wiring around the same pure decision, `jobs.ts`
+ * `trackSeenIds`), never forces the panel open. Fed `visible` — the same
+ * post-dismissal list `RepoUpdatesCardView` itself renders — so a row a user
+ * just dismissed falls out of the seen set with it: dismissing IS a
+ * disappearance, and a repo that goes behind again later (a fresh
+ * `checked_at` past the dismissal) is a genuine re-arrival, not a re-trigger
+ * of an old one.
  */
 export function RepoUpdatesDockView({
   rows,
@@ -376,11 +390,9 @@ export function RepoUpdatesDockView({
   };
 
   const visible = visibleRepoRows(rows, dismissed);
-  useAutoExpandOnNew(
+  const hasNew = useAutoExpandOnNew(
     visible.map((row) => row.repo.root),
     collapsed,
-    setCollapsed,
-    saveCollapsed,
   );
 
   return (
@@ -388,6 +400,7 @@ export function RepoUpdatesDockView({
       rows={rows}
       dismissed={dismissed}
       collapsed={collapsed}
+      hasNew={hasNew}
       onToggle={toggle}
       onDismiss={onDismiss}
       onDismissAll={onDismissAll}
