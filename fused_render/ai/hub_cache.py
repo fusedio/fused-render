@@ -1497,6 +1497,24 @@ def has_vision_tower(repo_id: str) -> bool:
     return _VISION_CONFIG in config or "image_token_id" in config
 
 
+def has_cached_snapshot(repo_id: str) -> bool:
+    """Is there a snapshot of `repo_id` on disk at all — the fact
+    `_accepts_image` (SPEC AI-17 item 17) needs to know before it can treat
+    `has_vision_tower`'s False as authoritative.
+
+    `has_vision_tower` answers False for two different situations — "this
+    checkpoint really has no vision tower" and "there is nothing cached to
+    read a tower off of" — and a caller that cannot tell them apart cannot
+    know when it is safe to fall back to a PRE-download source
+    (`hub_metadata.get`) instead of a stale, silently-wrong "no" for a repo
+    the user has not fetched yet. This is the split: True only when a real
+    snapshot directory exists, using the identical path-segment guard
+    `has_vision_tower`/`embed_family` already share (`_embed_snapshot_dir`),
+    so a hostile repo id answers False here exactly as it does there.
+    """
+    return _embed_snapshot_dir(repo_id) is not None
+
+
 def cached_capability(repo_id: str) -> CacheReading:
     """Which capability `repo_id` would load as, read off the local snapshot.
 

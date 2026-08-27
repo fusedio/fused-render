@@ -261,9 +261,9 @@ function RepoRowView({
  * `window`/`document`, so RepoUpdatesDock.test.tsx can render it directly.
  *
  * THE FOLD TAKES EVERY ROW — no exemption, no partial fold. That was always
- * this card's own rule (D525), and the jobs card has since adopted the exact
- * same one (D548, user call 2026-08-27: "everything is foldable, even for
- * the job cards" — reversing the exemptions D526/D527 had built there). The
+ * this card's own rule (D556), and the jobs card has since adopted the exact
+ * same one (D561, user call 2026-08-27: "everything is foldable, even for
+ * the job cards" — reversing the exemptions D557/D558 had built there). The
  * two cards now behave identically: collapsed renders NO rows at all — the
  * `.dl-rows` wrapper itself is omitted rather than left as an empty box —
  * and reachability while collapsed lives in the header (this card's rows are
@@ -344,7 +344,7 @@ export function RepoUpdatesCardView({
  * fixed row list (RepoUpdatesDock.test.tsx), the same split
  * `DownloadManagerView` uses in its own file for the identical reason.
  *
- * Auto-expand (D548 follow-up, "un collapse when a new one comes") keys off
+ * Auto-expand (D561 follow-up, "un collapse when a new one comes") keys off
  * `row.repo.root` per row — a repo not seen before, while the card is
  * collapsed, opens it exactly like the user's own toggle would
  * (`lib/autoExpand.ts` `useAutoExpandOnNew`, shared with DownloadManager.tsx

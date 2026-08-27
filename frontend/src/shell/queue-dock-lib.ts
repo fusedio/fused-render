@@ -245,9 +245,9 @@ export function withdrawableCount(rows: QueueRow[]): number {
  *  live or claimed work shows nothing either way, since "all" would be a
  *  button for zero messages.
  *
- *  `collapsed` drops the threshold to ONE (D548, user call 2026-08-27:
+ *  `collapsed` drops the threshold to ONE (D561, user call 2026-08-27:
  *  "everything is foldable, even for the job cards" — reversing the fold
- *  exemptions D526/D527 built). Collapsing now hides every row, including
+ *  exemptions D557/D558 built). Collapsing now hides every row, including
  *  that single one, so the "the row's own ✕ is reachable either way"
  *  reasoning the 2+ threshold rests on stops holding the moment the card is
  *  folded — the ✕ is not reachable any more, and Cancel all is the only

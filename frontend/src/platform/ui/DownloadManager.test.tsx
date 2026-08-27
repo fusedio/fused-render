@@ -158,7 +158,7 @@ test("a scheduled run's own terminal row still counts and draws — the exemptio
 });
 
 test("a stalled but still-running job alone offers no Clear button", () => {
-  // D526: Clear used to count a stalled row as clearable — mirroring
+  // D557: Clear used to count a stalled row as clearable — mirroring
   // clear_finished's own old bug — which meant pressing it could sweep the
   // RECORD of a job that was still genuinely running. The row itself is
   // still shown (dimmed via is-stalled); only the bulk button's count
@@ -179,11 +179,11 @@ test("a terminal row beside a stalled running one offers Clear, counting only th
   expect(findAll(tree, "dl-clear")).toHaveLength(1);
 });
 
-// -------------------------------------------------- the collapse toggle (D548)
+// -------------------------------------------------- the collapse toggle (D561)
 //
 // Reversed by user call (2026-08-27): "there should be nothing called a
 // 'non foldable card' — everything is foldable, even for the job cards."
-// D526/D527's whole premise — SOME rows (the queue's, a live schedule
+// D557/D558's whole premise — SOME rows (the queue's, a live schedule
 // stand-in) were exempt from the fold, so the toggle sometimes had nothing
 // to hide and was drawn as an inert `<span>` — is gone. The toggle is ALWAYS
 // a real `<button>`, and collapsing ALWAYS hides every row. Reachability
@@ -273,7 +273,7 @@ test("the overall progress bar survives the collapse while something is running"
   })).toBe(true);
 });
 
-test("Cancel all is offered for a single queued row once the card is collapsed (D548)", () => {
+test("Cancel all is offered for a single queued row once the card is collapsed (D561)", () => {
   // queue-dock-lib.ts's `showCancelAll` owns the actual threshold (its own
   // test pins 2+ expanded, 1+ collapsed); this just confirms the CARD calls
   // `cancelAll` as a function of `collapsed` rather than rendering a
@@ -293,7 +293,7 @@ test("Cancel all is offered for a single queued row once the card is collapsed (
 
 // ---------------------------------------------- auto-expand on a new arrival
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D548
+// "we can make the notifications 'un collapse' when a new one comes" (D561
 // follow-up). The shared decision (`trackSeenIds`) is tested on its own in
 // jobs.test.ts; these pin the CARD actually wiring it in, asserting on the
 // rendered rows themselves rather than a class name — an earlier fold bug

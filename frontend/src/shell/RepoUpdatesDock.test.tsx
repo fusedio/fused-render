@@ -248,7 +248,7 @@ test("pressing the secondary action does not relabel the primary as Working (tas
 
 // ---------------------------------------------- auto-expand on a new arrival
 //
-// "we can make the notifications 'un collapse' when a new one comes" (D548
+// "we can make the notifications 'un collapse' when a new one comes" (D561
 // follow-up). The shared decision (`trackSeenIds`) is tested on its own in
 // jobs.test.ts; these pin `RepoUpdatesDockView` — the stateful half that
 // owns collapse for this card — actually wiring it in. Assertions are on

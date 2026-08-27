@@ -422,6 +422,36 @@ def create_app(start_dir: str) -> FastAPI:
 
         supervisor.start_reaper()
 
+    # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
+    # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
+    # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
+    # per-request verdict path, which is why `fit.py`/`speed.py` only ever
+    # read `hw_detect.cached_hardware()`. Without this hook nothing ever
+    # calls the probe, and both modules take their no-GPU-known branch
+    # forever (code review, 2026-08-27) — a background daemon thread, same
+    # shape as the idle reaper above, not the create_app body: it fires one
+    # probe immediately and then re-probes every few hours for the rest of
+    # the process's life.
+    @app.on_event("startup")
+    async def _startup_ai_hardware_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hardware_refresh()
+
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
+    # `ai_runtime._accepts_image`/`_capability_tags` used to call
+    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
+    # 8-second timeout — straight from `describe_catalog`, a route the AI
+    # Models picker polls. They now read `hub_metadata.cached()` only (a
+    # plain disk read), and this background thread is the sole writer,
+    # mirroring the hardware-refresh hook immediately above for the
+    # identical reason.
+    @app.on_event("startup")
+    async def _startup_ai_hub_metadata_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_metadata_refresh()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.

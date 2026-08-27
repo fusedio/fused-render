@@ -47,6 +47,9 @@ export interface CurrentApp {
   /** Something is running under it right now — the row wears the running dot.
    *  Read from the task pulse, which the sidebar already subscribes to. */
   running: boolean;
+  /** The app's optional `icon.svg`, as a drawable URL (api.appIconUrl), or
+   *  null — the glyph slot falls back to the generic mark. */
+  iconUrl: string | null;
 }
 
 /** Is `project` this app's folder or somewhere inside it — the scope test the
@@ -70,7 +73,18 @@ export function currentApps(
     kind: e.kind,
     exists: e.exists,
     running: live.some((p) => isUnderDir(p, e.path)),
+    iconUrl: e.icon ? iconUrlFor(e.icon, e.icon_mtime) : null,
   }));
+}
+
+/** api.ts `appIconUrl` restated (raw file + mtime cache key) — that module is
+ *  not importable here for the same DOM-free reason as the codec above. */
+function iconUrlFor(icon: string, mtime?: number | null): string {
+  return (
+    "/api/fs/raw?path=" +
+    encodeURIComponent(icon) +
+    (mtime ? "&v=" + Math.floor(mtime) : "")
+  );
 }
 
 // ---- the app page's address (D488) ------------------------------------------

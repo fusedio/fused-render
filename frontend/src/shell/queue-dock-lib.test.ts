@@ -157,9 +157,9 @@ describe("cancel", () => {
     expect(showCancelAll(one)).toBe(false);
   });
 
-  it("drops the threshold to a single row once the card is collapsed (D548)", () => {
+  it("drops the threshold to a single row once the card is collapsed (D561)", () => {
     // The 2+ threshold rests on "a single row's own ✕ is reachable either way" —
-    // collapsing now hides that ✕ along with every other row (D548, user call
+    // collapsing now hides that ✕ along with every other row (D561, user call
     // 2026-08-27: there is no such thing as a non-foldable card any more), so
     // the reasoning stops applying the moment the card is folded. Expanded, one
     // withdrawable row still hides the button; collapsed, it must show it.
@@ -240,7 +240,7 @@ describe("one card, one count", () => {
 
 // The fold used to keep the queue rows and a live stand-in job row on screen
 // regardless of `collapsed` (jobs.ts `rowsShown`, deleted) — the user rejected
-// the whole idea of a partially-foldable card (D548, 2026-08-27): "everything
+// the whole idea of a partially-foldable card (D561, 2026-08-27): "everything
 // is foldable, even for the job cards." Collapsed now hides every row, no
 // exceptions, and reachability lives in the header instead — see
 // `showCancelAll`'s own "drops the threshold to a single row once the card is
@@ -270,7 +270,7 @@ function shownRows(
 ): string[] {
   const open = openRows(rows, queueJobs);
   const jobs = jobRows(reported, drawnIds(open));
-  // Collapsed hides every row now (D548, 2026-08-27) — no per-kind exemption
+  // Collapsed hides every row now (D561, 2026-08-27) — no per-kind exemption
   // left to compute, so this is `!collapsed` guarding the whole list rather
   // than `rowsShown`/`foldedJobRows` deciding a kind at a time.
   if (collapsed) return [];
@@ -467,7 +467,7 @@ describe("one scheduled run, one row, at every step of its life", () => {
   it("never draws the same run twice, at any step healthy or degraded — and never draws it at all while collapsed", () => {
     // The other failure mode, and the one the old unconditional drop was protecting
     // against. Every moment the pair of halves can actually be in: exactly one row
-    // for this run, never two and never zero, WHILE EXPANDED. Collapsed (D548,
+    // for this run, never two and never zero, WHILE EXPANDED. Collapsed (D561,
     // 2026-08-27), the row count is always zero regardless of which half currently
     // owns the run — ownership decides WHICH single row would show; the fold now
     // decides only whether any row shows at all, and that answer no longer depends

@@ -29,7 +29,7 @@
 // card owns everything shared — the plate, the one header, the one count, the one
 // scrolling list, the collapse, and Clear.
 //
-// EVERYTHING FOLDS NOW (D548, user call 2026-08-27, reversing D526/D527's
+// EVERYTHING FOLDS NOW (D561, user call 2026-08-27, reversing D557/D558's
 // exemptions): collapsing hides the queue's rows exactly like the job rows,
 // with no kind of row pinned outside it. That used to be deliberately
 // asymmetric — the queue's rows and a live scheduled run's stand-in job row
@@ -54,7 +54,7 @@
 // The slot now carries the entry ids its rows cover; this half drops exactly those
 // and draws the rest itself, which for a live run is a row with the same title, the
 // same status line and the same ✕, only without the Explorer link that needs shell.
-// This stand-in row folds like any other now (D548) — reachability while
+// This stand-in row folds like any other now (D561) — reachability while
 // collapsed is the header's job (Cancel all's single-row threshold), not this
 // row's own exemption.
 //
@@ -429,8 +429,8 @@ export interface QueueSlot extends QueueCount {
    *  endpoint, which is what it did before. */
   onJobs?: (jobs: Job[]) => void;
   /** Cancel all — a FUNCTION of whether the card is collapsed, not a
-   *  pre-decided node, because the threshold itself depends on it (D548,
-   *  user call 2026-08-27, reversing the fold exemptions D526/D527 built).
+   *  pre-decided node, because the threshold itself depends on it (D561,
+   *  user call 2026-08-27, reversing the fold exemptions D557/D558 built).
    *  Expanded: 2+ genuinely withdrawable rows, since a single row's own ✕
    *  is the same action with a better name on it and is right there on
    *  screen. Collapsed: 1+, because collapsing now hides that ✕ along with
@@ -559,7 +559,7 @@ export function DownloadManagerView({
   const clear = async () => {
     try {
       await clearFinishedJobs();
-      // Mirrors the server's rule (jobs.py `clear_finished`, D526): every
+      // Mirrors the server's rule (jobs.py `clear_finished`, D557): every
       // running row survives, stalled included — see `clearableCount`'s doc.
       patch((js) => jobsAfterClear(js));
     } catch {
@@ -571,9 +571,9 @@ export function DownloadManagerView({
   return (
     <div className="dl-host">
       <div className="dl-head">
-        {/* ALWAYS a real button (D548, user call 2026-08-27): there is always
+        {/* ALWAYS a real button (D561, user call 2026-08-27): there is always
             something to fold now that no row is exempt, so the toggle is never
-            offered where it would visibly do nothing — the D527 "static span"
+            offered where it would visibly do nothing — the D558 "static span"
             mitigation this reverses existed only because SOME rows used to be
             exempt. */}
         <button
@@ -618,7 +618,7 @@ export function DownloadManagerView({
           starting, then waiting) and the job rows under them, which is where the
           same run lands once its turn has ended. A scheduled message therefore
           moves down this list rather than jumping between two cards.
-          Collapsed shows NO rows at all (D548) — not a shorter, capped list, an
+          Collapsed shows NO rows at all (D561) — not a shorter, capped list, an
           absent one, and the wrapper itself is omitted rather than left as an
           empty box (the same rule RepoUpdatesDock.tsx's own card already
           follows). Reachability while collapsed is the HEADER's job now:

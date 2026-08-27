@@ -1,5 +1,5 @@
 // Un-collapse a folded notification card when a genuinely NEW item shows up
-// (D548 follow-up, user call: "we can make the notifications 'un collapse'
+// (D561 follow-up, user call: "we can make the notifications 'un collapse'
 // when a new one comes"). Shared by both notification cards —
 // platform/ui/DownloadManager.tsx's jobs/downloads card and
 // shell/RepoUpdatesDock.tsx's repo-updates card — since both need the exact

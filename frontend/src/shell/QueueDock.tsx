@@ -374,7 +374,7 @@ export default function QueueDock() {
   // card's Clear and never becomes it: Clear dismisses rows for work that ENDED.
   //
   // The threshold itself depends on whether the CARD is collapsed
-  // (`showCancelAll`'s own doc, D548) — and `collapsed` is state private to
+  // (`showCancelAll`'s own doc, D561) — and `collapsed` is state private to
   // `DownloadManagerView`, not lifted up here, so `cancelAll` below is built as
   // a FUNCTION of it rather than a node decided once at this render.
 

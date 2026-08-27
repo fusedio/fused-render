@@ -2365,6 +2365,23 @@ def test_has_vision_tower_is_false_for_a_hostile_repo_id(hub):
     assert ai_models_mod.has_vision_tower("../../etc/passwd") is False
 
 
+# -- has_cached_snapshot: is there anything to trust has_vision_tower's False
+# -- reading on at all (SPEC AI-17 item 17) -----------------------------------
+
+
+def test_has_cached_snapshot_is_true_for_a_real_snapshot(hub):
+    _repo(hub, "models--org--chat", snapshots={"c1": {}}, refs={"main": "c1"})
+    assert ai_models_mod.has_cached_snapshot("org/chat") is True
+
+
+def test_has_cached_snapshot_is_false_for_a_never_cached_repo(hub):
+    assert ai_models_mod.has_cached_snapshot("org/never-downloaded") is False
+
+
+def test_has_cached_snapshot_is_false_for_a_hostile_repo_id(hub):
+    assert ai_models_mod.has_cached_snapshot("../../etc/passwd") is False
+
+
 # -- the partly downloaded, engine-stranded repo (PR #830 regression) ----------
 
 

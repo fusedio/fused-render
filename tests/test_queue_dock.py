@@ -297,8 +297,8 @@ def test_there_is_one_card_not_two(dock, card):
 
 
 def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
-    """D548 (user call, 2026-08-27): 'everything is foldable, even for the job
-    cards' — reversing the earlier partial fold (D526/D527), which pinned the
+    """D561 (user call, 2026-08-27): 'everything is foldable, even for the job
+    cards' — reversing the earlier partial fold (D557/D558), which pinned the
     queue's rows and a live-run stand-in outside the collapse. Collapsed now
     renders no `.dl-rows` at all, no exemption; reachability while collapsed
     moved to the header (Cancel all's threshold drops to one row, queue-dock-lib
@@ -375,8 +375,8 @@ def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(doc
 
 def test_a_stand_in_job_row_folds_like_any_other_now(card):
     """A live run the queue half is NOT drawing still gets exactly one row, and it
-    is a job row (`jobRows` — unaffected by D548, this is ownership, not fold).
-    It used to be exempt from the collapse specially (`foldedJobRows`); D548
+    is a job row (`jobRows` — unaffected by D561, this is ownership, not fold).
+    It used to be exempt from the collapse specially (`foldedJobRows`); D561
     (user call, 2026-08-27) removed every such exemption, so this row now folds
     like any other — reachability while collapsed is Cancel all's job, not a
     per-row carve-out."""

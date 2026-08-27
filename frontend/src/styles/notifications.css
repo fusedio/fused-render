@@ -222,7 +222,7 @@
 /* Scrolls rather than growing without bound: the registry caps live records
    well above what fits a 360px column, and a card taller than the viewport
    would push its own header off-screen. Never rendered at all while
-   collapsed (D548, 2026-08-27, user call: "everything is foldable, even for
+   collapsed (D561, 2026-08-27, user call: "everything is foldable, even for
    the job cards") — collapsing hides EVERY row, queue and job alike, with no
    exemption and no partial-height fold, so there is no `.is-folded` cap any
    more; DownloadManagerView and RepoUpdatesDock.tsx's own card both omit
