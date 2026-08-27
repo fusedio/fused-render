@@ -47,16 +47,26 @@ const closers = new Map<SectionKey, { current: () => void }>();
 // effect-execution order. A later commit gets a higher tick, so an ordinary
 // user click always beats whatever was already open, whichever section it is.
 //
-// WHICH TIES ACTUALLY HAPPEN (narrowed by D587):
-//  - A RELOAD where two or more sections' PERSISTED preferences say open.
-//    Models can win this one and should — a saved preference is the user's own
-//    choice, and D587 forbids Models AUTO-opening, not being open.
-//  - TWO SECTIONS AUTO-OPENING on one poll response. Since D587 this contest
-//    is only ever Jobs vs Notifications: Models has no auto-open path left
-//    (`autoExpand.ts`'s `neverOpen`), so the "Models first" half of the order
-//    can no longer decide an auto-open tie. `SECTION_ORDER` is unchanged and
-//    still correct for both cases — Jobs simply happens to be the first
-//    *eligible* section for the second one.
+// WHICH TIES ACTUALLY HAPPEN — exactly ONE kind, now (narrowed by D587, then
+// again by D603):
+//  - TWO SECTIONS AUTO-OPENING on one poll response, which since D587 can only
+//    ever be Jobs vs Notifications. Models and Engines pass `neverOpen`
+//    (`autoExpand.ts`), so they have no auto-open path at all.
+//
+// THE RELOAD TIE IS GONE. It used to be the other case, and it was the
+// justification for `SECTION_ORDER`'s leading entry: two or more sections'
+// PERSISTED preferences saying open on a reload, which Models could win and
+// should, since a saved preference is the user's own choice and D587 forbids
+// Models AUTO-opening rather than being open. D603 deleted all four fold keys,
+// so nothing wants to be open at mount and that tie is unreachable.
+//
+// SO THE "MODELS FIRST" HALF OF THE ORDER NOW RESTS ON NOTHING, and this
+// comment says so rather than inventing a replacement rationale (code review
+// 2026-08-28, finding 15). The order is kept as-is because it mirrors
+// `StatusBar.tsx`'s lifetime ordering, which is a real and separately-argued
+// rule, and because the only live tie is decided by the Jobs-before-
+// Notifications half — but if a future section needs to win a tie against Jobs,
+// there is no prior decision here to argue with.
 //
 // The microtask is what bounds a "commit": React runs layout/passive effects
 // synchronously within a commit, before the microtask queue drains.

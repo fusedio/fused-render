@@ -7,10 +7,13 @@
 // A QUICK-INFO POPOVER, NOT A MANAGEMENT CONSOLE (user call, revising an
 // earlier gauge/progress-bar draft: "we don't need a gauge if too
 // complicated. just a quick info upon clicking which we have a list of
-// loaded models we can unload"). The chip is plain text — the count and the
-// cost, nothing else; the panel is one row per resident model, its name, its
-// own resident bytes, and an Unload button. No gauge, no proportional fill,
-// no RAM fraction — that is the whole feature.
+// loaded models we can unload"). The chip is the label `Models` plus ONE
+// circle, outlined when nothing is resident and filled when something is
+// (D588/D590, user: "no count. just a circle outlined or filled") — it carried
+// a count until D588 and a total cost until D589, and carries neither now. The
+// panel is one row per resident model: its name, what it is holding, and an
+// Unload button. No gauge, no proportional fill, no RAM fraction — that is the
+// whole feature.
 //
 // NO NEW TRANSPORT: `useAiRuntime` (apps/ai_models/lib/aiRuntime.ts) already
 // polls `GET /api/ai/runtime` — the same shared poll GlobalSidebar's own
@@ -41,11 +44,8 @@ import { useExclusiveSection } from "@platform/lib/exclusiveSection";
 import StatusDot from "@platform/ui/StatusDot";
 import { useDismissOnOutside } from "@platform/lib/dismissOnOutside";
 
-// This section's own persisted collapse preference — a THIRD independent key
-// beside `fused-render:jobs-collapsed` and `fused-render:repo-updates-collapsed`
-// (DownloadManager.tsx / RepoUpdatesDock.tsx), for the identical reason those
-// two are separate: three sections with three separate histories a user
-// might want folded independently.
+/** For a caller that mounts the view without an `onClose` — the pure view's
+ *  outside-pointer-down handler needs a function, not a branch. */
 const NOOP = () => {};
 // NOTHING ABOUT THE FOLD IS PERSISTED (D603, user: "on page reload the models
 // popover auto opens for some reason"). There used to be a `COLLAPSED_KEY` here
@@ -370,13 +370,14 @@ export function ModelsCardView({
     <div className="dl-host" ref={hostRef}>
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME plus a count, and
-          the idle sentence moves into the panel; see `DownloadManagerView`'s
-          own header comment for the fuller reasoning, identical here). No
-          label prefix once there is a value beyond the bare count (code
-          review revision, still true): the name IS "Models" either way now,
-          so the only thing that changes between idle and active is the
-          trailing count and cost. */}
+          inspiration" — the bar shows the category NAME and nothing that
+          varies in width, and the idle sentence moves into the panel; see
+          `DownloadManagerView`'s own header comment for the fuller reasoning,
+          identical here). The label is "Models" whether or not anything is
+          resident — the ONLY difference between idle and active is whether the
+          circle beside it is outlined or filled, plus `.is-idle`'s muting.
+          The count went in D588 and the total cost in D589, so there is
+          nothing left in this chip that can change its width at all. */}
       <button
         className={"dl-toggle" + (idle ? " is-idle" : "")}
         onClick={onToggle}

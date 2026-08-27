@@ -296,9 +296,12 @@ function RepoRowView({
  * included. D573 moved WHERE that shows: the chip is a real, always-
  * clickable button either way now (VS Code/Cursor status-bar idiom — hover
  * is the affordance, not a disclosure chevron), muted text (`.is-idle`) is
- * the one remaining "nothing here" signal, and the idle sentence itself
- * ("No notifications", D579) lives in the panel that opens beneath it
- * the chip, which only ever shows the category name and a count now.
+ * one "nothing here" signal alongside the outlined circle, and the idle
+ * sentence itself ("No notifications", D579) lives in the panel that opens
+ * beneath the chip. The chip shows the category name and ONE circle —
+ * outlined when this section holds nothing, filled when it holds anything
+ * (D588/D590, user: "no count. just a circle outlined or filled"). No count,
+ * no percentage, no chevron: D573, D581 and D588/D590 removed those in turn.
  */
 export function RepoUpdatesCardView({
   rows,
@@ -352,7 +355,7 @@ export function RepoUpdatesCardView({
     <div className="dl-host" ref={hostRef}>
       {/* ALWAYS a real, clickable button now (D573, user: "the chevron
           doesn't belong to the status bar. lets follow vscode/cursor for
-          inspiration" — the bar shows the category NAME plus a count, and
+          inspiration" — the bar shows the category NAME and one circle, and
           the idle sentence moves into the panel below; see
           `DownloadManagerView`'s own header comment for the fuller
           reasoning, identical here). `repoUpdatesSummary`, which used to
@@ -373,7 +376,10 @@ export function RepoUpdatesCardView({
             being behind upstream is ONE KIND of notification, not a top-level
             category beside Models and Activity, and `Updates` also collided
             with `Activity` (both read as "stuff that changed", neither says
-            whose). The count is unchanged. Nothing else was renamed: this
+            whose). ONLY THE LABEL CHANGED — the chip carried a count when this
+            rename landed and carries none since D588/D590, but that is a
+            separate decision and not part of the renaming. Nothing else was
+            renamed either: this
             file, its `.dl-*`/`.q-*` classes and `repoRows`/`visibleRepoRows`
             all still say "repo updates", which is exactly what they hold —
             `Notifications` is the extensible CATEGORY, so an alert that is

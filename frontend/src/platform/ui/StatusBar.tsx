@@ -1,7 +1,10 @@
 // The bottom status bar (SPEC §36, D563, redesigned D565): a thin strip
-// inside `#main` holding three ALWAYS-PRESENT categories — Models, Activity,
-// Updates — left to right, so a page's content ends above it instead of a
-// floating card overlaying it.
+// inside `#main` holding four ALWAYS-PRESENT categories — Models, Engines,
+// Jobs, Notifications — left to right, so a page's content ends above it
+// instead of a floating card overlaying it. (Engines arrived in D591; the
+// labels were `Activity` and `Updates` until D579 renamed them to `Jobs` and
+// `Notifications` — the props are still spelled `activity`/`repoUpdates`,
+// which is the only place the old names survive.)
 //
 // USER COMPLAINT THIS EXISTS TO FIX (round 1): "the collapsed notification is
 // also taking too much space. lets have a bottom status bar where the
@@ -20,7 +23,7 @@
 // look better"). `.status-bar:empty { display: none }` and the "empty means
 // gone" reasoning D563 built are SUPERSEDED, not merely extended: a page with
 // nothing loaded, nothing running and nothing behind used to render no bar at
-// all, and the user's own words reject that — the three categories are a
+// all, and the user's own words reject that — the categories are a
 // fixed status readout, like a real status bar, not a notification stack that
 // happens to sit at the bottom. `#main` is therefore permanently ~34px
 // shorter now, on every page, which is the accepted cost of that call. Each
@@ -31,40 +34,49 @@
 // with no chevron, since there is no panel behind an idle section worth
 // opening — rather than an empty box shouting for attention.
 //
-// COLLAPSED IS A CHIP, EXPANDED IS A PANEL, for the two sections that have
-// rows to show (Activity, Updates — Models never expands past its own quick
-// popover, see ModelsDock.tsx). Each section owns its own collapse state
-// exactly as it did in the floating column (`fused-render:jobs-collapsed` /
-// `fused-render:repo-updates-collapsed` / `fused-render:models-collapsed`,
-// three independent keys) — this component does not lift that state, it
-// only hosts what each section renders. Collapsed, a section renders a
-// small `.dl-toggle` chip — the summary line, the aggregate percentage
-// (jobs only), the chevron, a quiet dot for something unacknowledged
-// (`lib/autoExpand.ts`) — nothing more fits a bar this thin, and a control
-// on it would compete with the one line it has. Expanded, that SAME toggle
-// stays and a panel (`.dl-panel`) opens above it — floating over page
-// content, which is fine and expected: it is USER-initiated, never forced
-// open by an arrival (code review finding #4 — `useAutoExpandOnNew` no
-// longer does that; see its own doc).
+// COLLAPSED IS A CHIP, EXPANDED IS A PANEL, and all four sections work the
+// same way: a `.dl-toggle` chip that opens a `.dl-panel` floating above it.
 //
-// LIFETIME ORDER, LEFT TO RIGHT: Models is PERSISTENT status that is always
-// true the instant anything is resident — it does not "resolve" the way a
-// download finishes — so it sits leftmost, first. Activity and Updates are
+// EVERY CHIP IS A LABEL PLUS ONE CIRCLE — outlined when the section holds
+// nothing, filled when it holds anything (D588/D590, user: "no count. just a
+// circle outlined or filled"). Nothing else is on a chip: the chevron went in
+// D573, the aggregate percentage (`dl-pct`) in D581, Models' size readout in
+// D589, the counts in D588/D590, and the "something unacknowledged" dot
+// (`.dl-new-dot`) in D588 — the one circle answers "is there anything here",
+// which is all a bar this thin has room to say, and a chip whose contents
+// cannot change width cannot make its neighbours jump. `.is-idle` muting is
+// the only other state a chip carries.
+//
+// THE FOLD IS NOT PERSISTED, AND NOT LIFTED HERE (D603). Every section starts
+// collapsed on every load, unconditionally: there used to be four independent
+// `fused-render:*-collapsed` keys, and all four are DELETED, because a
+// `.dl-panel` is a popover and a popover that restores itself across reloads
+// covers the page on every navigation. Each section still OWNS its own
+// in-session collapse state — this component does not lift it, it only hosts
+// what each section renders. One panel is open at a time
+// (`lib/exclusiveSection.ts`, D582). A panel opens on a USER action, or
+// transiently for an arrival in the two sections that allow it (Jobs,
+// Notifications — Models and Engines pass `neverOpen`; `lib/autoExpand.ts`).
+//
+// LIFETIME ORDER, LEFT TO RIGHT: Models and Engines are PERSISTENT status,
+// true the instant anything is resident or running — neither "resolves" the way
+// a download finishes — so they sit leftmost. Jobs and Notifications are
 // TRANSIENT work that appears and resolves, the same lifetime-ordering
 // principle NotificationHost.tsx documents for its own column (a toast is
 // seconds, work in progress is minutes, the server card outlives the
 // session) — applied here to what is always true versus what is currently
 // happening, rather than to how long each lives.
 //
-// `models`/`activity`/`repoUpdates` are handed in rather than imported, for
+// `models`/`engines`/`activity`/`repoUpdates` are handed in rather than imported, for
 // the exact layering reason NotificationHost.tsx's own header comment states
 // for the two entries this bar took over: a queue row has to offer "Open in
 // Explorer", whose one answer lives in shell/schedule-lib; a repo row's
 // refusal stages a prompt into explorer/lib's own store; Models needs
 // apps/ai_models/lib's shared runtime poll — and platform may not import
 // shell or apps (frontend/scripts/check-boundaries.mjs). So the shell
-// composes all three (`shell/QueueDock.tsx`, `shell/RepoUpdatesDock.tsx`,
-// `shell/ModelsDock.tsx`) and this file keeps owning where they sit.
+// composes all four (`shell/QueueDock.tsx`, `shell/RepoUpdatesDock.tsx`,
+// `shell/ModelsDock.tsx`, `shell/EnginesDock.tsx`) and this file keeps owning
+// where they sit.
 // Omitted, the bare download manager stands in `activity`'s place — same
 // fallback NotificationHost used to provide, for the same reason: this
 // component must not depend on a shell that may not be there.

@@ -134,17 +134,19 @@
 /* Inside `#main` (explorer.css: `flex: 1 1 auto; display: flex; flex-direction:
    column`), as its LAST child — so it reserves height for free and every page's
    content ends above it, unlike the old fixed floating column this replaced,
-   which overlaid page content even collapsed. Three entries, left to right by
-   lifetime (StatusBar.tsx's own doc has the ordering principle): `models`
-   (persistent), `activity` and `repoUpdates` (transient), each a `.dl-host`
-   chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different categories
-   of status bar should be always present") — there used to be a `:empty {
-   display: none }` rule collapsing the strip to nothing when both sections
-   were empty; the three categories are a fixed readout now, so that rule is
+   which overlaid page content even collapsed. Four entries, left to right by
+   lifetime (StatusBar.tsx's own doc has the ordering principle): `models` and
+   `engines` (persistent), `activity` and `repoUpdates` (transient), each a
+   `.dl-host` chip+panel pair. ALWAYS PRESENT (D565, user verdict: "different
+   categories of status bar should be always present") — there used to be a
+   `:empty { display: none }` rule collapsing the strip to nothing when both
+   sections were empty; the categories are a fixed readout now, so that rule is
    gone and `#main` is permanently shorter by this bar's height, which is the
    accepted cost of the call. `tabular-nums` here, not per element, so every
-   count and percentage anywhere in the bar inherits it — the numbers tick
-   constantly and proportional digits would make the whole strip twitch.
+   ticking figure in the bar's SUBTREE inherits it — no chip carries a digit any
+   more (D588/D590 took the counts, D589 Models' size), but a `.dl-panel` is a
+   descendant of this element, and a row's `.dl-pct`/`.dl-amount`/status line
+   tick constantly where proportional digits would twitch.
 
    D573 (user: "the chevron doesn't belong to the status bar. lets follow
    vscode/cursor for inspiration"): a VS Code/Cursor status-bar item is a
@@ -415,8 +417,10 @@
 /* THE ONE INDICATOR (D588, user: "jobs and notifications can have a
    empty/filled circle - no need for count"). Jobs and Notifications each show
    a single circle: OUTLINED when the section holds nothing, FILLED when it
-   holds something. That is the section's whole state — there are no digits in
-   this bar any more outside Models' size.
+   holds something. That is the section's whole state — and since D589 removed
+   Models' `· 5.6 GB`, NO CHIP IN THIS BAR CARRIES A NUMBER AT ALL. The digits
+   that remain all live inside an expanded `.dl-panel`: a row's `.dl-pct`, its
+   `.dl-amount`, its status line.
 
    THIS RETIRES THE RESERVATION MACHINERY OUTRIGHT rather than sitting beside
    it. D581 held an empty `2ch` slot open so the bar could not reflow when a
@@ -427,7 +431,10 @@
    appears, nothing disappears, nothing changes width, so `.dl-count`,
    `.dl-zero` and their `min-width`/`padding-left`/tabular reasoning are
    deleted, not left dormant. (`font-variant-numeric: tabular-nums` stays on
-   `.status-bar` — Models' `· 5.6 GB` is the one number left in the bar.)
+   `.status-bar` — not for any chip, which has no digits left, but because a
+   `.dl-panel` is a descendant of `.status-bar` and every ticking figure in a
+   panel row inherits it from there. Assessed rather than assumed at code
+   review 2026-08-28, finding 9.)
 
    A DIRECT FLEX CHILD OF `.dl-toggle`, which is what fixes the centring the
    user reported as "bottom aligned vertically". The old circle sat three deep

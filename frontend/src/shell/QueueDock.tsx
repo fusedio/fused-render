@@ -393,27 +393,10 @@ export default function QueueDock({ onFailed }: { onFailed?: (jobs: Job[]) => vo
       lines.set(job.id.slice(SCHEDULE_JOB_PREFIX.length), jobStatusLine(job) || job.detail);
     }
   }
-  // "Cancel queued" — labelled for what it withdraws, since the old "Cancel
-  // all" read as "cancel everything on this card" over a header that is
-  // mostly job rows, which is precisely what this button does not touch
-  // (user feedback). It is the QUEUE's — the rows the server would withdraw
-  // if asked right now, which is `pending` and nothing else. A live turn is
-  // not one of them (it has its own ✕, which stops a running process) and
-  // neither is a claimed one (the server refuses `sending`), so the button
-  // counts only what it can take — and disappears when nothing left in the
-  // card is withdrawable. It is not the card's Clear and never becomes it:
-  // Clear dismisses rows for work that ENDED.
-  //
-  // A plain node now, decided once per render (D563, status bar redesign):
-  // it used to be built as a FUNCTION of whether the card was collapsed,
-  // because the threshold itself depended on it (`showCancelAll`'s own doc,
-  // D562) — collapsed dropped the withdrawable-rows threshold to one, since
-  // that was the only way left to reach a lone row once the header folded
-  // away. This button now renders only inside the card's expanded panel (the
-  // collapsed chip carries no controls at all), so that folded-but-visible
-  // state it was answering no longer exists, and neither does the function
-  // shape it needed.
-
+  // What the BUTTON does when pressed — asks the server to withdraw every
+  // queued message and reports what it actually took. Whether the button
+  // renders at all is `showCancelAll`'s call, at the `cancelAll:` prop below,
+  // where the reasoning for it lives.
   const cancelAll = async () => {
     setBusy(true);
     try {
@@ -449,6 +432,28 @@ export default function QueueDock({ onFailed }: { onFailed?: (jobs: Job[]) => vo
             onNote={setNote}
           />
         )),
+        // "Cancel queued" — labelled for what it withdraws, since the old
+        // "Cancel all" read as "cancel everything on this card" over a list that
+        // is mostly job rows, which is precisely what this button does not touch
+        // (user feedback). It is the QUEUE's — the rows the server would
+        // withdraw if asked right now, which is `pending` and nothing else. A
+        // live turn is not one of them (it has its own ✕, which stops a running
+        // process) and neither is a claimed one (the server refuses `sending`),
+        // so the button counts only what it can take — and disappears when
+        // nothing left in the card is withdrawable. It is not the card's Clear
+        // and never becomes it: Clear dismisses rows for work that ENDED.
+        //
+        // DECIDED INLINE, once per render (D563, status bar redesign). It used
+        // to be built as a FUNCTION of whether the card was collapsed, because
+        // the threshold itself depended on it (`showCancelAll`'s own doc, D562)
+        // — collapsed dropped the withdrawable-rows threshold to one, since that
+        // was the only way left to reach a lone row once the header folded away.
+        // This button now renders only inside the card's expanded panel (the
+        // collapsed chip carries no controls at all), so that
+        // folded-but-visible state it was answering no longer exists, and
+        // neither does the function shape it needed. There is no
+        // `offerCancelAll` local any more either: one call, at the one place
+        // that uses it.
         cancelAll: showCancelAll(rows) ? (
           <button
             type="button"
