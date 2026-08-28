@@ -1638,21 +1638,32 @@
      call leaves both sitting still while the run is perfectly healthy. A sweep
      across the label is motion the eye catches without being read.
      Gradient-over-text, so it costs no layout and no extra element. */
+  /* Claude orange (--accent), the same ink as the ✻ beside it, with the sweep
+     the top strip's "running" mark already uses (D453: a highlight sliding
+     across the word, 300% gradient, one animated property). The first cut
+     swept --fg over --faint — grey over grey — which read as a flat, static
+     word (Akshil, 2026-08-28: "not orange, not shimmering"). */
   .working .verb {
-    color: var(--fg);
-    background: linear-gradient(90deg, var(--fg) 35%, var(--faint) 50%, var(--fg) 65%);
-    background-size: 200% 100%;
+    color: var(--accent);
+    background-image: linear-gradient(
+      100deg,
+      var(--accent) 30%,
+      color-mix(in srgb, var(--accent) 55%, var(--fg)) 50%,
+      var(--accent) 70%
+    );
+    background-size: 300% 100%;
+    background-repeat: repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: skel-shimmer 2.2s linear infinite;
+    animation: claude-running-shimmer 2.2s linear infinite;
   }
   /* Awaiting approval is the one phase where nothing is running: the turn is
      blocked on the user, and a shimmer there would promise progress that only
      their click can produce. Stopping keeps it — the kill is still in flight. */
   .working.awaiting .verb {
     animation: none;
-    background: none;
+    background-image: none;
     -webkit-text-fill-color: var(--fg);
   }
   /* Reduced motion drops the sweep, and with it the transparent fill the
@@ -1660,11 +1671,22 @@
   @media (prefers-reduced-motion: reduce) {
     .working .verb {
       animation: none;
-      background: none;
-      -webkit-text-fill-color: var(--fg);
+      background-image: none;
+      -webkit-text-fill-color: var(--accent);
     }
   }
-  .working .meta { color: var(--faint); font-size: 12px; }
+  /* The brackets carry the detail (a Bash description, a file name) and are
+     the one part of the line whose length the page does not control. They give
+     way first: the verb and the stop button keep their width at any pane size,
+     and the detail truncates with an ellipsis rather than wrapping the line or
+     pushing the stop button off the column. */
+  .working .verb { white-space: nowrap; flex: 0 0 auto; }
+  .working .meta {
+    color: var(--faint); font-size: 12px;
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .working .stop { flex: 0 0 auto; }
   /* The stop control rides ON the working line, which exists for exactly as long
      as a run is interruptible — so the button cannot outlive what it cancels. */
   .working .stop {
@@ -12824,6 +12846,59 @@ function retryVerb(retry) {
 // line that reports a turn running OUTSIDE this app (D415's transcript-follow),
 // which has no process to kill and no phase to read, and where a "stop · esc"
 // that quietly does nothing would be the worst control on the page.
+// The verb for a run this page owns, from the poll's phase and `activity`. ONE
+// PLAIN SENTENCE a person who has never heard of tokens can read: what Claude
+// is doing right now, in everyday words. The specifics (which command, which
+// file) go in the brackets after it, and only one of them (see activityDetail).
+// An earlier cut of this line stacked tokens, input bytes, a thinking estimate,
+// a task count and a silence timer into the brackets — a dashboard, not a
+// status (Akshil, 2026-08-28). Everything that was a NUMBER is gone; what was
+// a number is now a word.
+//
+// `quietSecs` is how long the poll has reported nothing new. Past 20 s the
+// verb itself changes to say the wait is real — "Still waiting for a reply" —
+// instead of appending "quiet 86s" to a verb that still claims progress.
+function activityVerb(stats, thinkVerb, quietSecs) {
+  const act = stats.activity || {};
+  if (act.hook) return "Running project hooks";
+  if (stats.phase === "tooling") {
+    const t = act.tool;
+    if (!t) return "Reading the result";
+    const streaming = act.tool_input_bytes && !t.detail;
+    switch (t.name) {
+      case "Bash": return streaming ? "Preparing a command" : "Running a command";
+      case "Read": return "Reading a file";
+      case "Edit": case "MultiEdit": case "NotebookEdit": return "Editing a file";
+      case "Write": return "Writing a file";
+      case "Grep": case "Glob": return "Searching files";
+      case "Task": case "Agent": return "Running a helper agent";
+      case "Skill": return "Loading a skill";
+      case "WebFetch": case "WebSearch": return "Fetching from the web";
+      default: return "Using " + t.name;
+    }
+  }
+  // The model's turn: request out, thinking, or writing. A long silence here
+  // is the one ambiguity worth naming — and if a background command is still
+  // running, that is almost always what the wait is.
+  if (quietSecs >= 20) {
+    return act.tasks && act.tasks.length
+      ? "Waiting for a background command to finish"
+      : "Still waiting for a reply";
+  }
+  if (stats.phase === "requesting") return "Waiting for a reply";
+  if (stats.phase === "composing") return "Writing a reply";
+  return thinkVerb;
+}
+// The ONE thing that goes in the brackets beside the time: the command's
+// description, the file's name, the helper agent's job. Nothing while the model
+// itself is working — there is no useful noun for that.
+function activityDetail(stats) {
+  const act = stats.activity || {};
+  if (act.hook) return "";
+  if (stats.phase === "tooling" && act.tool && act.tool.detail) return act.tool.detail;
+  return "";
+}
+
 function addWorking(opts) {
   const fixedVerb = (opts && opts.verb) || "";
   const stoppable = !(opts && opts.stoppable === false);
@@ -12831,7 +12906,12 @@ function addWorking(opts) {
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
-  let stats = { tokens: 0, phase: "thinking", retry: null };
+  let stats = { tokens: 0, phase: "thinking", retry: null, activity: null };
+  // When the poll last told us something NEW. The stream rows carry no clock,
+  // so this is the page's own: a line whose facts have not moved for a while
+  // says so ("quiet 24s") instead of letting the timer imply progress.
+  let lastChange = Date.now();
+  let lastKey = "";
   let stopping = false;
   d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
     // The key rides on the label, not in a hint row: same reasoning as the
@@ -12848,20 +12928,21 @@ function addWorking(opts) {
     const secs = Math.round((Date.now() - start) / 1000);
     // A live retry outranks every phase but the user's own stop: it is the only
     // one of these that explains why nothing is happening.
+    const quiet = Math.round((Date.now() - lastChange) / 1000);
     verbEl.textContent = (stopping ? "Stopping" :
                           fixedVerb ? fixedVerb :
                           stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
-                          stats.phase === "composing" ? "Composing" :
-                          stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
+                          activityVerb(stats, thinkVerb, quiet)) + "…";
     // The shimmer is the liveness signal (see .working .verb), so the one phase
     // that is NOT progress has to say so: awaiting approval is blocked on the
     // user, not on the model.
     d.classList.toggle("awaiting", !stopping && stats.phase === "awaiting");
-    const effort = curEffort();
+    // Time, and at most one detail. Nothing else: no token count, no byte
+    // count, no effort label — the numbers were the complaint.
     const parts = [secs + "s"];
-    if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
-    if (stats.phase === "thinking" && effort) parts.push(effort + " effort");
+    const detail = stopping || fixedVerb ? "" : activityDetail(stats);
+    if (detail) parts.push(detail);
     meta.textContent = " (" + parts.join(" · ") + ")";
   };
   const timer = setInterval(draw, 1000);
@@ -12880,7 +12961,16 @@ function addWorking(opts) {
   followBottom();
   return {
     el: d,
-    setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
+    setStats(tokens, phase, retry, activity) {
+      stats = { tokens, phase, retry: retry || null, activity: activity || null };
+      // "New" = any fact on the line moved. Tokens tick during composing, the
+      // thinking estimate during thinking, input bytes during a Write — so a
+      // healthy run resets this every poll and only a genuinely silent one
+      // reaches the "quiet Ns" hint.
+      const key = JSON.stringify([tokens, phase, retry, activity]);
+      if (key !== lastKey) { lastKey = key; lastChange = Date.now(); }
+      draw();
+    },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
     setStopping(on) { stopping = on; if (stopBtn) stopBtn.disabled = on; draw(); },
@@ -14199,7 +14289,7 @@ async function pollLoop(run_id, gen = logGen) {
       if (tick++ % 8 === 0) pollArtifacts();
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
-      w.setStats(tokens, data.phase || "thinking", data.retry);
+      w.setStats(tokens, data.phase || "thinking", data.retry, data.activity);
       syncPermissions(data.permissions, run_id, w, data.mode);
       noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
