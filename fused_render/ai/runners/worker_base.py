@@ -275,7 +275,15 @@ def _fire_release(token):
 
     Never raises past this function. A `release` that throws must be a
     no-op — there is no request waiting on this timer to fail loudly at, and
-    a broken reclaim must not take the timer thread down with it.
+    a broken reclaim must not take the timer thread down with it. Still
+    LOGGED, though (`traceback.print_exc`, `_single`'s own pattern for an
+    error nobody is waiting on): a release that fails on every idle window
+    forever is otherwise invisible except as the footprint number this whole
+    feature exists to move never actually moving, and that is exactly the
+    silent-regression shape code review caught once already (a torch build
+    where the MPS branch always raised and quietly took the CUDA branch down
+    with it — see `torch_image.release`). The worker's own stderr lands in
+    `$TMPDIR/fused-render-<pid>.log`, where a broken reclaim is now visible.
     """
     global _release_timer
     with GENERATE_LOCK:
@@ -287,8 +295,8 @@ def _fire_release(token):
             _release_timer = None
         try:
             run_on_generate_thread(_release)
-        except Exception:  # noqa: BLE001 - see docstring: reclaim failures are silent
-            pass
+        except Exception:  # noqa: BLE001 - logged below, then swallowed: see docstring
+            traceback.print_exc(file=sys.stderr)
 
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 
