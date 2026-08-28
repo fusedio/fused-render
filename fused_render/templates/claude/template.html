@@ -1638,18 +1638,19 @@
      call leaves both sitting still while the run is perfectly healthy. A sweep
      across the label is motion the eye catches without being read.
      Gradient-over-text, so it costs no layout and no extra element. */
-  /* Claude orange (--accent), the same ink as the ✻ beside it, with the sweep
-     the top strip's "running" mark already uses (D453: a highlight sliding
-     across the word, 300% gradient, one animated property). The first cut
-     swept --fg over --faint — grey over grey — which read as a flat, static
-     word (Akshil, 2026-08-28: "not orange, not shimmering"). */
+  /* THE app's one running shimmer, on the verb: the same --status-progress
+     hue and the same D453 sweep the top strip's "running" mark and the
+     chat-row mark already use (100deg highlight, 300% gradient, 2.2 s, one
+     animated property). Not --fg over --faint (the first cut — grey over grey,
+     read as a static word) and not --accent (the second — a third colour for
+     "running" when the shell has settled on one). Two surfaces, one hue. */
   .working .verb {
-    color: var(--accent);
+    color: var(--status-progress);
     background-image: linear-gradient(
       100deg,
-      var(--accent) 30%,
-      color-mix(in srgb, var(--accent) 55%, var(--fg)) 50%,
-      var(--accent) 70%
+      var(--status-progress) 30%,
+      color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+      var(--status-progress) 70%
     );
     background-size: 300% 100%;
     background-repeat: repeat;
@@ -1667,12 +1668,13 @@
     -webkit-text-fill-color: var(--fg);
   }
   /* Reduced motion drops the sweep, and with it the transparent fill the
-     gradient stands in for — otherwise the label would be invisible. */
+     gradient stands in for — otherwise the label would be invisible. Same
+     fallback as the top strip: still says it, in the running colour. */
   @media (prefers-reduced-motion: reduce) {
     .working .verb {
       animation: none;
       background-image: none;
-      -webkit-text-fill-color: var(--accent);
+      -webkit-text-fill-color: var(--status-progress);
     }
   }
   /* The brackets carry the detail (a Bash description, a file name) and are
