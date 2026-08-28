@@ -266,6 +266,43 @@ def memory():
     return total or None
 
 
+def release():
+    """Hand the torch caching allocator's pool back to the OS — the non-MLX
+    analogue of `mlx_text.worker.release` and friends, one edit here covering
+    all three folders this file serves (CPU, CUDA, ROCm) per the module
+    docstring. `worker_base.serve(release=...)` fires this `worker_base.
+    _RELEASE_IDLE_S` seconds after this worker's LAST render if nothing new
+    started in the meantime — see `worker_base._release`'s docstring for the
+    measured numbers and why a timer rather than an unconditional per-call
+    clear.
+
+    `torch.mps.empty_cache()` on Apple Silicon, `torch.cuda.empty_cache()` on
+    an NVIDIA card — the CPU-only case (this file's own default install, see
+    the module docstring) has no allocator cache to speak of, so both calls
+    are simply absent there and this is a no-op. Both are guarded with
+    `hasattr`/`getattr` rather than a bare call: `torch.mps` did not gain
+    `empty_cache` until a later torch release than this app's floor, and
+    `torch.cuda.empty_cache` always exists on the module but is a no-op
+    itself when no CUDA device is available — checking `is_available()` first
+    avoids initialising a CUDA context on a machine that has none, the same
+    caution `_place`/`memory` above already take before touching either
+    backend.
+
+    Deliberately does NOT call `torch.cuda.reset_peak_memory_stats` or touch
+    anything upstream of the denoising loop — see the module boundary this
+    whole feature respects: reclaiming what a finished render left behind,
+    never changing what the next render is allowed to cost.
+    """
+    import torch
+
+    mps = getattr(torch, "mps", None)
+    empty_mps = getattr(mps, "empty_cache", None)
+    if empty_mps is not None:
+        empty_mps()
+    if torch.cuda.is_available() and hasattr(torch.cuda, "empty_cache"):
+        torch.cuda.empty_cache()
+
+
 def _sigma_after(pipeline, step):
     """The noise level the scheduler has ARRIVED at, after step index `step`.
 
@@ -420,4 +457,4 @@ def main():
     body is a path insert and a call to this.
     """
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory)
+                      streaming=False, memory=memory, release=release)
