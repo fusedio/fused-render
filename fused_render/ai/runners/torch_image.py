@@ -276,17 +276,26 @@ def release():
     measured numbers and why a timer rather than an unconditional per-call
     clear.
 
-    `torch.mps.empty_cache()` on Apple Silicon, `torch.cuda.empty_cache()` on
-    an NVIDIA card — the CPU-only case (this file's own default install, see
-    the module docstring) has no allocator cache to speak of, so both calls
-    are simply absent there and this is a no-op. Both are guarded with
-    `hasattr`/`getattr` rather than a bare call: `torch.mps` did not gain
-    `empty_cache` until a later torch release than this app's floor, and
-    `torch.cuda.empty_cache` always exists on the module but is a no-op
-    itself when no CUDA device is available — checking `is_available()` first
-    avoids initialising a CUDA context on a machine that has none, the same
-    caution `_place`/`memory` above already take before touching either
-    backend.
+    **`torch.mps` is not a presence check.** An earlier version of this
+    function gated on `getattr(torch, "mps", None)` / `hasattr(mps,
+    "empty_cache")` — but `torch/__init__.py` imports `torch.mps`
+    unconditionally on every platform, and `empty_cache` is a plain Python
+    function that always exists on it; both those guards always pass. On a
+    CPU/CUDA/ROCm build the call still reaches `torch._C._mps_emptyCache()`
+    -> `MPSHooksInterface::emptyCache()`, which is `TORCH_CHECK(false,
+    "Cannot execute emptyCache() without MPS backend.")` — a `RuntimeError`,
+    raised BEFORE the CUDA branch below ever ran, so the one build that
+    actually has a caching allocator worth reclaiming (`diffusers_image_cuda`
+    /`_rocm`) got nothing at all. The correct presence check is the one
+    `_place()` above already uses: `torch.backends.mps.is_available()`.
+
+    Each backend's call is also its OWN `try/except`, independent of the
+    other's — the same shape `memory()` above uses for its two probes —
+    so a raise from one (an API this app's floor of torch does not yet have,
+    say) can never take the other one down with it the way the bug above did.
+    `RuntimeError`/`OSError` is the pair `memory()` already catches for the
+    same backends; anything else is a real bug and is left to surface via
+    `worker_base._fire_release`'s own swallow-and-log, not hidden twice here.
 
     Deliberately does NOT call `torch.cuda.reset_peak_memory_stats` or touch
     anything upstream of the denoising loop — see the module boundary this
@@ -295,12 +304,16 @@ def release():
     """
     import torch
 
-    mps = getattr(torch, "mps", None)
-    empty_mps = getattr(mps, "empty_cache", None)
-    if empty_mps is not None:
-        empty_mps()
-    if torch.cuda.is_available() and hasattr(torch.cuda, "empty_cache"):
-        torch.cuda.empty_cache()
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        try:
+            torch.mps.empty_cache()
+        except (RuntimeError, OSError):
+            pass
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except (RuntimeError, OSError):
+            pass
 
 
 def _sigma_after(pipeline, step):
