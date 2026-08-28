@@ -461,6 +461,8 @@ def test_a_running_to_terminal_transition_forces_exactly_one_more_fetch(
     rebuild at the same terminal status must not fetch again."""
     got = _run(probe_src, """
 async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "running"}]});
+  runPythonQueue.push({turns: [{role: "user", text: "final"}]});
   const el = buildToolChip(%s, "k1");
   clickSummary(el.el);
   await new Promise((r) => setTimeout(r, 0));      // fetch #1, cached at "running"
@@ -485,6 +487,8 @@ def test_the_catch_up_fetch_still_fires_with_no_further_poll_tick(
     driven from inside the in-flight fetch's own completion, not a tick."""
     got = _run(probe_src, """
 async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "running"}]});
+  runPythonQueue.push({turns: [{role: "user", text: "final"}]});
   const el = buildToolChip(%s, "k1");
   clickSummary(el.el);          // fetch #1 starts, still "running"
   el.update(%s);                 // status flips to "ok" WHILE #1 is in flight
@@ -924,16 +928,20 @@ main();
     users = _by_class(got["tree"], "sub-turn-user")
     assert len(users) == 1 and users[0]["text"] == "still going"
     partial = _by_class(got["tree"], "sub-turn-partial")
-    assert len(partial) == 1, "a stale running-time cache must say it is partial"
+    assert len(partial) == 1 and partial[0]["text"], (
+        "a stale running-time cache must say it is partial")
     # The stale copy is NEVER silently replaced by the error path either —
     # the turns stay on screen, with the notice, not an error in their place.
-    assert _by_class(got["tree"], "sub-turn-error") == []
+    # (The error slot always EXISTS as a fixed sibling now — round 5 — so
+    # the invariant is that it holds no TEXT, not that the class is absent.)
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert all(not e["text"] for e in errors)
 
 
 def test_a_still_running_cache_reads_as_ok_not_partial(probe_src, tmp_path):
     got = _run(probe_src, """
 console.log(JSON.stringify({
-  state: subagentRenderState({turns: [], fetchedAtStatus: "running"}, 0, "running"),
+  state: subagentRenderState({turns: [], settled: false}, 0, "running"),
 }));
 """, tmp_path)
     assert got["state"]["kind"] == "ok"
@@ -947,12 +955,12 @@ def test_render_state_is_pure(probe_src, tmp_path):
 console.log(JSON.stringify({
   empty: subagentRenderState(null, 0, "running"),
   failed: subagentRenderState(null, 5, "running"),
-  ok: subagentRenderState({turns: [1], fetchedAtStatus: "ok"}, 0, "ok"),
-  partial: subagentRenderState({turns: [1], fetchedAtStatus: "running"}, 0, "ok"),
-  shouldFetchRunning: subagentShouldFetch({turns: [], fetchedAtStatus: "ok"}, 0, "running"),
-  shouldNotFetchSettled: subagentShouldFetch({turns: [], fetchedAtStatus: "ok"}, 0, "ok"),
+  ok: subagentRenderState({turns: [1], settled: true}, 0, "ok"),
+  partial: subagentRenderState({turns: [1], settled: false}, 0, "ok"),
+  shouldFetchRunning: subagentShouldFetch({turns: [], settled: true}, 0, "running"),
+  shouldNotFetchSettled: subagentShouldFetch({turns: [], settled: true}, 0, "ok"),
   shouldNotFetchGivenUp: subagentShouldFetch(null, 5, "running"),
-  shouldFetchStalePartial: subagentShouldFetch({turns: [], fetchedAtStatus: "running"}, 0, "ok"),
+  shouldFetchStalePartial: subagentShouldFetch({turns: [], settled: false}, 0, "ok"),
 }));
 """, tmp_path)
     assert got["empty"]["kind"] == "empty"
@@ -966,23 +974,26 @@ console.log(JSON.stringify({
 
 
 def test_the_give_up_message_is_not_repainted_once_shown(probe_src, tmp_path):
-    """Code review round 3, finding #4: once the failure message is the only
-    thing in the log, a poll tick that keeps calling this every 400 ms for
-    the rest of the run must not keep replacing the node — the SAME element
-    (by identity) should still be there after a second render of the exact
-    same failed state."""
+    """Code review round 3, finding #4 (and round 5's structural fix): the
+    give-up message now writes directly into its OWN sibling slot via
+    `textContent`, never by creating/replacing a child node — so "idempotent"
+    is simply "no write happens when the text is already correct", provable
+    directly rather than needing a uid/identity check on a node that no
+    longer exists as a separate thing from its container."""
     got = _run(probe_src, """
 const container = document.createElement("div");
 renderSubagentFailure(container, "down");
-const firstUid = container.children[0].uid;
+const firstText = container.textContent;
 renderSubagentFailure(container, "down");
 console.log(JSON.stringify({
   n: container.children.length,
-  sameUid: container.children[0].uid === firstUid,
+  text: container.textContent,
+  sameText: container.textContent === firstText,
 }));
 """, tmp_path)
-    assert got["n"] == 1
-    assert got["sameUid"] is True
+    assert got["n"] == 0, "no child node is ever created — the text lives on the slot itself"
+    assert got["text"] == "Couldn't load this subagent's transcript: down."
+    assert got["sameText"] is True
 
 
 def test_session_id_absent_never_touches_the_loading_set(probe_src, tmp_path):
@@ -1020,67 +1031,85 @@ main();
 
 # ------------------------------------------------- round 4
 
-def test_the_partial_notice_never_welds_into_a_later_turn(probe_src, tmp_path):
-    """Code review round 4, finding #1 (HIGH): `renderSubagentTranscript`
-    diffs `container.children[i]` positionally, and the partial notice used
-    to sit at index `list.length` — so when a LONGER turn list arrived
-    later (a partial cache of N turns, then a terminal fetch of N+1 that
-    includes the agent's own concluding message), index N reused the notice
-    element as the new turn, and `renderSegments` appended views into it
-    without ever clearing the notice's leftover text. This is the exact
-    empirical scenario the reviewer verified: 1 turn partial, then 2 turns
-    non-partial."""
-    container_script = """
-const container = document.createElement("div");
-renderSubagentTranscript(container, [
-  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
-], {partial: true});
-renderSubagentTranscript(container, [
-  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
-  {role: "assistant", text: "", segments: [{kind: "text", text: "all done"}]},
-], {partial: false});
-console.log(JSON.stringify({tree: dump(container)}));
-"""
-    got = _run(probe_src, container_script, tmp_path)
-    kids = got["tree"]["children"]
-    assert len(kids) == 2
-    # A "text" segment renders through renderMd into the ".seg-text" child's
-    # innerHTML (this stub's `<md>...</md>` wrapper) — the turn DIV itself
-    # never gets innerHTML written to it, only its nested child.
-    seg_text = _by_class(kids[1], "seg-text")
-    assert len(seg_text) == 1
-    assert seg_text[0]["html"] == "<md>all done</md>"
-    # THE bug: the notice div was set via `.textContent =`, which this stub
-    # stores as the element's OWN `_text` — reusing that same element as the
-    # new turn (welding) leaves `_text` in place forever, since renderSegments
-    # only ever APPENDS child views and never clears the container's own
-    # text. `dump()`'s `text` field is textContent, which combines a node's
-    # own `_text` with its children's — so under the bug this reads the old
-    # notice sentence PLUS nothing from the child (whose content lives in
-    # innerHTML, not textContent); fixed, it reads as empty, since a
-    # freshly-created (or notice-cleared) div has no leftover `_text` at all.
-    assert kids[1]["text"] == "", (
-        "the partial notice's text welded into the final turn: %r" % kids[1]["text"])
-
-
-def test_the_partial_notice_survives_a_same_length_repaint(probe_src, tmp_path):
-    """The fix must not just delete the notice and never bring it back: a
-    repaint at the SAME turn count that is STILL partial keeps showing it."""
+def test_renderSubagentTranscript_never_manages_a_notice_at_all(probe_src, tmp_path):
+    """Code review round 5, structural fix A: the partial notice used to be
+    the LAST entry of this same positionally-diffed list (round 3), which
+    round 4 then had to patch around twice (a stale notice reused as a
+    turn's element; a shrinking list mis-placing the new one). Round 5
+    removes the mechanism instead of patching it again: this function knows
+    nothing about notices any more, full stop — growing the turn count
+    (the same "1 turn, then 2" scenario the round 4 bug used) just adds a
+    second turn element, cleanly, with nothing else in the child list ever."""
     got = _run(probe_src, """
 const container = document.createElement("div");
 renderSubagentTranscript(container, [
-  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
-], {partial: true});
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+]);
 renderSubagentTranscript(container, [
-  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
-], {partial: true});
-console.log(JSON.stringify({
-  n: container.children.length,
-  lastCls: container.children[container.children.length - 1].className,
-}));
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working on it"}]},
+  {role: "assistant", text: "", segments: [{kind: "text", text: "all done"}]},
+]);
+console.log(JSON.stringify({tree: dump(container)}));
 """, tmp_path)
-    assert got["n"] == 2
-    assert got["lastCls"] == "sub-turn-partial"
+    kids = got["tree"]["children"]
+    assert len(kids) == 2
+    assert all(k["cls"] == "sub-turn-assistant" for k in kids)
+    seg_text = _by_class(kids[1], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>all done</md>"
+
+
+def test_a_role_flip_at_the_same_index_does_not_weld_text(probe_src, tmp_path):
+    """Code review round 5, finding #5: a rewritten/compacted transcript can
+    put a DIFFERENT role at an index a previous render already used —
+    renderSegments only ever appends, it never clears, so a reused element
+    that used to be a user turn (text set via textContent) would keep that
+    text sitting underneath the newly-appended assistant segment views
+    forever. `turnEl.replaceChildren()` on a class change closes this."""
+    got = _run(probe_src, """
+const container = document.createElement("div");
+renderSubagentTranscript(container, [{role: "user", text: "a question"}]);
+renderSubagentTranscript(container, [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "an answer"}]},
+]);
+console.log(JSON.stringify({tree: dump(container)}));
+""", tmp_path)
+    kids = got["tree"]["children"]
+    assert len(kids) == 1
+    assert kids[0]["cls"] == "sub-turn-assistant"
+    assert "a question" not in kids[0]["text"]
+    seg_text = _by_class(kids[0], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>an answer</md>"
+
+
+def test_the_partial_notice_lives_outside_the_turn_list_entirely(probe_src, tmp_path):
+    """Code review round 5, structural fix A: the notice is a SIBLING slot
+    (subagentSlots), never a member of the diffed turn list — so growing,
+    shrinking or repainting the turn list at the same length can never
+    touch it. Exercised through renderSubagentPump end to end, the way a
+    real chip uses it."""
+    got = _run(probe_src, """
+const log = document.createElement("div");
+const turnsEl = document.createElement("div");
+turnsEl.className = "chip-subagent-turns";
+const noticeEl = document.createElement("div");
+noticeEl.className = "sub-turn-partial";
+const errorEl = document.createElement("div");
+errorEl.className = "sub-turn-error";
+log.append(turnsEl, noticeEl, errorEl);
+
+renderSubagentPump(log, {kind: "partial", turns: [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
+]});
+renderSubagentPump(log, {kind: "partial", turns: [
+  {role: "assistant", text: "", segments: [{kind: "text", text: "working"}]},
+]});
+console.log(JSON.stringify({tree: dump(log)}));
+""", tmp_path)
+    kids = got["tree"]["children"]
+    assert [k["cls"] for k in kids] == [
+        "chip-subagent-turns", "sub-turn-partial", "sub-turn-error"]
+    assert kids[1]["text"], "the notice must still be showing"
+    assert kids[2]["text"] == ""
 
 
 def test_via_pump_a_growing_partial_to_final_transcript_is_not_contaminated(
@@ -1116,7 +1145,11 @@ main();
     assert assistants[1]["text"] == "", (
         "the partial notice's text welded into the final turn: %r"
         % assistants[1]["text"])
-    assert _by_class(log, "sub-turn-partial") == []
+    # The notice slot always EXISTS (round 5: it's a fixed sibling, not an
+    # entry in the turn list) — the invariant is that it holds no text once
+    # the transcript is complete, not that the element is gone.
+    notices = _by_class(log, "sub-turn-partial")
+    assert all(not n["text"] for n in notices)
 
 
 # ------------------------------------------------- round 4: pacing
@@ -1150,10 +1183,13 @@ main();
 
 def test_an_empty_successful_response_never_overwrites_a_good_cache(
         probe_src, tmp_path):
-    """Code review round 4, finding #3: `_subagent_transcript` returns
+    """Code review rounds 4 and 5: `_subagent_transcript` returns
     `{"turns": []}` for a bad id or a file that is momentarily unreadable —
-    a resolved fetch, not a failure. If that lands AFTER a good, non-empty
-    cache is already on hand, it must not destroy it."""
+    indistinguishable, on the wire, from "the agent said nothing". Round 5's
+    structural fix treats an empty response AT A TERMINAL STATUS as a
+    failure rather than a settled cache, so it never even reaches the
+    cache-write code — but this pins the outcome either way: it must never
+    destroy a good, non-empty cache already on hand."""
     got = _run(probe_src, """
 async function main() {
   runPythonQueue.push({turns: [{role: "user", text: "the real transcript"}]});
@@ -1173,30 +1209,86 @@ main();
     assert len(users) == 1 and users[0]["text"] == "the real transcript"
 
 
-def test_reexpanding_after_an_empty_settled_cache_gets_a_fresh_fetch(
+def test_an_empty_response_at_a_terminal_status_counts_as_a_failure_not_settled(
         probe_src, tmp_path):
-    """Code review round 4, finding #3: a successful-but-empty response at a
-    TERMINAL status used to settle permanently — `subagentShouldFetch`
-    false forever, and `reexpand` only cleared the fail count, which was
-    never what stopped this. Reexpand must also drop the cache entry, so
-    collapsing and reopening is a real recovery path here too."""
+    """Code review round 5, structural fix B (this round's HIGH): round 4's
+    fix made an empty-at-terminal response settle as `kind: "ok"` — a
+    truncated (here, EMPTY) transcript indistinguishable from a genuinely
+    complete one, no warning shown anywhere. It must instead count toward
+    the fail bound like any other failure, chasing exactly
+    MAX_SUBAGENT_FETCH_ATTEMPTS times before giving up and showing the
+    failure state — never settling into a silent, confidently-blank "ok"."""
     got = _run(probe_src, """
 async function main() {
-  runPythonQueue.push({turns: []});
+  for (let i = 0; i < 5; i++) runPythonQueue.push({turns: []});
   const el = buildToolChip(%s, "k1");
   clickSummary(el.el);                  // fetch #1: empty, at a terminal status
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);
+  }
   await new Promise((r) => setTimeout(r, 0));
-  const settledBefore = !subagentShouldFetch(
-    subagentCache.get("a1"), subagentFailCount.get("a1") || 0, "ok");
-  clickSummary(el.el);                  // close
-  runPythonQueue.push({turns: [{role: "user", text: "recovered"}]});
-  clickSummary(el.el);                  // re-open: reexpand:true drops the cache
-  await new Promise((r) => setTimeout(r, 0));
-  console.log(JSON.stringify({settledBefore, tree: dump(el.el)}));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
 }
 main();
 """ % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
-       ), tmp_path)
-    assert got["settledBefore"] is True, "an empty response must settle (kind: ok, no more fetching) until reexpand"
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    assert got["calls"] == 5
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and errors[0]["text"]
+    # No "ok" anywhere — an empty, never-confirmed transcript must never
+    # render as if it were a real (if uneventful) one.
+    assert _by_class(got["tree"], "sub-turn-user") == []
+    assert _by_class(got["tree"], "sub-turn-assistant") == []
+
+
+def test_reexpanding_after_giving_up_on_an_empty_response_gets_a_fresh_fetch(
+        probe_src, tmp_path):
+    """The recovery path for the SAME scenario: once given up on, re-opening
+    (reexpand) must still be able to try again and succeed."""
+    got = _run(probe_src, """
+async function main() {
+  for (let i = 0; i < 5; i++) runPythonQueue.push({turns: []});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  clickSummary(el.el);                  // close
+  runPythonQueue.push({turns: [{role: "user", text: "recovered"}]});
+  clickSummary(el.el);                  // re-open: reexpand clears the fail count
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
     users = _by_class(got["tree"], "sub-turn-user")
     assert len(users) == 1 and users[0]["text"] == "recovered"
+
+
+def test_reexpanding_a_good_non_empty_cache_does_not_blank_or_refetch_it(
+        probe_src, tmp_path):
+    """Code review round 5, finding #2: `reexpand` fires on EVERY open, not
+    only after a failure, and used to drop the cache unconditionally —
+    blanking a perfectly good, possibly multi-megabyte transcript and
+    re-fetching it on every single re-open. A cache with real turns in it
+    must be left exactly alone."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "the real transcript"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: good, non-empty, settled
+  await new Promise((r) => setTimeout(r, 0));
+  clickSummary(el.el);                  // close
+  clickSummary(el.el);                  // re-open: must NOT refetch or blank
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")), tmp_path)
+    assert got["calls"] == 1, "a good settled cache must not be re-fetched on reopen"
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "the real transcript"
