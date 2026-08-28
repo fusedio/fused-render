@@ -527,6 +527,13 @@ def _handle_pair(scope) -> Response:
     query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
     token = (query.get("t") or [""])[0]
     if not token or not _spend_pair_token(token):
+        # The same URL arriving again from the same phone is the scanner's
+        # "Open in Safari" button (or a reload of the popover): the token is
+        # spent, but the window it opened is still this phone's — pair it and
+        # send it to the grid rather than saying the code expired.
+        handoff = _pair_pending(scope, target="/")
+        if handoff is not None:
+            return handoff
         return _pair_page(
             "That code has expired",
             "Pairing codes last five minutes and work once. Open Preferences → Share on "
@@ -540,18 +547,19 @@ def _handle_pair(scope) -> Response:
     return _with_cookie(Response(_PAIRED_PAGE % host, media_type="text/html"), secret)
 
 
-def _pair_pending(scope) -> Response | None:
+def _pair_pending(scope, target: str | None = None) -> Response | None:
     """An unpaired visit from a phone that just scanned: pair it and replay the
-    request with the cookie set (a redirect to the same URL). The scanning
-    browser's record is retired — the user moved on from it."""
+    request with the cookie set (a redirect to `target`, default the same URL).
+    The scanning browser's record is retired — the user moved on from it."""
     scanned_id = _take_pending(_client_ip(scope))
     if scanned_id is None:
         return None
     revoke_device(scanned_id)
     secret, _record = _pair_device(_header(scope, b"user-agent"))
-    target = scope["path"]
-    if scope.get("query_string"):
-        target += "?" + scope["query_string"].decode("utf-8", "replace")
+    if target is None:
+        target = scope["path"]
+        if scope.get("query_string"):
+            target += "?" + scope["query_string"].decode("utf-8", "replace")
     return _with_cookie(RedirectResponse(target, status_code=302), secret)
 
 
