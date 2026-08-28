@@ -59,7 +59,7 @@ import shutil
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 
 from fused_render import app_listing, schedule
 from fused_render.server.common import _error, _require_fused
@@ -372,6 +372,70 @@ def api_app_entry(path: str):
         return {"entry": app_listing.app_entry(path)}
     except OSError:
         return {"entry": None}
+
+
+# The authored thumbnail's cap and signature — the same two the .fused
+# export applies to a capture (appfile.py), because it is the same picture:
+# a card still, ~1280x800, and canvas.toBlob("image/png") is the only thing
+# that produces it.
+_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+@router.post("/api/apps/preview")
+async def api_app_set_preview(
+    path: str = Form(default=""),
+    preview: UploadFile | None = File(default=None),
+    x_fused: str | None = Header(default=None),
+):
+    """Write (or replace) the app folder's authored still, ``preview.png``.
+
+    The explorer's path-bar menu offers "Set Current View as Preview" on an
+    app's entry page (Akshil, 2026-08-27): the page captures the pixels the
+    preview frame is showing (appShot.captureAppPreview — the same tab capture
+    the .fused export bakes in) and posts them here. The file lands under the
+    ONE name `app_listing.app_preview_image` reads, so a card shows it on its
+    next listing with no new plumbing.
+
+    Only an APP folder takes one — `app_listing.app_entry(path)` must resolve —
+    because a preview.png in a folder that is not an app is a stray file
+    nothing will ever read. Written to a sibling temp file and `os.replace`d so
+    an interrupted write never leaves the zero-length file `app_preview_image`
+    would (rightly) treat as absent while a real one sat there a moment ago.
+    ``replaced`` tells the caller which of the two verbs it just did.
+    """
+    from fused_render.index.ignore import MountGuard
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    if MountGuard().blocks(path) or not os.path.isdir(path):
+        return _error("not a folder", status=404)
+    if app_listing.app_entry(path) is None:
+        return _error("not an app folder: no page carries the fused-app marker")
+    if preview is None:
+        return _error("preview.png is required")
+    raw = await preview.read(_PREVIEW_MAX_BYTES + 1)
+    if not raw or not raw.startswith(_PNG_MAGIC):
+        return _error("preview must be a PNG")
+    if len(raw) > _PREVIEW_MAX_BYTES:
+        return _error("preview is larger than 8 MiB")
+    target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
+    replaced = os.path.isfile(target)
+    tmp = os.path.join(path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+        os.replace(tmp, target)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"could not write preview.png: {exc.strerror or exc}", status=500)
+    return {"path": target, "replaced": replaced}
 
 
 @router.get("/api/apps/recents")

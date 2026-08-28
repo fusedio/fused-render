@@ -100,6 +100,7 @@ import {
   upcomingEditEntry,
   viewFromSearch,
   viewUrl,
+  mergeTaskChanges,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -7128,5 +7129,28 @@ describe("the file mark after a task's title", () => {
     const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
     const body = rest.slice(0, rest.indexOf("}"));
     expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
+  });
+});
+
+describe("mergeTaskChanges", () => {
+  const row = (key: string, last_active: number): Task =>
+    ({ key, last_active, status: "done", messages: [] }) as unknown as Task;
+
+  it("upserts by key, drops gone, and keeps last_active descending", () => {
+    const shown = [row("a", 30), row("b", 20), row("c", 10)];
+    const merged = mergeTaskChanges(shown, [row("c", 40), row("d", 25)], ["b"]);
+    expect(merged.map((t) => t.key)).toEqual(["c", "a", "d"]);
+    expect(merged.find((t) => t.key === "c")?.last_active).toBe(40);
+  });
+
+  it("is a no-op for an empty answer and does not mutate its input", () => {
+    const shown = [row("a", 2), row("b", 1)];
+    const merged = mergeTaskChanges(shown, [], []);
+    expect(merged.map((t) => t.key)).toEqual(["a", "b"]);
+    expect(merged).not.toBe(shown);
+  });
+
+  it("a key both upserted and gone is gone", () => {
+    expect(mergeTaskChanges([row("a", 1)], [row("a", 5)], ["a"])).toEqual([]);
   });
 });

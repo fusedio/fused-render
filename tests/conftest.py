@@ -371,6 +371,22 @@ def _no_schedule_loop_thread(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_tasks_watch_thread(monkeypatch):
+    """No test may start the Tasks change-watcher thread.
+
+    `tasks_watch.start()` runs from the app's STARTUP event like the schedule
+    loop above, and would likewise outlive the test: a daemon that stats the
+    DEVELOPER'S real ~/.claude/sessions every second and pushes their live
+    sessions into a registry the tasks router then consults — so a test's
+    transcript-only fixture could be told a session is `busy` by a claude the
+    developer happens to be running. Tests that are about the watcher call
+    `tasks_watch.tick()` themselves against a tmp dir."""
+    from fused_render import tasks_watch
+
+    monkeypatch.setattr(tasks_watch, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
     """No test may read or write the DEVELOPER's own ~/.claude.
 

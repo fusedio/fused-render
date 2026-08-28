@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, typ
 import { createPortal } from "react-dom";
 import {
   getAppEntry,
+  setAppPreview,
   getAppFileCloneTarget,
   cloneAppFile,
   rawUrl,
@@ -21,7 +22,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
-import { exportAppFile } from "@platform/lib/appShot";
+import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -44,7 +45,6 @@ import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
-import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
@@ -56,6 +56,11 @@ import {
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
+import {
+  pendingClaudeAskVersion,
+  subscribePendingClaudeAsk,
+  takePendingClaudeAsk,
+} from "@apps/explorer/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -152,46 +157,6 @@ function TopbarActions({ children }: { children: ReactNode }) {
 // renders the box: same arrangement as TopbarActions above, other way round.
 function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
-}
-
-// "Clone" in the preview header of a showcase app: copy the app (current
-// state, edits included) into the workspace (Fused/local/<slug>, community.py's
-// `install`) and navigate to the cloned copy — the same open convention the
-// /apps community grid uses. The showcase tree itself is fully editable; the
-// clone is how you keep a copy that catalog refreshes never touch.
-function CloneCommunityButton({ slug }: { slug: string }) {
-  const [busy, setBusy] = useState(false);
-  const doClone = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const r = await runCommunity<{ status?: string; message?: string; path?: string }>({
-        action: "install",
-        slug,
-      });
-      // `already-installed` also carries the path — an app cloned elsewhere
-      // still opens the user's copy rather than erroring.
-      if (!r.path) throw new Error(r.message || "clone failed");
-      touchCommunityApp(slug);
-      navigate(r.path, { isDir: true });
-    } catch (e) {
-      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
-      setBusy(false);
-    }
-    // Success navigates away and unmounts this button; no busy reset needed.
-  };
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={"Clone this app into Fused/local/" + slug + " and open your copy"}
-      onClick={doClone}
-      disabled={busy}
-    >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Cloning…" : "Clone"}
-    </button>
-  );
 }
 
 // "Clone" in the preview header of a `.fused` app file: copy the payload into
@@ -295,17 +260,15 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
       // preview frame IS the app rendering, so it is the crop source — no
       // navigation, no flash. exportAppFile itself skips capture when the
       // folder carries an authored preview.png; the probe below is only so a
-      // pointless share prompt isn't raised for a capture the server would
-      // discard anyway (stat failure reads as "no authored still" — worst
-      // case is that redundant prompt, never a lost export).
+      // pointless native shot (and, on a Mac that has not granted Screen
+      // Recording, its permission dialog) isn't taken for a capture the
+      // server would discard anyway (stat failure reads as "no authored
+      // still" — worst case is that redundant shot, never a lost export).
       //
-      // ONE cheap local probe, and it must stay that: appShot raises the share
-      // prompt on this click's transient user activation, which Chrome expires
-      // a few seconds out, so anything slow awaited here spends the activation
-      // and loses the prompt. `.is-shown` satisfies appShot's crop-source
-      // contract (pixels that ARE the app, not a box it may fill): the class
-      // rides `shown`, which the frame swap only sets once that frame paints —
-      // the same guarantee `data-fused-annotate-target` below relies on.
+      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
+      // the app, not a box it may fill): the class rides `shown`, which the
+      // frame swap only sets once that frame paints — the same guarantee
+      // `data-fused-annotate-target` below relies on.
       const authored = await statPath(dir + "/preview.png").then(
         (s) => !s.is_dir,
         () => false,
@@ -524,6 +487,88 @@ function usePreviewFileMenu(
     });
   };
 
+  // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
+  // (/api/apps/entry) exactly as ExportAppButton asks it — under the marker
+  // rule a filename says nothing. Only an entry gets "Set Current View as
+  // Preview": a preview.png beside a plain html file has no card to show it.
+  const [isAppEntry, setIsAppEntry] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setIsAppEntry(false);
+    if (stat.is_dir) return;
+    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+    getAppEntry(parent)
+      .then((r) => {
+        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no verb for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, parent, stat.is_dir]);
+
+  // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
+  // frame is showing and write it as the folder's preview.png. Same capture
+  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
+  // to the shown frame), so the same one-time share prompt.
+  //
+  // ORDER: the share prompt needs the click's own transient activation, which
+  // Chrome expires a few seconds out. The one thing awaited before it is a stat
+  // of preview.png (milliseconds) — and when that says a still already exists,
+  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
+  // overwriting), which is a fresh activation of its own. Nothing is written
+  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  const shootPreview = async (replacing: boolean) => {
+    const name = basename(parent);
+    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
+    // full-viewport reload of the entry when the frame can't be cropped; that
+    // is not the view the user is looking at, so here it is refused up front
+    // (and `stage: false` refuses it again inside) rather than saved under a
+    // "Preview saved" toast (Bugbot, 2026-08-27).
+    const frame = document.querySelector(".preview-frame.is-shown");
+    if (!cropRect(frame)) {
+      pushToast({
+        msg: "Preview not captured — the app frame has to be fully on screen",
+        tone: "error",
+      });
+      return;
+    }
+    const blob = await captureAppPreview(fsPath, frame, { stage: false });
+    if (!blob) {
+      pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
+      return;
+    }
+    try {
+      await setAppPreview(parent, blob);
+      pushToast({
+        msg: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
+        tone: "info",
+      });
+    } catch (e) {
+      pushToast({ msg: "Could not save preview: " + (e as Error).message, tone: "error" });
+    }
+  };
+  const doSetPreview = () => {
+    statPath(join(parent, "preview.png")).then(
+      (s) => {
+        if (s.is_dir) {
+          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
+          return;
+        }
+        setDialog({
+          kind: "confirm",
+          title: "Replace preview?",
+          message: `"${basename(parent)}" already has a preview.png. Replace it with what the app shows now?`,
+          confirmLabel: "Replace",
+          onConfirm: () => void shootPreview(true),
+        });
+      },
+      () => void shootPreview(false),
+    );
+  };
+
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
   // lib/bar-menus for what it leaves out and why). The splits are offered on the
   // same condition TemplatePreview uses for its own split affordances: a single
@@ -535,6 +580,7 @@ function usePreviewFileMenu(
       onCopyPath: doCopyPath,
       onReveal: doReveal,
       onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+      onSetPreview: isAppEntry ? doSetPreview : undefined,
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });
@@ -716,9 +762,6 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  // Showcase clone app: fully editable, no mode restrictions — the slug only
-  // decides whether the Clone button renders in the header.
-  const communitySlug = communityCacheSlug(fsPath);
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
@@ -1137,6 +1180,46 @@ function TemplatePreview({
     claudeSeedRef.current = null;
   }, [fsPath]);
 
+  // The other side of a "Fix with Claude" staged from OUTSIDE this surface
+  // entirely — a repo-updates row in the activity card (shell/
+  // RepoUpdatesDock.tsx), which stages `{path, prompt}`
+  // (lib/pending-claude-ask.ts) and navigates here rather than calling
+  // `window._fusedClaudeAsk` the way the git companion's OWN button does,
+  // because that export only exists once a surface for this exact path is
+  // already mounted — the whole reason this file's copy of the pull exists.
+  // Gated on `claudeAskRoute` (not merely mounted) for the same reason the
+  // installer above is: nothing may be handed to a surface whose Claude
+  // entry cannot actually show it yet. ALSO gated on `suppressForListing`,
+  // for the same reason the installer above stands down there: a directory
+  // is exactly the target "Fix with Claude" navigates to (the repo root),
+  // which mounts `_listing` mode — `claudeAskRoute` resolves to `"content"`
+  // there (no split), so without this gate this file's own pull would win
+  // the race against the child `<Listing>`'s independent pull and consume
+  // the staged ask itself, `void setMode("claude")`-ing over the folder
+  // listing wholesale instead of leaving it to whichever installer the
+  // Lockstep contract actually intends for a directory target.
+  // `askVersion` (finding 17b, code review 2026-08-27): the case
+  // `[fsPath, claudeAskRoute, suppressForListing]` alone misses is a SECOND
+  // stage for the SAME path while this surface never left it — the common
+  // one, since the user is usually already looking at the very repo whose
+  // card just failed. None of those three deps change, so without this the
+  // effect would never re-run and the prompt would sit unseen until it
+  // expires. `pending-claude-ask.ts`'s own header has the full reasoning;
+  // Listing.tsx's copy of this hook does the identical thing, independently
+  // (the "Lockstep" its own comment names) — this file's own subscription
+  // must not be merged into that one.
+  const askVersion = useSyncExternalStore(
+    subscribePendingClaudeAsk,
+    pendingClaudeAskVersion,
+    pendingClaudeAskVersion,
+  );
+  useEffect(() => {
+    if (suppressForListing) return;
+    if (!claudeAskRoute) return;
+    const prompt = takePendingClaudeAsk(fsPath);
+    if (prompt) claudeAskActionRef.current(prompt);
+  }, [fsPath, claudeAskRoute, suppressForListing, askVersion]);
+
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
   // `_side` that named a mode this file doesn't offer (a carried-over param, or
@@ -1544,9 +1627,6 @@ function TemplatePreview({
           pane shows (and the way back to Live) is stated in the git sidebar's
           own commit list — the dot, the `previewing` pill, and its banner's
           "Back to now". One surface owns the state it controls. */}
-      {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
-          never touch your copy. */}
-      {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
           app, or opens the copy that is already there (D397). Keyed off the
           extension, which is what routes this file to the fusedapp template in

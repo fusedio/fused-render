@@ -82,10 +82,11 @@ def _backend():
     backend can ever be live in a process, so this is a module lookup and not an
     interface class standing in front of a single implementation.
 
-    Beyond the four calls, a backend may add three optional hooks —
+    Beyond the four calls, a backend may add four optional hooks —
     `ext(mode, spec)` for the container it is about to write,
-    `refuse(mode, spec)` for what it cannot honour, and `failure(handle)` for a
-    recording it has already lost. Everything platform-specific, INCLUDING the
+    `refuse(mode, spec)` for what it cannot honour, `failure(handle)` for a
+    recording it has already lost, and `locate(rect, dpr)` for mapping a
+    browser-measured screen rect onto one of its displays (`shot_region`). Everything platform-specific, INCLUDING the
     prose of a refusal, belongs there: a sentence naming System Settings is
     wrong on two of the three platforms, and this module cannot be the place it
     is written.
@@ -751,6 +752,63 @@ def screenshot(body: dict) -> dict:
     result = _describe(out)
     result.update(shot)
     return result
+
+
+def shot_region(body: dict) -> bytes:
+    """One frame of a SCREEN REGION, as PNG bytes — no file left behind.
+
+    The export path's capture (SPEC AF-11): the shell hands over the rect of an
+    element as the BROWSER measures it — `window.screenX` + chrome + the
+    element's box, in CSS pixels of the screen (DIPs) — plus the page's
+    `devicePixelRatio`, and gets back the pixels under it. It is not on the
+    `fused.capture` bridge because it answers a different question from
+    `screenshot()`: not "write a still to a path" but "what does this box look
+    like right now", where a file in `<home>/recordings` for every export
+    would be litter the user never asked for. So the backend still writes a
+    file — that is the one door it has — but into a temp path that is read and
+    unlinked before this returns.
+
+    Which display, and in which units, is the backend's knowledge (`locate`):
+    macOS measures displays in points, which ARE DIPs, so `dpr` is unused there;
+    Windows and Linux measure in physical pixels, so the rect is scaled. Each
+    backend also REFUSES a rect that is not fully inside one display rather
+    than clipping it — an export button on a half-off-screen window would
+    otherwise bake a sliver into the artifact as its permanent thumbnail, and
+    a valid PNG is something no later check can catch. Refusal is a
+    `CaptureError`, which the caller turns into "export without a preview".
+    """
+    import tempfile
+
+    rect = _rect(body.get("rect"))
+    if rect is None:
+        raise CaptureError("'rect' is required")
+    try:
+        dpr = float(body.get("dpr") or 1.0)
+    except (TypeError, ValueError):
+        raise CaptureError("'dpr' must be a number") from None
+    if not (0.25 <= dpr <= 8):
+        raise CaptureError(f"'dpr' is out of range: {dpr}")
+    backend = _backend()
+    locate = getattr(backend, "locate", None)
+    if locate is not None:
+        display, local = locate(rect, dpr)
+    else:
+        display, local = None, rect
+    fd, out = tempfile.mkstemp(prefix="fused-shot-", suffix=".png")
+    os.close(fd)
+    try:
+        spec = {"path": out, "rect": list(local)}
+        # Only when a backend named one: Linux refuses the key outright.
+        if display is not None:
+            spec["display"] = display
+        screenshot(spec)
+        with open(out, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
 
 
 # ------------------------------------------------------------------ teardown

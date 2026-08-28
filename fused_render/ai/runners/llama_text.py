@@ -1036,6 +1036,14 @@ def generate(body, write):
 
 
 def main():
-    """Serve, forever. The entry point `llamacpp_text/worker.py` calls."""
+    """Serve, forever. The entry point `llamacpp_text/worker.py` calls.
+
+    No `release=` (see `worker_base._release`'s docstring): llama.cpp's KV
+    context is a fixed-size allocation made once at `load()` time, sized for
+    the model's context window, and the weights themselves are mmap'd rather
+    than copied into a growable pool. There is no per-execution or per-idle
+    allocator cache here for a timer to hand back — the memory an idle worker
+    holds after this is exactly the memory it would need for its next call.
+    """
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=True, memory=memory)

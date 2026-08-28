@@ -24,8 +24,10 @@ and make the assertions depend on the developer's disk.
 """
 import ast
 import json
+import multiprocessing
 import os
 import subprocess
+import threading
 from unittest import mock
 
 import pytest
@@ -1390,6 +1392,277 @@ def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
     (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
     assert lib.commit("Enable — plugin ✔")
     assert lib.log()[0]["message"] == "Enable — plugin ✔"
+
+
+def _config_lock_commit_worker(claude_dir: str) -> None:
+    """Module-level (picklable, and run under a `spawn` context explicitly --
+    see the test) so it can run in its OWN process for
+    test_config_lock_held_commit_does_not_deadlock -- see that test for why a
+    thread is not enough.
+
+    Sets `lib.CLAUDE_DIR`/`SETTINGS_PATH`/`_LOCK_PATH` by ATTRIBUTE, the same
+    mechanism the `claude_dir` fixture uses (`monkeypatch.setattr`) -- NOT by
+    setting the `CLAUDE_DIR` environment variable and importing `lib`
+    afterward, which was this function's first version and was a no-op: under
+    `spawn`, unpickling this function's __module__ already imports the WHOLE
+    test module to find it, and that module imports `lib` at its own top
+    level -- so `lib.CLAUDE_DIR` is resolved from whatever environment this
+    worker process inherited BEFORE a single line of this function body runs.
+    On a machine or CI job that exports `CLAUDE_DIR`, that version would have
+    `git init`ed the REAL directory, overwritten its real settings.json, and
+    committed it -- this process gets none of the `claude_dir` fixture's
+    `monkeypatch` state, only what it sets up for itself here, and it has to
+    actually land where this docstring says.
+    """
+    from fused_render.claude_config import lib as _lib
+
+    _lib.CLAUDE_DIR = claude_dir
+    _lib.SETTINGS_PATH = os.path.join(claude_dir, "settings.json")
+    _lib._LOCK_PATH = os.path.join(claude_dir, ".config-ui.lock")
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
+    os.environ["GIT_AUTHOR_NAME"] = "Fixture Author"
+    os.environ["GIT_AUTHOR_EMAIL"] = "fixture@example.com"
+    os.environ["GIT_COMMITTER_NAME"] = "Fixture Author"
+    os.environ["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
+
+    # Prove it landed BEFORE anything destructive runs -- this is exactly
+    # the assertion whose absence let the environment-variable version of
+    # this function silently target the developer's real ~/.claude.
+    assert _lib.CLAUDE_DIR == claude_dir, (_lib.CLAUDE_DIR, claude_dir)
+
+    with _lib.config_lock():
+        _lib.write_json(_lib.SETTINGS_PATH, {"model": "opus"})
+        _lib.commit("test edit")
+
+
+# -- ensure_repo(): the first-run `git init` TOCTOU race ---------------------
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_survives_concurrent_first_run(claude_dir):
+    """The reported bug: on first paint, PreferencesSection's preferences.get()
+    and useGitStatus's gitOps.status() fire two POSTs at once, both dispatched
+    through run_in_threadpool -- genuine OS-thread concurrency in one process
+    -- and both reach lib.ensure_repo() unguarded by config_lock(). The old
+    body was a bare check-then-act (`os.path.isdir(.git)` then `git init`):
+    the loser's `git init` dies mid-template-copy with "File exists" (git's
+    copy_file() opens each hook with O_CREAT|O_EXCL after an lstat that skips
+    existing entries -- EEXIST can only happen in that window).
+
+    A test that calls ensure_repo() twice sequentially proves nothing: the
+    second call short-circuits on os.path.isdir before the race window ever
+    opens. This drives real concurrency instead -- several threads arrive at
+    a FRESH CLAUDE_DIR together via a barrier, so they race the check for
+    real."""
+    n = 8
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def worker():
+        barrier.wait()
+        try:
+            lib.ensure_repo()
+        except Exception as e:  # pragma: no cover - failure path
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == [], errors
+    assert os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    # Not just "no exception" -- the SEED COMMIT is its own TOCTOU (several
+    # threads read an unborn HEAD before any of them commits, then race `git
+    # add -A` + `git commit`), and it kept failing here one step later than
+    # the `git init` race even after that race was fixed. A test that only
+    # checks `.git` isdir would still pass with the seed commit moved back
+    # outside the lock -- this is what actually catches that regression.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the_dir(
+        claude_dir):
+    """`.git` existing is NOT proof `git init` succeeded -- the original bug
+    report proves it: the user's error was `cannot copy ... to
+    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    i.e. `.git/hooks/` already existed while init was genuinely still
+    failing. git creates the `.git` directory FIRST, then writes
+    `HEAD`/`config`, then copies hook templates -- so a real failure partway
+    through (disk full, permissions) leaves `.git` behind too, same as a won
+    race would.
+
+    No concurrency needed to prove this: forces `git init` itself to create
+    an empty `.git` (mimicking git's own first step) and then fail, and
+    confirms ensure_repo() still raises rather than treating the directory's
+    mere existence as "someone else already won"."""
+    real_run = subprocess.run
+    git_dir = os.path.join(str(claude_dir), ".git")
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            os.makedirs(git_dir, exist_ok=True)
+            return subprocess.CompletedProcess(
+                argv, 128,
+                "", "fatal: cannot copy '...pre-applypatch.sample': File exists")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed into a half-built repo: git itself does not
+    # recognise this directory (no HEAD/config/objects/refs were ever
+    # written), so a later call will retry rather than proceeding as if
+    # init had actually finished. `--resolve-git-dir`, not `--git-dir`: see
+    # test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure
+    # for why `--git-dir` is the wrong check here too.
+    assert lib.git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure(
+        claude_dir):
+    """Second review round: the fix above used `git rev-parse --git-dir` to
+    detect a lost race, and that command performs git's normal repository
+    DISCOVERY -- it walks UP the filesystem for a `.git` in any ancestor.
+    Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override) inside a
+    versioned dotfiles or home repo. From a CLAUDE_DIR with no valid `.git`
+    of its own but a repo somewhere ABOVE it, `--git-dir` exits 0 and prints
+    the ANCESTOR's git dir -- so a genuinely failed `git init` there (EPERM,
+    ENOSPC, a read-only volume) that leaves no local `.git` would have been
+    misread as "someone else already won", and every git() call after that
+    -- identity, the seed `git add -A` + `git commit`, and every later
+    commit()/status()/log()/diff() -- would run against the ANCESTOR repo
+    instead: rewriting its config and committing the user's whole dotfiles
+    tree.
+
+    Builds a REAL ancestor repo directly above the fixture's CLAUDE_DIR (the
+    exact "home/dotfiles repo containing ~/.claude" shape), forces `git
+    init` to fail without creating anything at all, and asserts both that
+    ensure_repo() raises AND that the ancestor repo is completely untouched
+    -- same HEAD sha, same config, no new commit. This test fails against
+    the `--git-dir` version of the fix (it exits 0 and lets ensure_repo()
+    proceed to write into the ancestor)."""
+    ancestor = claude_dir.parent
+
+    def ancestor_git(*args):
+        res = subprocess.run(
+            [lib._git_bin(), "-C", str(ancestor), *args],
+            capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    ancestor_git("init", "-q")
+    ancestor_git("config", "user.email", "fixture@example.com")
+    ancestor_git("config", "user.name", "Fixture Author")
+    (ancestor / "existing-dotfile").write_text("keep me\n")
+    ancestor_git("add", "-A")
+    ancestor_git("commit", "-q", "-m", "seed")
+    before_head = ancestor_git("rev-parse", "HEAD").strip()
+    before_config = (ancestor / ".git" / "config").read_text()
+
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            # A genuine failure that creates NOTHING under CLAUDE_DIR -- e.g.
+            # EPERM before git even gets to mkdir `.git`.
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: permission denied")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    assert not os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    assert ancestor_git("rev-parse", "HEAD").strip() == before_head
+    assert (ancestor / ".git" / "config").read_text() == before_config
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_config_lock_held_commit_does_not_deadlock(claude_dir):
+    """The trap: config_lock() acquires _THREAD_LOCK, a plain (non-reentrant)
+    threading.Lock, then commit() calls ensure_repo(). If ensure_repo() ever
+    routed its init check back through config_lock(), preferences.py's
+    action=patch (which holds config_lock() before calling commit()) would
+    self-deadlock on the very first edit.
+
+    Runs in a SEPARATE PROCESS, not a daemon thread. A thread-based version
+    that only waited on a timeout would not actually protect the suite: on a
+    regression the worker blocks while HOLDING `_THREAD_LOCK`, which is
+    module-level and never released, so every later test in the same pytest
+    worker that touches `config_lock()` would hang too -- the suite would
+    still die, just in some unrelated victim test with no pointer back here.
+    A subprocess takes the poisoned lock down with it when this test kills
+    it, so a regression fails HERE, cleanly, instead of hanging the run.
+
+    Uses the `spawn` context EXPLICITLY, not the platform default (`fork` on
+    Linux <=3.13). A bare fork() out of a pytest worker that may already have
+    PROJ/duckdb/rasterio resident from an earlier module in the same xdist
+    worker is exactly the rc=-11 hazard this repo guards against everywhere
+    else (SUBPROCESS_KWARGS, tests/test_git_posix_spawn.py) -- here it would
+    surface as a load-order-dependent `proc.exitcode` with no connection to
+    the deadlock under test. `spawn` also makes `_config_lock_commit_worker`'s
+    own "picklable" claim actually true on every platform, not just the ones
+    that happen to default to it."""
+    proc = multiprocessing.get_context("spawn").Process(
+        target=_config_lock_commit_worker, args=(str(claude_dir),))
+    proc.start()
+    proc.join(timeout=15)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+        pytest.fail("config_lock() -> commit() -> ensure_repo() deadlocked "
+                    "(worker process did not finish within 15s)")
+    assert proc.exitcode == 0
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_seed_commit_failure(claude_dir):
+    """The seed commit tolerates a LOST RACE (another thread already got HEAD
+    born) but must not tolerate a real failure -- a bad local identity, a
+    `commit-msg`/`pre-commit` hook someone dropped into
+    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
+    crashed process. An earlier version of this fix used `check=False` on the
+    seed `git commit`, which swallowed BOTH cases identically: the config
+    page would show no history, forever, with no exception and nothing to
+    say why.
+
+    Forces the `git commit` call specifically to fail (everything else --
+    init, identity, add, status -- runs for real), and confirms ensure_repo()
+    still raises rather than returning normally with the repo permanently
+    HEAD-less.
+
+    Uses mock.patch.object as its own context manager rather than the
+    `monkeypatch` fixture: `claude_dir` already uses `monkeypatch` to redirect
+    CLAUDE_DIR/HOME/GIT_CONFIG_* away from the developer's real ~/.claude, and
+    `monkeypatch` is function-scoped -- calling `.undo()` on the SAME instance
+    here would undo those redirects too, and the read below would land on the
+    developer's real repo instead of the scratch one (caught in review of this
+    test, not in CI: the read is harmless, but the mechanism is the kind of
+    mistake that silently stops being harmless).
+    """
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "commit" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "commit-msg hook rejected the commit")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed: HEAD is still unborn, so a later call will retry
+    # rather than treating this dir as done forever.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() == ""
 
 
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(

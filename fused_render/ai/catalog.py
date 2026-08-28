@@ -1646,4 +1646,9 @@ def _video_traits_payload(runner_code: str) -> dict:
         "defaultWidth": traits.default_width,
         "defaultHeight": traits.default_height,
         "defaultSteps": traits.default_steps,
+        # So the Playground cannot offer an image-reference control the
+        # resolved engine will not honour (SPEC AI-15) — the same "the
+        # client's slider cannot show a value the render won't use" rule
+        # `framesBase`/`framesStep` already serve for the frame grid.
+        "supportsImage": traits.supports_image,
     }

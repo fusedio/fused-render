@@ -154,23 +154,35 @@
  *     spoken in the audio, so there is nothing to align them to.
  *     There is no per-word confidence, deliberately — it is a number only some
  *     engines have, and a page must not come to depend on which one ran.
- *   fused.ai.video({prompt, model, width, height, frames, steps, seed,
+ *   fused.ai.video({prompt, model, width, height, frames, steps, seed, image,
  *                   onProgress}) -> Promise<{path, url, model, prompt, width,
- *                                            height, frames, steps, seed}>
- *     Text to video, with audio, locally (SPEC §40) — MiniMax H3, Apple
+ *                                            height, frames, steps, seed,
+ *                                            image}>
+ *     Text to video, with audio, locally (SPEC §40) — LTX-2.3, Apple
  *     Silicon only (no fallback on other platforms: the first capability
  *     with no "everywhere" runner). Same shape as fused.ai.image minus
- *     guidance (H3 is CFG-distilled and takes no such parameter) and
+ *     guidance (the engine is CFG-distilled and takes no such parameter) and
  *     previewUrl (no live preview in this build), plus frames — snapped
- *     server-side to h3's own valid grid, so the resolved object may not
- *     echo the number you asked for. Minutes to hours long
+ *     server-side to the engine's own valid grid, so the resolved object may
+ *     not echo the number you asked for. Minutes to hours long
  *     (VIDEO_TIMEOUT_S is 2h): onProgress fires per denoising step with the
  *     download-manager record, and that row's ✕ really stops the render —
  *     a real process kill, not merely an abandoned request. The seed comes
  *     back whether or not one was passed. Rejects with .type "cancelled" |
- *     "ai_error" | "unavailable" (no Apple Silicon, or the h3 binary is not
- *     staged — reason in the message, checked BEFORE any Apple-Silicon-only
- *     capability could otherwise look merely broken).
+ *     "ai_error" | "unavailable" (no Apple Silicon, or the engine's weights
+ *     are not staged — reason in the message, checked BEFORE any
+ *     Apple-Silicon-only capability could otherwise look merely broken).
+ *     `image`: one reference image to condition on — a path on THIS
+ *     machine, resolved beside this page when relative (like
+ *     readFile/rawUrl). Conditions the render at frame 0 with strength 1.0;
+ *     there is no per-image frame index or strength to set, and no list of
+ *     several reference images — the same single-image scope
+ *     fused.ai.image's own `image` option uses for an edit (SPEC AI-9f).
+ *     Also DERIVES the default width/height from the reference's own
+ *     aspect ratio when you do not pass one, the way fused.ai.image derives
+ *     an edit's default from its base image — pass width/height explicitly
+ *     to override either one. Rejects with .type "bad_request" if `image`
+ *     is missing, not a regular file, or anything but a single string.
  *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
@@ -3422,15 +3434,16 @@
 
   // fused.ai.video({prompt, ...}) -> Promise<{path, url, seed, ...}>
   //
-  // `aiImage`'s twin, minus `guidance` (H3 is CFG-distilled) and previewUrl
-  // (no live preview in this build), plus `frames`. Everything else about the
-  // waiting — onProgress per denoising step, the row's ✕ really stopping the
-  // render, the seed always coming back, resolving off the FILE when the row
-  // aged out from under a backgrounded tab — is the identical mechanism, so it
-  // is not restated here; see `aiImage`'s own comment for the reasoning.
+  // `aiImage`'s twin, minus `guidance` (the engine is CFG-distilled) and
+  // previewUrl (no live preview in this build), plus `frames`. Everything else
+  // about the waiting — onProgress per denoising step, the row's ✕ really
+  // stopping the render, the seed always coming back, resolving off the FILE
+  // when the row aged out from under a backgrounded tab — is the identical
+  // mechanism, so it is not restated here; see `aiImage`'s own comment for the
+  // reasoning.
   function aiVideo(opts) {
     opts = opts || {};
-    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed"];
+    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed", "image"];
     const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
     if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
@@ -3443,6 +3456,12 @@
     for (const key of videoKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
+    // `image`, when given, is page-relative exactly as `aiImage`'s own
+    // `image` is (RH-1): the page's own `?path=` becomes `body.base`. Sent
+    // unconditionally, same as there — a call with no `image` sends an
+    // unused `base` the server simply never reads.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/video", body).then((started) => {
       const watcher = watchJob(started.jobId);
       const done = () => ({ ...started, url: rawUrl(started.path) });

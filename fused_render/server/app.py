@@ -57,6 +57,7 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_show import router as git_show_router
+from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
 from fused_render.server.routers.engines import router as engines_router
@@ -405,6 +406,17 @@ def create_app(start_dir: str) -> FastAPI:
 
         schedule.start()
 
+    # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
+    # Claude Code's live-session registry, prompt history and live transcripts.
+    # A startup event for the same reason as `_startup_schedule`: it is a
+    # thread for the life of the process that reads the user's real ~/.claude,
+    # and tests build apps without lifespan.
+    @app.on_event("startup")
+    async def _startup_tasks_watch():
+        from fused_render import tasks_watch
+
+        tasks_watch.start()
+
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
@@ -639,6 +651,13 @@ def create_app(start_dir: str) -> FastAPI:
     # here while a frame carries `_rev`. Read-only, no guard; it refuses a
     # mount-backed path outright, like every other git call in the app.
     app.include_router(git_show_router)
+    # /api/git-upstream (routers/git_upstream.py): repos with a known
+    # upstream update, for the activity card's repo-update rows. GET is
+    # unguarded (the check that populates it runs off GET /render, D301,
+    # throttled per repo root); POST (the card's Update/Switch buttons) is
+    # guarded by X-Fused (D3) and only accepts a `root` the GET side has
+    # already recorded — never an arbitrary client-supplied path.
+    app.include_router(git_upstream_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
     # "AI Models" page (routers/ai_models.py). The reads are unguarded;
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused

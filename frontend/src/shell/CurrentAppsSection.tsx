@@ -234,17 +234,15 @@ function CurrentAppRow({
     >
       <span className="bookmark-glyph current-app-glyph" aria-hidden="true">
         {app.iconUrl ? (
-          // The app's own icon.svg in the generic mark's slot, as a CSS MASK
-          // over currentColor rather than an <img>: authors draw in black,
-          // and a black glyph on the dark theme vanished (owner, 2026-08-27).
-          // Masked, the shape takes the row's colour — muted, accent when
-          // active — exactly like the ▣ it replaces.
-          <span
+          // The app's own icon.svg in the generic mark's slot, drawn as is —
+          // the author's colours, no mask or tint (owner, 2026-08-27). Not
+          // draggable: an <img> drags natively, and the glyph is the natural
+          // handle for the row reorder (same as the name's draggable={false}).
+          <img
             className="current-app-icon"
-            style={{
-              maskImage: `url("${app.iconUrl}")`,
-              WebkitMaskImage: `url("${app.iconUrl}")`,
-            }}
+            src={app.iconUrl}
+            alt=""
+            draggable={false}
           />
         ) : (
           "▣"

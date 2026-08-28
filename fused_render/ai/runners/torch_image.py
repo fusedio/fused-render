@@ -266,6 +266,56 @@ def memory():
     return total or None
 
 
+def release():
+    """Hand the torch caching allocator's pool back to the OS — the non-MLX
+    analogue of `mlx_text.worker.release` and friends, one edit here covering
+    all three folders this file serves (CPU, CUDA, ROCm) per the module
+    docstring. `worker_base.serve(release=...)` fires this `worker_base.
+    _RELEASE_IDLE_S` seconds after this worker's LAST render if nothing new
+    started in the meantime — see `worker_base._release`'s docstring for the
+    measured numbers and why a timer rather than an unconditional per-call
+    clear.
+
+    **`torch.mps` is not a presence check.** An earlier version of this
+    function gated on `getattr(torch, "mps", None)` / `hasattr(mps,
+    "empty_cache")` — but `torch/__init__.py` imports `torch.mps`
+    unconditionally on every platform, and `empty_cache` is a plain Python
+    function that always exists on it; both those guards always pass. On a
+    CPU/CUDA/ROCm build the call still reaches `torch._C._mps_emptyCache()`
+    -> `MPSHooksInterface::emptyCache()`, which is `TORCH_CHECK(false,
+    "Cannot execute emptyCache() without MPS backend.")` — a `RuntimeError`,
+    raised BEFORE the CUDA branch below ever ran, so the one build that
+    actually has a caching allocator worth reclaiming (`diffusers_image_cuda`
+    /`_rocm`) got nothing at all. The correct presence check is the one
+    `_place()` above already uses: `torch.backends.mps.is_available()`.
+
+    Each backend's call is also its OWN `try/except`, independent of the
+    other's — the same shape `memory()` above uses for its two probes —
+    so a raise from one (an API this app's floor of torch does not yet have,
+    say) can never take the other one down with it the way the bug above did.
+    `RuntimeError`/`OSError` is the pair `memory()` already catches for the
+    same backends; anything else is a real bug and is left to surface via
+    `worker_base._fire_release`'s own swallow-and-log, not hidden twice here.
+
+    Deliberately does NOT call `torch.cuda.reset_peak_memory_stats` or touch
+    anything upstream of the denoising loop — see the module boundary this
+    whole feature respects: reclaiming what a finished render left behind,
+    never changing what the next render is allowed to cost.
+    """
+    import torch
+
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        try:
+            torch.mps.empty_cache()
+        except (RuntimeError, OSError):
+            pass
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+        except (RuntimeError, OSError):
+            pass
+
+
 def _sigma_after(pipeline, step):
     """The noise level the scheduler has ARRIVED at, after step index `step`.
 
@@ -420,4 +470,4 @@ def main():
     body is a path insert and a call to this.
     """
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory)
+                      streaming=False, memory=memory, release=release)

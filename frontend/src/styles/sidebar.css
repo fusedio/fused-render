@@ -1187,20 +1187,13 @@ a.bookmark-name::after {
   justify-content: center;
 }
 
-/* The app's own icon.svg, filling the 14px glyph slot as a mask over
-   currentColor: the shape is the author's, the colour is the row's (muted,
-   accent when active), so a black-drawn svg reads on the dark theme. */
+/* The app's own icon.svg, filling the 14px glyph slot as is — the author's
+   shape AND colours, untouched (owner, 2026-08-27). */
 .current-app-icon {
   display: block;
   width: 14px;
   height: 14px;
-  background: currentColor;
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  mask-position: center;
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
-  -webkit-mask-position: center;
+  object-fit: contain;
 }
 
 /* The running dot sits after the name, in flow: the name gives up its

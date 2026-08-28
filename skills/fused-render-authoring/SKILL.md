@@ -1,6 +1,6 @@
 ---
 name: fused-render-authoring
-description: Author .html views and .py data files for fused-render — the fused.runPython() bridge, URL-synced params, file IO, preview mode. Use when creating, editing or debugging a view, a data file or a preview template; when a view renders blank or shows a traceback overlay; or on any mention of fused.runPython/params/readFile/writeFile. Routes to the neighbouring fused-render-* skills for AI, capture, jobs and theming.
+description: Author .html views and .py data files for fused-render — the fused.runPython() bridge, URL-synced params, file IO, preview mode. Use when creating, editing or debugging a view, a data file or a preview template; when a view renders blank or shows a traceback overlay; or on any mention of fused.runPython/params/readFile/writeFile. Routes to the neighbouring fused-render-* skills for AI, capture, jobs, theming and the app icon.
 ---
 
 # Authoring fused-render views
@@ -34,11 +34,11 @@ fused-render is a local file explorer that renders `.html` files live in the bro
 <meta name="fused-app" />
 ```
 
-**Optional app icon: `icon.svg`.** Drop an `icon.svg` (that exact lowercase name) next to the entry page and the shell picks it up with no registration: it becomes the app's glyph in the sidebar's Projects list and the browser-tab favicon on the app's page (`/apps/<folder>`) and on any of its files opened in the explorer. Skip it and the generic mark is used. Keep it a single flat shape, legible at 14–16 px, no text. Both places use it as a **mask** — only the shape's alpha matters; the sidebar colours it from the theme, the tab icon paints it yellow on the black rounded square of the fused mark — so draw solid shapes on a transparent background (any fill colour works; a filled background rectangle would render as a solid square).
+**Optional app icon: `icon.svg`.** An `icon.svg` next to the entry page becomes the app's sidebar glyph and tab favicon, rendered as is. Designing one (own background, both themes, 14–16 px legibility) → **`fused-render-app-icon`**.
 
 Three primitives — `runPython`, `params`, and the file IO helpers — are the core API; the table below has the rest. Everything else is ordinary HTML/CSS/JS: no framework, no build step, ES2020 fine.
 
-Four neighbouring skills own the bigger surfaces, and this one keeps only enough to know when you need them: **`fused-render-ai`** (`fused.ai` and every model call), **`fused-render-capture`** (native screen/audio/screenshot), **`fused-render-jobs`** (work longer than one call, and the download manager), **`fused-render-theming`** (light/dark).
+Five neighbouring skills own the bigger surfaces, and this one keeps only enough to know when you need them: **`fused-render-ai`** (`fused.ai` and every model call), **`fused-render-capture`** (native screen/audio/screenshot), **`fused-render-jobs`** (work longer than one call, and the download manager), **`fused-render-theming`** (light/dark), **`fused-render-app-icon`** (the app's `icon.svg`).
 
 ## The Python side: `main()` contract
 

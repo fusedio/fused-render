@@ -413,6 +413,31 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim: `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST execution
+    if nothing new started by then, never per-call (see `worker_base.
+    _release`'s docstring for why, and the measured numbers this whole
+    feature exists for).
+
+    Doubly relevant here: `DistilledPipeline(low_memory=True)` already frees
+    the transformer and text encoder BETWEEN STAGES of one render (see
+    `peak_memory`'s docstring), which is a real memory saving DURING a
+    render — but it is orthogonal to this. Freeing a stage still leaves its
+    buffers in MLX's own pool, not back with the OS, so a finished render can
+    still be sitting on the same "peak held, nothing active" pool `mflux_
+    image` was measured with. `getattr` because a real but older mlx wheel,
+    or this repo's stubbed `mlx.core` in tests, may not have `clear_cache` at
+    all — absence is a no-op.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -528,6 +553,13 @@ def generate(body):
     seed = int(body.get("seed") or 0)
     out = str(body.get("out") or "")
     job = body.get("job") or None
+    # A reference image, for I2V conditioning at frame 0 (strength 1.0,
+    # single image — the app's own scope decision, not an engine limit).
+    # `None` when the request is a plain text-to-video call, so the
+    # `generate_and_save` call below omits the kwarg entirely rather than
+    # passing an explicit `image=None` — see `generate_and_save`'s own
+    # `image: str | None = None` signature (`ti2vid_two_stages.py:603`).
+    image = body.get("image") or None
     if not out:
         raise ValueError("'out' must be the path to write the video to")
 
@@ -543,10 +575,14 @@ def generate(body):
     original_tqdm = samplers.tqdm
     samplers.tqdm = _StepTicker(job)
     try:
+        # Stage 2 re-encodes the reference at full output resolution (see
+        # `distilled.py:328-334`) — the same image is conditioned on twice,
+        # once per stage, not just once at the start of stage 1.
+        extra = {"image": image} if image is not None else {}
         pipeline.generate_and_save(
             prompt=prompt, output_path=out, height=height, width=width,
             num_frames=frames, frame_rate=_FRAME_RATE, seed=seed,
-            stage1_steps=steps)
+            stage1_steps=steps, **extra)
     finally:
         # Restored unconditionally — on the cancel path too. This is
         # process-wide state on a third-party module, not this request's
@@ -555,7 +591,7 @@ def generate(body):
         # `_StepTicker` bound to a job that has already ended.
         samplers.tqdm = original_tqdm
 
-    return {
+    reply = {
         "path": out,
         "seconds": round(time.time() - started, 2),
         "seed": seed,
@@ -564,8 +600,15 @@ def generate(body):
         "frames": frames,
         "steps": steps,
     }
+    if image is not None:
+        # Echoed for the same reason `/api/ai/image`'s reply echoes its own
+        # `image`: a caller that passed a relative path can see what it
+        # resolved to.
+        reply["image"] = image
+    return reply
 
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, peak_memory=peak_memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory,
+                      release=release)
