@@ -4520,70 +4520,42 @@ def test_a_pasted_picture_still_gets_a_chip_where_there_is_no_pane(html):
     assert "for (const shot of shotAttached) box.appendChild(shotChip(shot));" in solo
 
 
-# ------------------------------------------------------ the native screen shot
+# ------------------------------------------------------- what shotPane answers
 
 
-def test_every_capture_tries_the_native_screen_shot_first(html):
-    """The same mechanism the shell's "Set Current View as Preview" and export
-    capture use (appShot.ts: `POST /api/capture/shot-region`, the §45 still),
-    ahead of BOTH older paths — the tab share for a cross-origin pane and the
-    clone-and-rasterise for a readable one. No share prompt, any browser, and the
-    pixels are the live ones (WebGL included). Every "cannot" is a null and the
-    older paths answer, so nothing that worked before stops working."""
+def test_the_clone_is_the_first_answer_for_a_readable_pane(html):
+    """D620 put the capture back where D285-D287 had it. `shotPane` has exactly
+    two answers: the tab share for a cross-origin pane, and the clone-and-
+    rasterise for a readable one — and the clone is the one a same-origin pane
+    gets, with nothing tried ahead of it. The native screen shot D611 wired in
+    first (`POST /api/capture/shot-region`, `shotNativePane`) is GONE from this
+    template: the owner reverted it, so the endpoint's only caller here is the
+    shell's own `fused.capture.screenshot()`, not the chat.
+
+    The cost is deliberate and is what the test also pins by NOT asserting it
+    away: a WebGL or canvas pane rasterises blank, and the blank is reported
+    (shotNote / blanks) rather than shipped."""
+    assert "shotNativePane" not in html, "the native pane shot is out (D620)"
+    assert "shot-region" not in html, \
+        "no chat capture may call /api/capture/shot-region any more"
+    assert "shotNativeOff" not in html and "shotScreenRect" not in html \
+        and "shotFrameOffset" not in html and "shotOverlayEls" not in html, \
+        "and none of its helpers linger unused"
+    # the two answers, in order: cross-origin first (there is no document to
+    # clone), then the clone off the app's own live tree.
     pane = _between(html, "async function shotPane(deadline)", "const clone")
-    assert "const native = await shotNativePane(deadline);" in pane
-    assert pane.index("shotNativePane(") < pane.index("if (annXO) return shotXOPane();")
-    body = _between(html, "async function shotNativePane(deadline)", "\n}\n")
-    assert '"/api/capture/shot-region"' in body
-    assert '"X-Fused": "1"' in body
-    assert "dpr: window.devicePixelRatio || 1" in body
-    # the same answer shape as the two paths it precedes
-    assert "blanks: []" in body and "incomplete: false" in body and "imagesMissing: 0" in body
-    # never a throw: the fallbacks are the error handling
-    assert "return null;" in body and "} catch (err) {" in body
-    # a 409 means "no still on this platform" and is remembered; a 400 is not.
-    # The boot probe answers the same question up front, and that flag is what
-    # gates the getDisplayMedia pre-warm (test_claude_annotation_modes pins the
-    # gate): where the native shot exists there is no share prompt to pre-pay.
-    assert "if (res.status === 409) shotNativeOff = true;" in body
-    assert "src.screenshot.available === false) shotNativeOff = true;" in html
-    assert "if (!res.ok) {" in body and "native pane shot refused (" in body, "said, not swallowed"
-    # the pixels are drawn at the frame's CSS size — the space every crop rect
-    # and badge position downstream is already in
-    assert "drawImage(bitmap, 0, 0, box.width, box.height)" in body
-
-
-def test_the_native_shot_hides_our_overlay_and_restores_it(html):
-    """A screen shot sees what the user sees, and the user sees our pins, the
-    hover ring and the click flash over the pane. The DOM clone never had this
-    problem (cloneNode skips a shadow tree) — here it is hidden for the shot and
-    put back in `finally`, whatever the shot did."""
-    body = _between(html, "async function shotNativePane(deadline)", "\n}\n")
-    assert "const hidden = shotOverlayEls();" in body
-    assert 'el.style.visibility = "hidden"' in body
-    assert "el.style.visibility = prior[i]" in body
-    assert body.index("} finally {") < body.index("el.style.visibility = prior[i]")
-    # and the shell's own overlay chrome goes on the same hook appShot.ts uses
-    assert 'setAttribute("data-capture-shooting", "")' in body
-    assert 'removeAttribute("data-capture-shooting")' in body
-    els = _between(html, "function shotOverlayEls()", "\n}\n")
-    assert "annLayerRoot.host" in els
-    assert "[data-shot-flash]" in els
-    flash = _between(html, "function shotFlash()", "\n}\n")
-    assert 'el.setAttribute("data-shot-flash", "")' in flash
-
-
-def test_the_native_shot_refuses_a_frame_that_is_not_fully_on_screen(html):
-    """The server refuses a rect straddling displays; before that, a frame that
-    is off the top viewport, hidden (a 0×0 rect in the narrow chat view) or too
-    small is refused HERE, because a sliver is a wrong picture and the older
-    paths are right there."""
-    body = _between(html, "function shotScreenRect(frame)", "\n}\n")
-    assert "SHOT_NATIVE_MIN" in body
-    assert "left + w > topWin.innerWidth || top + h > topWin.innerHeight" in body
-    # the frame's CONTENT box: border trimmed, so the pixels are the framed
-    # viewport's — the space every pin is already in
-    assert "frame.clientLeft" in body and "frame.clientWidth" in body
-    # a frame of the shell's: offsets summed up to the top window
-    off = _between(html, "function shotFrameOffset(win)", "\n}\n")
-    assert "w.frameElement" in off and "w !== w.top" in off
+    assert "if (annXO) return shotXOPane();" in pane
+    assert pane.index("if (annXO) return shotXOPane();") < pane.index("appWindow()"), \
+        "the cross-origin refusal is the guard, not a fallback"
+    body = _between(html, "async function shotPane(deadline)", "\n}\n")
+    # the clone path itself, still whole: cloneNode -> inline styles/scroll/
+    # images -> rasterise canvases -> foreignObject -> canvas
+    assert "body.cloneNode(true)" in body
+    assert "await shotInlineStyles(" in body
+    assert "await shotInlineImages(" in body
+    assert "shotRasterise(body, clone)" in body
+    assert "shotApplyScroll(styles.scrolled)" in body
+    assert "<foreignObject" in body and "data:image/svg+xml" in body
+    # and the boot probe no longer pins a capture flag off `screenshot`
+    probe = _between(html, "const src = await fused.capture.sources();", "\n  } catch")
+    assert "src.screenshot" not in probe, "the probe is about the MIC now, only"

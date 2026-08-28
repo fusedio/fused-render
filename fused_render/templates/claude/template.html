@@ -6913,11 +6913,7 @@ function annSetMode(on) {
   // fire-and-forget crop) may have none. Swallowed
   // whole: a declined prompt just means notes without pictures, and each
   // capture path already degrades to exactly that.
-  // Only when the native screen shot is not available here (shotNativeOff):
-  // with it, a cross-origin pane is photographed off the screen with no share
-  // prompt at all, and raising one at arm time would be the prompt this
-  // change exists to remove.
-  if (annOn && annXO && shotNativeOff) annXOStreamGet().catch(() => { /* declined: words only */ });
+  if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
   // The word is the static markup "Comment" in BOTH states — the button's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -7037,10 +7033,6 @@ function annWarmTranscriber() {
 (async () => {
   try {
     const src = await fused.capture.sources();
-    // The native still (shotNativePane) is off where the probe says the
-    // platform cannot take one; `granted` is deliberately NOT read — on
-    // macOS the first shot is what raises the Screen Recording prompt.
-    if (src && src.screenshot && src.screenshot.available === false) shotNativeOff = true;
     if (src && src.audio && src.audio.available === false) {
       // Removed, not hidden: #anncta's display rule beats `hidden`, and the
       // strip hides itself once nothing visible is left in it.
@@ -8887,188 +8879,13 @@ async function shotXOPane() {
            styled: 0, incomplete: false, imagesMissing: 0 };
 }
 
-// ── the native screen shot: the pane's LIVE pixels, no document needed ──
-// `POST /api/capture/shot-region` — the ScreenCaptureKit / GDI / desktop-portal
-// still behind `fused.capture.screenshot()` (SPEC §45), pointed at the screen
-// rect the browser reports for the pane's frame. It is the mechanism the
-// shell's "Set Current View as Preview" and export capture already use
-// (appShot.ts, AF-11), and every capture here tries it FIRST, for the reasons
-// it replaced tab capture there: no share prompt (so nothing hinges on a
-// click's transient activation, and a walkthrough's tenth note raises no
-// picker), it works in whatever browser opened the page (the Chromium-only
-// current-tab hints did not), and the pixels are the ones the user is looking
-// at — WebGL maps included, which the DOM clone below can only report blank.
-//
-// It photographs VISIBLE pixels, so the frame must be on screen and the
-// window on one display (the server refuses a straddling rect). Every
-// "cannot" — no server, 409 unsupported, 400 off-display, a hidden pane, an
-// origin we cannot compute — answers null, never a throw, and shotPane falls
-// through to the paths that were there before: the tab share for a
-// cross-origin pane, the clone-and-rasterise for a readable one. Nothing that
-// worked stops working; this is a better first answer, not a new gate.
-//
-// Same answer shape as shotPane and shotXOPane, so every consumer runs
-// unchanged; the doubt fields are clean because live pixels have no style
-// walk, no image inlining and no readback to caveat.
-let shotNativeOff = false;   // set by the sources() probe and by a 409
-const SHOT_NATIVE_MIN = { width: 120, height: 75 };
-
-// Where the TOP window's viewport sits on the screen, learned from pointer
-// events the way appShot.ts learns it: a MouseEvent carries screenX/Y and
-// clientX/Y both, and their difference IS the viewport origin in screen
-// units — exact for any chrome layout (a side panel, vertical tabs), where the
-// outerWidth/innerWidth arithmetic assumes chrome on top and split evenly at
-// the sides. Our window may be a frame of the shell's, so the learned origin
-// is walked up to the top through the frame offsets. `pointerdown` only: a
-// keyboard click is a MouseEvent with every coordinate zero, which would
-// teach an origin of (0,0) and send viewport coordinates as screen ones.
-let shotTopOrigin = null;
-window.addEventListener("pointerdown", (e) => {
-  const off = shotFrameOffset(window);
-  if (!off) return;
-  shotTopOrigin = { x: e.screenX - e.clientX - off.x, y: e.screenY - e.clientY - off.y };
-}, true);
-
-// A window's viewport origin within the TOP window's viewport, summed over
-// every frame element between them; null when a frame on the way is not ours
-// to read (a cross-origin ancestor — no screen rect can be computed then).
-function shotFrameOffset(win) {
-  let x = 0, y = 0;
-  try {
-    for (let w = win; w !== w.top; w = w.parent) {
-      const fe = w.frameElement;
-      if (!fe) return null;
-      const r = fe.getBoundingClientRect();
-      x += r.left + (fe.clientLeft || 0);
-      y += r.top + (fe.clientTop || 0);
-    }
-  } catch (err) {
-    return null;
-  }
-  return { x, y };
-}
-
-// The frame's CONTENT box in screen units — `{rect: [x, y, w, h], width,
-// height}` — or null when it is off screen, not fully inside the top viewport
-// (a sliver is a wrong picture, and the server would refuse the rect anyway)
-// or too small to be worth photographing. The border is trimmed because the
-// pixels have to be the framed viewport's: that is the space every pin and
-// crop rect is already in (annStageRect).
-function shotScreenRect(frame) {
-  const win = frame.ownerDocument && frame.ownerDocument.defaultView;
-  if (!win) return null;
-  const off = shotFrameOffset(win);
-  if (!off) return null;
-  const r = frame.getBoundingClientRect();
-  const w = Math.round(frame.clientWidth || r.width);
-  const h = Math.round(frame.clientHeight || r.height);
-  if (w < SHOT_NATIVE_MIN.width || h < SHOT_NATIVE_MIN.height) return null;
-  const left = off.x + r.left + (frame.clientLeft || 0);
-  const top = off.y + r.top + (frame.clientTop || 0);
-  let topWin;
-  try { topWin = win.top; void topWin.innerWidth; } catch (err) { return null; }
-  if (left < 0 || top < 0 || left + w > topWin.innerWidth || top + h > topWin.innerHeight) {
-    return null;
-  }
-  const origin = shotTopOrigin || {
-    x: topWin.screenX + Math.max(0, (topWin.outerWidth - topWin.innerWidth) / 2),
-    y: topWin.screenY + Math.max(0, topWin.outerHeight - topWin.innerHeight),
-  };
-  return { rect: [origin.x + left, origin.y + top, w, h], width: w, height: h };
-}
-
-// What sits ON the pane and must not be in its picture: our layer (ring,
-// pins, the click flash — one shadow host over the framed document, or the
-// split layout's #annpins/#annhl over #leftframe), and the flash where it is a
-// plain sibling of the frame (`data-shot-flash`). The DOM clone never had
-// this problem — cloneNode skips a shadow tree — but a screen shot sees
-// everything the user does.
-function shotOverlayEls() {
-  const els = [];
-  if (annLayerRoot && annLayerRoot.host) els.push(annLayerRoot.host);
-  else for (const el of [annPins, annHl]) if (el) els.push(el);
-  for (const el of document.querySelectorAll("[data-shot-flash]")) els.push(el);
-  return els;
-}
-
-async function shotNativePane(deadline) {
-  if (shotNativeOff || !annFrame || !annFrame.isConnected) return null;
-  const box = shotScreenRect(annFrame);
-  if (!box) return null;
-  const hidden = shotOverlayEls();
-  const prior = hidden.map((el) => el.style.visibility);
-  // The shell hides its own overlay chrome on this attribute (appShot.ts's
-  // SHOOTING_ATTR) — stamped on the document that OWNS the frame, which in the
-  // sidebar layout is the shell's.
-  let hostBody = null;
-  try { hostBody = annFrame.ownerDocument.body; } catch (err) { /* not ours */ }
-  try {
-    for (const el of hidden) el.style.visibility = "hidden";
-    if (hostBody) hostBody.setAttribute("data-capture-shooting", "");
-    // Two frames, so the hiding is painted before the screen is read —
-    // bounded, because rAF never fires in a hidden document and a hang here
-    // would eat the caller's whole deadline.
-    await Promise.race([
-      new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))),
-      new Promise((res) => setTimeout(res, 120)),
-    ]);
-    const ctl = new AbortController();
-    const left = (deadline || (Date.now() + SHOT_TIMEOUT_MS)) - Date.now();
-    const timer = setTimeout(() => ctl.abort(), Math.max(200, Math.min(4000, left)));
-    let res;
-    try {
-      res = await fetch("/api/capture/shot-region", {
-        method: "POST",
-        signal: ctl.signal,
-        headers: { "X-Fused": "1", "Content-Type": "application/json" },
-        body: JSON.stringify({ rect: box.rect, dpr: window.devicePixelRatio || 1 }),
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    // 409 is "this platform has no still": remembered, so a page over an
-    // unsupported backend pays the round trip once. 400 (off-display, bad
-    // rect) and 500 are about THIS shot — the next one may land.
-    if (res.status === 409) shotNativeOff = true;
-    if (!res.ok) {
-      // Said, not swallowed: the fallbacks answer, but a 400 on every click
-      // (a rect the server judges off-display) is a bug in the arithmetic
-      // above that only the console can show.
-      let why = "";
-      try { why = (await res.json())._error || ""; } catch (err) { /* not JSON */ }
-      console.warn("native pane shot refused (" + res.status + "): " + why,
-                   { rect: box.rect, dpr: window.devicePixelRatio || 1 });
-      return null;
-    }
-    const blob = await res.blob();
-    if (!blob.size || !blob.type.startsWith("image/png")) return null;
-    const bitmap = await createImageBitmap(blob);
-    // Drawn at the frame's CSS size, not the display's: every crop rect and
-    // badge position downstream is in the framed viewport's CSS pixels, the
-    // space the rasteriser below already answers in.
-    const canvas = document.createElement("canvas");
-    canvas.width = box.width;
-    canvas.height = box.height;
-    canvas.getContext("2d").drawImage(bitmap, 0, 0, box.width, box.height);
-    bitmap.close();
-    return { canvas, width: box.width, height: box.height, blanks: [],
-             styled: 0, incomplete: false, imagesMissing: 0 };
-  } catch (err) {
-    return null;   // unreachable server, aborted, undecodable — the fallbacks answer
-  } finally {
-    hidden.forEach((el, i) => { el.style.visibility = prior[i]; });
-    if (hostBody) hostBody.removeAttribute("data-capture-shooting");
-  }
-}
-
 // Rasterise the visible left pane once. Returns
 // {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
-// Every target tries the NATIVE screen shot first (shotNativePane above);
-// a cross-origin target that could not be shot that way takes the tab-capture
-// path — pixels off the screen, since there is no document to clone.
+// A cross-origin target takes the tab-capture path above instead — pixels off
+// the screen, since there is no document to clone.
 //
 // Why the clone is styled from the LIVE tree, which is what creates the race
 // shotInlineStyles has to defend against: a clone is detached, and a detached
@@ -9079,8 +8896,6 @@ async function shotNativePane(deadline) {
 // mutate the page the user is looking at. So the live tree is the only source of
 // truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
-  const native = await shotNativePane(deadline);
-  if (native) return native;
   if (annXO) return shotXOPane();
   const win = appWindow();
   const doc = win && win.document;
@@ -10358,10 +10173,6 @@ function shotFlash() {
   const el = host.ownerDocument.createElement("div");
   el.setAttribute("style", "position: absolute; inset: 0; background: #ffffff;"
     + " opacity: 0; pointer-events: none; z-index: 2147483647;");
-  // Named, so shotNativePane can hide it: a native shot reads the SCREEN, and
-  // the flash is on the screen (in the split layout it is a sibling of the
-  // frame, not behind a shadow root).
-  el.setAttribute("data-shot-flash", "");
   host.appendChild(el);
   const done = () => { try { el.remove(); } catch (err) { /* gone with the doc */ } };
   // No animate() (an old engine, a detached document) is a missed flash, never a

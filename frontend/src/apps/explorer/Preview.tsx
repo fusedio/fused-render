@@ -353,18 +353,18 @@ function ExportAppButton({ fsPath }: { fsPath: string }) {
     setBusy(true);
     try {
       // Same capture-on-export as the /apps card (appShot, D396): the shown
-      // preview frame IS the app rendering, so it is the crop source — no
+      // preview frame IS the app rendering, so it is the capture source — no
       // navigation, no flash. exportAppFile itself skips capture when the
       // folder carries an authored preview.png; the probe below is only so a
-      // pointless native shot (and, on a Mac that has not granted Screen
-      // Recording, its permission dialog) isn't taken for a capture the
-      // server would discard anyway (stat failure reads as "no authored
-      // still" — worst case is that redundant shot, never a lost export).
+      // pointless DOM clone (the expensive part is a getComputedStyle per
+      // element) isn't taken for a capture the server would discard anyway
+      // (stat failure reads as "no authored still" — worst case is that
+      // redundant capture, never a lost export).
       //
-      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
-      // the app, not a box it may fill): the class rides `shown`, which the
-      // frame swap only sets once that frame paints — the same guarantee
-      // `data-fused-annotate-target` below relies on.
+      // `.is-shown` satisfies appShot's capture-source contract (a frame whose
+      // document IS the app, not a box it may fill): the class rides `shown`,
+      // which the frame swap only sets once that frame paints — the same
+      // guarantee `data-fused-annotate-target` below relies on.
       const authored = await statPath(dir + "/preview.png").then(
         (s) => !s.is_dir,
         () => false,
@@ -605,28 +605,32 @@ function usePreviewFileMenu(
     };
   }, [fsPath, parent, stat.is_dir]);
 
-  // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
-  // frame is showing and write it as the folder's preview.png. Same capture
-  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
-  // to the shown frame), so the same one-time share prompt.
+  // "Set Current View as Preview" (Akshil, 2026-08-27): capture what the frame
+  // is showing and write it as the folder's preview.png. Same capture the
+  // .fused export bakes in (appShot.captureAppPreview — a DOM clone of the
+  // shown frame's own document, D621).
   //
-  // ORDER: the share prompt needs the click's own transient activation, which
-  // Chrome expires a few seconds out. The one thing awaited before it is a stat
-  // of preview.png (milliseconds) — and when that says a still already exists,
-  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
-  // overwriting), which is a fresh activation of its own. Nothing is written
-  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  // No prompt and no activation deadline any more: the clone needs no OS
+  // permission and no share dialog, so nothing here races the click's transient
+  // user activation the way the tab-capture and native-shot versions did. The
+  // stat of preview.png still runs first, but only to decide whether to ask
+  // before overwriting (Akshil: confirm before overwriting). Nothing is written
+  // until a picture is in hand: a failed capture leaves the old file alone.
   const shootPreview = async (replacing: boolean) => {
     const name = basename(parent);
     // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
-    // full-viewport reload of the entry when the frame can't be cropped; that
+    // full-viewport reload of the entry when the frame can't be captured; that
     // is not the view the user is looking at, so here it is refused up front
     // (and `stage: false` refuses it again inside) rather than saved under a
     // "Preview saved" toast (Bugbot, 2026-08-27).
     const frame = document.querySelector(".preview-frame.is-shown");
     if (!cropRect(frame)) {
+      // Size only — cropRect stopped requiring the frame to be fully in the
+      // viewport when the capture stopped photographing the screen (D621), so
+      // this is now reachable only for a frame too small to be worth capturing
+      // or one that is not there at all.
       pushToast({
-        msg: "Preview not captured — the app frame has to be fully on screen",
+        msg: "Preview not captured — there is no app frame to capture",
         tone: "error",
       });
       return;
