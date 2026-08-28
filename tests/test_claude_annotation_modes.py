@@ -704,8 +704,9 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     assert "blanks: []" in body and "incomplete: false" in body
     # The share prompt is paid ONCE — the stream is cached and reused — and
     # raised at ARM time, where the user activation actually is (a mic commit
-    # or a walkthrough click's fire-and-forget crop may have none).
-    assert "if (annOn && annXO) annXOStreamGet().catch" in html
+    # or a walkthrough click's fire-and-forget crop may have none). Only where
+    # the native screen shot is off, though: with it there is no prompt at all.
+    assert "if (annOn && annXO && shotNativeOff) annXOStreamGet().catch" in html
     getter = _block(html, "async function annXOStreamGet()", "\n}\n")
     assert 'readyState === "live"' in getter
     assert "preferCurrentTab: true" in getter
