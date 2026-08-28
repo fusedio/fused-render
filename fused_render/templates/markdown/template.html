@@ -410,22 +410,82 @@
   .wl-embed-missing { border: 1px dashed var(--ghost); color: var(--ghost); }
   .wl-embed-unknown { border: 1px solid var(--border); color: var(--fg-muted); }
 
-  /* ---- the corner cluster: sidebar toggle (MD-2a, MD-19) -------------------
-     The only persistent chrome in this view. One 26px button in the corner,
-     never a toolbar row (MD-2a). A writable note is editable, full stop — no
-     mode to switch, so no second button here (MD-1a). */
-  #corner {
+  /* ---- panel chrome, shared by the left rail and the right panel ---------
+     ONE set of classes for both panels' head row, collapse chevron and
+     collapsed edge button (owner: "follow a structure similar to the left
+     one"; D611 follow-up). There is no floating corner cluster any more —
+     each panel's own toggle lives IN that panel, at its INNER edge (the edge
+     nearest the document), which is also what removes the two bugs a
+     floating button had: it sat on top of the panel's own head when open,
+     and on top of the document when closed.
+     `.panel-head` carries the type register (11px uppercase, 0.08em
+     tracking, `--ghost`) both panels' heads use — including the GRAPH
+     sub-head inside the right panel, which shares the register but has no
+     button of its own. `.mirror` is the one modifier: same DOM order (label,
+     optional count, spacer, button) in both panels, and `row-reverse` alone
+     flips which edge the button lands on — the rail's un-mirrored head puts
+     its button at its own right (inner) edge, the right panel's mirrored
+     head puts its button at its own left (inner) edge, with no separate copy
+     of the layout. */
+  .panel-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    padding: 7px 8px 7px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    color: var(--ghost);
+  }
+  .panel-head.mirror { flex-direction: row-reverse; }
+  .panel-head .spacer { flex: 1; }
+  /* A count that could be misread as an ORDINAL right after a label ("outline
+     1", "backlinks 3" reading as "#1"/"#3") is not allowed to be a bare
+     numeral beside the text — it is set apart as its own pill: a different
+     background, rounded, smaller, no tracking. Empty and collapses to
+     nothing rather than an empty pill when there is nothing to count. */
+  .panel-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.2em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--fg-muted);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .panel-count:empty { display: none; }
+  .panel-collapse-btn {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ghost);
+    cursor: pointer;
+  }
+  .panel-collapse-btn:hover { color: var(--fg); background: var(--bg-alt); }
+  .panel-collapse-btn svg { width: 12px; height: 12px; display: block; }
+  /* The collapsed edge button: a 26px chip at the page edge, identical for
+     both panels — only which edge (`left`/`right`) differs, via the
+     `.right` modifier. */
+  .panel-reopen-btn {
     position: absolute;
     top: 8px;
-    right: 8px;
     z-index: 5;
-    display: flex;
-    gap: 6px;
-  }
-  .corner-btn {
     width: 26px;
     height: 26px;
-    display: flex;
+    display: none;
     align-items: center;
     justify-content: center;
     padding: 0;
@@ -435,23 +495,12 @@
     color: var(--fg-muted);
     cursor: pointer;
   }
-  .corner-btn:hover { color: var(--fg); border-color: var(--accent); }
-  /* An accent-coloured GLYPH on the normal surface, not a filled block: a
-     solid `--accent` fill read as the loudest thing on an otherwise quiet
-     page, especially in light mode where `--accent` is a heavy deep olive.
-     The border still turns accent too, so "on" is legible at a glance without
-     reading the icon — two signals, neither of them a fill. */
-  .corner-btn[aria-pressed="true"] {
-    background: var(--bg-alt);
-    border-color: var(--accent);
-    color: var(--accent);
-  }
-  .corner-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.45;
-  }
-  .corner-btn:disabled:hover { color: var(--fg-muted); border-color: var(--border); }
-  .corner-btn svg { width: 14px; height: 14px; display: block; }
+  .panel-reopen-btn[hidden] { display: none; }
+  .panel-reopen-btn:not([hidden]) { display: flex; }
+  .panel-reopen-btn:hover { color: var(--fg); border-color: var(--accent); }
+  .panel-reopen-btn svg { width: 13px; height: 13px; display: block; }
+  .panel-reopen-btn.left { left: 8px; }
+  .panel-reopen-btn.right { right: 8px; }
   #side {
     position: relative;
     width: 21rem;
@@ -483,24 +532,11 @@
     opacity: 0.4;
     outline: none;
   }
-  /* Same utility register as the rail's `.rail-head` (0.08em tracking,
-     --ghost, the same padding) — the two panels must read as one system. The
-     bottom hairline stays here (unlike the rail): this panel stacks several
-     sections and needs the separator the rail's single section does not. */
-  .side-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: none;
-    padding: 7px 8px 7px 10px;
-    border-bottom: 1px solid var(--border);
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 600;
-    color: var(--ghost);
-  }
-  .side-head .spacer { flex: 1; }
+  /* `.panel-head` carries the type register (declared above, shared with
+     the rail) — the bottom hairline here is scoped to this panel with its
+     own id rule, since it stacks several sections and needs the separator a
+     single-section panel (the rail) does not. */
+  #links-head { border-bottom: 1px solid var(--border); }
   /* Sized by its content, not by the leftover space: a handful of backlinks
      should not reserve half the panel while the graph's labels collide. The
      cap keeps a long list scrolling here instead of starving #graph-sec, so
@@ -542,58 +578,7 @@
     opacity: 0.4;
     outline: none;
   }
-  .rail-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: none;
-    padding: 7px 8px 7px 10px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 600;
-    color: var(--ghost);
-  }
-  .rail-head .spacer { flex: 1; }
-  #rail-collapse {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: var(--ghost);
-    cursor: pointer;
-  }
-  #rail-collapse:hover { color: var(--fg); background: var(--bg-alt); }
-  #rail-collapse svg { width: 12px; height: 12px; display: block; }
   #outline { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 12px; }
-  /* Collapsed: the rail vanishes and a slim reopen tab takes its place at the
-     page edge, clear of the corner cluster on the right. */
-  #rail-reopen {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    z-index: 5;
-    width: 26px;
-    height: 26px;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--bg-alt);
-    color: var(--fg-muted);
-    cursor: pointer;
-  }
-  #rail-reopen[hidden] { display: none; }
-  #rail-reopen:not([hidden]) { display: flex; }
-  #rail-reopen:hover { color: var(--fg); border-color: var(--accent); }
-  #rail-reopen svg { width: 13px; height: 13px; display: block; }
   /* The signature element: a 2px accent bar on the row for the heading you are
      currently reading, driven off scroll — the one accent-coloured thing in
      the rail. `::before` rather than a border, so it does not shift the row's
@@ -785,6 +770,34 @@
     cursor: pointer;
   }
   #fmt-bubble button svg { width: 14px; height: 14px; display: block; }
+  /* Letters, not icons, for bold/italic/strike (see the HTML comment) — set
+     explicitly rather than inherited, so they cannot drift if the page's own
+     body stack ever changes independently of this bubble. Sized by EYE
+     against the link icon's 14px, not at its own nominal 14px: a plain-weight
+     14px letter reads lighter than a 2px-stroke 14px icon sitting beside it,
+     so the glyphs go to 15px, and italic/strike pick up `font-weight: 600` —
+     bold does not need the same push, since 700 already carries enough
+     weight on its own. */
+  .fmt-glyph {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1;
+  }
+  .fmt-glyph-bold { font-weight: 700; }
+  .fmt-glyph-italic { font-style: italic; font-weight: 600; }
+  .fmt-glyph-strike { text-decoration: line-through; font-weight: 600; }
+  /* The inline-code button IS its own result: a small chip in the same idiom
+     `.lp-code` uses (border, rounded corners) around the backtick pair that
+     actually produces it — `border: currentColor` so it rides the button's
+     own colour states (rest/hover/pressed) for free, with no separate rule. */
+  .fmt-code-chip {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 4px;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+  }
   #fmt-bubble button:hover { color: var(--fg); }
   #fmt-bubble button[aria-pressed="true"] {
     background: var(--accent);
@@ -885,10 +898,6 @@
   }
   #lb-caption:empty { display: none; }
 
-  /* ---- outline count, the rail's utility register -------------------------
-     Matches the chip/bubble register: small, muted, non-uppercase digits. */
-  #outline-count { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ghost); }
-
   /* ---- skeleton --------------------------------------------------------- */
   #skel { flex: 1; max-width: 46rem; margin: 0 auto; padding: 40px 24px; }
   #skel[hidden] { display: none; }
@@ -928,11 +937,16 @@
          default: a note always has structure, so this is permanent chrome
          rather than a section behind a toggle. -->
     <aside id="outline-rail">
-      <div class="rail-head">
+      <!-- No count here (owner: "what is outline 1? how can you even have
+           multiple outlines?") — a bare numeral right after a label reads as
+           an ORDINAL, not a count, and the outline is a visible list anyway
+           (the eye already reports how long it is). Obsidian shows none for
+           the same reason. -->
+      <div class="panel-head">
         <span>Outline</span>
-        <span id="outline-count"></span>
         <span class="spacer"></span>
-        <button id="rail-collapse" type="button" aria-label="Collapse outline">
+        <button id="rail-collapse" type="button" class="panel-collapse-btn"
+                aria-label="Collapse outline">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M6 3.5 L11 8 L6 12.5" transform="rotate(180 8 8)" />
@@ -942,7 +956,8 @@
       <div id="outline"></div>
       <button id="rail-grip" type="button" aria-label="Resize outline"></button>
     </aside>
-    <button id="rail-reopen" type="button" aria-label="Show outline" hidden>
+    <button id="rail-reopen" type="button" class="panel-reopen-btn left"
+            aria-label="Show outline" hidden>
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M6 3.5 L11 8 L6 12.5" />
@@ -968,47 +983,28 @@
       <!-- The selection format bubble (6c). Hidden while there is no
            selection — chrome for a subject that exists (§2). Positioned by
            hand from the selection's coordinates, in JS. -->
-      <!-- One icon system, held throughout: monochrome SVG line icons at one
-           size and stroke weight, the same idiom the corner button already
-           uses — no text glyph standing in for its own function (a bold `B`),
-           no ASCII pseudo-icon (`</>`  — which also reads as an HTML tag, the
-           wrong reference for an INLINE code span) and no emoji anywhere.
-           "Turn into" stays the one worded label (it opens a menu; no icon
-           says "convert this line"), with a drawn chevron, not `▾`. -->
+      <!-- Letters are TYPE, pictures are ICONS — a hollow traced-outline `B`
+           does not read as bold at 14-16px, it reads as a damaged shape. Bold/
+           italic/strike are rendered as real characters carrying the actual
+           formatting (`font-weight`/`font-style`/`text-decoration`), so the
+           control demonstrates its own effect — self-describing in a way no
+           icon can be, the same reason Notion and Bear do this. Link stays an
+           SVG (it has no letterform of its own). Inline code gets the one
+           thing that IS its result: a small chip in the `.lp-code` idiom
+           (border + rounded corners) around the backtick pair that actually
+           produces it — not an abstract outline shape. -->
       <div id="fmt-bubble" hidden>
         <button id="fmt-bold" data-cmd="bold" title="Bold (⌘B)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M6 4h8a4 4 0 0 1 0 8H6z" />
-            <path d="M6 12h9a4 4 0 0 1 0 8H6z" />
-          </svg>
+          <span class="fmt-glyph fmt-glyph-bold">B</span>
         </button>
         <button id="fmt-italic" data-cmd="italic" title="Italic (⌘I)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" aria-hidden="true">
-            <path d="M19 4h-9" />
-            <path d="M14 20H5" />
-            <path d="M15 4L9 20" />
-          </svg>
+          <span class="fmt-glyph fmt-glyph-italic">I</span>
         </button>
         <button id="fmt-strike" data-cmd="strike" title="Strikethrough (⌘⇧X)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M16 4H9a3 3 0 0 0-2.83 4" />
-            <path d="M14 12a4 4 0 0 1 0 8H6" />
-            <path d="M4 12h16" />
-          </svg>
+          <span class="fmt-glyph fmt-glyph-strike">S</span>
         </button>
-        <!-- A chip, not a tag: two rounded sides around a short rule, echoing
-             the actual `.lp-code` treatment (a rounded background tint) that
-             toggling this produces — distinct from a code BLOCK's icon and
-             from `</>`, which reads as markup rather than a span of text. -->
         <button id="fmt-code" data-cmd="code" title="Inline code (⌘⇧E)">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="3" y="7" width="18" height="10" rx="5" />
-            <path d="M9 12h6" />
-          </svg>
+          <span class="fmt-glyph fmt-code-chip">``</span>
         </button>
         <button id="fmt-link" data-cmd="link" title="Link (⌘K)">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -1030,34 +1026,48 @@
         </div>
       </div>
     </div>
-    <div id="corner">
-      <button id="toggle-graph" class="corner-btn" aria-pressed="false"
-              aria-label="Toggle side panel" title="Toggle side panel">
-        <!-- A panel, not a graph: the sidebar holds backlinks AND the graph, and
-             the nodes-and-edges glyph this replaced was unreadable at 14px. The
-             right column is filled so the shape says "panel open on the right"
-             at a glance; both strokes and the fill inherit currentColor, so the
-             aria-pressed accent state and both themes come for free. -->
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"
-             stroke-linejoin="round" aria-hidden="true">
-          <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.8" />
-          <path d="M10.2 2.6 V13.4" />
-          <path d="M10.2 3.4 H13.6 V12.6 H10.2 Z" fill="currentColor" stroke="none" />
-        </svg>
-      </button>
-    </div>
+    <button id="side-reopen" type="button" class="panel-reopen-btn right"
+            aria-label="Show panel" hidden>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6 3.5 L11 8 L6 12.5" transform="rotate(180 8 8)" />
+      </svg>
+    </button>
     <aside id="side">
       <button id="side-grip" type="button" aria-label="Resize side panel"></button>
-      <div class="side-head" id="links-head">Backlinks</div>
+      <!-- Mirrored from the rail's head (owner: "follow a structure similar
+           to the left one") — same DOM order (label, count, spacer, button),
+           `.mirror` alone flips which edge the button lands on via
+           `row-reverse`, so the collapse chevron sits at THIS panel's inner
+           (left) edge, matching the rail's at its own inner (right) edge.
+           Unlike the outline, a backlinks COUNT is genuinely informative —
+           the list can be scrolled or capped, so the number says something
+           the visible rows do not — but it is never a bare numeral beside
+           the label: `.panel-count` sets it apart as its own pill so it
+           cannot be misread as "backlinks #3". -->
+      <div class="panel-head mirror" id="links-head">
+        <span>Backlinks</span>
+        <span class="panel-count" id="links-count"></span>
+        <span class="spacer"></span>
+        <button id="side-collapse" type="button" class="panel-collapse-btn"
+                aria-label="Collapse panel">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 3.5 L11 8 L6 12.5" />
+          </svg>
+        </button>
+      </div>
       <div id="links" hidden>
         <div id="bl-list"></div>
         <div id="notice" hidden></div>
       </div>
       <!-- The graph section only exists when the note has links (§5): drawn
            by JS, not hidden by CSS, so an absent graph never reserves space
-           or a "no links" placeholder. -->
+           or a "no links" placeholder. Shares the same head register
+           (`.panel-head`) as the panel head above it, with no button of its
+           own — collapsing the whole PANEL lives one level up. -->
       <div id="graph-sec" hidden>
-        <div class="side-head">
+        <div class="panel-head">
           <span>Graph</span>
           <span id="graph-count"></span>
           <span class="spacer"></span>
@@ -3464,7 +3474,6 @@
 
     function renderOutline() {
       const listEl = document.getElementById("outline");
-      const countEl = document.getElementById("outline-count");
       if (!outlineOn()) {
         // The rail is collapsed; there is nothing to draw and this is the hot path.
         outlineKey = null;
@@ -3478,7 +3487,8 @@
 
       const drawn = withDepth(rows);
 
-      countEl.textContent = rows.length ? String(rows.length) : "";
+      // No count in the head (owner: a bare numeral right after "Outline"
+      // reads as an ordinal, not a count — and the list is visible anyway).
       listEl.innerHTML = drawn.length
         ? drawn.map((row) => `
             <button class="bl ol" style="--ol-depth: ${row.depth}"
@@ -3528,7 +3538,7 @@
         // same mistake the ghost rendering used to make (MD-11).
         linksEl.hidden = false;
         listEl.innerHTML = "";
-        document.getElementById("links-head").textContent = "Backlinks";
+        linksCountEl.textContent = "";
         // graph.py's own words for why, so a mount refusal, a note outside its
         // root and a failed scan each read as themselves.
         noticeEl.textContent = "Backlinks need a folder scan. " + scanNotice;
@@ -3550,8 +3560,11 @@
         else byPath.set(row.path, { ...row, count: 1 });
       }
       const rows = [...byPath.values()];
-      document.getElementById("links-head").textContent =
-        rows.length ? `Backlinks (${rows.length})` : "Backlinks";
+      // A PILL, not text appended to the label (`.panel-count` — never
+      // "Backlinks 3", which reads as an ordinal): genuinely informative
+      // here, unlike the outline's, because the list can be capped or
+      // scrolled and the number says something the visible rows do not.
+      linksCountEl.textContent = rows.length ? String(rows.length) : "";
       listEl.innerHTML = rows.length
         ? rows.map((row) => `
             <button class="bl" data-path="${escapeHtml(row.path)}">
@@ -3946,7 +3959,14 @@
     // /template-shared/graph-canvas.js, shared with the folder-level `graph`
     // mode — one implementation, so the two surfaces cannot drift apart.
     const sideEl = document.getElementById("side");
-    const toggleEl = document.getElementById("toggle-graph");
+    // The panel's own toggle now lives IN it (owner: "follow a structure
+    // similar to the left one") — no more floating corner button. `-collapse`
+    // sits in the panel's own head row; `-reopen` is the collapsed edge chip,
+    // mirroring the rail's pair exactly (`.panel-collapse-btn`/
+    // `.panel-reopen-btn`, shared classes — see the CSS).
+    const sideCollapseEl = document.getElementById("side-collapse");
+    const sideReopenEl = document.getElementById("side-reopen");
+    const linksCountEl = document.getElementById("links-count");
     const canvasEl = document.getElementById("graph-canvas");
     const graphCountEl = document.getElementById("graph-count");
     const graphNoteEl = document.getElementById("graph-note");
@@ -4204,9 +4224,8 @@
       canvas.setData(data);
     }
 
-    toggleEl.addEventListener("click", () => {
-      fused.params.set("graph", graphOn() ? "0" : "1");
-    });
+    sideCollapseEl.addEventListener("click", () => fused.params.set("graph", "0"));
+    sideReopenEl.addEventListener("click", () => fused.params.set("graph", "1"));
 
     depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
 
@@ -4216,7 +4235,7 @@
     function applySidebar() {
       const on = graphOn();
       sideEl.classList.toggle("on", on);
-      toggleEl.setAttribute("aria-pressed", String(on));
+      sideReopenEl.hidden = on;
       depthEl.value = String(graphDepth());
       if (on) {
         // A stored width is applied here rather than at load: the panel has no

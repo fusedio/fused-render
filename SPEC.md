@@ -2740,19 +2740,20 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   look at it would silently rewrite it — that risk has not gone away, it is
   now accepted, by owner call, in exchange for one editable surface with no
   mode chrome at all.
-- **MD-2a** **No toolbar, and now only ONE persistent button.** The shell's own
+- **MD-2a** **No toolbar, and no floating corner cluster at all** (D611
+  follow-up — this reverses the cluster's own earlier design). The shell's own
   breadcrumb already names the open file, and Obsidian shows no save state, no
-  dirty indicator and no mode buttons — which left the bar holding nothing.
-  What survived it went where it belongs: the read-only badge floats (the
-  shared `ro-badge.js` idiom), a save *failure* floats as a pill and is
-  invisible when there is nothing to say, and the reload-or-keep banner
-  (MD-17) takes a row only while a conflict is unresolved. The corner cluster
-  held two 26px buttons while the read-only/editing mode existed (MD-1a);
-  with the mode gone, only the right-sidebar toggle (MD-19) remains there. The
-  sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
-  the graph together, and its accessible name says so. The **outline's own
-  control lives on the outline rail itself** (MD-19b), not in this cluster —
-  chrome for a subject sits with that subject.
+  dirty indicator and no mode buttons — which left a corner cluster holding
+  nothing of its own once the read/write mode (MD-1a) was removed and the
+  sidebar toggle followed it into the panel it controls (MD-19a/MD-19b): a
+  floating button belongs to neither the panel it opens nor the document it
+  sits on top of, and it visibly overlapped BOTH — the panel's own head when
+  open, the document's corner when closed. What survived the corner
+  altogether went where it belongs: the read-only badge floats (the shared
+  `ro-badge.js` idiom), a save *failure* floats as a pill and is invisible
+  when there is nothing to say, and the reload-or-keep banner (MD-17) takes a
+  row only while a conflict is unresolved. There is no other persistent
+  floating chrome in this view.
 - **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code",
   "claude", "reader"]` — `markdown` now supersedes `code` for
   notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
@@ -3161,19 +3162,44 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   reach because it cannot span into a widget's DOM (clicking the table shows the
   source, which is where a cell is edited). Paste-or-drop of an image *was*
   listed here as blocked on a binary write; it is now built (MD-23).
-- **MD-19a** **Backlinks and the graph are one right sidebar**, behind the
-  single 26px toggle (MD-2a) — not a footer under the document, which a
-  full-height editor has no room for. Backlinks scroll in the upper section;
-  the graph section sits below and is **conditional** (MD-19c). The outline is
-  no longer part of this panel (D611) — see MD-19b.
-  One toggle opens both remaining sections: they answer the same question
-  about the rest of the vault. The panel is **resizable** by dragging a thin
-  handle on its left edge (15rem to 45rem, arrow keys on the focused handle
-  too), and the width is persisted in **`localStorage`, deliberately not in
-  params**: params are the state a shared URL should reproduce (MD-20), and
-  how wide someone dragged their panel is window furniture that a link must
-  not carry. Each resize `nudge()`s the canvas, which is a fixed-size bitmap
-  and does not otherwise learn that its box moved.
+- **MD-19a** **Backlinks and the graph are one right sidebar** — not a footer
+  under the document, which a full-height editor has no room for. Backlinks
+  scroll in the upper section; the graph section sits below and is
+  **conditional** (MD-19c). The outline is no longer part of this panel
+  (D611) — see MD-19b.
+  **Its toggle lives IN the panel's own head row, not in a floating corner
+  button** (owner: "the icon placement for the right sidebar is bad… follow a
+  structure similar to the left one" — reversing the corner cluster this
+  panel's toggle used to sit in, MD-2a). A floating button belonged to
+  neither the panel nor the document: open, it sat on top of the panel's own
+  BACKLINKS head; closed, it sat on top of the document's corner. The head
+  row and its collapse control are **the same CSS classes the outline rail
+  uses** (`.panel-head`, `.panel-collapse-btn`, `.panel-reopen-btn` — see
+  MD-19b), mirrored rather than duplicated: identical DOM order (label,
+  optional count, a flex spacer, the button), and one modifier class
+  (`.mirror`, `flex-direction: row-reverse`) is the entire difference between
+  the rail's button landing at ITS inner (right) edge and this panel's at ITS
+  inner (left) edge — both always nearest the document, never floating over
+  it. Collapsed, the same **26px edge-chip button** the rail uses reappears
+  at this panel's outer edge (top-right), sharing `.panel-reopen-btn` with
+  only a `.right` vs `.left` modifier telling them apart.
+  **The head carries a count, unlike the rail's** (MD-19b) — set apart as its
+  own pill (`.panel-count`), never bare text after the label, because a
+  number immediately following a noun reads as an ORDINAL ("backlinks #3")
+  and not a quantity. Genuinely informative here, unlike on the outline: how
+  many notes link here is a fact about the rest of the vault the visible list
+  does not fully show (it can be capped or scrolled), where the outline's
+  count would only restate what the eye already sees in a list that is never
+  capped.
+  Backlinks and the graph still answer one question about the rest of the
+  vault, so one control still opens both. The panel is **resizable** by
+  dragging a thin handle on its left edge (15rem to 45rem, arrow keys on the
+  focused handle too), and the width is persisted in **`localStorage`,
+  deliberately not in params**: params are the state a shared URL should
+  reproduce (MD-20), and how wide someone dragged their panel is window
+  furniture that a link must not carry. Each resize `nudge()`s the canvas,
+  which is a fixed-size bitmap and does not otherwise learn that its box
+  moved.
 - **MD-19b** **The outline is a LEFT RAIL in the page** (`#outline-rail`),
   open by default, and it reads the live document (D190, moved off the right
   sidebar by D611). The open note's headings get a nested, click-to-scroll
@@ -3195,8 +3221,17 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   `localStorage` under `fused-md-outline-width` and clamped so it cannot
   squeeze the document below the same floor the right panel's own clamp
   protects — window furniture, not shareable state, for the same reason
-  MD-19a's width is not a param. Collapsed, a 26px button reopens it at the
-  page's left edge.
+  MD-19a's width is not a param. Collapsed, a 26px `.panel-reopen-btn`
+  reopens it at the page's left edge — shared with the right panel's own
+  collapsed button (MD-19a), which is identical but for a `.right` modifier.
+  **The head carries no count** (owner: "what is outline 1? how can you even
+  have multiple outlines?"): a bare numeral straight after a label reads as
+  an ORDINAL, not a quantity, and a heading count is also information the
+  reader already has — the outline is never capped or scrolled out of view,
+  so counting it tells the eye nothing it did not already report. Obsidian
+  shows no count on its outline for the same reason. The right panel's
+  BACKLINKS head does carry one (MD-19a), because that count answers a
+  question the visible list cannot always answer itself.
   **The signature element: a 2px accent bar** on the row for the heading
   currently at the top of the viewport, the one accent-coloured thing in the
   rail. Driven off the editor's own **scroll and update events, never a
@@ -3566,7 +3601,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   the selection shows its button pressed, using the identical pre/post
   wrap-detection `toggleWrap` itself uses to decide whether to unwrap. Absent
   entirely on an unwritable file (MD-1a/MD-15) — chrome for an action that is
-  not available.
+  not available. **Bold/italic/strike are rendered as real TYPE** (`B` at
+  `font-weight: 700`, `I` in `font-style: italic`, `S` with
+  `text-decoration: line-through`), not traced SVG letterforms — a hollow
+  outline `B` does not read as bold at 14–16px, and the control demonstrating
+  its own effect is self-describing in a way an icon cannot be. Link keeps an
+  SVG (it has no letterform), and inline code gets a small chip in the
+  `.lp-code` idiom around the backtick pair that produces it, for the same
+  reason — the control looks like its result, not an abstract shape.
 - **MD-30** **Line and block conversion: two doors, one command set** (D611).
   `convertLines(kind)` turns every line the selection touches (or the
   caret's line, with no selection) into `kind` — heading 1–3, quote, bullet
