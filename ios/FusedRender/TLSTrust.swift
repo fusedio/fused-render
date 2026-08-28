@@ -53,26 +53,6 @@ enum TLSTrust {
         return der
     }
 
-    /// The computer's own answer to "is there https, and which CA?" — for a
-    /// server found over Bonjour. Returns (httpsPort, fingerprint).
-    static func probeTLS(host: String, httpPort: Int) async -> (Int, String)? {
-        var c = URLComponents()
-        c.scheme = "http"
-        c.host = host
-        c.port = httpPort == 80 ? nil : httpPort
-        c.path = "/api/lan/tls"
-        guard let url = c.url else { return nil }
-        var req = URLRequest(url: url)
-        req.cachePolicy = .reloadIgnoringLocalCacheData
-        req.timeoutInterval = 4
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let port = obj["https_port"] as? Int,
-              let fp = obj["ca_fingerprint"] as? String else { return nil }
-        return (port, fp)
-    }
-
     static func derFromPEM(_ pem: Data) -> Data? {
         guard let text = String(data: pem, encoding: .utf8) else { return nil }
         // First certificate block only (the CA file has exactly one).

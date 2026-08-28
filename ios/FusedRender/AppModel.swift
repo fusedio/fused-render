@@ -86,49 +86,32 @@ final class AppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$discovered)
         discovery.start()
-        // A phone that paired before goes straight back in — and a computer
-        // remembered over http is asked for https on the way (it may have
-        // gained it since).
-        if let last = known.first {
-            current = last
-            if !last.isSecure { Task { await upgradeToHTTPS(last) } }
-        }
+        // A phone that paired before goes straight back in.
+        if let last = known.first { current = last }
     }
 
-    /// Open a known or discovered computer. A discovered one (http) is asked
-    /// whether it has https and which CA signs it; if so the CA is fetched and
-    /// pinned before the first page loads — trust on first use.
+    /// Open a computer this phone paired with before. The record carries the
+    /// scheme and the pinned CA; nothing is learned from the network here.
+    ///
+    /// The app never trusts a CA it did not get from a QR code. Asking the
+    /// computer itself (`/api/lan/tls`) would be trust-on-first-use: whoever
+    /// answers to that name on the Wi-Fi first would get pinned. So a record
+    /// paired over http before the computer had https stays http until the
+    /// user scans again (Forget → Pair).
     func open(_ server: Server) {
-        var server = server
-        if let known = known.first(where: { $0.host == server.host }), known.isSecure {
-            server = known
-        }
+        let server = known.first(where: { $0.host == server.host }) ?? server
         remember(server)
         current = server
-        if !server.isSecure {
-            Task { await upgradeToHTTPS(server) }
-        }
-    }
-
-    private func upgradeToHTTPS(_ server: Server) async {
-        guard let (httpsPort, fingerprint) = await TLSTrust.probeTLS(host: server.host, httpPort: server.port),
-              let ca = await TLSTrust.fetchCA(host: server.host, httpPort: server.port, expected: fingerprint)
-        else { return }
-        let secure = Server(name: server.name, host: server.host, port: httpsPort, scheme: "https", caDER: ca)
-        // Same computer: replace the http record so a relaunch is https too.
-        known.removeAll { $0.host == server.host }
-        remember(secure)
-        if current?.host == server.host {
-            current = secure
-            pendingPairURL = secure.baseURL
-        }
     }
 
     /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`,
     /// plus `ca` (the CA fingerprint) and `s` (the https port) from a server
     /// that has https. With those, the CA is fetched over http, checked against
-    /// the fingerprint, pinned, and the pairing happens over https — the cookie
-    /// then lives on the https origin. Without them, http as before.
+    /// the fingerprint from the QR — the one channel an attacker on the Wi-Fi
+    /// cannot touch — pinned, and the pairing happens over https, so the cookie
+    /// lives on the https origin. A fingerprint that does not check out ends
+    /// the pairing: there is no silent fall back to http. A code without `ca`
+    /// (a computer that has no https) pairs over http.
     func pair(with url: URL) -> Bool {
         guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               comps.path == "/pair",
@@ -143,11 +126,11 @@ final class AppModel: ObservableObject {
         Task {
             var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
             if let fingerprint, let httpsPort {
-                if let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) {
-                    server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
-                } else {
-                    pairProblem = "Could not verify the computer's certificate; pairing over http instead."
+                guard let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) else {
+                    pairProblem = "The computer's certificate did not match this code. Try a fresh code from Preferences → Render local network."
+                    return
                 }
+                server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
             }
             var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
             pairURL.path = "/pair"
