@@ -8,6 +8,13 @@ import Combine
 import Foundation
 
 struct Server: Identifiable, Codable, Equatable, Hashable {
+    // One computer = one host. The same machine shows up as http:80 from
+    // Bonjour and as https:443 (+ CA) once paired; port, scheme and CA are
+    // how we reach it, not who it is — so identity, equality and hashing
+    // use the host alone.
+    static func == (a: Server, b: Server) -> Bool { a.host == b.host }
+    func hash(into h: inout Hasher) { h.combine(host) }
+
     /// Bonjour service name, e.g. "Fused Render (render.fused.local)".
     var name: String
     /// Host to connect through. The listener only answers a Host header it
@@ -22,7 +29,7 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
     /// the app accepts for this host.
     var caDER: Data?
 
-    var id: String { "\(host):\(port)" }
+    var id: String { host }
 
     var isSecure: Bool { scheme == "https" && caDER != nil }
 
@@ -93,7 +100,7 @@ final class AppModel: ObservableObject {
     /// pinned before the first page loads — trust on first use.
     func open(_ server: Server) {
         var server = server
-        if let known = known.first(where: { $0.host == server.host && $0.port == server.port }), known.isSecure {
+        if let known = known.first(where: { $0.host == server.host }), known.isSecure {
             server = known
         }
         remember(server)
