@@ -50,7 +50,8 @@ class _FakeProc:
     spoken and is now waiting, which is the resting state of a healthy sign-in.
     """
 
-    def __init__(self, text="", code=0, pid=4242):
+    def __init__(self, text="", code=0, pid=4242, ignore_stop=False):
+        self.ignore_stop = ignore_stop
         self._release = threading.Event()
         self._code = code
         self.pid = pid
@@ -70,6 +71,13 @@ class _FakeProc:
             raise subprocess.TimeoutExpired("claude", timeout)
         return self._code
 
+    def eof(self):
+        """Close stdout without exiting — a child that said its piece and stayed."""
+        try:
+            os.close(self._write_fd)
+        except OSError:
+            pass
+
     def _close(self):
         try:
             os.close(self._write_fd)
@@ -79,11 +87,13 @@ class _FakeProc:
 
     def terminate(self):
         self.terminated = True
-        self._close()
+        if not self.ignore_stop:
+            self._close()
 
     def kill(self):
         self.killed = True
-        self._close()
+        if not self.ignore_stop:
+            self._close()
 
     def finish(self):
         self._close()
@@ -437,6 +447,53 @@ def test_a_re_probe_that_itself_fails_does_not_wedge_the_record(monkeypatch):
     proc.finish()
     assert _settle(lambda: not claude_login.status()["in_flight"])
     assert claude_login.status()["error"] is None
+
+
+def test_taskkill_missing_falls_back_to_signalling_the_child(monkeypatch):
+    """Killing cmd.exe alone is worth little behind a shim, but it beats not
+    trying — and the fallback must not raise out of a cancel."""
+    monkeypatch.setattr(claude_login.os, "name", "nt")
+
+    def no_taskkill(*a, **k):
+        raise FileNotFoundError("taskkill")
+
+    monkeypatch.setattr(claude_login.subprocess, "run", no_taskkill)
+    proc = _FakeProc(text=PROMPT)
+    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
+                       force=False)
+    assert proc.terminated is True
+    proc.finish()
+
+
+def test_a_child_that_will_not_reap_is_not_called_a_login_timeout(monkeypatch):
+    """stdout is at EOF but the process record has not gone. It said its piece,
+    so this is NOT the ten-minute watchdog and must not be labelled as one —
+    the record quotes the child's own last words instead."""
+    _found(monkeypatch)
+    monkeypatch.setattr(claude_login, "REAP_TIMEOUT_S", 0.05)
+    proc = _FakeProc(text="Login failed: nope\n", ignore_stop=True)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    proc.eof()  # stdout closes; the child stays
+    assert _settle(lambda: not claude_login.status()["in_flight"])
+    error = claude_login.status()["error"]
+    assert error == "Login failed: nope"
+    assert "not finished within" not in error
+
+
+def test_a_cancel_the_child_ignores_is_reported_honestly(monkeypatch):
+    """It says it cancelled, because it asked. It does not claim the child is
+    gone when it is still there — the record keeps saying in flight, which is
+    the true thing and what keeps the poll alive."""
+    _found(monkeypatch)
+    monkeypatch.setattr(claude_login, "CANCEL_GRACE_S", 0.05)
+    proc = _FakeProc(text=PROMPT, ignore_stop=True)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    record = claude_login.cancel()
+    assert record["canceled"] is True
+    assert record["in_flight"] is True
+    proc.finish()
 
 
 def test_cancel_terminates_and_settles_the_record(monkeypatch):

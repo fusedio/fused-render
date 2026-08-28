@@ -71,6 +71,11 @@ LOGIN_TIMEOUT_S = 600.0
 #: How long `cancel` waits for a terminated child before letting go of it.
 CANCEL_GRACE_S = 5.0
 
+#: How long to wait for a child to reap after its stdout has reached EOF. It has
+#: already said everything it is going to; this is only the gap between the pipe
+#: closing and the process record going away.
+REAP_TIMEOUT_S = 30.0
+
 #: How many of the child's lines to keep. Bounded, and IN MEMORY ONLY — see
 #: `_Login.tail`.
 _OUTPUT_TAIL_LINES = 40
@@ -265,7 +270,7 @@ def _run(login: _Login) -> None:
         watchdog.start()
         try:
             _drain(login)
-            code = login.proc.wait(30)
+            code = login.proc.wait(REAP_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             # stdout is at EOF but the child has not reaped. NOT `_expire`: that
             # would label this a ten-minute login timeout in the record, when
