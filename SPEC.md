@@ -2721,51 +2721,38 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   or where it points. The folder mode calls it as `../markdown/graph.py`
   (`/api/run` resolves a relative `py` against the page's directory) rather
   than shipping a second copy.
-- **MD-1a** **Read-only and editing are a MODE, and the mode is writability
-  only — never appearance.** The same Live Preview decorations over the same
-  document, with CM's two read-only facets on or off
-  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`) — which are
-  *exactly* the facets the unwritable-file path already used, so **a read-only
-  file's locked buffer and read-only mode are one mechanism, not two**. There is
-  no different typography, no restyled surface and emphatically no second render
-  pipeline; that was removed deliberately (MD-1/D158) and does not come back to
-  serve a mode. With `editable=false` there is no caret, so nothing reveals and
-  the document reads as fully rendered — that *is* the reading view, obtained
-  without a second pipeline. The reveal is additionally suppressed by one guard
-  in `selectedLines`, because a browser text selection inside a non-editable view
-  still reaches the state's selection and would un-render whatever was swiped
-  over; the guard makes the mode deterministic rather than dependent on that.
-  **A note opens READ-ONLY** (owner call 2026-07-31, reversing the earlier
-  Obsidian-matching "editing is the default"): opening a file in an explorer is a
-  read, and on the always-editable surface a stray keystroke on a note you opened
-  to look at rewrites it — editing is one click away and, once asked for, stays
-  in the URL. It also makes the view a better annotate stage (§17): the framed
-  document takes no edits and reveals no markers under the reviewer's clicks.
-  The preference lives in `fused.params` under
-  `edit` (`"0"`/`"1"`), like `graph` and `depth` (MD-20), so it survives a refresh
-  and travels in a shared URL; an absent param is read-only, and only an explicit
-  `"1"` grants editing. `aria-pressed` on the corner button therefore tracks
-  **editing** — the non-default state, so the accent marks the surface you can
-  change — while the glyph names the current mode (padlock read-only, pencil
-  editing). It is layered **on top of** the file's real
-  writability and can never override it: for a genuinely unwritable file (MD-15)
-  the toggle is *disabled* with a title saying why. Switching to read-only
-  flushes pending edits first (`await save()`), for the same reason navigation
-  does (MD-16). The control is a second 26px button in the same corner cluster as
-  the sidebar toggle — not a toolbar row, which MD-2a still forbids — and
-  switching rebuilds the view (`editable` is chosen at construction), which is
-  invisible because `buildEditor` carries the caret and the scroll position
-  across.
-- **MD-2a** **No toolbar.** The shell's own breadcrumb already names the open
-  file, and Obsidian shows no save state, no dirty indicator and no mode
-  buttons — which left the bar holding nothing. What survived it went where it
-  belongs: the read-only badge floats (the shared `ro-badge.js` idiom), a save
-  *failure* floats as a pill and is invisible when there is nothing to say, and
-  the reload-or-keep banner (MD-17) takes a row only while a conflict is
-  unresolved. The only persistent chrome is a top-right cluster of two 26px
-  buttons — the read-only/editing mode (MD-1a) and the sidebar toggle (MD-19).
-  The sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
-  the graph together, and its accessible name says so.
+- **MD-1a** **There is no mode. A writable note is editable, full stop** (D611,
+  reversing D186). `writable` — read off the shell's persisted `stat.writable`
+  (MD-15) — is the ONLY editability gate; `edit`/`editWanted()`/`editing()`/
+  `applyEditMode`/`#toggle-edit` are deleted outright, not merely hidden. A
+  genuinely unwritable file (a snapshot, a read-only file) still opens locked,
+  through the SAME mechanism it always used — CM's two read-only facets
+  (`EditorView.editable.of(false)` + `EditorState.readOnly.of(true)`), the
+  shared read-only badge — so removing the mode cost nothing there: the locked
+  buffer was always its own path, not a state the mode toggle shared. There is
+  no different typography, no restyled surface and no second render pipeline
+  either way (MD-1/D158). `selectedLines` still gates reveal on `writable`
+  alone, for the reason it always did — a browser text selection inside a
+  non-editable view still reaches the state's selection and would un-render
+  whatever was swiped over. **The trade this reverses:** D186 put a note behind
+  a read-only-by-default lock because the surface autosaves 2s after the last
+  keystroke with no save button, so a stray keystroke on a note opened only to
+  look at it would silently rewrite it — that risk has not gone away, it is
+  now accepted, by owner call, in exchange for one editable surface with no
+  mode chrome at all.
+- **MD-2a** **No toolbar, and now only ONE persistent button.** The shell's own
+  breadcrumb already names the open file, and Obsidian shows no save state, no
+  dirty indicator and no mode buttons — which left the bar holding nothing.
+  What survived it went where it belongs: the read-only badge floats (the
+  shared `ro-badge.js` idiom), a save *failure* floats as a pill and is
+  invisible when there is nothing to say, and the reload-or-keep banner
+  (MD-17) takes a row only while a conflict is unresolved. The corner cluster
+  held two 26px buttons while the read-only/editing mode existed (MD-1a);
+  with the mode gone, only the right-sidebar toggle (MD-19) remains there. The
+  sidebar's glyph is a **panel**, not a graph: the panel holds backlinks and
+  the graph together, and its accessible name says so. The **outline's own
+  control lives on the outline rail itself** (MD-19b), not in this cluster —
+  chrome for a subject sits with that subject.
 - **MD-2** **Registry.** `.md`/`.markdown` are `["markdown", "code",
   "claude", "reader"]` — `markdown` now supersedes `code` for
   notes, and `code` stays **unchanged** as the raw-source escape hatch. The chat
@@ -3174,59 +3161,83 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   reach because it cannot span into a widget's DOM (clicking the table shows the
   source, which is where a cell is edited). Paste-or-drop of an image *was*
   listed here as blocked on a binary write; it is now built (MD-23).
-- **MD-19a** **Backlinks and the graph are one right sidebar**, as they are in
-  Obsidian, behind the single 26px toggle (MD-2a) — not a footer under the
-  document, which a full-height editor has no room for. Backlinks scroll in the
-  upper section; the graph canvas and its depth control sit below.
-  One toggle opens both: they answer the same question about the open note. The
-  panel is **resizable** by dragging a thin handle on its left edge (15rem to
-  45rem, arrow keys on the focused handle too), and the width is persisted in
-  **`localStorage`, deliberately not in params**: params are the state a shared
-  URL should reproduce (MD-20), and how wide someone dragged their panel is
-  window furniture that a link must not carry. Each resize `nudge()`s the canvas,
-  which is a fixed-size bitmap and does not otherwise learn that its box moved.
-- **MD-19b** **The outline is the sidebar's TOP section, and it reads the live
-  document** (D190). The open note's headings get a nested, click-to-scroll list —
-  the navigation aid a long note needs, which the panel had headings for
-  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is a **section of
-  the one right sidebar**, not a panel and not a second toggle: MD-19a allows
-  exactly one right sidebar behind one 26px toggle and MD-2a forbids the toolbar
-  row a second control would want. It sits **above** backlinks because the
-  ordering is by subject rather than by size — the outline is about the note in
-  front of you, backlinks and the graph are about the rest of the vault, so the
-  section describing the open document is nearest it, as in Obsidian. Being first
-  it is also the section that clears the floating corner cluster. Sized like the
-  backlinks list (content-sized, scrolling, capped) so neither list can starve
-  the canvas.
-  **It reads `view.state.doc`, never the payload.** `notes.headings` re-parses
-  only on save (MD-9), so a payload-fed outline would lag every heading typed by
-  up to one autosave interval, and a stale outline sends you to the wrong place —
-  worse than none. Reading the document is the same move MD-4b already makes.
-  **No timer**: the editor's existing `docChanged` listener is the only trigger,
-  and this template stays poll-free (MD-17). The heading scan mirrors graph.py's
-  `_mask_code` — frontmatter and fenced code masked, ATX only — so a
-  `# not a heading` inside a fenced block is as absent here as it is from every
-  other heading surface. Mirroring it includes the case that bites while typing:
-  an **unclosed** `---` is not frontmatter (`_frontmatter_span` returns no span,
-  and MD-18a's decoration scan finds the end before it dims anything), so the
-  closer is found before any line is skipped. A standing "in frontmatter" flag
-  emptied the whole outline from the keystroke that opened the block to the one
-  that closed it, while the other two surfaces kept those headings — caught in
-  review. Indentation is **nesting depth over the levels present**, and the
-  `[[#` popup calls the same function rather than a matching copy (MD-14), since
-  a note that starts at `##` or skips a level is where two copies diverge. Not the syntax tree, tempting though it is: it is parsed
-  only as far as CM has got, so a long note would silently lose its tail
-  headings. Rows scroll by **line**, not by heading text (they were built from
-  that line; matching by text hands the second `## Notes` to the first one), and
-  MD-4b's caret rule lives in the one `scrollToLine` both paths call. Indent is by
-  **nesting depth over the levels present**, so a note that starts at `##` is not
-  an indented note. **No state, therefore no param** (MD-20 carries what a shared
-  URL must reproduce; a section that is always drawn with its panel has nothing
-  to carry), and an unchanged heading list is not redrawn — which is what keeps
+- **MD-19a** **Backlinks and the graph are one right sidebar**, behind the
+  single 26px toggle (MD-2a) — not a footer under the document, which a
+  full-height editor has no room for. Backlinks scroll in the upper section;
+  the graph section sits below and is **conditional** (MD-19c). The outline is
+  no longer part of this panel (D611) — see MD-19b.
+  One toggle opens both remaining sections: they answer the same question
+  about the rest of the vault. The panel is **resizable** by dragging a thin
+  handle on its left edge (15rem to 45rem, arrow keys on the focused handle
+  too), and the width is persisted in **`localStorage`, deliberately not in
+  params**: params are the state a shared URL should reproduce (MD-20), and
+  how wide someone dragged their panel is window furniture that a link must
+  not carry. Each resize `nudge()`s the canvas, which is a fixed-size bitmap
+  and does not otherwise learn that its box moved.
+- **MD-19b** **The outline is a LEFT RAIL in the page** (`#outline-rail`),
+  open by default, and it reads the live document (D190, moved off the right
+  sidebar by D611). The open note's headings get a nested, click-to-scroll
+  list — the navigation aid a long note needs, which the page had headings for
+  everywhere (`[[#`, `](#`, `?heading=`) except on screen. It is **no longer a
+  section of the right sidebar**: MD-19a's one-toggle rule now governs only
+  backlinks and the graph, because a note's own structure is not the same
+  subject as the rest of the vault, and because it always exists — unlike
+  backlinks or the graph, which can be legitimately absent (MD-19c) — so it
+  earns permanent chrome instead of chrome behind a toggle (§2 of the redesign
+  plan: "chrome appears only when its subject exists", and a note's structure
+  always does).
+  **State is a param, `outline`, exactly like `graph` and `depth`** (MD-20):
+  absent means **open** (the default — a reversal of the old "no state,
+  therefore no param" rule, which held only because the section used to be
+  undrawable without its parent panel open), and only an explicit `"0"`
+  closes it, so a shared URL still reproduces what you see. Width is
+  **15rem, resizable 12rem–30rem by dragging its right edge**, persisted in
+  `localStorage` under `fused-md-outline-width` and clamped so it cannot
+  squeeze the document below the same floor the right panel's own clamp
+  protects — window furniture, not shareable state, for the same reason
+  MD-19a's width is not a param. Collapsed, a 26px button reopens it at the
+  page's left edge.
+  **The signature element: a 2px accent bar** on the row for the heading
+  currently at the top of the viewport, the one accent-coloured thing in the
+  rail. Driven off the editor's own **scroll and update events, never a
+  timer** — the same poll-free discipline MD-17 already holds this template
+  to (`view.scrollDOM`'s native `scroll` event, plus the existing `docChanged`/
+  `selectionSet` triggers). It is computed from `view.lineBlockAt` against
+  each drawn heading's line, not from a second measurement pass.
+  Everything else about how it reads the document is unchanged from before the
+  move: **it reads `view.state.doc`, never the payload.** `notes.headings`
+  re-parses only on save (MD-9), so a payload-fed outline would lag every
+  heading typed by up to one autosave interval, and a stale outline sends you
+  to the wrong place — worse than none. Reading the document is the same move
+  MD-4b already makes. The heading scan mirrors graph.py's `_mask_code` —
+  frontmatter and fenced code masked, ATX only — so a `# not a heading` inside
+  a fenced block is as absent here as it is from every other heading surface,
+  including the case that bites while typing: an **unclosed** `---` is not
+  frontmatter (`_frontmatter_span` returns no span, and MD-18a's decoration
+  scan finds the end before it dims anything), so the closer is found before
+  any line is skipped. Indentation is **nesting depth over the levels
+  present**, and the `[[#` popup calls the same function rather than a
+  matching copy (MD-14), since a note that starts at `##` or skips a level is
+  where two copies diverge. Not the syntax tree, tempting though it is: it is
+  parsed only as far as CM has got, so a long note would silently lose its
+  tail headings. Rows scroll by **line**, not by heading text (they were
+  built from that line; matching by text hands the second `## Notes` to the
+  first one), and MD-4b's caret rule lives in the one `scrollToLine` both
+  paths call. An unchanged heading list is not redrawn, which is what keeps
   the list's own scroll position while you type inside a heading. Empty says
-  so, in the backlinks list's voice. Fully functional read-only (MD-1a): an
-  outline is a reading affordance first, its rows are buttons outside the editor
-  on the one delegated click handler, and a scroll is not an edit.
+  "No headings yet." — the same voice as the backlinks empty state. Fully
+  functional on an unwritable file (MD-1a): an outline is a reading affordance
+  first, its rows are buttons outside the editor on the one delegated click
+  handler, and a scroll is not an edit.
+- **MD-19c** **The graph section is conditional: drawn only when the note has
+  a link.** At least one outbound link this scan resolved, or at least one
+  backlink — otherwise the section is **absent**, not an empty canvas and not
+  a "no links" placeholder (D611). An empty graph would tell an orphan note's
+  reader the same fact the backlinks list above it already told them, a
+  second time, with a canvas. On the **no-scan** path (a mount, a refused
+  root) the section is absent too, and the backlinks notice directly above it
+  already says why in graph.py's own words — MD-11a's distinction ("nobody
+  looked" is not "there is nothing") belongs to one surface, not two.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
@@ -3292,9 +3303,14 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   the resting field washes out in proportion to edges-per-node; the focus
   note's own edges hold a step above the field, and hover is what makes any
   individual link fully legible again.
-- **MD-20** **Graph state is params.** Panel open and depth live in
-  `fused.params`, so a graph view is refresh-proof and **URL-shareable** — which
-  Obsidian's is not. Nodes are notes and per-**name** ghosts (five notes linking
+- **MD-20** **Graph state is params — and so is the outline rail's.** Panel
+  open and depth live in `fused.params`, so a graph view is refresh-proof and
+  **URL-shareable** — which Obsidian's is not. The outline rail follows the
+  same rule (MD-19b) under `outline`: absent is open, `"0"` closes it, the
+  same absent-means-default-on convention `graph` and `depth` already used.
+  **`edit` is gone** (D611): there is no mode left for a param to carry, and
+  no read/write state to reproduce in a shared URL any more — a writable note
+  is simply editable wherever it is opened. Nodes are notes and per-**name** ghosts (five notes linking
   `[[Roadmap]]` share the node they are all asking for) and nothing else; an
   embedded picture is deliberately **not** a node, or a vault of screenshots
   would drown the graph. A focused graph BFSes out `depth` hops
@@ -3484,6 +3500,96 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   - **The bottom side stays small.** Markdown's own blank separator line is
     already a full line-height of space; these rules add what markdown cannot
     express — the space *above* a heading, and the gap around a block.
+- **MD-27** **The image lightbox** (D611). Clicking a rendered `<img
+  class="lp-img">` (`imageWidget`, not video — a native player already owns
+  clicks there) opens a full-screen overlay: dim backdrop, image fitted to the
+  viewport, `Escape` or a backdrop click to close, `←`/`→` to step through the
+  note's other images. The widget becomes **opaque** for an image specifically
+  (`ignoreEvent` returns true), a change from its previous click-to-edit
+  posture, so the click neither moves the caret nor counts as an edit.
+  **Navigation walks the SOURCE, not the DOM.** CodeMirror only renders the
+  current viewport, so a `document.querySelectorAll(".lp-img")` at open time
+  would silently omit every image outside it on a long note; `collectDocImages`
+  instead regex-scans `view.state.doc.toString()` for `![alt](src)` in document
+  order and resolves each the same way `imageWidget` does. The clicked image
+  is re-found in that list by its own **source position** (the `Image` node's
+  `from`, threaded through as `imageWidget`'s third argument), not by URL or
+  alt text, since either can repeat. Alt text, when present, sits bottom-left
+  as the caption. `![[embed]]` images are not indexed for prev/next — only the
+  plain `![alt](src)` form the regex scan can see without a link scan.
+- **MD-28** **Fenced code gets real per-language highlighting, in both
+  themes, as a block** (D611). Three changes:
+  1. **Per-language tokens.** `CM.markdown({ codeLanguages })` had never been
+     wired to anything, so a fence got flat colour from whichever markdown
+     theme was active. `codeLanguages` is now a small function
+     (`codeLanguageFor`) mapping a fence's info string — plus the usual
+     aliases (`js`/`ts`/`jsx`/`tsx`/`py`/`sh`/`bash`/`zsh`/`yml`) — to one of
+     the languages already bundled (python, javascript, json, yaml, html,
+     css, shell, toml); an unmapped language gets no highlighting but keeps
+     its chip and copy button.
+  2. **Light mode gets its own `HighlightStyle`.** `oneDark` (dark mode only)
+     ships its own token colours; light mode had none, so its fences stayed
+     flat grey. `lightCodeHighlight` is built from this view's OWN theme
+     tokens — `--accent`/`--fg`/`--fg-muted`/`--ghost`/`--error`, no new
+     colour literals — with weight and slant carrying some of what a fuller
+     palette would in colour (keywords/numbers accent+bold, comments ghost+
+     italic, strings/punctuation fg-muted). This is the one change that
+     needed the vendored bundle rebuilt: `HighlightStyle`, `syntaxHighlighting`
+     and `tags` (from `@lezer/highlight` — there is no way to define a
+     `HighlightStyle` without a tag namespace, so this was added alongside
+     the two named exports) were not previously re-exported from
+     `scripts/vendor-codemirror/entry.js` (MD-13).
+  3. **A block, not striped lines.** `.lp-fence-line` already tinted every
+     line; it now also carries a left/right border, with the opening and
+     closing lines carrying the top/bottom border and the rounded corners —
+     since the lines sit flush with no gap, the borders read as one panel.
+     The opening line (`position: relative`) anchors a small floating toolbar
+     (`.lp-fence-chip`, a `Decoration.widget` at that line's end): the fence's
+     language, uppercase and muted in the chrome register (§2 of the redesign
+     plan — 11px, `letter-spacing: 0.08em`), and a **copy button** that
+     appears on hovering that corner and copies the fenced body (markers
+     stripped) via `navigator.clipboard`. The widget's reuse key includes a
+     snippet of the body, not just the language, so editing the code inside
+     the fence cannot leave the copy button holding a stale closure over the
+     old text.
+- **MD-29** **The selection format bubble** (D611). A floating bar appears
+  above a non-empty editor selection — bold, italic, strikethrough, inline
+  code, link, and "Turn into" (MD-30) — flipping below the selection when
+  there is no room above, and dismissing when the selection empties, on
+  `Escape`, on scroll, or on blur. **Positioned by hand from
+  `view.coordsAtPos`**, not through `CM.showTooltip`/`Tooltip` — neither is
+  bundled, and adding them was explicitly out of scope for this build, to
+  keep the tooltip machinery out of the vendored bundle rebuild MD-28 already
+  needed. **Every button calls the command that already exists** —
+  `toggleWrap`/`insertLink`, the same path the keyboard shortcuts use — so
+  there is no second definition of what bold means; a mark already applied on
+  the selection shows its button pressed, using the identical pre/post
+  wrap-detection `toggleWrap` itself uses to decide whether to unwrap. Absent
+  entirely on an unwritable file (MD-1a/MD-15) — chrome for an action that is
+  not available.
+- **MD-30** **Line and block conversion: two doors, one command set** (D611).
+  `convertLines(kind)` turns every line the selection touches (or the
+  caret's line, with no selection) into `kind` — heading 1–3, quote, bullet
+  list, numbered list, task, code (which fences the whole range as one
+  block rather than prefixing each line), or plain text — by stripping any
+  existing block-level prefix first (`BLOCK_STRIP_RE`) so "Turn into Quote"
+  on a bulleted line replaces the bullet instead of stacking `- > `.
+  - **"Turn into"**, in the selection format bubble (MD-29), is the
+    RETROACTIVE door: it converts lines that already have content.
+  - **`/` at the start of an empty line** is the INSERTION door: a fourth
+    source (`slashMenuCompletions`) in the same `CM.autocompletion({
+    override })` call the `[[` popup already uses (MD-14) — no new
+    completion plumbing. It offers the same block types as "Turn into" plus
+    three pure insertions "Turn into" cannot express on already-typed text
+    (table, divider, callout — the last inserting `> [!note] ` as a plain
+    blockquote, not a new parsed/rendered callout block, which stays out of
+    scope; §8 backlog item 4). Both doors read from one shared list,
+    `BLOCK_TYPES`, so the menu and the bubble cannot describe two different
+    sets of block types.
+  What this makes unnecessary: Live Preview already turns `# ` into a
+  rendered heading the instant it is typed (MD-18a) — the only gap was ever
+  the RETROACTIVE direction, which neither Obsidian nor Typora has a native
+  command for either.
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 
