@@ -24,6 +24,8 @@ enum FusedShared {
 struct ManifestApp: Codable, Identifiable, Hashable {
     var host: String
     var port: Int
+    /// "http" or "https" — how the app reaches this computer (TLSTrust.swift).
+    var scheme: String = "http"
     var name: String
     var title: String?
     /// The app folder on the computer.
@@ -46,9 +48,9 @@ struct ManifestApp: Codable, Identifiable, Hashable {
 
     var baseURL: URL {
         var c = URLComponents()
-        c.scheme = "http"
+        c.scheme = scheme
         c.host = host
-        c.port = port == 80 ? nil : port
+        c.port = (scheme == "https" ? port == 443 : port == 80) ? nil : port
         c.path = "/"
         return c.url!
     }
@@ -56,8 +58,8 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     /// Where the page lives: the grid's relative URL resolved on the server.
     var pageURL: URL { URL(string: url, relativeTo: baseURL)!.absoluteURL }
 
-    /// `fusedrender://open?host=…&port=…&path=<entry html>` — widgets and quick
-    /// actions carry this; the app routes it straight to the page.
+    /// `fusedrender://open?host=…&port=…&scheme=…&path=<entry html>` — widgets
+    /// and quick actions carry this; the app routes it straight to the page.
     var deepLink: URL {
         var c = URLComponents()
         c.scheme = FusedShared.scheme
@@ -66,6 +68,7 @@ struct ManifestApp: Codable, Identifiable, Hashable {
         c.queryItems = [
             .init(name: "host", value: host),
             .init(name: "port", value: String(port)),
+            .init(name: "scheme", value: scheme),
             .init(name: "path", value: entry),
         ]
         return c.url!
@@ -79,6 +82,7 @@ struct ManifestApp: Codable, Identifiable, Hashable {
 struct DeepLink {
     let host: String
     let port: Int
+    let scheme: String
     let path: String
 
     init?(_ url: URL) {
@@ -88,7 +92,8 @@ struct DeepLink {
               let path = items.first(where: { $0.name == "path" })?.value, !path.isEmpty
         else { return nil }
         self.host = host
-        self.port = Int(items.first(where: { $0.name == "port" })?.value ?? "") ?? 80
+        self.scheme = items.first(where: { $0.name == "scheme" })?.value ?? "http"
+        self.port = Int(items.first(where: { $0.name == "port" })?.value ?? "") ?? (scheme == "https" ? 443 : 80)
         self.path = path
     }
 }

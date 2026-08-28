@@ -134,7 +134,7 @@ struct PairView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
-                if let problem {
+                if let problem = problem ?? model.pairProblem {
                     Text(problem).font(.footnote).foregroundStyle(.red)
                 }
                 Spacer()
@@ -171,76 +171,54 @@ struct ConnectedView: View {
     }
 
     var body: some View {
-        WebView(url: server.baseURL, pairURL: $model.pendingPairURL, controller: web)
+        WebView(server: server, pairURL: $model.pendingPairURL, controller: web)
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
-            // Two kinds of chrome, never both. On the grid: a proper bottom
-            // bar — the listing is ours, so it gets real controls. Inside an
-            // app: one floating button in the corner under the home indicator,
-            // because the page owns the screen (owner's call).
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                if onGrid { gridBar }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if !onGrid { appMenu }
-            }
-            .animation(.easeInOut(duration: 0.18), value: onGrid)
+            // One top bar, on the grid and inside apps alike (owner's call —
+            // no floating button, no back). Left: the computer (grid) or home
+            // (app). Middle: where you are. Right: the few actions.
+            .safeAreaInset(edge: .top, spacing: 0) { topBar }
     }
 
-    private var gridBar: some View {
-        HStack(spacing: 0) {
-            BarButton(title: "Computers", systemImage: "desktopcomputer") { model.disconnect() }
-            BarButton(title: "Refresh", systemImage: "arrow.clockwise") { web.load(server.baseURL) }
-            BarButton(title: "Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
-        }
-        .padding(.top, 6)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private var appMenu: some View {
-        Menu {
-            Button("All apps", systemImage: "square.grid.2x2") { web.load(server.baseURL) }
-            if web.canGoBack {
-                Button("Back", systemImage: "chevron.left") { web.goBack() }
+    private var topBar: some View {
+        HStack(spacing: 8) {
+            if onGrid {
+                Button { model.disconnect() } label: {
+                    Label("Computers", systemImage: "desktopcomputer").labelStyle(.iconOnly)
+                }
+                .accessibilityLabel("Switch computer")
+            } else {
+                Button { web.load(server.baseURL) } label: {
+                    Label("All apps", systemImage: "house").labelStyle(.iconOnly)
+                }
+                .accessibilityLabel("All apps")
             }
-            Button("Reload", systemImage: "arrow.clockwise") { web.webView?.reload() }
-            Divider()
-            Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
-            Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }
-            Text(server.host).font(.footnote)
-        } label: {
-            Image(systemName: "ellipsis.circle.fill")
-                .font(.title2)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(.secondary)
-                .padding(8)
-                .background(.ultraThinMaterial, in: Circle())
-                .padding(.trailing, 12)
-                .padding(.bottom, 6)
-        }
-    }
-}
-
-/// A tab-bar-shaped button: icon over a small label, equal width.
-struct BarButton: View {
-    let title: String
-    let systemImage: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemImage).font(.system(size: 20, weight: .regular))
-                Text(title).font(.system(size: 10.5, weight: .medium))
+            VStack(spacing: 0) {
+                Text(onGrid ? "Apps" : (web.title.isEmpty ? "…" : web.title))
+                    .font(.headline)
+                    .lineLimit(1)
+                Text(server.host)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 4)
-            .contentShape(Rectangle())
+            Menu {
+                Button("Reload", systemImage: "arrow.clockwise") { web.webView?.reload() }
+                Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
+                Divider()
+                Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }
+                Text(server.baseURL.absoluteString).font(.footnote)
+            } label: {
+                Label("More", systemImage: "ellipsis.circle").labelStyle(.iconOnly)
+            }
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
+        .font(.title3)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }

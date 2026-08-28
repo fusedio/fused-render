@@ -24,6 +24,8 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
     static let handlerName = "fusedCapture"
 
     weak var webView: WKWebView?
+    /// The computer the page came from — for the pinned https session.
+    var server: Server?
 
     private var audio: AudioRecording?
     private var screen: ScreenRecording?
@@ -214,6 +216,9 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             .map { "\($0.name)=\($0.value)" }
             .joined(separator: "; ")
 
+        // Over https, trust exactly the computer's private CA (TLSTrust.swift).
+        let pinned = PinnedSession(caDER: server?.caDER)
+
         // /api/fs/upload refuses a missing parent; make `<app dir>/captures/`
         // (or whatever the caller named) first. "Already exists" is fine.
         var mkdirComps = comps
@@ -226,7 +231,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
             if !cookieHeader.isEmpty { mk.setValue(cookieHeader, forHTTPHeaderField: "Cookie") }
             mk.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
             mk.httpBody = try JSONSerialization.data(withJSONObject: ["path": (path as NSString).deletingLastPathComponent])
-            _ = try? await URLSession.shared.data(for: mk)
+            _ = try? await pinned.data(for: mk)
         }
 
         let boundary = "fused-" + UUID().uuidString
@@ -247,7 +252,7 @@ final class CaptureBridge: NSObject, WKScriptMessageHandler {
         req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.httpBody = body
 
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await pinned.data(for: req)
         guard let http = response as? HTTPURLResponse else { throw BridgeError("no response from the server") }
         guard (200..<300).contains(http.statusCode) else {
             let text = String(data: data, encoding: .utf8) ?? ""

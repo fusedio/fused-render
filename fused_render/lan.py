@@ -66,6 +66,10 @@ ALIAS_HOSTNAME = "render.local"
 #: Port 80 first so the URL carries no port (macOS ≥ 10.14 lets a non-root
 #: process bind it); the fallbacks are for Linux/Windows or a taken 80.
 PORT_CANDIDATES = (80, 8080, 1888)
+#: The https listener beside it (lan_tls.py): trusted by the native shell,
+#: which pins our private CA from the pairing QR; browsers keep http. 443
+#: first so the app's URL carries no port.
+TLS_PORT_CANDIDATES = (443, 8443, 1889)
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "lan")
 
@@ -583,6 +587,20 @@ class LanApp:
             return _not_found()
         if path == "/pair" and method == "GET":
             return _handle_pair(scope)
+        if path == "/lan/ca.pem" and method == "GET":
+            # The private CA's PUBLIC certificate, for the native shell to pin
+            # after checking it against the fingerprint the QR carried.
+            from fused_render import lan_tls
+
+            return Response(lan_tls.ca_pem(), media_type="application/x-pem-file",
+                            headers={"Cache-Control": "no-store"})
+        if path == "/api/lan/tls" and method == "GET":
+            # Where https is and which CA signs it — for a shell that found the
+            # computer over Bonjour rather than a QR (trust on first use).
+            from fused_render import lan_tls
+
+            return JSONResponse({"https_port": _controller.tls_port,
+                                 "ca_fingerprint": lan_tls.ca_fingerprint() if _controller.tls_running else None})
         if not _paired(scope):
             return _unauthorized(scope)
 
@@ -808,6 +826,12 @@ class _Controller:
         self._ip: str | None = None
         self.port: int | None = None
         self.error: str | None = None
+        # The https listener (lan_tls.py) beside the http one.
+        self._tls_server = None
+        self._tls_thread: threading.Thread | None = None
+        self._tls_ip: str | None = None
+        self.tls_port: int | None = None
+        self.tls_error: str | None = None
 
     # -- wiring
     def attach(self, inner) -> None:
@@ -817,16 +841,36 @@ class _Controller:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive() and self.port is not None
 
+    @property
+    def tls_running(self) -> bool:
+        return self._tls_thread is not None and self._tls_thread.is_alive() and self.tls_port is not None
+
     def url(self) -> str | None:
         if not self.running:
             return None
         return f"http://{HOSTNAME}/" if self.port == 80 else f"http://{HOSTNAME}:{self.port}/"
 
+    def https_url(self) -> str | None:
+        if not self.tls_running:
+            return None
+        return f"https://{HOSTNAME}/" if self.tls_port == 443 else f"https://{HOSTNAME}:{self.tls_port}/"
+
     def status(self) -> dict:
         ip = lan_ip()
         if self.running and ip and ip != self._ip:
-            # Wi-Fi changed under us: re-advertise the new address.
+            # Wi-Fi changed under us: re-advertise the new address, and reissue
+            # the certificate (it names the address) on a fresh https listener.
             self._advertise(ip)
+            if ip != self._tls_ip:
+                with self._lock:
+                    self._stop_tls()
+                    self._start_tls(ip)
+        from fused_render import lan_tls
+
+        try:
+            fingerprint = lan_tls.ca_fingerprint() if self.running else None
+        except Exception:  # noqa: BLE001
+            fingerprint = None
         return {
             "running": self.running,
             "url": self.url(),
@@ -835,8 +879,21 @@ class _Controller:
             "ip": ip,
             "port": self.port,
             "error": self.error,
+            "https_url": self.https_url(),
+            "https_port": self.tls_port,
+            "tls_error": self.tls_error,
+            "ca_fingerprint": fingerprint,
             "devices": list_devices(),
         }
+
+    def _stop_tls(self) -> None:
+        server, thread = self._tls_server, self._tls_thread
+        self._tls_server = self._tls_thread = None
+        self.tls_port = None
+        if server is not None:
+            server.should_exit = True
+        if thread is not None:
+            thread.join(timeout=5.0)
 
     # -- start/stop
     def apply(self, enabled: bool) -> None:
@@ -878,21 +935,67 @@ class _Controller:
         thread.start()
         self._server, self._thread = server, thread
         ip = lan_ip()
+        # https first: the mDNS record names its port.
+        self._start_tls(ip)
         if ip:
             self._advertise(ip)
         else:
             self.error = "no network address found"
-        logger.info("lan: sharing ~/Fused/local at %s (%s:%s)", self.url(), ip, self.port)
+        logger.info("lan: sharing at %s / %s (%s)", self.url(), self.https_url(), ip)
+
+    def _start_tls(self, ip: str | None) -> None:
+        """The https listener for the native shell (lan_tls.py). Best-effort:
+        a failure here leaves http working and is reported in `tls_error`."""
+        import uvicorn
+
+        from fused_render import lan_tls
+
+        self.tls_error = None
+        try:
+            cert, key = lan_tls.ensure_server_cert([HOSTNAME, ALIAS_HOSTNAME], [ip] if ip else [])
+            self._tls_ip = ip
+        except Exception as e:  # noqa: BLE001
+            self.tls_error = f"certificate: {e}"
+            logger.warning("lan: tls certificate failed: %s", e)
+            return
+        sock = None
+        for port in TLS_PORT_CANDIDATES:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
+                sock.listen(128)
+                self.tls_port = port
+                break
+            except OSError as e:
+                sock.close()
+                sock = None
+                logger.info("lan: tls port %s unavailable (%s)", port, e)
+        if sock is None:
+            self.tls_error = "no free https port among " + ", ".join(map(str, TLS_PORT_CANDIDATES))
+            self.tls_port = None
+            return
+        config = uvicorn.Config(LanApp(self._inner), host="0.0.0.0", port=self.tls_port,
+                                log_level="warning", lifespan="on",
+                                ssl_certfile=cert, ssl_keyfile=key)
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]},
+                                  daemon=True, name="fused-lan-tls")
+        thread.start()
+        self._tls_server, self._tls_thread = server, thread
 
     def _stop(self) -> None:
         self._unadvertise()
         server, thread = self._server, self._thread
-        self._server = self._thread = None
-        self.port = None
-        if server is not None:
-            server.should_exit = True
-        if thread is not None:
-            thread.join(timeout=5.0)
+        tls_server, tls_thread = self._tls_server, self._tls_thread
+        self._server = self._thread = self._tls_server = self._tls_thread = None
+        self.port = self.tls_port = None
+        for s in (server, tls_server):
+            if s is not None:
+                s.should_exit = True
+        for t in (thread, tls_thread):
+            if t is not None:
+                t.join(timeout=5.0)
         logger.info("lan: sharing stopped")
 
     # -- mDNS
@@ -913,7 +1016,8 @@ class _Controller:
                     addresses=[socket.inet_aton(ip)],
                     port=self.port or 80,
                     server=host + ".",
-                    properties={"path": "/"},
+                    # `https`: the port the native shell should prefer.
+                    properties={"path": "/", **({"https": str(self.tls_port)} if self.tls_port else {})},
                 )
                 zc.register_service(info)
                 infos.append(info)
@@ -968,15 +1072,29 @@ def _require_fused(x_fused: str | None):
 @router.get("/api/lan/pair-token")
 def api_lan_pair_token():
     """Mint a one-time pairing token and the URL to put in the QR code."""
+    from fused_render import lan_tls
+
     token = mint_pair_token()
     base = _controller.url()
-    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode({"t": token})
+    # The QR is an http URL so a browser can use it as-is. Two extra params
+    # ride along for the native shell: `ca`, the private CA's fingerprint, and
+    # `s`, the https port — it fetches /lan/ca.pem, checks the fingerprint, pins
+    # the CA, and pairs over https instead. Browsers ignore both.
+    params = {"t": token}
+    if _controller.tls_running:
+        try:
+            params["ca"] = lan_tls.ca_fingerprint()
+            params["s"] = str(_controller.tls_port)
+        except Exception:  # noqa: BLE001 — https stays optional
+            pass
+    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode(params)
     ip = _controller._ip or lan_ip()
     port = _controller.port
     ip_url = None
     if ip:
-        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode({"t": token})
-    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S}
+        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode(params)
+    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S,
+            "https_url": _controller.https_url(), "ca_fingerprint": params.get("ca")}
 
 
 @router.get("/api/lan/devices")

@@ -1,8 +1,9 @@
 // App state: the computers found on this Wi-Fi, the one we are connected to,
 // and the servers this phone has paired with before (so a relaunch goes
 // straight to the grid). Pairing itself is the webview loading the pair URL —
-// the server sets a cookie in the webview's persistent store — so the only
-// thing worth remembering here is the server's address.
+// the server sets a cookie in the webview's persistent store — so what is
+// remembered here is the server's address plus, for https, the private CA it
+// presents (TLSTrust.swift).
 import Combine
 import Foundation
 
@@ -14,22 +15,49 @@ struct Server: Identifiable, Codable, Equatable, Hashable {
     /// IPv4 it published — never an arbitrary resolved endpoint.
     var host: String
     var port: Int
+    /// "https" once the computer's CA is known and pinned; "http" until then
+    /// (older records decode as http).
+    var scheme: String = "http"
+    /// The computer's private CA (DER) when scheme is https — the only anchor
+    /// the app accepts for this host.
+    var caDER: Data?
 
     var id: String { "\(host):\(port)" }
 
+    var isSecure: Bool { scheme == "https" && caDER != nil }
+
     var baseURL: URL {
         var c = URLComponents()
-        c.scheme = "http"
+        c.scheme = scheme
         c.host = host
-        c.port = port == 80 ? nil : port
+        c.port = (scheme == "https" ? port == 443 : port == 80) ? nil : port
         c.path = "/"
         return c.url!
+    }
+
+    enum CodingKeys: String, CodingKey { case name, host, port, scheme, caDER }
+
+    init(name: String, host: String, port: Int, scheme: String = "http", caDER: Data? = nil) {
+        self.name = name
+        self.host = host
+        self.port = port
+        self.scheme = scheme
+        self.caDER = caDER
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decode(Int.self, forKey: .port)
+        scheme = try c.decodeIfPresent(String.self, forKey: .scheme) ?? "http"
+        caDER = try c.decodeIfPresent(Data.self, forKey: .caDER)
     }
 }
 
 @MainActor
 final class AppModel: ObservableObject {
-    /// Computers advertising the listener right now (Bonjour).
+    /// Computers advertising the listener right now (Bonjour / probe).
     @Published var discovered: [Server] = []
     /// Servers this phone opened before, most recent first.
     @Published var known: [Server] = [] {
@@ -37,9 +65,10 @@ final class AppModel: ObservableObject {
     }
     /// The server the webview is showing, if any.
     @Published var current: Server?
-    /// A pairing the user asked for: the webview loads this URL, the server
-    /// replies with the cookie and a redirect to the grid.
+    /// A URL the webview should load next (a pairing, or a deep link's page).
     @Published var pendingPairURL: URL?
+    /// Why the last pairing attempt did not start, for the pair sheet.
+    @Published var pairProblem: String?
 
     private let discovery = Discovery()
     private var bag = Set<AnyCancellable>()
@@ -50,39 +79,87 @@ final class AppModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$discovered)
         discovery.start()
-        // A phone that paired before goes straight back in.
-        if let last = known.first { current = last }
+        // A phone that paired before goes straight back in — and a computer
+        // remembered over http is asked for https on the way (it may have
+        // gained it since).
+        if let last = known.first {
+            current = last
+            if !last.isSecure { Task { await upgradeToHTTPS(last) } }
+        }
     }
 
+    /// Open a known or discovered computer. A discovered one (http) is asked
+    /// whether it has https and which CA signs it; if so the CA is fetched and
+    /// pinned before the first page loads — trust on first use.
     func open(_ server: Server) {
+        var server = server
+        if let known = known.first(where: { $0.host == server.host && $0.port == server.port }), known.isSecure {
+            server = known
+        }
         remember(server)
         current = server
+        if !server.isSecure {
+            Task { await upgradeToHTTPS(server) }
+        }
     }
 
-    /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`.
-    /// We keep the host it names — that is the advertised name and the one the
-    /// listener will answer — and let the webview do the pairing.
+    private func upgradeToHTTPS(_ server: Server) async {
+        guard let (httpsPort, fingerprint) = await TLSTrust.probeTLS(host: server.host, httpPort: server.port),
+              let ca = await TLSTrust.fetchCA(host: server.host, httpPort: server.port, expected: fingerprint)
+        else { return }
+        let secure = Server(name: server.name, host: server.host, port: httpsPort, scheme: "https", caDER: ca)
+        // Same computer: replace the http record so a relaunch is https too.
+        known.removeAll { $0.host == server.host }
+        remember(secure)
+        if current?.host == server.host {
+            current = secure
+            pendingPairURL = secure.baseURL
+        }
+    }
+
+    /// The QR code (or a pasted URL) names `http://<host>[:port]/pair?t=…`,
+    /// plus `ca` (the CA fingerprint) and `s` (the https port) from a server
+    /// that has https. With those, the CA is fetched over http, checked against
+    /// the fingerprint, pinned, and the pairing happens over https — the cookie
+    /// then lives on the https origin. Without them, http as before.
     func pair(with url: URL) -> Bool {
         guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
               comps.path == "/pair",
-              comps.queryItems?.contains(where: { $0.name == "t" && !($0.value ?? "").isEmpty }) == true,
+              let items = comps.queryItems,
+              let token = items.first(where: { $0.name == "t" })?.value, !token.isEmpty,
               let host = comps.host, !host.isEmpty
         else { return false }
-        let server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host,
-                            host: host, port: comps.port ?? 80)
-        remember(server)
-        pendingPairURL = url
-        current = server
+        let httpPort = comps.port ?? 80
+        let fingerprint = items.first(where: { $0.name == "ca" })?.value
+        let httpsPort = items.first(where: { $0.name == "s" })?.value.flatMap(Int.init)
+        pairProblem = nil
+        Task {
+            var server = Server(name: discovered.first(where: { $0.host == host })?.name ?? host, host: host, port: httpPort)
+            if let fingerprint, let httpsPort {
+                if let ca = await TLSTrust.fetchCA(host: host, httpPort: httpPort, expected: fingerprint) {
+                    server = Server(name: server.name, host: host, port: httpsPort, scheme: "https", caDER: ca)
+                } else {
+                    pairProblem = "Could not verify the computer's certificate; pairing over http instead."
+                }
+            }
+            var pairURL = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
+            pairURL.path = "/pair"
+            pairURL.queryItems = [URLQueryItem(name: "t", value: token)]
+            known.removeAll { $0.host == host }
+            remember(server)
+            pendingPairURL = pairURL.url
+            current = server
+        }
         return true
     }
 
     /// A widget or quick action: `fusedrender://open?host&port&path`. Go to
-    /// that computer and straight to the page, skipping the grid. An unpaired
-    /// computer shows the server's own pairing page; the ⋯ menu offers Pair.
+    /// that computer and straight to the page, skipping the grid. The known
+    /// record for that host carries the scheme and CA.
     func open(deepLink url: URL) -> Bool {
         guard let link = DeepLink(url) else { return false }
-        let server = known.first(where: { $0.host == link.host && $0.port == link.port })
-            ?? Server(name: link.host, host: link.host, port: link.port)
+        let server = known.first(where: { $0.host == link.host })
+            ?? Server(name: link.host, host: link.host, port: link.port, scheme: link.scheme)
         remember(server)
         var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
         c.path = "/render"
@@ -107,7 +184,7 @@ final class AppModel: ObservableObject {
         known.insert(server, at: 0)
     }
 
-    // MARK: persistence (UserDefaults — addresses only, nothing secret)
+    // MARK: persistence (UserDefaults — addresses and a PUBLIC CA certificate)
 
     private static let knownKey = "fused.knownServers"
 

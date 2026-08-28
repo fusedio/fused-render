@@ -4,11 +4,18 @@
 //
 // The user agent carries a marker (`FusedRender-iOS/<version>`) so the
 // listener can tell this shell from a phone browser: lan.py serves the STOCK
-// runtime.js to it instead of appending the phone-browser overrides
-// (camera-photo capture etc.), leaving room for the native bridge to install
-// its own `fused.capture` later.
+// runtime.js to it and the native bridge (CaptureBridge.swift) installs its
+// own `fused.capture` on top.
+//
+// Over https the server presents a certificate from its own private CA; the
+// navigation delegate accepts exactly that CA for exactly this host
+// (TLSTrust.swift) — which is what gives pages a secure context, and with it
+// the microphone and clipboard the same pages lack on plain http.
 import SwiftUI
 import WebKit
+import os
+
+private let webLog = Logger(subsystem: "io.fused.render", category: "web")
 
 /// The little the native chrome needs from the page: where it is, whether it
 /// can go back, and two verbs. Owned by ConnectedView, filled in by WebView.
@@ -17,13 +24,14 @@ final class WebController: ObservableObject {
     weak var webView: WKWebView?
     @Published var location: URL?
     @Published var canGoBack = false
+    @Published var title = ""
 
     func goBack() { webView?.goBack() }
     func load(_ url: URL) { webView?.load(URLRequest(url: url)) }
 }
 
 struct WebView: UIViewRepresentable {
-    let url: URL
+    let server: Server
     @Binding var pairURL: URL?
     let controller: WebController
 
@@ -54,6 +62,7 @@ struct WebView: UIViewRepresentable {
         }
         let web = WKWebView(frame: .zero, configuration: config)
         bridge.webView = web
+        bridge.server = server
         web.navigationDelegate = context.coordinator
         web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = true
@@ -66,38 +75,64 @@ struct WebView: UIViewRepresentable {
         web.backgroundColor = .systemBackground
         context.coordinator.webView = web
         controller.webView = web
-        web.load(URLRequest(url: pairURL ?? url))
+        web.load(URLRequest(url: pairURL ?? server.baseURL))
         return web
     }
 
     func updateUIView(_ web: WKWebView, context: Context) {
+        context.coordinator.server = server
+        context.coordinator.bridge.server = server
         if let pair = pairURL {
             // A fresh pairing request: load it once, then clear so a SwiftUI
-            // re-render does not replay it.
-            web.load(URLRequest(url: pair))
+            // re-render does not replay it. Guarded against the same URL being
+            // seen twice before the async clear lands.
+            if context.coordinator.lastPending != pair {
+                context.coordinator.lastPending = pair
+                webLog.info("load pending \(pair.absoluteString, privacy: .public)")
+                web.load(URLRequest(url: pair))
+            }
             DispatchQueue.main.async { pairURL = nil }
-        } else if context.coordinator.baseURL != url {
-            context.coordinator.baseURL = url
-            web.load(URLRequest(url: url))
+        } else if context.coordinator.baseURL != server.baseURL {
+            context.coordinator.baseURL = server.baseURL
+            webLog.info("load base \(server.baseURL.absoluteString, privacy: .public)")
+            web.load(URLRequest(url: server.baseURL))
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(baseURL: url, controller: controller) }
+    func makeCoordinator() -> Coordinator { Coordinator(server: server, controller: controller) }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        var server: Server
         var baseURL: URL
+        var lastPending: URL?
         weak var webView: WKWebView?
         let controller: WebController
         let bridge = CaptureBridge()
 
-        init(baseURL: URL, controller: WebController) {
-            self.baseURL = baseURL
+        init(server: Server, controller: WebController) {
+            self.server = server
+            self.baseURL = server.baseURL
             self.controller = controller
         }
 
         @objc func pulled(_ sender: UIRefreshControl) {
             guard let web = webView else { sender.endRefreshing(); return }
             if web.url != nil { web.reload() } else { web.load(URLRequest(url: baseURL)) }
+        }
+
+        // The server's private CA is the only anchor for this host.
+        func webView(_ webView: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+                     completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+            guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
+                  let trust = challenge.protectionSpace.serverTrust else {
+                completionHandler(.performDefaultHandling, nil)
+                return
+            }
+            if let ca = server.caDER, TLSTrust.accepts(trust, caDER: ca, host: challenge.protectionSpace.host) {
+                completionHandler(.useCredential, URLCredential(trust: trust))
+            } else {
+                completionHandler(.cancelAuthenticationChallenge, nil)
+            }
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -110,12 +145,14 @@ struct WebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             webView.scrollView.refreshControl?.endRefreshing()
+            webLog.info("finished \(webView.url?.absoluteString ?? "-", privacy: .public)")
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack
+            controller.title = webView.title ?? ""
             // The grid just loaded (paired, current): refresh what the widgets
             // and quick actions know.
-            if let u = webView.url, u.path == "/" || u.path == "/index.html", let host = u.host {
-                ManifestSync.refresh(from: webView, server: Server(name: host, host: host, port: u.port ?? 80))
+            if let u = webView.url, u.path == "/" || u.path == "/index.html" {
+                ManifestSync.refresh(from: webView, server: server)
             }
         }
 
@@ -130,9 +167,9 @@ struct WebView: UIViewRepresentable {
             return nil
         }
 
-        // Pages may ask for the microphone / camera (apps that record). The
-        // insecure-context rule does not apply inside WKWebView the way it does
-        // in Safari; grant, and let iOS's own permission prompt decide.
+        // Pages may ask for the microphone / camera. Over https they have a
+        // secure context and WebKit asks us; grant, and let iOS's own
+        // permission prompt decide.
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
                      initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {

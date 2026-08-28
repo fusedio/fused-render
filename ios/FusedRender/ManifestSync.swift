@@ -27,11 +27,12 @@ enum ManifestSync {
             .filter { server.host.hasSuffix($0.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))) }
             .map { "\($0.name)=\($0.value)" }
             .joined(separator: "; ")
+        let pinned = PinnedSession(caDER: server.caDER)
         var req = URLRequest(url: server.baseURL.appendingPathComponent("api/lan/apps"))
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
         req.cachePolicy = .reloadIgnoringLocalCacheData
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
+        guard let (data, response) = try? await pinned.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
             log.info("manifest refresh skipped (not paired or offline)")
@@ -40,10 +41,11 @@ enum ManifestSync {
 
         var apps: [ManifestApp] = []
         for row in payload.apps {
-            var app = ManifestApp(host: server.host, port: server.port, name: row.name, title: row.title,
-                                  path: row.path, url: row.url, tag: row.tag, recency: row.recency, previewFile: nil)
+            var app = ManifestApp(host: server.host, port: server.port, scheme: server.scheme, name: row.name,
+                                  title: row.title, path: row.path, url: row.url, tag: row.tag,
+                                  recency: row.recency, previewFile: nil)
             if let preview = row.preview {
-                app.previewFile = await cachePreview(preview, for: app, cookieHeader: cookieHeader)
+                app.previewFile = await cachePreview(preview, for: app, cookieHeader: cookieHeader, session: pinned)
             }
             apps.append(app)
         }
@@ -59,12 +61,13 @@ enum ManifestSync {
     /// Download preview.png once per (app, mtime-less) — re-fetched on every
     /// refresh but only rewritten when the bytes changed; downscaled to widget
     /// size so the container stays small.
-    private static func cachePreview(_ relative: String, for app: ManifestApp, cookieHeader: String) async -> String? {
+    private static func cachePreview(_ relative: String, for app: ManifestApp, cookieHeader: String,
+                                     session: PinnedSession) async -> String? {
         guard let url = URL(string: relative, relativeTo: app.baseURL)?.absoluteURL else { return nil }
         var req = URLRequest(url: url)
         req.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         req.setValue(WebView.userAgentMarker, forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
+        guard let (data, response) = try? await session.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let image = UIImage(data: data) else { return nil }
         let side: CGFloat = 400
