@@ -1,0 +1,58 @@
+# XcodeGen spec for the FusedRender iOS app — `xcodegen generate` in this
+# folder writes FusedRender.xcodeproj (gitignored). A thin native shell around
+# the local-network listener (fused_render/lan.py): Bonjour finds the computer,
+# a QR scan pairs, a WKWebView shows the same grid and apps a phone browser
+# would — with the native pieces a browser on plain http cannot offer.
+name: FusedRender
+options:
+  bundleIdPrefix: io.fused
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # No team yet: simulator builds run unsigned. Set DEVELOPMENT_TEAM for a
+    # device / TestFlight build.
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: "1,2"
+    SUPPORTS_MACCATALYST: NO
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  FusedRender:
+    type: application
+    platform: iOS
+    sources:
+      - path: FusedRender
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Fused Render
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+    info:
+      path: FusedRender/Info.plist
+      properties:
+        CFBundleDisplayName: Fused Render
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        # The listener speaks plain http on the LAN (lan.py explains why).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSAllowsArbitraryLoadsInWebContent: true
+        # Bonjour browsing for the listener's _http._tcp record.
+        NSBonjourServices:
+          - _http._tcp
+        NSLocalNetworkUsageDescription: Fused finds your computer on this Wi-Fi to open the apps you build there.
+        NSCameraUsageDescription: The camera reads the pairing code shown in Fused Render's Preferences.
+        NSMicrophoneUsageDescription: Apps you open can record audio with your permission.
+        UIViewControllerBasedStatusBarAppearance: true
+        ITSAppUsesNonExemptEncryption: false

@@ -583,7 +583,12 @@ class LanApp:
         if path.startswith("/a/"):
             return self._app_shortcut(path[3:])
         if path == "/static/runtime.js" and method in ("GET", "HEAD"):
-            return _phone_runtime()
+            # The native iOS shell (ios/) marks its user agent: it gets the
+            # STOCK runtime — the phone-browser overrides (camera-photo capture,
+            # etc.) are workarounds for limits a WKWebView shell does not have,
+            # and the shell installs its own bridge on top.
+            if "FusedRender-iOS/" not in _header(scope, b"user-agent"):
+                return _phone_runtime()
 
         if any(path.startswith(p) for p in _PREFIXES):
             return None

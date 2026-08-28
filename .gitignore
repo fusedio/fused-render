@@ -65,3 +65,7 @@ docs/superpowers/plans/
 
 # Windows dev.ps1 isolated home
 .dev-home/
+
+# iOS shell (ios/): XcodeGen writes the project from project.yml
+ios/*.xcodeproj
+ios/build/
