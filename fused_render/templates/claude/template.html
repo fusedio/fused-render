@@ -13361,6 +13361,16 @@ function subagentStatusLine(seg, now) {
 // OWN chip happened to repaint.
 const subagentCache = new Map();
 const subagentLoading = new Set();   // agentIds with a fetch in flight
+// Same bound as APP_STATE_MEMO_MAX, same reason: one entry per subagent ever
+// expanded is bounded in practice (a handful per session) and unbounded in
+// principle over a session left open for a very long time — oldest out first,
+// which only costs a re-fetch next time that one is opened again.
+const SUBAGENT_CACHE_MAX = 200;
+function subagentCacheTrim() {
+  while (subagentCache.size > SUBAGENT_CACHE_MAX) {
+    subagentCache.delete(subagentCache.keys().next().value);
+  }
+}
 
 // One assistant/user turn of a subagent's own transcript. Assistant turns go
 // through `renderSegments` — the SAME tool-chip/thinking/text machinery the
@@ -13404,6 +13414,7 @@ async function loadSubagentTranscript(logEl, seg) {
       AGENT, { action: "subagent", file: FILE, session_id, agent_id: agentId },
       { key: null });
     subagentCache.set(agentId, data);
+    subagentCacheTrim();
     renderSubagentTranscript(logEl, (data && data.turns) || []);
   } finally {
     subagentLoading.delete(agentId);
