@@ -63,7 +63,7 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { useThemePref } from "@platform/lib/theme";
 import { IndexingPanel } from "@shell/Indexing";
 
-type PrefsTab = "render" | "ai" | "indexing";
+type PrefsTab = "render" | "ai" | "indexing" | "lan";
 
 // The one section on this page that is deliberately NOT server-backed. Every
 // other control here round-trips /api/prefs (shell/prefs.py); Appearance is
@@ -290,7 +290,7 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
         </span>
       </label>
       {running && lan.url && (
-        <LanPairing url={lan.url} deviceCount={devices.length} />
+        <LanPairing url={lan.url} />
       )}
       {running && (
         <LanDevices devices={devices} onRevoke={revoke} />
@@ -303,18 +303,17 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
   );
 }
 
-// The QR code: a one-time pairing URL, refreshed when it expires or is spent
-// (the device count changing is how we learn it was spent).
-function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
+// The QR code: a pairing URL good for five minutes, as many scans as needed
+// (the Control Center scanner's sandbox and the Safari it hands off to both
+// open it). A new one replaces it when the old one runs out.
+function LanPairing({ url }: { url: string }) {
   const [svg, setSvg] = useState<string | null>(null);
   const [ipUrl, setIpUrl] = useState<string | null>(null);
-  const [expired, setExpired] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let alive = true;
     let timer: number | null = null;
-    setExpired(false);
     getLanPairToken()
       .then((t) => {
         if (!alive) return;
@@ -323,42 +322,32 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
         qr.make();
         setSvg(qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }));
         setIpUrl(t.ip_url);
-        timer = window.setTimeout(() => alive && setExpired(true), t.ttl_s * 1000);
+        // Rotate just before the server forgets this one.
+        timer = window.setTimeout(() => alive && setNonce((n) => n + 1), Math.max(5, t.ttl_s - 5) * 1000);
       })
       .catch(() => alive && setSvg(null));
     return () => {
       alive = false;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [nonce, deviceCount]);
+  }, [nonce]);
 
   return (
     <div className="lan-pair">
       <div
         className="lan-pair-qr"
         aria-label="Pairing QR code"
-        style={{ opacity: expired ? 0.25 : 1 }}
         dangerouslySetInnerHTML={{ __html: svg ?? "" }}
       />
       <div className="lan-pair-text">
         <p>
-          <b>Scan with the phone's Camera app</b> to pair it. The code works once and for five
-          minutes; the phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+          <b>Scan with the phone's camera</b> to pair it — from the Camera app or the Control Center
+          scanner (tap "Open in Safari" there). The code changes every five minutes; a paired phone
+          then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
         </p>
-        <p className="deploy-muted">
-          Scanned from Control Center instead? Its little browser can't hand the page to Safari —
-          close it and open <code>{url.replace(/^https?:\/\//, "").replace(/\/$/, "")}</code> in Safari
-          within two minutes; the phone is let in.
-        </p>
-        {expired ? (
-          <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
-            New code
-          </button>
-        ) : (
-          <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
-            New code
-          </button>
-        )}
+        <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
+          New code
+        </button>
         {ipUrl && (
           <p className="deploy-muted" style={{ marginTop: 8 }}>
             If the phone can't resolve the name, open this once instead:{" "}
@@ -778,7 +767,10 @@ export default function Preferences() {
   // tab falling back to "render" is not the answer for that one — a bookmark
   // pointing at the engine picker should land ON the engine picker.
   const tab: PrefsTab =
-    requested === "indexing" ? "indexing" : requested === "ai" ? "ai" : "render";
+    requested === "indexing" ? "indexing"
+    : requested === "ai" ? "ai"
+    : requested === "lan" ? "lan"
+    : "render";
   const setTab = (next: PrefsTab) => {
     const params = new URLSearchParams(location.search);
     if (next === "render") params.delete("tab");
@@ -827,6 +819,17 @@ export default function Preferences() {
             >
               Indexing
             </button>
+            {/* Render local network — sharing apps with phones on the Wi-Fi
+                (lan.py): the switch, the pairing QR and the paired devices.
+                Its own tab because pairing is a task you come here to DO with
+                a phone in hand, not a setting you glance at. */}
+            <button
+              type="button"
+              className={"prefs-tab" + (tab === "lan" ? " active" : "")}
+              onClick={() => setTab("lan")}
+            >
+              Render local network
+            </button>
           </div>
           <div className="prefs-tabpanel">
             {tab === "render" && (
@@ -835,9 +838,9 @@ export default function Preferences() {
                 <CallLogSection prefs={prefs} onChange={setPrefs} />
                 <AccessibilitySection prefs={prefs} onChange={setPrefs} />
                 <CanvasesSection prefs={prefs} onChange={setPrefs} />
-                <LanSection prefs={prefs} onChange={setPrefs} />
               </>
             )}
+            {tab === "lan" && <LanSection prefs={prefs} onChange={setPrefs} />}
             {tab === "ai" && (
               <>
                 <ModelSection prefs={prefs} onChange={setPrefs} />

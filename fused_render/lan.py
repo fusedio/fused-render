@@ -243,12 +243,17 @@ def _not_found() -> Response:
 # ---- pairing: which devices may use the listener ----------------------------
 #
 # QR only, by the owner's call: Preferences shows a QR of
-# http://render.fused.local/pair?t=<one-time token>; the phone scans it, /pair
-# sets a long-lived device cookie and lands on the grid. No PIN, no approval
-# dialog. The token is minted over LOOPBACK (the desktop's own API — a LAN peer
-# cannot mint one), lives five minutes, and is spent on first use. The cookie
-# is 128 bits of randomness; the store keeps its SHA-256 plus a name derived
-# from the user agent, so a stolen store file cannot forge a cookie and the
+# http://render.fused.local/pair?t=<token>; the phone scans it, /pair sets a
+# long-lived device cookie and lands on the grid. No PIN, no approval dialog.
+# The token is minted over LOOPBACK (the desktop's own API — a LAN peer cannot
+# mint one) and is good for five minutes, AS MANY TIMES AS NEEDED — Preferences
+# rotates the code every five minutes. Multi-use is deliberate (owner's call):
+# iOS's Control Center scanner opens the URL in a sandboxed in-app browser whose
+# "Open in Safari" re-opens the SAME URL, so a single-use token paired the
+# sandbox and told Safari the code had expired. Every browser that opens a
+# live URL becomes its own device row; the list shows them all. The cookie is
+# 128 bits of randomness; the store keeps its SHA-256 plus a name derived from
+# the user agent, so a stolen store file cannot forge a cookie and the
 # Preferences list can say "iPhone · Safari, last seen 2h ago" and revoke it.
 #
 # What this does and does not cover: it answers "is this MY device", not "is
@@ -263,16 +268,6 @@ _LAST_SEEN_STEP_S = 10 * 60
 
 _pair_tokens: dict[str, float] = {}  # token -> expiry (monotonic)
 _pair_lock = threading.Lock()
-
-#: A scan does not always land in the browser the user keeps: iOS's Control
-#: Center scanner opens an SFSafariViewController with its own cookie jar and
-#: no way to hand the page to Safari, so a cookie set there is lost. So a spent
-#: token also opens a short window for the scanning PHONE, keyed by its LAN
-#: address: the next unpaired visit from that address — real Safari, typed or
-#: bookmarked — is paired on arrival. Two minutes; one use; LAN peers have
-#: distinct addresses, so nothing else can slip through the window.
-PENDING_TTL_S = 120
-_pending_pairs: dict[str, float] = {}  # client ip -> expiry (monotonic)
 
 
 def _devices_path() -> str:
@@ -302,7 +297,7 @@ def _hash(secret: str) -> str:
 
 
 def mint_pair_token() -> str:
-    """A one-time, five-minute pairing token. Loopback callers only (the router
+    """A five-minute, multi-use pairing token. Loopback callers only (the router
     below is on the inner app; the LAN wrapper never forwards it)."""
     import secrets
     import time
@@ -317,11 +312,11 @@ def mint_pair_token() -> str:
     return token
 
 
-def _spend_pair_token(token: str) -> bool:
+def _pair_token_valid(token: str) -> bool:
     import time
 
     with _pair_lock:
-        exp = _pair_tokens.pop(token, None)
+        exp = _pair_tokens.get(token)
     return exp is not None and exp >= time.monotonic()
 
 
@@ -470,97 +465,26 @@ def _unauthorized(scope) -> Response:
     return JSONResponse({"error": "not paired"}, status_code=401)
 
 
-def _client_ip(scope) -> str:
-    client = scope.get("client")
-    return client[0] if client else ""
-
-
-def _open_pending(ip: str, device_id: str) -> None:
-    """Open the window for `ip`, remembering the record the scanning browser
-    got: if the user carries on in another browser, that record is retired so
-    the Preferences list shows one device per phone, not one per scan."""
-    import time
-
-    if not ip:
-        return
-    with _pair_lock:
-        _pending_pairs[ip] = (time.monotonic() + PENDING_TTL_S, device_id)
-
-
-def _take_pending(ip: str) -> str | None:
-    """The scanning browser's device id when `ip` has an open window (spent by
-    this call), else None."""
-    import time
-
-    if not ip:
-        return None
-    with _pair_lock:
-        now = time.monotonic()
-        for k, (exp, _id) in list(_pending_pairs.items()):
-            if exp < now:
-                del _pending_pairs[k]
-        entry = _pending_pairs.pop(ip, None)
-    return entry[1] if entry else None
-
-
 def _with_cookie(response: Response, secret: str) -> Response:
     response.set_cookie(COOKIE, secret, max_age=COOKIE_MAX_AGE_S, httponly=True,
                         samesite="lax", path="/")
     return response
 
 
-_PAIRED_PAGE = """<!doctype html><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Paired</title>
-<style>
-html{color-scheme:light dark;background:#131417;color:#e8eaed;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-@media (prefers-color-scheme:light){html{background:#fff;color:#17181a}}
-main{max-width:28rem;margin:16vh auto 0;padding:0 24px}h1{font-size:22px;margin:0 0 12px}p{color:#9aa0a6;margin:0 0 14px}
-a.go{display:inline-block;background:#E5FF44;color:#111;font-weight:600;padding:12px 18px;border-radius:12px;text-decoration:none}
-code{font:14px ui-monospace,Menlo,monospace;color:inherit}
-</style><main><h1>This phone is paired</h1>
-<p>If this opened in a small in-app browser (the Control Center scanner does that), close it and open <code>%s</code> in Safari within two minutes — this phone will be let in.</p>
-<p><a class="go" href="/">Open apps here</a></p></main>"""
-
-
 def _handle_pair(scope) -> Response:
+    """A live token pairs THIS browser and lands it on the grid. Multi-use for
+    the token's five minutes (see the section comment): the Control Center
+    scanner's sandbox and the Safari it hands off to both open the same URL."""
     query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
     token = (query.get("t") or [""])[0]
-    if not token or not _spend_pair_token(token):
-        # The same URL arriving again from the same phone is the scanner's
-        # "Open in Safari" button (or a reload of the popover): the token is
-        # spent, but the window it opened is still this phone's — pair it and
-        # send it to the grid rather than saying the code expired.
-        handoff = _pair_pending(scope, target="/")
-        if handoff is not None:
-            return handoff
+    if not token or not _pair_token_valid(token):
         return _pair_page(
             "That code has expired",
-            "Pairing codes last five minutes and work once. Open Preferences → Share on "
-            "local network on the computer for a fresh one and scan it again.",
+            "Pairing codes last five minutes. Open Preferences → Share on local network on "
+            "the computer — it shows a fresh one — and scan again.",
             "Not paired.")
-    secret, record = _pair_device(_header(scope, b"user-agent"))
-    # The scanning browser gets its cookie; the phone's address gets the window
-    # for the browser the user actually keeps (see _pending_pairs).
-    _open_pending(_client_ip(scope), record["id"])
-    host = _header(scope, b"host") or HOSTNAME
-    return _with_cookie(Response(_PAIRED_PAGE % host, media_type="text/html"), secret)
-
-
-def _pair_pending(scope, target: str | None = None) -> Response | None:
-    """An unpaired visit from a phone that just scanned: pair it and replay the
-    request with the cookie set (a redirect to `target`, default the same URL).
-    The scanning browser's record is retired — the user moved on from it."""
-    scanned_id = _take_pending(_client_ip(scope))
-    if scanned_id is None:
-        return None
-    revoke_device(scanned_id)
     secret, _record = _pair_device(_header(scope, b"user-agent"))
-    if target is None:
-        target = scope["path"]
-        if scope.get("query_string"):
-            target += "?" + scope["query_string"].decode("utf-8", "replace")
-    return _with_cookie(RedirectResponse(target, status_code=302), secret)
+    return _with_cookie(RedirectResponse("/", status_code=302), secret)
 
 
 _RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")
@@ -641,7 +565,7 @@ class LanApp:
         if path == "/pair" and method == "GET":
             return _handle_pair(scope)
         if not _paired(scope):
-            return _pair_pending(scope) or _unauthorized(scope)
+            return _unauthorized(scope)
 
         if path == "/" or path == "/index.html":
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
