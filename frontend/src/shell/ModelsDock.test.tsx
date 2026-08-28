@@ -336,6 +336,51 @@ test("expanded draws one row per model — its name, its memory figures, an Unlo
   expect(findAll(tree, "dl-bar")).toHaveLength(0);
 });
 
+// The bug report, verbatim: a model id was wrapping mid-token
+// ("FLUX.2-" / "Klein-4B-4bit") because the title inherited `.dl-title`'s
+// job-row wrap rule. `dl-title-id` (notifications.css) is the fix's marker —
+// asserted here rather than by measuring rendered width (this suite cannot
+// see layout), because the class IS the thing that guarantees one line.
+test("the model id carries the one-line title class, never the job-row wrap rule alone", () => {
+  const tree = renderView({
+    models: [model({ model: "mlx-community/FLUX.2-Klein-4B-4bit" })],
+  });
+  const title = findAll(findAll(tree, "dl-row")[0], "dl-title")[0];
+  const classes = (title.props.className as string).split(" ");
+  expect(classes).toContain("dl-title");
+  expect(classes).toContain("dl-title-id");
+});
+
+// The figures moved OFF the head onto their own line (the same device D596
+// used for `.dl-model`) because a long name + "1.7 GB now (2.2 GB held)" +
+// "Unload" cannot fit one line at the panel's own width cap. Asserted
+// structurally: the head holds only the name and the button, and the memory
+// reading lives in a sibling block below it.
+test("the head holds only the name and Unload — the figures sit in their own block below it", () => {
+  const tree = renderView({
+    models: [model({ residentBytes: 1_850_960_734, osFootprintBytes: 25_676_453_144 })],
+  });
+  const row = findAll(tree, "dl-row")[0];
+  const head = findAll(row, "dl-row-head")[0];
+  expect(findAll(head, "dl-amount")).toHaveLength(0);
+  expect(findAll(head, "dl-mem-live")).toHaveLength(0);
+  const figures = findAll(row, "dl-row-figures");
+  expect(figures).toHaveLength(1);
+  expect(text(findAll(figures[0], "dl-amount")[0])).toBe("1.7 GB now (24 GB held)");
+});
+
+// Same structural split for the non-ready state span — it is what the figures
+// line shows in place of `MemoryCell` before there is a cost to report.
+test("a non-ready model's state also lives in the figures block, not the head", () => {
+  const tree = renderView({
+    models: [model({ state: "downloading", residentBytes: null })],
+  });
+  const row = findAll(tree, "dl-row")[0];
+  const head = findAll(row, "dl-row-head")[0];
+  expect(findAll(head, "dl-amount")).toHaveLength(0);
+  expect(text(findAll(findAll(row, "dl-row-figures")[0], "dl-amount")[0])).toBe("downloading");
+});
+
 test("pressing Unload calls onUnload with the model id and shows Unloading… mid-flight", async () => {
   const pending: Array<() => void> = [];
   const seen: string[] = [];

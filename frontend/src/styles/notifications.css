@@ -698,6 +698,34 @@
   font-weight: 600;
 }
 
+/* THE MODEL ROW'S TITLE IS AN ID, NOT A PROMPT — the opposite of the case
+   `.dl-title` above is built for, so a model row needs a second, more
+   specific rule rather than a tweak to that one. `.dl-title` carries D596's
+   two-line clamp plus `overflow-wrap: anywhere` because a JOB row's title is
+   a long PROMPT and the model id already has its own line below (`.dl-model`,
+   next). `ModelRow` (ModelsDock.tsx) has no such second line — its `.dl-title`
+   *is* the model id — so inheriting the prompt rule let `overflow-wrap:
+   anywhere` snap "FLUX.2-Klein-4B-4bit" at the hyphen into "FLUX.2-" over
+   "Klein-4B-4bit", which is exactly what `.dl-model`'s own comment below
+   forbids: "a model id is a single unbreakable token and wrapping one
+   mid-word reads worse than truncating it". `EnginesDock.tsx` also renders a
+   bare `.dl-title` (a folder name beside a one-word `.dl-amount`) and stays on
+   the shared rule untouched — this class is additive, kept alongside
+   `dl-title` on the model row's span, not a replacement for it.
+   ONE LINE, ELLIPSISED, never wrapped: `display: block` plus `white-space:
+   nowrap` opts back out of the `-webkit-box`/`line-clamp` machinery entirely
+   (line-clamp only exists inside that box model), and `overflow-wrap: normal`
+   restores the browser's ordinary "break at a real word boundary, or not at
+   all" behaviour so a hyphen is never mistaken for one. Full id stays on
+   hover, same as before. */
+.dl-title.dl-title-id {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
 /* The model running this row (JobRow's `.dl-model`) — ON ITS OWN LINE since
    D596, no longer a suffix on the head. It is a `<div>` between the head and
    the progress bar, so it has the panel's full width and needs no shrink
@@ -719,6 +747,39 @@
   white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for
+   `.dl-model` above, applied for the same reason: the head is short of
+   LINES, not width. `.dl-panel` caps at `min(340px, ...)` (D608), which
+   leaves a row roughly 320px of content box; the name, "1.7 GB now (2.2 GB
+   held)" and "Unload" together need more than that at once, and truncating
+   the name would not have closed the gap either — three items were never
+   going to fit on one line at this cap. So `MemoryCell` (or the non-ready
+   `state` span it alternates with) moves out of `.dl-row-head` onto a line
+   below it, exactly where `.dl-model` sits on a job row, and the head keeps
+   only the name and the Unload button.
+   TAKES `.dl-model`'s NUMBERS, NOT `.dl-model` ITSELF: same 11px muted ink
+   and the same bottom margin, so the two dock kinds still read as one visual
+   language, but this is a distinct class because the two lines mean different
+   things (a job's model-id restatement vs. a model row's own memory reading)
+   and a shared class would make a future edit to one silently reach the
+   other. Unlike `.dl-model` this line is not itself ellipsised — its content
+   is `.dl-amount`/`.dl-mem-live`, which already carry their own overflow
+   rules, and neither of those changes here. */
+.dl-row-figures {
+  margin-bottom: 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* Same reasoning as `.dl-row-head + .dl-status` below, one level further
+   down the row: with the figures now always on their own line between the
+   head and a failure message, `.dl-row-figures` is what sits directly above
+   `.dl-status` on a model row, so it is what needs its top margin zeroed to
+   avoid stacking two 5px gaps into one 10px one. */
+.dl-row-figures + .dl-status {
+  margin-top: 0;
 }
 
 /* BACK IN THE PROTECTED GROUP (D596), reversing D577's `flex: 0 9999 auto`.
