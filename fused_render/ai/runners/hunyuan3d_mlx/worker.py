@@ -268,18 +268,32 @@ def generate(body):
     """Render one mesh. Returns `{path, seconds, seed, steps, guidance,
     octreeResolution, faces}`.
 
-    **No mid-render progress ticks, and no mid-render cancellation point.**
+    **No mid-render progress ticks, and no mid-render INTERRUPTION point.**
     `ShapePipeline.__call__` runs its whole denoising loop and its VAE decode
     inside one Python call with no callback hook of any kind — unlike `ltx_
     video`'s patchable `samplers.tqdm` or `mflux_image`'s `mflux.callbacks`
     registry, there is no name in this pipeline a worker can stand in front
     of without editing the upstream loop itself, which this fork's packaging-
     only mandate rules out (see this file's module docstring). A single
-    `report()` before the call is the honest shape of what this worker can
-    say about a render in progress: it has started, and it has not yet
-    returned. A ✕ sent mid-render is still honoured — `worker_base`'s request
-    handling itself checks `CANCEL` between requests — but it takes effect
-    only once this call returns, not partway through it.
+    `report_or_cancel()` before the call is the honest shape of what this
+    worker can say about a render in progress: it has started, and it has
+    not yet returned.
+
+    **A ✕ is checked at both ends of the one call this worker cannot
+    interrupt, never in the middle of it — and this function checks BOTH
+    cancellation channels explicitly, at both ends, rather than relying on
+    one implicitly (code review, 2026-08-28, finding 2: neither channel was
+    checked here at all before this).** `worker_base.CANCEL` is set directly
+    by a `/cancel` POST to this worker (`supervisor.cancel_generation`);
+    `report_or_cancel`'s `cancel_requested` is a SEPARATE signal, carried on
+    THIS render's own job row (the download manager's ✕) and readable only
+    by posting a tick to it. Checking before `pipeline(...)` catches a ✕
+    pressed before the render actually started (the model may still have
+    been loading); checking again immediately after catches one pressed
+    WHILE the render ran, which cannot stop the compute already in flight
+    but must still stop the artefact from landing on disk and the row from
+    reading "done" — a cancelled render must not silently finish and
+    succeed.
     """
     _pin_stream()
 
@@ -290,9 +304,19 @@ def generate(body):
     image = str(body.get("image") or "")
     if not image:
         raise ValueError("'image' must be the path to the input image")
-    steps = int(body.get("steps") or _DEFAULT_STEPS)
-    guidance = float(body.get("guidance") or _DEFAULT_GUIDANCE)
-    octree_resolution = int(body.get("octreeResolution") or _DEFAULT_OCTREE_RESOLUTION)
+    # `if ... is not None else default`, not `body.get(...) or default` —
+    # `or` treats 0 as absent, and 0 is the one qualitative guidance value
+    # (CFG off) this capability has. The route already clamps/validates
+    # both before they ever reach a worker, but this file is not ONLY
+    # reachable through that route (a test, or a future caller) and must
+    # not reintroduce the bug the route was just fixed for (code review,
+    # 2026-08-28, finding 1).
+    steps_in = body.get("steps")
+    steps = int(steps_in if steps_in is not None else _DEFAULT_STEPS)
+    guidance_in = body.get("guidance")
+    guidance = float(guidance_in if guidance_in is not None else _DEFAULT_GUIDANCE)
+    octree_in = body.get("octreeResolution")
+    octree_resolution = int(octree_in if octree_in is not None else _DEFAULT_OCTREE_RESOLUTION)
     seed = int(body.get("seed") or 0)
     out = str(body.get("out") or "")
     job = body.get("job") or None
@@ -302,8 +326,16 @@ def generate(body):
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
 
     started = time.time()
-    worker_base.report(job=job, state="running", kind="task", unit="",
-                       done=0, total=1, detail="Generating shape")
+    # `report_or_cancel`, not `report` — a ✕ already sitting on this job's
+    # row (pressed while a cold model was still loading, before this
+    # function was ever called) must stop the render before it starts,
+    # exactly as the image and video routes' own pre-generation checks do.
+    worker_base.report_or_cancel(job=job, state="running", kind="task", unit="",
+                                 done=0, total=1, detail="Generating shape")
+    # `CANCEL` is the OTHER channel (see this function's own docstring) —
+    # checked here too, for the identical pre-start reason.
+    if worker_base.CANCEL.is_set():
+        raise worker_base.Cancelled()
 
     mesh = pipeline(
         image=image,
@@ -312,6 +344,16 @@ def generate(body):
         octree_resolution=octree_resolution,
         seed=seed,
     )
+
+    # The one checkpoint this pipeline offers after the compute it cannot be
+    # interrupted during (see the docstring above): a ✕ from EITHER channel
+    # must still stop the mesh from being written and the render from being
+    # reported done, even though it could not stop the render itself.
+    if worker_base.CANCEL.is_set():
+        raise worker_base.Cancelled()
+    worker_base.report_or_cancel(job=job, state="running", kind="task", unit="",
+                                 done=1, total=1, detail="Generating shape")
+
     mesh.export(out)
 
     return {

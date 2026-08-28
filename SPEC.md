@@ -10881,9 +10881,13 @@ this section is one new capability occupying each of them, not a new pattern.
   `ltx-video`'s patchable `samplers.tqdm` (§40) or `mflux_image`'s
   `mflux.callbacks` registry, there is no name in this pipeline a worker can
   stand in front of without editing the fork's own loop, which MESH-2's
-  packaging-only mandate rules out. A single `report()` before the call is
-  what this worker can honestly say about a render in progress; a ✕ sent
-  mid-render is still honoured, but only once the call returns.
+  packaging-only mandate rules out. A `report_or_cancel()` before the call
+  is what this worker can honestly say about a render in progress; a ✕
+  from either cancellation channel (`worker_base.CANCEL`, set by a direct
+  `/cancel` POST to this worker, or the job row's own `cancel_requested`)
+  is checked again once the call returns, so a cancel that could not stop
+  the compute already in flight still stops the mesh from being written
+  and the row from reading "done" (code review, 2026-08-28, finding 2).
 - **MESH-8** **`text-to-3d` stays unmapped, deliberately, not by
   oversight.** Serving it means chaining an image-generation runner into
   the mesh runner behind one button — two resident slots, two engines, one
