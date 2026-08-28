@@ -126,7 +126,7 @@ def _message_start():
 def test_a_fresh_run_is_thinking_with_an_empty_activity(agent, run_dir):
     data = _poll(agent, run_dir, [])
     assert data["phase"] == "thinking"
-    assert data["activity"] == {"tool": None, "tool_input_bytes": 0,
+    assert data["activity"] == {"tool": None, "tools_open": 0, "tool_input_bytes": 0,
                                 "thinking_tokens": 0, "hook": "", "tasks": [],
                                 "agent_rows": 0}
 
@@ -246,6 +246,46 @@ def test_a_tool_that_finished_before_the_result_row_stays_open(agent, run_dir):
     data = _poll(agent, run_dir, rows)
     assert data["phase"] == "tooling"
     assert data["activity"]["tool"]["detail"] == "Nap"
+
+
+def test_parallel_tools_stay_open_until_the_last_result(agent, run_dir):
+    """One message, two tool_use blocks, two separate result rows (Bugbot,
+    PR #908). The first result must not drop the line to "Waiting for a
+    reply" while the second command is still running."""
+    rows = [_tool_start("Bash", id="a"), _tool_start("Read", id="b"),
+            _assistant_tool("Bash", {"command": "sleep 30", "description": "Long one"}, id="a"),
+            _tool_result(id="b")]
+    data = _poll(agent, run_dir, rows)
+    assert data["phase"] == "tooling"
+    assert data["activity"]["tools_open"] == 1
+    assert data["activity"]["tool"]["name"] == "Bash"
+    assert data["activity"]["tool"]["detail"] == "Long one"
+    rows.append(_tool_result(id="a"))
+    data = _poll(agent, run_dir, rows)
+    assert data["phase"] == "requesting"
+    assert data["activity"]["tool"] is None and data["activity"]["tools_open"] == 0
+
+
+def test_the_newest_open_tool_is_the_one_shown(agent, run_dir):
+    rows = [_tool_start("Bash", id="a"), _tool_start("Read", id="b")]
+    data = _poll(agent, run_dir, rows)
+    assert data["activity"]["tool"]["name"] == "Read"
+    assert data["activity"]["tools_open"] == 2
+
+
+def test_a_result_with_an_unknown_id_closes_the_oldest_call(agent, run_dir):
+    """A start row lost to a half-written line must not pin a finished tool
+    on the line for the rest of the turn."""
+    rows = [_tool_start("Bash", id="a"), _tool_result(id="zzz")]
+    data = _poll(agent, run_dir, rows)
+    assert data["phase"] == "requesting" and data["activity"]["tool"] is None
+
+
+def test_a_result_row_with_no_tool_result_block_changes_nothing(agent, run_dir):
+    rows = [_tool_start("Bash", id="a"),
+            {"type": "user", "session_id": "s", "message": {"role": "user", "content": "plain text"}}]
+    data = _poll(agent, run_dir, rows)
+    assert data["phase"] == "tooling" and data["activity"]["tool"]["name"] == "Bash"
 
 
 # ------------------------------------------------------------ hooks & tasks
