@@ -175,6 +175,121 @@ def run_on_generate_thread(fn, *args, **kwargs):
         return payload
     raise payload
 
+
+#: How long a worker sits with NO new execution before it hands its allocator
+#: pool back to the OS (`_release`, `_arm_release_timer`, `_fire_release`
+#: below). A deliberate, named constant rather than a literal 30 scattered
+#: across the file — see those functions' docstrings for the mechanism.
+#:
+#: Chosen to match `supervisor._REAPER_TICK_S` (also 30.0) in spirit, not by
+#: coincidence: both exist because 30s is short enough that "idle" means
+#: something a user would recognise, and this timer is that reaper's much
+#: cheaper, purely in-process cousin. The reaper polls every 30s whether a
+#: worker has been unused for `prefs.effective_ai_idle_unload_minutes()` (10
+#: minutes by default) and, past that, KILLS THE PROCESS — losing the loaded
+#: weights entirely, the next request pays a full reload. This timer fires
+#: once, 30 SECONDS after the worker's own last execution, and only hands
+#: back the allocator's idle pool — the model stays resident and the next
+#: request is exactly as fast as this one, it just re-faults the working set
+#: from the pool it now has to grow again. Two different costs at two very
+#: different timescales, not one mechanism with two names.
+_RELEASE_IDLE_S = 30.0
+
+#: Guards `_release_timer`/`_release_generation` together, so arming a new
+#: timer and a just-fired old one checking whether it is still current can
+#: never interleave into a wrong answer.
+_release_lock = threading.Lock()
+
+#: The pending idle-release timer, or `None` between executions. Always
+#: `threading.Timer` in production; tests substitute a manually-fired stand-in
+#: (see `tests/test_ai_worker_base.py`) rather than sleeping 30 real seconds.
+_release_timer = None
+
+#: Bumped every time a timer is (re)armed. A fired timer compares the token it
+#: was armed with against this before calling `_release` — belt-and-braces
+#: alongside `Timer.cancel()` itself, for the window between a timer's wait
+#: elapsing and its callback actually running, during which a new execution
+#: could already have rearmed (see `_fire_release`).
+_release_generation = 0
+
+
+def _arm_release_timer():
+    """(Re)start the `_RELEASE_IDLE_S` idle timer — called once after every
+    completed execution, success, `Cancelled`, or any other exception alike,
+    since a render that already allocated its peak can still be the one the
+    user pressed Stop on.
+
+    Cancels whatever timer a PRIOR execution left pending first: a burst of
+    renders must not pay the re-fault cost of clearing and re-growing the
+    allocator pool between each one — only the LAST execution in a burst gets
+    to start the clock, which is the whole reason this is a timer and not the
+    unconditional `finally`-call this shipped as originally. Correctness in
+    the race between "the old timer's wait already elapsed" and "cancel just
+    ran" is `_fire_release`'s job, via the generation token.
+
+    A no-op when no `release` hook was supplied (`serve(release=...)` never
+    called) — nothing to ever arm for `mlx_text`, `llamacpp_text`, and the
+    rest of the runners this deliberately excludes.
+    """
+    global _release_timer, _release_generation
+    if _release is None:
+        return
+    with _release_lock:
+        if _release_timer is not None:
+            # A `Timer` whose wait already elapsed and is mid-callback cannot
+            # be stopped by `cancel()` — that race is exactly why
+            # `_fire_release` re-checks its token under this same lock rather
+            # than trusting cancellation alone.
+            _release_timer.cancel()
+        _release_generation += 1
+        token = _release_generation
+        timer = threading.Timer(_RELEASE_IDLE_S, _fire_release, args=(token,))
+        # Daemon: a pending release must never be what keeps the worker
+        # process alive. `serve_forever()`'s own thread and `os._exit(0)` in
+        # `/quit` are both how this process actually ends, and neither should
+        # have to know this timer exists in order to exit cleanly.
+        timer.daemon = True
+        _release_timer = timer
+    timer.start()
+
+
+def _fire_release(token):
+    """The idle timer's callback: reclaim the allocator pool, but only if
+    nothing has run since `token` was handed out.
+
+    `GENERATE_LOCK` FIRST, generation check second: acquiring the same lock
+    `_single`/`_stream` hold for the whole request guarantees this can never
+    run WHILE a generation is in flight (mid-render is the one moment this
+    must never fire — see `_arm_release_timer`), and once acquired, a
+    generation that started and finished entirely inside this timer's 30s
+    wait has already rearmed with a NEWER token by the time that lock frees
+    up — so the check below catches it even though `cancel()` came too late
+    to stop this callback from being scheduled at all.
+
+    Routed through `run_on_generate_thread`, same as `generate` itself: the
+    hook this exists for is `mx.clear_cache()`, an MLX allocator call, and
+    that function's docstring is the whole reason no MLX call is ever made
+    from a thread other than the one dedicated to them — a `Timer` callback
+    runs on yet another thread of its own, no different in kind from a
+    `ThreadingTCPServer` connection thread in that respect.
+
+    Never raises past this function. A `release` that throws must be a
+    no-op — there is no request waiting on this timer to fail loudly at, and
+    a broken reclaim must not take the timer thread down with it.
+    """
+    global _release_timer
+    with GENERATE_LOCK:
+        with _release_lock:
+            if token != _release_generation:
+                # Superseded: a later execution already rearmed a fresher
+                # timer, which owns clearing the cache from here.
+                return
+            _release_timer = None
+        try:
+            run_on_generate_thread(_release)
+        except Exception:  # noqa: BLE001 - see docstring: reclaim failures are silent
+            pass
+
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
 
 #: Bounds on the PRE-AUTH body drain (Handler._drain). 64 KiB is far above any
@@ -551,6 +666,58 @@ _measure_peak = None
 #: bytes` for the precedence between the two, and AI-16's `basis` for how that
 #: difference is carried outward to a reader.
 _rss_peak = None
+
+#: A runner's own "give it back to the OS" hook, when it has one. Set by
+#: `serve(release=...)` — the third optional hook beside `_measure`/`_measure_
+#: peak` above. Never called directly from a request: `_arm_release_timer`
+#: starts a `_RELEASE_IDLE_S` clock after every execution, and `_fire_release`
+#: is what actually calls this, once that clock runs out with nothing new
+#: having started.
+#:
+#: Why this exists: a live FLUX.2-Klein-4B-4bit render through `mflux-image`
+#: needed ~24.12 GB at its peak (`mx.get_peak_memory()`, the `_measure_peak`
+#: probe) but settles at 1.7 GB RSS once it is done — and yet the status bar
+#: kept showing "1.7 GB now (21 GB held)" (`os_footprint_bytes()`, D597) long
+#: after the render finished. MLX frees those buffers back to its OWN pool,
+#: never to the OS, and only reclaims the pool once it exceeds `mx.set_cache_
+#: limit`'s default — 1.5x the recommended working set, ~38.7 GB on the 34.4
+#: GB machine this was measured on, i.e. ABOVE physical RAM, so that condition
+#: can never fire on its own. `mx.clear_cache()` is the other side of that:
+#: hand the idle pool back once nothing has asked for it in a while.
+#:
+#: Why an IDLE TIMER rather than an unconditional call in `_single`/`_stream`'s
+#: `finally` (the first cut of this feature): a 24 GB working set is not free
+#: to re-fault, and clearing right after every execution makes a burst of five
+#: renders pay that cost five times over. Waiting `_RELEASE_IDLE_S` after the
+#: LAST execution keeps a burst at full allocator speed and still releases the
+#: moment the user actually walks away — see `_arm_release_timer` and
+#: `_fire_release` for the mechanism, which lives entirely in this process
+#: (no supervisor RPC, no new route: the worker already knows when its own
+#: last execution ended).
+#:
+#: Wired into all five MLX runners (`mflux_image`, `ltx_video`, `mlx_text`,
+#: `mlx_embed`, `mlx_whisper`) and the shared `torch_image` runner (MPS/CUDA).
+#: An idle timer changes the earlier per-call exclusion's arithmetic: it does
+#: not fire mid-loop, so a bulk run of embeds or a token stream is never
+#: interrupted by it, and the machine this was measured on can hold a speech
+#: model (whisper-large-v3, 3.66 GB measured) and a text model resident in
+#: SEPARATE PROCESSES at once — the supervisor keeps one worker per
+#: capability — each with its own idle pool, so the small-model case stacks
+#: rather than disappearing into rounding.
+#:
+#: Still nothing to wire for `llamacpp_text`/`llamacpp_text*` (a fixed KV
+#: context allocated up front, weights mmap'd — there is no reclaimable
+#: cache), `faster_whisper` (its CTranslate2 backend exposes no cache-release
+#: API), or `onnx_embed`/its cuda/directml/rocm shells (the arena is
+#: session-scoped `SessionOptions` config decided at session creation, not
+#: something a per-idle clear can touch).
+#:
+#: This only RECLAIMS memory after a run finishes — it must never be reached
+#: for by anything trying to lower the PEAK a render needs (tiled decode,
+#: `mx.eval()` boundaries, `set_cache_limit`/`set_memory_limit`): those are
+#: separate, unapproved changes to what an execution costs, not to what it
+#: leaves behind.
+_release = None
 
 
 def resident_bytes():
@@ -4266,6 +4433,13 @@ def _handler(generate, streaming):
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     traceback.print_exc(file=sys.stderr)
                     self._json({"ok": False, "error": describe_failure(e)})
+                finally:
+                    # Arms the idle-release timer on every outcome, not just
+                    # success: a cancelled or failed generation can still have
+                    # allocated its peak before it stopped, and this only
+                    # STARTS the clock — it does not clear anything itself.
+                    # See `_arm_release_timer`.
+                    _arm_release_timer()
 
         def _stream(self, body):
             """NDJSON, chunked. `{"type":"chunk"}` lines closed by
@@ -4296,6 +4470,13 @@ def _handler(generate, streaming):
                     write({"type": "done", "ok": False,
                            "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
+                finally:
+                    # Same reasoning as `_single`'s finally — and note WHERE
+                    # this sits: after `run_on_generate_thread` has RETURNED,
+                    # i.e. after the whole token stream or transcription has
+                    # finished, not after its first chunk. The idle clock only
+                    # starts once the worker is actually idle again.
+                    _arm_release_timer()
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
 
@@ -4315,7 +4496,7 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
 
 
 def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
-         argv=None):
+         release=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
@@ -4325,11 +4506,18 @@ def serve(download, load, generate, streaming=False, memory=None, peak_memory=No
     `peak_memory` is `memory`'s sibling (SPEC AI-8c, D497) — a runner that can
     answer "what did this cost at its WORST", not just "right now". See
     `peak_resident_bytes` for what a runner without one gets instead.
+
+    `release` is a third, independent optional hook: not a measurement but an
+    action, armed to run `_RELEASE_IDLE_S` after the worker's last execution
+    (win, loss, or cancel alike) if nothing new has started by then — see
+    `_release`, `_arm_release_timer` and `_fire_release` for the mechanism and
+    why only some runners pass one.
     """
-    global JOB_ID, _measure, _measure_peak
+    global JOB_ID, _measure, _measure_peak, _release
 
     _measure = memory
     _measure_peak = peak_memory
+    _release = release
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to
