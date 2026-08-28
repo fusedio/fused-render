@@ -48,6 +48,20 @@
     /* The shell's own `--sel`, not a re-derived alpha wash: a wash tuned
        against the old grey read too warm on the shell's cooler ground. */
     --selection: #2b3a52;
+    /* Elevation for a floating surface (the format bubble, its "Turn into"
+       menu) — the shell's own `--shadow-ink`, not an invented alpha. */
+    --shadow-ink: rgba(0, 0, 0, 0.4);
+    /* THE SCRIM SET (frontend/src/styles/tokens.css) — deliberately IDENTICAL
+       in both palette blocks below. These are for controls that sit on
+       ARBITRARY PIXELS (the lightbox's image), where the surface underneath
+       is not this view's own and the theme says nothing about it:
+       white-on-dark-wash reads over anything, and a token that flipped with
+       the theme would put light ink on a light photo half the time. */
+    --scrim-veil: rgba(0, 0, 0, 0.72);
+    --scrim-bg: rgba(0, 0, 0, 0.55);
+    --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+    --scrim-border: rgba(255, 255, 255, 0.25);
+    --scrim-fg: #ffffff;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -63,6 +77,16 @@
     --ghost: #ababab;
     --on-accent: #ffffff;
     --selection: #cfe0f7;
+    /* Lighter than dark's, same reason `--shadow-md` is lighter in light mode
+       shell-wide: a near-opaque shadow reads as dirt on a light page. */
+    --shadow-ink: rgba(0, 0, 0, 0.1);
+    /* Identical to dark's — see the dark block's comment: these sit on a
+       photo, not on this view's own surface, so they do not follow the theme. */
+    --scrim-veil: rgba(0, 0, 0, 0.72);
+    --scrim-bg: rgba(0, 0, 0, 0.55);
+    --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+    --scrim-border: rgba(255, 255, 255, 0.25);
+    --scrim-fg: #ffffff;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -428,18 +452,22 @@
     opacity: 0.4;
     outline: none;
   }
+  /* Same utility register as the rail's `.rail-head` (0.08em tracking,
+     --ghost, the same padding) — the two panels must read as one system. The
+     bottom hairline stays here (unlike the rail): this panel stacks several
+     sections and needs the separator the rail's single section does not. */
   .side-head {
     display: flex;
     align-items: center;
     gap: 8px;
     flex: none;
-    padding: 7px 10px;
+    padding: 7px 8px 7px 10px;
     border-bottom: 1px solid var(--border);
     font-size: 11px;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     font-weight: 600;
-    color: var(--fg-muted);
+    color: var(--ghost);
   }
   .side-head .spacer { flex: 1; }
   /* Sized by its content, not by the leftover space: a handful of backlinks
@@ -592,7 +620,8 @@
      note once, so the multiplicity has to survive somewhere. Muted like the
      path — it qualifies the row, it is not the row. */
   .bl-count { flex: none; color: var(--fg-muted); font-size: 11px; }
-  .bl-empty { color: var(--fg-muted); font-size: 12px; }
+  /* The rail's own empty-state register: micro-copy, not a sentence — "No headings yet." and "No other note … links here." read the same way. */
+  .bl-empty { color: var(--fg-muted); font-size: 11px; line-height: 1.5; }
   /* An outline row IS a backlink row (it carries `bl` as well) — one row style
      for one panel — plus the indent that carries the nesting. Declared after
      `.bl` so its padding-left wins, and the step comes from the depth the
@@ -600,15 +629,17 @@
      headings all start at `##` is not a uniformly indented note. */
   .ol { padding-left: calc(7px + var(--ol-depth, 0) * 13px); }
   .ol-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A caveat about SCAN COVERAGE, not a warning about the note — --warn is
+     reserved for the conflict banner, the one message here that must be read
+     (§2). One muted line in the same register as everything else in this
+     panel, not a bordered box: a truncated-walk notice is real information,
+     but it is not more important than the note itself. */
   #notice {
-    margin: 12px 0 0;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--warn);
-    border-radius: 0 6px 6px 0;
-    background: var(--bg);
+    margin: 6px 0 0;
+    padding: 0 10px;
     color: var(--fg-muted);
-    font-size: 12px;
+    font-size: 11px;
+    line-height: 1.5;
   }
   #notice[hidden] { display: none; }
   /* Takes everything the backlinks list does not use: the canvas is the one
@@ -621,6 +652,13 @@
     flex-direction: column;
     border-top: 1px solid var(--border);
   }
+  /* Load-bearing, not decorative: `#graph-sec { display: flex }` above beats
+     the UA stylesheet's `[hidden] { display: none }` on specificity alone (an
+     ID selector outranks an attribute selector), so without this rule setting
+     `.hidden = true` in JS (§5/MD-19c) drew the header, the depth stepper and
+     an empty canvas anyway — the section LOOKED conditional in the code and
+     was not conditional on screen. */
+  #graph-sec[hidden] { display: none; }
   #graph-canvas { flex: 1; width: 100%; display: block; cursor: grab; }
   #graph-note { flex: none; padding: 6px 10px; font-size: 11px; color: var(--fg-muted); }
   #graph-note[hidden] { display: none; }
@@ -680,74 +718,81 @@
      Positioned by hand from `view.coordsAtPos`, not via CM's tooltip API
      (that would need `showTooltip`/`Tooltip`, which are not bundled — MD-13
      stays as it is). Chrome for a subject that exists: hidden while there is
-     no non-empty selection. */
+     no non-empty selection. A TOOL, not a card: ~30px tall (3px padding + a
+     24px row), 4px gaps, 6px radius, one hairline border, `--shadow-ink` for
+     lift — no heavy rounding and no padding beyond what the icons need. */
   #fmt-bubble {
     position: fixed;
     z-index: 7;
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding: 4px;
+    gap: 4px;
+    padding: 3px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--bg-alt);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 4px 14px var(--shadow-ink);
   }
   #fmt-bubble[hidden] { display: none; }
+  /* One icon system, one size, one stroke weight (see the HTML): every mark
+     button is a monochrome SVG glyph, `--fg-muted` at rest, `--fg` on hover,
+     and `--accent` ONLY for a mark already applied to the selection — the
+     bubble's one deliberate spot of colour, and it means something specific
+     rather than decorating the row. */
   #fmt-bubble button {
-    min-width: 26px;
-    height: 26px;
-    padding: 0 7px;
+    width: 26px;
+    height: 24px;
+    padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid transparent;
-    border-radius: 5px;
+    gap: 3px;
+    border: none;
+    border-radius: 4px;
     background: transparent;
-    color: var(--fg);
-    font-size: 13px;
+    color: var(--fg-muted);
     cursor: pointer;
   }
-  #fmt-bubble button:hover { background: var(--bg); border-color: var(--border); }
-  /* A mark already applied shows pressed, so the bubble also says what the
-     selection currently IS, not only what it can become. */
+  #fmt-bubble button svg { width: 14px; height: 14px; display: block; }
+  #fmt-bubble button:hover { color: var(--fg); }
   #fmt-bubble button[aria-pressed="true"] {
     background: var(--accent);
     color: var(--on-accent);
   }
-  .fmt-sep { width: 1px; align-self: stretch; margin: 2px 2px; background: var(--border); }
+  .fmt-sep { width: 1px; align-self: stretch; margin: 1px 0; background: var(--border); }
   .fmt-turn { position: relative; }
   #fmt-turn-btn {
-    font-size: 12px;
+    width: auto;
+    padding: 0 6px;
+    font-size: 11px;
     white-space: nowrap;
-    color: var(--fg-muted);
   }
+  #fmt-turn-btn svg { width: 10px; height: 10px; }
   #fmt-turn-menu {
     position: absolute;
     top: calc(100% + 4px);
     left: 0;
     z-index: 8;
-    min-width: 10rem;
+    min-width: 9rem;
     padding: 4px;
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: 6px;
     background: var(--bg-alt);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+    box-shadow: 0 4px 14px var(--shadow-ink);
   }
   #fmt-turn-menu[hidden] { display: none; }
+  /* Full-width text rows, not icon buttons — overrides `#fmt-bubble button`'s
+     fixed square size (equal specificity, later in source: it wins). */
   #fmt-turn-menu button {
     display: block;
     width: 100%;
+    height: auto;
     text-align: left;
     padding: 5px 8px;
-    border: none;
-    border-radius: 5px;
-    background: none;
     color: var(--fg);
-    font-size: 13px;
-    cursor: pointer;
+    font-size: 12px;
   }
-  #fmt-turn-menu button:hover { background: var(--bg); }
+  #fmt-turn-menu button:hover { background: var(--bg); color: var(--fg); }
 
   /* ---- the image lightbox (6a) --------------------------------------------
      A backdrop overlay, not a rendering change: the underlying `<img
@@ -760,7 +805,11 @@
     align-items: center;
     justify-content: center;
     padding: 4vh 4vw;
-    background: rgba(0, 0, 0, 0.82);
+    /* --scrim-veil, not --scrim: this dims the whole viewport to make one
+       picture the only thing in the room, which is heavier than an ordinary
+       modal backdrop — the same distinction the shell's own lightbox tokens
+       draw (frontend/src/styles/tokens.css). */
+    background: var(--scrim-veil);
   }
   #lightbox[hidden] { display: none; }
   #lb-img {
@@ -769,35 +818,38 @@
     border-radius: 4px;
     object-fit: contain;
   }
+  /* The scrim set, not --fg/--bg-alt: these controls sit on ARBITRARY PIXELS
+     (the photo itself), where the app's theme says nothing about the surface
+     underneath — white-on-dark-wash reads over anything, and a token that
+     flipped with the theme would put light ink on a light photo half the
+     time. Same reasoning and the same token names as the shell's own scrim
+     set. */
   #lb-close, #lb-prev, #lb-next {
     position: absolute;
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid var(--scrim-border);
     border-radius: 999px;
-    background: rgba(0, 0, 0, 0.4);
-    color: #fff;
+    background: var(--scrim-bg);
+    color: var(--scrim-fg);
     cursor: pointer;
   }
-  #lb-close { top: 16px; right: 16px; width: 34px; height: 34px; font-size: 15px; }
-  #lb-prev, #lb-next {
-    top: 50%;
-    transform: translateY(-50%);
-    width: 44px;
-    height: 44px;
-    font-size: 22px;
-  }
+  #lb-close svg, #lb-prev svg, #lb-next svg { display: block; }
+  #lb-close { top: 16px; right: 16px; width: 34px; height: 34px; }
+  #lb-close svg { width: 15px; height: 15px; }
+  #lb-prev, #lb-next { top: 50%; transform: translateY(-50%); width: 44px; height: 44px; }
+  #lb-prev svg, #lb-next svg { width: 18px; height: 18px; }
   #lb-prev { left: 16px; }
   #lb-next { right: 16px; }
-  #lb-close:hover, #lb-prev:hover, #lb-next:hover { background: rgba(0, 0, 0, 0.65); }
+  #lb-close:hover, #lb-prev:hover, #lb-next:hover { background: var(--scrim-bg-hover); }
   #lb-prev[hidden], #lb-next[hidden] { display: none; }
   #lb-caption {
     position: absolute;
     left: 20px;
     bottom: 16px;
     max-width: 60%;
-    color: rgba(255, 255, 255, 0.82);
+    color: var(--scrim-fg);
     font-size: 13px;
   }
   #lb-caption:empty { display: none; }
@@ -885,15 +937,64 @@
       <!-- The selection format bubble (6c). Hidden while there is no
            selection — chrome for a subject that exists (§2). Positioned by
            hand from the selection's coordinates, in JS. -->
+      <!-- One icon system, held throughout: monochrome SVG line icons at one
+           size and stroke weight, the same idiom the corner button already
+           uses — no text glyph standing in for its own function (a bold `B`),
+           no ASCII pseudo-icon (`</>`  — which also reads as an HTML tag, the
+           wrong reference for an INLINE code span) and no emoji anywhere.
+           "Turn into" stays the one worded label (it opens a menu; no icon
+           says "convert this line"), with a drawn chevron, not `▾`. -->
       <div id="fmt-bubble" hidden>
-        <button id="fmt-bold" data-cmd="bold" title="Bold (⌘B)"><b>B</b></button>
-        <button id="fmt-italic" data-cmd="italic" title="Italic (⌘I)"><i>i</i></button>
-        <button id="fmt-strike" data-cmd="strike" title="Strikethrough (⌘⇧X)"><s>S</s></button>
-        <button id="fmt-code" data-cmd="code" title="Inline code (⌘⇧E)">&lt;/&gt;</button>
-        <button id="fmt-link" data-cmd="link" title="Link (⌘K)">🔗</button>
+        <button id="fmt-bold" data-cmd="bold" title="Bold (⌘B)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 4h8a4 4 0 0 1 0 8H6z" />
+            <path d="M6 12h9a4 4 0 0 1 0 8H6z" />
+          </svg>
+        </button>
+        <button id="fmt-italic" data-cmd="italic" title="Italic (⌘I)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" aria-hidden="true">
+            <path d="M19 4h-9" />
+            <path d="M14 20H5" />
+            <path d="M15 4L9 20" />
+          </svg>
+        </button>
+        <button id="fmt-strike" data-cmd="strike" title="Strikethrough (⌘⇧X)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M16 4H9a3 3 0 0 0-2.83 4" />
+            <path d="M14 12a4 4 0 0 1 0 8H6" />
+            <path d="M4 12h16" />
+          </svg>
+        </button>
+        <!-- A chip, not a tag: two rounded sides around a short rule, echoing
+             the actual `.lp-code` treatment (a rounded background tint) that
+             toggling this produces — distinct from a code BLOCK's icon and
+             from `</>`, which reads as markup rather than a span of text. -->
+        <button id="fmt-code" data-cmd="code" title="Inline code (⌘⇧E)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="18" height="10" rx="5" />
+            <path d="M9 12h6" />
+          </svg>
+        </button>
+        <button id="fmt-link" data-cmd="link" title="Link (⌘K)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+          </svg>
+        </button>
         <span class="fmt-sep"></span>
         <div id="fmt-turn" class="fmt-turn">
-          <button id="fmt-turn-btn" type="button">Turn into ▾</button>
+          <button id="fmt-turn-btn" type="button">
+            <span>Turn into</span>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 6 L8 10 L12 6" />
+            </svg>
+          </button>
           <div id="fmt-turn-menu" hidden></div>
         </div>
       </div>
@@ -950,10 +1051,30 @@
   <!-- The image lightbox (6a): overlay + key handler over the already-rendered
        <img class="lp-img">/<video> widgets, not a rendering change. -->
   <div id="lightbox" hidden>
-    <button id="lb-close" type="button" aria-label="Close">✕</button>
-    <button id="lb-prev" type="button" aria-label="Previous image">‹</button>
+    <!-- Monochrome SVG on currentColor, the same idiom the corner button uses
+       — no typographic character standing in for an icon anywhere (✕/‹/› all
+       render at a different weight and optical size than a drawn glyph, and
+       inherit font fallback this view does not control). -->
+    <button id="lb-close" type="button" aria-label="Close">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" aria-hidden="true">
+        <path d="M3.5 3.5 L12.5 12.5" />
+        <path d="M12.5 3.5 L3.5 12.5" />
+      </svg>
+    </button>
+    <button id="lb-prev" type="button" aria-label="Previous image">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9.5 3.5 L5 8 L9.5 12.5" />
+      </svg>
+    </button>
     <img id="lb-img" alt="" />
-    <button id="lb-next" type="button" aria-label="Next image">›</button>
+    <button id="lb-next" type="button" aria-label="Next image">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M6.5 3.5 L11 8 L6.5 12.5" />
+      </svg>
+    </button>
     <div id="lb-caption"></div>
   </div>
   <script>
@@ -3436,9 +3557,16 @@
     // notice already says why in graph.py's own words — "nobody looked" is not
     // "there is nothing" (MD-11a), and that distinction belongs to one surface,
     // not two.
+    // `notes.links` carries EVERY authored link in this note, resolved or not
+    // (an entry for a ghost still has an offset, a target and a null `path`) —
+    // so `.length > 0` was true for a note whose every link is an unresolved
+    // ghost, which drew the graph section over a note that, by plan §5's own
+    // words ("a resolved outbound link"), has none. `link.path` is truthy only
+    // once graph.py has actually resolved it against a real file (MD-4/MD-6),
+    // so that is the field this checks — not mere presence in the array.
     function hasLinks() {
       return !!notes && (
-        (notes.links && notes.links.length > 0)
+        (notes.links && notes.links.some((link) => !!link.path))
         || (notes.backlinks && notes.backlinks.length > 0));
     }
     function updateGraphSection() {
@@ -3675,9 +3803,11 @@
       let x = (left + right) / 2 - bw / 2;
       x = Math.max(8, Math.min(window.innerWidth - bw - 8, x));
       // Flips BELOW the selection when there is no room above — "near the top
-      // of the viewport" is exactly the case that needs it.
-      let y = top - bh - 8;
-      if (y < 8) y = bottom + 8;
+      // of the viewport" is exactly the case that needs it. The 10px gap
+      // (rather than a bare few px) keeps the bubble from sitting flush on
+      // the line above the selection, which otherwise reads as covering it.
+      let y = top - bh - 10;
+      if (y < 8) y = bottom + 10;
       fmtBubbleEl.style.left = x + "px";
       fmtBubbleEl.style.top = y + "px";
     }
@@ -3766,33 +3896,34 @@
       onCreateGhost: (label) => void createGhost(label),
     });
 
-    // ---- the panel's width --------------------------------------------------
+    // ---- the panels' widths ---------------------------------------------
     // Persisted in localStorage and deliberately NOT in fused.params. Params are
     // the view state a shared URL should reproduce (MD-20) — which note, which
-    // heading, sidebar open, graph depth, read-only or editing. How wide someone
-    // dragged their panel is personal window furniture, and inheriting it from
-    // a link would be a bug, not a feature.
+    // heading, sidebar open, graph depth — not which panel is open. How wide
+    // someone dragged their panel is personal window furniture, and inheriting
+    // it from a link would be a bug, not a feature.
+    //
+    // Two panels, one document, ONE joint clamp (layoutPanels, below): a width
+    // clamped only against its OWN min/max — which is what applySideWidth and
+    // applyRailWidth compute here — is the DESIRED width, not the rendered
+    // one. Rendering is `layoutPanels`'s job, because whether the document has
+    // room for both panels at their desired widths cannot be answered by
+    // either panel looking only at itself. `desiredRailPx`/`desiredSidePx`
+    // hold that desire; each panel's own drag/keyboard handlers only ever
+    // update their own variable and call `layoutPanels()`.
     const gripEl = document.getElementById("side-grip");
     const SIDE_KEY = "fused-md-side-width";
     const SIDE_MIN = 15 * 16;   // 15rem — narrower and the backlink rows wrap badly
     const SIDE_MAX = 45 * 16;   // 45rem — wider and the note itself is squeezed
+    let desiredSidePx = 21 * 16; // the CSS default (#side's own width: 21rem)
 
     function applySideWidth(px, persist) {
-      // The note keeps at least 20rem whatever the stored width says: 45rem of
-      // panel in a narrow window would otherwise squeeze the prose to a word per
-      // line, and a width stored on a wide monitor travels to a narrow one.
-      const room = document.getElementById("split").getBoundingClientRect().width;
-      const max = Math.max(SIDE_MIN, Math.min(SIDE_MAX, room - 20 * 16));
-      const width = Math.min(max, Math.max(SIDE_MIN, Math.round(px)));
-      sideEl.style.width = width + "px";
-      // A canvas is a fixed-size bitmap: its backing store only follows its CSS
-      // box when something tells it to, and nudge() is that (it re-measures and
-      // re-runs the sim, which also re-frames the graph for the new shape).
-      canvas.nudge();
+      desiredSidePx = Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(px)));
       if (persist) {
-        try { localStorage.setItem(SIDE_KEY, String(width)); }
+        try { localStorage.setItem(SIDE_KEY, String(desiredSidePx)); }
         catch (e) { /* private mode — the width is a nicety */ }
       }
+      layoutPanels();
     }
 
     function storedSideWidth() {
@@ -3832,7 +3963,7 @@
     // Open by default: absent means open, only an explicit "0" closes it — the
     // rule `graph` and `depth` already follow (MD-20). Width lives in
     // localStorage, like the right panel's, and is clamped so it cannot
-    // squeeze the document.
+    // squeeze the document — jointly with the right panel, see `layoutPanels`.
     const railEl = document.getElementById("outline-rail");
     const railGripEl = document.getElementById("rail-grip");
     const railReopenEl = document.getElementById("rail-reopen");
@@ -3840,19 +3971,17 @@
     const RAIL_KEY = "fused-md-outline-width";
     const RAIL_MIN = 12 * 16;  // 12rem
     const RAIL_MAX = 30 * 16;  // 30rem
+    let desiredRailPx = 15 * 16; // the CSS default (#outline-rail's own width: 15rem)
 
     function outlineOn() { return fused.params.get("outline") !== "0"; }
 
     function applyRailWidth(px, persist) {
-      const room = document.getElementById("split").getBoundingClientRect().width;
-      const reserved = 20 * 16 + (sideEl.classList.contains("on") ? sideEl.getBoundingClientRect().width : 0);
-      const max = Math.max(RAIL_MIN, Math.min(RAIL_MAX, room - reserved));
-      const width = Math.min(max, Math.max(RAIL_MIN, Math.round(px)));
-      railEl.style.width = width + "px";
+      desiredRailPx = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(px)));
       if (persist) {
-        try { localStorage.setItem(RAIL_KEY, String(width)); }
+        try { localStorage.setItem(RAIL_KEY, String(desiredRailPx)); }
         catch (e) { /* private mode — the width is a nicety */ }
       }
+      layoutPanels();
     }
 
     function storedRailWidth() {
@@ -3862,18 +3991,60 @@
       } catch (e) { return 0; }
     }
 
+    // The document's own floor (MD-19a/MD-19b): 20rem narrower and the prose
+    // wraps to a word or two per line. Both panels are measured against this
+    // ONE number, together, in `layoutPanels` — a panel's own MIN/MAX only says
+    // what that panel alone will tolerate, never what the document needs.
+    const DOC_FLOOR_PX = 20 * 16;
+
+    // The one place either panel's width actually reaches the DOM. Reads the
+    // two DESIRED widths (not the last-RENDERED ones — reading those back
+    // would ratchet the panels narrower forever on a shrinking window and
+    // never recover on a widening one) and gives the document its floor
+    // first. When the two desired widths together do not leave room for it,
+    // **the right panel yields first** (owner's call): the rail is the one
+    // open by default, so the panel the user opened on top of it is the one
+    // that gives ground, down to its own MIN, before the rail is touched at all.
+    function layoutPanels() {
+      const room = document.getElementById("split").getBoundingClientRect().width;
+      const railOpen = !railEl.hidden;
+      const sideOpen = sideEl.classList.contains("on");
+      let railW = railOpen ? desiredRailPx : 0;
+      let sideW = sideOpen ? desiredSidePx : 0;
+      let overflow = (railW + sideW) - (room - DOC_FLOOR_PX);
+      if (overflow > 0 && sideOpen) {
+        const give = Math.min(overflow, sideW - SIDE_MIN);
+        sideW -= give;
+        overflow -= give;
+      }
+      if (overflow > 0 && railOpen) {
+        const give = Math.min(overflow, railW - RAIL_MIN);
+        railW -= give;
+        overflow -= give;
+      }
+      if (railOpen) railEl.style.width = Math.round(Math.max(RAIL_MIN, railW)) + "px";
+      if (sideOpen) {
+        sideEl.style.width = Math.round(Math.max(SIDE_MIN, sideW)) + "px";
+        // A canvas is a fixed-size bitmap: its backing store only follows its
+        // CSS box when something tells it to, and nudge() is that (it
+        // re-measures and re-runs the sim, which also re-frames the graph).
+        canvas.nudge();
+      }
+    }
+
     function applyRail() {
       const on = outlineOn();
       railEl.hidden = !on;
       railReopenEl.hidden = on;
       if (on) {
         const stored = storedRailWidth();
-        if (stored) applyRailWidth(stored, false);
+        if (stored) desiredRailPx = Math.min(RAIL_MAX, Math.max(RAIL_MIN, stored));
         // renderOutline draws nothing while the rail is collapsed, so opening
         // it is the moment to draw what the document says now.
         outlineKey = null;
         renderOutline();
       }
+      layoutPanels();
     }
 
     railCollapseEl.addEventListener("click", () => fused.params.set("outline", "0"));
@@ -3965,10 +4136,14 @@
         // A stored width is applied here rather than at load: the panel has no
         // box at all while it is hidden, so measuring or nudging then is moot.
         const stored = storedSideWidth();
-        if (stored) applySideWidth(stored, false);
-        canvas.nudge(); // the canvas had zero size while the panel was hidden
+        if (stored) desiredSidePx = Math.min(SIDE_MAX, Math.max(SIDE_MIN, stored));
         void loadGraph();
       }
+      // Jointly with the rail (layoutPanels), even when there is no stored
+      // width at all: two panels at their CSS defaults is exactly the case
+      // that used to squeeze the document, because neither panel's clamp ever
+      // ran without a stored value to re-clamp.
+      layoutPanels();
     }
 
     function fail(html, isError) {
