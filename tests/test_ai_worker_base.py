@@ -947,6 +947,46 @@ def test_release_runs_on_the_generate_thread_not_the_connection_thread(base, man
         server.shutdown()
 
 
+def test_a_fired_release_cannot_run_while_a_generation_holds_the_lock(base, manual_timers):
+    """The safety-critical half of `_fire_release` that nothing above actually
+    exercises: acquiring `GENERATE_LOCK` FIRST is what makes firing mid-render
+    impossible, not just an assumption. `GENERATE_LOCK` is held here directly
+    from this thread, standing in for "a generation is in flight" without the
+    generation-token machinery (a real second execution would also CANCEL and
+    supersede this timer once it finishes, which is a different behaviour —
+    covered by `test_a_second_execution_inside_the_window_defers_the_pending_
+    release` above — and would make "does it fire" ambiguous here for the
+    wrong reason)."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        timer = manual_timers[-1]
+    finally:
+        server.shutdown()
+
+    base.GENERATE_LOCK.acquire()
+    try:
+        firer = threading.Thread(target=timer.fire)
+        firer.start()
+        firer.join(timeout=0.2)
+        assert firer.is_alive(), (
+            "the release ran while GENERATE_LOCK was held by an in-flight "
+            "generation — the whole point of acquiring it first")
+        assert calls == []
+    finally:
+        base.GENERATE_LOCK.release()
+    firer.join(timeout=5)
+    assert not firer.is_alive()
+    assert calls == ["released"], (
+        "the pending release must still run once the lock is free again"
+    )
+
+
 def test_serve_wires_release_into_the_module_global(base, monkeypatch, tmp_path):
     """`serve(release=...)` has to actually reach the module global that
     `_arm_release_timer` reads — the same wiring `memory=`/`peak_memory=`
