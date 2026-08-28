@@ -171,6 +171,25 @@
  *     "ai_error" | "unavailable" (no Apple Silicon, or the h3 binary is not
  *     staged — reason in the message, checked BEFORE any Apple-Silicon-only
  *     capability could otherwise look merely broken).
+ *   fused.ai.mesh({image, model, steps, guidance, octreeResolution, seed,
+ *                 onProgress}) -> Promise<{path, url, model, image, steps,
+ *                                         guidance, octreeResolution, seed}>
+ *     Image to 3D shape, locally (SPEC §48) — Hunyuan3D-2.1 on MLX, Apple
+ *     Silicon only (no fallback on other platforms: the second capability
+ *     with no "everywhere" runner, after fused.ai.video). `image` is
+ *     REQUIRED — unlike fused.ai.image's optional one, there is no
+ *     prompt-only mode for a pipeline that only ever reads a picture — and
+ *     resolves page-relative exactly like fused.ai.transcribe's `path`
+ *     (RH-1). The result is an untextured mesh: shape only, no PBR
+ *     texture stage. Minutes long (MESH_TIMEOUT_S is 30 minutes):
+ *     onProgress fires once at the start of the render (this pipeline
+ *     exposes no mid-render step hook, unlike video's per-denoising-step
+ *     ticks) and the row's ✕ still stops the render, taking effect once the
+ *     underlying call returns rather than mid-step. The seed comes back
+ *     whether or not one was passed; `steps`/`guidance`/`octreeResolution`
+ *     come back clamped to what actually rendered, which may not be what
+ *     was asked for. Rejects with .type "cancelled" | "ai_error" |
+ *     "unavailable" (no Apple Silicon — reason in the message).
  *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
  *     Text OR images into one vector space, locally (SPEC §40) — a dual
  *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
@@ -3472,6 +3491,59 @@
     });
   }
 
+  // fused.ai.mesh({image, ...}) -> Promise<{path, url, seed, ...}>
+  //
+  // `aiVideo`'s twin in waiting shape (onProgress, the row's ✕ really
+  // stopping the render, resolving off the FILE when the row aged out from
+  // under a backgrounded tab — see `aiVideo`'s own comment) but `image` is
+  // REQUIRED rather than a prompt, and resolves page-relative exactly as
+  // `aiImage`'s optional `image` and `aiTranscribe`'s `path` do (RH-1) —
+  // see `aiImage`'s own comment for why `base` is sent unconditionally.
+  function aiMesh(opts) {
+    opts = opts || {};
+    const meshKeys = ["image", "model", "steps", "guidance", "octreeResolution", "seed"];
+    const unknownErr = rejectUnknownOptions(opts, meshKeys, ["onProgress"], "fused.ai.mesh");
+    if (unknownErr) return Promise.reject(unknownErr);
+    if (typeof opts.image !== "string" || !opts.image.trim()) {
+      const err = new Error("fused.ai.mesh({image}): image must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of meshKeys) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
+    return aiPost("/api/ai/mesh", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      const done = () => ({ ...started, url: rawUrl(started.path) });
+      const tick = onProgress ? (job) => onProgress({ ...job }) : null;
+      return watcher.watch(tick).then((record) => {
+        if (!record) {
+          // The row aged out from under us — the same backgrounded-tab race
+          // `aiVideo` guards against. The FILE is the other witness.
+          return stat(started.path).then(done, () => {
+            const err = new Error("the mesh job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the mesh was cancelled"
+            : record.message || "the mesh failed to render",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
   //
   // The other call that resolves with a FILE, and the same waiting as
@@ -4004,6 +4076,7 @@
   ai.models = aiModels;
   ai.image = aiImage;
   ai.video = aiVideo;
+  ai.mesh = aiMesh;
   ai.transcribe = aiTranscribe;
   ai.embed = aiEmbed;
   // Stop the generation in flight on a local model, keeping it loaded — the

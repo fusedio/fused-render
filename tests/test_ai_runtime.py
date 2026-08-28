@@ -8163,6 +8163,109 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert js_keys == sorted(ai_runtime._VIDEO_OPTIONS)
 
 
+def _run_ai_mesh(record='{state: "done"}', ticks="[]",
+                 opts='{image: "a.png", onProgress: (job) => progress.push(job)}'):
+    """`_run_ai_video`'s harness for `aiMesh`."""
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node is needed to run the page's own mesh glue")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "fused_render", "static", "runtime.js")
+    source = open(path, encoding="utf-8").read()
+    fn = _js_fn_with_helper(source, "  function aiMesh(opts)")
+
+    prelude = """
+      const started = {jobId: "sys:ai-mesh:x", path: "/t/a.glb", seed: 7,
+                       steps: 50, guidance: 5.0, octreeResolution: 256};
+      const window = {location: {search: "?path=/pages/p.html"}};
+      const aiPost = () => Promise.resolve(started);
+      const rawUrl = (p) => "/api/fs/raw?path=" + p;
+      const stat = () => Promise.reject(new Error("no stat"));
+      const rows = TICKS;
+      const watchJob = () => ({
+        watch: (cb) => {
+          for (const row of rows) if (cb) cb(row);
+          return Promise.resolve(RECORD);
+        },
+        get: () => Promise.resolve(RECORD),
+        stop() {}, cancel: () => Promise.resolve(true),
+      });
+      const progress = [];
+    """.replace("TICKS", ticks).replace("RECORD", record)
+    call = """
+      aiMesh(OPTS).then(
+        (value) => console.log(JSON.stringify({ok: true, value, progress, rows})),
+        (err) => console.log(JSON.stringify(
+          {ok: false, message: err.message, type: err.type, progress, rows})),
+      );
+    """.replace("OPTS", opts)
+    out = subprocess.run(["node", "-e", prelude + fn + call],
+                         capture_output=True, text=True, encoding="utf-8")
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_resolved_mesh_carries_the_url():
+    settled = _run_ai_mesh()
+    assert settled["ok"] is True, settled
+    assert settled["value"]["url"] == "/api/fs/raw?path=/t/a.glb"
+
+
+def test_a_mesh_needs_an_image_at_the_bridge_too():
+    settled = _run_ai_mesh(opts='{}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "image" in settled["message"]
+
+
+def test_the_bridge_rejects_an_unrecognised_mesh_option_before_the_POST():
+    settled = _run_ai_mesh(opts='{image: "a.png", strength: 0.6}')
+    assert settled["ok"] is False
+    assert settled["type"] == "bad_request"
+    assert "strength" in settled["message"]
+
+
+def test_prompt_is_rejected_by_the_mesh_bridge_too():
+    """The mesh pipeline reads an image, never a prompt — the bridge's
+    whitelist must agree with the server's, or a caller gets a 400 from the
+    network instead of a same-tick rejection."""
+    settled = _run_ai_mesh(opts='{image: "a.png", prompt: "a chair"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "prompt" in settled["message"]
+
+
+def test_onProgress_is_exempt_from_the_mesh_unknown_key_check():
+    settled = _run_ai_mesh(opts='{image: "a.png", onProgress: () => {}}')
+    assert settled["ok"] is True, settled
+
+
+def test_the_mesh_bridge_checks_the_envelope_BEFORE_the_image_field():
+    settled = _run_ai_mesh(opts='{bogus: "x"}')
+    assert settled["ok"] is False and settled["type"] == "bad_request"
+    assert "'bogus' is not an option" in settled["message"]
+    assert "must be a non-empty string" not in settled["message"]
+
+
+def test_the_bridges_accepted_mesh_keys_match_the_servers_CALLER_FACING_constant():
+    """The drift guard, exactly like the video one above — compared against
+    the CALLER-FACING set, which must NOT include `base`: the server's set
+    is wider because the bridge injects `base` itself."""
+    from fused_render.server.routers import ai_runtime
+
+    source = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "fused_render", "static", "runtime.js"),
+                  encoding="utf-8").read()
+    start = source.index("  function aiMesh(opts)")
+    body = source[start:source.index("\n  }\n", start)]
+    match = re.search(r'const meshKeys = \[(.*?)\];', body)
+    assert match, "could not find aiMesh's whitelist array in runtime.js"
+    js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
+    assert js_keys == sorted(ai_runtime._MESH_OPTIONS)
+    assert "base" not in ai_runtime._MESH_OPTIONS
+    assert "base" in ai_runtime._MESH_SERVER_OPTIONS
+
+
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():
     """Same drift guard for transcribe — compared against the CALLER-FACING
     set, which must NOT include `base`: the server's set is wider because

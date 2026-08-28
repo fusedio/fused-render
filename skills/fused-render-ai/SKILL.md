@@ -23,7 +23,7 @@ Both destinations are **local-only** — there is no hosted path — so an expor
 ## When to Use
 
 - A page asks a model something: text, chat, streaming.
-- A page generates an image (`fused.ai.image`) or transcribes a recording (`fused.ai.transcribe`) locally.
+- A page generates an image (`fused.ai.image`), a video (`fused.ai.video`), a 3D mesh from an image (`fused.ai.mesh`), or transcribes a recording (`fused.ai.transcribe`) locally.
 - A page manages what this machine is holding in memory (`fused.ai.models.*`).
 - An AI call rejects and you need to know whose fault it is.
 - A `.py` data file, or a process outside the browser entirely, wants the same AI calls — see "Calling from Python".
@@ -357,6 +357,49 @@ Video generation has no "everywhere" runner — off Apple Silicon, `fused.ai.mod
 - `fused.ai.cancel("text-to-video")` stops the render and keeps the model resident, so the next call starts warm.
 - Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"`.
 
+## Image to 3D: `fused.ai.mesh({image, ...})`
+
+`fused.ai.video`'s sibling in shape — job-backed, resolves with a file — for image-to-3D shape generation, on Hunyuan3D-2.1 (`hy3dshape`, MLX). **Apple Silicon only, with no fallback on any other platform**, exactly like video: always handle `.type === "unavailable"`. Unlike `fused.ai.image`'s *optional* `image` (which switches it into edit mode), `image` here is **required** — there is no prompt-only mode for a pipeline that only ever reads a picture.
+
+```js
+const mesh = await fused.ai.mesh({
+  image: "chair-photo.jpg",   // page-relative, like fused.ai.transcribe's `path`
+  onProgress: (job) => { if (job.total) bar.value = job.done / job.total; },
+});
+viewer.load(mesh.url);   // a .glb — open it in the `glb` template, or a three.js viewer
+```
+
+### Options and the reply
+
+| Option | Default | Range | Notes |
+|---|---|---|---|
+| `image` | — | non-empty | **required.** Page-relative (resolves beside the calling page, like `fused.ai.transcribe`'s `path`) or absolute; missing/empty/non-string is `bad_request` **before** a job opens |
+| `model` | the `image-to-3d` row's `default` (`null` if this machine cannot serve the capability at all) | the curated Hunyuan3D-2.1 MLX weights (~7.4 GB, shape only) | |
+| `steps` | `50` — the pipeline's own default | **1–100** | clamped; not a number → 400 |
+| `guidance` | `5.0` — the pipeline's own default | **0–20** | clamped; not a number → 400 |
+| `octreeResolution` | `256` — the pipeline's own default | **16–512** | clamped; this is also the capability's face-count ceiling — there is no separate face-limit option, higher resolution means more triangles |
+| `seed` | random | **0 – 2147483647** | clamped; not a whole number → 400 |
+| `onProgress(job)` | — | — | fires **once**, at the start of the render — this pipeline exposes no mid-render step hook, unlike video's per-denoising-step ticks |
+
+Resolves with `{jobId, path, url, model, image, steps, guidance, octreeResolution, seed}` — the render that actually happened, not the one you asked for (`steps`/`guidance`/`octreeResolution` may have been clamped).
+
+- **`seed` comes back whether or not you passed one.**
+- **The server owns where the glb goes**: `<home>/ai/meshes/<YYYYmmdd-HHMMSS>-<uid>.glb`, time-ordered, outlives the tab, nothing cleans these up.
+- **Shape only — no texture.** The result is an untextured mesh; there is no PBR texture stage in this build.
+- **One row and one file per render.**
+
+### Availability: check it before you build the button
+
+Image-to-3D has no "everywhere" runner — off Apple Silicon, `fused.ai.models.catalog()` reports `default: null` for `image-to-3d` and every call rejects `.type "unavailable"` with the reason ("needs Apple Silicon…") in `.message`. Read `catalog()` first, the same rule `fused.ai.video` documents.
+
+### Slow renders, and cancelling one
+
+- **Minutes are the honest expectation** — the server allows up to **30 minutes** per render (`MESH_TIMEOUT_S`), narrower than video's 2-hour cap: a shape-only render is one blocking call with no internal upscaling stage.
+- **Renders serialize**, exactly like video and images: one at a time per worker.
+- **An aged-out row still answers off the file** — the same backgrounded-tab recovery `fused.ai.image` documents.
+- `fused.ai.cancel("image-to-3d")` stops the render, but **takes effect only once the underlying call returns** — there is no mid-render checkpoint to interrupt at, unlike video's per-step cancel.
+- Rejects `.type` `"cancelled"` | `"ai_error"` | `"unavailable"`.
+
 ## Transcription: `fused.ai.transcribe({path, ...})`
 
 Speech to text, locally. Job-backed and file-producing like `fused.ai.image` — but it hands you the **words as well**, because a transcript is text and the caller almost always wants it now.
@@ -589,6 +632,7 @@ Fifteen runners, five capabilities, taking **either** a Hugging Face repo id **o
 | `automatic-speech-recognition` | MLX Whisper, then Faster Whisper (CTranslate2) | **Everywhere.** MLX Whisper (GPU) is the Apple Silicon default; CTranslate2 serves both Mac architectures, Linux and Windows and is one Engines-tab switch away on a Mac. There is deliberately **no** GPU variant here off Apple Silicon, so transcription on an NVIDIA or AMD machine runs on the CPU. |
 | `embeddings` | MLX Embeddings, then ONNX Embeddings (CPU), then ONNX (DirectML), (CUDA), (ROCm) | **Everywhere.** MLX takes Apple Silicon; **ONNX Embeddings (CPU)** serves everywhere else and is the Apple Silicon fallback, so **local embedding ids are ONNX exports** on every machine but a Mac (a parity gate asserts ≥0.999 cosine against the torch weights). The three accelerated rows — DirectML, CUDA, ROCm — are opt-in and hardware-gated; none of them is about speed, and `auto` never reaches one. |
 | `text-to-video` | LTX-2.3 (Apple Silicon) | **NOT everywhere — the first capability with no fallback row.** LTX-2.3 runs on `ltx-2-mlx`, which is MLX-only; there is no CPU, CUDA or ROCm engine for it. Off Apple Silicon, `catalog()` reports `default: null` and every call to `fused.ai.video` rejects `.type "unavailable"`. |
+| `image-to-3d` | Hunyuan3D-2.1 (Apple Silicon) | **NOT everywhere — the second capability with no fallback row.** Runs on `hy3dshape`, MLX-only; no CPU, CUDA or ROCm engine. Off Apple Silicon, `catalog()` reports `default: null` and every call to `fused.ai.mesh` rejects `.type "unavailable"`. Shape only — no PBR texture stage. |
 
 Those five strings are the capability vocabulary — what `unload({capability})` and `cancel(capability)` take, and what `catalog()` groups by.
 
