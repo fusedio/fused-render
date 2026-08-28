@@ -6448,6 +6448,26 @@ def test_video_canvas_derives_from_the_reference_image(
     _wait_job(started["jobId"])
 
 
+def test_a_small_reference_can_come_back_square(client, fake_video_runner, tmp_path):
+    """`_video_default_size`'s own docstring: the 64-multiple step pairs with
+    the SAME 256 floor `_edit_default_size` uses at 16, so aspect collapses
+    far more readily here — not only on an extreme ratio. A 300x200 (3:2)
+    reference is smaller than the engine's own 704 target on both axes (no
+    downscale happens), and each axis then floors independently: `max(256,
+    300 // 64 * 64) == 256`, `max(256, 200 // 64 * 64) == 256`. This pins
+    that as deliberate rather than incidental — see D611."""
+    page = tmp_path / "pages" / "editor.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<html></html>")
+    photo = page.parent / "small.png"
+    photo.write_bytes(_png_bytes(300, 200))
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "small.png", "base": str(page)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (256, 256)
+    _wait_job(started["jobId"])
+
+
 def test_an_explicit_width_still_wins_over_the_derived_default(
         client, fake_video_runner, base_photo):
     page, photo = base_photo

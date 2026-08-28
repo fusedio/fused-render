@@ -350,7 +350,7 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
     return fitted_w, fitted_h
 
 
-def _resolve_reference_image(value, base, *, caller: str):
+def _resolve_reference_image(value, base, *, caller: str, verb: str):
     """Resolve an `image` option to `(path, None)`, or `(None, error)`.
 
     Shared by `/api/ai/image`'s edit image and `/api/ai/video`'s reference
@@ -362,16 +362,19 @@ def _resolve_reference_image(value, base, *, caller: str):
     wrong.
 
     `caller` names the bridge function in the one message that mentions it
-    (`fused.ai.image` or `fused.ai.video`) — every other word in every
-    message here is shared VERBATIM between the two routes, so the image
-    route's wording (pinned by tests and by SPEC) stays byte-identical and
-    the video route's says `fused.ai.video` in exactly the place the image
-    one says `fused.ai.image`.
+    (`fused.ai.image` or `fused.ai.video`); `verb` names what that call DOES
+    with the image (`"edits exactly one image"` for the image route,
+    `"conditions on exactly one image"` for video — a render conditioned on
+    a reference is not an edit of it). Every other word in every message
+    here is shared VERBATIM between the two routes, so the image route's
+    wording (pinned by tests and by SPEC) stays byte-identical and the video
+    route's reads naturally instead of borrowing "edits" for a call that
+    does not edit anything.
     """
     if not isinstance(value, str) or not value.strip():
         return None, _error(
             "'image' must be the path to one base image, as a single "
-            f"string — {caller}({{image}}) edits exactly one image, so an "
+            f"string — {caller}({{image}}) {verb}, so an "
             "array or any other type is rejected rather than guessed at",
             status=400)
     path = os.path.expanduser(value.strip())
@@ -408,6 +411,21 @@ def _video_default_size(image_path: str, traits: "registry.VideoTraits") -> tupl
     (not `_clamp_video_canvas`'s ordinary 32), so a canvas this function
     hands back never needs a further shave that would knock it back off the
     64-multiple grid.
+
+    **This is NOT the same fit-without-upscaling arithmetic as
+    `_edit_default_size`, despite starting from the identical shape — the
+    step is 4x coarser (64 against 16) against the SAME 256 floor, so aspect
+    collapses far more readily.** `_edit_default_size` only overrides aspect
+    on an extreme ratio (a 4000x200 banner). Here, ANY reference whose short
+    side lands under 320 after fitting gets that side floored to 256
+    regardless of ratio, so an ordinary small or near-square photo can come
+    back perfectly square: a 300x200 (3:2) reference is not downscaled at all
+    (300 and 200 are both already under the 704 target) and then floors on
+    BOTH axes — `max(256, 300 // 64 * 64) == 256` and `max(256, 200 // 64 *
+    64) == 256` — landing on 256x256 for a picture that was never square.
+    This is accepted, not a bug to route around: the 64-multiple floor is
+    what keeps the reply honest about the engine's own re-snap grid, and
+    holding it, not the aspect ratio, is what this function exists for.
     """
     dims = _image_pixel_size(image_path)
     if dims is None:
@@ -1460,7 +1478,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # PATH resolution — the shared function's own type check is a no-op
         # for a value that already passed it.
         image_path, rejection = _resolve_reference_image(
-            image, body.get("base"), caller="fused.ai.image")
+            image, body.get("base"), caller="fused.ai.image",
+            verb="edits exactly one image")
         if rejection is not None:
             return rejection
 
@@ -1641,7 +1660,8 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     image_path = None
     if image is not None:
         image_path, rejection = _resolve_reference_image(
-            image, body.get("base"), caller="fused.ai.video")
+            image, body.get("base"), caller="fused.ai.video",
+            verb="conditions on exactly one image")
         if rejection is not None:
             return rejection
 
