@@ -121,6 +121,14 @@ EMBEDDINGS = "embeddings"
 #: off Apple Silicon this capability has zero runners able to serve it, and
 #: `catalog()` reports `default: null` for it there.
 VIDEO_GENERATION = "text-to-video"
+#: The Hub's own tag, spelled exactly as the Hub spells it — same convention
+#: as every constant above. The second capability with no "everywhere" row:
+#: its one engine (`hunyuan3d-mlx`) is MLX, so like `VIDEO_GENERATION` this
+#: is Apple-Silicon-only with zero cross-platform fallback, and `catalog()`
+#: reports `default: null` for it elsewhere. Shape generation only — see
+#: the `hunyuan3d-mlx` `Runner` row below for what is deliberately not
+#: ported (the PBR texture stage) and why.
+IMAGE_TO_3D = "image-to-3d"
 
 # --------------------------------------------------------------- SPEC AI-28
 #: Orthogonal TAGS, not capabilities — `tool-use` and `vision` describe a
@@ -1556,6 +1564,30 @@ _RUNNERS: tuple[Runner, ...] = (
              "Needs 16 GB+ of RAM.",
         _available=_apple_silicon,
     ),
+    # Image-to-3D, the sixth capability and the second with no "everywhere"
+    # row — same shape as `ltx-video` above: one MLX engine, gated on the
+    # same `_apple_silicon` probe, no bundled binary to resolve.
+    #
+    # `hunyuan3d-mlx` is Tencent's Hunyuan3D-2.1 shape pipeline (image ->
+    # untextured mesh) through `iamsdas/Hunyuan3D-2.1-mlx`, a fork of
+    # `dgrauet/Hunyuan3D-2.1-mlx` that adds only packaging (see the runner's
+    # own `pyproject.toml` for the pin and why it is a fork rather than
+    # upstream). Shape only, deliberately: the fork also ports a Stage 2 PBR
+    # texture pipeline (`hy3dpaint`) that needs a second ~7.6 GB of weights,
+    # runs a six-view diffusion render plus a super-resolution pass (peaking
+    # near 38 GB), and would be a follow-up capability tier, not a variant
+    # of this one — this row's worker never imports that half.
+    Runner(
+        code="hunyuan3d-mlx",
+        capability=IMAGE_TO_3D,
+        folder=os.path.join(RUNNERS_DIR, "hunyuan3d_mlx"),
+        label="Hunyuan3D-2.1 (Apple Silicon)",
+        short_label="Hunyuan3D-2.1",
+        family_label="Hunyuan3D-2.1",
+        note="Generates an untextured 3D mesh from one image. Needs "
+             "16 GB+ of RAM.",
+        _available=_apple_silicon,
+    ),
 )
 
 
@@ -1648,6 +1680,75 @@ def video_frame_bounds(traits: VideoTraits) -> tuple[int, int]:
     """
     return (traits.frames_base + traits.frames_step * MIN_VIDEO_FRAMES_N,
             traits.frames_base + traits.frames_step * MAX_VIDEO_FRAMES_N)
+
+
+@dataclass(frozen=True)
+class MeshTraits:
+    """The shape of a mesh request, for the one runner that will actually
+    serve it — `VideoTraits`' own argument applies verbatim: these are the
+    facts `server/routers/ai_runtime.py`'s route would otherwise hardcode.
+
+    There is no frame grid here — a mesh request has no analogous "valid
+    point on a line" shape — so this table is flatter than `VideoTraits`:
+    three defaults, each read from `hy3dshape.pipeline_mlx.ShapePipeline.
+    __call__`'s own signature at the pinned commit (Task 1), not from
+    memory. The app-level clamp WINDOW for each one is a module-level
+    constant beside this table (`MIN_MESH_STEPS`/`MAX_MESH_STEPS` and its
+    two siblings below), the same "shared across every runner of this
+    capability, not per-trait-row" shape `MIN_VIDEO_FRAMES_N` already uses —
+    there is only one mesh runner today, but a second one would still want
+    the same safety rail, not its own.
+    """
+
+    default_steps: int
+    default_guidance: float
+    default_octree_resolution: int
+
+
+#: Runner code -> its `MeshTraits`. Absent for a runner with no mesh
+#: capability — `VIDEO_TRAITS`'s own "absent rather than empty" shape.
+#: `mesh_traits_for` falls back to `hunyuan3d-mlx`'s row for the same reason
+#: `video_traits_for` falls back to `ltx-video`'s: the one shipping engine's
+#: numbers are a better default for an unrecognised code than an
+#: engine-neutral guess.
+MESH_TRAITS: dict[str, MeshTraits] = {
+    "hunyuan3d-mlx": MeshTraits(
+        default_steps=50, default_guidance=5.0, default_octree_resolution=256),
+}
+
+
+def mesh_traits_for(code: str | None) -> MeshTraits:
+    """The request shape for `code`, falling back to `hunyuan3d-mlx`'s
+    numbers. See `MESH_TRAITS`'s docstring for why."""
+    return MESH_TRAITS.get(code or "", MESH_TRAITS["hunyuan3d-mlx"])
+
+
+#: The app's own safety rails for a mesh request — not a fact about
+#: `hy3dshape`'s weights, the same distinction `MIN_VIDEO_FRAMES_N` draws.
+#:
+#: Steps and octree resolution mirror the ONLY sliders upstream's own
+#: `gradio_app.py` exposes for this pipeline at the pinned commit (`gr.
+#: Slider(minimum=1, maximum=100, ...)` for inference steps, `gr.Slider(
+#: minimum=16, maximum=512, ...)` for octree resolution) — upstream's own
+#: accepted range, not one this app invented. Guidance has no such
+#: upstream-recommended range (`gradio_app.py` never exposes it as a
+#: slider at all, fixed at its PyTorch-reference default everywhere it
+#: appears); `[0, 20]` here is an ordinary classifier-free-guidance window,
+#: not a value anyone has tuned this checkpoint against.
+#:
+#: **`MAX_MESH_OCTREE_RESOLUTION` doubles as this capability's "face cap".**
+#: `ShapePipeline` has no separate face-count parameter to clamp — marching
+#: cubes at a given octree resolution produces however many triangles the
+#: decoded surface actually has, and the lean, torch-free path this runner
+#: takes (Task 1) deliberately skips `hy3dshape.postprocessors.FaceReducer`,
+#: which needs `pymeshlab` AND `torch`. Bounding the resolution IS bounding
+#: the face count for this engine — there is no second knob.
+MIN_MESH_STEPS = 1
+MAX_MESH_STEPS = 100
+MIN_MESH_GUIDANCE = 0.0
+MAX_MESH_GUIDANCE = 20.0
+MIN_MESH_OCTREE_RESOLUTION = 16
+MAX_MESH_OCTREE_RESOLUTION = 512
 
 
 # The task vocabulary — which `pipeline_tag` means what, and which of them a

@@ -107,6 +107,17 @@ TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
 # the worst case here is a known ceiling rather than an open-ended file.
 VIDEO_TIMEOUT_S = 2 * 3600.0
 
+# How long a mesh request will wait for the worker to finish rendering.
+# Shorter than `VIDEO_TIMEOUT_S`: a shape-only render is one blocking call
+# with no internal upscaling stage, and even at this capability's own clamp
+# ceiling (`registry.MAX_MESH_STEPS`, `registry.MAX_MESH_OCTREE_
+# RESOLUTION`) it is minutes, not hours, of work on ordinary Apple Silicon.
+# Half an hour is the same kind of backstop `TRANSCRIBE_TIMEOUT_S`'s
+# docstring describes — wide enough that no real render on the app's own
+# clamps ever brushes it, narrow enough that a wedged worker does not park
+# a request thread indefinitely.
+MESH_TIMEOUT_S = 1800.0
+
 # How long an image request will wait for its model to become resident. Long,
 # because the honest worst case is a multi-GB download on a slow connection
 # followed by a minutes-long load — and the alternative to waiting is failing a
@@ -123,6 +134,8 @@ IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
 #: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
 VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
+#: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
+MESH_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-mesh:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -1682,6 +1695,8 @@ def _leak_ceiling(capability: str, window: float) -> float:
         timeout = TRANSCRIBE_TIMEOUT_S
     elif capability == registry.VIDEO_GENERATION:
         timeout = VIDEO_TIMEOUT_S
+    elif capability == registry.IMAGE_TO_3D:
+        timeout = MESH_TIMEOUT_S
     else:
         timeout = GENERATE_TIMEOUT_S
     return max(window, timeout + _LEAK_CEILING_MARGIN_S)
@@ -2265,6 +2280,22 @@ def start_video(model: str, request: dict, job: str) -> None:
                   noun="video", thread_name="ai-video")
 
 
+def mesh_job_id(uid: str) -> str:
+    """The download-manager row for one render. See `image_job_id`."""
+    return MESH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_mesh(model: str, request: dict, job: str) -> None:
+    """Open `job` and render a mesh on a thread. See `_start_render`.
+
+    Raises before starting if it cannot — a request this machine cannot
+    serve (no Apple Silicon) answers with the reason instead of opening a
+    row that immediately dies.
+    """
+    _start_render(registry.IMAGE_TO_3D, model, request, job, generate_mesh,
+                  noun="mesh", thread_name="ai-mesh")
+
+
 def _generate_via_worker(capability: str, model: str, request: dict, job: str,
                           *, timeout: float, noun: str) -> dict:
     """Render one item through the resident `capability` worker. Blocking —
@@ -2317,6 +2348,17 @@ def generate_video(model: str, request: dict, job: str) -> dict:
     """
     return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
                                 timeout=VIDEO_TIMEOUT_S, noun="video")
+
+
+def generate_mesh(model: str, request: dict, job: str) -> dict:
+    """Render one mesh. See `_generate_via_worker`.
+
+    `MESH_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S` — see that constant's
+    own docstring for why a mesh render gets a wider (if still bounded)
+    window than an image request.
+    """
+    return _generate_via_worker(registry.IMAGE_TO_3D, model, request, job,
+                                timeout=MESH_TIMEOUT_S, noun="mesh")
 
 
 def _await_turn(job: str, title: str, model: str = "") -> None:

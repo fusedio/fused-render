@@ -85,9 +85,23 @@ def test_ruled_out_and_unknown_are_tellable_apart():
     # `ltx-video` serves this one prompt-only; its image-conditioned siblings
     # (image-to-video, image-text-to-video) stay unmapped below.
     ("text-to-video", registry.VIDEO_GENERATION),
+    # `hunyuan3d-mlx` serves this one — an existing, previously-unmapped tag.
+    ("image-to-3d", registry.IMAGE_TO_3D),
 ])
 def test_the_tags_a_runner_serves(tag, capability):
     assert tasks.classify(tag).capability == capability
+
+
+def test_text_to_3d_stays_unmapped_with_a_real_reason():
+    """`text-to-3d` had NO runner before this branch and still has none —
+    only its neighbour tag (`image-to-3d`) gained one. The reason must be
+    the actual one (chaining two resident engines behind one button), not
+    `reason()`'s generic "nothing runs this" fallback a plain unmapped row
+    gets by default."""
+    reading = tasks.classify("text-to-3d")
+    assert reading.support == tasks.NO_RUNNER
+    assert "hunyuan3d-mlx" in reading.reason
+    assert "Nothing on this machine runs" not in reading.reason
 
 
 def test_the_IMAGE_only_encoder_tag_is_still_deliberately_unserved():

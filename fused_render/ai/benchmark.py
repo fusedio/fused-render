@@ -147,7 +147,13 @@ _EMBED_TEXTS = (
 #: for a capability missing from both `WORKLOADS` and `_MEASURE` already
 #: degrades this to a clean 4xx rather than a crash or a silently-broken Run
 #: button (see that function's docstring) — the gap is safe, just incomplete.
-NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION})
+#: `image-to-3d` joins `text-to-video` here for the identical reason: its
+#: one engine (`hunyuan3d-mlx`, `registry.MESH_TRAITS`) is a resident MLX
+#: model with a render that runs tens of seconds to a couple of minutes even
+#: at default settings, not the few-second workloads every wired capability
+#: below actually measures. The cost argument above applies unchanged —
+#: this is a scope decision for a person, not a regression.
+NO_WORKLOAD_YET = frozenset({registry.VIDEO_GENERATION, registry.IMAGE_TO_3D})
 
 #: One entry per capability constant in `registry`, `NO_WORKLOAD_YET` excepted.
 #: A capability with neither an entry here nor an exemption above would render

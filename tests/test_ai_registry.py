@@ -355,3 +355,84 @@ def test_the_playgrounds_fallback_traits_match_the_servers_own_fallback():
         "VideoStage.tsx's FALLBACK_TRAITS has drifted from "
         "`registry.video_traits_for`'s own fallback row — see this test's "
         "docstring for why that is invisible at runtime")
+
+
+# --------------------------------------------------------- image-to-3D (Task 2)
+
+
+def test_image_to_3d_is_a_registered_capability():
+    assert registry.IMAGE_TO_3D == "image-to-3d"
+    assert registry.IMAGE_TO_3D in registry.capabilities()
+
+
+def test_hunyuan3d_mlx_is_the_only_registered_mesh_runner():
+    codes = [r.code for r in registry.all_runners() if r.capability == registry.IMAGE_TO_3D]
+    assert codes == ["hunyuan3d-mlx"]
+
+
+def test_hunyuan3d_mlx_row_present_on_apple_silicon(monkeypatch):
+    _mac_arm(monkeypatch)
+    assert _runner("hunyuan3d-mlx")._available().ok
+
+
+def test_hunyuan3d_mlx_row_absent_off_apple_silicon(monkeypatch):
+    """Forced across every non-Apple-Silicon hardware resolution this suite
+    recognises — Windows, Linux, and Intel Macs — because this row is gated
+    on the SAME `_apple_silicon` probe every other MLX-only row uses, and a
+    test that only checked one of the three would pass here and prove
+    nothing about the other two."""
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64"),
+                            ("Darwin", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        status = _runner("hunyuan3d-mlx")._available()
+        assert not status.ok, f"{system}/{machine} unexpectedly available"
+        assert "Apple Silicon" in status.reason
+
+
+def test_no_mesh_runner_is_available_off_apple_silicon(monkeypatch):
+    """The capability's one row is gated on `_apple_silicon`, so a machine
+    that is not one has no image-to-3D capability at all — the same
+    "no cross-platform fallback" shape `text-to-video` already has, checked
+    across all three non-Apple-Silicon resolutions."""
+    for system, machine in (("Windows", "AMD64"), ("Linux", "x86_64"),
+                            ("Darwin", "x86_64")):
+        monkeypatch.setattr(registry.platform, "system", lambda s=system: s)
+        monkeypatch.setattr(registry.platform, "machine", lambda m=machine: m)
+        assert registry.for_capability(registry.IMAGE_TO_3D) is None, (
+            f"{system}/{machine} unexpectedly resolved a mesh runner")
+
+
+def test_apple_silicon_resolves_to_hunyuan3d_mlx(monkeypatch):
+    _mac_arm(monkeypatch)
+    resolved = registry.for_capability(registry.IMAGE_TO_3D)
+    assert resolved is not None and resolved.code == "hunyuan3d-mlx"
+
+
+def test_mesh_traits_names_every_registered_mesh_runner():
+    assert set(registry.MESH_TRAITS) == {"hunyuan3d-mlx"}
+
+
+def test_mesh_traits_for_falls_back_to_the_shipping_runner_for_an_unknown_code():
+    assert registry.mesh_traits_for("fake-mesh") == registry.MESH_TRAITS["hunyuan3d-mlx"]
+    assert registry.mesh_traits_for(None) == registry.MESH_TRAITS["hunyuan3d-mlx"]
+
+
+def test_mesh_traits_for_hunyuan3d_mlx_matches_the_pipelines_own_defaults():
+    """Read from `hy3dshape.pipeline_mlx.ShapePipeline.__call__`'s own
+    signature at the pinned commit (Task 1) — `num_inference_steps=50`,
+    `guidance_scale=5.0`, `octree_resolution=256` — not from memory."""
+    traits = registry.mesh_traits_for("hunyuan3d-mlx")
+    assert traits.default_steps == 50
+    assert traits.default_guidance == 5.0
+    assert traits.default_octree_resolution == 256
+
+
+def test_mesh_clamp_bounds_match_upstreams_own_gradio_sliders():
+    """`registry.MIN_MESH_STEPS`/`MAX_MESH_STEPS` and their octree-resolution
+    siblings mirror the only two sliders upstream's own `gradio_app.py`
+    exposes for this pipeline at the pinned commit."""
+    assert (registry.MIN_MESH_STEPS, registry.MAX_MESH_STEPS) == (1, 100)
+    assert (registry.MIN_MESH_OCTREE_RESOLUTION,
+            registry.MAX_MESH_OCTREE_RESOLUTION) == (16, 512)
+    assert registry.MIN_MESH_GUIDANCE < registry.MAX_MESH_GUIDANCE

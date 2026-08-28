@@ -38,6 +38,7 @@ from dataclasses import dataclass
 from fused_render.ai.registry import (
     EMBEDDINGS,
     IMAGE_GENERATION,
+    IMAGE_TO_3D,
     SPEECH_TO_TEXT,
     TEXT_GENERATION,
     VIDEO_GENERATION,
@@ -241,8 +242,15 @@ _TASKS: tuple[Task, ...] = (
     _t("visual-document-retrieval", "visual document retrieval", "multimodal", None,
        "Finds the page of a document that answers a query, from the page images."),
     _t("text-to-3d", "text to 3D", "cv", None,
-       "Generates a 3D object from a written description."),
-    _t("image-to-3d", "image to 3D", "cv", None,
+       "Generates a 3D object from a written description.",
+       note="Nothing here generates an image AND a mesh from one call — "
+            "serving this would mean chaining an image runner into "
+            "`hunyuan3d-mlx` behind one button, two resident slots for one "
+            "user action. Worth doing deliberately later, not as a side "
+            "effect of the mesh runner landing."),
+    # `hunyuan3d-mlx` (Hunyuan3D-2.1's shape pipeline on MLX) serves this
+    # one — an existing tag that had no runner until Task 1's runner landed.
+    _t("image-to-3d", "image to 3D", "cv", IMAGE_TO_3D,
        "Generates a 3D object from a picture."),
 
     # ------------------------------------------------------------------- video
