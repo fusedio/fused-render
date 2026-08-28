@@ -1584,8 +1584,14 @@ _RUNNERS: tuple[Runner, ...] = (
         label="Hunyuan3D-2.1 (Apple Silicon)",
         short_label="Hunyuan3D-2.1",
         family_label="Hunyuan3D-2.1",
+        # 32 GB+, not 16 — this repo publishes one fp16 dit.safetensors and
+        # no quantized tier (catalog.py's own comment on the row has the
+        # measurement), so unlike ltx-video there is no smaller checkpoint
+        # to soften the number. 16 was copy-pasted from that row above and
+        # would have sent a 16 GB user into swap or an OOM after a real
+        # 7.4 GB download (code review, 2026-08-28, finding 4).
         note="Generates an untextured 3D mesh from one image. Needs "
-             "16 GB+ of RAM.",
+             "32 GB+ of RAM.",
         _available=_apple_silicon,
     ),
 )
