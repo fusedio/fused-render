@@ -1601,7 +1601,10 @@ def _attachments_block(entry: dict) -> str:
         noun = "a picture" if len(shots) == 1 else "pictures"
     what = noun if len(shots) == 1 and noun.startswith("a ") \
         else f"{len(shots)} {noun}"
-    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
+    # Forward slashes on the wire on every platform — the chat template's
+    # reader and the agent's Read rule both spell paths that way (agent.py
+    # `_wire_path`), and a stored Windows path still carries its backslashes.
+    payload = json.dumps([{"kind": a["kind"], "view": a["path"].replace("\\", "/"),
                            "name": a["name"], "viewNote": ""} for a in shots])
     # The chat's own two kind sentences, minus the two kinds a scheduled run
     # cannot have: "pane" and "overview" are pictures of a screen taken at send
