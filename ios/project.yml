@@ -22,7 +22,7 @@ settings:
     # The Fused developer team (Apple Development identity in the keychain):
     # signs simulator and device builds alike; the App Group entitlement the
     # widget needs is provisioned against it.
-    DEVELOPMENT_TEAM: 39J46U46UX
+    DEVELOPMENT_TEAM: L5CL3594R4
     CODE_SIGN_STYLE: Automatic
     # SIMULATOR CAVEAT: Xcode ad-hoc signs simulator builds with no team
     # whatever identity is asked for, and AppIntents' linkd then rejects the
