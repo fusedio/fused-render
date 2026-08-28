@@ -336,7 +336,10 @@ def _device_name(user_agent: str) -> str:
         device = "Linux"
     else:
         device = "Device"
-    if "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
+    if "FusedRender-iOS/" in ua:
+        # The native shell (ios/) — not a browser, whatever WebKit's UA says.
+        browser = "Fused Render app"
+    elif "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
         browser = "Chrome"
     elif "Edg" in ua:
         browser = "Edge"

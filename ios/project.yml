@@ -24,6 +24,11 @@ settings:
     # widget needs is provisioned against it.
     DEVELOPMENT_TEAM: 39J46U46UX
     CODE_SIGN_STYLE: Automatic
+    # SIMULATOR CAVEAT: Xcode ad-hoc signs simulator builds with no team
+    # whatever identity is asked for, and AppIntents' linkd then rejects the
+    # widget extension ("Unable to get teamId from io.fused.render.widgets …
+    # requiresValidBundle") — so editing a widget's chosen app never persists
+    # in the simulator. Not a code path we control; verify on a device.
     TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: NO
     ENABLE_USER_SCRIPT_SANDBOXING: YES

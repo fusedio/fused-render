@@ -35,6 +35,10 @@ struct WebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // The marker rides on WebKit's own UA from the very first request (the
+        // pairing one included) — setting customUserAgent after creation was
+        // too late, and the server named the device "iPhone · Safari".
+        config.applicationNameForUserAgent = "Mobile/15E148 " + Self.userAgentMarker
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -56,11 +60,6 @@ struct WebView: UIViewRepresentable {
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.isOpaque = false
         web.backgroundColor = .systemBackground
-        // Append our marker to WebKit's own UA (it needs the default for
-        // feature detection in pages).
-        web.evaluateJavaScript("navigator.userAgent") { ua, _ in
-            if let ua = ua as? String { web.customUserAgent = ua + " " + Self.userAgentMarker }
-        }
         context.coordinator.webView = web
         controller.webView = web
         web.load(URLRequest(url: pairURL ?? url))

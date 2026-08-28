@@ -6,6 +6,9 @@
 import AppIntents
 import SwiftUI
 import WidgetKit
+import os
+
+private let log = Logger(subsystem: "io.fused.render", category: "widget")
 
 @main
 struct FusedRenderWidgets: WidgetBundle {
@@ -14,48 +17,7 @@ struct FusedRenderWidgets: WidgetBundle {
     }
 }
 
-// MARK: - the app the user picks
-
-struct FusedAppEntity: AppEntity {
-    static var typeDisplayRepresentation: TypeDisplayRepresentation = "Fused app"
-    static var defaultQuery = FusedAppQuery()
-
-    var id: String
-    var label: String
-    var host: String
-
-    var displayRepresentation: DisplayRepresentation {
-        DisplayRepresentation(title: "\(label)", subtitle: "\(host)")
-    }
-
-    init(_ app: ManifestApp) {
-        id = app.id
-        label = app.label
-        host = app.host
-    }
-}
-
-struct FusedAppQuery: EntityQuery {
-    func entities(for identifiers: [String]) async throws -> [FusedAppEntity] {
-        Manifest.load().filter { identifiers.contains($0.id) }.map(FusedAppEntity.init)
-    }
-
-    func suggestedEntities() async throws -> [FusedAppEntity] {
-        Manifest.load().sorted { $0.recency > $1.recency }.map(FusedAppEntity.init)
-    }
-
-    func defaultResult() async -> FusedAppEntity? {
-        Manifest.load().max { $0.recency < $1.recency }.map(FusedAppEntity.init)
-    }
-}
-
-struct SelectFusedAppIntent: WidgetConfigurationIntent {
-    static var title: LocalizedStringResource = "Fused app"
-    static var description = IntentDescription("Which app this tile opens.")
-
-    @Parameter(title: "App")
-    var app: FusedAppEntity?
-}
+// The configuration intent + entity live in Shared/WidgetIntents.swift (both targets).
 
 // MARK: - timeline
 
@@ -81,7 +43,12 @@ struct FusedAppProvider: AppIntentTimelineProvider {
 
     private func entry(for configuration: SelectFusedAppIntent) -> FusedAppEntry {
         let apps = Manifest.load()
-        let app = apps.first(where: { $0.id == configuration.app?.id }) ?? apps.max { $0.recency < $1.recency }
+        let wanted = configuration.app?.id
+        // No silent fallback: an unconfigured tile says so, rather than
+        // showing the most recent app and masking a selection that did not
+        // persist.
+        let app = apps.first(where: { $0.id == wanted })
+        log.info("entry: wanted=\(wanted ?? "nil", privacy: .public) → \(app?.label ?? "none", privacy: .public) of \(apps.count)")
         let preview = app?.previewURL.flatMap { UIImage(contentsOfFile: $0.path) }
         return FusedAppEntry(date: .now, app: app, preview: preview)
     }
@@ -100,7 +67,10 @@ struct FusedAppTile: View {
         } else {
             VStack(spacing: 6) {
                 Image(systemName: "sparkle").font(.title2)
-                Text("Open Fused Render once to list your apps").font(.caption2).multilineTextAlignment(.center)
+                Text(Manifest.load().isEmpty
+                     ? "Open Fused Render once to list your apps"
+                     : "Hold, then Edit Widget to choose an app")
+                    .font(.caption2).multilineTextAlignment(.center)
             }
             .foregroundStyle(.secondary)
             .padding()

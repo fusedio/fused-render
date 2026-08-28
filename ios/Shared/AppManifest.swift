@@ -3,6 +3,7 @@
 // opens one, and the monogram colour rule the grid uses. Lives in the App
 // Group container so the widget can draw without the network and the app can
 // refresh it whenever the grid loads.
+import CryptoKit
 import Foundation
 import SwiftUI
 
@@ -34,7 +35,13 @@ struct ManifestApp: Codable, Identifiable, Hashable {
     /// Cached preview.png in `previews/`, when the app has one.
     var previewFile: String?
 
-    var id: String { "\(host):\(port)|\(path)" }
+    /// A plain hex digest, not "host:port|/path": AppIntents persists a chosen
+    /// entity by its id, and ids carrying "/" and ":" were not round-tripping —
+    /// the widget kept its previous app after every edit.
+    var id: String {
+        let key = "\(host):\(port)|\(path)"
+        return SHA256.hash(data: Data(key.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+    }
     var label: String { title?.isEmpty == false ? title! : name }
 
     var baseURL: URL {
