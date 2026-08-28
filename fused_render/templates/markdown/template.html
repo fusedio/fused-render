@@ -508,7 +508,7 @@
   .panel-reopen-btn.right { right: 8px; }
   #side {
     position: relative;
-    width: 21rem;
+    width: 18rem;
     flex: none;
     display: none;
     flex-direction: column;
@@ -556,7 +556,7 @@
      than something whose subject might not exist. */
   #outline-rail {
     position: relative;
-    width: 15rem;
+    width: 12rem;
     flex: none;
     display: flex;
     flex-direction: column;
@@ -4017,7 +4017,11 @@
     const SIDE_KEY = "fused-md-side-width";
     const SIDE_MIN = 15 * 16;   // 15rem — narrower and the backlink rows wrap badly
     const SIDE_MAX = 45 * 16;   // 45rem — wider and the note itself is squeezed
-    let desiredSidePx = 21 * 16; // the CSS default (#side's own width: 21rem)
+    // 18rem, not the drag range's old 21rem default (owner: "the 2 sidebars
+    // are taking a lot of space" — 36rem of chrome against a 46rem document
+    // measure was the wrong split). The drag RANGE is untouched — anyone who
+    // wants more still has 45rem to go to — only the default moved.
+    let desiredSidePx = 18 * 16; // the CSS default (#side's own width: 18rem)
 
     function applySideWidth(px, persist) {
       desiredSidePx = Math.min(SIDE_MAX, Math.max(SIDE_MIN, Math.round(px)));
@@ -4073,7 +4077,12 @@
     const RAIL_KEY = "fused-md-outline-width";
     const RAIL_MIN = 12 * 16;  // 12rem
     const RAIL_MAX = 30 * 16;  // 30rem
-    let desiredRailPx = 15 * 16; // the CSS default (#outline-rail's own width: 15rem)
+    // The default now EQUALS the floor (owner: "the 2 sidebars are taking a
+    // lot of space"). The rail's own rows already ellipsise well before
+    // 15rem ("The freeze mechanism: Godot…"), so the extra 3rem the old
+    // default spent was buying wider truncated labels, not full ones — a
+    // width nobody was actually reading. The drag RANGE is unchanged.
+    let desiredRailPx = 12 * 16; // the CSS default (#outline-rail's own width: 12rem)
 
     function outlineOn() { return fused.params.get("outline") !== "0"; }
 
@@ -4093,32 +4102,51 @@
       } catch (e) { return 0; }
     }
 
-    // The document's own floor (MD-19a/MD-19b): 20rem narrower and the prose
-    // wraps to a word or two per line. Both panels are measured against this
-    // ONE number, together, in `layoutPanels` — a panel's own MIN/MAX only says
-    // what that panel alone will tolerate, never what the document needs.
+    // The document's own HARD floor (MD-19a/MD-19b): 20rem narrower and the
+    // prose wraps to a word or two per line — the catastrophic case. Both
+    // panels are measured against this ONE number, together, in
+    // `layoutPanels` — a panel's own MIN/MAX only says what that panel alone
+    // will tolerate, never what the document needs.
     const DOC_FLOOR_PX = 20 * 16;
+    // The document's COMFORT target (owner: "the 2 sidebars are taking a lot
+    // of space" — 36rem of chrome against a 46rem measure was the wrong
+    // split, even though neither panel was anywhere near ITS OWN minimum).
+    // This is the ordinary case, not the catastrophic one: before either
+    // panel gets its full default width, the document gets first claim on a
+    // genuinely readable measure. 35rem, the middle of the owner's suggested
+    // 34–36rem — comfortably inside the 46rem cap, so it never competes with
+    // the cap itself, and still leaves real room to negotiate above the hard
+    // floor. Below this the panels shrink toward their MINIMUMS (not yet
+    // closed — that is still the hard floor's job, below).
+    const DOC_COMFORT_PX = 35 * 16;
 
     // The one place either panel's width actually reaches the DOM. Reads the
     // two DESIRED widths (not the last-RENDERED ones — reading those back
     // would ratchet the panels narrower forever on a shrinking window and
-    // never recover on a widening one) and gives the document its floor
-    // FIRST, as a HARD minimum — narrower than this and a panel is worth
-    // nothing, because there is no document left to read or annotate. A
-    // narrow window is not the only way to get here: the shell's own
-    // Claude-panel iframe can leave this template's `#split` at a fraction of
-    // the outer window's width with no navigation and no reload, which is why
-    // this is re-run on `resize` (below), not only on open/drag.
+    // never recover on a widening one). A narrow window is not the only way
+    // to get here: the shell's own Claude-panel iframe can leave this
+    // template's `#split` at a fraction of the outer window's width with no
+    // navigation and no reload, which is why this is re-run on `resize`
+    // (below), not only on open/drag.
     //
-    // Down to a panel's own MIN is a squeeze; past that is a CLOSE, not a
-    // squeeze-below-min — this view never renders a sliver of a panel too
-    // narrow to read. **The right panel yields first, and furthest**
-    // (owner's call): squeezed to its floor, then closed outright, before the
-    // rail — open by default — gives any ground at all. Presentational only:
-    // this sets `style.display` directly, which beats both the `.on` class
-    // and the `hidden` attribute on specificity without touching either, so
-    // the moment there is room again both panels reappear exactly as the
-    // user left them — no param write, no lost preference.
+    // TWO layers, spent in order, both preferring the RIGHT panel to give
+    // ground first (owner's call: the rail is open by default):
+    //   1. COMFORT — shrink toward MIN so the document keeps `DOC_COMFORT_PX`
+    //      whenever the two panels' DEFAULTS would eat into it. On a wide
+    //      window (`room` well past defaults + comfort + the document's
+    //      46rem cap) this spends nothing at all: the panels are only ever
+    //      taking space the document was never going to use as prose anyway,
+    //      which is the whole point — chrome is free above the document's
+    //      cap and costs only in the middle range where a note actually gets
+    //      read next to an open panel.
+    //   2. HARD FLOOR — past MIN, a panel CLOSES outright rather than
+    //      rendering a sliver too narrow to read; this view never shows a
+    //      squeeze below a panel's own minimum. Presentational only, both
+    //      layers: everything here sets `style.display`/`style.width`
+    //      directly, which beats both the `.on` class and the `hidden`
+    //      attribute on specificity without touching either param, so the
+    //      moment there is room again both panels reappear exactly as the
+    //      user left them.
     function layoutPanels() {
       const room = document.getElementById("split").getBoundingClientRect().width;
       const railWantsOpen = !railEl.hidden;      // the `outline` param's state
@@ -4127,18 +4155,28 @@
       let sideOpen = sideWantsOpen;
       let railW = railOpen ? desiredRailPx : 0;
       let sideW = sideOpen ? desiredSidePx : 0;
-      const spareFor = (rw, sw) => room - DOC_FLOOR_PX - rw - sw;
 
-      if (sideOpen) {
-        const short = -spareFor(railW, sideW);
-        if (short > 0) sideW -= Math.min(short, sideW - SIDE_MIN);
-        if (spareFor(railW, sideW) < 0) { sideOpen = false; sideW = 0; }
+      // Layer 1: the comfort target. Only ever shrinks toward MIN — never
+      // closes a panel — so a window just barely tight for the comfort
+      // target still shows both panels, merely narrower than their defaults.
+      let short = (railW + sideW) - (room - DOC_COMFORT_PX);
+      if (short > 0 && sideOpen) {
+        const give = Math.min(short, sideW - SIDE_MIN);
+        sideW -= give; short -= give;
       }
-      if (railOpen) {
-        const short = -spareFor(railW, sideW);
-        if (short > 0) railW -= Math.min(short, railW - RAIL_MIN);
-        if (spareFor(railW, sideW) < 0) { railOpen = false; railW = 0; }
+      if (short > 0 && railOpen) {
+        const give = Math.min(short, railW - RAIL_MIN);
+        railW -= give; short -= give;
       }
+
+      // Layer 2: the hard floor. Whatever Layer 1 left (already at or above
+      // each panel's own MIN) is measured against the stricter, smaller
+      // `DOC_FLOOR_PX` — and only past THAT does a panel close outright
+      // rather than squeeze further (it cannot squeeze further; it is
+      // already at MIN by construction).
+      const spareFor = (rw, sw) => room - DOC_FLOOR_PX - rw - sw;
+      if (sideOpen && spareFor(railW, sideW) < 0) { sideOpen = false; sideW = 0; }
+      if (railOpen && spareFor(railW, sideW) < 0) { railOpen = false; railW = 0; }
 
       railEl.style.display = railOpen ? "" : "none";
       if (railOpen) railEl.style.width = Math.round(Math.max(RAIL_MIN, railW)) + "px";

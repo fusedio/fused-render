@@ -3198,14 +3198,20 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   count would only restate what the eye already sees in a list that is never
   capped.
   Backlinks and the graph still answer one question about the rest of the
-  vault, so one control still opens both. The panel is **resizable** by
+  vault, so one control still opens both. The panel is **18rem by default**
+  (down from an original 21rem — owner: "the 2 sidebars are taking a lot of
+  space", with a 15rem rail alongside leaving barely more than the
+  document's own 46rem cap for the document itself) and **resizable** by
   dragging a thin handle on its left edge (15rem to 45rem, arrow keys on the
-  focused handle too), and the width is persisted in **`localStorage`,
-  deliberately not in params**: params are the state a shared URL should
-  reproduce (MD-20), and how wide someone dragged their panel is window
-  furniture that a link must not carry. Each resize `nudge()`s the canvas,
-  which is a fixed-size bitmap and does not otherwise learn that its box
-  moved.
+  focused handle too, drag RANGE unchanged — only the default moved), and the
+  width is persisted in **`localStorage`, deliberately not in params**:
+  params are the state a shared URL should reproduce (MD-20), and how wide
+  someone dragged their panel is window furniture that a link must not
+  carry. Each resize `nudge()`s the canvas, which is a fixed-size bitmap and
+  does not otherwise learn that its box moved. Both this default and the
+  rail's (MD-19b) are additionally subject to the document's COMFORT target
+  (MD-19d), which shrinks either panel toward its MIN before the document's
+  measure is allowed to fall below it.
 - **MD-19b** **The outline is a LEFT RAIL in the page** (`#outline-rail`),
   open by default, and it reads the live document (D190, moved off the right
   sidebar by D611). The open note's headings get a nested, click-to-scroll
@@ -3223,11 +3229,15 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   therefore no param" rule, which held only because the section used to be
   undrawable without its parent panel open), and only an explicit `"0"`
   closes it, so a shared URL still reproduces what you see. Width is
-  **15rem, resizable 12rem–30rem by dragging its right edge**, persisted in
-  `localStorage` under `fused-md-outline-width` and clamped so it cannot
-  squeeze the document below the same floor the right panel's own clamp
-  protects — window furniture, not shareable state, for the same reason
-  MD-19a's width is not a param. Collapsed, a 26px `.panel-reopen-btn`
+  **12rem by default** (down from an original 15rem — its rows already
+  ellipsise well before 15rem, "The freeze mechanism: Godot…", so the extra
+  3rem was buying wider TRUNCATED labels, not full ones), **resizable
+  12rem–30rem by dragging its right edge** (drag range unchanged — the
+  default now equals the range's own floor), persisted in `localStorage`
+  under `fused-md-outline-width` and clamped so it cannot squeeze the
+  document below the same floor the right panel's own clamp protects —
+  window furniture, not shareable state, for the same reason MD-19a's width
+  is not a param. Collapsed, a 26px `.panel-reopen-btn`
   reopens it at the page's left edge — shared with the right panel's own
   collapsed button (MD-19a), which is identical but for a `.right` modifier.
   **The head carries no count** (owner: "what is outline 1? how can you even
@@ -3279,6 +3289,37 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   root) the section is absent too, and the backlinks notice directly above it
   already says why in graph.py's own words — MD-11a's distinction ("nobody
   looked" is not "there is nothing") belongs to one surface, not two.
+- **MD-19d** **The two panels are clamped TOGETHER against the document, in
+  two layers, both spent by `layoutPanels`** (owner, two rounds: "the right
+  sidebar looks... squeeze[s] the document" then "the 2 sidebars are taking a
+  lot of space" — the first round only ever compared each panel's OWN
+  min/max against the room left over; it never asked what the document
+  itself needed).
+  1. **The hard floor, 20rem.** Below this the document is unreadable —
+     word-per-line wrapping — so it is the non-negotiable minimum: each
+     panel is measured against it and, past its own MIN, **closes outright**
+     rather than render a sliver narrower than its floor. The right panel
+     yields first and furthest (owner's call: the rail is open by default),
+     presentational only — `style.display` set directly, beating both the
+     `.on` class and the `hidden` attribute on specificity without touching
+     either, so the panel a param says should be open reappears exactly as
+     the user left it the moment there is room again.
+  2. **The comfort target, 35rem** (the middle of the owner's suggested
+     34–36rem), spent BEFORE the hard floor and never closing a panel —
+     only shrinking one toward its own MIN. This is the ordinary case, not
+     the catastrophic one: two panels comfortably inside their own
+     minimums can still leave the document a measure nobody would call
+     comfortable, which the hard floor alone cannot see (it only asks "is
+     this readable at all", not "is this pleasant"). The RIGHT panel gives
+     ground first here too, same order as the hard floor.
+  **Free on a wide window, costly only in the middle.** The document is
+  capped at 46rem (MD-18a's measure), so once `room` clears both panels'
+  defaults plus the 35rem comfort target plus that cap, the panels are
+  spending only space the document was never going to render prose into —
+  margin either way. The two-layer clamp only ever engages in the band
+  between "wide enough that chrome is free" and "the hard floor", which is
+  deliberately where a note gets read beside an open chat panel — the case
+  the owner was looking at both times.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
