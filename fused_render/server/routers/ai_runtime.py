@@ -121,6 +121,20 @@ _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # other unsupported option.
 _VIDEO_OPTIONS = frozenset({
     "prompt", "model", "width", "height", "frames", "steps", "seed"})
+# Bounds for a mesh request. Steps and octree resolution mirror upstream's
+# OWN gradio sliders (`registry.MeshTraits`'s docstring has the pinned-commit
+# evidence); guidance has no upstream-recommended range and gets an ordinary
+# CFG window instead — see that same docstring. One shared table
+# (`registry.MIN_MESH_*`/`MAX_MESH_*`) rather than a private pair here,
+# for the identical reason `_MIN_FRAMES_N`/`_MAX_FRAMES_N` above are not
+# private either: `catalog.py`'s mesh-traits payload for the Playground's
+# sliders needs the SAME window a server clamp enforces.
+_MIN_MESH_STEPS, _MAX_MESH_STEPS = registry.MIN_MESH_STEPS, registry.MAX_MESH_STEPS
+_MIN_MESH_GUIDANCE, _MAX_MESH_GUIDANCE = registry.MIN_MESH_GUIDANCE, registry.MAX_MESH_GUIDANCE
+_MIN_MESH_OCTREE_RESOLUTION = registry.MIN_MESH_OCTREE_RESOLUTION
+_MAX_MESH_OCTREE_RESOLUTION = registry.MAX_MESH_OCTREE_RESOLUTION
+_MESH_OPTIONS = frozenset({
+    "image", "model", "steps", "guidance", "octreeResolution", "seed"})
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words"})
@@ -135,6 +149,11 @@ _TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
 # exactly as `aiTranscribe` does, so a caller passing `base` directly is
 # passing an option that does not exist from where it is standing.
 _IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
+# `aiMesh`'s `image` is REQUIRED rather than optional (unlike `aiImage`'s
+# edit-mode one) but resolves against `base` the identical way — see
+# `api_ai_mesh`'s own resolution block, copied from `api_ai_transcribe`'s
+# `path`.
+_MESH_SERVER_OPTIONS = _MESH_OPTIONS | {"base"}
 #: `/api/ai/embed`'s caller-facing option names (SPEC §40, PY-19).
 #:
 #: **Declared for the DRIFT GUARD rather than for a rejection.** Unlike the four
@@ -358,6 +377,27 @@ def _videos_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "videos")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _meshes_dir() -> str:
+    """Where rendered meshes land: `<home>/ai/meshes`. See `_images_dir`."""
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "meshes")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _mesh_octree_resolution(value, default: int) -> int:
+    """Octree resolution, clamped to `[_MIN_MESH_OCTREE_RESOLUTION,
+    _MAX_MESH_OCTREE_RESOLUTION]` — this engine's ENTIRE face-count lever
+    (`registry.MeshTraits`'s docstring explains why there is no second
+    knob), so this clamp is also this capability's "face cap"."""
+    try:
+        resolution = int(value)
+    except (TypeError, ValueError):
+        resolution = default
+    return max(_MIN_MESH_OCTREE_RESOLUTION, min(_MAX_MESH_OCTREE_RESOLUTION, resolution))
 
 
 def _video_side(value, default: int) -> int:
@@ -1668,6 +1708,125 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         "height": height,
         "frames": frames,
         "steps": steps,
+        "seed": seed,
+    }
+
+
+@router.post("/api/ai/mesh")
+def api_ai_mesh(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Generate one untextured 3D mesh from an image. Returns everything
+    about it except the bytes — `api_ai_video`'s twin in shape: job-backed
+    for the same "this runs for minutes" reason, the same 409 for "nothing
+    can serve this capability at all" (image-to-3D is the SECOND capability
+    with no cross-platform row), and the same "settled request, not the one
+    that came in" reply.
+
+    **The input is a required image path, resolved exactly like `/api/ai/
+    transcribe`'s `path`** — page-relative against a bridge-injected `base`,
+    absolute otherwise, no allowlist beyond "does this file exist" (see that
+    route's own docstring for why there is no allowlist at all). Unlike
+    `/api/ai/image`'s OPTIONAL `image` (which selects edit vs. generate
+    mode), this one is the whole request: there is no prompt-only mode for
+    a shape pipeline that only ever reads a picture.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Checked first, same as every other route here — see `_reject_unknown`.
+    rejection = _reject_unknown(body, _MESH_SERVER_OPTIONS, "/api/ai/mesh")
+    if rejection is not None:
+        return rejection
+
+    image = body.get("image")
+    if not isinstance(image, str) or not image.strip():
+        return _error("'image' must be the path to the input image", status=400)
+    # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
+    # (RH-1) — see that route's docstring for the argument in full.
+    image_path = os.path.expanduser(image.strip())
+    base = body.get("base")
+    if not os.path.isabs(image_path):
+        if not isinstance(base, str) or not os.path.isabs(base):
+            return _error(
+                "'image' must be absolute, or relative to a page named by "
+                "'base'", status=400)
+        image_path = os.path.join(os.path.dirname(base), image_path)
+    image_path = os.path.abspath(image_path)
+    if not os.path.exists(image_path):
+        return _error(f"no such file: {image_path}", status=400)
+    if not os.path.isfile(image_path):
+        return _error(f"not a file: {image_path}", status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.IMAGE_TO_3D)
+    if not model:
+        # See `api_ai_video`'s identical branch: dead in practice today
+        # (`catalog.default_for` never gates on availability, and Task 6's
+        # curated shortlist is a hardcoded non-empty list) but kept as cheap
+        # defensive code against a catalog that someday ships an empty one.
+        # The REAL "needs Apple Silicon" answer, on a machine that cannot
+        # serve this capability, comes from `start_mesh`'s own
+        # `_runner_or_raise` below.
+        return _error(registry.unavailable_reason(registry.IMAGE_TO_3D)
+                      or "no mesh model is configured", status=409)
+
+    # The runner that will actually SERVE this request — by CAPABILITY, not
+    # by `model`, mirroring `api_ai_video`'s identical resolution a few
+    # hundred lines up. `None` when nothing can serve the capability at
+    # all; `mesh_traits_for` falls back to the shipping runner's own numbers.
+    serving_runner = registry.for_capability(registry.IMAGE_TO_3D)
+    traits = registry.mesh_traits_for(serving_runner.code if serving_runner else None)
+
+    try:
+        steps = max(_MIN_MESH_STEPS,
+                    min(_MAX_MESH_STEPS, int(body.get("steps") or traits.default_steps)))
+    except (TypeError, ValueError):
+        return _error("'steps' must be a number", status=400)
+    try:
+        guidance = max(_MIN_MESH_GUIDANCE, min(
+            _MAX_MESH_GUIDANCE, float(body.get("guidance") or traits.default_guidance)))
+    except (TypeError, ValueError):
+        return _error("'guidance' must be a number", status=400)
+    octree_resolution = _mesh_octree_resolution(
+        body.get("octreeResolution"), traits.default_octree_resolution)
+    # A seed the caller did not choose is chosen HERE and reported back —
+    # same rule `/api/ai/image` and `/api/ai/video` both use.
+    try:
+        seed = int(body["seed"]) if body.get("seed") is not None else secrets.randbelow(_MAX_SEED)
+    except (TypeError, ValueError):
+        return _error("'seed' must be a whole number", status=400)
+    seed = max(0, min(_MAX_SEED, seed))
+
+    uid = secrets.token_hex(6)
+    job = supervisor.mesh_job_id(uid)
+    meshes = _meshes_dir()
+    # Time-ordered and unique, like the image and video routes' filenames.
+    path = os.path.join(meshes, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.glb")
+
+    request = {
+        "image": image_path,
+        "steps": steps,
+        "guidance": guidance,
+        "octreeResolution": octree_resolution,
+        "seed": seed,
+        "out": path,
+    }
+    try:
+        supervisor.start_mesh(model, request, job)
+    except supervisor.SupervisorError as e:
+        # 409 for the same reason a load does: the request was well-formed
+        # and the answer is a fact about this machine, not a server fault.
+        return _error(str(e), status=409)
+    # The settled request, not the one that came in — `steps`/`guidance`/
+    # `octreeResolution` may have been clamped, `seed` invented.
+    return {
+        "jobId": job,
+        # Canonical, like every other path this API hands back.
+        "path": canonical_fs_path(path),
+        "model": model,
+        "image": canonical_fs_path(image_path),
+        "steps": steps,
+        "guidance": guidance,
+        "octreeResolution": octree_resolution,
         "seed": seed,
     }
 

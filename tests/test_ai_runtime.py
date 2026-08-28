@@ -264,6 +264,80 @@ FAKE_VIDEO_WORKER = textwrap.dedent('''
 ''')
 
 
+# A mesh worker: loads instantly, answers /health, and writes a tiny fake
+# .glb where the request tells it to. Stands in for hunyuan3d_mlx/worker.py's
+# CONTRACT — a single JSON reply and a file on disk — not for MLX or
+# `hy3dshape`.
+FAKE_MESH_WORKER = textwrap.dedent('''
+    import argparse, http.server, json, os, socketserver, sys, threading, time
+
+    TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+    STATE = {"state": "loading", "model": "", "detail": "", "error": "",
+             "resident_bytes": None, "loaded_at": None}
+    # Not a real glTF binary — enough bytes for the test to assert the server
+    # hands back a path that actually resolves.
+    GLB = b"glTFfake mesh bytes"
+
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def ok(self):
+            if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
+                return True
+            self.send_response(403); self.send_header("Content-Length","0"); self.end_headers()
+            return False
+        def _json(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers(); self.wfile.write(body)
+        def do_GET(self):
+            if not self.ok(): return
+            self._json(STATE)
+        def do_POST(self):
+            if not self.ok(): return
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n) if n else b"{}"
+            body = json.loads(raw or b"{}")
+            if self.path.startswith("/quit"):
+                self._json({"ok": True})
+                threading.Thread(target=lambda: (time.sleep(0.05), os._exit(0)), daemon=True).start()
+                return
+            if self.path.startswith("/generate"):
+                if os.environ.get("FAKE_MESH_FAILS") == "1":
+                    self._json({"ok": False, "error": "the renderer exited nonzero"}); return
+                out = body["out"]
+                os.makedirs(os.path.dirname(out), exist_ok=True)
+                with open(out, "wb") as f: f.write(GLB)
+                self._json({"ok": True, "result": {
+                    "path": out, "seconds": 0.1, "seed": body.get("seed"),
+                    "steps": body.get("steps"), "guidance": body.get("guidance"),
+                    "octreeResolution": body.get("octreeResolution"), "faces": 1234}})
+                return
+            self._json({"ok": True})
+
+    class S(socketserver.ThreadingTCPServer):
+        daemon_threads = True; allow_reuse_address = True
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--model"); p.add_argument("--status", default="")
+    p.add_argument("--job", default=""); p.add_argument("--download-only", action="store_true")
+    a = p.parse_args()
+    if a.download_only:
+        sys.exit(0)
+    STATE["model"] = a.model
+    srv = S(("127.0.0.1", 0), H)
+    with open(a.status, "w") as f:
+        json.dump({"port": srv.server_address[1], "pid": os.getpid()}, f)
+    def ready():
+        time.sleep(float(os.environ.get("FAKE_LOAD_SECONDS", "0.1")))
+        STATE.update(state="ready", resident_bytes=6543, loaded_at=time.time())
+    threading.Thread(target=ready, daemon=True).start()
+    srv.serve_forever()
+''')
+
+
 # A transcription worker: loads instantly, answers /health, and writes the two
 # transcript files where the request tells it to. Stands in for
 # faster_whisper/worker.py's CONTRACT — a single JSON reply and files on disk —
@@ -419,6 +493,34 @@ def fake_video_runner(tmp_path, monkeypatch):
     # the fake backend brings its own default.
     monkeypatch.setitem(catalog.SUGGESTIONS, "fake-video", [
         {"id": "org/fake-video", "label": "Fake video", "size_gb": None, "note": ""},
+    ])
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
+@pytest.fixture()
+def fake_mesh_runner(tmp_path, monkeypatch):
+    """A registry whose ONLY runner serves image-to-3D, with the fake worker
+    and this interpreter — so no weights, no MLX, no Apple Silicon needed.
+
+    Deliberately does NOT gate on Apple Silicon, for the identical reason
+    `fake_video_runner` does not — this fixture exercises the ROUTE (path
+    resolution, clamping, job shape, error surfacing) on any machine running
+    the suite; `test_ai_registry.py` tests the real platform gate directly.
+    """
+    folder = tmp_path / "fake_mesh_runner"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_MESH_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="fake-mesh", capability=registry.IMAGE_TO_3D,
+        folder=str(folder), label="Fake mesh",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-mesh", [
+        {"id": "org/fake-mesh", "label": "Fake mesh", "size_gb": None, "note": ""},
     ])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
@@ -4563,7 +4665,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video"}
+        "onnx-embed-rocm", "ltx-video", "hunyuan3d-mlx"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -6324,6 +6426,180 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
     monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
     assert supervisor.describe()["loaded"] == []
     started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"], timeout=40)
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+
+
+# -- image-to-3D (SPEC §48) -----------------------------------------------------
+# These tests run on `fake_mesh_runner`, whose `code="fake-mesh"` is not in
+# `registry.MESH_TRAITS` — every request below exercises the fallback row's
+# numbers (`hunyuan3d-mlx`'s own), same shape `fake_video_runner`'s tests use.
+
+
+def _photo(tmp_path, name="photo.png"):
+    from PIL import Image
+
+    path = tmp_path / name
+    Image.new("RGB", (64, 64), (200, 100, 50)).save(str(path), "PNG")
+    return str(path)
+
+
+def test_a_mesh_renders_to_disk_and_the_job_finishes(client, fake_mesh_runner, tmp_path):
+    response = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 200
+    started = response.json()
+
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "done", row
+    assert os.path.isfile(started["path"])
+    assert open(started["path"], "rb").read(4) == b"glTF"
+
+
+def test_the_mesh_reply_describes_the_render_that_will_actually_happen(
+        client, fake_mesh_runner, tmp_path):
+    body = {"image": _photo(tmp_path), "steps": 500, "guidance": 99, "octreeResolution": 9999}
+    reply = client.post("/api/ai/mesh", json=body, headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 100          # clamped to _MAX_MESH_STEPS
+    assert reply["guidance"] == 20.0      # clamped to _MAX_MESH_GUIDANCE
+    assert reply["octreeResolution"] == 512  # clamped to _MAX_MESH_OCTREE_RESOLUTION
+    _wait_job(reply["jobId"])
+
+
+def test_mesh_defaults_match_the_pipelines_own_signature(client, fake_mesh_runner, tmp_path):
+    reply = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
+                        headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 50
+    assert reply["guidance"] == 5.0
+    assert reply["octreeResolution"] == 256
+    _wait_job(reply["jobId"])
+
+
+def test_mesh_seed_is_invented_when_not_given_and_echoed_when_it_is(
+        client, fake_mesh_runner, tmp_path):
+    photo = _photo(tmp_path)
+    one = client.post("/api/ai/mesh", json={"image": photo}, headers={"X-Fused": "1"}).json()
+    two = client.post("/api/ai/mesh", json={"image": photo, "seed": 1234},
+                      headers={"X-Fused": "1"}).json()
+    assert isinstance(one["seed"], int)
+    assert two["seed"] == 1234
+    _wait_job(one["jobId"]); _wait_job(two["jobId"])
+
+
+def test_a_mesh_needs_an_image(client, fake_mesh_runner):
+    for body in ({}, {"image": ""}, {"image": "   "}, {"image": 7}):
+        response = client.post("/api/ai/mesh", json=body, headers={"X-Fused": "1"})
+        assert response.status_code == 400, body
+
+
+def test_a_mesh_image_relative_to_base_resolves_beside_the_page(
+        client, fake_mesh_runner, tmp_path):
+    """Mirrors `/api/ai/transcribe`'s `path`/`base` resolution — a relative
+    `image` resolves against the directory of `base`, never the server's cwd."""
+    photo_path = _photo(tmp_path)
+    page = tmp_path / "page.html"
+    page.write_text("", encoding="utf-8")
+    response = client.post(
+        "/api/ai/mesh", json={"image": os.path.basename(photo_path), "base": str(page)},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+    _wait_job(response.json()["jobId"])
+
+
+def test_a_mesh_image_missing_on_disk_is_a_400_naming_it(client, fake_mesh_runner, tmp_path):
+    missing = str(tmp_path / "nope.png")
+    response = client.post("/api/ai/mesh", json={"image": missing}, headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert missing in response.json()["error"]
+
+
+def test_an_unrecognised_mesh_option_is_a_400_naming_it(client, fake_mesh_runner, tmp_path):
+    response = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "strength": 0.6},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "strength" in message
+    assert "not an option" in message
+
+
+def test_prompt_is_rejected_as_an_unknown_mesh_option(client, fake_mesh_runner, tmp_path):
+    """The mesh pipeline reads an image, never a prompt — the plan is
+    explicit that there is no separate check for this, because the
+    unknown-option rejection already handles anyone passing one."""
+    response = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "prompt": "a chair"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "prompt" in response.json()["error"]
+
+
+def test_the_mesh_envelope_is_checked_before_any_field_validation(
+        client, fake_mesh_runner, tmp_path):
+    response = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "bogus": "x", "steps": "nonsense"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    message = response.json()["error"]
+    assert "'bogus' is not an option" in message
+    assert "must be a number" not in message
+
+
+def test_every_documented_mesh_option_is_still_accepted(client, fake_mesh_runner, tmp_path):
+    body = {
+        "image": _photo(tmp_path), "model": "org/x", "steps": 20,
+        "guidance": 4.0, "octreeResolution": 128, "seed": 7,
+    }
+    response = client.post("/api/ai/mesh", json=body, headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
+def test_a_failing_mesh_render_reports_the_reason_on_the_row(
+        client, fake_mesh_runner, tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_MESH_FAILS", "1")
+    started = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
+                          headers={"X-Fused": "1"}).json()
+    row = _wait_job(started["jobId"])
+    assert row["state"] == "error"
+    assert "the renderer exited" in row["message"]
+
+
+def test_a_mesh_on_a_machine_with_no_mesh_runner_says_why(client, monkeypatch, tmp_path):
+    """The ordinary case, not the edge one — image-to-3D is the second
+    capability with no "everywhere" row, so a machine that is not Apple
+    Silicon always answers 409 here, never opening a row for work that was
+    never going to start."""
+    ghost = registry.Runner(
+        code="ghost-mesh", capability=registry.IMAGE_TO_3D,
+        folder="/nowhere", label="Ghost mesh",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (ghost,))
+    response = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "not built yet" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs() if j["id"].startswith(supervisor.MESH_JOB_PREFIX)]
+
+
+def test_a_mesh_off_apple_silicon_says_so(client, monkeypatch, tmp_path):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("hunyuan3d-mlx"),))
+    response = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
+                           headers={"X-Fused": "1"})
+    assert response.status_code == 409
+    assert "Apple Silicon" in response.json()["error"]
+
+
+def test_a_mesh_waits_for_its_model_rather_than_failing_fast(
+        client, fake_mesh_runner, tmp_path, monkeypatch):
+    """Same reasoning as the video route's own version of this test: a mesh
+    caller already has a job to watch, so a cold load happens INSIDE it."""
+    monkeypatch.setenv("FAKE_LOAD_SECONDS", "1.5")
+    assert supervisor.describe()["loaded"] == []
+    started = client.post("/api/ai/mesh", json={"image": _photo(tmp_path)},
                           headers={"X-Fused": "1"}).json()
     row = _wait_job(started["jobId"], timeout=40)
     assert row["state"] == "done", row
