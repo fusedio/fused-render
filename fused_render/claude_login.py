@@ -206,13 +206,49 @@ def _drain(login: _Login) -> None:
         pass
 
 
+def _stop(login: _Login, force: bool) -> None:
+    """Stop the child — and on Windows the whole tree under it.
+
+    ON WINDOWS THE DIRECT CHILD MAY NOT BE CLAUDE. npm installs the CLI as a
+    `.cmd` shim, which only cmd.exe can run, so `_probe_cmd` hands us a command
+    string and the spawn is `shell=True`. `terminate()` and `kill()` are both
+    `TerminateProcess` on that cmd.exe and nothing else: the node process under
+    it keeps running, keeps the loopback listener, and keeps the write end of
+    our stdout pipe — so the drain never reaches EOF, the record never settles,
+    and `in_flight` stays true for the life of the app. Cancel and the watchdog
+    would both leave the button wedged, on precisely the install this button
+    exists to serve.
+
+    `taskkill /T` is what walks the tree. `/F` with it because there is no
+    graceful stop to prefer here: a console process is under no obligation to
+    act on the polite form, and a sign-in that will not close is the failure
+    being fixed. CREATE_NO_WINDOW so a packaged GUI app does not flash a
+    console. POSIX is unaffected — `shell=True` never happens there, so the
+    child IS the CLI and a signal reaches it.
+    """
+    proc = login.proc
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True, timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            # taskkill missing or refused. Fall through: killing cmd.exe alone
+            # is worth less than nothing here, but it is better than not trying.
+            logger.warning("taskkill could not stop the Claude Code sign-in tree")
+    try:
+        proc.kill() if force else proc.terminate()
+    except OSError:
+        pass
+
+
 def _expire(login: _Login) -> None:
     """The watchdog body: end a sign-in nobody finished."""
     login.timed_out = True
-    try:
-        login.proc.kill()  # unblocks the drain, which then sees EOF
-    except OSError:
-        pass
+    _stop(login, force=True)  # unblocks the drain, which then sees EOF
 
 
 def _run(login: _Login) -> None:
@@ -235,10 +271,7 @@ def _run(login: _Login) -> None:
             # would label this a ten-minute login timeout in the record, when
             # what actually happened is a child that said its piece and would not
             # exit. Kill it and let its own last words explain it.
-            try:
-                login.proc.kill()
-            except OSError:
-                pass
+            _stop(login, force=True)
             code = -1
         except OSError:
             code = -1
@@ -254,10 +287,27 @@ def _run(login: _Login) -> None:
             login.error = None
         elif code != 0:
             login.error = _failure(login, code)
-        # A CLEAN EXIT IS NOT REPORTED AS SUCCESS, and that is not caution: the
-        # child exits 0 having written a credential this process never sees.
-        # Whether it worked is `claude auth status`'s answer, and the client asks
-        # the refresh endpoint for it.
+        else:
+            # THE RE-PROBE, the same one claude_install makes the point of: the
+            # child exited cleanly, so whatever it did to this machine's
+            # credentials has already happened, and the cached snapshot is now
+            # the stale claim that the user is signed out.
+            #
+            # SERVER-SIDE, AND BEFORE `settled`. Leaving it to the strip's own
+            # refresh made it conditional on the strip still being mounted and
+            # still polling — so a user who signed in and walked away came back
+            # to a mounted-fresh strip reading a 60-second-old "signed out" and
+            # offering to start a second browser flow. Doing it here also closes
+            # the gap on the polling path: by the time anything can observe
+            # `in_flight: false`, the snapshot behind it is already re-measured.
+            #
+            # A CLEAN EXIT IS STILL NOT REPORTED AS SUCCESS. This re-measures;
+            # it does not conclude. Whether the sign-in took is `claude auth
+            # status`'s answer, which is exactly what the re-probe goes and asks.
+            try:
+                claude_health.summary_refreshed()
+            except Exception:  # noqa: BLE001 - a failed probe is not a failed login
+                logger.warning("the sign-in finished but the re-probe failed")
     finally:
         # LAST, AND UNCONDITIONALLY. `error` must be readable the moment the
         # record stops saying "in flight", and a worker that died on the way out
@@ -346,10 +396,7 @@ def cancel() -> dict:
     if login is None:
         return {**status(), "canceled": False}
     login.canceled = True
-    try:
-        login.proc.terminate()
-    except OSError:
-        logger.debug("the Claude Code sign-in child was already gone")
+    _stop(login, force=False)
     if not login.settled.wait(CANCEL_GRACE_S):
         logger.warning("the Claude Code sign-in child did not stop when asked")
     return {**_record(login), "canceled": True}

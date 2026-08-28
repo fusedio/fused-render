@@ -340,6 +340,105 @@ def test_an_abandoned_sign_in_is_killed_by_the_watchdog(monkeypatch):
     assert "not finished" in claude_login.status()["error"]
 
 
+def test_on_windows_the_whole_process_tree_is_stopped(monkeypatch):
+    """Behind a .cmd shim the direct child is cmd.exe, and TerminateProcess on
+    it leaves the node process holding the loopback listener and our stdout
+    pipe — so the drain never sees EOF and the record never settles. Cancel and
+    the watchdog would both wedge the button, on exactly the npm-on-Windows
+    install this button exists to serve."""
+    monkeypatch.setattr(claude_login.os, "name", "nt")
+    killed = []
+    monkeypatch.setattr(claude_login.subprocess, "run",
+                        lambda argv, **kw: killed.append(argv))
+    proc = _FakeProc(text=PROMPT, pid=9182)
+    claude_login._stop(claude_login._Login(proc=proc, started_at=0.0, tail=[]),
+                       force=False)
+    assert killed == [["taskkill", "/T", "/F", "/PID", "9182"]]
+    # And NOT the plain terminate, which is the thing that does not work here.
+    assert proc.terminated is False
+    proc.finish()
+
+
+def test_off_windows_the_child_itself_is_signalled(monkeypatch):
+    """`shell=True` never happens on POSIX, so the child IS the CLI and a
+    signal reaches it — no taskkill, and terminate stays the polite form."""
+    monkeypatch.setattr(claude_login.os, "name", "posix")
+    proc = _FakeProc(text=PROMPT)
+    login = claude_login._Login(proc=proc, started_at=0.0, tail=[])
+    claude_login._stop(login, force=False)
+    assert proc.terminated is True and proc.killed is False
+    proc2 = _FakeProc(text=PROMPT)
+    claude_login._stop(claude_login._Login(proc=proc2, started_at=0.0, tail=[]),
+                       force=True)
+    assert proc2.killed is True
+
+
+def test_a_clean_sign_in_re_probes_health_on_the_server(monkeypatch):
+    """Leaving the refresh to the strip made it conditional on the strip still
+    being mounted: sign in, walk away, come back to a fresh strip reading a
+    60-second-old "signed out" and offering a second browser flow."""
+    _found(monkeypatch)
+    probes = []
+    monkeypatch.setattr(claude_health, "summary_refreshed",
+                        lambda: probes.append(1) or {})
+    proc = _FakeProc(text=f"{AUTHORIZE_LINE}\n", code=0)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    proc.finish()
+    assert _settle(lambda: not claude_login.status()["in_flight"])
+    assert probes == [1]
+
+
+def test_the_re_probe_happens_before_the_record_settles(monkeypatch):
+    """Ordering, not decoration: anything that can observe `in_flight: false`
+    must find the snapshot behind it already re-measured, or the polling client
+    reads the stale one in the gap."""
+    _found(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        claude_health, "summary_refreshed",
+        lambda: seen.setdefault("in_flight_during_probe",
+                                claude_login.status()["in_flight"]) or {})
+    proc = _FakeProc(text=f"{AUTHORIZE_LINE}\n", code=0)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    proc.finish()
+    assert _settle(lambda: not claude_login.status()["in_flight"])
+    assert seen["in_flight_during_probe"] is True
+
+
+def test_a_failed_sign_in_does_not_re_probe(monkeypatch):
+    """Nothing changed about this machine's credentials, so spending a probe
+    would only be the app looking busy."""
+    _found(monkeypatch)
+    probes = []
+    monkeypatch.setattr(claude_health, "summary_refreshed",
+                        lambda: probes.append(1) or {})
+    proc = _FakeProc(text="Login failed: nope\n", code=1)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    proc.finish()
+    assert _settle(lambda: not claude_login.status()["in_flight"])
+    assert probes == []
+
+
+def test_a_re_probe_that_itself_fails_does_not_wedge_the_record(monkeypatch):
+    """A failed probe is not a failed sign-in — and must never leave the button
+    stuck behind a record that never settles."""
+    _found(monkeypatch)
+
+    def boom():
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(claude_health, "summary_refreshed", boom)
+    proc = _FakeProc(text=f"{AUTHORIZE_LINE}\n", code=0)
+    _spawn(monkeypatch, proc)
+    claude_login.start()
+    proc.finish()
+    assert _settle(lambda: not claude_login.status()["in_flight"])
+    assert claude_login.status()["error"] is None
+
+
 def test_cancel_terminates_and_settles_the_record(monkeypatch):
     """`terminate`, not `kill`: the child owns a loopback socket and is a step
     from a credential store. And the record comes back settled, so the strip
