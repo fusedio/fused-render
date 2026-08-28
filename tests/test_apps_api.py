@@ -1131,6 +1131,33 @@ def test_a_render_referred_by_a_preview_records_nothing(client, workspace, recen
     assert _opened_at(client, "sine") is not None
 
 
+def test_a_noopen_render_records_nothing(client, workspace, recents_home):
+    # `_noopen=1` is the explorer companion pane's own stamp (D621): unlike
+    # `_preview=1`, it says NOTHING about whether this render is a thumbnail —
+    # only that it must not count as an app open. Same recording suppression,
+    # a separate reason.
+    d = _app_dir(workspace, "sine")
+    r = client.get("/render",
+                   params={"path": str(d / "index.html"), "_noopen": "1"})
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+
+
+def test_a_render_referred_by_noopen_records_nothing(client, workspace, recents_home):
+    # An app framed inside the companion pane's own left preview (two levels
+    # under the companion document) must not be recorded as opened either —
+    # that inheritance is the whole point of `_noopen`, not a side effect of
+    # `_preview`.
+    d = _app_dir(workspace, "sine")
+    r = client.get(
+        "/render",
+        params={"path": str(d / "index.html")},
+        headers={"Referer": "http://x/render?path=%2Fw%2Ftutorial.html&_noopen=1"},
+    )
+    assert r.status_code == 200
+    assert _opened_at(client, "sine") is None
+
+
 def test_rendering_an_unmarked_page_records_nothing(client, workspace, tmp_path, recents_home):
     # Templates and plain html render through /render too; no marker, no record.
     p = tmp_path / "plain.html"
