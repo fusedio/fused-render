@@ -792,9 +792,33 @@
 }
 
 /* Same 16px slot as the queue row's controls below, so the ✕ column lines up down
-   the whole list instead of stepping 4px sideways where the row kind changes. */
+   the whole list instead of stepping 4px sideways where the row kind changes.
+
+   PINNED TO THE ROW'S RIGHT EDGE (D609, user with a screenshot of the narrowed
+   card: "the x icon should always be at the very right of the card"). The
+   `margin-left: auto` is on the ✕ — and on `.q-x`/`.q-spin` further down, the
+   other two things that can end a row head — rather than on the head itself,
+   because only the LAST item may absorb the slack: `justify-content` on the
+   head would move every control at once, and pushing the whole group right is
+   what D573 already rejected when the void was on the other side.
+
+   It has to be every trailing control, not just this one. The Jobs panel draws
+   ONE list holding both row kinds (a queue `.q-row` above a job `.dl-row`), so
+   pinning this class alone would leave two ✕ columns disagreeing inside a
+   single card — the exact stepping this rule's first paragraph exists to
+   prevent. `.q-spin` comes along for the same reason it exists at all: it
+   stands in the ✕'s slot on a claimed row, and a pin that skipped it would make
+   the controls jump sideways as a row moves queued -> sending.
+
+   Costs the panel nothing. An `auto` margin does not contribute to a box's
+   max-content contribution, so `.dl-panel`'s intrinsic width (`width:
+   max-content`, D608) is unchanged — measured identical before and after, at
+   the 240px floor. Where the row's own content is what set that width there is
+   no free space, the auto margin resolves to zero, and the ✕ lands flush right
+   anyway: the two states agree rather than the glyph jumping between them. */
 .dl-x {
   flex: 0 0 auto;
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -981,6 +1005,25 @@
 .q-x:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* The queue row's half of D609's edge pin — see `.dl-x`'s comment for the rule
+   and the reasoning. Stated apart from the `.q-open, .q-x` block above because
+   `.q-open` MUST NOT get it: the Open icon is not last in the head, and an auto
+   margin there would eat the slack before the ✕ ever saw it and strand the ✕
+   back beside it. `.q-spin` shares the pin because it stands in the ✕'s slot on
+   a claimed row, and the whole point of that stand-in is that the trailing
+   control does not move as the entry goes queued -> sending.
+
+   This does put spare width BETWEEN the row's actions and its ✕, which is a
+   void D573 removed from the other side of the same row (it had been between
+   the title and the action group, caused by a `flex: 1 1 auto` title). That fix
+   is untouched and still correct — the title still does not grow, the actions
+   still follow the text. What moved is only where the leftover goes: to the ✕'s
+   left, on purpose, because a per-row dismiss belongs at the row's boundary. */
+.q-x,
+.q-spin {
+  margin-left: auto;
 }
 
 /* The one ring the app uses (buttons-modal.css's .btn), stated here because these
