@@ -12,7 +12,41 @@ import { expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 import type { ReactTestRendererJSON } from "react-test-renderer";
 
-import { JobRow } from "@platform/ui/DownloadManager";
+
+// DownloadManager reaches `@platform/lib/router` (the fix button navigates
+// into the session it starts), and router.ts rewrites the legacy path at
+// MODULE INIT — so importing JobRow here now touches `location` before any
+// test runs. The house `??=` shim, same as router.test.ts and the readiness
+// render test: never an assignment over an existing global, and never a
+// delete afterwards, because `bun test` shares one process and a file that
+// overwrites or removes these takes them out from under every other file
+// whose own `??=` already ran.
+//
+// Without it this file passed only by luck of module-init order — some other
+// suite happened to install `location` first in a full run, and it failed the
+// moment it was run alone.
+(globalThis as { location?: unknown }).location ??= {
+  pathname: "/",
+  search: "",
+  href: "http://localhost/",
+};
+(globalThis as { history?: unknown }).history ??= {
+  state: null,
+  pushState() {},
+  replaceState() {},
+};
+(globalThis as { window?: unknown }).window ??= {
+  addEventListener() {},
+  removeEventListener() {},
+  dispatchEvent() {},
+  setTimeout: globalThis.setTimeout.bind(globalThis),
+  clearTimeout: globalThis.clearTimeout.bind(globalThis),
+};
+
+// DYNAMIC, after the shims above: a static import is hoisted above them, so
+// router.ts would still evaluate against a bare global. Same device as
+// self-fix-readiness.render.test.ts.
+const { JobRow } = await import("@platform/ui/DownloadManager");
 import type { Job } from "@platform/lib/jobs";
 
 const BASE: Job = {
@@ -197,6 +231,36 @@ test("a rejected Dismiss surfaces its own failure message and the row stays", as
   const status = findAll(after, "dl-status");
   expect(status).toHaveLength(1);
   expect(status[0].children).toEqual(["Could not dismiss — check your connection and retry."]);
+});
+
+test("a rejected Dismiss on a FAILED row stays a plain sentence — no fix card", async () => {
+  // The row's own actions and the self-fix start are two different failures
+  // and get two different presentations: a sentence on the status line, or the
+  // compact TroubleCard whose caption names "starting a fix session".
+  //
+  // They were briefly ONE state, and this is the case that proves they cannot
+  // be: Dismiss is offered on an errored row, the fix button is offered on
+  // exactly the same row, so a shared flag made a rejected DISMISS render the
+  // card and caption a network refusal as a fix that would not start.
+  const dismissFn = () => Promise.reject(new Error("network down"));
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "error", detail: "" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  await pressButton(before, "dl-x");
+
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  const status = findAll(after, "dl-status");
+  expect(status).toHaveLength(1);
+  expect(status[0].children).toEqual(["Could not dismiss — check your connection and retry."]);
+  // ...and NOT as a fix that failed to start.
+  expect(findAll(after, "trouble-compact")).toHaveLength(0);
+  expect(text(after)).not.toContain("starting a fix session");
 });
 
 test("a successful Cancel shows no failure line", async () => {

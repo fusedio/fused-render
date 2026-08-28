@@ -435,6 +435,22 @@ export function JobRow({
   // the server is authoritative about whether the work actually stopped —
   // it was only ever wrong for a request that never landed at all.
   const [failure, setFailure] = useState<string | null>(null);
+  // TWO FAILURE STATES, because a row has two kinds of failure and they are
+  // NOT presented alike. `failure` is the row's own action refusing (cancel,
+  // dismiss) and reads as a plain sentence on the status line. `fixFailure` is
+  // a self-fix session that could not start, and draws the compact
+  // TroubleCard, whose whole point is that "Claude isn't installed" needs
+  // somewhere to go rather than a red line.
+  //
+  // Folding the fix into `failure` was tried and is wrong in both directions:
+  // the card renders on any failure of an error-state row, so a rejected
+  // DISMISS was captioned "starting a fix session"; and a refused fix then
+  // painted the status line as well, saying it twice. One state cannot answer
+  // "what happened" and "how should it be shown" at once.
+  //
+  // Mutually exclusive by construction — each writer clears the other below —
+  // so the row still shows one failure, never two stacked.
+  const [fixFailure, setFixFailure] = useState<string | null>(null);
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
@@ -482,6 +498,7 @@ export function JobRow({
   const cancel = async () => {
     setBusy(true);
     setFailure(null);
+    setFixFailure(null);
     try {
       await cancelFn(job.id);
       // The row stays — the work has not stopped — but the label has to move
@@ -502,6 +519,7 @@ export function JobRow({
   const dismiss = async () => {
     setBusy(true);
     setFailure(null);
+    setFixFailure(null);
     try {
       await dismissFn(job.id);
       onPatch((js) => js.filter((j) => j.id !== job.id));
@@ -533,7 +551,15 @@ export function JobRow({
         {fraction !== null && running && (
           <span className="dl-pct">{Math.round(fraction * 100)}%</span>
         )}
-        {job.state === "error" && <FixButton job={job} onError={setFailure} />}
+        {job.state === "error" && (
+          <FixButton
+            job={job}
+            onError={(msg) => {
+              setFixFailure(msg);
+              if (msg) setFailure(null);
+            }}
+          />
+        )}
         {canCancel && (
           <button
             className="dl-row-cancel"
@@ -591,13 +617,14 @@ export function JobRow({
           start" with nowhere to go is the shape of message this whole surface
           exists to replace. Facts are not fetched for this one — the card sits
           in a notification and the Preferences tab is where the full report
-          lives. It reads the SAME `failure` the line above does, so a rejected
-          cancel keeps its plain sentence and only a refused fix draws a card. */}
-      {failure && job.state === "error" && (
+          lives.
+          `fixFailure`, NOT `failure` — the caption below names starting a fix
+          session, so it may only render for a failure that IS one. */}
+      {fixFailure && (
         <TroubleCard
           compact
           what={`starting a fix session for "${job.title || job.id}"`}
-          error={failure}
+          error={fixFailure}
         />
       )}
     </div>
