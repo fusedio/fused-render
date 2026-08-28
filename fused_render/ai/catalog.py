@@ -1168,6 +1168,66 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "defaults": {"steps": 8},
         },
     ],
+    # Hunyuan3D-2.1's shape pipeline on MLX, through `iamsdas/Hunyuan3D-2.1-mlx`
+    # — the second capability with no cross-platform row (Task 2, SPEC §48).
+    #
+    # **`size_gb` is the CURATED file set only** — `config.json`, `split_
+    # model.json`, `image_encoder.safetensors`, `dit.safetensors`, `vae.
+    # safetensors` — this file's own rule that the reported download match
+    # what `hunyuan3d_mlx/worker.py`'s `allow_patterns` actually fetches, not
+    # the repo's full listing. Measured against the Hub's own per-file byte
+    # sums (`HfApi.model_info(..., files_metadata=True)`, 2026-08-28):
+    #   1,322 (config) + 1,623 (split_model) + 608,791,514 (image_encoder)
+    #   + 6,101,598,440 (dit) + 655,540,754 (vae) = 7,365,933,653 B = 7.4 GB
+    # — of the repo's full ~15.06 GB, the rest being the Stage 2 PBR texture
+    # checkpoints this shape-only runner never fetches (`paint_clip`,
+    # `paint_dino`, `paint_unet`, `paint_vae`, `realesrgan_x4plus`).
+    #
+    # **`resident_gb` is the weights-only concurrent peak, the SAME "largest
+    # single-stage component" rule the video entries above use** — `pipeline_
+    # mlx.py::ShapePipeline.__call__` frees the DiT (`del self.dit`) only
+    # AFTER denoising, so the image encoder and the DiT are the two weight
+    # blocks resident together during the render's longest phase: 608,791,514
+    # + 6,101,598,440 = 6,710,389,954 B = 6.7 GB. **This is weights only, not
+    # a measured process figure** — no download has run against this pin
+    # (SPEC AI-22/D526's usual "real evidence" bar wants a render behind it,
+    # which is the manual check Task 1 defers to the user) — activation and
+    # marching-cubes decode-buffer memory on top of it is real and unmeasured
+    # here.
+    #
+    # **fp16 only, so this is a 32 GB story, not a 16 GB one.** The repo
+    # publishes one `dit.safetensors` at 6.10 GB and no quantized variant —
+    # unlike the video entries' int4/int8 pair, there is no smaller tier to
+    # offer. The plan's own risk note puts the fuller (weights + activations)
+    # peak around 10 GB; the note below says 32 GB+ rather than 16 GB+ for
+    # that reason.
+    "hunyuan3d-mlx": [
+        {
+            "id": "dgrauet/hunyuan3d-2.1-mlx",
+            "recommended": True,
+            "label": "Hunyuan3D-2.1 shape",
+            "nickname": "Hunyuan3D-2.1",
+            # Neither the fork's README nor the Hub's card_data for
+            # `tencent/Hunyuan3D-2.1` states a parameter count for the shape
+            # DiT specifically (checked 2026-08-28), so this is DERIVED
+            # rather than a publisher's own string, unlike this file's usual
+            # AI-2c rule: `dit.safetensors` is 6,101,598,440 B, and the
+            # worker loads it fp16 (2 bytes/param, no quantization) — dividing
+            # gives ~3.05B, rounded to the nearest named tier.
+            "params": "3B",
+            "size_gb": 7.4,
+            "resident_gb": 6.7,
+            "note": "Image to untextured 3D mesh, fp16 only (no quantized "
+                    "tier), on a 32 GB+ Mac. Shape only — no PBR texture "
+                    "stage.",
+            # `ShapePipeline.__call__`'s own defaults (`pipeline_mlx.py` at
+            # the pinned commit) — the same "one repo, one curator's hint"
+            # shape the video entries' `defaults` use, named explicitly here
+            # rather than left to the engine-level fallback
+            # (`registry.mesh_traits_for`) agreeing with it by construction.
+            "defaults": {"steps": 50},
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`
@@ -1622,9 +1682,34 @@ def describe() -> list[dict]:
                     if capability == registry.VIDEO_GENERATION and runner is not None
                     else None
                 ),
+                # `videoTraits`' sibling, absent for every capability but
+                # image-to-3D — same "absent rather than empty" shape, same
+                # reason: there is exactly one mesh runner today and its
+                # numbers are read straight from `hy3dshape.pipeline_mlx.
+                # ShapePipeline.__call__`'s own signature, but a client that
+                # hardcoded them would drift the moment a second engine (or
+                # a changed default) resolved differently.
+                "meshTraits": (
+                    _mesh_traits_payload(runner.code)
+                    if capability == registry.IMAGE_TO_3D and runner is not None
+                    else None
+                ),
             }
         )
     return rows
+
+
+def _mesh_traits_payload(runner_code: str) -> dict:
+    """`registry.MeshTraits`, in the shape `describe()`'s payload wants —
+    `_video_traits_payload`'s sibling. Flatter than that one: a mesh request
+    has no frame-grid analogue, so this is the three defaults, verbatim.
+    """
+    traits = registry.mesh_traits_for(runner_code)
+    return {
+        "defaultSteps": traits.default_steps,
+        "defaultGuidance": traits.default_guidance,
+        "defaultOctreeResolution": traits.default_octree_resolution,
+    }
 
 
 def _video_traits_payload(runner_code: str) -> dict:

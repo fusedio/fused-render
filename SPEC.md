@@ -10808,3 +10808,93 @@ the rules around it.
 - **Sequenced-after, deliberately absent here**: any cache eviction the app
   does not write itself, any UI that shows or clears an app's `.fused/`, and
   any `window.fused` accessor for the paths.
+
+## 48. Image-to-3D — A Mesh From a Picture, Locally (D611, D612, D613)
+
+Goal: `fused.ai.mesh({image})` — a `.glb` mesh generated from one picture, on
+this machine, with the identical job-shaped contract `fused.ai.image` and
+`fused.ai.video` already established. Every seam this needs already existed;
+this section is one new capability occupying each of them, not a new pattern.
+
+- **MESH-1** **A sixth capability, `image-to-3d` — the Hub's own tag, spelled
+  the way every constant in `registry.py` is.** Its one runner is
+  `hunyuan3d-mlx`, gated on the same `_apple_silicon` probe `ltx-video`
+  (§40, AI-2) uses: like video generation, this capability has no
+  "everywhere" row and no cross-platform fallback. Off Apple Silicon,
+  `catalog()` reports `default: null` for it and every `fused.ai.mesh` call
+  rejects `.type "unavailable"` — the identical shape §40's video addition
+  already gave a page to handle, not a new failure mode to learn.
+- **MESH-2** **The engine is Tencent's Hunyuan3D-2.1 shape pipeline, through
+  a FORK that adds packaging and nothing else.** `dgrauet/Hunyuan3D-2.1-mlx`
+  is a pure-MLX port of the reference pipeline, but its `hy3dshape` package
+  ships no build system — `uv` has nothing to resolve it against as a git
+  dependency. `iamsdas/Hunyuan3D-2.1-mlx` adds exactly one file
+  (`hy3dshape/pyproject.toml`: a build backend and a package declaration,
+  zero runtime dependencies) over an unmodified upstream checkout. Vendoring
+  the four MLX-only files instead was considered and rejected: it is four
+  files that import only each other plus PyPI packages, so it would work —
+  but it would put third-party model code in this tree and make upstream
+  drift invisible, the same trade `runners/*.py`'s "a folder, not a fork of
+  the library" convention (AI-2) already makes for every other engine here.
+- **MESH-3** **The runner never does a plain `import hy3dshape`.** Every
+  ancestor package on the way to the MLX-only `pipeline_mlx.py` — `hy3dshape`
+  itself, `models`, `models.autoencoders`, `models.denoisers` — has an
+  `__init__.py` that eagerly imports the PyTorch reference pipeline (`import
+  torch`, `from diffusers import ...`), because Python always executes a
+  package's `__init__.py` before any submodule of it. Declaring torch,
+  diffusers, transformers, pymeshlab, rembg and onnxruntime as dependencies
+  to satisfy that chain would drag the ENTIRE reference stack into a runner
+  meant to be MLX-only. `hunyuan3d_mlx/worker.py` instead registers
+  hand-built stand-in modules for those four ancestor packages directly in
+  `sys.modules` — a name and a `__path__`, nothing else, never executed as
+  `__init__.py` — so Python's ordinary path-based finder locates the four
+  real, unmodified MLX modules without ever running the torch-importing
+  code on the way. Zero bytes of the fork are edited to make this work.
+- **MESH-4** **Shape only — the PBR texture stage is out of scope,
+  deliberately.** The fork also ports Stage 2 (`hy3dpaint`, mesh + image ->
+  textured GLB): a second ~7.6 GB of weights, a six-view diffusion render,
+  a RealESRGAN super-resolution pass, and a peak near 38 GB. This is a
+  follow-up capability tier that deserves its own deliberate build, not a
+  bundled extra on this one — `hunyuan3d_mlx/worker.py` never imports
+  `hy3dpaint` at all.
+- **MESH-5** **`fused.ai.mesh()`, not `.model3d()`.** Every bridge call is
+  named for what it returns (`.image`, `.video`, `.transcribe`, `.embed`),
+  and `model` is already an option key on every one of them — `model3d`
+  would read as a variant of that key rather than as the call's own name.
+  `image` is REQUIRED, unlike `fused.ai.image`'s optional edit-mode one:
+  there is no prompt-only mode for a pipeline that only ever reads a
+  picture, so the option that selects a mode elsewhere is the whole request
+  here.
+- **MESH-6** **Octree resolution is this engine's only face-count lever, and
+  its clamp doubles as the "face cap."** The lean, torch-free import path
+  (MESH-3) deliberately never reaches `hy3dshape.postprocessors.FaceReducer`
+  — the reference implementation's mesh-simplification step — because it
+  needs `pymeshlab` AND `torch`, both excluded for the same reason the rest
+  of that stack is. Marching cubes at a given octree resolution produces
+  however many triangles the decoded surface actually has; bounding the
+  resolution (`registry.MIN_MESH_OCTREE_RESOLUTION`/`MAX_MESH_OCTREE_
+  RESOLUTION`, mirroring upstream's own `gradio_app.py` sliders) is bounding
+  the face count, because there is no second knob to bound it with.
+- **MESH-7** **No mid-render progress ticks, and no mid-render cancel
+  point.** `ShapePipeline.__call__` runs its whole denoising loop and VAE
+  decode inside one Python call with no callback hook of any kind — unlike
+  `ltx-video`'s patchable `samplers.tqdm` (§40) or `mflux_image`'s
+  `mflux.callbacks` registry, there is no name in this pipeline a worker can
+  stand in front of without editing the fork's own loop, which MESH-2's
+  packaging-only mandate rules out. A single `report()` before the call is
+  what this worker can honestly say about a render in progress; a ✕ sent
+  mid-render is still honoured, but only once the call returns.
+- **MESH-8** **`text-to-3d` stays unmapped, deliberately, not by
+  oversight.** Serving it means chaining an image-generation runner into
+  the mesh runner behind one button — two resident slots, two engines, one
+  user action — which is a real feature worth building deliberately later,
+  not a side effect of the mesh runner landing. `ai/tasks.py`'s row for it
+  carries the real reason as its `note`, not the generic "nothing runs
+  this" fallback every other unmapped row gets by default.
+- **fp16 only, so this is a 32 GB story, not a 16 GB one.** The curated
+  weights repo publishes one `dit.safetensors` at 6.10 GB and no quantized
+  variant — unlike `ltx-video`'s int4/int8 pair, there is no smaller tier
+  to offer today.
+- **Sequenced-after, deliberately absent here**: the PBR texture stage
+  (MESH-4), `text-to-3d` (MESH-8), a quantized DiT tier, and any
+  mesh-simplification option beyond the octree-resolution ceiling (MESH-6).

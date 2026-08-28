@@ -110,6 +110,11 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y",
         names={formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"},
         dirnames=set(), config={}, torch_weights=True))
+    # The `hunyuan3d-mlx` branch short-circuits too (see `loaders()`'s own
+    # comment on it) — same reason the LTX-2.3 call above is needed.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names={"dit.safetensors", "image_encoder.safetensors"},
+        dirnames=set(), config={}, torch_weights=True))
     # The embedding branch short-circuits too (see `loaders()`'s own
     # comment on the branch), so — like the MLX whisper and Parakeet cases
     # above — a code reachable only from below it would otherwise look absent.
@@ -297,6 +302,30 @@ def test_has_ltx_split_layout_needs_both_signals():
     assert not formats.has_ltx_split_layout({"transformer-dev.safetensors"})
     assert formats.has_ltx_split_layout(
         {formats.LTX_SPLIT_MANIFEST, "transformer-distilled.safetensors"})
+
+
+def test_has_hunyuan3d_mlx_layout_needs_both_signals():
+    """Neither `dit.safetensors` alone nor `image_encoder.safetensors` alone
+    is enough — mirrors `test_has_ltx_split_layout_needs_both_signals` for
+    the identical reason: a single fixed-name file is a thinner claim than
+    this codebase accepts here."""
+    assert not formats.has_hunyuan3d_mlx_layout({"dit.safetensors"})
+    assert not formats.has_hunyuan3d_mlx_layout({"image_encoder.safetensors"})
+    assert formats.has_hunyuan3d_mlx_layout(
+        {"dit.safetensors", "image_encoder.safetensors"})
+
+
+def test_a_hunyuan3d_mlx_snapshot_is_recognised_and_matches_only_that_runner():
+    """The full curated download resolves to exactly `hunyuan3d-mlx` —
+    mirrors `test_an_ltx_snapshot_is_recognised_and_matches_only_ltx_video`
+    (a directory of safetensors that must not ALSO fall through to
+    `mlx-text` and offer a Load button that opens the DiT as a chat model)."""
+    codes = formats.loaders(
+        repo_id="dgrauet/hunyuan3d-2.1-mlx",
+        names={"config.json", "split_model.json", "image_encoder.safetensors",
+              "dit.safetensors", "vae.safetensors"},
+        dirnames=set(), config={}, torch_weights=True)
+    assert set(codes) == {"hunyuan3d-mlx"}
 
 
 def test_an_FL2VA_snapshot_is_recognised_and_matches_no_runner():

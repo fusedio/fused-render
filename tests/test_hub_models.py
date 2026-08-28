@@ -609,17 +609,19 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     for absent in ("fill-mask", "image-feature-extraction",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
-    # …while the five the Engines tab is about are all reachable. EMBEDDINGS
+    # …while the six the Engines tab is about are all reachable. EMBEDDINGS
     # arrives through THREE tags, which is unique to it (see
     # `registry.EMBEDDINGS`'s docstring): `zero-shot-image-classification` for a
     # dual encoder, `feature-extraction` and `sentence-similarity` for a prose
     # one. VIDEO_GENERATION arrives through "text-to-video", the tag `ltx-video`
-    # serves.
+    # serves. IMAGE_TO_3D arrives through "image-to-3d", the tag `hunyuan3d-mlx`
+    # now serves (Task 2, SPEC §48) — a sixth capability, not a seventh tag on
+    # one of the five above, so it widens this set rather than the `<=` one.
     assert {"zero-shot-image-classification", "feature-extraction",
             "sentence-similarity"} <= set(offered)
     assert {ai_tasks.capability_for_tag(t) for t in offered} == {
         registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
-        registry.EMBEDDINGS, registry.VIDEO_GENERATION}
+        registry.EMBEDDINGS, registry.VIDEO_GENERATION, registry.IMAGE_TO_3D}
 
 
 def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):

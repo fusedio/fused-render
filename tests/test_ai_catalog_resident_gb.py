@@ -1,4 +1,5 @@
-"""SPEC AI-22, D526: `resident_gb` populated for the two `ltx-video` rows.
+"""SPEC AI-22, D526: `resident_gb` populated for the two `ltx-video` rows,
+and (SPEC §48) the one `hunyuan3d-mlx` row.
 
 `resident_gb` is the `declared` rung of `fit.py`'s precedence ladder — an
 optional, curator-supplied resident-footprint estimate that outranks the
@@ -26,15 +27,27 @@ already the same figure — seeding `resident_gb` there would add no
 information, only a second number to drift out of sync with the first. See
 this test file's own assertions for why NEITHER of those two things is being
 skipped by accident.
+
+**`hunyuan3d-mlx` joined for the identical reason, one stage narrower.**
+`pipeline_mlx.py::ShapePipeline.__call__` frees the DiT (`del self.dit`)
+only AFTER denoising, so the image encoder and the DiT are the two weight
+blocks resident together during the render's longest phase — a smaller
+version of `DistilledPipeline`'s two-stage shape, same argument: `size_gb`
+(the curated download, 7.4 GB) sums every fetched byte, while the true peak
+is the larger concurrently-held component set, 6.7 GB. Unlike the video
+rows, this number is WEIGHTS ONLY — no render has run against this pin to
+measure activation/decode-buffer memory on top of it (`catalog.py`'s own
+comment on the row says so) — but the ranking argument (component byte
+counts, not a guess) is the same one SPEC AI-22 asks for.
 """
 from fused_render.ai import catalog, fit
 
 
-def _entry(model_id: str) -> dict:
-    for entry in catalog.SUGGESTIONS["ltx-video"]:
+def _entry(model_id: str, capability: str = "ltx-video") -> dict:
+    for entry in catalog.SUGGESTIONS[capability]:
         if entry["id"] == model_id:
             return entry
-    raise AssertionError(f"{model_id!r} not found in the ltx-video suggestions")
+    raise AssertionError(f"{model_id!r} not found in the {capability!r} suggestions")
 
 
 def test_the_int4_tier_declares_the_larger_single_stage_not_the_download_sum():
@@ -56,6 +69,17 @@ def test_the_int8_tier_declares_the_larger_single_stage_not_the_download_sum():
     assert entry["resident_gb"] < entry["size_gb"]
 
 
+def test_hunyuan3d_mlx_declares_the_larger_single_stage_not_the_download_sum():
+    entry = _entry("dgrauet/hunyuan3d-2.1-mlx", "hunyuan3d-mlx")
+    # 608,791,514 B image encoder + 6,101,598,440 B DiT = 6,710,389,954 B —
+    # the two weight blocks held resident together during denoising, freed
+    # before the VAE decode. 7.4 GB is every byte the curated download
+    # fetches (image encoder + DiT + VAE + two small JSON files).
+    assert entry["resident_gb"] == 6.7
+    assert entry["size_gb"] == 7.4
+    assert entry["resident_gb"] < entry["size_gb"]
+
+
 def test_no_single_stage_pipeline_entry_declares_a_resident_gb():
     """Every OTHER curated row is a pipeline whose components are resident
     TOGETHER for the whole run — `size_gb` already IS the true resident
@@ -67,7 +91,8 @@ def test_no_single_stage_pipeline_entry_declares_a_resident_gb():
     plausible-looking number by habit."""
     for capability_entries in catalog.SUGGESTIONS.values():
         for entry in capability_entries:
-            if entry["id"] in ("dgrauet/ltx-2.3-mlx-q4", "dgrauet/ltx-2.3-mlx-q8"):
+            if entry["id"] in ("dgrauet/ltx-2.3-mlx-q4", "dgrauet/ltx-2.3-mlx-q8",
+                              "dgrauet/hunyuan3d-2.1-mlx"):
                 continue
             assert "resident_gb" not in entry, (
                 f"{entry['id']!r} declares a resident_gb with no documented "

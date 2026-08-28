@@ -1487,7 +1487,14 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # reason `LLAMACPP_RUNNERS` is spelled literally just above.
             "mlx-embed",
             "onnx-embed", "onnx-embed-directml", "onnx-embed-cuda",
-            "onnx-embed-rocm")
+            "onnx-embed-rocm",
+            # `dit.safetensors` + `image_encoder.safetensors` is `hunyuan3d-
+            # mlx`'s own curated layout — the `has_ltx_split_layout` reason
+            # again: an early return in `loaders()` already keeps `mlx-text`
+            # from claiming this directory of safetensors, and this tuple
+            # makes that decisiveness a queryable fact rather than one only
+            # `loaders()` itself knows.
+            "hunyuan3d-mlx")
 
 
 def unloadable_quant(config: dict) -> str | None:
@@ -1626,6 +1633,23 @@ def has_ltx_split_layout(names) -> bool:
                for name in names)
 
 
+def has_hunyuan3d_mlx_layout(names) -> bool:
+    """Is this `hunyuan3d_mlx`'s own curated download — the shape-only
+    conversion of Hunyuan3D-2.1's DiT? `names` is the snapshot's top-level
+    files, same convention as `has_ltx_split_layout`; this format has no
+    component subfolders either.
+
+    Two fixed names, both required and neither shared with any other format
+    this file recognises: `dit.safetensors` (the flow-matching DiT) and
+    `image_encoder.safetensors` (the DINOv2 tower) — `worker.py`'s
+    `_CURATED_FILES` fetches exactly these two plus `vae.safetensors` and two
+    small JSON manifests, and these two are the pair a versioned-filename
+    ambiguity (the `ltx-video` case `has_ltx_split_layout` guards against)
+    cannot arise for: upstream ships each under exactly one name.
+    """
+    return "dit.safetensors" in names and "image_encoder.safetensors" in names
+
+
 def missing_mflux_components(snapshot_dir: str) -> list[str]:
     """The component folders an mflux load needs and this snapshot lacks."""
     return [name for name in MFLUX_COMPONENTS
@@ -1724,6 +1748,14 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         # gives it component subfolders), so without this return the
         # fallthrough at the bottom of this function would ALSO claim it
         # and offer to load an LTX-2.3 checkpoint as a chat model.
+        return tuple(found)
+    if has_hunyuan3d_mlx_layout(names):
+        found.append("hunyuan3d-mlx")
+        # …and NOTHING else, for the `ltx-video` branch's reason immediately
+        # above: this snapshot is a directory of safetensors with no
+        # component subfolders, so without this return the `mlx-text`
+        # fallthrough at the bottom of this function would ALSO claim it and
+        # offer to load a shape DiT checkpoint as a chat model.
         return tuple(found)
     if has_h3_components(dirnames):
         # Claims NO runner — D468 dropped `h3-video`, which was the only
