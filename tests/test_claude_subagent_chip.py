@@ -450,35 +450,64 @@ main();
     assert got["calls"] == 3
 
 
-def test_a_terminal_tick_stops_fetching_once_a_transcript_is_in_hand(
+def test_a_terminal_fetch_still_retrieves_the_agents_final_message(
         probe_src, tmp_path):
-    """Code review round 6: the lazy-cache/settle machinery (a "catch-up"
-    fetch specifically forced by the running->terminal transition) is gone.
-    Design now: once the Task is terminal AND a fetch has already returned a
-    REAL, non-empty transcript, there is nothing left worth asking for —
-    accepted as a single fact about data already in hand (the possible cost
-    is one turn's worth of staleness a re-open recovers), not a "is this
-    copy trustworthy" judgement call that four review rounds kept getting
-    wrong in a new way each time."""
+    """Code review round 7, HIGH 1: the previous stop condition ("any cached
+    content at all, current status terminal") froze the transcript at
+    whatever a RUNNING-status fetch last returned. The tick right after the
+    Task goes terminal — the one carrying the agent's own concluding
+    message — hit that early return and the message was never retrieved,
+    permanently. A fetch made while still running can never prove there is
+    nothing left to say; only a fetch made AT the terminal status can."""
     got = _run(probe_src, """
 async function main() {
-  runPythonQueue.push({turns: [{role: "user", text: "running"}]});
+  runPythonQueue.push({turns: [{role: "user", text: "early"}]});
+  runPythonQueue.push({turns: [
+    {role: "user", text: "early"},
+    {role: "assistant", text: "", segments: [{kind: "text", text: "FINAL ANSWER"}]},
+  ]});
   const el = buildToolChip(%s, "k1");
   clickSummary(el.el);
-  await new Promise((r) => setTimeout(r, 0));      // fetch #1: real turns, "running"
-  el.update(%s);                                    // now "ok" — same agentId
-  await new Promise((r) => setTimeout(r, 0));
-  el.update(%s);                                    // still "ok"
-  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));      // fetch #1: cached while "running"
+  el.update(%s);                                    // Task goes terminal
+  await new Promise((r) => setTimeout(r, 0));       // fetch #2 MUST happen
+  console.log(JSON.stringify({calls: runPythonLog.length, tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(), status="running")),
+       json.dumps(_task_seg(subagent=_sub(), status="ok"))), tmp_path)
+    assert got["calls"] == 2
+    assistants = _by_class(got["tree"], "sub-turn-assistant")
+    assert len(assistants) == 1
+    seg_text = _by_class(assistants[0], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>FINAL ANSWER</md>"
+
+
+def test_a_re_open_after_the_final_terminal_fetch_does_not_refetch(
+        probe_src, tmp_path):
+    """The flip side of the fix above: once a fetch that ITSELF started at a
+    terminal status has come back with real content, that copy is final —
+    a later tick (or re-open) must not go back to the wire for it again."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "early"}]});
+  runPythonQueue.push({turns: [{role: "user", text: "final"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  await new Promise((r) => setTimeout(r, 0));       // fetch #1: "running"
+  el.update(%s);                                     // terminal
+  await new Promise((r) => setTimeout(r, 0));        // fetch #2: terminal, real -> final
+  el.update(%s);                                     // still terminal
+  await new Promise((r) => setTimeout(r, 0));        // must NOT fetch again
   console.log(JSON.stringify({calls: runPythonLog.length, tree: dump(el.el)}));
 }
 main();
 """ % (json.dumps(_task_seg(subagent=_sub(), status="running")),
        json.dumps(_task_seg(subagent=_sub(), status="ok")),
        json.dumps(_task_seg(subagent=_sub(), status="ok"))), tmp_path)
-    assert got["calls"] == 1
+    assert got["calls"] == 2
     users = _by_class(got["tree"], "sub-turn-user")
-    assert len(users) == 1 and users[0]["text"] == "running"
+    assert len(users) == 1 and users[0]["text"] == "final"
 
 
 def test_a_terminal_tick_still_fetches_with_nothing_usable_in_hand_yet(
@@ -690,6 +719,63 @@ main();
     assert len(errors) == 1 and "down" in errors[0]["text"]
 
 
+def test_a_single_failure_paints_immediately_not_only_at_the_bound(
+        probe_src, tmp_path):
+    """Code review round 7, HIGH 2: the give-up message used to paint ONLY
+    once the fail count reached MAX_SUBAGENT_FETCH_ATTEMPTS. A restored or
+    finished conversation never polls again — there is no external tick
+    left to drive a fail count from 1 up to the bound — so a single failed
+    fetch (nowhere near the bound) used to leave the chip permanently blank
+    with nothing anywhere to explain it. It must explain itself the moment
+    there is nothing else worth showing, on the very first failure."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % json.dumps(_task_seg(subagent=_sub(agent_id="a1"))), tmp_path)
+    assert got["calls"] == 1
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and "down" in errors[0]["text"]
+
+
+def test_repeated_close_reopen_cycles_each_paint_their_own_failure(
+        probe_src, tmp_path):
+    """Code review round 7, HIGH 2 (the reviewer's probe scenario):
+    `reexpand` resets the fail count to 0 on every open, so a person
+    closing and re-opening a chip that keeps failing gets exactly ONE
+    attempt per cycle — the bound (5) is structurally unreachable that way.
+    Before the fix, painting only "at the bound" meant NONE of those single
+    attempts ever explained themselves: ten rejections across four
+    close/re-open cycles left the chip permanently, silently empty. Each
+    cycle's own failure must now be visible."""
+    got = _run(probe_src, """
+async function main() {
+  const seen = [];
+  const el = buildToolChip(%s, "k1");
+  for (let i = 0; i < 4; i++) {
+    runPythonQueue.push({__reject: true, message: "down " + i});
+    clickSummary(el.el);              // open (reexpand resets the fail count)
+    await new Promise((r) => setTimeout(r, 0));
+    seen.push(dump(el.el));
+    clickSummary(el.el);              // close, ready for the next cycle
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  console.log(JSON.stringify({seen, calls: runPythonLog.length}));
+}
+main();
+""" % json.dumps(_task_seg(subagent=_sub(agent_id="a1"))), tmp_path)
+    assert got["calls"] == 4
+    for tree in got["seen"]:
+        errors = _by_class(tree, "sub-turn-error")
+        assert len(errors) == 1 and errors[0]["text"], (
+            "each independent close/re-open cycle must show its OWN failure")
+
+
 def test_a_success_after_earlier_failures_clears_the_failure_state(
         probe_src, tmp_path):
     got = _run(probe_src, """
@@ -812,15 +898,24 @@ main();
 def test_a_given_up_agent_gets_no_further_fetch_on_a_later_tick(probe_src, tmp_path):
     """An agent already given up on (the fail bound reached) must not get a
     bonus fetch just because a later poll tick calls pumpSubagentLog again
-    while the chip is open."""
+    while the chip is open. (Code review round 7, MEDIUM: the chip has to
+    actually be OPEN for this to test anything — a collapsed chip bails at
+    `if (!el.open) return` long before the fail-bound check, which is
+    exactly the gap the original version of this test had.)"""
     got = _run(probe_src, """
 async function main() {
+  runPythonQueue.push({turns: []});   // nothing useful yet, still worth asking again
   const el = buildToolChip(%s, "k1");
-  subagentFailCount.set("a1", MAX_SUBAGENT_FETCH_ATTEMPTS);   // already given up
-  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "x"}]}});
-  el.update(%s);   // re-triggers a pass while open; cache empty, but capped...
+  clickSummary(el.el);                 // OPEN it — the fail-bound gate this
+                                        // test claims to pin is unreachable
+                                        // otherwise
   await new Promise((r) => setTimeout(r, 0));
-  console.log(JSON.stringify({calls: runPythonLog.length}));
+  subagentFailCount.set("a1", MAX_SUBAGENT_FETCH_ATTEMPTS);   // now given up
+  const before = runPythonLog.length;
+  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "x"}]}});
+  el.update(%s);   // a later tick, chip STILL open, no re-open involved
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({calls: runPythonLog.length - before}));
 }
 main();
 """ % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
