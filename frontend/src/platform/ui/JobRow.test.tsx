@@ -263,6 +263,59 @@ test("a rejected Dismiss on a FAILED row stays a plain sentence — no fix card"
   expect(text(after)).not.toContain("starting a fix session");
 });
 
+test("a fix failure and a dismiss failure never stack — the later one wins alone", async () => {
+  // BOTH IN FLIGHT AT ONCE, which is the only way to reach this: nothing
+  // disables Dismiss while a fix is starting (`FixButton` owns its own
+  // `busy`). Clearing the counterpart at the START of each action does not
+  // cover it — by the time the second failure lands, both actions have long
+  // since started, so the surviving guard has to be at the WRITE.
+  //
+  // Sequentially the bug hides: pressing Dismiss after a fix already failed
+  // clears `fixFailure` on the way in, and the row looks correct either way.
+  let rejectDismiss: (e: Error) => void = () => {};
+  const dismissFn = () =>
+    new Promise<never>((_resolve, reject) => {
+      rejectDismiss = reject;
+    });
+  const tree = create(
+    <JobRow
+      job={{ ...BASE, state: "error", detail: "" }}
+      onChanged={() => {}}
+      onPatch={() => {}}
+      dismissFn={dismissFn}
+    />,
+  );
+
+  // Dismiss goes out and STAYS out — not awaited, so it is still pending.
+  const before = tree.toJSON() as ReactTestRendererJSON;
+  await act(async () => {
+    void (findAll(before, "dl-x")[0].props as { onClick: () => Promise<void> }).onClick();
+  });
+
+  // The fix fails first, while the dismiss is still in the air.
+  await act(async () => {
+    await (
+      findAll(tree.toJSON() as ReactTestRendererJSON, "dl-fix")[0].props as {
+        onClick: () => Promise<void>;
+      }
+    ).onClick();
+  });
+  expect(findAll(tree.toJSON() as ReactTestRendererJSON, "trouble-compact")).toHaveLength(1);
+
+  // ...and only then does the dismiss reject.
+  await act(async () => {
+    rejectDismiss(new Error("network down"));
+    await Promise.resolve();
+  });
+
+  const after = tree.toJSON() as ReactTestRendererJSON;
+  // Whichever spoke last speaks ALONE — the sentence, and no card beside it.
+  expect(findAll(after, "dl-status")[0].children).toEqual([
+    "Could not dismiss — check your connection and retry.",
+  ]);
+  expect(findAll(after, "trouble-compact")).toHaveLength(0);
+});
+
 test("a successful Cancel shows no failure line", async () => {
   const cancelFn = () => Promise.resolve({ ...BASE, cancel_requested: true });
   const tree = create(

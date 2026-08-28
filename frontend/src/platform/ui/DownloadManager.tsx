@@ -451,6 +451,26 @@ export function JobRow({
   // Mutually exclusive by construction — each writer clears the other below —
   // so the row still shows one failure, never two stacked.
   const [fixFailure, setFixFailure] = useState<string | null>(null);
+
+  // ONE FAILURE AT A TIME, ENFORCED WHERE IT IS WRITTEN. Clearing the other at
+  // the START of each action is not enough, because the two are independently
+  // in flight: nothing disables Dismiss while a fix is starting (`FixButton`
+  // owns its own `busy`), so a fix that rejects and THEN a dismiss that
+  // rejects left `fixFailure` standing while `failure` was set, and the row
+  // drew the sentence and the card together — exactly the stacking the split
+  // was meant to make impossible.
+  //
+  // Going through these two rather than the setters means a writer cannot
+  // forget the other half: the clear is part of what "show this failure"
+  // means, not a step beside it.
+  const showRowFailure = (msg: string | null) => {
+    setFailure(msg);
+    setFixFailure(null);
+  };
+  const showFixFailure = (msg: string | null) => {
+    setFixFailure(msg);
+    setFailure(null);
+  };
   const running = isRunning(job);
   const fraction = jobFraction(job);
   const amount = jobAmount(job);
@@ -497,8 +517,7 @@ export function JobRow({
 
   const cancel = async () => {
     setBusy(true);
-    setFailure(null);
-    setFixFailure(null);
+    showRowFailure(null);
     try {
       await cancelFn(job.id);
       // The row stays — the work has not stopped — but the label has to move
@@ -509,7 +528,7 @@ export function JobRow({
       // heard of, a 500, an offline server. `onPatch` above did NOT run, so
       // there is nothing for the refresh to correct; without this the button
       // just goes quiet, which reads as broken because it is.
-      setFailure("Could not cancel — check your connection and retry.");
+      showRowFailure("Could not cancel — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -518,15 +537,14 @@ export function JobRow({
 
   const dismiss = async () => {
     setBusy(true);
-    setFailure(null);
-    setFixFailure(null);
+    showRowFailure(null);
     try {
       await dismissFn(job.id);
       onPatch((js) => js.filter((j) => j.id !== job.id));
     } catch {
       // Same class of problem as `cancel` above: a rejected request left the
       // row exactly as it was with nothing said about why.
-      setFailure("Could not dismiss — check your connection and retry.");
+      showRowFailure("Could not dismiss — check your connection and retry.");
     } finally {
       setBusy(false);
       onChanged();
@@ -554,10 +572,7 @@ export function JobRow({
         {job.state === "error" && (
           <FixButton
             job={job}
-            onError={(msg) => {
-              setFixFailure(msg);
-              if (msg) setFailure(null);
-            }}
+            onError={showFixFailure}
           />
         )}
         {canCancel && (
