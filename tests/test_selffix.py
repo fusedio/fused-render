@@ -1432,3 +1432,77 @@ def test_the_session_pointer_survives_a_read_only_installation(install, monkeypa
     assert selffix.active_run() == "run-ro"
     # ...and not inside the tree it could not write to.
     assert not selffix.session_path().startswith(str(install))
+
+
+def test_a_session_on_ONE_installation_does_not_lock_ANOTHER(install, tmp_path,
+                                                             monkeypatch):
+    """The guard is per-INSTALL, and the out-of-tree home is per-USER.
+
+    Those two facts collide. The state dir belongs to one installation, so a
+    pointer in it can only ever be about that one; `~/.fused-render/selffix` is
+    shared by every copy the user has, so a pointer named the same way there
+    speaks for all of them. One live diagnostic session on an admin-installed
+    copy then answered "busy" for the user's own second copy — and installing a
+    second copy is the exact remedy the read-only UI names, so the refusal
+    landed on precisely the user who had followed the advice.
+    """
+    other = tmp_path / "elsewhere" / "fused_render"
+    other.mkdir(parents=True)
+
+    # A diagnostic session on the read-only copy: its pointer has nowhere to go
+    # but the shared home.
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+    selffix.note_session("run-on-the-admin-copy")
+    assert selffix.active_run() == "run-on-the-admin-copy"
+
+    # The user's own copy, same machine, same user, same home dir.
+    monkeypatch.setattr(selffix, "install_root", lambda: str(other))
+    assert selffix.active_run() == "", (
+        "a session on one installation was reported as live on another")
+
+
+def test_two_installations_do_not_overwrite_each_other_s_pointer(install, tmp_path,
+                                                                 monkeypatch):
+    """The mirror of the same collision, and the quieter half.
+
+    Sharing one name in the shared home does not only make a pointer visible to
+    the wrong install — it makes the second start DESTROY the first. The copy
+    whose pointer was overwritten keeps running with only the bounded scan
+    behind it, which is the very half `note_session` exists to cover.
+    """
+    other = tmp_path / "elsewhere" / "fused_render"
+    other.mkdir(parents=True)
+    monkeypatch.setattr(selffix, "writable", lambda: False)
+
+    selffix.note_session("run-on-the-admin-copy")
+    monkeypatch.setattr(selffix, "install_root", lambda: str(other))
+    selffix.note_session("run-on-my-own-copy")
+    assert selffix.active_run() == "run-on-my-own-copy"
+
+    monkeypatch.setattr(selffix, "install_root", lambda: str(install))
+    assert selffix.active_run() == "run-on-the-admin-copy", (
+        "the second installation's session pointer overwrote the first's")
+
+
+def test_an_in_tree_pointer_survives_the_installation_being_MOVED(install, tmp_path,
+                                                                  monkeypatch):
+    """Why the two homes name the pointer differently rather than both carrying
+    the install.
+
+    Folding the root into the name everywhere would look more uniform and would
+    be wrong in the one home that does not need it: the state dir travels WITH
+    the tree, so a name derived from the old absolute path stops matching the
+    moment the install is moved or renamed — and a fix session survives that
+    exactly as a chat does. Inside the tree, the directory is the identity.
+    """
+    _, in_tree = selffix.record_incident({"title": "here"}, now=1000.0)
+    selffix.note_session("run-before-the-move")
+    assert selffix.in_state_dir(in_tree)
+
+    moved = tmp_path / "moved" / "fused_render"
+    moved.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(install, moved)
+    monkeypatch.setattr(selffix, "install_root", lambda: str(moved))
+
+    assert selffix.active_run() == "run-before-the-move", (
+        "the pointer stopped being found once its installation moved")

@@ -72,6 +72,10 @@ DISMISSED_NAME = "dismissed.json"
 # The run id of the last fix session started here. A POINTER, not a lease: it
 # carries no expiry and needs no cleanup, because whether that run is still
 # going is answered by its process, never by this file (see `active_run`).
+#
+# The name is used AS IS only in the state dir. The out-of-tree home is shared
+# by every copy the user has installed, so there the pointer's name carries the
+# installation it speaks for — see `_session_file`.
 SESSION_NAME = "session.json"
 REPORTS_DIR = "reports"
 INCIDENTS_DIR = "incidents"
@@ -516,6 +520,42 @@ def dismissed_digest() -> str:
     return str(record.get("digest") or "")
 
 
+def _install_session_name() -> str:
+    """`SESSION_NAME` with this installation's identity folded into it.
+
+    A short digest of the resolved install root, because the root is an
+    absolute path: too long for a filename, and on a case-insensitive
+    filesystem two spellings of it name the same directory. Normalised exactly
+    as `_dedup` normalises a home, so the two agree on what "the same place"
+    means.
+    """
+    key = os.path.normcase(os.path.realpath(install_root()))
+    stem, ext = os.path.splitext(SESSION_NAME)
+    digest = hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()
+    return f"{stem}-{digest[:12]}{ext}"
+
+
+def _session_file(home: str) -> str:
+    """Where this installation's pointer lives inside one records home.
+
+    THE NAME CARRIES THE INSTALL ONLY WHERE THE DIRECTORY DOES NOT. The state
+    dir belongs to one installation — a file inside it can only be a claim
+    about that one — and it keeps the plain name, so that moving the tree moves
+    its pointer intact. The out-of-tree home is per-USER and shared by every
+    copy that user has installed, so there the name has to say which one.
+
+    One shared `session.json` made the one-at-a-time guard machine-wide, and it
+    failed in both directions at once. A live diagnostic session on a read-only
+    copy answered "busy" for a second copy the user owns — the very remedy the
+    read-only UI names, refused to the user who took the advice. And where both
+    copies are read-only, the second start OVERWROTE the first's pointer,
+    quietly costing the long-session half of the guard on the install that was
+    still running.
+    """
+    return os.path.join(home, SESSION_NAME if in_state_dir(home)
+                        else _install_session_name())
+
+
 def session_path() -> str:
     """Beside the reports, not beside the marker — `records_dir()`, so that it
     still exists on a read-only installation.
@@ -528,7 +568,7 @@ def session_path() -> str:
     the state dir it silently failed to write there (`note_session` is
     best-effort by design), quietly costing the long-session half of the guard on
     the one kind of install where the user cannot investigate why."""
-    return os.path.join(records_dir(), SESSION_NAME)
+    return _session_file(records_dir())
 
 
 def note_session(run_id: str) -> None:
@@ -552,7 +592,7 @@ def note_session(run_id: str) -> None:
     """
     for home in record_homes():
         try:
-            _write_json(os.path.join(home, SESSION_NAME),
+            _write_json(_session_file(home),
                         {"schema": 1, "run_id": str(run_id)})
             return
         except OSError:
@@ -571,7 +611,7 @@ def active_run() -> str:
     have offered a writer."""
     newest, run = 0.0, ""
     for home in reader_homes():
-        path = os.path.join(home, SESSION_NAME)
+        path = _session_file(home)
         record = _read_json(path)
         if not record:
             continue

@@ -11795,8 +11795,9 @@ the installation, and the mark that says so.
   ones") and wrong for this one: a fix session is the long-running case by
   construction, and a machine firing scheduled tasks can start 60 runs beside it,
   at which point the scan stops seeing the very session it is guarding. So the
-  run this app started is ALSO named directly, in
-  `<state dir>/session.json`, and asked about by pid. That file is a **pointer,
+  run this app started is ALSO named directly, in `records_dir()`'s
+  `session.json` (SF-13, and SF-13c2 for its name there), and asked about by
+  pid. That file is a **pointer,
   not a lease**, and the distinction is the whole design: nothing expires it,
   nothing recovers it at startup, and a record left by a finished session — or by
   a machine that lost power mid-fix — reads as "not running" the moment its pid
@@ -11806,6 +11807,21 @@ the installation, and the mark that says so.
   that is the wrong trade. The two lookups are not two answers to reconcile: each
   covers a case the other cannot (the pointer knows our own long run; the scan
   knows the chat someone opened on the folder by hand).
+- **SF-13c2** **The pointer's NAME carries the installation only where its
+  DIRECTORY does not.** The guard is per-install; one of its two homes is
+  per-USER. In the state dir the plain `session.json` is right and a name
+  derived from the root would be worse: that directory travels with the tree, so
+  the file keeps being found after the install is moved or renamed, which a
+  path-derived name would stop doing. `records_dir()`'s out-of-tree home is
+  shared by every copy the user has installed, so there the name folds in a
+  short digest of the resolved install root. One shared `session.json` made the
+  one-at-a-time guard MACHINE-wide, and it failed in both directions at once: a
+  live diagnostic session on an admin-installed copy answered "busy" for the
+  user's own second copy — the very remedy SF-13's read-only path names, refused
+  to the user who took the advice — and where both copies are read-only, the
+  second start OVERWROTE the first's pointer, costing the long-session half of
+  the guard on an install still running. Neither reads as a bug from the
+  outside: one is a 409 that looks like the guard working, the other is silent.
 - **SF-13d** **The lookup fails OPEN**, reasoned rather than a coin toss:
   everything it can fail on (the agent not loading, an unreadable runs directory)
   fails the spawn moments later too, with a message naming what actually went
