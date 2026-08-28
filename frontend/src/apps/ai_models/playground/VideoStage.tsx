@@ -24,21 +24,14 @@ import {
   ConfigPanel,
   useConfigOpen,
   RailField,
+  RailReset,
   RailSlider,
   ResultSlot,
   StageHeader,
   StarterCards,
   type Starter,
 } from "./controls";
-import {
-  canEdit,
-  fitToImage,
-  imageFields,
-  usableBase,
-  EDIT_LONGEST_SIDE,
-  type AttachedImage,
-  type Size,
-} from "./imageInput";
+import { canEdit, usableBase, type AttachedImage } from "./imageInput";
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
@@ -154,6 +147,31 @@ const STARTERS: Starter[] = [
   },
 ];
 
+/** The `image`/`width`/`height` fields of one render request.
+ *
+ *  Deliberately NOT `imageInput.ts`'s own `imageFields` (the image STAGE's
+ *  version): that function's third case sends a CLIENT-computed size
+ *  alongside `image` (`fitToImage`'s arithmetic — cap 640, snapped to a
+ *  multiple of 16), and that arithmetic is the image route's own, not this
+ *  one's. `/api/ai/video` derives its default canvas off the reference
+ *  itself, on the ENGINE's own 64-multiple two-stage grid
+ *  (`_video_default_size`, D611) — sending `fitToImage`'s pair would bypass
+ *  that derivation and echo a canvas nobody actually rendered (a 1280x704
+ *  reference would send 640x352, while the engine renders 640x320). So with
+ *  no size picked by hand, `width`/`height` are left off entirely and the
+ *  server derives them off the reference's own header — the third case here
+ *  is simply "leave them out", not "compute a smaller version of them". */
+function videoImageFields(
+  base: AttachedImage | null,
+  sizeFromImage: boolean,
+  width: number,
+  height: number,
+): { image?: string; width?: number; height?: number } {
+  if (!base) return { width, height };
+  if (!sizeFromImage) return { image: base.path, width, height };
+  return { image: base.path };
+}
+
 interface Run {
   started: VideoStarted;
   job: Job | null;
@@ -190,12 +208,13 @@ export function VideoStage({
   const [gallery, setGallery] = useState<VideoStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // A reference image (SPEC AI-15) — the same gate, attachment shape and
-  // request-field derivation `ImageStage.tsx` uses for its own base image
-  // (AI-9f), reused as-is through `imageInput.ts` rather than reimplemented:
-  // `canEdit`/`usableBase`/`fitToImage`/`imageFields` all take a plain
-  // `boolean | undefined`, so `engineTraits.supportsImage` slots in exactly
-  // where `entry.acceptsImage` does there.
+  // A reference image (SPEC AI-15) — the same gate and attachment shape
+  // `ImageStage.tsx` uses for its own base image (AI-9f), reused as-is
+  // through `imageInput.ts` rather than reimplemented: `canEdit`/`usableBase`
+  // both take a plain `boolean | undefined`, so `engineTraits.supportsImage`
+  // slots in exactly where `entry.acceptsImage` does there. **Not**
+  // `imageFields`/`fitToImage`, unlike the image stage — see `videoImageFields`
+  // below for why this stage computes its own request fields instead.
   const editable = canEdit(engineTraits.supportsImage);
   const [attachment, setAttachment] = useState<AttachedImage | null>(() => {
     const path = readParam("img");
@@ -203,9 +222,13 @@ export function VideoStage({
   });
   const [sizeFromImage, setSizeFromImage] = useState(true);
   const base = usableBase(engineTraits.supportsImage, attachment);
-  const [natural, setNatural] = useState<Size | null>(null);
   const [attaching, setAttaching] = useState(false);
   const [showBase, setShowBase] = useState(false);
+  // Is the size the REFERENCE's? Only with one attached, and only until
+  // somebody picks a size themselves — same rule `ImageStage.tsx`'s own
+  // `sizeIsTheImages` states, mirrored here so the two stages stay
+  // recognisably the same component.
+  const sizeIsTheImages = base !== null && sizeFromImage;
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -229,27 +252,6 @@ export function VideoStage({
     engineTraits.defaultFrames, editable, attachment,
   ]);
 
-  // The attached picture's own pixel size, off a decode in the browser — same
-  // probe `ImageStage.tsx` runs, needed so a render can be fit to the
-  // reference's own shape client-side without waiting on the server's own
-  // header-derived default (which targets the ENGINE's canvas, not this
-  // stage's smaller preview-first one).
-  useEffect(() => {
-    setNatural(null);
-    if (!base) return;
-    let alive = true;
-    const probe = new Image();
-    probe.onload = () => {
-      if (alive && probe.naturalWidth && probe.naturalHeight) {
-        setNatural({ width: probe.naturalWidth, height: probe.naturalHeight });
-      }
-    };
-    probe.src = rawUrl(base.path);
-    return () => {
-      alive = false;
-    };
-  }, [base?.path]);
-
   useEffect(() => {
     if (!showBase) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowBase(false);
@@ -260,12 +262,25 @@ export function VideoStage({
   const { ref: boxRef } = useAutoGrow(prompt);
 
   const abortRef = useRef<AbortController | null>(null);
-  useEffect(() => () => abortRef.current?.abort(), []);
-
-  const fitted = base && natural ? fitToImage(natural, EDIT_LONGEST_SIDE) : null;
+  // Set on the way in as well as cleared on the way out, the same shape
+  // `ImageStage.tsx`'s own flag has: the OS file dialog `choose()` awaits is a
+  // server-side modal that can stay open arbitrarily long, and a continuation
+  // that lands after this component has unmounted (a model switch while the
+  // dialog is up) must not write state on a dead component.
+  const aliveRef = useRef(true);
+  useEffect(() => {
+    aliveRef.current = true;
+    return () => {
+      aliveRef.current = false;
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const attach = (picked: AttachedImage) => {
     setAttachment(picked);
+    // A fresh reference is a fresh size question, and the honest default is
+    // that reference's own shape — even where the last one had been
+    // overridden.
     setSizeFromImage(true);
   };
 
@@ -277,8 +292,10 @@ export function VideoStage({
         title: "Choose a reference image",
         types: ATTACH_TYPES,
       });
-      if (path === null) return;
+      // A cancel is an answer: nothing changes and nothing is said about it.
+      if (path === null || !aliveRef.current) return;
       const name = path.split("/").pop() || path;
+      // Still checked, filter or no filter — see ATTACH_EXTENSIONS.
       if (!ATTACH_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
         setError(
           `${name} is not a PNG, JPEG or WebP — those are the three the renderer ` +
@@ -288,9 +305,9 @@ export function VideoStage({
       }
       attach({ path, name });
     } catch (e) {
-      setError((e as Error).message);
+      if (aliveRef.current) setError((e as Error).message);
     } finally {
-      setAttaching(false);
+      if (aliveRef.current) setAttaching(false);
     }
   };
 
@@ -307,7 +324,7 @@ export function VideoStage({
         model,
         frames,
         steps,
-        ...imageFields(base, sizeFromImage, fitted, width, height),
+        ...videoImageFields(base, sizeFromImage, width, height),
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
       setRun({ started, job: null, done: false });
@@ -449,32 +466,51 @@ export function VideoStage({
                 {StarterIcons.landscape}
                 <span>{base ? "Replace" : "Add a reference image"}</span>
               </button>
+              {attaching && <span className="pg-attach-note">Working…</span>}
             </div>
           )}
         </div>
       )}
 
       <ConfigPanel open={configOpen} animated={configTouched.current}>
-        <RailSlider
-          label="Width"
-          hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={width}
-          fallback={DEFAULTS.width}
-          onChange={setWidth}
-        />
-        <RailSlider
-          label="Height"
-          hint="Bigger is slower and needs more memory."
-          min={SIZE_RANGE[0]}
-          max={SIZE_RANGE[1]}
-          step={32}
-          value={height}
-          fallback={DEFAULTS.height}
-          onChange={setHeight}
-        />
+        {/* Hidden, not disabled, while the attached reference decides the
+            size: a slider parked on 512 is a control saying something about a
+            canvas that will not run — the render comes back at the
+            reference's own shape instead. One line replaces them, and it is
+            also the way back to picking a size by hand. Same shape
+            `ImageStage.tsx` uses for its own `sizeIsTheImages`. */}
+        {sizeIsTheImages ? (
+          <RailField
+            label="Size"
+            action={<RailReset onClick={() => setSizeFromImage(false)}>Set a size</RailReset>}
+            hint="Derived from the reference's own shape, on the engine's own canvas grid — read the reply for the exact size that rendered."
+          >
+            <span className="text-xs">From the attached reference</span>
+          </RailField>
+        ) : (
+          <>
+            <RailSlider
+              label="Width"
+              hint="Snapped to a multiple of 32, and shrunk if width×height is too large."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={32}
+              value={width}
+              fallback={DEFAULTS.width}
+              onChange={setWidth}
+            />
+            <RailSlider
+              label="Height"
+              hint="Bigger is slower and needs more memory."
+              min={SIZE_RANGE[0]}
+              max={SIZE_RANGE[1]}
+              step={32}
+              value={height}
+              fallback={DEFAULTS.height}
+              onChange={setHeight}
+            />
+          </>
+        )}
         <RailSlider
           label="Frames"
           hint="Rounded to the video engine's own valid grid — the number that runs may differ slightly."
