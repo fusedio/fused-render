@@ -16,7 +16,7 @@
 // naming the seed of, and worth being able to go back to.
 import { useEffect, useRef, useState } from "react";
 import { cancelJob, type Job } from "@platform/lib/jobs";
-import { rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
+import { pickFile, rawUrl, type AiCatalogCapability, type AiCatalogModel } from "@platform/lib/api";
 import { startVideo, watchJob, type VideoStarted } from "./client";
 import { Input } from "@platform/shadcn/ui/input";
 import { Card } from "@platform/shadcn/ui/card";
@@ -30,9 +30,26 @@ import {
   StarterCards,
   type Starter,
 } from "./controls";
+import {
+  canEdit,
+  fitToImage,
+  imageFields,
+  usableBase,
+  EDIT_LONGEST_SIDE,
+  type AttachedImage,
+  type Size,
+} from "./imageInput";
 import { useAutoGrow } from "@platform/lib/autoGrow";
 import { StarterIcons } from "./starterIcons";
 import { numParam, readParam, writeParams } from "@apps/ai_models/lib/params";
+
+// The three formats the server's own header reader understands (AI-9f) —
+// identical list to the image stage's `ATTACH_EXTENSIONS`, restated rather
+// than imported: a shared constant would tie the two stages' file filters
+// together for a fact that just happens to coincide today (both routes go
+// through `_image_pixel_size`), not one they are required to share forever.
+const ATTACH_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp"] as const;
+const ATTACH_TYPES = ATTACH_EXTENSIONS.map((e) => e.slice(1));
 
 // Small canvas by default — the first clip arriving quickly is the point,
 // exactly like the image stage's 512² default. This is a UI choice
@@ -70,6 +87,7 @@ const FALLBACK_TRAITS: NonNullable<AiCatalogCapability["videoTraits"]> = {
   defaultWidth: 704,
   defaultHeight: 480,
   defaultSteps: 8,
+  supportsImage: true,
 };
 
 // Eight authored examples — two pages of four (D465). Every one names a
@@ -172,6 +190,23 @@ export function VideoStage({
   const [gallery, setGallery] = useState<VideoStarted[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // A reference image (SPEC AI-15) — the same gate, attachment shape and
+  // request-field derivation `ImageStage.tsx` uses for its own base image
+  // (AI-9f), reused as-is through `imageInput.ts` rather than reimplemented:
+  // `canEdit`/`usableBase`/`fitToImage`/`imageFields` all take a plain
+  // `boolean | undefined`, so `engineTraits.supportsImage` slots in exactly
+  // where `entry.acceptsImage` does there.
+  const editable = canEdit(engineTraits.supportsImage);
+  const [attachment, setAttachment] = useState<AttachedImage | null>(() => {
+    const path = readParam("img");
+    return path ? { path, name: path.split("/").pop() ?? path } : null;
+  });
+  const [sizeFromImage, setSizeFromImage] = useState(true);
+  const base = usableBase(engineTraits.supportsImage, attachment);
+  const [natural, setNatural] = useState<Size | null>(null);
+  const [attaching, setAttaching] = useState(false);
+  const [showBase, setShowBase] = useState(false);
+
   useEffect(() => {
     const timer = window.setTimeout(() => {
       writeParams({
@@ -181,15 +216,83 @@ export function VideoStage({
         frames: frames !== engineTraits.defaultFrames ? String(frames) : null,
         steps: steps !== modelSteps ? String(steps) : null,
         seed: seed ? seed : null,
+        // Omitted rather than nulled on an engine that cannot condition on
+        // one — same rule `ImageStage.tsx` follows for `img`, so switching
+        // to an engine without `supportsImage` and back does not silently
+        // drop the attachment.
+        ...(editable ? { img: attachment ? attachment.path : null } : {}),
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [prompt, width, height, frames, steps, seed, modelSteps, engineTraits.defaultFrames]);
+  }, [
+    prompt, width, height, frames, steps, seed, modelSteps,
+    engineTraits.defaultFrames, editable, attachment,
+  ]);
+
+  // The attached picture's own pixel size, off a decode in the browser — same
+  // probe `ImageStage.tsx` runs, needed so a render can be fit to the
+  // reference's own shape client-side without waiting on the server's own
+  // header-derived default (which targets the ENGINE's canvas, not this
+  // stage's smaller preview-first one).
+  useEffect(() => {
+    setNatural(null);
+    if (!base) return;
+    let alive = true;
+    const probe = new Image();
+    probe.onload = () => {
+      if (alive && probe.naturalWidth && probe.naturalHeight) {
+        setNatural({ width: probe.naturalWidth, height: probe.naturalHeight });
+      }
+    };
+    probe.src = rawUrl(base.path);
+    return () => {
+      alive = false;
+    };
+  }, [base?.path]);
+
+  useEffect(() => {
+    if (!showBase) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowBase(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showBase]);
 
   const { ref: boxRef } = useAutoGrow(prompt);
 
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  const fitted = base && natural ? fitToImage(natural, EDIT_LONGEST_SIDE) : null;
+
+  const attach = (picked: AttachedImage) => {
+    setAttachment(picked);
+    setSizeFromImage(true);
+  };
+
+  const choose = async () => {
+    setError(null);
+    setAttaching(true);
+    try {
+      const path = await pickFile({
+        title: "Choose a reference image",
+        types: ATTACH_TYPES,
+      });
+      if (path === null) return;
+      const name = path.split("/").pop() || path;
+      if (!ATTACH_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext))) {
+        setError(
+          `${name} is not a PNG, JPEG or WebP — those are the three the renderer ` +
+            "can read the size of.",
+        );
+        return;
+      }
+      attach({ path, name });
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAttaching(false);
+    }
+  };
 
   const generate = async (asked?: string) => {
     const wanted = (asked ?? prompt).trim();
@@ -202,10 +305,9 @@ export function VideoStage({
       const started = await startVideo({
         prompt: wanted,
         model,
-        width,
-        height,
         frames,
         steps,
+        ...imageFields(base, sizeFromImage, fitted, width, height),
         ...(seed.trim() !== "" ? { seed: Number(seed) } : {}),
       });
       setRun({ started, job: null, done: false });
@@ -229,12 +331,15 @@ export function VideoStage({
     }
   };
 
-  // Back to empty: the prompt and the result. Settings stay put, and so does
-  // the gallery strip — a clip already rendered is not what Clear is about.
+  // Back to empty: the prompt, the result, and the attached reference —
+  // it is part of the request rather than part of the setup, the same rule
+  // `ImageStage.tsx`'s own Clear follows. Settings stay put, and so does the
+  // gallery strip — a clip already rendered is not what Clear is about.
   const clear = () => {
     setPrompt("");
     setRun(null);
     setError(null);
+    setAttachment(null);
     // The height follows the emptied prompt on its own (useAutoGrow).
     boxRef.current?.focus();
   };
@@ -305,6 +410,50 @@ export function VideoStage({
         </div>
       </div>
 
+      {/* The reference image, on its own line below the composer — same
+          pattern `ImageStage.tsx` uses for its own base image, drawn only
+          when the resolved engine can honour one at all (`editable`). */}
+      {(base || editable) && (
+        <div className="pg-composer-foot">
+          {base && (
+            <span className="pg-attach">
+              <button
+                type="button"
+                className="pg-attach-open"
+                title="See this picture"
+                aria-label="See this picture"
+                onClick={() => setShowBase(true)}
+              >
+                <img src={rawUrl(base.path)} alt="" />
+              </button>
+              <button
+                type="button"
+                className="pg-attach-drop"
+                title="Remove this image"
+                aria-label="Remove this image"
+                onClick={() => setAttachment(null)}
+              >
+                ✕
+              </button>
+            </span>
+          )}
+          {editable && (
+            <div className="pg-attach-row">
+              <button
+                type="button"
+                className="pg-attach-btn"
+                title="Point at a picture already on this disk — nothing is copied"
+                disabled={attaching}
+                onClick={() => void choose()}
+              >
+                {StarterIcons.landscape}
+                <span>{base ? "Replace" : "Add a reference image"}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       <ConfigPanel open={configOpen} animated={configTouched.current}>
         <RailSlider
           label="Width"
@@ -359,6 +508,29 @@ export function VideoStage({
           />
         </RailField>
       </ConfigPanel>
+
+      {/* The attached reference at full size — same whole-modal shape
+          `ImageStage.tsx` uses for its own base image: a 28px thumbnail
+          cannot be looked at. Click the backdrop or press Escape to close. */}
+      {base && showBase && (
+        <div
+          className="pg-lightbox"
+          role="dialog"
+          aria-label="The attached reference image"
+          onClick={() => setShowBase(false)}
+        >
+          <img src={rawUrl(base.path)} alt="" onClick={(e) => e.stopPropagation()} />
+          <button
+            type="button"
+            className="pg-lightbox-close"
+            title="Close"
+            aria-label="Close"
+            onClick={() => setShowBase(false)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Examples first, under the box they fill; hidden once a clip is on
           screen, which is what that space is then for. */}
