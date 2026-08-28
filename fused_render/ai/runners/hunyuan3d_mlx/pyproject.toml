@@ -1,0 +1,66 @@
+# The hunyuan3d_mlx runner's environment (SPEC §48).
+#
+# Image-to-3D shape generation on MLX, through `hy3dshape` — the shape half
+# of `iamsdas/Hunyuan3D-2.1-mlx` (https://github.com/iamsdas/Hunyuan3D-2.1-mlx,
+# a fork of `dgrauet/Hunyuan3D-2.1-mlx`), a pure-MLX port of Tencent's
+# Hunyuan3D-2.1 shape pipeline. `worker.py` builds `pipeline_mlx.ShapePipeline`
+# and calls it directly — the same "one folder, one `pyproject.toml`, one
+# `worker.py`" shape every runner here uses.
+#
+# **A fork, not upstream, and for one reason only: upstream ships no
+# packaging.** `dgrauet/Hunyuan3D-2.1-mlx`'s `hy3dshape/hy3dshape/` folder has
+# no build system at all, so `uv` has nothing to resolve it against as a git
+# dependency. The fork adds exactly one file — `hy3dshape/pyproject.toml`, a
+# build backend plus the package declaration, no runtime dependencies, no
+# other change — see that file's own header for why its `dependencies` list
+# is deliberately empty. Nothing about the shape pipeline itself is forked
+# code; this is a packaging shim living next to unmodified upstream.
+#
+# **Pinned to a commit SHA, not a branch or a tag.** `00fed0736aad06ef4068
+# ee78b3faf85e0e8d408f` is the fork commit that adds the packaging file
+# above, one past `5fe21945b790fbb7fb28c510e89babd7b9feabe6` (the upstream
+# HEAD it was branched from, 2026-08-28). Bumping the sha to pick up a real
+# upstream change is a normal, deliberate act; it should happen with a
+# render behind it, like every other version ceiling on this page.
+#
+# **`subdirectory = "hy3dshape"`, not `"hy3dshape/hy3dshape"`.** The new
+# `pyproject.toml` lives in the OUTER `hy3dshape/` folder and declares the
+# distribution `hy3dshape` with its package root at the inner `hy3dshape/
+# hy3dshape/` (same name, sibling directory) — `subdirectory` points uv at
+# the folder holding that manifest, not at the package code itself.
+#
+# **`hy3dshape` is declared here as a dependency, but `worker.py` never does
+# a plain `import hy3dshape`.** `hy3dshape/hy3dshape/__init__.py` eagerly
+# imports the PyTorch reference pipeline (`from .pipelines import ...`,
+# which does a bare `import torch` and `from diffusers...`) — and Python
+# always runs a package's `__init__.py` before any submodule of it, MLX-only
+# submodules included. `worker.py` reaches `pipeline_mlx.ShapePipeline`
+# through hand-built stand-in package modules in `sys.modules` instead, so
+# this venv never needs torch, diffusers, transformers, pymeshlab, rembg,
+# onnxruntime or any of the rest of the reference stack — see `worker.py`'s
+# own docstring for the mechanics. Declaring the dependency here is still
+# correct: it is what makes `uv sync` fetch and build the git source at all,
+# so its files exist on disk for that import machinery to find.
+[project]
+name = "fused-render-runner-hunyuan3d-mlx"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "hy3dshape",
+    "mlx>=0.31,<1",
+    "mlx-arsenal>=0.10.1,<1",
+    "numpy>=1.26,<3",
+    "pillow>=10,<12",
+    "trimesh>=4,<5",
+    "scikit-image>=0.22,<1",
+    "scipy>=1.11,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+hy3dshape = { git = "https://github.com/iamsdas/Hunyuan3D-2.1-mlx", rev = "00fed0736aad06ef4068ee78b3faf85e0e8d408f", subdirectory = "hy3dshape" }
