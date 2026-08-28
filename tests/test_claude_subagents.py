@@ -302,6 +302,86 @@ def test_history_attaches_subagent_headers_to_task_segments(agent, tmp_path, mon
     assert task["status"] == "running"
 
 
+def test_history_builds_the_sidecar_index_once_for_the_whole_load(
+        agent, tmp_path, monkeypatch):
+    """Perf regression pin: a session with several Task-carrying turns used
+    to `os.listdir` the subagents dir and re-parse every sidecar once PER
+    TURN. `_history` now builds that index once for the whole load."""
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    d = projects / agent._munge(str(target.parent))
+    rows = []
+    for i in range(5):
+        tool_use_id = "tu%d" % i
+        # A real user text turn between each Task call, so each one lands on
+        # its OWN assistant turn — five separate `_attach_subagents` calls,
+        # not one merged stretch (consecutive assistant rows with no
+        # intervening user TEXT turn merge into a single turn, which would
+        # make this test exercise one call regardless of memoization).
+        rows.append({"type": "user", "message": {"role": "user",
+                                                  "content": "go %d" % i}})
+        rows.append(_t_assistant([{"type": "text", "text": "working"},
+                                  {"type": "tool_use", "id": tool_use_id,
+                                   "name": "Task",
+                                   "input": {"description": "step %d" % i,
+                                            "subagent_type": "general-purpose"}}]))
+        rows.append({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tool_use_id, "content": "done"}]}})
+        _write_meta(d / "sess1" / "subagents" / ("agent-a%d.meta.json" % i),
+                    "general-purpose", "step %d" % i, tool_use_id)
+    _write_jsonl(str(d / "sess1.jsonl"), rows)
+
+    real_listdir = os.listdir
+    calls = []
+
+    def counting_listdir(path):
+        # `_history` also lists the runs dir (`_stopped_last`) for an
+        # unrelated reason — only the subagents dir is this test's subject.
+        if "subagents" in str(path):
+            calls.append(path)
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", counting_listdir)
+    turns = agent._history(str(target), "sess1")["turns"]
+    tasks = [s for t in turns if t["role"] == "assistant"
+             for s in t.get("segments") or [] if s["kind"] == "tool"]
+    assert len(tasks) == 5
+    assert all(t["subagent"]["agentType"] == "general-purpose" for t in tasks)
+    # One os.listdir of the subagents dir for the WHOLE history load, not one
+    # per turn (there are 5 Task-carrying turns here).
+    assert len(calls) == 1
+
+
+def test_history_with_no_task_calls_never_touches_the_subagents_dir(
+        agent, tmp_path, monkeypatch):
+    """The common case — no Task calls at all — must cost no I/O: the index
+    is never even built, let alone rebuilt per turn."""
+    target = tmp_path / "proj" / "page.html"
+    os.makedirs(target.parent, exist_ok=True)
+    target.write_text("<html></html>")
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+    d = projects / agent._munge(str(target.parent))
+    _write_jsonl(str(d / "sess1.jsonl"), [
+        {"type": "user", "message": {"role": "user", "content": "hi"}},
+        _t_assistant([{"type": "text", "text": "hello"}]),
+    ])
+
+    real_listdir = os.listdir
+
+    def failing_listdir(path):
+        if "subagents" in str(path):
+            raise AssertionError("must not list the subagents dir with no Task calls")
+        return real_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", failing_listdir)
+    turns = agent._history(str(target), "sess1")["turns"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+
+
 # ------------------------------------------------------- subagent transcript
 
 def test_subagent_transcript_renders_its_own_turns(agent, tmp_path, monkeypatch):

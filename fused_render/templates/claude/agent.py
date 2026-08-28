@@ -2880,9 +2880,36 @@ def _subagent_progress(path: str) -> dict:
     return out
 
 
-def _attach_subagents(segments: list, file: str, session_id: str) -> list:
+def _subagent_index_if_any_task(turns: list, file: str, session_id: str) -> dict:
+    """The sidecar index for `turns`, built ONCE — `{}` without ever touching
+    disk when none of them carry a `Task` call at all, which is the common
+    case and the one this exists to keep cheap. Shared by `_history` and
+    `_subagent_transcript`, whose per-turn loops would otherwise each ask
+    `_attach_subagents` to rebuild it (an `os.listdir` plus a `json.load` of
+    every sidecar) once per turn instead of once per request."""
+    if not file or not session_id:
+        return {}
+    has_task = any(
+        s.get("kind") == "tool" and s.get("name") == "Task"
+        for t in turns if t.get("role") == "assistant"
+        for s in t.get("segments") or [])
+    return _subagent_meta_index(file, session_id) if has_task else {}
+
+
+def _attach_subagents(segments: list, file: str, session_id: str,
+                      index: dict | None = None) -> list:
     """Enrich every `Task` tool segment IN PLACE with its subagent's header,
     and — only while it is still running — a live progress snapshot.
+
+    `index` lets a caller that walks MANY turns in one request (`_history`,
+    `_subagent_transcript`) build the sidecar index ONCE and hand it to every
+    call, rather than each call re-`os.listdir`-ing the subagents dir and
+    re-parsing every `.meta.json` in it — the index is identical for every
+    turn of one session, so a 40-turn history with a `Task` call in each one
+    used to do 40 listdirs and re-parse the same sidecars 40 times. Left
+    `None` (the default) for the common one-off caller (`_poll`, one call per
+    request), where a caller-supplied index would just be a parameter nobody
+    needs.
 
     No-op without both a target file and a session id (a bookkeeping poll
     that has neither, or a run whose session id has not landed yet) and
@@ -2894,7 +2921,8 @@ def _attach_subagents(segments: list, file: str, session_id: str) -> list:
     if not any(s.get("kind") == "tool" and s.get("name") == "Task"
                for s in segments):
         return segments
-    index = _subagent_meta_index(file, session_id)
+    if index is None:
+        index = _subagent_meta_index(file, session_id)
     if not index:
         return segments
     for seg in segments:
@@ -2927,10 +2955,14 @@ def _subagent_transcript(file: str, session_id: str, agent_id: str) -> dict:
     if not os.path.isfile(path):
         return {"turns": [], "transcript": stat}
     turns = _turns_from_transcript(path, skip_sidechain=False)
+    # Built ONCE for every turn of this transcript, not once per turn (see
+    # `_attach_subagents`'s own docstring) — a scan of already-in-memory
+    # segments, so finding out there is nothing to attach costs no I/O at all.
+    subagent_index = _subagent_index_if_any_task(turns, file, session_id)
     for turn in turns:
         if turn["role"] == "assistant" and turn.get("segments"):
             turn["segments"] = _attach_subagents(turn["segments"], file,
-                                                 session_id)
+                                                 session_id, subagent_index)
     return {"turns": turns, "transcript": stat}
 
 
@@ -3952,11 +3984,16 @@ def _history(file: str, session_id: str) -> dict:
 
     turns = _turns_from_transcript(path)
     # Every assistant turn's `Task` calls get their subagent's header (and, if
-    # still running, a live progress snapshot) — see `_attach_subagents`.
+    # still running, a live progress snapshot) — see `_attach_subagents`. The
+    # index behind that is built ONCE for the whole history load, not once per
+    # turn (`_subagent_index_if_any_task`) — a session with 40 Task-carrying
+    # turns used to `os.listdir` the subagents dir and re-parse every sidecar
+    # 40 times over, on every boot, every refresh and every repair poll.
+    subagent_index = _subagent_index_if_any_task(turns, file, session_id)
     for turn in turns:
         if turn["role"] == "assistant" and turn.get("segments"):
             turn["segments"] = _attach_subagents(turn["segments"], file,
-                                                 session_id)
+                                                 session_id, subagent_index)
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
     # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
