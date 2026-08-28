@@ -342,8 +342,13 @@ function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) 
       />
       <div className="lan-pair-text">
         <p>
-          <b>Scan with the phone's camera</b> to pair it. The code works once and for five minutes;
-          the phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+          <b>Scan with the phone's Camera app</b> to pair it. The code works once and for five
+          minutes; the phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+        </p>
+        <p className="deploy-muted">
+          Scanned from Control Center instead? Its little browser can't hand the page to Safari —
+          close it and open <code>{url.replace(/^https?:\/\//, "").replace(/\/$/, "")}</code> in Safari
+          within two minutes; the phone is let in.
         </p>
         {expired ? (
           <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
