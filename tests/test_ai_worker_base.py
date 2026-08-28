@@ -1561,27 +1561,39 @@ def test_every_runner_with_a_reclaimable_allocator_wires_the_idle_release():
     their executions. Source again, for the same reason as the peak-probe
     test above — mlx and a GPU-built torch do not import on this CI host.
 
+    The strings checked below are CODE, not prose: every one of these
+    `release()` docstrings also mentions `mx.clear_cache()`/`empty_cache()`
+    in its own explanation of what it does, so a naive `"clear_cache" in
+    source` (an earlier version of this test) would keep passing even with
+    the actual call deleted from the function body — a guard that cannot
+    fail is not a guard. `getattr(mx, "clear_cache", None)` and
+    `torch.{mps,cuda}.empty_cache()` are each the exact statement `release()`
+    executes, and each appears in these files exactly once, in the body, not
+    in a docstring — verified by hand: deleting the real call and re-running
+    this test does turn it red.
+
     `llamacpp_text`, `faster_whisper` and `onnx_embed` are deliberately
     absent from this list — see the comment beside each of their own
     `worker_base.serve(...)` calls for why each one has nothing here to
     release."""
     from fused_render.ai import registry
 
-    for code, clear_call in (
-        ("mlx-text", "clear_cache"),
-        ("mflux-image", "clear_cache"),
-        ("mlx-whisper", "clear_cache"),
-        ("mlx-embed", "clear_cache"),
-        ("ltx-video", "clear_cache"),
-        ("diffusers-image", "empty_cache"),
+    for code, clear_calls in (
+        ("mlx-text", ('getattr(mx, "clear_cache", None)',)),
+        ("mflux-image", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-whisper", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-embed", ('getattr(mx, "clear_cache", None)',)),
+        ("ltx-video", ('getattr(mx, "clear_cache", None)',)),
+        ("diffusers-image", ("torch.mps.empty_cache()", "torch.cuda.empty_cache()")),
     ):
         runner = registry.by_code(code)
         assert runner is not None, code
         source = _runner_source(runner)
         assert "def release(" in source, f"{code} has no release hook"
-        assert clear_call in source, (
-            f"{code}'s release() does not call {clear_call!r}"
-        )
+        for clear_call in clear_calls:
+            assert clear_call in source, (
+                f"{code}'s release() does not actually call {clear_call!r}"
+            )
         assert "release=release" in source, (
             f"{code} does not pass its release hook to serve(), so an idle "
             "worker here never hands its allocator pool back"
