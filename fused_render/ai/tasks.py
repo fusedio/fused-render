@@ -95,12 +95,18 @@ def _t(tag, label, modality, capability=None, help="", note="") -> Task:
 #: tab's filter menu is this table filtered, and a menu ordered by an enum's
 #: accident reads as random.
 #:
-#: **Seven rows carry a capability and the other fifty do not**, which is the
-#: honest shape of a desktop app whose five capabilities are each reachable by
-#: more than one Hub tag (a chat model answers both `text-generation` and,
-#: with a vision tower, `image-text-to-text`/`visual-question-answering`).
-#: The interesting ones are commented; the rest are ordinary "no runner for
-#: this" rows.
+#: **Ten rows carry a capability and the other forty-seven do not**, which is
+#: the honest shape of a desktop app whose six capabilities are each
+#: reachable by more than one Hub tag (a chat model answers both
+#: `text-generation` and, with a vision tower, `image-text-to-text`/
+#: `visual-question-answering`; `image-to-3d` is the newest one-tag
+#: exception, Task 2 of SPEC §48). The interesting ones are commented; the
+#: rest are ordinary "no runner for this" rows. Counted directly against
+#: `_TASKS` (code review, 2026-08-28, finding 9: this comment had drifted to
+#: "seven"/"fifty"/"five" as rows were added without updating it) rather
+#: than trusted from memory — there is no test pinning these counts, so
+#: whoever adds the next capability should re-count rather than increment
+#: by one out of habit.
 _TASKS: tuple[Task, ...] = (
     # ---------------------------------------------------------------- text
     _t("text-generation", "text generation", "nlp", TEXT_GENERATION,
