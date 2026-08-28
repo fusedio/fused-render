@@ -2397,16 +2397,15 @@
   .chip-subagent-status.is-error { color: var(--error); border-color: var(--error); }
   /* The subagent's own transcript, nested one level in: a left rule (same
      device as .thinking-body) says "this is a conversation INSIDE the call
-     above", never a sibling of the turn's own segments. Always has its
-     three fixed slots (see subagentSlots) once created, so it is never
-     itself empty — :empty here would be dead weight. */
+     above", never a sibling of the turn's own segments. Always has its two
+     fixed slots (see fillToolChipBody's Task case) once created, so it is
+     never itself empty — :empty here would be dead weight. */
   .chip-subagent-log {
     margin-top: 8px;
     padding-left: 10px;
     border-left: 2px solid var(--border-strong);
   }
-  /* The turn list: collapses to nothing when there are no turns yet (the
-     "empty"/"failed" render states), same device as the log wrapper above. */
+  /* The turn list: collapses to nothing when there are no turns yet. */
   .chip-subagent-turns:empty { display: none; }
   .sub-turn-user {
     color: var(--dim); font-size: 12px; margin: 6px 0;
@@ -2414,22 +2413,12 @@
   }
   /* A subagent fetch that gave up (renderSubagentFailure, MAX_SUBAGENT_FETCH_
      ATTEMPTS): the chip says something rather than sitting on an empty log.
-     Its own sibling slot (round 5) — shown only while it actually holds
-     text, same as the notice below. */
+     Its own sibling slot, shown only while it actually holds text. */
   .sub-turn-error {
     color: var(--error); font-size: 12px; margin: 6px 0;
     white-space: pre-wrap; word-break: break-word;
   }
   .sub-turn-error:empty { display: none; }
-  /* A cached copy that predates the Task's own completion (subagentRenderState's
-     "partial" kind): the turns above it are real, but the agent's own final
-     message may still be missing — said plainly, not left implicit. Its own
-     sibling slot (round 5), never an entry inside the turn list above. */
-  .sub-turn-partial {
-    color: var(--faint); font-size: 12px; font-style: italic; margin: 6px 0;
-    white-space: pre-wrap; word-break: break-word;
-  }
-  .sub-turn-partial:empty { display: none; }
   .thinking > summary {
     cursor: pointer; color: var(--faint); font-size: 12px; font-style: italic;
     transition: color .12s ease-out;
@@ -14293,19 +14282,18 @@ function subagentStatusLine(seg, now) {
   return type + " — done";
 }
 
-// agentId -> `{turns, fetchedAtStatus}`, the last `action: "subagent"` answer
-// and the Task's OWN status at the moment that fetch was made. That second
-// field is what tells a later read whether the copy is final: a snapshot
-// taken while still `running` is stale the instant the Task itself finishes
-// — it is missing whatever the agent wrote in roughly its last 400 ms, which
-// is typically its concluding message, i.e. the actual result — so the
-// running→terminal transition always forces exactly one more fetch (see
-// `pumpSubagentLog`) rather than trusting the cache forever.
-//
-// Kept across a chip's own body rebuilds (its `<details>` is torn down and
-// rebuilt the moment the Task's own status flips, see buildToolChip) so a
-// finished subagent, once its final copy is in, is not re-fetched just
-// because its OWN chip happened to repaint.
+// agentId -> `{turns}`, the last successful `action: "subagent"` answer for
+// that agent. This is a DISPLAY CACHE ONLY — it exists purely to avoid a
+// blank frame between opening a chip and its first fetch resolving, and it
+// never decides what state the UI is in. Four review rounds in a row put a
+// HIGH into exactly that "is this cached copy trustworthy" question (a
+// settled flag inferred from statuses, an explicit flag an empty read could
+// still smuggle past, a role-flip reuse bug in the renderer underneath it)
+// — so the question is gone: `pumpSubagentLog` re-fetches on every poll
+// tick while the chip stays open and renders whatever comes back, live,
+// every time. The one exception (skip re-fetching once terminal AND a
+// fetch has already returned real content) is a single fact about data
+// already in hand, not a judgement call — see `pumpSubagentLog`.
 const subagentCache = new Map();
 const subagentLoading = new Set();     // agentIds with a fetch in flight
 const subagentFailCount = new Map();   // agentId -> consecutive failures
@@ -14315,7 +14303,9 @@ const subagentFailMessage = new Map(); // agentId -> the last error's message
 // 400 ms retry storm for the rest of the page's life. Never hit by a
 // transient blip (one retry the very next tick recovers those); hit only by
 // something that keeps failing, at which point retrying harder is not going
-// to help and the chip says so instead (see renderSubagentFailure).
+// to help and the chip says so instead (see renderSubagentFailure). This is
+// real error handling, not an optimisation — kept even after the cache
+// itself stopped being a source of truth.
 const MAX_SUBAGENT_FETCH_ATTEMPTS = 5;
 // Same bound as APP_STATE_MEMO_MAX, same reason: one entry per subagent ever
 // expanded is bounded in practice (a handful per session) and unbounded in
@@ -14330,7 +14320,9 @@ function subagentCacheTrim() {
 // Same bound, same reason, for the two maps a run of failures grows: unlike
 // `subagentCache` (trimmed above already), these were unbounded before
 // (pre-existing, flagged in round 4 review) — cheap enough to close here
-// without any restructuring.
+// without any restructuring. The two maps are always written and cleared
+// together (every `.set`/`.delete` site does both), so trimming by
+// `subagentFailCount`'s keys alone keeps them in lockstep.
 function subagentFailTrim() {
   while (subagentFailCount.size > SUBAGENT_CACHE_MAX) {
     const oldest = subagentFailCount.keys().next().value;
@@ -14345,16 +14337,12 @@ function subagentFailTrim() {
 // > 1) work with no code of its own. A user turn is the subagent's own
 // prompt: plain text, never markdown — nobody asked the model to write it.
 //
-// ONLY turns live in `container` — the partial notice and the give-up
-// message are each their OWN sibling element (see subagentSlots /
-// renderSubagentPump below), never entries in this positionally-diffed
-// list. Round 3 put the notice at index `list.length` of this same list,
-// and rounds 3-4 spent two fixes on the fallout (a stale notice reused as a
-// turn, welding its text permanently into whatever renderSegments appended
-// next; a shrinking list mis-placing the notice and leaving a phantom turn
-// behind). Keeping ANY non-turn content out of this index space entirely —
-// round 5's structural fix — is what makes that whole family of bugs
-// impossible rather than patched one instance at a time.
+// ONLY turns live in `container` — the give-up message is its OWN sibling
+// element (see fillToolChipBody's Task case / renderSubagentPump below),
+// never an entry in this positionally-diffed list. Putting anything else
+// in this same index space is what produced two rounds of bugs (a stale
+// notice reused as a turn; a shrinking list mis-placing it); keeping this
+// list turns-only is what makes that whole family impossible here.
 function renderSubagentTranscript(container, turns) {
   const list = Array.isArray(turns) ? turns : [];
   for (let i = 0; i < list.length; i++) {
@@ -14370,7 +14358,15 @@ function renderSubagentTranscript(container, turns) {
       // only ever APPENDS child views, it never clears what is already
       // there, so a reused element carrying a different kind of turn's
       // leftovers would keep showing them forever (round 5, finding #5).
+      // Clearing the DOM alone is not enough: renderSegments keys its own
+      // view list off the container element in the module-level
+      // `segStates` WeakMap, so a flip BACK to a role this element held
+      // before (assistant -> user -> assistant) would find its OLD views
+      // still on file, decide nothing changed, and never rebuild — the
+      // turn renders into now-detached nodes and stays blank forever
+      // (round 6). Both have to be forgotten together.
       turnEl.replaceChildren();
+      segStates.delete(turnEl);
     }
     turnEl.className = wantCls;
     if (turn.role === "user") {
@@ -14384,12 +14380,10 @@ function renderSubagentTranscript(container, turns) {
 }
 
 // A fetch that failed enough times to give up on: shown in its OWN sibling
-// element (see subagentSlots), never a node inside the turn list — so
-// "idempotent" is now just "only write the text if it changed", the same
-// as every other text write in this file, rather than a bespoke identity
-// check on a node that might be a stale leftover from something else
-// entirely (round 4's fix; round 5 made the whole class of confusion
-// structurally impossible instead of guarded against).
+// element, never a node inside the turn list — so "idempotent" is just
+// "only write the text if it changed", the same as every other text write
+// in this file, rather than a bespoke identity check on a node that might
+// be a stale leftover from something else entirely.
 function renderSubagentFailure(container, message) {
   const text = message
     ? "Couldn't load this subagent's transcript: " + message + "."
@@ -14397,110 +14391,41 @@ function renderSubagentFailure(container, message) {
   if (container.textContent !== text) container.textContent = text;
 }
 
-// A Task chip's subagent-log container gets exactly THREE fixed sibling
+// A Task chip's subagent-log container gets exactly TWO fixed sibling
 // slots, created once (fillToolChipBody's Task case) and never touched by
-// index arithmetic again: the turn list, the partial-transcript notice, and
-// the give-up message. Each is shown or hidden purely by whether it has any
-// text/children — see the `:empty` CSS rules — so `renderSubagentPump` only
-// ever writes INTO one of these three, never manages who occupies which
-// index of a shared list. This is what makes round 3 and round 4's whole
-// bug family (the notice colliding with the turn list's positional diff)
-// impossible rather than patched.
-function subagentSlots(container) {
-  return {
-    turnsEl: container.children[0] || null,
-    noticeEl: container.children[1] || null,
-    errorEl: container.children[2] || null,
-  };
-}
-
-// ── the state machine, made a pure function (round 3) ─────────
-// Rounds 1 and 2 painted imperatively, once, from whichever exit path a
-// fetch happened to take — and every round found one more path that forgot
-// to. `subagentRenderState`/`subagentShouldFetch` are the fix: two pure
-// functions of (cached entry, fail count, Task's own current status), with
-// no side effects, called FRESH on every pump. There is no longer a "did
-// this code path remember to paint" question, because painting is not a
-// side effect scattered through the fetch — it is "call `renderSubagentPump`
-// with whatever these return", every time, unconditionally.
-
-// What the log should show right now. Never decides whether to fetch — a
-// cached copy can be the RIGHT THING TO SHOW while the agent is still
-// writing and another fetch is still worth making (see subagentShouldFetch).
-//
-// `cached.settled` (round 5, structural fix B) is an EXPLICIT flag, not
-// inferred by comparing `cached.fetchedAtStatus` against the current
-// `status`: round 4's version conflated "this fetch happened at a terminal
-// status" with "this fetch is trustworthy as final", and an empty response
-// at a terminal status (a bad id, a file that briefly isn't readable —
-// `_subagent_transcript`'s own documented case, not hypothetical) is
-// neither. Whoever writes the cache decides `settled`; this function only
-// reads it.
-function subagentRenderState(cached, failCount, status) {
-  if (cached) {
-    // A copy that is not yet settled and the Task has gone terminal is
-    // PARTIAL: it is missing whatever the agent wrote after this copy was
-    // taken — typically its own concluding message, i.e. the actual result
-    // — and must never be shown as if it were the final word. A truncated
-    // transcript that reads exactly like a complete one is the worst
-    // failure mode this feature can have (round 2's own finding) — worse
-    // than one that is visibly broken.
-    const partial = status !== "running" && !cached.settled;
-    return { kind: partial ? "partial" : "ok", turns: cached.turns };
-  }
-  if ((failCount || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) return { kind: "failed" };
-  return { kind: "empty" };   // nothing yet — still loading, or never asked
-}
-
-// Whether there is anything left worth going back to the wire for. A cache
-// that is the right thing to RENDER (kind "ok") can still be worth
-// refreshing — the agent may still be writing — so this is asked
-// separately from `subagentRenderState`, not derived from its `kind`.
-function subagentShouldFetch(cached, failCount, status) {
-  if ((failCount || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) return false;   // given up
-  if (!cached) return true;
-  if (status === "running") return true;   // still writing; always worth another look
-  return !cached.settled;   // stale-or-unconfirmed copy, now-terminal status
-}
-
-// The ONE place that touches a Task chip's subagent-log DOM. Every caller —
-// the top of `pumpSubagentLog` (painting whatever is already known, before
-// any fetch), and a fetch's own completion (painting whatever just changed)
-// — hands this the CURRENT derived state and nothing else decides what
-// appears on screen. Writes into whichever of the three fixed slots the
-// state calls for and clears the other two — never rebuilds the container
-// itself, so the three slots are never at risk of disappearing.
-function renderSubagentPump(container, state, message) {
-  const { turnsEl, noticeEl, errorEl } = subagentSlots(container);
-  if (!turnsEl || !noticeEl || !errorEl) return;   // depth-capped chip: no log at all
-  if (state.kind === "failed") {
+// index arithmetic again: the turn list, and the give-up message. Each is
+// shown or hidden purely by whether it has any text/children — see the
+// `:empty` CSS rules — so this only ever writes INTO one of the two,
+// never manages who occupies which index of a shared list.
+function renderSubagentPump(container, turns, failed, message) {
+  const turnsEl = container.children[0];
+  const errorEl = container.children[1];
+  if (!turnsEl || !errorEl) return;
+  if (failed) {
     renderSubagentFailure(errorEl, message);
-    if (turnsEl.children.length) turnsEl.replaceChildren();
-    if (noticeEl.textContent) noticeEl.textContent = "";
     return;
   }
   if (errorEl.textContent) errorEl.textContent = "";
-  if (state.kind === "empty") {
-    if (turnsEl.children.length) turnsEl.replaceChildren();
-    if (noticeEl.textContent) noticeEl.textContent = "";
-    return;
-  }
-  renderSubagentTranscript(turnsEl, state.turns || []);
-  const notice = state.kind === "partial"
-    ? "Showing a partial transcript — this agent's final message may still be missing."
-    : "";
-  if (noticeEl.textContent !== notice) noticeEl.textContent = notice;
+  if (turns) renderSubagentTranscript(turnsEl, turns);
 }
 
-// ONE entry point for a Task chip's subagent log — the 400 ms poll tick, the
-// "toggle" listener (a restored conversation that never polls), and a fetch's
-// own completion ALL call this, rather than each other or a fetch function
-// directly. That is deliberate: separate call sites each re-implementing "is
-// this open, is this agent given up on, should this recurse, should this
-// paint" is exactly how two prior rounds of fixes each left one more
-// no-more-poll-ticks case unhandled. One function every caller goes through,
-// painting from the pure state functions above, cannot forget a gate — or a
-// paint — for one of its callers and not the others.
+// ONE entry point for a Task chip's subagent log — the 400 ms poll tick and
+// the "toggle" listener (a restored conversation that never polls) both
+// call this, rather than a fetch function directly, so the gates (open?,
+// depth cap, fail bound, one in flight at a time) live in one place.
+//
+// Design, after four review rounds each put a HIGH into some corner of
+// "when is a cached copy trustworthy": there is no such question any more.
+// While the chip is open, this fetches the transcript and renders whatever
+// comes back — live, every poll tick — with no notion of a copy being
+// "settled" or "partial". `subagentCache` survives only as a display cache
+// (paint something instead of a blank frame while a fetch is in flight);
+// it is never consulted to decide what the UI's state IS. The one
+// short-circuit (skip re-fetching once terminal AND a real, non-empty
+// transcript is already in hand) is a single fact about live data, and
+// getting it wrong costs one harmless extra fetch, never a wrong render.
+// Accepted cost: one transcript read per 400 ms per OPEN chip — the price
+// this feature should have paid from the start.
 //
 // `getLogEl`/`getSeg` are read AT USE, never captured by value: a rebuild
 // (the Task's own status flipping, or `subagent` arriving late) tears down
@@ -14520,48 +14445,40 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   // `subagentFailCount` is cumulative over the page's whole lifetime rather
   // than "this burst", so without this a handful of failures hours apart
   // (a dev-server restart, an executor recycle) would sit on the bound
-  // forever even though nothing is currently wrong.
-  //
-  // The cache is dropped ONLY when it is unusable (round 5, finding #2):
-  // `reexpand` fires on EVERY open, not only after a failure, so
-  // unconditionally clearing it (round 4's fix) blanked a perfectly good,
-  // possibly multi-megabyte transcript and re-fetched it on every single
-  // re-open — and because the drop happened before the fetch, an empty
-  // answer landing at exactly that moment permanently destroyed the good
-  // copy the user was looking at, which is the opposite of a recovery
-  // gesture. A cache with real turns is left alone; only "nothing useful
-  // in it" (never fetched, or fetched but empty) is worth discarding.
+  // forever even though nothing is currently wrong. Nothing to do with the
+  // cache any more — it is just the last thing painted, and the next fetch
+  // (about to happen below) overwrites it regardless.
   if (opts && opts.reexpand) {
     subagentFailCount.delete(agentId);
     subagentFailMessage.delete(agentId);
-    const entry = subagentCache.get(agentId);
-    if (!entry || !entry.turns || !entry.turns.length) {
-      subagentCache.delete(agentId);
-    }
   }
   const status = seg.status || "running";
+  const cached = subagentCache.get(agentId);
 
-  // Paint whatever is ALREADY known before deciding whether to fetch
-  // anything more — every pump repaints from the current cache/fail-count/
-  // status, so there is no "first open after a give-up shows nothing until
-  // a fetch resolves" gap, and no stale render left over from a state that
-  // no longer holds (a `reexpand` above, say).
-  renderSubagentPump(logEl, subagentRenderState(
-    subagentCache.get(agentId), subagentFailCount.get(agentId), status),
-    subagentFailMessage.get(agentId));
+  // Paint whatever is already on hand immediately — no flash of an empty
+  // log while the fetch below is in flight.
+  renderSubagentPump(logEl, cached && cached.turns, false, null);
 
-  if (!subagentShouldFetch(subagentCache.get(agentId),
-                           subagentFailCount.get(agentId), status)) {
-    return;   // fully settled (a final cache) or already given up
+  // Once the Task is terminal and a fetch has already returned a REAL,
+  // non-empty transcript, there is nothing left worth asking for. This is
+  // a single condition on data already in hand, not an inference about
+  // whether that data can be trusted — if it is somehow wrong (the agent
+  // truly has more to say and this reads stale), the failure mode is one
+  // skipped fetch a re-open recovers, never a confidently wrong render.
+  if (status !== "running" && cached && cached.turns && cached.turns.length) {
+    return;
+  }
+  if ((subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
+    renderSubagentPump(logEl, null, true, subagentFailMessage.get(agentId));
+    return;
   }
   if (subagentLoading.has(agentId)) return;   // already in flight elsewhere
   const session_id = fused.params.get("session_id") || "";
-  if (!session_id) return;   // hoisted above the `.add` (code review finding
-                             // #5) — an unresolvable case must not churn the
-                             // in-flight set on every tick regardless
+  if (!session_id) return;   // hoisted above the `.add` — an unresolvable
+                             // case must not churn the in-flight set on
+                             // every tick regardless
 
   subagentLoading.add(agentId);
-  const startStatus = status;
   let outcome;
   try {
     const data = await fused.runPython(
@@ -14576,99 +14493,50 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   }
 
   // The shared, agentId-keyed state is updated UNCONDITIONALLY, before any
-  // check of what THIS chip currently points at (code review finding #3): a
-  // successful, potentially multi-megabyte fetch is valid regardless of a
-  // mid-flight rebuild, and `subagent` can also be transiently ABSENT from
-  // this very segment (`_attach_subagents` returns segments untouched on a
-  // transient `os.listdir` error or a half-written `.meta.json` hitting a
-  // `json.load` failure) — neither is a reason to throw the answer away.
+  // check of what THIS chip currently points at: a successful fetch is
+  // valid regardless of a mid-flight rebuild (`key`, in buildToolChip,
+  // includes `agentId` precisely because a rebuild CAN retarget this
+  // closure at a different subagent entirely) — discarding a real,
+  // potentially multi-megabyte answer just because the chip moved on would
+  // be worse than the cost of holding it.
   //
-  // An EMPTY answer at a TERMINAL status is treated as a FAILURE, not a
-  // settled result (round 5, structural fix B): `_subagent_transcript`
-  // returns no turns for a bad id or a file that is not (or no longer)
-  // readable, which is indistinguishable, on the wire, from "the agent
-  // genuinely said nothing" — and round 4's version cached it as `kind:
-  // "ok"` regardless, silently upgrading a good PARTIAL cache (and its
-  // warning notice) into an apparently-complete one with nothing wrong
-  // visible anywhere. Counting it against the fail bound instead means the
-  // chase keeps retrying (a real transient read failure recovers), and if
-  // it never recovers, the give-up message wins over a falsely-confident
-  // "ok" — while any partial cache already on screen, and its notice, are
-  // untouched either way, because this branch never writes to the cache.
-  const emptyAtTerminal = outcome.ok && !outcome.turns.length && startStatus !== "running";
+  // An EMPTY answer at a TERMINAL status reads, on the wire, exactly like a
+  // real "the agent said nothing" — `_subagent_transcript` returns no turns
+  // for a bad id or a file that is not (or no longer) readable — so it is
+  // counted as a FAILURE rather than cached: the fail bound's retries give
+  // a transient read failure a real chance to recover, and if it never
+  // does, the give-up message wins rather than a silently empty "success".
+  // Classified against `status` (this agent's OWN status when the fetch was
+  // made), not whatever the chip's segment says after the fact — that could
+  // by now belong to a different agent entirely.
+  const emptyAtTerminal = outcome.ok && !outcome.turns.length && status !== "running";
+  let failN = 0;
   if (outcome.ok && !emptyAtTerminal) {
-    subagentCache.set(agentId, {
-      turns: outcome.turns,
-      // Settled — the explicit flag `subagentRenderState`/`subagentShouldFetch`
-      // read, never inferred later by comparing statuses — the instant this
-      // fetch itself happened at a terminal status. A fetch still "running"
-      // is never settled, no matter how many turns it returned: the agent
-      // could still write more.
-      settled: startStatus !== "running",
-    });
+    subagentCache.set(agentId, { turns: outcome.turns });
     subagentCacheTrim();
     subagentFailCount.delete(agentId);
     subagentFailMessage.delete(agentId);
   } else {
-    subagentFailCount.set(agentId, (subagentFailCount.get(agentId) || 0) + 1);
+    failN = (subagentFailCount.get(agentId) || 0) + 1;
+    subagentFailCount.set(agentId, failN);
     subagentFailMessage.set(agentId, emptyAtTerminal
       ? "the agent's transcript could not be read"
       : outcome.message);
+    subagentFailTrim();
   }
-  subagentFailTrim();
 
-  // Everything past here is about WHAT IS ON SCREEN, which only makes sense
-  // for the chip this fetch was actually asked for — `key` (buildToolChip)
-  // includes `agentId` precisely because a rebuild CAN retarget this closure
-  // at a different subagent entirely, and painting (or chasing a
-  // transition) for the wrong one would be worse than doing nothing.
+  // Painting, unlike the bookkeeping above, only makes sense for the chip
+  // this fetch was actually asked for — applying the outcome to a chip now
+  // pointed at a DIFFERENT agent would show the wrong subagent's data (or
+  // the wrong subagent's give-up message) under this one's header.
   const seg2 = getSeg();
   if (!(seg2 && seg2.subagent && seg2.subagent.agentId === agentId)) return;
-  const status2 = seg2.status || "running";
-  const cached2 = subagentCache.get(agentId);
-  const failN2 = subagentFailCount.get(agentId) || 0;
   const cur = getLogEl();
-  if (cur) {
-    renderSubagentPump(cur, subagentRenderState(cached2, failN2, status2),
-                       subagentFailMessage.get(agentId));
-  }
-  // Chase a state that is not yet SETTLED (still partial/empty, i.e. still
-  // worth fetching) all the way to a stopping point — a complete cache, or
-  // the give-up bound — the moment the Task itself has gone terminal, with
-  // no dependence on a further external poll tick: the Task's own
-  // `tool_result` can be the very last row before the whole run reports
-  // done, so there may not be one. Gated on the CURRENT status being
-  // terminal, not on what THIS attempt started as — a failure below the
-  // bound must keep chasing through subsequent failures too, not stop after
-  // one extra try — and bounded because `subagentShouldFetch` becomes false
-  // once the fetch finally succeeds at a matching status OR the fail count
-  // reaches its own ceiling; either way this cannot recurse forever. While
-  // the subagent is still running, the 400 ms poll tick is what paces
-  // further fetches instead — recursing here regardless of status2 would
-  // free-run as fast as the network allows rather than on that cadence.
-  if (status2 !== "running" && subagentShouldFetch(cached2, failN2, status2)) {
-    // Paced on the SAME 400 ms cadence as the poll tick this is standing in
-    // for — not fired at machine speed. Round 4's review: a transient
-    // server hiccup (an executor recycle, one dev-server restart) at the
-    // exact moment the Task finishes used to fire all `MAX_SUBAGENT_
-    // FETCH_ATTEMPTS` retries back-to-back in milliseconds, burning the
-    // page-lifetime budget on one blip instead of leaving room for the
-    // "one retry next tick recovers it" case the bound's own comment
-    // promises.
-    await sleep(400);
-    // `.catch` rather than awaited: a throw from deep inside this recursive
-    // chain (a bug elsewhere, not this function's own network handling,
-    // which already catches) must not become an unhandled promise
-    // rejection — pre-existing risk the reviewer flagged, cheap enough to
-    // close here.
-    // Diagnostic, not silent: pumpSubagentLog already catches its OWN
-    // network failures (the outcome.ok/err split above), so the only thing
-    // this .catch can still see is a genuine bug elsewhere in the chain (a
-    // TypeError in renderSegments for a nested Task chip, a null deref) —
-    // those used to surface as an unhandled rejection; now the chip just
-    // stops with nothing to say at all, which is worse for finding it.
-    pumpSubagentLog(el, getLogEl, getSeg)
-      .catch((e) => console.error("subagent log pump failed", e));
+  if (!cur) return;
+  if (outcome.ok && !emptyAtTerminal) {
+    renderSubagentPump(cur, outcome.turns, false, null);
+  } else if (failN >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
+    renderSubagentPump(cur, null, true, subagentFailMessage.get(agentId));
   }
 }
 
@@ -14730,18 +14598,15 @@ function fillToolChipBody(body, seg) {
         if ((seg.subagent.spawnDepth || 0) <= MAX_SUBAGENT_DEPTH) {
           subagentLog = document.createElement("div");
           subagentLog.className = "chip-subagent-log";
-          // Three FIXED sibling slots — turns, the partial notice, the
-          // give-up message — created once here and never touched by index
-          // arithmetic again (see subagentSlots/renderSubagentPump). Each is
-          // empty until a pump has something to say; `:empty` CSS rules
-          // hide whichever ones are unused.
+          // Two FIXED sibling slots — turns, the give-up message — created
+          // once here and never touched by index arithmetic again (see
+          // renderSubagentPump). Each is empty until a pump has something
+          // to say; `:empty` CSS rules hide whichever one is unused.
           const turnsEl = document.createElement("div");
           turnsEl.className = "chip-subagent-turns";
-          const noticeEl = document.createElement("div");
-          noticeEl.className = "sub-turn-partial";
           const errorEl = document.createElement("div");
           errorEl.className = "sub-turn-error";
-          subagentLog.append(turnsEl, noticeEl, errorEl);
+          subagentLog.append(turnsEl, errorEl);
           body.appendChild(subagentLog);
         }
       }
