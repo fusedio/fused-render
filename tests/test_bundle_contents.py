@@ -372,6 +372,50 @@ def test_the_bundled_and_fused_extras_pin_the_same_wheel():
         "`[fused]` is the documented light install path that gets the engine "
         "without the scientific stack."
     )
+    # The `mcp` constraint travels WITH the engine pin, in both extras and
+    # byte-identical for the same reason: it exists only because `fused` pulls
+    # `mcp` in, and the engine's own floor (`mcp[cli]>=1.0.0`) admits mcp 2.x
+    # where `mcp.server.fastmcp` is gone — which breaks `fused app serve`, the
+    # command the MCP panel registers globally (SPEC MC-5). One extra carrying
+    # the constraint and the other not would mean the DMG and the pip path serve
+    # MCP from different libraries.
+    mcp_bundled = [r for r in extras["bundled"] if _norm(r) == "mcp"]
+    mcp_extra = [r for r in extras["fused"] if _norm(r) == "mcp"]
+    assert len(mcp_bundled) == 1 and len(mcp_extra) == 1, (
+        "both `[bundled]` and `[fused]` must constrain `mcp` exactly once; got "
+        f"{mcp_bundled} and {mcp_extra}"
+    )
+    assert mcp_bundled[0] == mcp_extra[0], (
+        "the `mcp` constraint in `[bundled]` and in `[fused]` have drifted:\n"
+        f"  [bundled] {mcp_bundled[0]!r}\n  [fused]   {mcp_extra[0]!r}"
+    )
+
+
+def test_the_fused_pin_reads_the_app_serve_python_seam():
+    """The pinned engine must be one whose `app serve` READS
+    OPENFUSED_APP_SERVE_PYTHON (openfused #364, released in `2.9.3b7`).
+
+    `fusedcli._wrapper_text` exports that variable in the `fused` wrapper every
+    Claude session gets, so the `fused app serve` the MCP panel registers
+    (SPEC MC-5) computes on the SAME interpreter page runs use: one venv cache
+    key instead of two, and a tool with no declared dependencies running on the
+    engine's interpreter instead of a bare stdlib venv. An older engine ignores
+    the export in SILENCE — the tools still answer, just out of venvs nothing
+    else shares — so the export and the pin are one change, and this is the
+    guard that keeps them one. A floor rather than an equality: the next bump
+    must not have to come back here.
+    """
+    from packaging.version import Version
+
+    pinned = [r for r in _pyproject()["project"]["optional-dependencies"]["fused"]
+              if _norm(r) == "fused"]
+    assert len(pinned) == 1, pinned
+    version = pinned[0].split("==", 1)[1].split(";")[0].split(",")[0].strip()
+    assert Version(version) >= Version("2.9.3b7"), (
+        f"the `fused` pin is {version}, which does not read "
+        "OPENFUSED_APP_SERVE_PYTHON; `fusedcli._wrapper_text` exports it, so the "
+        "pin must be >= 2.9.3b7 or the export is a silent no-op"
+    )
 
 
 def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():
@@ -481,68 +525,22 @@ def test_excluded_distributions_are_not_forced_into_the_bundle():
             )
 
 
-def test_the_learn_page_only_promises_what_the_app_ships():
-    """The Learn page's library table is a promise; keep it true (D177).
-
-    `core_apps/learn/check_libs.py` is a hand-written mirror of `[bundled]` —
-    the shape that always diverges — and it is read by USERS deciding what they
-    may import. Divergence here does not break a build; it tells someone
-    `polars` is available and then fails their page in the packaged app, where
-    `pip install` is not a thing they can do (D176).
-
-    Only one direction is asserted. Every name promised must be shipped; the
-    reverse is a curation choice, since the app's own plumbing (fastapi,
-    packaging, tomli, pyobjc, the engine itself) is not something a page should
-    be told to import.
-    """
-    path = os.path.join(_REPO, "core_apps", "learn", "check_libs.py")
-    spec = importlib.util.spec_from_file_location("_learn_check_libs", path)
-    assert spec is not None and spec.loader is not None, f"cannot load {path}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    promised = {_norm(n) for _group, names in module.SUPPORTED for n in names}
-    lying = sorted(promised - _macos_dists())
-    assert not lying, (
-        f"core_apps/learn/check_libs.py tells users they can import {lying}, "
-        "which the app does not ship. They render as '—' in the live table and "
-        "as ModuleNotFoundError in their page. Drop them from SUPPORTED (and "
-        "from the static table in core_apps/learn/index.html), or put them back "
-        "in `[bundled]`."
-    )
-
-
-def _learn_groups() -> list[tuple[str, list[str]]]:
-    """`core_apps/learn/check_libs.py`'s SUPPORTED, imported."""
-    path = os.path.join(_REPO, "core_apps", "learn", "check_libs.py")
-    spec = importlib.util.spec_from_file_location("_learn_check_libs", path)
-    assert spec is not None and spec.loader is not None, f"cannot load {path}"
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return list(module.SUPPORTED)
-
-
 # (file, section-start marker, section-end marker, row pattern). The markers are
-# what keep this honest: an unanchored row pattern matches ANY `<tr class="lg-h">`
-# or ANY `- **Label:** …` bullet in the file, so an unrelated note added to the
-# skill would fail a test whose message claims the library list drifted — a
-# false accusation is worse than no check, because the next reader "fixes" the
-# wrong thing. Both markers must exist, which is itself asserted: a renamed
-# anchor must break loudly rather than silently narrow the section to nothing.
+# what keep this honest: an unanchored row pattern matches ANY `- **Label:** …`
+# bullet in the file, so an unrelated note added to the skill would fail a test
+# whose message claims the library list drifted — a false accusation is worse
+# than no check, because the next reader "fixes" the wrong thing. Both markers
+# must exist, which is itself asserted: a renamed anchor must break loudly
+# rather than silently narrow the section to nothing.
+#
+# One list: the authoring skill's bullets, pinned directly to what the bundle
+# ships.
 _DOC_LIBRARY_LISTS = [
-    # The Learn page's static table — what a user sees before the live versions
-    # arrive, and all they ever see outside the app.
-    (
-        os.path.join("core_apps", "learn", "index.html"),
-        '<table class="apitable" id="libTable">',
-        "</table>",
-        r'<tr><td class="lg-h">([^<]+)</td><td>(.*?)</td></tr>',
-    ),
     # The authoring skill's list — what an agent writing a page reads.
     (
         os.path.join("skills", "fused-render-authoring", "SKILL.md"),
         "### Available Python libraries",
-        "Anything outside this set",
+        "Anything else",
         r"(?m)^- \*\*([^:*]+):\*\* (.*)$",
     ),
 ]
@@ -552,23 +550,24 @@ _DOC_LIBRARY_LISTS = [
     "relpath,start,end,pattern", _DOC_LIBRARY_LISTS,
     ids=[row[0] for row in _DOC_LIBRARY_LISTS],
 )
-def test_the_documented_library_list_matches_check_libs(relpath, start, end, pattern):
-    """Three copies of one promise; pin them to each other (D177).
+def test_the_documented_library_list_only_promises_what_ships(relpath, start, end, pattern):
+    """A documented library list is a promise; keep it true (D177).
 
-    `check_libs.py`'s SUPPORTED is the source of truth — it is the only one that
-    RUNS, and the previous test pins it to what the bundle really ships. The
-    Learn page's static table and the authoring skill's bullet list restate it
-    for a human and for an agent respectively, which is exactly the shape that
-    rotted here: `polars`, `scipy`, `matplotlib`, `geopandas` and the rest were
-    advertised in all three long after anyone would have wanted to check.
+    The list is read by USERS and by AGENTS deciding what a page may import.
+    Divergence here does not break a build; it tells someone `polars` is
+    available and then fails their page in the packaged app, where
+    `pip install` is not a thing they can do (D176).
 
-    Deriving them at build time was considered and rejected: the packaged app
-    ships no `pyproject.toml`, the skill is read as plain Markdown outside any
-    build, and `importlib.metadata` cannot tell a promised library from a
-    transitive one. So this is D177's third rung — the copies stay, and their
-    divergence is a test failure.
+    Only one direction is asserted. Every name promised must be shipped; the
+    reverse is a curation choice, since the app's own plumbing (fastapi,
+    packaging, tomli, pyobjc, the engine itself) is not something a page should
+    be told to import.
+
+    Deriving the list at build time was considered and rejected: the skill is
+    read as plain Markdown outside any build, and `importlib.metadata` cannot
+    tell a promised library from a transitive one. So the copy stays, and its
+    divergence from the bundle is a test failure.
     """
-    import html as _html
     import re
 
     with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
@@ -578,38 +577,35 @@ def test_the_documented_library_list_matches_check_libs(relpath, start, end, pat
     finish = text.find(end, begin + len(start))
     assert finish >= 0, f"{relpath} no longer contains {end!r}; re-anchor this test"
     section = text[begin:finish]
-    found = [
-        (_html.unescape(group).strip(),
-         [_norm(n) for n in re.findall(r"<code>([^<]+)</code>|`([^`]+)`", body)
-          for n in [n[0] or n[1]]])
-        for group, body in re.findall(pattern, section)
-    ]
-    expected = [(g, [_norm(n) for n in names]) for g, names in _learn_groups()]
-    assert found == expected, (
-        f"{relpath}'s library list has drifted from core_apps/learn/check_libs.py's "
-        f"SUPPORTED, which is the one that actually runs.\n  doc:       {found}\n"
-        f"  check_libs: {expected}\n"
-        "Update the doc (or SUPPORTED, if the app's contents changed). Users and "
-        "agents read these lists to decide what they may import."
+    rows = re.findall(pattern, section)
+    assert rows, f"{relpath}'s library list parsed as empty; re-anchor this test"
+    promised = {
+        _norm(n)
+        for _group, body in rows
+        for n in re.findall(r"<code>([^<]+)</code>|`([^`]+)`", body)
+        for n in [n[0] or n[1]]
+    }
+    lying = sorted(promised - _macos_dists())
+    assert not lying, (
+        f"{relpath} tells users they can import {lying}, which the app does not "
+        "ship. They fail as ModuleNotFoundError in the packaged app. Drop them "
+        "from the list, or put them back in `[bundled]`."
     )
 
 
-def test_no_doc_claims_a_shipped_package_was_removed():
-    """The other half of the promise: what a doc says is GONE must be gone.
+def test_no_doc_sends_a_shipped_package_to_a_folder_manifest():
+    """The other half of the promise: what a doc says is ABSENT must be absent.
 
-    `test_the_documented_library_list_matches_check_libs` pins the positive
-    list — what the app has. Nothing pinned the negative one, and that is
-    exactly where this rotted: two docs went on saying `fpdf2` had left
-    `[bundled]` after the removal was reversed, including
-    `fused-render-authoring`, which is what an agent reads to decide what it may
-    import. The consequence is not a broken build but a worse one — an agent
-    steered away from a package that is right there, or into declaring a folder
-    manifest it does not need, which is the precise outcome the reversal existed
-    to prevent.
+    `test_the_documented_library_list_only_promises_what_ships` pins the
+    positive list — what the app has. This pins the negative one: the sentence
+    naming what a page must declare in a folder `pyproject.toml` must not name
+    something the app already ships. Getting that wrong does not break a build;
+    it steers an agent away from a package that is right there, into a folder
+    manifest the page does not need and a first-run install the user waits
+    through.
 
-    Scanned as a set of names rather than by parsing prose: any distribution
-    `[bundled]` or the core dependencies actually ship must not appear in a
-    sentence claiming things were removed. Cheap, and it would have caught this.
+    Scanned as a set of names rather than by parsing prose: cheap, and it
+    catches the drift the moment a distribution moves between the two lists.
     """
     import re
 
@@ -617,9 +613,7 @@ def test_no_doc_claims_a_shipped_package_was_removed():
     offenders = {}
     for relpath, marker in [
         (os.path.join("skills", "fused-render-authoring", "SKILL.md"),
-         "no longer does:"),
-        (os.path.join("core_apps", "learn", "check_libs.py"),
-         "What is deliberately NOT here:"),
+         "Anything else"),
     ]:
         with open(os.path.join(_REPO, relpath), encoding="utf-8") as f:
             text = f.read()
@@ -632,10 +626,10 @@ def test_no_doc_claims_a_shipped_package_was_removed():
         if wrong:
             offenders[relpath] = wrong
     assert not offenders, (
-        f"{offenders} are named as REMOVED but `[bundled]`/the core dependencies "
-        "still ship them, so the doc tells a reader (or an authoring agent) a "
-        "package is unavailable when it is importable with no declaration and no "
-        "install. Fix the doc, or remove the package for real."
+        f"{offenders} are named as needing a folder manifest, but `[bundled]`/the "
+        "core dependencies ship them — so the doc tells a reader (or an authoring "
+        "agent) a package is unavailable when it is importable with no declaration "
+        "and no install. Fix the doc, or drop the package for real."
     )
 
 
@@ -757,7 +751,7 @@ def test_the_bundle_ships_the_whole_importable_stdlib():
 
 #: Excluded names CPython has since REMOVED, and the version that removed them.
 #: The DMG is built on 3.12 (`envinstall.SCRIPT_PYTHON_VERSION`), while this
-#: suite runs on 3.10–3.13, so an entry can be perfectly valid for the build
+#: suite runs on 3.11–3.13, so an entry can be perfectly valid for the build
 #: interpreter and absent from the one asserting about it — `lib2to3` is gone in
 #: 3.13. Listed rather than waved through so a typo is still caught: an
 #: exclusion has to be a real module on SOME version we know about.
@@ -795,6 +789,21 @@ def test_the_stdlib_split_puts_packages_and_modules_in_the_right_list():
             f"{name} is a package and must be forced whole, not traced")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="setup_py2app._stdlib_split() derives STDLIB_PACKAGES/INCLUDES from "
+           "what THIS HOST can importlib.util.find_spec() — that is exactly "
+           "what keeps msvcrt/winreg/winsound out of a real macOS build (they "
+           "raise ImportError there), but it also means the derivation is "
+           "host-relative by design, not macOS-relative. Run on an actual "
+           "Windows host, winsound is a real importable extension module "
+           "(not a builtin like nt/msvcrt/winreg/_winapi, which are compiled "
+           "into the interpreter and already skipped via "
+           "sys.builtin_module_names) and correctly reaches STDLIB_INCLUDES "
+           "— proving nothing about the macOS build this test is about. The "
+           "production build only ever runs setup_py2app.py ON macOS "
+           "(scripts/build_dmg.sh), where this holds; ubuntu/macos CI already "
+           "cover it")
 def test_no_windows_only_stdlib_module_reaches_a_macos_build():
     """py2app fails on an `includes` entry it cannot resolve, so the derivation
     has to filter by what this host can actually find."""

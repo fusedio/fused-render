@@ -24,8 +24,10 @@ and make the assertions depend on the developer's disk.
 """
 import ast
 import json
+import multiprocessing
 import os
 import subprocess
+import threading
 from unittest import mock
 
 import pytest
@@ -74,7 +76,10 @@ def claude_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "SKILL_LOCK_PATH",
                         str(tmp_path / ".agents" / ".skill-lock.json"))
     # HOME drives claude_md's ~/.claude.json probe (and nothing else here).
+    # os.path.expanduser reads USERPROFILE on Windows (ntpath.expanduser never
+    # looks at HOME), so both have to be set for the redirect to actually land.
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     # Identity + no global config, so `git commit` works on a machine with an
     # empty ~/.gitconfig and a developer's own settings can't change the result
     # (same posture as tests/_git_repo.py).
@@ -267,18 +272,214 @@ def test_preferences_patch_writes_settings_and_rejects_unmanaged_keys(client, cl
 
 
 # -- the catalog override: reads fall back, writes never touch the package ----
+#
+# Anthropic reshaped code.claude.com/docs/en/settings-reference.md (2026-08):
+# no more table, one `### `key`` heading per setting followed by a prose
+# paragraph and a bullet list. The OLD version of these tests fed a synthetic
+# fixture in the table shape the parser no longer reads — which is exactly why
+# the suite stayed green while `refresh_catalog` was 100% broken against the
+# real page (ValueError: could not find '### Available settings' section, a
+# raw 500 through the button). `_LIVE_DOC_SLICE` below is captured verbatim
+# from the live page instead — four real sections (a plain key, a dotted
+# sub-key, a backticked default, a prose "unset" default, and a
+# `#### Fields for` sub-heading that must NOT parse as a key of its own).
+
+# Captured verbatim from https://code.claude.com/docs/en/settings-reference.md
+# on 2026-08-26. Do not hand-edit; if the docs reshape again, recapture.
+_LIVE_DOC_SLICE = '''\
+### `model`
+
+Set the model every new session uses, so you don't have to pick one with `/model` each time. Setting it here doesn't stop you from switching mid-session. If your admin set an [organization default model](/docs/en/model-config#organization-default-model) to override user selection, you get that model even when you set this key in user, project, or local settings.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: string, a model alias or full model ID
+* **Default**: unset, so Claude Code uses your account's default model
+* **Per-session overrides**: `--model` takes precedence over [`ANTHROPIC_MODEL`](/docs/en/env-vars), and both take precedence over this key for one session, including over a managed `model`; an [`availableModels`](#availablemodels) list still applies to the pick
+
+```json settings.json theme={null}
+{
+  "model": "claude-sonnet-5"
+}
+```
+
+A value here outranks [`ANTHROPIC_DEFAULT_MODEL`](/docs/en/model-config#set-a-default-model-for-new-sessions), which Claude Code uses only when nothing else selects a model.
+
+### `showThinkingSummaries`
+
+See summaries of Claude's [extended thinking](/docs/en/model-config#extended-thinking) in interactive sessions. Set it if you want the full summaries when you expand thinking with `Ctrl+O`. When unset or `false`, the Anthropic API redacts thinking blocks and Claude Code shows a collapsed stub; third-party providers don't redact.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: Boolean
+  * `true`: you see full thinking summaries when you expand thinking with `Ctrl+O`
+  * `false`: the Anthropic API redacts thinking blocks and Claude Code shows a collapsed stub
+* **Default**: `false`
+
+```json settings.json theme={null}
+{
+  "showThinkingSummaries": true
+}
+```
+
+Redaction only changes what you see, not what the model generates: to reduce thinking spend, [lower the budget or disable thinking](/docs/en/model-config#extended-thinking) instead. This setting has no effect in non-interactive mode (`-p`), the Agent SDK, or IDE extensions such as VS Code.
+
+### `permissions.allow`
+
+List the tool uses Claude Code approves without asking you. In an MCP rule, `*` can appear only in the tool name after the `mcp__<server>__` prefix, such as `mcp__github__get_*`; it can't appear in the server name.
+
+* **Scope**: [`Any file`](#scopes)
+* **Type**: array of permission rule strings
+* **Default**: unset
+* **Per-session overrides**: `--allowedTools` adds allow rules for one session, and a deny rule from any settings file still blocks a tool it names
+
+This example approves `git diff` and lets Claude Code read your `.zshrc` without asking:
+
+```json settings.json theme={null}
+{
+  "permissions": {
+    "allow": ["Bash(git diff *)", "Read(~/.zshrc)"]
+  }
+}
+```
+
+Claude Code applies `allow` rules from a project's `.claude/settings.json` only after you accept the [workspace trust dialog](/docs/en/permissions#project-allow-rules-and-workspace-trust) for that folder.
+
+#### Permission rule syntax
+
+Permission rules follow the format `Tool` or `Tool(specifier)`. Claude Code evaluates `deny` rules first, then `ask`, then `allow`, and the first match decides regardless of how specific each rule is; see the [permission rule evaluation order](/docs/en/permissions#manage-permissions).
+
+### `modelPicker`
+
+List the models the `/model` picker offers, in the order you write them and under labels you choose, so the picker lists the models your organization runs, after the built-in lineup or instead of it. Each row's `model` is taken verbatim, so it accepts anything `--model` accepts: an alias such as `opus`, an Anthropic model ID, or a provider-format ID for Amazon Bedrock, Google Cloud's Agent Platform, Microsoft Foundry, or an LLM gateway. Requires Claude Code v2.1.242 or later.
+
+* **Scope**: [`User or managed`](#scopes). Claude Code reads the key from managed settings, `--settings`, and user settings, and ignores it in project and local settings so a repository you clone can't relabel the picker. The highest of those three that sets the key supplies the whole lineup, and Claude Code never combines lineups from two sources.
+* **Type**: object with an `options` array of rows and an optional `replaceBuiltInOptions` Boolean
+* **Default**: unset, so the picker shows the built-in lineup
+
+This example adds two Bedrock deployments after the built-in lineup, under names your team recognizes:
+
+```json managed-settings.json theme={null}
+{
+  "modelPicker": {
+    "options": [
+      { "model": "us.anthropic.claude-opus-4-8", "label": "Opus (production)" },
+      {
+        "model": "us.anthropic.claude-sonnet-4-6",
+        "label": "Sonnet (production)",
+        "description": "Day-to-day work"
+      }
+    ]
+  }
+}
+```
+
+<span id="modelpicker-options" />
+
+<span id="modelpicker-replacebuiltinoptions" />
+
+#### Fields for `modelPicker`
+
+The key takes two fields, one for the rows themselves and one for whether they replace the built-in lineup or add to it.
+
+| Field                   | Type                                                                                  | What it does                                                                                                                                                                                                                                                                  |
+| :---------------------- | :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `options`               | array of rows, each with a required `model` and an optional `label` and `description` | The rows the picker shows, in this order, except that a grayed-out row moves to the bottom. Without a `label`, Claude Code titles the row with the built-in name for a model it knows, or the model ID otherwise, and without a `description` it writes a generic second line |
+| `replaceBuiltInOptions` | Boolean, default `false`                                                              | Set it to `true` to show only these rows, **Default**, and a row for the model the session is already using. Leave it unset to add these rows after the built-in lineup                                                                                                       |
+
+With `replaceBuiltInOptions` on, Claude Code hides every other row: the built-in lineup, the rows it adds for [`availableModels`](#availablemodels) entries, the models [gateway discovery](/docs/en/llm-gateway-protocol#model-discovery) found, and [`ANTHROPIC_CUSTOM_MODEL_OPTION`](/docs/en/model-config#add-a-custom-model-option). With it off, Claude Code skips a listed model that the built-in lineup already covers. A label changes what the picker shows, not which model Claude Code runs.
+'''
 
 
-def _fake_docs(doc_keys):
-    """A settings-reference page documenting `doc_keys`, padded past the parser's
-    50-key sanity floor with filler rows."""
-    # Filler names must start with a letter: the row regex only accepts keys that
-    # look like real settings keys.
-    keys = list(doc_keys) + [f"filler{i}" for i in range(60)]
-    rows = "\n".join(
-        f"| `{k}` | Doc for {k}. **Default**: `false` | `example` |" for k in keys)
-    return ("### Available settings\n\n| Key | Description | Example |\n"
-            "|---|---|---|\n" + rows + "\n\n## Next section\n")
+def test_parse_settings_reference_reads_a_real_docs_slice_verbatim():
+    # Pinned against the CAPTURED page, not a synthetic stand-in — this is the
+    # test that would have caught the docs reshape before it shipped broken.
+    entries = refresh_catalog.parse_settings_reference(_LIVE_DOC_SLICE)
+
+    # `#### Fields for `modelPicker`` and `#### Permission rule syntax` are
+    # both 4-hash headings under real keys above — neither becomes a key of
+    # its own. Exactly the four `### `key`` headings resolve.
+    assert sorted(entries) == ["model", "modelPicker", "permissions.allow",
+                                "showThinkingSummaries"]
+
+    # A plain key, doc'd with a PROSE "unset" default: honest None, not the
+    # literal word "unset" and not the unrelated backticked terms later in
+    # the same explanatory clause.
+    assert entries["model"]["default"] is None
+    assert entries["model"]["doc"] == (
+        "Set the model every new session uses, so you don't have to pick "
+        "one with /model each time.")
+
+    # A BACKTICKED default, coerced from JSON the way the old table's example
+    # column used to be.
+    assert entries["showThinkingSummaries"]["default"] is False
+
+    # A dotted sub-key heading resolves under its own dotted name — existing
+    # `docKey` lookups (e.g. `permissions.defaultMode`) depend on this.
+    assert entries["permissions.allow"]["default"] is None
+
+    # `modelPicker`'s own prose default is honestly None (unset), and its
+    # "Requires Claude Code vX.Y.Z" sentence (min-version prose is the only
+    # surviving signal — literal "min-version:" text is gone from the new
+    # page entirely) is still picked up from its paragraph.
+    assert entries["modelPicker"]["default"] is None
+    assert entries["modelPicker"]["minVersion"] == "2.1.242"
+
+
+# Captured verbatim from settings-reference.md alongside _LIVE_DOC_SLICE — its
+# own constant because it pins a distinct failure mode: a `**Type**` bullet
+# that is itself a NESTED list of every enumerated value. The old table put
+# prose and the value list in one cell, so the catalog's stored `doc` used to
+# be the whole enumeration — which is what the owner saw wrapping to three
+# lines beside a select that already showed the same values. clean_doc must
+# take the doc from the prose paragraph only, never folding the Type bullet's
+# nested list in, or this bloat reappears across every enumerated key.
+_LIVE_DOC_THEME_SLICE = '''\
+### `theme`
+
+Pick the color theme for the interface. Appears in `/config` as **Theme**.
+
+* **Scope**: [`Any file`](#scopes). A value in `~/.claude.json` from an older version applies when no settings file sets it.
+* **Type**: string, one of:
+  * `"auto"`: matches your terminal's light or dark background
+  * `"dark"`: the dark theme
+  * `"light"`: the light theme
+  * `"dark-daltonized"`: the dark theme with colorblind-friendly colors
+  * `"light-daltonized"`: the light theme with colorblind-friendly colors
+  * `"dark-ansi"`: the dark theme using only your terminal's ANSI color palette
+  * `"light-ansi"`: the light theme using only your terminal's ANSI color palette
+  * `"custom:<slug>"` or `"custom:<plugin-name>:<slug>"`: a custom theme from `~/.claude/themes/` or a plugin
+* **Default**: `"dark"`
+
+```json settings.json theme={null}
+{
+  "theme": "light-daltonized"
+}
+```
+'''
+
+
+def test_parse_settings_reference_keeps_a_nested_type_list_out_of_the_doc():
+    entries = refresh_catalog.parse_settings_reference(_LIVE_DOC_THEME_SLICE)
+    # The prose sentence only — none of the eight `"auto"`/`"dark"`/… bullet
+    # values the Type list under it enumerates.
+    assert entries["theme"]["doc"] == "Pick the color theme for the interface."
+    assert entries["theme"]["default"] == "dark"
+
+
+def _fake_settings_reference(doc_keys):
+    """A settings-reference page in the real page's heading-per-key shape,
+    padded past the parser's 100-key sanity floor with filler sections in the
+    same shape. The shape-specific behavior (dotted keys, prose vs. backticked
+    defaults, a `####` sub-heading that isn't a key) is pinned for real above
+    against `_LIVE_DOC_SLICE`; this only has to be structurally honest, not
+    individually verbatim, to exercise the round trip through the catalog."""
+    keys = list(doc_keys) + [f"filler{i}" for i in range(100)]
+    return "\n\n".join(
+        f"### `{k}`\n\nDoc for {k}.\n\n"
+        f"* **Scope**: `Any file`\n"
+        f"* **Type**: Boolean\n"
+        f"* **Default**: `false`"
+        for k in keys
+    )
 
 
 def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
@@ -293,13 +494,14 @@ def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
 
 def test_refresh_writes_the_override_and_leaves_the_package_untouched(
         catalog_home, monkeypatch):
-    # Only the fetch is stubbed; the parse, the >=50-key floor and the write path
-    # are the real ones.
+    # Only the fetch is stubbed; the parse, the >=100-key floor and the write
+    # path are the real ones.
     packaged = lib.packaged_catalog_path()
     before = open(packaged, "rb").read()
     shipped = json.loads(before.decode())
     doc_keys = [d.get("docKey") or d["key"] for d in shipped]
-    monkeypatch.setattr(refresh_catalog, "_fetch", lambda: _fake_docs(doc_keys))
+    monkeypatch.setattr(refresh_catalog, "_fetch",
+                        lambda: _fake_settings_reference(doc_keys))
 
     res = refresh_catalog.main()
 
@@ -318,16 +520,65 @@ def test_refresh_writes_the_override_and_leaves_the_package_untouched(
     assert served[0]["doc"].startswith("Doc for ")
 
 
+def test_refresh_keeps_a_surfaced_key_s_doc_when_the_new_docs_omit_it(
+        catalog_home, monkeypatch):
+    # Real finding against the live page (2026-08-26): three shipped keys —
+    # `defaultView`, `todoFeatureEnabled`, `skipWorkflowUsageWarning` — have
+    # zero mentions anywhere on the reshaped settings-reference.md. Absent
+    # from the docs is not the same claim as removed from Claude Code, so a
+    # refresh must leave a key like this exactly as it was (doc, default,
+    # minVersion all untouched) and merely name it in `undocumented` —
+    # never blank it, never invent a value for it, never drop it from the
+    # catalog.
+    packaged = lib.packaged_catalog_path()
+    shipped = json.loads(open(packaged, "rb").read().decode())
+    doc_keys = [d.get("docKey") or d["key"] for d in shipped if d["key"] != "defaultView"]
+    monkeypatch.setattr(refresh_catalog, "_fetch",
+                        lambda: _fake_settings_reference(doc_keys))
+
+    before = next(d for d in shipped if d["key"] == "defaultView")
+    res = refresh_catalog.main()
+
+    assert res["ok"] is True
+    assert "defaultView" in res["undocumented"]
+    served = preferences._catalog()
+    after = next(d for d in served if d["key"] == "defaultView")
+    assert after["doc"] == before["doc"]
+    assert after["default"] == before["default"]
+    assert after["minVersion"] == before["minVersion"]
+    # Every OTHER key still resolved and got the fresh doc/default.
+    assert res["updated"] == len(shipped) - 1
+
+
 def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
         catalog_home, monkeypatch):
+    # Below the sanity floor — the parser found real headings, just not
+    # nearly enough of them, the same "docs shape changed" signal a table
+    # missing most of its rows used to give.
     monkeypatch.setattr(refresh_catalog, "_fetch",
-                        lambda: "### Available settings\n\n| `only` | one row | x |")
+                        lambda: "### `only`\n\nOne key.\n\n* **Default**: `1`\n")
     res = refresh_catalog.main()
     assert res["ok"] is False
     assert "docs shape changed" in res["error"]
     # Nothing written anywhere — a truncated refresh must not become the catalog.
     assert not os.path.exists(lib.catalog_override_path())
     assert lib.catalog_read_path() == lib.packaged_catalog_path()
+
+
+def test_refresh_over_the_api_survives_a_page_with_no_headings_at_all(
+        catalog_home, monkeypatch):
+    # main()'s docstring promises failures are RETURNED, never raised — but it
+    # used to wrap only `_fetch()`. `parse_settings_reference` raises
+    # ValueError when it finds no `### `key`` heading at all (a page reshaped
+    # even more drastically than "too few keys"), and that escaped straight
+    # through to the HTTP router as a raw 500 — which is exactly what the
+    # owner saw against the real reshaped docs. Pinned here so the button
+    # renders an in-band error again if the docs move a second time.
+    monkeypatch.setattr(refresh_catalog, "_fetch", lambda: "# Not a settings page at all\n")
+    res = refresh_catalog.main()
+    assert res == {"ok": False, "error": "parse failed (found no '### `key`' "
+                                          "headings); kept existing catalog"}
+    assert not os.path.exists(lib.catalog_override_path())
 
 
 # -- memory: the project slug back to a real folder --------------------------
@@ -403,6 +654,86 @@ def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir
     assert p["project"] == "-nowhere-in-particular-gone"
     assert p["path"] is None
     assert p["pathConfirmed"] is False
+
+
+# -- memory: per-file frontmatter description ---------------------------------
+# Round 2 of the Claude config redesign makes the memory FILE the row (grouped
+# by project), not the project — so `files` carries a {name, description} pair
+# per file instead of a bare name. `description` comes from the file's YAML
+# frontmatter, the same shape Claude Code itself writes:
+#
+#   ---
+#   name: some-slug
+#   description: "one line about what this memory covers"
+#   metadata: ...
+#   ---
+
+
+def _write_memory_file(claude_dir, slug, name, body, subdir="memory"):
+    d = claude_dir / "projects" / slug / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_text(body, encoding="utf-8")
+
+
+def test_memory_list_reads_the_description_from_frontmatter(client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "some-lesson.md",
+        '---\nname: some-lesson\ndescription: "one line about the lesson"\n'
+        'metadata: \n  node_type: memory\n---\n\nBody text here.\n',
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["name"] == "some-lesson.md"
+    assert f["description"] == "one line about the lesson"
+
+
+def test_memory_list_falls_back_to_the_filename_when_frontmatter_is_missing(
+        client, claude_dir):
+    # A file with no --- delimiter at all — MEMORY.md, the plain index, looks
+    # like this.
+    _write_memory_file(claude_dir, "-proj", "MEMORY.md", "- [a lesson](a.md) — summary\n")
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["name"] == "MEMORY.md"
+    assert f["description"] is None
+
+
+def test_memory_list_falls_back_when_frontmatter_has_no_description_key(client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "no-desc.md",
+        "---\nname: no-desc\nmetadata: \n  node_type: memory\n---\n\nBody.\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
+
+
+def test_memory_list_falls_back_when_frontmatter_never_closes(client, claude_dir):
+    # A malformed file — the opening delimiter with no closing one — must not
+    # be read as if the whole body were frontmatter, and must not blow up.
+    _write_memory_file(
+        claude_dir, "-proj", "unterminated.md",
+        "---\nname: unterminated\ndescription: never actually closes\n\nrest of the file\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
+
+
+def test_memory_list_never_invents_a_description_from_an_unquoted_blank_value(
+        client, claude_dir):
+    _write_memory_file(
+        claude_dir, "-proj", "blank-desc.md",
+        "---\nname: blank-desc\ndescription:\nmetadata: \n---\n\nBody.\n",
+    )
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    [f] = p["files"]
+    assert f["description"] is None
 
 
 # -- plugins: the marketplace catalogs + guarded install ---------------------
@@ -534,6 +865,28 @@ def test_option_shaped_names_never_reach_the_cli(client, claude_dir, monkeypatch
             "ok": False, "error": "unknown plugin"}
 
 
+def test_plugins_update_runs_headlessly_like_install_does(
+        client, claude_dir, monkeypatch):
+    """`-y` on update, not only on install. The CLI documents the flag on both,
+    and re-prompts for consent when a marketplace CHANGES its declared install
+    command — with stdout captured, that prompt can only be answered by the
+    timeout, so the user is told the update timed out rather than that consent
+    was wanted."""
+    seen = {}
+
+    def fake_cli(*args, timeout=25):
+        seen["args"] = args
+        return {"ok": True, "stdout": "updated", "stderr": ""}
+
+    monkeypatch.setattr(lib, "claude_cli", fake_cli)
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"enabledPlugins": {"widget@acme": True}}))
+
+    body = _post(client, "plugins", action="update", id="widget@acme").json()
+    assert body == {"ok": True, "id": "widget@acme", "stdout": "updated"}
+    assert seen["args"] == ("plugin", "update", "widget@acme", "--scope", "user", "-y")
+
+
 def test_update_refuses_an_option_shaped_id_even_when_settings_lists_it(
         client, claude_dir, monkeypatch):
     # `update` checks membership in settings.json + installed_plugins.json —
@@ -553,6 +906,290 @@ def test_mcp_refuses_an_option_shaped_server_name(client, claude_dir, monkeypatc
                             lambda *a, **k: pytest.fail(f"claude CLI invoked with {a}"))
     body = _post(client, "mcp", action=action, name="--scope", json="{}").json()
     assert body == {"ok": False, "error": "invalid server name"}
+
+
+# -- plugins: what an installed plugin puts in a session ---------------------
+# `contents` is the only action that reads the plugin's own FILES rather than
+# the two json files beside them, so its whole contract is on-disk layout: the
+# conventional dirs, the manifest's right to relocate them, and the boundary
+# that keeps a third-party manifest from pointing this at the rest of the disk.
+
+
+def _installed(claude_dir, pid, root, **rec):
+    """Record `pid` as installed at `root`, the way the CLI does."""
+    path = claude_dir / "plugins" / "installed_plugins.json"
+    doc = json.loads(path.read_text()) if path.exists() else {"plugins": {}}
+    doc.setdefault("plugins", {})[pid] = [{"installPath": str(root), **rec}]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc))
+
+
+def _plugin_tree(tmp_path, name, manifest=None):
+    root = tmp_path / "plugin-cache" / name
+    (root / ".claude-plugin").mkdir(parents=True)
+    if manifest is not None:
+        body = manifest if isinstance(manifest, str) else json.dumps(manifest)
+        (root / ".claude-plugin" / "plugin.json").write_text(body)
+    return root
+
+
+def _write(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+
+
+def test_plugins_contents_reads_every_component_kind_off_disk(
+    client, claude_dir, tmp_path
+):
+    root = _plugin_tree(tmp_path, "kitchen", {"name": "kitchen", "description": "All of it."})
+    _write(root / "skills" / "brewing" / "SKILL.md",
+           "---\nname: brew-coffee\ndescription: \"Makes coffee.\"\n---\nbody\n")
+    # Nested, because a plugin is free to group its skills in subdirectories.
+    _write(root / "skills" / "group" / "steeping" / "SKILL.md",
+           "---\ndescription: Makes tea.\n---\n")
+    _write(root / "commands" / "sub" / "pour.md", "---\ndescription: Pours.\n---\n")
+    _write(root / "agents" / "taster.md", "---\nname: taster\ndescription: Tastes.\n---\n")
+    _write(root / "hooks" / "hooks.json", json.dumps({"hooks": {
+        "PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}],
+        "SessionStart": [{"hooks": [{"type": "command", "command": "y"},
+                                    {"type": "command", "command": "z"}]}],
+    }}))
+    _write(root / ".mcp.json", json.dumps({"mcpServers": {"beans": {"command": "node"}}}))
+    _installed(claude_dir, "kitchen@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="kitchen@acme").json()
+    assert body["ok"] is True
+    assert body["description"] == "All of it."
+    assert body["root"] == str(root)
+
+    # A skill is a DIRECTORY with a SKILL.md in it; its name comes from
+    # frontmatter, and falls back to the directory when the block names none.
+    assert [(s["name"], s["description"]) for s in body["skills"]] == [
+        ("brew-coffee", "Makes coffee."),
+        ("steeping", "Makes tea."),
+    ]
+    assert body["skills"][0]["path"] == str(root / "skills" / "brewing" / "SKILL.md")
+
+    # A command is INVOKED by its path, so the path is its name — a nested one
+    # spells the separator the way the invocation does.
+    assert body["commands"] == [{
+        "name": "sub:pour", "description": "Pours.",
+        "path": str(root / "commands" / "sub" / "pour.md"),
+    }]
+    # An agent declares its own name, so that is what it is called.
+    assert body["agents"][0]["name"] == "taster"
+
+    # One row per EVENT, counting the commands under it and naming its matchers
+    # — not one row per command, which is a ${CLAUDE_PLUGIN_ROOT} string that
+    # says nothing on one line.
+    assert {h["name"]: h["description"] for h in body["hooks"]} == {
+        "PostToolUse": "1 hook on Write",
+        "SessionStart": "2 hooks",
+    }
+    assert body["hooks"][0]["path"] == str(root / "hooks" / "hooks.json")
+
+    assert body["mcpServers"] == [{
+        "name": "beans", "description": "node", "path": str(root / ".mcp.json"),
+    }]
+    # Nothing here ran the walk budget out.
+    assert body["truncated"] is False
+
+
+def test_plugins_contents_reads_a_bare_mcp_json(client, claude_dir, tmp_path):
+    # `{"mcpServers": {...}}` is one shape a plugin's own .mcp.json comes in;
+    # a BARE server map at the file's root is the other, and it is the shape
+    # github@claude-plugins-official actually ships on disk. `_hooks` already
+    # tolerates both shapes for hooks.json; mcpServers used to bail on the
+    # wrapper key being absent, so a plugin whose entire contribution was one
+    # MCP server rendered as shipping nothing at all.
+    root = _plugin_tree(tmp_path, "bare-mcp", {"name": "bare-mcp"})
+    _write(root / ".mcp.json", json.dumps({"github": {"type": "http", "url": "https://x"}}))
+    _installed(claude_dir, "bare-mcp@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="bare-mcp@acme").json()
+    assert body["mcpServers"] == [{
+        "name": "github", "description": "https://x", "path": str(root / ".mcp.json"),
+    }]
+
+
+def test_plugins_contents_folds_a_block_scalar_description(client, claude_dir, tmp_path):
+    # The frontmatter parser used to read only the key's OWN line, which is most
+    # of YAML's ways of writing a string and not all of them: context-mode's
+    # eight skills all write `description: |` and put the text below, so every
+    # one of them displayed as a bare pipe. Folded to one line, because both
+    # callers put this in a one-line slot.
+    root = _plugin_tree(tmp_path, "blocky", {"name": "blocky"})
+    _write(root / "skills" / "wordy" / "SKILL.md",
+           "---\nname: wordy\ndescription: |\n  First line.\n  Second line.\nother: x\n---\nbody\n")
+    _write(root / "skills" / "folded" / "SKILL.md",
+           "---\nname: folded\ndescription: >-\n  Folded.\n---\n")
+    _installed(claude_dir, "blocky@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="blocky@acme").json()
+    assert [(s["name"], s["description"]) for s in body["skills"]] == [
+        ("folded", "Folded."),
+        ("wordy", "First line. Second line."),
+    ]
+
+
+def test_plugins_contents_honours_the_manifest_s_relocated_paths(
+    client, claude_dir, tmp_path
+):
+    # Every path a manifest may move, including the ${CLAUDE_PLUGIN_ROOT} spelling
+    # the CLI substitutes, and the list form.
+    root = _plugin_tree(tmp_path, "moved", {
+        "name": "moved",
+        "skills": ["./elsewhere/skills", "${CLAUDE_PLUGIN_ROOT}/more"],
+        "commands": "./cmds",
+        "agents": "./bots",
+        "hooks": "./cfg/hooks.json",
+        "mcpServers": {"remote": {"type": "http", "url": "https://example.test/mcp"}},
+    })
+    _write(root / "elsewhere" / "skills" / "one" / "SKILL.md", "---\nname: one\n---\n")
+    _write(root / "more" / "two" / "SKILL.md", "---\nname: two\n---\n")
+    _write(root / "cmds" / "go.md", "")
+    _write(root / "bots" / "bot.md", "")
+    _write(root / "cfg" / "hooks.json", json.dumps({"hooks": {"Stop": [{"hooks": [{}]}]}}))
+    # The conventional locations hold decoys: a manifest that names a dir
+    # REPLACES the default, it does not add to it.
+    _write(root / "skills" / "decoy" / "SKILL.md", "---\nname: decoy\n---\n")
+    _write(root / "commands" / "decoy.md", "")
+    _installed(claude_dir, "moved@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="moved@acme").json()
+    assert [s["name"] for s in body["skills"]] == ["one", "two"]
+    assert [c["name"] for c in body["commands"]] == ["go"]
+    assert [a["name"] for a in body["agents"]] == ["bot"]
+    assert [h["name"] for h in body["hooks"]] == ["Stop"]
+    # Declared inline in plugin.json rather than in a .mcp.json — both are in
+    # the wild — and described by its transport.
+    assert body["mcpServers"] == [{
+        "name": "remote", "description": "https://example.test/mcp",
+        "path": str(root / ".claude-plugin" / "plugin.json"),
+    }]
+
+
+def test_plugins_contents_refuses_a_manifest_path_that_escapes_the_plugin(
+    client, claude_dir, tmp_path
+):
+    # A manifest is third-party content and its path values become directories
+    # this walks. One pointing out of the plugin must resolve to nothing rather
+    # than to a tour of the user's disk.
+    outside = tmp_path / "outside"
+    _write(outside / "secret" / "SKILL.md", "---\nname: secret\n---\n")
+    root = _plugin_tree(tmp_path, "nosy", {
+        "name": "nosy", "skills": "../../outside", "commands": str(outside),
+    })
+    _installed(claude_dir, "nosy@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="nosy@acme").json()
+    assert body["ok"] is True
+    assert body["skills"] == []
+    assert body["commands"] == []
+
+
+def test_plugins_contents_refuses_a_symlinked_dir_that_escapes_the_plugin(
+    client, claude_dir, tmp_path
+):
+    # The manifest-string escape above is lexical and `os.path.normpath`
+    # catches it; a SYMLINKED component dir is a different escape entirely —
+    # `skills` pointing at some real directory outside the plugin root passes
+    # a purely lexical containment check (the symlink's own name sits under
+    # root) even though its target does not, and `os.walk(top)` visits `top`
+    # itself regardless of `followlinks` (that flag only governs descendant
+    # symlinks it discovers, not the walk's own starting directory).
+    outside = tmp_path / "outside-home"
+    _write(outside / "secret" / "SKILL.md", "---\nname: secret\n---\n")
+    root = _plugin_tree(tmp_path, "linked", {"name": "linked"})
+    (root / "skills").symlink_to(outside)
+    _installed(claude_dir, "linked@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="linked@acme").json()
+    assert body["ok"] is True
+    assert body["skills"] == []
+
+
+def test_plugins_contents_reports_truncation_once_the_walk_budget_runs_out(
+    client, claude_dir, tmp_path
+):
+    # The walk budget is a bounded-PANEL cost limit, not a per-directory one:
+    # a flat commands/ dir well past the cap must come back partial AND say
+    # so, rather than either hanging on a five-figure file count or silently
+    # under-reporting what the plugin actually ships.
+    root = _plugin_tree(tmp_path, "sprawling", {"name": "sprawling"})
+    for i in range(250):
+        _write(root / "commands" / f"c{i:03d}.md", "")
+    _installed(claude_dir, "sprawling@acme", root)
+
+    body = _post(client, "plugins", action="contents", id="sprawling@acme").json()
+    assert body["ok"] is True
+    assert body["truncated"] is True
+    assert 0 < len(body["commands"]) < 250
+
+
+def test_plugins_contents_survives_a_plugin_that_ships_nothing(client, claude_dir, tmp_path):
+    root = _plugin_tree(tmp_path, "bare")
+    _installed(claude_dir, "bare@acme", root)
+    body = _post(client, "plugins", action="contents", id="bare@acme").json()
+    assert body["ok"] is True
+    assert (body["skills"], body["commands"], body["agents"],
+            body["hooks"], body["mcpServers"]) == ([], [], [], [], [])
+    assert body["truncated"] is False
+
+
+def test_plugins_contents_keeps_a_broken_hooks_file_visible(client, claude_dir, tmp_path):
+    # A hooks.json we cannot parse is still a hooks.json the plugin ships: the
+    # row stays and opens the file that needs fixing, rather than the panel
+    # quietly reporting a plugin with no hooks.
+    root = _plugin_tree(tmp_path, "torn", {"name": "torn"})
+    _write(root / "hooks" / "hooks.json", "{ not json")
+    _installed(claude_dir, "torn@acme", root)
+    body = _post(client, "plugins", action="contents", id="torn@acme").json()
+    assert body["hooks"] == [{
+        "name": "hooks.json", "description": "could not be read",
+        "path": str(root / "hooks" / "hooks.json"),
+    }]
+
+
+def test_plugins_contents_survives_a_malformed_manifest(client, claude_dir, tmp_path):
+    # lib.read_json lets malformed JSON raise because the user's OWN config
+    # being corrupt must surface. A plugin's manifest is somebody else's file:
+    # a broken one costs this panel the non-default paths, not a 500.
+    root = _plugin_tree(tmp_path, "junk", "{ not json")
+    _write(root / "skills" / "still" / "SKILL.md", "---\nname: still-found\n---\n")
+    _installed(claude_dir, "junk@acme", root)
+    body = _post(client, "plugins", action="contents", id="junk@acme").json()
+    assert body["ok"] is True
+    assert [s["name"] for s in body["skills"]] == ["still-found"]
+
+
+def test_plugins_contents_refuses_an_id_that_is_not_installed(client, claude_dir, tmp_path):
+    # The path is resolved HERE, out of installed_plugins.json, so this action
+    # can never be pointed at an arbitrary directory by its caller.
+    assert _post(client, "plugins", action="contents", id="").json() == {
+        "ok": False, "error": "id required"}
+    assert _post(client, "plugins", action="contents", id="ghost@acme").json() == {
+        "ok": False, "error": "plugin is not installed"}
+    # Recorded, but its files are gone — a distinct answer, because the fix is
+    # different (reinstall, not "you don't have this").
+    _installed(claude_dir, "gone@acme", tmp_path / "was-here")
+    assert _post(client, "plugins", action="contents", id="gone@acme").json() == {
+        "ok": False, "error": "plugin files are missing — reinstall it"}
+
+
+def test_plugins_contents_skips_the_dirs_that_never_hold_components(
+    client, claude_dir, tmp_path
+):
+    # A plugin root is third-party content of unbounded size and this runs on a
+    # UI request: node_modules is the one that actually shows up (context-mode
+    # ships one), and walking it would cost a panel a five-figure file count.
+    root = _plugin_tree(tmp_path, "heavy", {"name": "heavy"})
+    _write(root / "skills" / "real" / "SKILL.md", "---\nname: real\n---\n")
+    _write(root / "skills" / "node_modules" / "dep" / "SKILL.md", "---\nname: dep\n---\n")
+    _write(root / "skills" / ".hidden" / "SKILL.md", "---\nname: hidden\n---\n")
+    _installed(claude_dir, "heavy@acme", root)
+    body = _post(client, "plugins", action="contents", id="heavy@acme").json()
+    assert [s["name"] for s in body["skills"]] == ["real"]
 
 
 def test_plugins_unknown_action_is_an_in_band_refusal(client, claude_dir):
@@ -738,7 +1375,12 @@ def test_git_runs_with_dash_c_rather_than_cwd():
     # (tests/test_git_posix_spawn.py). basename alone would pass a
     # regression to a bare "git".
     assert os.path.isabs(seen["argv"][0])
-    assert os.path.basename(seen["argv"][0]) in ("git", "git.exe")
+    # `.lower()`: `shutil.which("git")` on Windows resolves the bare name by
+    # trying each `PATHEXT` entry as-is, and the default `PATHEXT` spells its
+    # entries `.EXE` — so the resolved path this app actually runs is
+    # literally `...\git.EXE`, uppercase extension, with no lowercase form on
+    # disk to fall back to. That is still "git", not a different binary.
+    assert os.path.basename(seen["argv"][0]).lower() in ("git", "git.exe")
     assert seen["argv"][1:3] == ["-C", lib.CLAUDE_DIR]
     assert "cwd" not in seen["kwargs"]
     assert seen["kwargs"]["close_fds"] is False
@@ -750,6 +1392,277 @@ def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
     (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
     assert lib.commit("Enable — plugin ✔")
     assert lib.log()[0]["message"] == "Enable — plugin ✔"
+
+
+def _config_lock_commit_worker(claude_dir: str) -> None:
+    """Module-level (picklable, and run under a `spawn` context explicitly --
+    see the test) so it can run in its OWN process for
+    test_config_lock_held_commit_does_not_deadlock -- see that test for why a
+    thread is not enough.
+
+    Sets `lib.CLAUDE_DIR`/`SETTINGS_PATH`/`_LOCK_PATH` by ATTRIBUTE, the same
+    mechanism the `claude_dir` fixture uses (`monkeypatch.setattr`) -- NOT by
+    setting the `CLAUDE_DIR` environment variable and importing `lib`
+    afterward, which was this function's first version and was a no-op: under
+    `spawn`, unpickling this function's __module__ already imports the WHOLE
+    test module to find it, and that module imports `lib` at its own top
+    level -- so `lib.CLAUDE_DIR` is resolved from whatever environment this
+    worker process inherited BEFORE a single line of this function body runs.
+    On a machine or CI job that exports `CLAUDE_DIR`, that version would have
+    `git init`ed the REAL directory, overwritten its real settings.json, and
+    committed it -- this process gets none of the `claude_dir` fixture's
+    `monkeypatch` state, only what it sets up for itself here, and it has to
+    actually land where this docstring says.
+    """
+    from fused_render.claude_config import lib as _lib
+
+    _lib.CLAUDE_DIR = claude_dir
+    _lib.SETTINGS_PATH = os.path.join(claude_dir, "settings.json")
+    _lib._LOCK_PATH = os.path.join(claude_dir, ".config-ui.lock")
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
+    os.environ["GIT_AUTHOR_NAME"] = "Fixture Author"
+    os.environ["GIT_AUTHOR_EMAIL"] = "fixture@example.com"
+    os.environ["GIT_COMMITTER_NAME"] = "Fixture Author"
+    os.environ["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
+
+    # Prove it landed BEFORE anything destructive runs -- this is exactly
+    # the assertion whose absence let the environment-variable version of
+    # this function silently target the developer's real ~/.claude.
+    assert _lib.CLAUDE_DIR == claude_dir, (_lib.CLAUDE_DIR, claude_dir)
+
+    with _lib.config_lock():
+        _lib.write_json(_lib.SETTINGS_PATH, {"model": "opus"})
+        _lib.commit("test edit")
+
+
+# -- ensure_repo(): the first-run `git init` TOCTOU race ---------------------
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_survives_concurrent_first_run(claude_dir):
+    """The reported bug: on first paint, PreferencesSection's preferences.get()
+    and useGitStatus's gitOps.status() fire two POSTs at once, both dispatched
+    through run_in_threadpool -- genuine OS-thread concurrency in one process
+    -- and both reach lib.ensure_repo() unguarded by config_lock(). The old
+    body was a bare check-then-act (`os.path.isdir(.git)` then `git init`):
+    the loser's `git init` dies mid-template-copy with "File exists" (git's
+    copy_file() opens each hook with O_CREAT|O_EXCL after an lstat that skips
+    existing entries -- EEXIST can only happen in that window).
+
+    A test that calls ensure_repo() twice sequentially proves nothing: the
+    second call short-circuits on os.path.isdir before the race window ever
+    opens. This drives real concurrency instead -- several threads arrive at
+    a FRESH CLAUDE_DIR together via a barrier, so they race the check for
+    real."""
+    n = 8
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def worker():
+        barrier.wait()
+        try:
+            lib.ensure_repo()
+        except Exception as e:  # pragma: no cover - failure path
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not any(t.is_alive() for t in threads)
+    assert errors == [], errors
+    assert os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    # Not just "no exception" -- the SEED COMMIT is its own TOCTOU (several
+    # threads read an unborn HEAD before any of them commits, then race `git
+    # add -A` + `git commit`), and it kept failing here one step later than
+    # the `git init` race even after that race was fixed. A test that only
+    # checks `.git` isdir would still pass with the seed commit moved back
+    # outside the lock -- this is what actually catches that regression.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the_dir(
+        claude_dir):
+    """`.git` existing is NOT proof `git init` succeeded -- the original bug
+    report proves it: the user's error was `cannot copy ... to
+    C:/Users/amynr/.claude/.git/hooks/pre-applypatch.sample: File exists`,
+    i.e. `.git/hooks/` already existed while init was genuinely still
+    failing. git creates the `.git` directory FIRST, then writes
+    `HEAD`/`config`, then copies hook templates -- so a real failure partway
+    through (disk full, permissions) leaves `.git` behind too, same as a won
+    race would.
+
+    No concurrency needed to prove this: forces `git init` itself to create
+    an empty `.git` (mimicking git's own first step) and then fail, and
+    confirms ensure_repo() still raises rather than treating the directory's
+    mere existence as "someone else already won"."""
+    real_run = subprocess.run
+    git_dir = os.path.join(str(claude_dir), ".git")
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            os.makedirs(git_dir, exist_ok=True)
+            return subprocess.CompletedProcess(
+                argv, 128,
+                "", "fatal: cannot copy '...pre-applypatch.sample': File exists")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed into a half-built repo: git itself does not
+    # recognise this directory (no HEAD/config/objects/refs were ever
+    # written), so a later call will retry rather than proceeding as if
+    # init had actually finished. `--resolve-git-dir`, not `--git-dir`: see
+    # test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure
+    # for why `--git-dir` is the wrong check here too.
+    assert lib.git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == ""
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure(
+        claude_dir):
+    """Second review round: the fix above used `git rev-parse --git-dir` to
+    detect a lost race, and that command performs git's normal repository
+    DISCOVERY -- it walks UP the filesystem for a `.git` in any ancestor.
+    Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override) inside a
+    versioned dotfiles or home repo. From a CLAUDE_DIR with no valid `.git`
+    of its own but a repo somewhere ABOVE it, `--git-dir` exits 0 and prints
+    the ANCESTOR's git dir -- so a genuinely failed `git init` there (EPERM,
+    ENOSPC, a read-only volume) that leaves no local `.git` would have been
+    misread as "someone else already won", and every git() call after that
+    -- identity, the seed `git add -A` + `git commit`, and every later
+    commit()/status()/log()/diff() -- would run against the ANCESTOR repo
+    instead: rewriting its config and committing the user's whole dotfiles
+    tree.
+
+    Builds a REAL ancestor repo directly above the fixture's CLAUDE_DIR (the
+    exact "home/dotfiles repo containing ~/.claude" shape), forces `git
+    init` to fail without creating anything at all, and asserts both that
+    ensure_repo() raises AND that the ancestor repo is completely untouched
+    -- same HEAD sha, same config, no new commit. This test fails against
+    the `--git-dir` version of the fix (it exits 0 and lets ensure_repo()
+    proceed to write into the ancestor)."""
+    ancestor = claude_dir.parent
+
+    def ancestor_git(*args):
+        res = subprocess.run(
+            [lib._git_bin(), "-C", str(ancestor), *args],
+            capture_output=True, text=True)
+        assert res.returncode == 0, res.stderr
+        return res.stdout
+
+    ancestor_git("init", "-q")
+    ancestor_git("config", "user.email", "fixture@example.com")
+    ancestor_git("config", "user.name", "Fixture Author")
+    (ancestor / "existing-dotfile").write_text("keep me\n")
+    ancestor_git("add", "-A")
+    ancestor_git("commit", "-q", "-m", "seed")
+    before_head = ancestor_git("rev-parse", "HEAD").strip()
+    before_config = (ancestor / ".git" / "config").read_text()
+
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "init" in argv:
+            # A genuine failure that creates NOTHING under CLAUDE_DIR -- e.g.
+            # EPERM before git even gets to mkdir `.git`.
+            return subprocess.CompletedProcess(
+                argv, 128, "", "fatal: permission denied")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    assert not os.path.isdir(os.path.join(str(claude_dir), ".git"))
+    assert ancestor_git("rev-parse", "HEAD").strip() == before_head
+    assert (ancestor / ".git" / "config").read_text() == before_config
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_config_lock_held_commit_does_not_deadlock(claude_dir):
+    """The trap: config_lock() acquires _THREAD_LOCK, a plain (non-reentrant)
+    threading.Lock, then commit() calls ensure_repo(). If ensure_repo() ever
+    routed its init check back through config_lock(), preferences.py's
+    action=patch (which holds config_lock() before calling commit()) would
+    self-deadlock on the very first edit.
+
+    Runs in a SEPARATE PROCESS, not a daemon thread. A thread-based version
+    that only waited on a timeout would not actually protect the suite: on a
+    regression the worker blocks while HOLDING `_THREAD_LOCK`, which is
+    module-level and never released, so every later test in the same pytest
+    worker that touches `config_lock()` would hang too -- the suite would
+    still die, just in some unrelated victim test with no pointer back here.
+    A subprocess takes the poisoned lock down with it when this test kills
+    it, so a regression fails HERE, cleanly, instead of hanging the run.
+
+    Uses the `spawn` context EXPLICITLY, not the platform default (`fork` on
+    Linux <=3.13). A bare fork() out of a pytest worker that may already have
+    PROJ/duckdb/rasterio resident from an earlier module in the same xdist
+    worker is exactly the rc=-11 hazard this repo guards against everywhere
+    else (SUBPROCESS_KWARGS, tests/test_git_posix_spawn.py) -- here it would
+    surface as a load-order-dependent `proc.exitcode` with no connection to
+    the deadlock under test. `spawn` also makes `_config_lock_commit_worker`'s
+    own "picklable" claim actually true on every platform, not just the ones
+    that happen to default to it."""
+    proc = multiprocessing.get_context("spawn").Process(
+        target=_config_lock_commit_worker, args=(str(claude_dir),))
+    proc.start()
+    proc.join(timeout=15)
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=5)
+        pytest.fail("config_lock() -> commit() -> ensure_repo() deadlocked "
+                    "(worker process did not finish within 15s)")
+    assert proc.exitcode == 0
+
+
+@pytest.mark.skipif(not git_available(), reason="needs git")
+def test_ensure_repo_reraises_a_genuine_seed_commit_failure(claude_dir):
+    """The seed commit tolerates a LOST RACE (another thread already got HEAD
+    born) but must not tolerate a real failure -- a bad local identity, a
+    `commit-msg`/`pre-commit` hook someone dropped into
+    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
+    crashed process. An earlier version of this fix used `check=False` on the
+    seed `git commit`, which swallowed BOTH cases identically: the config
+    page would show no history, forever, with no exception and nothing to
+    say why.
+
+    Forces the `git commit` call specifically to fail (everything else --
+    init, identity, add, status -- runs for real), and confirms ensure_repo()
+    still raises rather than returning normally with the repo permanently
+    HEAD-less.
+
+    Uses mock.patch.object as its own context manager rather than the
+    `monkeypatch` fixture: `claude_dir` already uses `monkeypatch` to redirect
+    CLAUDE_DIR/HOME/GIT_CONFIG_* away from the developer's real ~/.claude, and
+    `monkeypatch` is function-scoped -- calling `.undo()` on the SAME instance
+    here would undo those redirects too, and the read below would land on the
+    developer's real repo instead of the scratch one (caught in review of this
+    test, not in CI: the read is harmless, but the mechanism is the kind of
+    mistake that silently stops being harmless).
+    """
+    real_run = subprocess.run
+
+    def fake_run(argv, **kwargs):
+        if "commit" in argv:
+            return subprocess.CompletedProcess(
+                argv, 1, "", "commit-msg hook rejected the commit")
+        return real_run(argv, **kwargs)
+
+    with mock.patch.object(subprocess, "run", fake_run):
+        with pytest.raises(RuntimeError):
+            lib.ensure_repo()
+
+    # Not silently healed: HEAD is still unborn, so a later call will retry
+    # rather than treating this dir as done forever.
+    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() == ""
 
 
 def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(

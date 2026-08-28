@@ -11,7 +11,7 @@ Runs entirely on `127.0.0.1`. No accounts, no cloud, no sandboxing — your own
 machine, your own trusted code. See `SPEC.md` / `ARCHITECTURE.md` / `DECISIONS.md`
 for the full design.
 
-![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](core_apps/learn/assets/open_with_right_click.gif)
+![fused-render: right-click a file in Explorer, pick "Open with" → fused-render, and it opens in the browser](docs/screenshots/open_with_right_click.gif)
 
 Right-click a file in Explorer → **Open with** → fused-render, and it opens in
 your browser. See [Windows: Explorer "Open with"](#windows-explorer-open-with)
@@ -35,7 +35,7 @@ notes for its URL): `pip install <wheel-url>`. From a source checkout:
 pip install -e .
 ```
 
-Requires Python 3.10+. Installs FastAPI, uvicorn, and pyarrow (used by the
+Requires Python 3.11+. Installs FastAPI, uvicorn, and pyarrow (used by the
 built-in parquet preview).
 
 Building from source and the local dev loop live in
@@ -108,12 +108,14 @@ Any `.html` file can call it and bind the result to the URL:
   reproduces its exact state.
 - `fused.ai(prompt, opts?)` — ask an AI model through the `claude` (Claude
   Code) CLI on your machine; resolves with `{text, model, usage}`. Pass a
-  Hugging Face repo id as `model` (`"Qwen/Qwen3-4B-Instruct-2507"`) and the same
+  Hugging Face repo id as `model` (`"Qwen/Qwen3.5-4B"`) and the same
   call runs a model **locally** instead — the slash is what tells them apart.
   Local chat works on every supported desktop platform: MLX is preferred on
-  Apple Silicon with PyTorch as its fallback, while Windows and Linux use
-  PyTorch directly. The AI Models page suggests models that suit whichever
-  backend your machine got.
+  Apple Silicon, and everywhere else the default is a small CPU-only PyTorch
+  build that runs on any machine — CUDA and ROCm builds exist and are one radio
+  away on the AI Models page's Engines tab, offered only where the app can see a
+  matching GPU. The AI Models page suggests models that suit whichever backend
+  is serving you.
   Local calls also take `history` (prior `{role, content}` turns, for a
   conversation rather than one question) and can be stopped mid-answer with
   `fused.ai.cancel()`.
@@ -131,6 +133,16 @@ Any `.html` file can call it and bind the result to the URL:
   language is auto-detected unless you name one. It runs for minutes, so
   `onProgress` fires with seconds of audio and the download manager's ✕ really
   stops it, and the transcript is written to a file so it outlives the tab.
+- `fused.ai.embed({texts|paths, kind, ...})` — text into a vector space
+  locally — and, on a model with a vision tower, images into the SAME space, so
+  a typed phrase can rank photographs. Resolves with `{vectors, dim, model}`,
+  unit-normalized so cosine similarity is a plain dot product. Pass `texts` or
+  `paths`, never both — a batch of up to 64 at a time. `kind: "query" |
+  "document"` picks which half of a retrieval model's prompt pair goes in front
+  of the texts: embed a corpus as documents once, then each search as a query.
+  Both `paths` and `kind` are refused with a 400 naming the model where that
+  model has no vision tower / no retrieval convention — `fused.ai.models
+  .catalog()` reports `acceptsPaths` and `promptScheme` per model.
 - `fused.ai.models.list() / load(id) / unload(id)` — what this machine is
   holding in memory and what it costs. See the **AI Models** page
   ([docs](docs/usage.md#ai-models)).

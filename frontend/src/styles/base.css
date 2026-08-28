@@ -68,6 +68,13 @@ table.listing-table th.sortable,
 html, body {
   height: 100%;
   margin: 0;
+  /* The shell is a fixed 100vh flex frame (#app) — the document itself never
+     scrolls. Any wheel delta an inner pane doesn't consume chains up to here,
+     and macOS answers with the elastic bounce: the whole app lurches and snaps
+     back, loudest when a pane hits its end mid-scroll (Akshil, 2026-08-20, the
+     Tasks list). The Y axis ONLY: the shorthand would also eat the horizontal
+     swipe-back/forward gesture, which is real navigation here (bugbot, #678). */
+  overscroll-behavior-y: none;
 }
 
 body {
@@ -100,3 +107,50 @@ iframe {
   background: var(--bg);
 }
 
+
+/* -- the instant tooltip (platform/lib/hints.ts) -------------------------------
+   ONE panel for the whole document, moved to the pointer. See that module for
+   why neither of the obvious alternatives survived here: a native `title` is
+   placed perfectly and waits four to five seconds on the first hover of a
+   session, and a CSS `::before` panel is instant but absolutely positioned
+   against its own element, so it opens over the next row on the first row of a
+   list and outside the scroller on the last cell of a row. Both shipped and both
+   were reported.
+
+   `position: fixed` is what makes it un-clippable: a child of <body> at fixed
+   coordinates is outside every `overflow` on the page. `pointer-events: none` is
+   what stops it eating its own hover — a panel 12px from the cursor is a panel
+   the cursor can reach, and one that took the pointer would hide itself and
+   flicker forever.
+
+   NO transition and NO delay, which is the whole point. `z-index` is above the
+   modal layer because a tip explains a control and a control may live in a
+   dialog; it never takes a pointer, so it cannot block one. */
+.hint-panel {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 9000;
+  max-width: min(46ch, 80vw);
+  padding: 4px 8px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg-popover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px var(--shadow-sm);
+  pointer-events: none;
+  /* Hidden by DISPLAY rather than opacity: an invisible panel that still has a
+     box is one whose width the next `place()` measures before its text lands. */
+  display: none;
+  /* A path is one token and would otherwise force the panel to the full 46ch on
+     every hint; wrapping keeps it as narrow as its longest line needs. */
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.hint-panel.is-on {
+  display: block;
+}

@@ -166,6 +166,34 @@ export interface AvailablePlugins {
   skipped: string[];
 }
 
+// One thing a plugin contributes to a session — a skill, a command, an agent,
+// a hook event, an MCP server. `path` is the absolute file that declares it,
+// which is what makes the entry clickable: the panel opens it in FusedRender
+// rather than paraphrasing it.
+export interface PluginComponent {
+  name: string;
+  description: string;
+  path: string;
+}
+
+// What ONE installed plugin puts in a session. Read on demand, per row — see
+// plugins.py's `_contents` for why this is not folded into `list`.
+export interface PluginContents extends OkResult {
+  id?: string;
+  root?: string;
+  description?: string;
+  skills?: PluginComponent[];
+  commands?: PluginComponent[];
+  agents?: PluginComponent[];
+  hooks?: PluginComponent[];
+  mcpServers?: PluginComponent[];
+  // True once the server's per-read walk budget ran out (plugins.py's
+  // _WalkBudget) — the lists above may be missing components rather than the
+  // plugin genuinely shipping fewer, so the panel says so instead of reading
+  // as a complete inventory of a plugin that is just unusually large.
+  truncated?: boolean;
+}
+
 export interface UpdateResult extends OkResult {
   id?: string;
   stdout?: string;
@@ -180,6 +208,8 @@ export const plugins = {
       id,
       enabled,
     }),
+  contents: (id: string) =>
+    callModule<PluginContents>("plugins", { action: "contents", id }),
   update: (id: string) => callModule<UpdateResult>("plugins", { action: "update", id }),
   // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
   // the caller must show a busy state rather than assume a quick answer.
@@ -214,6 +244,14 @@ export const marketplaces = {
 
 // -- memory -------------------------------------------------------------------
 
+// A memory FILE within a project — round 2's unit for this tab. `description`
+// is the file's own YAML frontmatter `description:` value; null when the
+// file has none, or it didn't parse (never guessed at from content).
+export interface MemoryFile {
+  name: string;
+  description: string | null;
+}
+
 export interface MemoryProject {
   // The projects/ directory name — a munged cwd. Still the IDENTIFIER every
   // other memory action is keyed on (the server path-guards on it), which is
@@ -224,7 +262,7 @@ export interface MemoryProject {
   // The munge is lossy, so a null here means "we refuse to guess", not "none".
   path: string | null;
   pathConfirmed: boolean;
-  files: string[];
+  files: MemoryFile[];
   changes: FileDelta[];
 }
 
@@ -235,32 +273,6 @@ export const memory = {
     callModule<OkResult & { committed?: string | null }>("memory", { action: "commit", project }),
   clear: (project: string) =>
     callModule<OkResult & { committed?: string | null }>("memory", { action: "clear", project }),
-};
-
-// -- claude_md ----------------------------------------------------------------
-
-export interface ClaudeMdFile {
-  path: string;
-  dir: string;
-  name: string;
-  size: number;
-  // Epoch SECONDS (os.stat st_mtime), not milliseconds.
-  mtime: number;
-  empty: boolean;
-  scope: "global" | "project" | "disk";
-  // First few lines of the file (char-capped server-side) for the card preview.
-  snippet: string;
-}
-
-export const claudeMd = {
-  list: () => callModule<{ files: ClaudeMdFile[]; engine: string }>("claude_md", { action: "list" }),
-  open: (path: string) => callModule<OkResult>("claude_md", { action: "open", path }),
-  remove: (path: string) =>
-    callModule<OkResult & { committed?: string | null }>("claude_md", { action: "delete", path }),
-  // Fold a just-saved edit into the config repo's history; a no-op for files
-  // outside ~/.claude (committed: null).
-  commit: (path: string) =>
-    callModule<OkResult & { committed?: string | null }>("claude_md", { action: "commit", path }),
 };
 
 // -- skills -------------------------------------------------------------------

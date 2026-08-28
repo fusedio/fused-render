@@ -24,6 +24,11 @@ export interface CanvasEntry {
   n_udfs: number | null;
   /** Newest file mtime (epoch seconds) in the local clone; null when not cloned. */
   mtime: number | null;
+  /** The workbench's own code-UDF count (nodes minus sticky notes, widgets and
+   *  apps), for every canvas in the account whether cloned or not — the lite
+   *  listing already carries the node list, so it costs no round trip. Null
+   *  only on the external-CLI fallback path, which lists bare names. */
+  n_code_udfs?: number | null;
   /** Canvas preview image URL, when it costs nothing to know: a public https
    *  URL already in the list payload. A preview held in the private image
    *  bucket arrives null here with `preview_pending` set — signing it is a

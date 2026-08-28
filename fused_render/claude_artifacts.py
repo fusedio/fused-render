@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from fused_render._view_url_codec import canonical_fs_path
 
 # CLAUDE_CONFIG_DIR wins where set — same rule (and same deliberate local
-# duplication) as server/routers/claude_sessions.py, user_skills.py and the
+# duplication) as server/routers/claude_sessions.py, user_plugin.py and the
 # claude template's CLAUDE_DIR.
 CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
@@ -89,7 +89,9 @@ def _epoch(value) -> float | None:
     """A transcript's ISO-8601 timestamp as an epoch float, or None.
 
     The trailing "Z" is rewritten rather than passed through: `fromisoformat`
-    only learned to accept it in 3.11, and this package still runs on 3.10. A
+    only learned to accept it in 3.11, which is now the floor — so the rewrite is
+    no longer required, and is kept only because it is harmless and this parsing
+    is not what the floor bump is about. A
     timestamp with no zone at all is read as UTC — every writer of these records
     emits UTC, and guessing local time would silently shift an artifact's
     position in a listing sorted by time.

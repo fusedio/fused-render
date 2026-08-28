@@ -162,10 +162,12 @@ def _bundled_distributions():
     them). Reading only the extra is how an earlier version of this change
     silently dropped them from the bundle.
     """
-    # tomllib is 3.11+ stdlib; `tomli` is the same parser and is a dependency on
-    # 3.10 (see pyproject). This module is imported by
-    # tests/test_bundle_contents.py, which runs on the whole 3.10-3.13 matrix, so
-    # it cannot assume the newer name.
+    # tomllib is 3.11+ stdlib, and requires-python is now >=3.11, so the `tomli`
+    # arm below cannot be reached and `tomli` is no longer a declared dependency.
+    # Kept as a one-failed-import fallback rather than deleted: this module is
+    # imported by tests/test_bundle_contents.py and by the py2app build, and a
+    # bare `import tomllib` at module scope is the shape that errored a whole
+    # test module out once already.
     try:
         import tomllib
     except ImportError:
@@ -291,10 +293,11 @@ _PREVIEWABLE_EXTENSIONS = [
     "mp4", "mov", "m4v", "webm", "mp3", "wav", "m4a", "ogg", "flac",
     "tif", "tiff", "geotiff",  # GeoTIFF rasters (server.py "geotiff" template)
     "nc", "nc4", "cdf",  # NetCDF (server.py "netcdf" template)
+    "h5", "hdf5", "he5", "hdf",  # HDF (server.py "map" template)
     # geo/sci formats with no built-in template key — bindable via the
     # runtime template registry:
     "gpkg", "shp", "fgb", "kml", "kmz", "gpx", "las", "laz",
-    "pmtiles", "mbtiles", "zarr", "h5", "grib2", "jp2",
+    "pmtiles", "mbtiles", "zarr", "grib2", "jp2",
 ]
 
 DOCUMENT_TYPES = [
@@ -306,6 +309,16 @@ DOCUMENT_TYPES = [
         "LSHandlerRank": "Owner",
         "CFBundleTypeExtensions": ["bookmark"],
         "LSItemContentTypes": ["io.fused.render.bookmark"],
+    },
+    {
+        # `.fused` is our own single-file app format (SPEC §43, D385): declare
+        # the UTI below and claim Owner rank so a Finder double-click always
+        # opens FusedRender on the /openfused confirm page.
+        "CFBundleTypeName": "FusedRender app",
+        "CFBundleTypeRole": "Viewer",
+        "LSHandlerRank": "Owner",
+        "CFBundleTypeExtensions": ["fused"],
+        "LSItemContentTypes": ["io.fused.render.app"],
     },
     {
         "CFBundleTypeName": "Apache Parquet data",
@@ -426,6 +439,15 @@ OPTIONS = {
         "rumps", "objc", "AppKit", "Foundation", "Cocoa", "CoreFoundation",
         # Pinned view (SPEC §25, D97): WKWebView for the status-item popover.
         "WebKit",
+        # Native capture (SPEC §45): fused_render/capture/_darwin.py imports
+        # these directly. Named rather than derived because they are core deps
+        # with a platform marker, not `[bundled]` ones — the same reason AppKit
+        # is listed above. Quartz carries the non-prompting permission probe
+        # (CGPreflightScreenCaptureAccess) and the still's ImageIO writer;
+        # CoreMedia/CoreAudio arrive as their dependencies and are named so a
+        # dropped transitive is a build error rather than an ImportError on a
+        # user's first recording.
+        "ScreenCaptureKit", "AVFoundation", "Quartz", "CoreMedia", "CoreAudio",
         # The execution engine and deploy CLI (D69, D79, SPEC §19 DP-3), run
         # in-bundle via fused_render/_fused_cli.py. `fused` ITSELF is no longer
         # named here: it is a `[bundled]` requirement, so BUNDLED_PACKAGES below
@@ -454,6 +476,16 @@ OPTIONS = {
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
+        # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402).
+        # Forced for the reason this whole list exists: every import of it in the
+        # app is INSIDE a function (the router imports it per request, and
+        # `worker_base` must stay stdlib-only at module scope), so a
+        # traced-module copy is exactly the shape that ships a DMG where the
+        # button reports an ImportError — the .pptx failure this file's comments
+        # describe, in a new place. `hf_xet` is its compiled Xet backend and
+        # `filelock` guards its token store; both are reached only from inside
+        # hf, so neither is any more traceable than hf itself.
+        "huggingface_hub", "hf_xet", "filelock",
     ] + BUNDLED_PACKAGES + STDLIB_PACKAGES,
     # Single modules (incl. bare C extensions) that modulegraph can't be
     # trusted to find on its own — same runtime-import blindness as
@@ -512,7 +544,17 @@ OPTIONS = {
                 "UTTypeDescription": "FusedRender bookmark",
                 "UTTypeConformsTo": ["public.json"],
                 "UTTypeTagSpecification": {"public.filename-extension": ["bookmark"]},
-            }
+            },
+            # Same posture for `.fused` (SPEC §43, D385): our own format, the
+            # UTI exported so the Owner rank above binds reliably. Physically
+            # a zip, but conforming to public.data (not public.zip-archive)
+            # keeps Archive Utility and friends from claiming it.
+            {
+                "UTTypeIdentifier": "io.fused.render.app",
+                "UTTypeDescription": "FusedRender app",
+                "UTTypeConformsTo": ["public.data"],
+                "UTTypeTagSpecification": {"public.filename-extension": ["fused"]},
+            },
         ],
         # macOS shows these strings in the TCC permission prompt when the app
         # first reads a file under a protected folder (the app browses the
@@ -534,6 +576,15 @@ OPTIONS = {
         ),
         "NSNetworkVolumesUsageDescription": (
             "FusedRender previews files you open from network volumes."
+        ),
+        # `fused.capture.audio` / a screen recording with `audio: "mic"`
+        # (SPEC §45). REQUIRED, not decorative: an app that touches the
+        # microphone with no NSMicrophoneUsageDescription is killed by the OS
+        # rather than prompted. Screen recording has no matching key — that
+        # grant lives only in System Settings.
+        "NSMicrophoneUsageDescription": (
+            "FusedRender records the microphone when a page you opened asks it "
+            "to — a voice note, or narration over a screen recording."
         ),
     },
 }

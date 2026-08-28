@@ -49,11 +49,12 @@
 // list that also held next Tuesday would answer a different question.
 //
 // Section layout and per-action busy/error state follow shell/Mounts.tsx.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   getConfig,
   getSchedule,
   getScheduleQueue,
+  getTaskChanges,
   getTasks,
 } from "@platform/lib/api";
 import type {
@@ -76,12 +77,24 @@ import {
   TaskFilterControls,
   TaskList,
   filterTasks,
+  filtersForView,
   projectOptions,
 } from "./ScheduleTaskViews";
 import type { TaskFilters } from "./ScheduleTaskViews";
 import { publishTasks, TASKS_POKE_EVENT, useTasksFeeder } from "./tasksPulse";
-import { viewFromSearch, viewUrl } from "./tasks-lib";
+import { mergeTaskChanges, viewFromSearch, viewUrl } from "./tasks-lib";
 import type { TaskView } from "./tasks-lib";
+import { isUnderDir } from "./current-apps-lib";
+
+/** The app page's Tasks tab (shell/AppPage.tsx, D488) mounts this SAME page
+ *  narrowed to one folder: every task whose project is `project` or sits inside
+ *  it. The scope is applied before the toolbar filters, so those still work
+ *  within it; nothing else about the page changes — same views, same modal,
+ *  same poll. The unscoped `/tasks` route passes nothing. */
+export interface TasksScope {
+  /** The app folder, canonical forward-slash — the value `Task.project` carries. */
+  project: string;
+}
 
 // How often the page re-reads itself. A `pending` message becomes `sent` on the
 // server's own tick (30s), so anything much slower than this shows a message as
@@ -98,6 +111,11 @@ const POLL_MS = 20000;
 // bare `/tasks`, which is how the page is opened from the sidebar. Both are
 // kept in step, so switching the view in one tab still greets the next visit
 // the same way.
+//
+// Shared with the app page's Tasks tab (AppPage.tsx, D488), which mounts this
+// same component scoped to one folder: picking Board there is remembered here
+// too. One page, one memory — a per-app key would make the same control forget
+// on every other app.
 const VIEW_KEY = "fused-render:scheduled-view";
 
 // How far ahead a deep link's prefilled time lands. The form's own default is
@@ -107,7 +125,7 @@ const VIEW_KEY = "fused-render:scheduled-view";
 // inside the CURRENT minute opens the form on a time already behind the clock.
 const NEW_LINK_LEAD_MS = 120_000;
 
-export default function Scheduled() {
+export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // THIS PAGE IS THE POLLER while it is open. The sidebar's Tasks entry reads the
   // same rows (shell/tasksPulse) and would otherwise run a timer of its own
   // alongside this one — two calls to /api/tasks for one answer, at two
@@ -117,6 +135,15 @@ export default function Scheduled() {
   const [state, setState] = useState<ScheduleResult | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [tasksFailed, setTasksFailed] = useState(false);
+  // The rows as the changes loop below last saw them, and the server
+  // generation they answer to. Refs, not state: the loop is one long-lived
+  // effect and must read the newest value without re-subscribing on every
+  // poll. Mirrored from `tasks` by the effect under it.
+  const tasksRef = useRef<Task[]>([]);
+  const generationRef = useRef(-1);
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
   const [queued, setQueued] = useState<ScheduledMessage[]>([]);
   const [running, setRunning] = useState<ScheduledMessage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -248,8 +275,13 @@ export default function Scheduled() {
     );
     getTasks().then(
       (r) => {
+        // A full listing that left before a delta landed is OLDER than what
+        // is on screen; applying it would roll the rows back and the
+        // generation with them (bugbot #892). The next poll catches up.
+        if (typeof r.generation === "number" && r.generation < generationRef.current) return;
         setTasks(r.tasks ?? []);
         setTasksFailed(false);
+        if (typeof r.generation === "number") generationRef.current = r.generation;
         // The sidebar's Tasks entry reads the same rows (shell/tasksPulse): the
         // dot and the counts beside the label are this answer, not a second poll
         // of their own — two polls would show a dot the page disagrees with for
@@ -288,6 +320,76 @@ export default function Scheduled() {
     window.addEventListener(TASKS_POKE_EVENT, reload);
     return () => window.removeEventListener(TASKS_POKE_EVENT, reload);
   }, []);
+  // The fast lane. /api/tasks/changes long-polls the server's change watcher
+  // (tasks_watch.py) and answers the moment a session starts, resumes, takes
+  // a prompt or grows — so a `claude` typed into a terminal in some folder is
+  // a row here within a second, not up to a poll later. Only the rows that
+  // moved come back and are folded into place (mergeTaskChanges); the 20s
+  // full reload above stays as the truth underneath. Hidden tabs sit the loop
+  // out — useRefreshOnReturn reloads on the way back — and a failed call
+  // backs off rather than hammering a server that is restarting.
+  useEffect(() => {
+    let stopped = false;
+    let controller: AbortController | null = null;
+    const sleep = (ms: number) =>
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+      });
+    const untilVisible = () =>
+      new Promise<void>((resolve) => {
+        const onChange = () => {
+          if (document.visibilityState !== "visible") return;
+          document.removeEventListener("visibilitychange", onChange);
+          resolve();
+        };
+        document.addEventListener("visibilitychange", onChange);
+      });
+    const run = async () => {
+      while (!stopped) {
+        if (document.visibilityState !== "visible") {
+          await untilVisible();
+          continue;
+        }
+        if (generationRef.current < 0) {
+          // No full listing has answered yet; nothing to merge into.
+          await sleep(500);
+          continue;
+        }
+        controller = new AbortController();
+        try {
+          const r = await getTaskChanges(generationRef.current, 25, controller.signal);
+          if (stopped) return;
+          if (r.full) {
+            // "Reload everything" includes a server that restarted and counts
+            // from zero again: forget our generation FIRST, or the stale-listing
+            // guard in reload() would refuse the very listing that catches us
+            // up, forever (bugbot #892).
+            generationRef.current = -1;
+            reload();
+            await sleep(1000);
+            continue;
+          }
+          generationRef.current = r.generation;
+          const rows = r.rows ?? [];
+          const gone = r.gone ?? [];
+          if (rows.length || gone.length) {
+            const merged = mergeTaskChanges(tasksRef.current, rows, gone);
+            tasksRef.current = merged;
+            setTasks(merged);
+            publishTasks(merged);
+          }
+        } catch {
+          if (stopped) return;
+          await sleep(3000);
+        }
+      }
+    };
+    void run();
+    return () => {
+      stopped = true;
+      controller?.abort();
+    };
+  }, []);
 
   const pickView = (v: TaskView) => {
     setView(v);
@@ -313,8 +415,23 @@ export default function Scheduled() {
   // Every folder that has a task, for the project filter. Derived from the
   // tasks themselves rather than from a separate call: the set of projects IS
   // "the folders these tasks are in", and any other source could disagree.
-  const projects = useMemo(() => projectOptions(tasks), [tasks]);
-  const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);
+  // The app page's scope, applied FIRST: `tasks` above stays the whole machine
+  // (it is what publishTasks hands the sidebar), and everything the page shows
+  // or offers to filter is derived from this narrowed set instead.
+  const inScope = useMemo(
+    () => (scope ? tasks.filter((t) => isUnderDir(t.project, scope.project)) : tasks),
+    [tasks, scope],
+  );
+  const projects = useMemo(() => projectOptions(inScope), [inScope]);
+  // The Archive facet does not apply on the Calendar (see
+  // tasks-lib.filtersForView): a hidden selection must never silently filter
+  // that view's grid to nothing, so the query it runs drops "archived" from
+  // the status list while the STORED `filters` — and therefore the popover's
+  // tick and the badge on List/Board — stay exactly as the user left them.
+  const shown = useMemo(
+    () => filterTasks(inScope, filtersForView(filters, view)),
+    [inScope, filters, view],
+  );
 
   // Editing is addressed by ENTRY id, not by task: a task is a thread, and a
   // thread has nothing to edit — only a message that has not gone out yet does.
@@ -362,9 +479,13 @@ export default function Scheduled() {
           what it is by shape, and the line under it was buying nothing but
           vertical space the views wanted. The app-must-be-running caveat lives
           where a person meets its consequence — the Queued strip. */}
-      <header className="schedule-header">
-        <h1>Tasks</h1>
-      </header>
+      {/* Scoped, the app page's own header names the app and the tab already
+          says "Tasks"; a second heading would be the page saying its name twice. */}
+      {!scope && (
+        <header className="schedule-header">
+          <h1>Tasks</h1>
+        </header>
+      )}
 
       {loadError && <ErrorBanner>Failed to load tasks: {loadError}</ErrorBanner>}
       {!state && !loadError && <SkeletonLines rows={2} label="Loading tasks" />}
@@ -386,8 +507,14 @@ export default function Scheduled() {
                 would be recognition traded for guessing (design-principles §4)
                 — and the marks are lucide's, at the same 14px every other glyph
                 on this page uses (ScheduleCalendar's `icon`). */}
-            <div className="schedule-form-seg" role="radiogroup" aria-label="View">
+            {/* `schedule-view-seg` and the per-button `data-view` are the Tasks
+                tour's anchors (platform/lib/tours/tasks.ts): three other
+                controls in the app wear `.schedule-form-seg` (the calendar's
+                range, the modal's Ends), so the shared class cannot name this
+                one. Styling still hangs off `.schedule-form-seg`. */}
+            <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
               <button type="button"
+                      data-view="list"
                       className={"btn btn-secondary schedule-view-btn" + (view === "list" ? " is-active" : "")}
                       aria-pressed={view === "list"}
                       onClick={() => pickView("list")}>
@@ -395,6 +522,7 @@ export default function Scheduled() {
                 List
               </button>
               <button type="button"
+                      data-view="board"
                       className={"btn btn-secondary schedule-view-btn" + (view === "board" ? " is-active" : "")}
                       aria-pressed={view === "board"}
                       onClick={() => pickView("board")}>
@@ -402,6 +530,7 @@ export default function Scheduled() {
                 Board
               </button>
               <button type="button"
+                      data-view="calendar"
                       className={"btn btn-secondary schedule-view-btn" + (view === "calendar" ? " is-active" : "")}
                       aria-pressed={view === "calendar"}
                       onClick={() => pickView("calendar")}>
@@ -428,6 +557,7 @@ export default function Scheduled() {
               projects={projects}
               home={home}
               onChange={setFilters}
+              hideArchiveStatus={view === "calendar"}
             />
             <button type="button" className="btn btn-primary schedule-new"
                     onClick={() => openForm("blank", null)}>
@@ -474,13 +604,39 @@ export default function Scheduled() {
               // a reason to hold onto it. See `stale` in TaskList.
               stale={tasksFailed}
               onEditEntry={editEntry}
+              // The folder chip as a TAG: pressing one narrows the page to that
+              // project, pressing the pinned one again clears it. It REPLACES
+              // the project selection rather than adding to it — the gesture
+              // means "show me this folder", and a press that quietly widened
+              // an existing selection would be the opposite of what it looks
+              // like. Everything else about the filters is left alone, so a
+              // status or a search already on stays on.
+              onPickProject={(project) =>
+                setFilters((f) => ({
+                  ...f,
+                  // A TOGGLE, because the chip stays on screen wearing the
+                  // state: pressing the folder you are already filtered to is
+                  // the obvious way to let it go, and it is the only way that
+                  // does not send the reader to the toolbar popover to undo a
+                  // gesture they made in the list.
+                  projects:
+                    f.projects.length === 1 && f.projects[0] === project
+                      ? []
+                      : [project],
+                }))
+              }
+              // Which project the page is pinned to — so the chip survives the
+              // filter that makes every row agree, and shows that it is on.
+              pinnedProjects={filters.projects}
               // Cancelling a message changes server state. The 20s poll would
               // catch it anyway, so this is about the row not looking stuck for
               // twenty seconds, not about correctness.
               onReload={reload}
               emptyLabel={
-                tasks.length === 0
-                  ? "No tasks yet. Everything Claude runs for you shows up here."
+                inScope.length === 0
+                  ? scope
+                    ? "No tasks for this app yet."
+                    : "No tasks yet. Everything Claude runs for you shows up here."
                   : "Nothing matches these filters."
               }
             />
@@ -508,11 +664,22 @@ export default function Scheduled() {
           // `openSeq` above.
           key={`${editing ? `edit:${editing.id}` : "new"}#${openSeq}`}
           initialTime={creating instanceof Date ? creating : null}
-          initialTarget={newTarget}
+          // Scoped, a new task is a task FOR THIS APP: the folder is prefilled
+          // so the modal opens ready to type. A deep link's own target still
+          // wins — it named a folder on purpose.
+          initialTarget={newTarget ?? scope?.project ?? null}
           initialMessage={newMessage}
           chatSessionId={newSession}
           chatBack={newBack}
           editing={editing}
+          // IS THIS CARD BEING USED TO PLAN? Three ways it is: the reader is on
+          // the calendar (where "when" is the question the view itself asks),
+          // the opening carried a time (a slot click), or an existing task is
+          // being changed. From the List or the Board it is not, and the
+          // when-row folds into More options — a task typed there is one to run
+          // now, and the row was what everybody skipped past (Akshil,
+          // 2026-08-23).
+          planning={view === "calendar" || creating instanceof Date || !!editing}
           permissionModes={state.permission_modes}
           // Newest-first fallback recents: past entries arrive newest first,
           // and the modal dedupes against what localStorage already knows.

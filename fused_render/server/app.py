@@ -16,7 +16,10 @@ missing).
 """
 
 import asyncio
+import json
 import os
+import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -26,7 +29,6 @@ from fused_render.canvases import router as canvases_router
 from fused_render.shell.bookmarks import router as bookmarks_router
 from fused_render.shell.prefs import router as prefs_router
 from fused_render.shell.recents import router as recents_router
-from fused_render.user_skills import sync_user_skills
 
 from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_session
 from fused_render.server.common import (
@@ -39,12 +41,15 @@ from fused_render.server.common import (
     _forced_engine,
 )
 from fused_render.server.routers.apps import router as apps_router
+from fused_render.server.routers.app_api import router as app_api_router
+from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.clipboard import router as clipboard_router
+from fused_render.server.routers.capture import router as capture_router
 from fused_render.server.routers.config import router as config_router
 from fused_render.server.routers.env import router as env_router
 from fused_render.server.routers.export import router as export_router
@@ -52,17 +57,23 @@ from fused_render.server.fs_mutate import router as fs_mutate_router
 from fused_render.server.routers.fs_read import router as fs_read_router
 from fused_render.server.routers.git_repos import router as git_repos_router
 from fused_render.server.routers.git_show import router as git_show_router
+from fused_render.server.routers.git_upstream import router as git_upstream_router
 from fused_render.server.routers import index as index_routes
 from fused_render.server.routers.jobs import router as jobs_router
+from fused_render.server.routers.engines import router as engines_router
 from fused_render.server.routers.ai_models import router as ai_models_router
+from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
+from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
+from fused_render.server.routers.app_engine import router as app_engine_router
 from fused_render.server.routers.schedule import router as schedule_router
 from fused_render.server.routers.search import router as search_router
 from fused_render.server.routers.selffix import router as selffix_router
 from fused_render.server.routers.shell import router as shell_router
+from fused_render.server.routers.current_apps import router as current_apps_router
 from fused_render.server.routers.tasks import router as tasks_router
 from fused_render.server.routers.update import router as update_router
 # The MODULE, not `from … import TEMPLATES_DIR`: that constant is a live seam
@@ -159,6 +170,91 @@ def export_app_env() -> None:
     _export_bundled_uv_path()
 
 
+def _server_json_path() -> str:
+    from fused_render.shell import storage as shell_storage
+
+    return os.path.join(shell_storage.home_dir(), "server.json")
+
+
+def write_server_json(port: int, host: str = "127.0.0.1") -> None:
+    """Publish this server's origin + the shared-template dir to
+    `<home_dir()>/server.json`, for a process the server did NOT spawn (SPEC
+    PY-19, D472) — `fused_ai.py`'s `resolve_origin()` reads it as the fallback
+    below `FUSED_RENDER_ORIGIN`. A server child already inherits the env var
+    (`set_server_origin_env`, right above); a user-launched app inherits
+    nothing and cannot compute the port itself, since the desktop launcher
+    auto-picks a free one and `_branch.branch_port()` is only right for a bare
+    `fused-render` run.
+
+    Written at the SAME lifecycle point as `set_server_origin_env`/
+    `export_app_env` — before the server starts serving — into
+    `shell.storage.home_dir()`, which is already branch-resolved, so a
+    per-branch dev server writes its own file rather than colliding with
+    another branch's.
+
+    **Best-effort and non-fatal, like every other startup export here.** This
+    runs before the socket bind; a write failure (a read-only home dir, a
+    disk full) must never block or crash startup — the desktop supervisor
+    reads a slow start as a failed one. A stale file from a crashed server is
+    expected and is the CLIENT's problem to detect (a connect probe before
+    trusting it), not something this side heartbeats.
+    """
+    try:
+        import fused_render
+
+        path = _server_json_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        shared = os.path.join(
+            os.path.dirname(os.path.abspath(fused_render.__file__)),
+            "templates", "shared")
+        payload = {
+            "origin": f"http://{host}:{port}",
+            "pid": os.getpid(),
+            "shared": shared,
+            "version": fused_render.__version__,
+            "started": time.time(),
+        }
+        # Write-then-rename so a reader never observes a half-written file —
+        # `resolve_origin()` may be polling this path from another process at
+        # the same moment.
+        tmp_path = path + f".{os.getpid()}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+        os.replace(tmp_path, path)
+    except OSError:
+        logger.warning("could not write server.json (non-fatal)", exc_info=True)
+
+
+def remove_server_json() -> None:
+    """Undo `write_server_json` at shutdown. Best-effort: a file that is
+    already gone, or a home dir that went away underneath the server, is not
+    a reason to raise from a shutdown handler.
+
+    **Only ever removes a file THIS process wrote.** `write_server_json` is
+    last-writer-wins into one branch-resolved path with no locking, and two
+    servers on the same branch (different ports — the desktop app plus a
+    manually-launched `fused-render serve --port 8001`) both write it. With
+    no ownership check, whichever shuts down first deletes the file the
+    survivor is still relying on, and every external `resolve_origin()` then
+    raises `ServerNotRunning` while a server genuinely is. Read the file
+    back and compare its recorded `pid` against this process's own before
+    deleting — a read failure (also best-effort) or a pid mismatch means
+    "not mine", and this is a no-op either way.
+    """
+    path = _server_json_path()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict) or data.get("pid") != os.getpid():
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _export_bundled_uv_path() -> None:
     """Put the bundled ``uv`` on PATH so template daemons can find it.
 
@@ -244,16 +340,57 @@ def create_app(start_dir: str) -> FastAPI:
 
         engine.warm_unless_forced_builtin()
 
-    # User-level skill sync (D185): install/refresh the canonical fused-render
-    # skills in Claude Code's skills dir. Since D216 this is for sessions
-    # fused-render did NOT launch — the user's own `claude` in their app folder
-    # — because the ones it does launch are handed the plugin root instead
-    # (export_app_env above). A startup event (not create_app body) on purpose
-    # — tests build the app without running lifespan, so they never write
-    # outside the redirected dirs.
+    # Background apps (background_apps.py): resurrect every autostart-opted-in
+    # app's daemon at server startup. A daemon thread, not the create_app body
+    # or an unthreaded await here — same D228 rationale as
+    # _startup_sync_user_plugin below: each bring-up is a subprocess spawn
+    # plus a bootstrap wait (BOOTSTRAP_TIMEOUT_S), nowhere near cheap enough
+    # for the pre-bind path, and one folder's failure (dead manifest, project
+    # venv not built, a spawn error) must never delay server readiness or the
+    # other apps' bring-up — `resurrect_autostart` already logs-and-skips
+    # those itself. Autostart is opt-in (D511): only paths explicitly present
+    # in the autostart store come back here — a `start()` with no `autostart`
+    # call never persisted anything and does NOT return at the next launch.
+    #
+    # `_background_apps_shutdown` is a per-app-instance Event (a local here,
+    # not a module global): a bring-up only registers its child once `_spawn`
+    # returns, up to BOOTSTRAP_TIMEOUT_S (120s) later, so a shutdown landing
+    # mid-spawn would otherwise have `engine_host.stop_all()` walk a
+    # `_children` that does not hold it yet, and the child would start
+    # running unowned right after `stop_all()` already finished. Setting this
+    # on shutdown lets `resurrect_autostart`'s own thread catch that — see its
+    # docstring — for exactly the race a code review caught (2026-08-26).
+    _background_apps_shutdown = threading.Event()
+
     @app.on_event("startup")
-    async def _startup_sync_user_skills():
-        sync_user_skills()
+    async def _startup_resurrect_background_apps():
+        from fused_render import background_apps
+
+        threading.Thread(target=background_apps.resurrect_autostart,
+                         args=(_background_apps_shutdown,),
+                         name="background-apps-resurrect", daemon=True).start()
+
+    @app.on_event("shutdown")
+    async def _shutdown_background_apps_resurrection():
+        _background_apps_shutdown.set()
+
+    # The published `fusedio/fused-render` plugin, installed or refreshed in
+    # the user's own Claude config (user_plugin.py, D492) — for sessions
+    # fused-render did NOT launch, the user's own `claude` in a terminal or
+    # their app folder, which `--plugin-dir` cannot reach. The ones we do launch
+    # are handed the local plugin root instead (export_app_env above) and owe
+    # nothing to this.
+    #
+    # `start()` and not the sync itself: it spawns `claude` and clones over the
+    # network, so it belongs on a daemon thread and emphatically not on the
+    # pre-bind path (D228). A startup event rather than the create_app body for
+    # the usual reason — tests build apps without running lifespan, so they
+    # never reach the user's real config.
+    @app.on_event("startup")
+    async def _startup_sync_user_plugin():
+        from fused_render import user_plugin
+
+        user_plugin.start()
 
     # Scheduled Claude messages (schedule.py). A startup event and emphatically
     # NOT the create_app body: this loop SENDS things, and its first tick fires
@@ -279,19 +416,100 @@ def create_app(start_dir: str) -> FastAPI:
         from fused_render import selffix
 
         selffix.start_reconcile()
+    # The Tasks page's change signal (tasks_watch.py): a stat-poll thread over
+    # Claude Code's live-session registry, prompt history and live transcripts.
+    # A startup event for the same reason as `_startup_schedule`: it is a
+    # thread for the life of the process that reads the user's real ~/.claude,
+    # and tests build apps without lifespan.
+    @app.on_event("startup")
+    async def _startup_tasks_watch():
+        from fused_render import tasks_watch
+
+        tasks_watch.start()
 
     @app.on_event("shutdown")
     async def _startup_shutdown_ai():
         await shutdown_ai_session()
 
+    # The idle-unload reaper (SPEC AI-13): unloads a resident local model once
+    # nothing has used it for the configured window (default 10 min, 0 = off).
+    # A startup event and deliberately not the create_app body, for the same
+    # reason as `_startup_schedule` above: tests build apps with no lifespan,
+    # and this starts a thread that lives for the process — building one per
+    # test-constructed app would leak a thread per test.
+    @app.on_event("startup")
+    async def _startup_ai_idle_reaper():
+        from fused_render.ai import supervisor
+
+        supervisor.start_reaper()
+
+    # GPU/VRAM detection (SPEC AI-18, D519): `hw_detect.detect_hardware` is a
+    # subprocess probe (nvidia-smi/rocm-smi/PowerShell+registry/sysctl),
+    # 50-500ms cold — the same cost `fit._wired_limit_mb` refuses on the
+    # per-request verdict path, which is why `fit.py`/`speed.py` only ever
+    # read `hw_detect.cached_hardware()`. Without this hook nothing ever
+    # calls the probe, and both modules take their no-GPU-known branch
+    # forever (code review, 2026-08-27) — a background daemon thread, same
+    # shape as the idle reaper above, not the create_app body: it fires one
+    # probe immediately and then re-probes every few hours for the rest of
+    # the process's life.
+    @app.on_event("startup")
+    async def _startup_ai_hardware_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hardware_refresh()
+
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
+    # `ai_runtime._accepts_image`/`_capability_tags` used to call
+    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
+    # 8-second timeout — straight from `describe_catalog`, a route the AI
+    # Models picker polls. They now read `hub_metadata.cached()` only (a
+    # plain disk read), and this background thread is the sole writer,
+    # mirroring the hardware-refresh hook immediately above for the
+    # identical reason.
+    @app.on_event("startup")
+    async def _startup_ai_hub_metadata_refresh():
+        from fused_render.ai import supervisor
+
+        supervisor.start_hub_metadata_refresh()
+
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
     # memory to a process nothing on screen mentions any more.
+    # Live native recordings are finalised on the way out (SPEC §45/CP-4): a
+    # .mov whose `moov` atom was never written does not play, so a server that
+    # stops while one is running must not just vanish. This covers the plain
+    # `fused-render` server (Ctrl-C, uvicorn's own shutdown); the packaged app
+    # never gets here — it exits via `os._exit` — so `app.quit_teardown` has a
+    # "capture" rung of its own.
+    # Undo `write_server_json` on an ordinary shutdown (Ctrl-C, uvicorn's own
+    # stop). The packaged app's other exit path (`os._exit`) runs no shutdown
+    # event at all — a stale file there is exactly the case `resolve_origin()`
+    # is required to connect-probe before trusting, so it is a correctness gap
+    # this side does not need to close.
+    @app.on_event("shutdown")
+    async def _shutdown_server_json():
+        remove_server_json()
+
+    @app.on_event("shutdown")
+    async def _shutdown_captures():
+        from fused_render import capture
+
+        capture.stop_all()
+
     @app.on_event("shutdown")
     async def _shutdown_ai_workers():
         from fused_render.ai import supervisor
 
         supervisor.unload_all()
+
+    # Every managed engine dies with the app: template daemons and /api/engine
+    # warm workers alike (stop_all clears both).
+    @app.on_event("shutdown")
+    async def _shutdown_engines():
+        from fused_render.server import engine_host
+
+        engine_host.stop_all()
 
     # Reclaim project venvs whose source folder is gone (SPEC PY-16). Keying a
     # venv on the folder's path means moving or renaming a project orphans its
@@ -371,6 +589,11 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.shell import prefetch as shell_prefetch
 
     app.include_router(shell_mounts.router)
+    # Full Disk Access nudge (shell/fda.py): open the Settings pane + persist
+    # "Not now". The state itself rides /api/config's `fda` field.
+    from fused_render.shell import fda as shell_fda
+
+    app.include_router(shell_fda.router)
     shell_mounts.startup()
     # Background mount-health monitor (shell/mounts.py): polls every mount on a
     # timer, auto-reconnects a wedged/disconnected NFS mount ONCE per disconnect
@@ -383,6 +606,10 @@ def create_app(start_dir: str) -> FastAPI:
     # /api/desktop/shutdown — a generic app-info/control grab-bag that doesn't
     # map to any single fs/template/ai concern (_server_config.py).
     app.include_router(config_router)
+    # Native screen / microphone / still capture (routers/capture.py, SPEC §45):
+    # `fused.capture.*`. macOS-only today, and it says so in `sources()` rather
+    # than by the routes being absent — a page must be able to ask.
+    app.include_router(capture_router)
     # Self-update triggers (routers/update.py) — POSTs that kick a manifest
     # check / an install; both carry the D3 X-Fused guard and 404 unless the
     # mac app started the update manager.
@@ -392,9 +619,22 @@ def create_app(start_dir: str) -> FastAPI:
     # leaves behind. Sibling of the updater above on purpose — one of them
     # changes this install, the other replaces it.
     app.include_router(selffix_router)
+    # Managed template engines (routers/engines.py): a template's daemon rides
+    # this stable origin instead of its ephemeral port, and the routes heal a
+    # dead child under the URLs the page holds (engine_host.py). The map
+    # template's tile daemon is the first user.
+    app.include_router(engines_router)
     # The Home view's apps backend (routers/apps.py): list workspace app
     # folders + scaffold new ones from the app starter kit.
     app.include_router(apps_router)
+    # The app page's API tab (routers/app_api.py): every .py in one app folder
+    # described by the api template's inspector, one request per folder.
+    app.include_router(app_api_router)
+    # Background apps (routers/background_apps.py): enable/disable/stop/
+    # restart/status for a folder's declared long-running daemon, backed by
+    # engine_host's "background" child kind + background_apps.py's enabled
+    # store. See the startup resurrection hook below.
+    app.include_router(background_apps_router)
     # Claude Code project folders for the Explorer homepage's "Claude
     # sessions" tab (routers/claude_sessions.py) — read-only, no auth guard.
     app.include_router(claude_sessions_router)
@@ -410,6 +650,9 @@ def create_app(start_dir: str) -> FastAPI:
     # message that entered it, typed or scheduled. Reads are unguarded; the one
     # POST marks a message read, the same weight of change as the triage POST.
     app.include_router(tasks_router)
+    # The Current apps desk (fused_render/current_apps.py): GET the table,
+    # DELETE one app (archiving its tasks). Fed by the tasks listing above.
+    app.include_router(current_apps_router)
     # Community marketplace backend for the /apps hub's Showcase tab and the
     # explorer preview's Clone button (routers/community.py).
     app.include_router(community_router)
@@ -423,6 +666,13 @@ def create_app(start_dir: str) -> FastAPI:
     # here while a frame carries `_rev`. Read-only, no guard; it refuses a
     # mount-backed path outright, like every other git call in the app.
     app.include_router(git_show_router)
+    # /api/git-upstream (routers/git_upstream.py): repos with a known
+    # upstream update, for the activity card's repo-update rows. GET is
+    # unguarded (the check that populates it runs off GET /render, D301,
+    # throttled per repo root); POST (the card's Update/Switch buttons) is
+    # guarded by X-Fused (D3) and only accepts a `root` the GET side has
+    # already recorded — never an arbitrary client-supplied path.
+    app.include_router(git_upstream_router)
     # What the Hugging Face cache holds on this machine, for the sidebar's
     # "AI Models" page (routers/ai_models.py). The reads are unguarded;
     # its one destructive POST (delete a repo/revision) carries the D3 X-Fused
@@ -436,11 +686,24 @@ def create_app(start_dir: str) -> FastAPI:
     # my disk" and "what is on the network" fail differently and share nothing
     # but the join.
     app.include_router(hub_models_router)
+    # Signing this machine in to the Hub (routers/hf_auth.py, D402). The app
+    # stores no token: the button drives huggingface_hub's own browser login and
+    # hf persists what comes back, so this router holds a device flow and
+    # nothing else. The read is unguarded and carries no credential — not even
+    # the value of an environment variable that may be overriding hf's store.
+    app.include_router(hf_auth_router)
     # Local inference (routers/ai_runtime.py, SPEC §40): which models this
     # machine is holding in memory, what they cost, and the load/unload/download
     # that change that. Reads unguarded; the three POSTs start processes and
     # write gigabytes, so they carry the D3 X-Fused guard.
     app.include_router(ai_runtime_router)
+    # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-14):
+    # run a fixed per-capability workload against a local model and keep the
+    # throughput/memory/load figures forever. The read is unguarded; the run and
+    # the delete carry the D3 X-Fused guard — the first spends minutes of GPU
+    # time, the second destroys measurements that cannot be recomputed for an
+    # app version that has moved on.
+    app.include_router(ai_benchmark_router)
     # Claude Code CONFIG editing for the Preferences page's "Claude config" tab
     # (routers/claude_config.py): one dispatch POST over the
     # fused_render/claude_config/ feature modules, plus a cheap availability
@@ -448,8 +711,8 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(claude_config_router)
     # Is Claude Code usable at all (routers/claude_health.py): found / version /
     # signed-in, so the first run can be TOLD rather than left to discover it by
-    # failing. Same doctrine as /api/config's learn_mount_ready, which gates the
-    # sidebar's Learn entry so it is never a dead link — this is that gate for
+    # failing. Same doctrine as /api/config's sessions_mount_ready, which gates
+    # a link into a bundled mount so it is never dead — this is that gate for
     # everything Claude-dependent. Its own endpoint, not a /api/config field:
     # the facts behind it are process spawns, and /api/config is read on every
     # page load. The cache is warmed by the entry points (claude_health.
@@ -462,6 +725,12 @@ def create_app(start_dir: str) -> FastAPI:
     from fused_render.deeplink import router as deeplink_router
 
     app.include_router(deeplink_router)
+    # .fused single-file app export/open (SPEC §43, D385-D390): GET
+    # /api/appfile/export download + the internal POST /api/appfile/open the
+    # fusedapp preview template calls (no user-facing open route).
+    from fused_render.server.routers.appfile import router as appfile_router
+
+    app.include_router(appfile_router)
     # Canvases (canvases.py) — local development on legacy-workbench canvases:
     # `fused login`, list/clone via the CLI, the folder-watch → `canvas push`
     # sync loop, and the access token the workspace iframe is seeded with.
@@ -486,6 +755,9 @@ def create_app(start_dir: str) -> FastAPI:
     app.include_router(fs_mutate_router)
     app.include_router(render_router)
     app.include_router(run_router)
+    # The warm variant of /api/run (routers/app_engine.py): POST /api/engine
+    # keeps the script's worker alive between calls. Opt-in via fused.engine().
+    app.include_router(app_engine_router)
     # The script-venv install loader (routers/env.py): /api/env/install,
     # /api/env/progress, /api/env/cancel — what the page shell drives after
     # /api/run's pre-flight answers `needs_install` (PY-18 / D173).

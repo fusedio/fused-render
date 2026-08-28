@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import (
     FileResponse,
@@ -16,7 +17,8 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
-from fused_render import claude_health
+from fused_render import claude_health, jobs
+from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import _require_fused
 from fused_render.shell.prefs import default_model
@@ -104,11 +106,26 @@ _AI_BIN_ENV = claude_health.BIN_ENV
 # is not a heuristic — a Hub id always has the form `org/name`, and no Claude
 # alias ever contains a slash — and it is what lets `fused.ai(prompt, {model})`
 # reach a local model with no new parameter and no change to any existing caller.
+#
+# **The seam gained a second shape (D411) and this is the one place it has to
+# be spelled out, because it is genuinely not a slash-shaped id.**
+# `llamacpp-text`'s curated ids (`formats.GGUF_RECIPES`) are the GGUF's own
+# FILENAME, never a repo id — `"Qwen3.5-4B-Q4_K_M.gguf"` has no `/` at all —
+# because a GGUF repo commonly ships two dozen quantizations of one model and
+# the filename is what tells them apart (see `llama_text.py`'s own docstring).
+# `"/" in model` alone therefore sent every curated llamacpp id down the
+# CLAUDE path, as an unrecognised alias, which nothing caught because nothing
+# had called `fused.ai()` with one — a bug from the moment `llamacpp-text`
+# shipped (D411), not something Piece 1/2 introduced, found while auditing
+# this file for what the branch invalidated. No Claude alias has ever ended
+# in `.gguf` either, so the fix is the same kind of fact as the slash: an
+# uncurated repo id Piece 1 resolves (always `org/name`) already has the
+# slash and needs nothing new.
 _AI_MODEL_RE = re.compile(r"[A-Za-z0-9._/-]+")
 
 
 def _is_local_model(model: str) -> bool:
-    return "/" in model
+    return "/" in model or model.lower().endswith(formats.GGUF_EXTENSION)
 
 
 def _ai_error(type_: str, message: str, status: int = 502) -> JSONResponse:
@@ -155,8 +172,8 @@ def _claude_seconds(data: dict) -> float | None:
 # until the next sign-in.
 #
 # IMPORTED, not written here. These used to be two literal tuples, and the app
-# held four such lists across this module, claude_config/lib.py,
-# core_apps/learn/check_env.py and core_apps/sessions/analyze.py. Any directory
+# held four such lists across this module, claude_config/lib.py, the learn
+# content's check_env.py and core_apps/sessions/analyze.py. Any directory
 # only some of them knew about was a directory where the app disagreed with
 # itself: a CLI in `~/.bun/bin` gave a working Preferences → Claude config tab
 # and an `ai_unavailable` from `fused.ai()` on the same machine. claude_health
@@ -730,6 +747,67 @@ def _sampling_problem(body: dict) -> str | None:
     return None
 
 
+#: How many pictures one request may attach. Bounded for the same reason
+#: `max_tokens` is (`_SAMPLING`, above): ONE model is resident per capability
+#: and serves every page on this machine, so an unbounded list is not one
+#: caller's slow request — it is every other caller's turn behind a request
+#: that decided to carry fifty images' worth of placeholder tokens. Eight is
+#: past any ordinary "compare these pictures" ask and short of a caller that
+#: meant to send a folder.
+_MAX_IMAGES = 8
+
+
+def _images_problem(images) -> str | None:
+    """Why this `images` list is unusable, or None. Local models only — the
+    caller-facing refusal for a Claude-tier request lives in `_ai_relay`,
+    beside `history`'s and `raw`'s own refusals, and this only checks the
+    SHAPE: a list of non-empty strings, under the cap."""
+    if not isinstance(images, list):
+        return "'images' must be a list of absolute file paths"
+    if len(images) > _MAX_IMAGES:
+        return f"'images' may not carry more than {_MAX_IMAGES} paths"
+    for index, path in enumerate(images):
+        if not isinstance(path, str) or not path:
+            return f"'images[{index}]' must be a non-empty string"
+    return None
+
+
+def _images_unsupported_by_runner(model: str) -> str | None:
+    """Why the runner that would actually SERVE `model` cannot be handed an
+    image, or None.
+
+    `_images_problem` only checks the shape of the list; this checks whether
+    the request means anything at all once it reaches a worker. Only
+    `mlx-text`'s own worker reads `images` (`mlx_text/worker.py`'s image
+    branch, which builds the prompt through `mlx_vlm.prompt_utils.
+    apply_chat_template`) — `llamacpp_text`'s shared `generate` (`runners/
+    llama_text.py`) reads `messages`/`prompt`/the sampling knobs and nothing
+    else, so a picture handed to it is silently dropped on the floor. That
+    would read as a confident answer about nothing on Linux, on Windows, or
+    on a Mac where llama.cpp has been promoted over MLX — not a 400, not a
+    warning, just an answer about a photograph the model never saw.
+
+    `_accepts_image` (`ai_runtime.py`, AI-11j) already knows this — it is the
+    SAME computation the catalog's attach affordance is drawn from, both the
+    engine gate and, for `mlx-text`, whether the specific checkpoint even has
+    a vision tower — so it is asked here rather than re-derived: a caller
+    that ignores the flag, or a client built before it existed, must not get
+    an answer the flag never promised.
+    """
+    from fused_render.ai import registry
+    from fused_render.server.routers import ai_runtime
+
+    runner = registry.for_capability(registry.TEXT_GENERATION)
+    runner_code = runner.code if runner else None
+    if ai_runtime._accepts_image(registry.TEXT_GENERATION, runner_code, model):
+        return None
+    if runner_code is None:
+        return "no text-generation runner is available on this machine to read an image"
+    return (f"{model!r} cannot be handed an image on this machine — the resolved "
+            f"runner ({runner_code!r}) either cannot read a picture at all, or "
+            "this checkpoint has no vision tower")
+
+
 def _history_problem(history) -> str | None:
     """Why this history is unusable, or None. The message is the API's manners:
     a chat client passing the wrong shape should be told which turn and what
@@ -799,6 +877,15 @@ def _local_relay(model: str, prompt: str, system_prompt: str, stream: bool,
         "max_tokens": body.get("max_tokens"),
         "temperature": body.get("temperature"),
         "top_p": body.get("top_p"),
+        # Absolute paths on THIS turn only (mlx_text/worker.py's own boundary,
+        # AI-11j) — a LIST, unlike `/api/ai/image`'s single `image`, because a
+        # VLM's chat template is told `num_images` and asking about two
+        # pictures at once is the ordinary case for this capability, where an
+        # edit always has exactly one base image. Omitted entirely rather than
+        # sent empty: `images: []` on every call would be a needless departure
+        # from the worker's "absent = today's text path" contract for every
+        # model that never uses it.
+        **({"images": body.get("images")} if body.get("images") else {}),
     }
     request = {k: v for k, v in request.items() if v is not None}
 
@@ -959,6 +1046,38 @@ async def _ai_relay(body: dict):
             "has nowhere to put 'history' — send one or the other",
             status=400)
 
+    # Base images for a vision-language local model, on the CURRENT turn only
+    # (mlx_text/worker.py's own boundary — `history` stays text-only, matching
+    # `_history_problem`'s `content: str` requirement, which this leaves
+    # alone). Shape-checked here, refused for Claude below, same as history
+    # and raw.
+    images = body.get("images")
+    if images is not None:
+        problem = _images_problem(images)
+        if problem:
+            return _ai_error("bad_request", problem, status=400)
+    # `raw` and `images` refuse each other, the same shape as `raw`/`history`
+    # above and for the same underlying reason: `raw` means "no chat template
+    # at all", and the image placeholder tokens a picture needs are inserted
+    # BY that template (`mlx_vlm.prompt_utils.apply_chat_template`, called
+    # only on the image path — see `mlx_text/worker.py::generate`). There is
+    # nowhere in a template-free request to put them, so honouring `raw` here
+    # would mean silently ignoring `images` — the worker's image branch reads
+    # `messages` unconditionally and never looks at `prompt` at all, so a
+    # caller setting both today would watch `raw` have no effect with no
+    # error, which is exactly the silent-drop `history` is refused instead of
+    # dropped for. Refusing the pair, rather than teaching the image path to
+    # honour a raw string, is the correct call: mlx-vlm's own template helper
+    # is what carries the placeholder tokens, and it takes structured messages
+    # to do it, not a bare continuation.
+    if raw and images:
+        return _ai_error(
+            "bad_request",
+            "'raw' sends the prompt with no chat template, and the image "
+            "placeholder tokens 'images' needs are inserted BY that template "
+            "— send one or the other",
+            status=400)
+
     # The fork. Everything above is shared validation — a prompt is a prompt and
     # a stream flag is a stream flag wherever the tokens come from — and
     # everything below this line is the Claude CLI's own path.
@@ -980,6 +1099,21 @@ async def _ai_relay(body: dict):
         sampling = _sampling_problem(body)
         if sampling:
             return _ai_error("bad_request", sampling, status=400)
+        # `images` is shape-checked above (any local model), but SHAPE is not
+        # SUPPORT: only mlx-text's own worker reads `images` at all
+        # (`mlx_text/worker.py`'s image branch) — `llamacpp_text`'s shared
+        # `generate` reads `messages`/`prompt`/the sampling knobs and nothing
+        # else, so a picture handed to it is dropped on the floor rather than
+        # refused, and a caller reads back a confident answer about nothing.
+        # The catalog already knows this answer per entry (`acceptsImage`,
+        # AI-11j) so a caller who never reads that flag — or a stale client
+        # that predates it — must not be trusted to have honoured it; the
+        # request path enforces the SAME computation rather than a second,
+        # looser one.
+        if images:
+            unsupported = _images_unsupported_by_runner(model)
+            if unsupported:
+                return _ai_error("bad_request", unsupported, status=400)
         # In a THREAD. `_local_relay` is blocking I/O to a worker process: it
         # waits for the first token before it can answer, and the non-streaming
         # path waits for the whole completion. On a local model that is seconds
@@ -1015,10 +1149,22 @@ async def _ai_relay(body: dict):
             "which is always a chat",
             status=400)
 
-    # Third flag, same rule. The Claude CLI exposes no sampling knobs at all —
+    # Third flag, same rule. The Claude CLI has no notion of an attachment —
+    # `claude -p` takes a prompt string — so silently dropping the picture
+    # would answer as if it had never been sent, which reads as the model
+    # ignoring what was attached rather than the API declining to attach it.
+    if images:
+        return _ai_error(
+            "bad_request",
+            "'images' is only supported by a local model (a Hugging Face repo "
+            "id, e.g. 'mlx-community/Qwen3-8B-4bit'); this call would go to "
+            f"{model!r}, which cannot be handed a picture",
+            status=400)
+
+    # Fourth flag, same rule. The Claude CLI exposes no sampling knobs at all —
     # `effort` is what it has — so a temperature accepted here would be a
     # setting the caller could watch have no effect, which is the failure mode
-    # `history` and `raw` are refused for.
+    # `history`, `raw` and `images` are refused for.
     named = [name for name in _SAMPLING if body.get(name) is not None]
     if named:
         return _ai_error(
@@ -1033,6 +1179,74 @@ async def _ai_relay(body: dict):
             model, "ai_unavailable",
             "claude binary not found on PATH; install Claude Code or set "
             f"{_AI_BIN_ENV} to its location")
+
+    # Bottom-right activity notification (fused_render/jobs.py's registry —
+    # see supervisor._report for the local-model twin of this write). Before
+    # this, only a LOCAL model ever produced a row there: a page calling
+    # fused.ai() against remote Claude did nothing visible in that corner, so
+    # a user watching it could not tell they were talking to Claude instead
+    # of a model on their own machine. There is no worker process to report
+    # from on this path, so the relay opens and closes the row itself — one
+    # per call (a fresh id, not a fixed one, because a second call queued
+    # behind the same-instance lock in _AiSession is a second call, not a
+    # progress tick on the first) — with wording that says "remote" up
+    # front, which is the whole point of adding it.
+    #
+    # `cancellable=False`: JobRow renders a ✕ on any running, cancellable row
+    # (DownloadManager.tsx), and pressing it only sets jobs.py's
+    # `cancel_requested` flag for a reporter to notice on its next tick.
+    # Nothing in this relay polls that flag, so advertising a ✕ here would
+    # ship a button that visibly does nothing when pressed.
+    #
+    # NOT opened here, before the stream/non-stream fork: `ndjson()` below is
+    # an async generator that Starlette only starts iterating once it
+    # actually sends the response body, so a client that disconnects before
+    # that first `__anext__` never runs the generator at all — including its
+    # `finally`. A row opened out here, unconditionally, would then never
+    # close: exactly the leak the streaming `finally` exists to prevent, just
+    # relocated one step earlier. Each branch below opens its own row as its
+    # own first action instead, so there is no window where a row exists
+    # with nothing yet committed to closing it.
+    _remote_job = jobs.SERVER_ID_PREFIX + "ai-claude:" + uuid.uuid4().hex
+    _remote_job_closed = False
+
+    def _report_remote(**fields) -> None:
+        """One tick on the remote-Claude row, best-effort (never breaks the
+        call — same discipline as supervisor._report)."""
+        nonlocal _remote_job_closed
+        if fields.get("state") in jobs.TERMINAL_STATES:
+            if _remote_job_closed:
+                return
+            _remote_job_closed = True
+        try:
+            jobs.upsert({"id": _remote_job, **fields}, server=True)
+        except (jobs.JobError, ValueError):
+            pass
+
+    def _open_remote_job() -> None:
+        # Same title convention as the local rows (supervisor._start_render):
+        # the PROMPT, trimmed and capped at 80 chars, falling back to the
+        # model when there is no usable prompt (unreachable today — `prompt`
+        # is already validated non-empty above this branch — but written the
+        # same way so the two shapes cannot drift). The model rides its own
+        # field (jobs.py `Job.model`) — a dimmed suffix JobRow draws after the
+        # title, same as a local row's — so the detail line is free to say
+        # only "Claude — remote", which is the one thing this row exists to
+        # say that a local row's detail never does.
+        title = str(prompt or model).strip() or model
+        _report_remote(title=title[:80], model=model, state="running", kind="task",
+                       cancellable=False, detail="Claude — remote")
+
+    def _finish_remote_job() -> None:
+        """Success only: drop the row immediately rather than leaving it at
+        a "done" state for the 3s sweep to clear later. `jobs.dismiss`, not a
+        terminal `_report_remote(state="done")` left sitting — the whole
+        point is that the corner shows nothing at all once the call
+        succeeded. Safe to poison this id into `jobs._dismissed`: it is a
+        fresh uuid4 per call (see `_remote_job` above), never reused, unlike
+        the local rows' deterministic `job_id_for(model)`."""
+        _report_remote(state="done")  # dismiss() refuses a still-running row
+        jobs.dismiss(_remote_job)
 
     async def run_once(on_delta=None):
         """One completion through the shared instance, start to finish.
@@ -1088,31 +1302,70 @@ async def _ai_relay(body: dict):
                     raise
 
     if not stream:
+        _open_remote_job()
         try:
-            data = await run_once()
-        except asyncio.TimeoutError:
-            return _ai_failed(
-                model, "timeout",
-                f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
-        except OSError as exc:
-            return _ai_failed(
-                model, "ai_unavailable", f"could not run the claude CLI: {exc}")
-        except _AiProcFailure as exc:
-            return _ai_failed(model, "ai_error", str(exc))
-        payload, err = _ai_result_payload(data, model)
-        if err is not None:
-            return _ai_failed(model, "ai_error", err)
-        # Under the RESOLVED id, not the alias the caller sent: "opus" and
-        # "claude-opus-5" are one model and must not be two rows in the
-        # breakdown. `_ai_result_payload` already did that resolution.
-        ai_metrics.record(payload["model"], payload["usage"],
-                          _claude_seconds(data))
-        return JSONResponse({"ok": True, "result": payload})
+            try:
+                data = await run_once()
+            except asyncio.TimeoutError:
+                _report_remote(state="error",
+                               message=f"timed out after {_AI_TIMEOUT_S:.0f}s")
+                return _ai_failed(
+                    model, "timeout",
+                    f"claude CLI did not answer within {_AI_TIMEOUT_S:.0f}s")
+            except OSError as exc:
+                _report_remote(state="error", message=str(exc))
+                return _ai_failed(
+                    model, "ai_unavailable",
+                    f"could not run the claude CLI: {exc}")
+            except _AiProcFailure as exc:
+                _report_remote(state="error", message=str(exc))
+                return _ai_failed(model, "ai_error", str(exc))
+            payload, err = _ai_result_payload(data, model)
+            if err is not None:
+                _report_remote(state="error", message=err)
+                return _ai_failed(model, "ai_error", err)
+            # Under the RESOLVED id, not the alias the caller sent: "opus" and
+            # "claude-opus-5" are one model and must not be two rows in the
+            # breakdown. `_ai_result_payload` already did that resolution.
+            ai_metrics.record(payload["model"], payload["usage"],
+                              _claude_seconds(data))
+            _finish_remote_job()
+            return JSONResponse({"ok": True, "result": payload})
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-call. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above (a bug in
+            # `_ai_result_payload`, or any other unhandled exception) is a
+            # real server error, not something the user did — reporting it
+            # as "cancelled" would tell the corner a lie about what
+            # happened. Let it keep propagating (still a 500) after marking
+            # the row accordingly.
+            _report_remote(state="error", message="internal error")
+            raise
+        finally:
+            # Belt-and-suspenders: anything that reaches here without one of
+            # the terminal reports above closes the row as cancelled rather
+            # than leaving it running forever. A no-op once a real terminal
+            # state (done/error/cancelled) was already reported, thanks to
+            # `_report_remote`'s own dedup.
+            _report_remote(state="cancelled")
 
     # Streaming: NDJSON over a chunked 200. Anything that goes wrong after
     # the first chunk left the wire cannot change the status code, so errors
     # become the terminal done frame instead.
     async def ndjson():
+        # First action, not before the StreamingResponse is constructed: this
+        # generator only starts running once Starlette actually sends the
+        # body (its first `__anext__`), so a client that disconnects before
+        # that point never runs this line — and, symmetrically, never runs
+        # the `finally` below either. Opening the row out here rather than
+        # before `return StreamingResponse(...)` keeps those two facts in
+        # sync: no code path can create a row without something guaranteed
+        # to run also being on the hook to close it.
+        _open_remote_job()
         queue: asyncio.Queue = asyncio.Queue()
         task = asyncio.ensure_future(
             run_once(on_delta=queue.put_nowait))
@@ -1135,6 +1388,9 @@ async def _ai_relay(body: dict):
                 data = task.result()
             except asyncio.TimeoutError:
                 ai_metrics.record_failure(model, "timeout")
+                _report_remote(
+                    state="error",
+                    message=f"timed out after {_AI_TIMEOUT_S:.0f}s")
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "timeout",
                     "message": "claude CLI did not answer within "
@@ -1142,25 +1398,40 @@ async def _ai_relay(body: dict):
                 return
             except OSError as exc:
                 ai_metrics.record_failure(model, "ai_unavailable")
+                _report_remote(state="error", message=str(exc))
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_unavailable",
                     "message": f"could not run the claude CLI: {exc}"}}) + "\n"
                 return
             except _AiProcFailure as exc:
                 ai_metrics.record_failure(model, "ai_error")
+                _report_remote(state="error", message=str(exc))
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": str(exc)}}) + "\n"
                 return
             payload, err = _ai_result_payload(data, model)
             if err is not None:
                 ai_metrics.record_failure(model, "ai_error")
+                _report_remote(state="error", message=err)
                 yield json.dumps({"type": "done", "ok": False, "error": {
                     "type": "ai_error", "message": err}}) + "\n"
                 return
             ai_metrics.record(payload["model"], payload["usage"],
                               _claude_seconds(data))
+            _finish_remote_job()
             yield json.dumps(
                 {"type": "done", "ok": True, "result": payload}) + "\n"
+        except asyncio.CancelledError:
+            # A genuine cancellation — the client went away mid-stream. The
+            # only exit that is honestly "cancelled".
+            _report_remote(state="cancelled")
+            raise
+        except Exception:
+            # Anything else escaping the block above is a real server bug,
+            # not something the user did — reporting it as "cancelled" would
+            # tell the corner a lie about what happened.
+            _report_remote(state="error", message="internal error")
+            raise
         finally:
             if not task.done():
                 # Client went away mid-stream: cancel AND await, so
@@ -1171,6 +1442,13 @@ async def _ai_relay(body: dict):
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            # Belt-and-suspenders, same reasoning as the non-streaming
+            # branch's own finally: any exit that reached here without one of
+            # the terminal reports above (mid-stream disconnect, an
+            # unexpected exception) still closes the row rather than leaving
+            # it running forever. `_report_remote`'s own dedup makes this a
+            # no-op once a real terminal state was already reported.
+            _report_remote(state="cancelled")
 
     return StreamingResponse(ndjson(), media_type="text/x-ndjson")
 

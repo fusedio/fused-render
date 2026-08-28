@@ -129,6 +129,21 @@ Three consequences worth knowing:
   deliberately left on disk one compaction longer for a reader that loaded the manifest
   microseconds before the swap.
 
+## 5. Compaction threads
+
+The merge connects through `background_connect()`, which issues
+`SET threads TO compaction_threads()` — a quarter of the cores, at most
+`MAX_COMPACTION_THREADS` (4). Readers get no cap at all (`query.py` connects plain):
+the compaction runs inside a niced scan worker nobody is waiting on, while
+`/api/index/rank` is a keystroke, and an all-cores merge starved it for seconds
+(`scan.md §4`, scheduling priority).
+
+The compaction's reads of old parquet generations and its `COPY ... TO` writes of
+new ones also run under the worker's background disk I/O policy
+(`worker._set_background_io_policy`, `scan.md` scheduling priority) — capping
+threads alone bounds CPU, not disk queue position, and an interactive rank's
+`read_parquet` (`query.md`) must not queue behind either.
+
 ## Non-goals
 
 - **Queries over these files** — `query.md`.

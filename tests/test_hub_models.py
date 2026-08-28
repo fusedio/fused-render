@@ -22,8 +22,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fused_render.ai import registry
+from fused_render.ai import tasks as ai_tasks
 from fused_render.server import create_app
-from fused_render.server.routers import ai_models as ai_models_mod
+from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.server.routers import hub_models as hub
 
 
@@ -44,10 +45,43 @@ def _clear_cache():
 
 @pytest.fixture(autouse=True)
 def _no_token(monkeypatch, tmp_path):
-    # A developer's real token must not decide what these tests assert.
+    """A developer's real token must not decide what these tests assert.
+
+    The search reads whatever `huggingface_hub.get_token()` finds (D402), so the
+    STORE has to be redirected and not just the environment: hf resolves
+    `HF_TOKEN_PATH` once at import, so setting `HF_HOME` here does nothing to an
+    hf that another test already imported — it would leave these tests reading
+    the login of whoever ran them.
+    """
     monkeypatch.delenv("HF_TOKEN", raising=False)
     monkeypatch.delenv("HUGGING_FACE_HUB_TOKEN", raising=False)
-    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
+    home = tmp_path / "hf-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HF_HOME", str(home))
+    from huggingface_hub import constants
+
+    monkeypatch.setattr(constants, "HF_TOKEN_PATH", str(home / "token"))
+    monkeypatch.setattr(constants, "HF_STORED_TOKENS_PATH", str(home / "stored_tokens"))
+
+
+@pytest.fixture(autouse=True)
+def _no_format_filter(monkeypatch):
+    """Every test here starts with an active text engine that filters no format,
+    and the handful that care about the format filter override it.
+
+    Without this the module's assertions depend on the HOST, and D416 is what
+    made that bite. `hub._model_row` narrows a text-generation search by the
+    active runner's `hub_filter_tags` (D412), and until D416 the runner a
+    non-Apple machine resolved to was `transformers-text`, which declares none —
+    so every safetensors fixture in this file survived the filter by accident of
+    what the developer's laptop happened to be. With the transformers rows gone,
+    Linux and Windows resolve to `llamacpp-text` and its `("gguf",)` tag, which
+    dropped 30 tests here while the code under test was behaving exactly as
+    designed. Pinning it makes the DEFAULT explicit and the format-filter tests
+    the deliberate exception they already read as (`_gguf_runner` below), and it
+    is the same reasoning `_no_token` above applies to a developer's Hub login.
+    """
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
 
 
 @pytest.fixture()
@@ -138,6 +172,24 @@ def test_a_half_pulled_repo_is_partial_not_downloaded(client, hub_cache, monkeyp
     assert models[0]["local"]["state"] == "partial"
 
 
+def test_a_repo_with_a_revision_and_an_unfinished_fetch_is_partial_too(
+    client, hub_cache, monkeypatch
+):
+    """"Has at least one snapshot" was the wrong line (D424).
+
+    Our own fetcher links each file into `snapshots/<commit>/` as it lands, so a
+    cancelled pull has a revision — and this tab said "downloaded" over a repo
+    holding a part file and no weights. The residue of the stopped fetch is what
+    answers now, and it is the AI Models listing's own reading, so the two tabs
+    cannot disagree about one folder.
+    """
+    repo = _cached_repo(hub_cache, "models--org--partial")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 32)
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/partial")]))
+
+    assert _search(client).json()["models"][0]["local"]["state"] == "partial"
+
+
 def test_the_join_costs_what_the_results_cost_not_what_the_cache_costs(
     client, hub_cache, monkeypatch
 ):
@@ -196,7 +248,7 @@ def test_a_task_reads_the_same_here_as_on_the_local_cards(client, hub_cache, mon
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"}]))
     row = _search(client).json()["models"][0]
     assert row["task"] == "image + text to text"
-    assert row["taskHelp"] == ai_models_mod._TASK_HELP["image + text to text"]
+    assert row["taskHelp"] == ai_tasks.help_for("image-text-to-text")
 
 
 def test_size_is_recovered_from_the_dtype_map(client, hub_cache, monkeypatch):
@@ -235,6 +287,73 @@ def test_a_row_with_no_id_is_dropped(client, hub_cache, monkeypatch):
     monkeypatch.setattr(httpx, "get", _reply([{"likes": 3}, _hit("org/real")]))
     models = _search(client).json()["models"]
     assert [m["id"] for m in models] == ["org/real"]
+
+
+# -- D412: the GGUF pick, only when the active runner needs one -------------
+#
+# `siblings` is a NEW `_EXPAND` field, so every hit in this section carries
+# it — verified live that the Hub returns the full filename list in the LIST
+# response itself, which is what makes this resolvable per-row with no
+# second request.
+
+
+def _gguf_runner(tags=("gguf",)):
+    """A stand-in for whatever runner `registry.for_capability` resolves to,
+    carrying only the one field `_model_row` reads. Not a real `Runner` —
+    this module's own resolution is under test, not the registry's."""
+    import types as _types
+
+    return _types.SimpleNamespace(hub_filter_tags=tags)
+
+
+def test_a_gguf_repo_resolves_to_the_pickers_choice_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("unsloth/x-GGUF", siblings=[
+        {"rfilename": "x-Q8_0.gguf"}, {"rfilename": "x-Q4_K_M.gguf"},
+        {"rfilename": "README.md"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] == "x-Q4_K_M.gguf"
+
+
+def test_a_gguf_repo_with_nothing_loadable_is_dropped_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    """The fifth drop reason (D412): a repo whose ONLY GGUF is auxiliary
+    (here, a projector) is not actionable by the active engine, so it is
+    dropped exactly like a `.tflite` repo already is for a different
+    reason — never offered with a Download button that cannot resolve."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/only-a-projector", siblings=[
+        {"rfilename": "m-mmproj-F16.gguf"},
+    ])]))
+    models = _search(client).json()["models"]
+    assert models == []
+
+
+def test_a_gguf_row_carries_no_file_when_the_active_engine_is_not_llamacpp(
+        client, hub_cache, monkeypatch):
+    """When the capability's active runner declares no format tag at all —
+    the `mlx-text` case — a repo is not resolved or dropped
+    by the picker, whatever its `siblings` look like: `file` is simply
+    absent from the answer, the same as it always was before D412."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever", siblings=[
+        {"rfilename": "m-mmproj-F16.gguf"},
+    ])]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
+
+
+def test_a_gguf_row_carries_no_file_when_nothing_serves_the_capability_here(
+        client, hub_cache, monkeypatch):
+    """`for_capability` returning None (nothing registered could run here)
+    must not crash the join — the row still surfaces on capability
+    existence alone, per D313, with `file` simply unset."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: None)
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/whatever")]))
+    row = _search(client).json()["models"][0]
+    assert row["file"] is None
 
 
 # -- the request ------------------------------------------------------------
@@ -287,6 +406,39 @@ def test_a_token_is_sent_but_never_returned(client, hub_cache, monkeypatch):
     assert "hf_secret" not in json.dumps(body)
 
 
+def test_the_token_hf_holds_is_the_one_sent(client, hub_cache, monkeypatch):
+    """D402: the search sends whatever `get_token()` finds — a login made from
+    Preferences, or a `hf auth login` in a terminal, indistinguishable here by
+    design. This app stores no token of its own, so there is no second
+    resolution that could disagree with the download beside it."""
+    from huggingface_hub._login import _save_token, _set_active_token
+
+    _save_token(token="hf_from_hfs_own_store", token_name="fused-render")
+    _set_active_token(token_name="fused-render", add_to_git_credential=False)
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _search(client).json()
+    assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_from_hfs_own_store"
+    assert body["authenticated"] is True
+    assert "hf_from_hfs_own_store" not in json.dumps(body)
+
+
+def test_an_environment_token_still_wins(client, hub_cache, monkeypatch):
+    # hf's own order, which this app no longer has any opinion about: the
+    # variable beats the store, here and inside every worker, because both ask
+    # the same library.
+    from huggingface_hub._login import _save_token, _set_active_token
+
+    _save_token(token="hf_from_hfs_own_store", token_name="fused-render")
+    _set_active_token(token_name="fused-render", add_to_git_credential=False)
+    monkeypatch.setenv("HF_TOKEN", "hf_from_the_environment")
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client)
+    assert (fake.calls[0][1]["headers"]["Authorization"]
+            == "Bearer hf_from_the_environment")
+
+
 @pytest.mark.parametrize("endpoint,expected", [
     ("https://hf-mirror.example", "https://hf-mirror.example"),
     ("file:///etc", "https://huggingface.co"),
@@ -298,6 +450,61 @@ def test_the_endpoint_override_must_be_an_http_url(monkeypatch, endpoint, expect
     # environment — but it is still checked before it becomes a request.
     monkeypatch.setenv("HF_ENDPOINT", endpoint)
     assert hub.hub_endpoint() == expected
+
+
+# -- D412: the runner-declared filter tag, ANDed onto the task filter -------
+
+
+def test_the_gguf_tag_is_anded_onto_the_hub_request_when_llamacpp_is_active(
+        client, hub_cache, monkeypatch):
+    """Confirmed live: the Hub ANDs multiple `filter=` values, and the router
+    already sends `urlencode(..., doseq=True)` — so a runner declaring a
+    format tag turns into a SECOND `filter=` on the wire, not a new
+    parameter shape."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation"})
+    url = fake.calls[0][0]
+    assert "filter=text-generation" in url and "filter=gguf" in url
+
+
+def test_no_format_tag_is_added_when_the_active_runner_declares_none(
+        client, hub_cache, monkeypatch):
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"task": "text-generation"})
+    url = fake.calls[0][0]
+    assert "filter=text-generation" in url and "gguf" not in url
+
+
+def test_no_format_tag_is_added_without_a_task_filter(client, hub_cache, monkeypatch):
+    """A bare keyword search spans every supported tag at once — there is no
+    SINGLE capability to resolve a runner for, so the Hub-side narrowing is
+    skipped and `_model_row`'s own per-row check is the only gate, the same
+    two-layer shape the pipeline-tag filter itself already has."""
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    fake = _reply([])
+    monkeypatch.setattr(httpx, "get", fake)
+    _search(client, {"q": "llama"})
+    assert "filter=" not in fake.calls[0][0]
+
+
+def test_the_cache_does_not_survive_an_engine_switch(client, hub_cache, monkeypatch):
+    """A preference switched live (CT-5, no restart) changes which runner
+    serves the capability — the SAME query/task/sort/count must not be
+    served from a cache entry built under the OTHER engine's filter."""
+    fake = _reply([_hit("org/m")])
+    monkeypatch.setattr(httpx, "get", fake)
+
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner())
+    _search(client, {"task": "text-generation"})
+    assert len(fake.calls) == 1
+
+    monkeypatch.setattr(hub, "for_capability", lambda capability: _gguf_runner(tags=()))
+    _search(client, {"task": "text-generation"})
+    assert len(fake.calls) == 2  # a different engine choice is a different question
 
 
 # -- when the far side is unhappy -------------------------------------------
@@ -375,34 +582,56 @@ def test_the_menu_offers_only_tags_something_here_can_run(client):
     The menu used to list every tag the Hub recognises — twenty-six of them, of
     which this app can load four — so the control that looked most like the
     point of the feature was mostly a list of ways to get results with no
-    working button.
+    working button. (A fifth, video generation, joined since — see the "text
+    to video" mapping below.)
     """
     tasks = client.get("/api/ai-models/hub/tasks").json()["tasks"]
     offered = [t["tag"] for t in tasks]
     # Every offered tag resolves to a capability something here serves. Asked of
-    # the registry, which is the same authority the Load button uses.
+    # the registry, which is the same authority the Load button uses. This is a
+    # claim about the REGISTRY, not about THIS machine — video generation has no
+    # "everywhere" row, so the tag is offered (and refuses at Download time with
+    # "needs Apple Silicon") on a machine that cannot actually serve it, same as
+    # every other capability's menu entry is offered independent of whether ITS
+    # runner resolves here.
     for tag in offered:
-        assert registry.capability_for_task(hub._friendly_task(tag)) is not None, tag
-    # And the ones that made the complaint are gone, by name.
-    for absent in ("fill-mask", "feature-extraction", "sentence-similarity",
+        assert ai_tasks.classify(tag).supported, tag
+    # And the ones that made the complaint are gone, by name — MINUS the two
+    # that legitimately joined. `feature-extraction` and `sentence-similarity`
+    # were on this list for as long as the embedding capability meant dual
+    # encoders only: what wears them is a text encoder, and nothing here could
+    # open one, so offering the filter promised a Load button that then refused.
+    # Both engines load a prose encoder now (SPEC §40's widening), so the promise
+    # is real and the two moved out of this list into the `capability_for_tag`
+    # check below. `image-feature-extraction` did NOT move and is added here in
+    # their place: an image-only encoder (DINOv2/v3) has no text tower for either
+    # load path to read.
+    for absent in ("fill-mask", "image-feature-extraction",
                    "text-classification", "summarization", "image-classification"):
         assert absent not in offered
-    # …while the three the Engines tab is about are all reachable.
-    assert {registry.capability_for_task(hub._friendly_task(t)) for t in offered} == {
-        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT}
+    # …while the five the Engines tab is about are all reachable. EMBEDDINGS
+    # arrives through THREE tags, which is unique to it (see
+    # `registry.EMBEDDINGS`'s docstring): `zero-shot-image-classification` for a
+    # dual encoder, `feature-extraction` and `sentence-similarity` for a prose
+    # one. VIDEO_GENERATION arrives through "text-to-video", the tag `ltx-video`
+    # serves.
+    assert {"zero-shot-image-classification", "feature-extraction",
+            "sentence-similarity"} <= set(offered)
+    assert {ai_tasks.capability_for_tag(t) for t in offered} == {
+        registry.TEXT_GENERATION, registry.IMAGE_GENERATION, registry.SPEECH_TO_TEXT,
+        registry.EMBEDDINGS, registry.VIDEO_GENERATION}
 
 
-def test_the_menu_follows_the_registry_rather_than_a_second_list(client, monkeypatch):
+def test_the_menu_follows_the_vocabulary_rather_than_a_second_list(client, monkeypatch):
     """A runner appearing or disappearing must move this menu on its own.
 
-    The tags are Hub vocabulary and live in `hub_models`; WHICH of them is
-    offered is the registry's answer. Two hand-maintained lists would drift, and
-    the drift is invisible until someone downloads 8GB of something that then
-    refuses to load.
+    The tags and the answer now live in ONE table (`ai/tasks.py`): a row gains a
+    `capability` and the filter appears, loses it and the filter goes. This
+    module keeps no list of its own — it used to, and the copy had already gone
+    stale (it still offered `text2text-generation`, a tag the Hub retired).
     """
     monkeypatch.setattr(
-        hub, "capability_for_task",
-        lambda task: registry.TEXT_GENERATION if task == "summarization" else None)
+        ai_tasks, "supported_tags", lambda: ("summarization",))
     assert [t["tag"] for t in client.get("/api/ai-models/hub/tasks").json()["tasks"]] == [
         "summarization"]
 
@@ -416,13 +645,23 @@ def test_a_result_is_never_something_this_app_cannot_run(client, hub_cache, monk
         {"id": "org/vlm", "pipeline_tag": "image-text-to-text"},
         {"id": "org/pic", "pipeline_tag": "text-to-image"},
         {"id": "org/ears", "pipeline_tag": "automatic-speech-recognition"},
-        # …and the ones the user was looking at when they complained.
+        # A prose embedding model, which this app now genuinely loads — this row
+        # used to be in the rejected group below and moved up with SPEC §40's
+        # widening of the embeddings capability.
         {"id": "sentence-transformers/all-MiniLM-L6-v2", "pipeline_tag": "feature-extraction"},
+        # …and the ones the user was looking at when they complained, which are
+        # still nothing this app can run.
         {"id": "google-bert/bert-base-uncased", "pipeline_tag": "fill-mask"},
         {"id": "cross-encoder/ms-marco", "pipeline_tag": "text-classification"},
+        # An image-ONLY encoder: the neighbour of `feature-extraction` that did
+        # NOT become loadable, because it has no text tower for either load path
+        # to read.
+        {"id": "facebook/dinov2-base", "pipeline_tag": "image-feature-extraction"},
     ]))
     models = _search(client).json()["models"]
-    assert [m["id"] for m in models] == ["org/chat", "org/vlm", "org/pic", "org/ears"]
+    assert [m["id"] for m in models] == [
+        "org/chat", "org/vlm", "org/pic", "org/ears",
+        "sentence-transformers/all-MiniLM-L6-v2"]
 
 
 def test_a_result_with_no_pipeline_tag_is_dropped(client, hub_cache, monkeypatch):
@@ -500,6 +739,63 @@ def test_an_ungated_result_says_so_rather_than_saying_nothing(client, hub_cache,
     # that did not tell us" the same answer.
     monkeypatch.setattr(httpx, "get", _reply([_hit("org/open"), _hit("org/also", gated=False)]))
     assert [r["gated"] for r in _search(client).json()["models"]] == [None, None]
+
+
+def test_a_result_in_a_format_no_runner_reads_is_dropped(client, hub_cache, monkeypatch):
+    """The tag is right and the format is unreadable — the case the tag filter
+    cannot see.
+
+    `litert-community/FLUX.2-klein-4B-LiteRT` is the repo from the complaint: a
+    `text-to-image` model, so `capability_for_task` passes it, published as
+    `.tflite` graphs, which nothing in `runners/` imports under any
+    circumstances. The card offered a Download button and the load that followed
+    could only fail.
+    """
+    monkeypatch.setattr(httpx, "get", _reply([
+        {"id": "litert-community/FLUX.2-klein-4B-LiteRT",
+         "pipeline_tag": "text-to-image", "library_name": "litert"},
+        # A raw NeMo archive is the same shape of mistake in the audio column,
+        # and unloadable outright since D406 withdrew `parakeet-mlx` — no
+        # runner here reads a `.nemo` archive or an MLX conversion of one.
+        {"id": "nvidia/parakeet-tdt-0.6b-v3",
+         "pipeline_tag": "automatic-speech-recognition", "library_name": "nemo"},
+        _hit("org/known"),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == ["org/known"]
+
+
+def test_a_result_with_no_library_name_is_kept(client, hub_cache, monkeypatch):
+    """An ABSENT library says nothing about the format, so it cannot be read as
+    "unsupported" — only a value naming a framework we have no runner for is."""
+    monkeypatch.setattr(httpx, "get", _reply([
+        _hit("org/unsaid"), _hit("org/null", library_name=None),
+        # Not a string, so not a value either: this must be as harmless as a
+        # missing key rather than a 500 in a `.lower()`.
+        _hit("org/weird", library_name=17),
+    ]))
+    assert [m["id"] for m in _search(client).json()["models"]] == [
+        "org/unsaid", "org/null", "org/weird"]
+
+
+@pytest.mark.parametrize("library", [
+    # Every one of these is a value a repo something here loads TODAY reports,
+    # read off the Hub rather than guessed — which is why this filter is a
+    # denylist. An allowlist of the libraries our runners are built on
+    # (diffusers, transformers, mlx) would have hidden five of these eight.
+    "diffusers",            # black-forest-labs/FLUX.2-klein-4B
+    "transformers",         # most text models
+    "mlx",                  # mlx-community/whisper-large-v3-turbo, …/Qwen3-8B-4bit
+    "mflux",                # Runpod/FLUX.2-klein-4B-mflux-4bit
+    "ggml",                 # unsloth/FLUX.2-klein-4B-GGUF, the recipe's transformer
+    "gguf",                 # the same repos' other spelling of it
+    "ctranslate2",          # Systran/faster-whisper-large-v3
+    "diffusion-single-file",  # mlx-community/FLUX.2-Klein-4B-4bit
+])
+def test_a_library_something_here_loads_is_not_dropped(client, hub_cache, monkeypatch, library):
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/fine", library_name=library)]))
+    models = _search(client).json()["models"]
+    assert [m["id"] for m in models] == ["org/fine"]
+    assert models[0]["library"] == library
 
 
 def test_asking_for_a_task_nothing_here_runs_is_refused(client, hub_cache, monkeypatch):
@@ -604,3 +900,157 @@ def test_the_task_glossary_stays_an_ordinary_read(client):
     so it keeps the unguarded GET every other read has (WF-5). The asymmetry is
     the point: what earns the guard is the outbound call, not the router."""
     assert client.get("/api/ai-models/hub/tasks").status_code == 200
+
+
+# -- the total-size fallback (hub/size) --------------------------------------
+#
+# A repo with no safetensors metadata — GGUF, mflux, a LoRA — has no size to
+# recover from a dtype map, and the search endpoint cannot ask for one: the
+# Hub's LIST endpoint refuses `expand[]=usedStorage` outright. The real total
+# comes from the per-repo DETAIL endpoint, one round trip each, which is why it
+# is its own route the page calls only for the cards it is actually showing.
+
+
+def _size(client, body=None):
+    """One size lookup. Guarded POST for the same reason search is: it leaves
+    the machine carrying the user's token."""
+    return client.post("/api/ai-models/hub/size", json=body or {},
+                       headers={"X-Fused": "1"})
+
+
+def _detail(payload, status=200, body=None):
+    """A stand-in `httpx.get` returning one canned per-repo detail answer — an
+    OBJECT, not the list the search endpoint gets."""
+    def fake(url, **kwargs):
+        fake.calls.append((url, kwargs))
+        content = json.dumps(payload).encode() if body is None else body
+        return httpx.Response(status, content=content,
+                              request=httpx.Request("GET", url))
+    fake.calls = []
+    return fake
+
+
+def test_the_total_size_comes_from_the_detail_endpoint(client, monkeypatch):
+    # The number the Hub's own model page shows for a repo with no safetensors:
+    # everything in it, not just the weights.
+    fake = _detail({"id": "Runpod/FLUX.2-klein-4B-mflux-4bit", "usedStorage": 4_619_599_193})
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit"}).json()
+    assert body == {"id": "Runpod/FLUX.2-klein-4B-mflux-4bit",
+                    "usedStorage": 4_619_599_193, "error": None}
+    url = fake.calls[0][0]
+    assert url == ("https://huggingface.co/api/models/"
+                   "Runpod/FLUX.2-klein-4B-mflux-4bit?expand%5B%5D=usedStorage")
+
+
+def test_a_repo_the_hub_has_no_total_for_reports_none(client, monkeypatch):
+    # No guess and no fallback to the dtype map: this route's only job is the
+    # total, and a repo the Hub does not measure has none.
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m"}))
+    assert _size(client, {"id": "org/m"}).json() == {
+        "id": "org/m", "usedStorage": None, "error": None}
+
+
+@pytest.mark.parametrize("value", ["4619599193", -1, 1.5, True, {}, None])
+def test_a_total_that_is_not_a_count_of_bytes_is_no_total(client, monkeypatch, value):
+    # A string of digits is not an int, and a negative is not a size. Either
+    # would reach the card as a number someone plans a download around.
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": value}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] is None
+
+
+def test_the_id_is_quoted_into_the_path_not_concatenated(client, monkeypatch):
+    # `org/name` keeps its slash — it is the path — but nothing else does, so an
+    # id carrying a `?` cannot become a second query parameter.
+    fake = _detail({})
+    monkeypatch.setattr(httpx, "get", fake)
+    _size(client, {"id": "org/a b?expand[]=evil"})
+    url = fake.calls[0][0]
+    assert "/api/models/org/a%20b%3Fexpand%5B%5D%3Devil?" in url
+
+
+@pytest.mark.parametrize("bad", [
+    None, "", "   ", 7, ["org/m"], "nameonly", "org/name/extra", "/name", "org/",
+    "org/" + "n" * 300,
+])
+def test_a_malformed_id_is_refused_before_the_hub_is_asked(client, monkeypatch, bad):
+    fake = _detail({})
+    monkeypatch.setattr(httpx, "get", fake)
+    reply = _size(client, {"id": bad})
+    assert reply.status_code == 400 and reply.json()["error"]
+    assert not fake.calls, "a malformed id still cost an outbound request"
+
+
+def test_an_unreachable_hub_is_a_sentence_not_a_500_for_sizes(client, monkeypatch):
+    def boom(url, **kwargs):
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and "huggingface.co" in body["error"]
+
+
+@pytest.mark.parametrize("status,needle", [
+    (403, "token"), (429, "rate-limiting"), (500, "500")])
+def test_an_unhappy_hub_explains_itself_for_sizes(client, monkeypatch, status, needle):
+    monkeypatch.setattr(httpx, "get", _detail(None, status=status))
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and needle in body["error"]
+
+
+@pytest.mark.parametrize("raw", [b"<html>nope</html>", b'[{"not": "an object"}]'])
+def test_an_unexpected_detail_reply_does_not_reach_the_page(client, monkeypatch, raw):
+    # The detail endpoint answers with an object. A list is the LIST endpoint's
+    # shape, and reading one as a repo would be indexing blindly.
+    monkeypatch.setattr(httpx, "get", _detail(None, body=raw))
+    body = _size(client, {"id": "org/m"}).json()
+    assert body["usedStorage"] is None and body["error"]
+
+
+def test_the_same_repo_inside_the_window_is_asked_once(client, monkeypatch):
+    # One round trip per repo is the cost this route exists to bound; a card
+    # that scrolls back into view must not pay it again.
+    fake = _detail({"id": "org/m", "usedStorage": 123})
+    monkeypatch.setattr(httpx, "get", fake)
+    for _ in range(3):
+        assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 123
+    assert len(fake.calls) == 1
+    _size(client, {"id": "org/other"})
+    assert len(fake.calls) == 2  # …a different repo is a different question
+
+
+def test_a_size_error_is_not_cached(client, monkeypatch):
+    monkeypatch.setattr(httpx, "get", _detail(None, status=500))
+    assert _size(client, {"id": "org/m"}).json()["error"]
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": 9}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 9
+
+
+def test_the_size_lookup_does_not_collide_with_a_search_answer(client, hub_cache, monkeypatch):
+    # Both caches are the same dict, so the keys have to be told apart or a
+    # search would be answered with a size.
+    monkeypatch.setattr(httpx, "get", _reply([_hit("org/m")]))
+    assert _search(client).json()["models"][0]["id"] == "org/m"
+    monkeypatch.setattr(httpx, "get", _detail({"id": "org/m", "usedStorage": 5}))
+    assert _size(client, {"id": "org/m"}).json()["usedStorage"] == 5
+
+
+def test_the_size_lookup_sends_the_token_but_never_returns_it(client, monkeypatch):
+    fake = _detail({"id": "org/m", "usedStorage": 5})
+    monkeypatch.setenv("HF_TOKEN", "hf_secret")
+    monkeypatch.setattr(httpx, "get", fake)
+    body = _size(client, {"id": "org/m"}).json()
+    assert fake.calls[0][1]["headers"]["Authorization"] == "Bearer hf_secret"
+    assert "hf_secret" not in json.dumps(body)
+
+
+def test_the_size_lookup_is_a_guarded_post(client, monkeypatch):
+    # Same reasoning as search: the cost is in the REQUEST, which spends
+    # someone's credential and their rate limit on a third party.
+    fake = _detail({"id": "org/m", "usedStorage": 5})
+    monkeypatch.setattr(httpx, "get", fake)
+    blind = client.post("/api/ai-models/hub/size", json={"id": "org/m"})
+    assert blind.status_code == 403
+    assert not fake.calls, "a guarded size lookup still reached the Hub"
+    assert client.get("/api/ai-models/hub/size").status_code == 405
+    assert _size(client, {"id": "org/m"}).status_code == 200

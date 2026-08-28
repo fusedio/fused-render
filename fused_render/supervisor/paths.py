@@ -228,11 +228,10 @@ class DesktopPaths:
             "FUSED_RENDER_RCLONE_BIN": str(
                 tools_dir / ("rclone.exe" if sys.platform == "win32" else "rclone")
             ),
-            # learn.zip / sessions.zip ship in the payload's assets/ (the
-            # Windows installer globs assets\*); mounts.builtin_zip_path()
-            # reads these overrides, and its isfile check no-ops when a build
-            # didn't bundle a zip.
-            "FUSED_RENDER_LEARN_ZIP": str(tools_dir.parent / "assets" / "learn.zip"),
+            # sessions.zip ships in the payload's assets/ (the Windows
+            # installer globs assets\*); mounts.builtin_zip_path() reads this
+            # override, and its isfile check no-ops when a build didn't bundle
+            # a zip.
             "FUSED_RENDER_SESSIONS_ZIP": str(tools_dir.parent / "assets" / "sessions.zip"),
             "TEMP": str(self.temp),
             "TMP": str(self.temp),

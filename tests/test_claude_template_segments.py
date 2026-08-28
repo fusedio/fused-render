@@ -17,7 +17,10 @@ probes attached to the code that actually ships.
 markdown probes they need a DOM. `_DOM` below is a hand-built minimal one
 (the same narrow-stub approach as tests/test_claude_app_state.py's `_DOM`,
 widened to what these functions touch: createElement/createTextNode,
-append/appendChild/remove/after/replaceChildren, className + classList,
+append/appendChild/remove/after/replaceWith/replaceChildren, focus,
+style (a bare bag) + scrollHeight/offsetHeight/clientHeight,
+scrollTop + scrollIntoView (recorded on `scrolledIntoView`),
+className + classList,
 textContent, innerHTML, `open`). No jsdom — the dependency task 1 was told
 not to add, and not needed: nothing here lays out, parses HTML or measures.
 Two properties of the stub are load-bearing for the assertions:
@@ -91,6 +94,7 @@ _TYPER_END = "abort() { if (raf) cancelAnimationFrame(raf); cur.remove(); },\n  
 # reports both, so a test can prove which door a string came in through.
 _DOM = r"""
 let _uid = 0;
+let _focused = null;   // the element whose focus() ran last
 function textNode(s) {
   const t = {nodeType: 3, nodeValue: String(s), parentElement: null};
   Object.defineProperty(t, "textContent", {get: () => t.nodeValue});
@@ -101,6 +105,15 @@ function makeEl(tag) {
     uid: ++_uid, tagName: String(tag).toUpperCase(), nodeType: 1,
     className: "", children: [], parentElement: null, open: false,
     _text: "", _html: null, attrs: {}, src: undefined, alt: undefined,
+    // autoGrow writes a height and reads a scrollHeight. Neither is measured
+    // here (there is no layout), but both have to EXIST or the shipping
+    // function throws — and it is the shipping function these probes run.
+    style: {}, scrollHeight: 0, offsetHeight: 0, clientHeight: 0, scrollTop: 0,
+    // Recorded, not swallowed: keeping the row the user is typing in on screen
+    // is a REQUIREMENT of the "Other" box, so "it asked to be scrolled into
+    // view, and asked for `nearest`" is an assertion, not a detail.
+    scrolledIntoView: null,
+    scrollIntoView(opt) { e.scrolledIntoView = opt === undefined ? {} : opt; },
     appendChild(n) {
       if (n.parentElement) n.parentElement.removeChild(n);
       n.parentElement = e; e.children.push(n); return n;
@@ -114,6 +127,10 @@ function makeEl(tag) {
       n.parentElement = null; return n;
     },
     remove() { if (e.parentElement) e.parentElement.removeChild(e); },
+    // `after` then `remove`, in that order: the question card's "Other" row
+    // swaps a button for its text field and back again, and doing it the other
+    // way round would lose the position the swap exists to keep.
+    replaceWith(n) { e.after(n); e.remove(); },
     after(n) {
       const p = e.parentElement;
       if (!p) return;
@@ -126,6 +143,10 @@ function makeEl(tag) {
       e._text = ""; e._html = null;
       nodes.forEach((n) => e.appendChild(typeof n === "string" ? textNode(n) : n));
     },
+    // Recorded, not swallowed: the question card autofocuses the box an
+    // "Other" row opens, and "the caret is in the field the user just asked
+    // for" is the assertion, not an implementation detail.
+    focus() { _focused = e; },
     setAttribute(k, v) { e.attrs[String(k)] = String(v); },
     getAttribute(k) { return k in e.attrs ? e.attrs[k] : null; },
     // The collapse policy records a user's fold from the SUMMARY's click
@@ -234,7 +255,15 @@ def _node(script, tmp_path):
         pytest.skip("node is required to drive the template's own JS")
     harness = tmp_path / "harness.mjs"
     harness.write_text(script, encoding="utf-8")
-    out = subprocess.run([node, str(harness)], capture_output=True, text=True)
+    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
+    # child's stdout with locale.getpreferredencoding(False), and node always
+    # writes its UTF-8 source glyphs (the toolchip's ✗/☑/☐/…) as UTF-8 bytes
+    # regardless of platform. On Windows that locale default is commonly
+    # cp1252, which decodes those bytes into mojibake ("✗" -> "âœ—") without
+    # ever raising — a silent corruption, not a crash, so it slipped past
+    # every POSIX run where the locale default already happens to be UTF-8.
+    out = subprocess.run([node, str(harness)], capture_output=True,
+                          text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 
@@ -767,6 +796,28 @@ def test_thinking_is_a_details_rendered_as_markdown(probe):
                for n in _nodes(block))
 
 
+# --- the background-task notice (D415) ---------------------------------------
+
+
+def test_a_notice_segment_is_a_plain_text_system_chip(probe):
+    """The harness's wake, drawn as one line. NEVER markdown: the summary quotes
+    a command line, and a stray backtick in it must not restyle the chip."""
+    got = probe.render([{"kind": "notice", "status": "completed",
+                         "text": 'Background command `sleep 30` completed'}])
+    chip = _by_class(got["tree"], "seg-notice")[0]
+    assert got["mdCalls"] == []
+    assert "Background command `sleep 30` completed" in chip["text"]
+    assert not any(n.get("html") for n in _nodes(chip))
+
+
+def test_a_notice_between_two_replies_keeps_them_apart(probe):
+    got = probe.render([{"kind": "text", "text": "starting"},
+                        {"kind": "notice", "text": "the job finished"},
+                        {"kind": "text", "text": "it passed"}])
+    kids = got["tree"]["children"]
+    assert [k["cls"] for k in kids] == ["seg-text", "seg-notice", "seg-text"]
+
+
 # --- default-collapse policy: everything folded, the user's click excepted ---
 #
 # The rule the page implements: EVERY collapsible card (tool chip, thinking
@@ -925,9 +976,14 @@ def test_the_log_wipes_reset_the_collapse_policy(source):
     back = _block(source, 'document.getElementById("back").onclick = () => {',
                   "loadRecent();")
     assert "resetCardPolicy()" in back
-    hist = _block(source, "async function loadHistory(session_id) {",
+    hist = _block(source, "async function loadHistory(session_id, opts) {",
                   "renderLogSkeleton();")
     assert "resetCardPolicy()" in hist
+    # ...and the transcript-follow's REFRESH is the deliberate exception (D415):
+    # it re-renders the SAME conversation because it grew underneath the page,
+    # so re-folding a chip the reader opened — every five seconds — would be the
+    # redraw made visible. The reset sits inside the `!refresh` arm for that.
+    assert hist.index("if (!refresh) {") < hist.index("resetCardPolicy()")
 
 
 def test_register_card_defaults_to_closed_and_tracks_no_newest(source):
@@ -1507,9 +1563,15 @@ def test_a_question_card_renders_the_header_question_and_every_option(card):
     assert _texts(tree, "qtext") == ["Alpha or Beta?"]
     # One control per option, each showing the label AND its description — the
     # label is the only thing that can be sent, so nothing about it is elided.
-    assert _texts(tree, "lbl") == ["Alpha", "Beta"]
-    assert _texts(tree, "desc") == ["Pick Alpha", "Pick Beta"]
-    assert len(_by_class(tree, "qopt")) == 2
+    # …plus the "Other" row this window always adds (D407), last and marked as
+    # not one of Claude's: two-to-four options are its guess at the answer
+    # space, and a card that cannot express disagreement with that guess makes
+    # the user pick the nearest wrong answer.
+    assert _texts(tree, "lbl") == ["Alpha", "Beta", "Other…"]
+    assert _texts(tree, "desc") == ["Pick Alpha", "Pick Beta",
+                                    "Answer in your own words"]
+    assert len(_by_class(tree, "qopt")) == 3
+    assert [n["cls"] for n in _by_class(tree, "qother")] == ["qopt qother"]
     # A single-choice question answers on click, so there is no submit step.
     assert not _by_class(tree, "qsend")
 
@@ -1546,6 +1608,9 @@ def test_clicking_an_option_sends_that_label_as_the_answer(card):
         "scope": "once", "decision": "allow",
         # A JSON string keyed by the exact question text, value = the label.
         "answers": '{"Alpha or Beta?":"Beta"}',
+        # …and the empty second channel. It always goes, so the backend never
+        # has to tell "no Other was used" from "a page too old to have one".
+        "custom": "{}",
     }]
     status = _by_class(got["tree"], "perm-status")[0]
     assert status["text"] == "✓ You chose: Beta"
@@ -1570,10 +1635,15 @@ def test_a_multi_select_question_submits_the_ticked_labels_joined(card):
   byClass(card.el, "qsend")[0].children[0].onclick();
   await settle();
 """, reply={"decision": "allow", "answers": {"Which libraries?": "Alpha, Gamma"}})
+    # Three options plus the "Other" tick. The box it opens into is a TEXTAREA,
+    # not a fifth input — a typed answer is the one most likely to be a sentence,
+    # and a single line scrolls it out of sight sideways.
     assert [n["type"] for n in _nodes(got["before"]) if n["tag"] == "input"] \
-        == ["checkbox"] * 3
+        == ["checkbox"] * 4
+    assert [n["tag"] for n in _nodes(got["before"])].count("textarea") == 1
     assert json.loads(got["sent"][0]["answers"]) == {
         "Which libraries?": "Alpha, Gamma"}
+    assert got["sent"][0]["custom"] == "{}"
     assert _by_class(got["tree"], "perm-status")[0]["text"] == \
         "✓ You chose: Alpha, Gamma"
 
@@ -1591,7 +1661,7 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
   await settle();
   extra.halfway = {sent: sent.length,
                    status: byClass(card.el, "perm-status")[0].textContent};
-  boxes[3].checked = true;         // Beta, on the second question
+  boxes[4].checked = true;         // Beta, on the second question
   submit();
   await settle();
 """, reply={"decision": "allow"})
@@ -1600,10 +1670,286 @@ def test_a_multi_question_card_will_not_send_a_half_answer(card):
     assert json.loads(got["sent"][0]["answers"]) == {
         "Alpha or Beta?": "Alpha", "Which libraries?": "Beta"}
     # Two questions ⇒ radios for the single-choice one, checkboxes for the other,
-    # grouped per question so one question cannot steal another's selection.
+    # grouped per question so one question cannot steal another's selection —
+    # and an "Other" tick in each group, in that group's own shape, followed by
+    # the text box it opens.
     inputs = [n for n in _nodes(got["before"]) if n["tag"] == "input"]
-    assert [n["type"] for n in inputs] == ["radio"] * 2 + ["checkbox"] * 3
+    assert [n["type"] for n in inputs] == ["radio"] * 3 + ["checkbox"] * 4
     assert len({n["name"] for n in inputs}) == 2
+    # One text box per question, and in no group: an "Other" that unticked the
+    # question's options by sharing their name would be answering it by being
+    # typed into.
+    areas = [n for n in _nodes(got["before"]) if n["tag"] == "textarea"]
+    assert len(areas) == 2 and all(not n["name"] for n in areas)
+
+
+def test_other_opens_a_box_in_place_and_enter_sends_what_was_typed(card):
+    """D407. On a single-choice card every option IS a button, so "Other" is one
+    too and clicking it swaps the button for the field where the button stood —
+    the row the user aimed at stays where they aimed at it. Enter answers, and
+    what leaves is the typed string in `answers` plus the same string in
+    `custom`, which is what tells the backend the user wrote it.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qother")[0].onclick();
+  const field = byClass(card.el, "qtype")[0];
+  extra.opened = {rows: byClass(card.el, "qopt").length,
+                  // Alpha and Beta are still buttons; Other is not one any more.
+                  buttons: byTag(card.el, "BUTTON").length,
+                  focused: _focused === field,
+                  // The opened row still SAYS what it is, and the field says
+                  // what to do with it.
+                  label: byClass(card.el, "lbl")[2].textContent,
+                  placeholder: field.placeholder,
+                  tag: field.tagName, rowsAttr: field.rows,
+                  boxes: byTag(card.el, "INPUT").length};
+  field.value = "  Neither — use Delta  ";
+  field.onkeydown({key: "Enter", preventDefault(){}, stopPropagation(){}});
+  await settle();
+""", reply={"decision": "allow",
+            "answers": {"Alpha or Beta?": "Neither — use Delta"}})
+    # The button became the box, in place — three rows before and after — and
+    # the caret is already in it, so the click and the typing are one gesture.
+    # `label` and `boxes` are the shipped regression: the opened row went out as
+    # a bare field in a grey box (no label at all) whose only visible mark was
+    # the text input painted as a 14px tick, so it read as a broken checkbox row
+    # with nowhere to type. A single-choice question has no tick anywhere on it.
+    assert got["extra"]["opened"] == {
+        "rows": 3, "buttons": 2, "focused": True, "boxes": 0,
+        "tag": "TEXTAREA", "rowsAttr": 1,
+        "label": "Other…", "placeholder": "Type your answer, then press Enter"}
+    sent = got["sent"][0]
+    # Trimmed, and the SAME string on both channels: `answers` is what the model
+    # reads, `custom` is the provenance the validators need to let it through.
+    assert json.loads(sent["answers"]) == {"Alpha or Beta?": "Neither — use Delta"}
+    assert json.loads(sent["custom"]) == {"Alpha or Beta?": "Neither — use Delta"}
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "✓ You chose: Neither — use Delta"
+
+
+def test_shift_enter_breaks_the_line_and_a_multi_line_answer_keeps_its_newlines(card):
+    """The composer's bargain, and for the same reason: the commonest answer here
+    is one line, so plain Enter has to finish it — which leaves Shift+Enter as
+    the way to write a second one.
+
+    Shift+Enter is not intercepted at all (no preventDefault), so the textarea
+    inserts the newline itself and `autoGrow` runs off the input event. What
+    finally leaves is trimmed at the ENDS only: the newlines a multi-line answer
+    is made of are part of what the user wrote, and an answer reflowed into one
+    line is not the one they typed.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  byClass(card.el, "qother")[0].onclick();
+  const field = byClass(card.el, "qtype")[0];
+  let defaulted = false;
+  const ev = (key, shift) => field.onkeydown(
+    {key, shiftKey: !!shift, preventDefault(){ defaulted = true; },
+     stopPropagation(){}});
+  field.value = "first line";
+  ev("Enter", true);          // the textarea would insert the newline itself
+  extra.shift = {sent: sent.length, prevented: defaulted};
+  field.value = "  first line\\nsecond line  ";
+  ev("Enter", false);
+  await settle();
+""", reply={"decision": "allow"})
+    # Shift+Enter sent nothing AND did not swallow the key.
+    assert got["extra"]["shift"] == {"sent": 0, "prevented": False}
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Alpha or Beta?": "first line\nsecond line"}
+    assert json.loads(got["sent"][0]["custom"]) == {
+        "Alpha or Beta?": "first line\nsecond line"}
+
+
+def test_the_other_box_grows_to_a_flat_ceiling_and_keeps_the_caret_in_view(card):
+    """One line to start, taller as it fills, a flat 200px ceiling — the
+    composer's — and past it the box scrolls ITSELF.
+
+    Flat, not computed against the room `.qscroll` had left. That was tried and
+    shipped, and it is unfixable in the direction it was pointed: measured in a
+    real browser on a 460px-tall window, a four-option card is 452px of question
+    list under a 212px cap, so the list was over the cap before a character was
+    typed. There was no room to give, so the clamp bottomed out at its floor and
+    the answer was a 64px box that scrolled INSIDE a card that was also
+    scrolling. The card stops scrolling instead (the `:has` rule, pinned by
+    `test_only_one_thing_scrolls_while_the_other_box_is_open`), which leaves this
+    function nothing to measure against and nothing to be clever about.
+
+    Two things the composer's `autoGrow` does not do, both of them "the user can
+    see what they are typing": setting a height resets the textarea's scrollTop,
+    so a caret at the end has to be put back at the bottom afterwards or every
+    keystroke jumps the view to the first line (measured: 812 characters in,
+    caret at 812, scrollTop 0, in a 75px window on 426px of content); and the row
+    itself asks to be scrolled into view — `nearest`, so it moves the least it
+    can and does nothing when the row is already visible.
+
+    Driven on the multi-select card because that is the shape whose field is in
+    the DOM the whole time, closed as well as open — which is exactly the state
+    the re-measure on open exists for.
+    """
+    got = card.build(_MULTI, actions="""
+  const list = byClass(card.el, "qopts")[0];
+  const field = byClass(card.el, "qtype")[0];
+  // Never measured while the row was closed: that is the reading that is 0.
+  extra.whileClosed = field.style.height === undefined ? null : field.style.height;
+  // The borders `grow` adds back on top of the padding-box scrollHeight.
+  field.offsetHeight = 14; field.clientHeight = 12;
+  field.scrollHeight = 96;                 // as if three lines were in it
+  byTag(card.el, "INPUT")[3].checked = true;
+  list._on.change.forEach((f) => f());
+  extra.onOpen = field.style.height;
+  extra.askedOnOpen = field.scrolledIntoView;
+
+  // Typing at the end, past the ceiling: capped, and scrolled to the bottom so
+  // the caret the user is typing at is the part on screen.
+  field.scrolledIntoView = null;
+  field.value = "a long answer";
+  field.selectionStart = field.selectionEnd = field.value.length;
+  field.scrollTop = 0;
+  field.scrollHeight = 4000;
+  field.grow();
+  extra.capped = field.style.height;
+  extra.atEnd = field.scrollTop;
+  extra.askedWhileTyping = field.scrolledIntoView;
+
+  // …and a caret parked in the MIDDLE keeps the offset the browser already put
+  // on it, rather than being yanked to the bottom of someone else's text.
+  field.selectionStart = field.selectionEnd = 3;
+  field.scrollTop = 250;
+  field.grow();
+  extra.midway = field.scrollTop;
+""")
+    assert got["extra"]["whileClosed"] is None
+    # 96 of content plus the 2px of border scrollHeight does not count.
+    assert got["extra"]["onOpen"] == "98px"
+    # The composer's 200 is the ceiling, and it is FLAT — nothing about the card
+    # around it can talk it down.
+    assert got["extra"]["capped"] == "200px"
+    # Bottom of the box, so the caret is the part on screen.
+    assert got["extra"]["atEnd"] == 4000
+    assert got["extra"]["midway"] == 250
+    # The row asks to be brought into view, both on open and on every keystroke,
+    # and asks for the smallest move that does it.
+    assert got["extra"]["askedOnOpen"] == {"block": "nearest"}
+    assert got["extra"]["askedWhileTyping"] == {"block": "nearest"}
+
+
+def test_only_one_thing_scrolls_while_the_other_box_is_open(source):
+    """The question list and the "Other" box are two scrollers stacked in the
+    same axis, and two of those cannot both be right: whichever one the wheel
+    lands on, the other is the one the user meant. So the list gives up its 46vh
+    cap for exactly as long as a box is open, and the box is the only scroller
+    inside the card.
+
+    A stylesheet test and not a DOM probe because there is no layout here — this
+    IS the fix, and the shape of it (which selector, which two properties) is
+    what a future edit could quietly undo. The measurements behind it are in the
+    D407 row and in the commit."""
+    style = source[source.index("<style>"):source.index("</style>")]
+    style = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+    # Capped by default, so "Send answer" stays reachable…
+    base = re.search(r"\.perm\.ask \.qscroll \{([^}]*)\}", style)
+    assert base, "the question list's own rule moved"
+    assert "max-height: 46vh" in base.group(1)
+    assert "overflow: auto" in base.group(1)
+    # …and not a scroller at all while a box is open. Keyed on the SAME class
+    # the row carries while it is being typed into, so the two cannot drift.
+    open_ = re.search(
+        r"\.perm\.ask \.qscroll:has\(\.qopt\.qother\.typing\) \{([^}]*)\}", style)
+    assert open_, "the rule that takes the cap off while the box is open is gone"
+    assert "max-height: none" in open_.group(1)
+    assert "overflow: visible" in open_.group(1)
+    # The row and its column never scroll either: the box does, vertically only.
+    rule = re.search(r"\.perm \.qopt\.qother,\s*\.perm \.qopt\.qother \.qbody\s*\{([^}]*)\}",
+                     style)
+    assert rule and "overflow: visible" in rule.group(1), style[-400:]
+    field = re.search(r"\.perm \.qopt \.qtype\s*\{([^}]*)\}", style)
+    assert field, "the Other box's own rule moved"
+    assert "overflow-y: auto" in field.group(1)
+    assert "overflow-x: hidden" in field.group(1)
+    assert "resize: none" in field.group(1)
+
+
+def test_an_empty_other_box_sends_nothing_and_escape_gives_the_options_back(card):
+    """A blank answer would reach the model as a question the user "answered"
+    with silence, which is worse than an unanswered one — so Enter on an empty
+    box does nothing at all. Esc is the way out, and it restores the row rather
+    than leaving a field the user cannot close."""
+    got = card.build(_ONE_QUESTION, actions="""
+  const press = (key) => byClass(card.el, "qtype")[0].onkeydown(
+    {key, preventDefault(){}, stopPropagation(){}});
+  byClass(card.el, "qother")[0].onclick();
+  byClass(card.el, "qtype")[0].value = "   ";
+  press("Enter");
+  await settle();
+  extra.afterBlankEnter = {sent: sent.length,
+                           fields: byClass(card.el, "qtype").length};
+  press("Escape");
+""")
+    assert got["extra"]["afterBlankEnter"] == {"sent": 0, "fields": 1}
+    # Back to three plain options, the third one closed again.
+    assert got["sent"] == []
+    assert _texts(got["tree"], "lbl") == ["Alpha", "Beta", "Other…"]
+    assert [n["cls"] for n in _by_class(got["tree"], "qother")] == ["qopt qother"]
+
+
+def test_a_multi_select_sends_the_typed_answer_last_alongside_the_ticks(card):
+    """Parity on a multi-select: "Other" is a tick like the rest, and what is
+    typed there JOINS the chosen labels rather than replacing them — appended
+    last, because that is the order the backend matches a join in."""
+    got = card.build(_MULTI, actions="""
+  const boxes = byTag(card.el, "INPUT");
+  boxes[0].checked = true;                    // Alpha
+  boxes[2].checked = true;                    // Gamma
+  boxes[3].checked = true;                    // Other
+  byClass(card.el, "qtype")[0].value = "Delta";
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""", reply={"decision": "allow",
+            "answers": {"Which libraries?": "Alpha, Gamma, Delta"}})
+    assert json.loads(got["sent"][0]["answers"]) == {
+        "Which libraries?": "Alpha, Gamma, Delta"}
+    assert json.loads(got["sent"][0]["custom"]) == {"Which libraries?": "Delta"}
+
+
+def test_ticking_other_opens_its_box_and_picking_an_option_closes_it_again(card):
+    """The tick is the switch and the box is the answer, so they move together.
+
+    The listener sits on the LIST rather than on the tick, and that is the whole
+    point on a single-choice question: a radio that another option unticks fires
+    no event of its own, so the row would sit there open, focused and ignored
+    while the answer had already moved elsewhere.
+    """
+    got = card.build(_ONE_QUESTION, actions="""
+  const p2 = {questions: [p.input.questions[0], {question: "Second?",
+              options: [{label: "x"}], multiSelect: false}]};
+  const two = buildPermCard(Object.assign({}, p, {input: p2}), "run-1", "prompt");
+  const list = byClass(two.el, "qopts")[0];
+  const boxes = byTag(list, "INPUT");
+  const fire = () => (list._on.change || []).forEach((f) => f());
+  const row = () => byClass(list, "qother")[0].className;
+  boxes[2].checked = true;                     // Other
+  fire();
+  extra.opened = {cls: row(), focused: _focused === byClass(list, "qtype")[0]};
+  boxes[2].checked = false; boxes[0].checked = true;   // a radio steals it
+  fire();
+  extra.closed = row();
+""")
+    assert got["extra"]["opened"] == {"cls": "qopt qother typing", "focused": True}
+    assert got["extra"]["closed"] == "qopt qother"
+
+
+def test_a_ticked_but_empty_other_is_told_what_is_missing(card):
+    """An open, empty box is a different mistake from an untouched question, and
+    "Pick an answer" to someone who has already decided not to pick one is no
+    help."""
+    got = card.build(_MULTI, actions="""
+  byTag(card.el, "INPUT")[3].checked = true;   // Other, nothing typed
+  byClass(card.el, "qsend")[0].children[0].onclick();
+  await settle();
+""")
+    assert got["sent"] == []
+    assert _by_class(got["tree"], "perm-status")[0]["text"] == \
+        "Type your own answer, or pick one of the options."
 
 
 def test_a_question_card_offers_neither_a_verdict_nor_a_mode_switch(card):
@@ -1644,7 +1990,7 @@ def test_a_failed_send_brings_the_options_back(card):
   byClass(card.el, "qopt")[0].onclick();
   await settle();
 """, reply={"error": "could not record that decision"})
-    assert len(_by_class(got["tree"], "qopt")) == 2
+    assert len(_by_class(got["tree"], "qopt")) == 3
     assert not any(n["disabled"] for n in _nodes(got["tree"])
                    if n["tag"] in ("button", "input"))
     status = _by_class(got["tree"], "perm-status")[0]

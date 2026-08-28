@@ -34,7 +34,7 @@ coverage.xml
 htmlcov/
 # Runtime sidecar written next to an opened file: the server writes `<file>.json`
 # beside ANY file you open, whatever its extension (bookmark/session/comment
-# state — e.g. learn/index.html.json, ARCHITECTURE.md.json). It is per-machine
+# state — e.g. core_apps/sessions/inbox.html.json, ARCHITECTURE.md.json). It is per-machine
 # state and never source: a committed one hijacks the default view for everyone,
 # because an empty-query open restores its `lastSession` (ARCHITECTURE.md.json
 # was committed by accident and pinned the doc to one machine's git-mode
@@ -51,7 +51,7 @@ htmlcov/
 # cmux browser/screenshot captures — local scratch, never committed
 cmux-assets/
 
-# dev.sh's staged builtin-mount zips (learn.zip / sessions.zip) — build
+# dev.sh's staged builtin-mount zips (sessions.zip) — build
 # artifacts, freshly rebuilt on every dev.sh run, never committed
 .dev-zips/
 # dev.sh's per-worktree pidfile (one fixed file per checkout; the dir itself is
@@ -69,3 +69,5 @@ docs/superpowers/plans/
 # is an installation like any other, so the dir can appear here too. Never
 # committed: it describes one machine's copy, not the release.
 fused_render/.fused-render-selffix/
+# Windows dev.ps1 isolated home
+.dev-home/

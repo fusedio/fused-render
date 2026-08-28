@@ -3,6 +3,7 @@
  * top-to-bottom order of the monolithic file. Add new sections at the
  * position their rules would have appeared, not at the end by habit.
  * Palette tokens live in styles/tokens.css (tests/test_theme.py). */
+@import "./styles/tailwind.css";
 @import "./styles/tokens.css";
 @import "./styles/base.css";
 @import "./styles/sidebar.css";
@@ -24,6 +25,9 @@
 /* After claude-config.css because the AI Models page borrows its page chrome
    (.cc-main / .cc-heading / .cc-pill) and only adds its own row layout. */
 @import "./styles/ai-models.css";
+/* After ai-models.css: the Playground tab lives on the same page and layers its
+   pg-* stage/sidebar rules over that page's chrome. */
+@import "./styles/ai-playground.css";
 @import "./styles/mounts.css";
 /* After mounts.css for the same reason mounts.css sits after preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
@@ -40,6 +44,9 @@
    adds only the rows new to it — the two checkboxes, title and description,
    the past-time note. */
 @import "./styles/new-task.css";
+/* After the whole tasks family: the app page (/apps/<slug>, D488) hosts the
+   Tasks page inside its Tasks tab and adds only the header and frame around it. */
+@import "./styles/app-page.css";
 @import "./styles/setup-modal.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";

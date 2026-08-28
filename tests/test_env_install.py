@@ -393,7 +393,9 @@ def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     (fake_app / "Resources" / "bin").mkdir(parents=True)
     interp = fake_app / "MacOS" / "python"
     interp.write_text("")
-    uv = fake_app / "Resources" / "bin" / "uv"
+    # uv_bin() looks for "uv.exe" on win32 (see uv_bin's own `name` line) —
+    # match that filename, same as the sibling test just below.
+    uv = fake_app / "Resources" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
     uv.write_text("")
     monkeypatch.setattr(sys, "executable", str(interp))
     monkeypatch.delenv("FUSED_RENDER_UV_BIN", raising=False)
@@ -508,6 +510,7 @@ def test_a_server_already_on_312_builds_script_venvs_from_ITSELF(
     assert envinstall.script_python_ready() is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_server_on_the_WRONG_version_resolves_a_uv_managed_312(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -574,6 +577,7 @@ def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
     assert envinstall.script_python_ready() is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_an_explicit_script_python_override_wins_but_is_still_probed(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -591,6 +595,7 @@ def test_an_explicit_script_python_override_wins_but_is_still_probed(
     assert envinstall.script_python_ready() is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_the_interpreter_is_resolved_ONCE_per_process(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -651,6 +656,7 @@ def test_the_interpreter_is_never_ANOTHER_VENVS_python(
     assert "--managed-python" in find and "--no-project" in find, repr(find)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="needs a POSIX #! stub interpreter")
 def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_script_python):
     """"Nothing here yet" is a fact about this instant, not about the machine.
 
@@ -768,6 +774,36 @@ def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
     monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     envinstall.reset_venv_validation_cache()
     assert envinstall.start(proj)["key"] == envinstall.venv_key_for(proj)
+
+
+@requires_fused
+def test_start_says_whether_THIS_CALL_claimed_the_install(
+    tmp_path, monkeypatch, _fresh_script_python
+):
+    """`claimed` is what makes "may I cancel this?" a fact rather than a guess.
+
+    The key identifies the SHARED install, not the caller's share of it, so a
+    caller holding only a key could not tell an owner from a joiner — and the AI
+    supervisor, cancelling on the key, tore down an install every other download
+    of that runner was waiting on (each of which then failed with a cancellation
+    it never asked for).
+
+    Deliberately not in `progress()`: it is a fact about THIS CALL, and a polled
+    record carrying it would mean something different on the next read.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    monkeypatch.setattr(envinstall, "_spawn", lambda *a, **kw: os.getpid())
+
+    first = envinstall.start(proj)
+    assert first["claimed"] is True, "the caller that spawned the installer owns it"
+
+    # The claim is still in place, so a second caller joins rather than spawning.
+    def never(*a, **kw):
+        raise AssertionError("a joiner spawned a second installer")
+
+    monkeypatch.setattr(envinstall, "_spawn", never)
+    assert envinstall.start(proj)["claimed"] is False
+    assert "claimed" not in (envinstall.progress(first["key"]) or {})
 
 
 @requires_fused
@@ -1964,6 +2000,38 @@ def test_the_worker_is_told_the_venv_directory_rather_than_deriving_it(
 
 
 @requires_fused
+def test_a_none_cache_sends_the_worker_the_empty_string_not_the_word_None(
+    tmp_path, monkeypatch
+):
+    """`projectenv.uv_cache_dir()` answers `None` outside test isolation (no
+    `FUSED_RENDER_HOME`) — argv cannot carry that, so `_spawn` must send the
+    same empty-string sentinel slots 5 and 6 already use, not a literal
+    `"None"` or a crash.
+
+    Stubbed at `projectenv.uv_cache_dir` directly rather than by deleting
+    `FUSED_RENDER_HOME` in this process: that variable ALSO governs
+    `progress_dir(key)` (and everywhere else `home_dir()` is read), and
+    `_spawn` genuinely creates that directory and opens `worker.log` inside
+    it — unsetting the redirect here would point those real writes at this
+    developer's actual `~/.fused-render`, not a testable difference.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    key = envinstall.venv_key_for(proj)
+    monkeypatch.setattr(projectenv, "uv_cache_dir", lambda: None)
+
+    argv = []
+
+    class _Proc:
+        pid = os.getpid()
+
+    monkeypatch.setattr(envinstall.subprocess, "Popen",
+                        lambda cmd, **kw: (argv.extend(cmd), _Proc())[1])
+    envinstall._spawn(key, proj)
+
+    assert argv[6] == ""
+
+
+@requires_fused
 def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch):
     """`uv sync`, in the project dir, with the venv redirected out of it.
 
@@ -1993,7 +2061,13 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, cache, "3.12")
@@ -2006,6 +2080,97 @@ def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch)
     assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
     assert seen["env"]["UV_CACHE_DIR"] == cache
     assert not os.path.exists(os.path.join(proj, ".venv"))
+
+
+def test_no_explicit_cache_leaves_an_unset_UV_CACHE_DIR_unset(
+        tmp_path, monkeypatch):
+    """`None` (the ordinary case now — see `projectenv.uv_cache_dir()`) means
+    "let uv pick its own default" — not set to an empty string uv would
+    treat as a real, nonsensical path, and not stripped from the ambient
+    environment either if one happens to be there (see the sibling test
+    below). This pins the plain case: nothing ambient, nothing added.
+    """
+    monkeypatch.delenv("UV_CACHE_DIR", raising=False)
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_no_cache")
+
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        # Derived from `_venv_python`, not re-spelled as `bin/python`: that
+        # function returns `Scripts\python.exe` on Windows, and a literal
+        # POSIX path here is exactly the class of bug `fd50fc88` fixed once
+        # already ("uv sync reported success ... but left no interpreter
+        # at ...python.exe") — a bug in the TEST's assumed venv layout, not
+        # in `_build`.
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, None, "3.12")
+
+    assert "UV_CACHE_DIR" not in seen["env"]
+    assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
+
+
+def test_no_explicit_cache_passes_through_an_ambient_UV_CACHE_DIR_unchanged(
+        tmp_path, monkeypatch):
+    """The failure this pins: CI's own `setup-uv` action exports
+    `UV_CACHE_DIR` (observed in CI as
+    `/home/runner/work/_temp/setup-uv-cache`), and `uv_cache_dir()` answering
+    `None` there is not the same fact as `UV_CACHE_DIR` being absent — it
+    means WE have no opinion, and `_uv_env`'s base is a plain copy of
+    `os.environ`, so whatever is already there rides along untouched.
+
+    That is deliberate, not an oversight worth "fixing" by stripping it:
+    the whole point of deferring to uv's own default (see
+    `projectenv.uv_cache_dir()`) is to stop IMPOSING a cache location —
+    and actively deleting an operator's own `UV_CACHE_DIR` would impose a
+    different one ("no cache override", asserted rather than just not
+    contributed) that nobody asked for and that would surprise anyone who
+    set it on purpose. Honouring it is consistent with "defer to uv";
+    uv itself would honour exactly the same variable if invoked by hand.
+    """
+    monkeypatch.setenv("UV_CACHE_DIR", "/home/runner/work/_temp/setup-uv-cache")
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ambient_cache")
+
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["env"] = kw.get("env")
+        interpreter = worker._venv_python(venv_dir)
+        os.makedirs(os.path.dirname(interpreter), exist_ok=True)
+        open(interpreter, "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    monkeypatch.setattr(worker, "pty", None)  # exercise the piped fallback — see the test above
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, None, "3.12")
+
+    assert seen["env"]["UV_CACHE_DIR"] == "/home/runner/work/_temp/setup-uv-cache"
 
 
 @requires_fused
@@ -2036,7 +2201,13 @@ def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setenv("UV_LINK_MODE", "copy")
 
@@ -2074,7 +2245,13 @@ def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "home" / "uv-cache"), "3.12")
@@ -2110,7 +2287,13 @@ def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
@@ -2149,7 +2332,13 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
     monkeypatch.setattr(
         worker.os, "replace",
@@ -2201,11 +2390,567 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
 
         return _P()
 
-    monkeypatch.setattr(worker.subprocess, "run", _fake_run)
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
     monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
 
     worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
     assert not os.path.exists(os.path.join(venv_dir, "leftover"))
+
+
+@requires_fused
+def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeypatch):
+    """`uv sync` WRITES `uv.lock` into the directory it runs in.
+
+    A project folder that cannot be written to therefore failed the sync outright
+    — `failed to write to file .../uv.lock: Read-only file system (os error 30)`,
+    no environment built. Which is every AI model download on the packaged Linux
+    and Windows builds: the runner folders ship inside the app, the AppImage runs
+    from a read-only squashfs mount, and a `Program Files` install is not
+    user-writable. The venv, cache and interpreter are unchanged; only the
+    directory uv is allowed to litter moves.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ro")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["cwd"] = kw.get("cwd")
+        seen["env"] = kw.get("env")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    mirror = venv_dir + ".src"
+    assert seen["cwd"] == mirror, "the sync ran where uv cannot write its lock"
+    with open(os.path.join(mirror, "pyproject.toml"), encoding="utf-8") as fh:
+        mirrored = fh.read()
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        assert mirrored == fh.read(), "the mirror must declare what the project does"
+    # The environment is the same one either way.
+    assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
+
+
+@requires_fused
+def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
+    """The mirror is a fallback, not a layer: a user's folder syncs in itself.
+
+    The lock uv writes there is source and belongs in the user's tree (MD-7 puts
+    only DERIVED state in the home dir), so a mirror for a writable folder would
+    quietly stop that folder ever gaining a lock to commit.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_rw")
+    seen = {}
+
+    def _fake_run(cmd, **kw):
+        seen["cwd"] = kw.get("cwd")
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    assert seen["cwd"] == proj
+    assert not os.path.exists(venv_dir + ".src")
+
+
+def _seed_mirror(proj, mirror, *, lock, manifest="same"):
+    """A mirror left behind by an earlier build: its lock, and its record of the
+    manifest that lock was resolved against.
+
+    `manifest="same"` copies the project's current declaration, which is the state
+    after any successful build; `"stale"` writes something else, standing in for a
+    release that edited the manifest since. The mirror's manifest copy IS that
+    record — `_sync_root` compares it byte-for-byte and expires the lock on a
+    difference — so a test that seeds a lock without one is not describing any
+    state the worker can actually produce.
+    """
+    os.makedirs(mirror, exist_ok=True)
+    with open(os.path.join(mirror, "uv.lock"), "w", encoding="utf-8") as fh:
+        fh.write(lock)
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        current = fh.read()
+    with open(os.path.join(mirror, "pyproject.toml"), "w", encoding="utf-8") as fh:
+        fh.write(current if manifest == "same" else manifest)
+
+
+@requires_fused
+def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
+    """Which is the reason the mirror is a directory that persists at all.
+
+    A read-only folder ships no lock and can never gain one, so without this every
+    rebuild of a bundled runner re-resolves ctranslate2/torch from PyPI and can
+    pick up versions no release ever tested. Kept here, the first build's
+    resolution is what later builds reconcile against.
+
+    The manifest is UNCHANGED here, which is the condition: this is the
+    rebuild-after-repair case (D212 removed a venv whose base interpreter had
+    gone), where nothing about the declaration moved and re-resolving would only
+    risk picking different versions for the same request.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # what the first build resolved\n")
+    worker = _worker_module("_env_install_worker_mirror_lock")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.lock"), encoding="utf-8") as fh:
+        assert "the first build resolved" in fh.read()
+
+
+@requires_fused
+def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
+    """Source beats derived, the same way the manifest does.
+
+    A runner folder that commits a `uv.lock` is stating the versions it was tested
+    at, and a lock left over from an earlier release's own resolution must not
+    outrank it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    with open(os.path.join(proj, "uv.lock"), "w", encoding="utf-8") as fh:
+        fh.write("version = 1  # shipped with the app\n")
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    # Manifest unchanged, so the mirror's lock is one the expiry rule would KEEP:
+    # what overwrites it here is the shipped lock and nothing else.
+    _seed_mirror(proj, mirror, lock="version = 1  # left over from a previous release\n")
+    worker = _worker_module("_env_install_worker_shipped_lock")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.lock"), encoding="utf-8") as fh:
+        assert "shipped with the app" in fh.read()
+
+
+@requires_fused
+def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypatch):
+    """Not the mirror, which is an implementation detail of the home dir.
+
+    uv's text is passed through verbatim because it names the real problem, and
+    the folder the user can act on is the runner/project folder — a message about
+    `~/.fused-render/venvs/<hash>.src` sends them to a directory they have never
+    heard of.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_ro_error")
+
+    def _fake_run(cmd, **kw):
+        class _P:
+            returncode = 1
+            stdout = ""
+            stderr = "error: no wheels available"
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        with pytest.raises(RuntimeError) as excinfo:
+            worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert proj in str(excinfo.value)
+    assert ".src" not in str(excinfo.value)
+
+
+def test_writability_is_a_probe_and_not_os_access(tmp_path, monkeypatch):
+    """`os.access(dir, os.W_OK)` is the wrong question, on the platform that matters.
+
+    On Windows it reports the read-only ATTRIBUTE, which says nothing about a
+    directory: an ACL-protected `C:\\Program Files\\FusedRender\\...` answers
+    "writable", so the sync would run in place and uv would still die — `Access is
+    denied. (os error 5)` instead of `Read-only file system (os error 30)`, the
+    same install failing for the same reason on the platform the mirror was added
+    for. POSIX ACLs and SELinux have the smaller version of the same hole.
+
+    `os.access` is forced to lie here, which is the only way to describe that from
+    a POSIX test box: the directory really cannot be written to, and the mirror has
+    to happen anyway.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    worker = _worker_module("_env_install_worker_probe")
+    monkeypatch.setattr(worker.os, "access", lambda *a, **kw: True)
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        root = worker._sync_root(proj, str(tmp_path / "home" / "venvs" / "abc"))
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert root == str(tmp_path / "home" / "venvs" / "abc") + ".src", (
+        "os.access said writable and the sync went to a directory uv cannot write"
+    )
+
+
+def test_the_write_probe_leaves_nothing_behind(tmp_path):
+    """It runs in the user's own project folder on every single build.
+
+    A probe file that survived would be a file this app creates in a tree it
+    promised to touch only through the user's own edits (MD-7) — and one the user
+    would then see in `git status`.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    worker = _worker_module("_env_install_worker_probe_clean")
+    before = sorted(os.listdir(proj))
+
+    assert worker._writable_dir(proj) is True
+    assert sorted(os.listdir(proj)) == before
+
+
+@requires_fused
+def test_a_CHANGED_manifest_expires_the_mirrors_lock(tmp_path, monkeypatch):
+    """Otherwise a widened ceiling in a runner manifest never actually widens.
+
+    Bare `uv sync` re-resolves only what the manifest invalidates, and a WIDENED
+    range invalidates nothing: the runner manifests pin a pre-1.0 ceiling
+    (`mlx-lm>=0.31,<0.32`) and a release that moves it to `<0.33` leaves the
+    locked 0.31.x still satisfying the range. The rebuild would reinstall the
+    identical versions — packaged builds behaving as though a lock had been
+    committed and never refreshed, while dev checkouts (writable folder, no lock)
+    picked the new version up. Exactly inverted from what those manifests say they
+    rely on.
+
+    The mirror's own copy of the manifest is the record of what its lock was
+    resolved against, so a difference in those bytes is what expires it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # resolved against the old ceiling\n",
+                 manifest="[project]\nname = 'proj'\ndependencies = ['pip<1']\n")
+    worker = _worker_module("_env_install_worker_expire_lock")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert not os.path.exists(os.path.join(mirror, "uv.lock")), (
+        "the mirror kept a lock resolved against a manifest that has since moved"
+    )
+    with open(os.path.join(mirror, "pyproject.toml"), encoding="utf-8") as fh:
+        mirrored = fh.read()
+    with open(os.path.join(proj, "pyproject.toml"), encoding="utf-8") as fh:
+        assert mirrored == fh.read(), "the record must be updated to what it now holds"
+
+
+@requires_fused
+def test_a_MISSING_project_folder_still_reports_itself_and_builds_no_mirror(tmp_path):
+    """"Not there" must not be diagnosed as "read-only".
+
+    The probe answers the same False for both — nothing can be created in a folder
+    that does not exist either — so without a separate question a vanished runner
+    folder would be mirrored, uv would run in an empty directory, and the verbatim
+    error PY-18 shows the user would complain about a missing `pyproject.toml`
+    instead of naming the path that is gone. The direct sync root puts the real
+    path on `cwd` and lets the spawn say so.
+    """
+    missing = str(tmp_path / "gone")
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_missing_project")
+
+    assert worker._sync_root(missing, venv_dir) == missing
+    assert not os.path.exists(venv_dir + ".src"), (
+        "a folder that does not exist was mirrored"
+    )
+
+
+@requires_fused
+def test_an_UNREADABLE_source_manifest_does_not_leave_a_vouched_for_lock(tmp_path, monkeypatch):
+    """The gate must not read "I could not read either file" as "they agree".
+
+    `_read_bytes` answers `None` for a file that is absent and for one it could not
+    read, and conflating those on the KEEPING side is the dangerous direction: an
+    unreadable source manifest compared against a mirror holding no record at all
+    would come out equal, and the lock nothing had ever been compared against would
+    be carried forward.
+
+    The build fails either way — the copy loop cannot read the manifest either — so
+    what this pins is that the failure does not leave a blessed lock behind for
+    whatever runs next. An absent record fails the gate on its own, before any
+    comparison, so the lock is gone before the copy is attempted.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    os.makedirs(mirror, exist_ok=True)
+    lock = os.path.join(mirror, "uv.lock")
+    with open(lock, "w", encoding="utf-8") as fh:
+        fh.write("version = 1  # resolved against nobody knows what\n")
+    worker = _worker_module("_env_install_worker_unreadable_manifest")
+
+    manifest = os.path.join(proj, "pyproject.toml")
+    os.chmod(manifest, 0o000)
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj) or worker._read_bytes(manifest) is not None:
+            pytest.skip("running as root: read-only and unreadable are still readable")
+        with pytest.raises(OSError):
+            worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+        os.chmod(manifest, 0o644)
+
+    assert not os.path.exists(lock), (
+        "an unreadable manifest was taken as agreement and the lock survived"
+    )
+
+
+@requires_fused
+def test_the_mirror_drops_a_file_the_source_STOPPED_shipping(tmp_path, monkeypatch):
+    """A withdrawn `.python-version` must not govern every later build forever.
+
+    The mirror only ever copied names that exist, so a release that removes a
+    runner's `.python-version` (or withdraws a `uv.lock` it used to commit) left
+    the old copy in place and the environment kept being built against a
+    declaration no source tree contains. The folder is read-only, so there is no
+    edit that could undo it, and the file sits in the home dir where no user will
+    ever look for it.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    mirror = venv_dir + ".src"
+    _seed_mirror(proj, mirror, lock="version = 1  # uv's own output\n")
+    with open(os.path.join(mirror, ".python-version"), "w", encoding="utf-8") as fh:
+        fh.write("3.10\n")  # shipped by the previous release, gone from this one
+    worker = _worker_module("_env_install_worker_drop_stale")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    assert not os.path.exists(os.path.join(mirror, ".python-version"))
+    # `uv.lock` is the exemption and it is the whole point of the mirror: there the
+    # mirror holds uv's own output, which the source never has. Rule: a changed
+    # manifest expires it, an absent source file does not.
+    assert os.path.exists(os.path.join(mirror, "uv.lock"))
+
+
+@requires_fused
+def test_the_mirror_carries_uv_s_own_config_beside_the_manifest(tmp_path, monkeypatch):
+    """`uv.toml` is a resolution input, so leaving it out changes the answer.
+
+    A private index, an `exclude-newer`, build settings — configured beside the
+    manifest and simply not applying in the mirror, with nothing anywhere saying
+    why the resolution differs from the same folder's on a writable machine.
+    """
+    proj = _project(tmp_path, deps=["pip"])
+    with open(os.path.join(proj, "uv.toml"), "w", encoding="utf-8") as fh:
+        fh.write('index-url = "https://internal.example/simple"\n')
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+    worker = _worker_module("_env_install_worker_uv_toml")
+
+    os.chmod(proj, 0o555)
+    try:
+        if worker._writable_dir(proj):
+            pytest.skip("running as root: a read-only directory is still writable")
+        mirror = worker._sync_root(proj, venv_dir)
+    finally:
+        os.chmod(proj, 0o755)
+
+    with open(os.path.join(mirror, "uv.toml"), encoding="utf-8") as fh:
+        assert "internal.example" in fh.read()
+
+
+@requires_fused
+def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monkeypatch):
+    """Not this launch's mount path, which no later launch can resolve.
+
+    `gc()` keeps a venv whose source is merely unreachable (an unplugged drive
+    looks the same), so an absolute path recorded for a folder inside an AppImage
+    reads as unreachable forever — a runner folder a release removes or renames
+    would strand a multi-gigabyte environment nothing could ever collect.
+    """
+    worker = _worker_module("_env_install_worker_sidecar_identity")
+    pkg = tmp_path / ".mount_FusedRaaaaaa" / "fused_render"
+    runner = _project(pkg / "ai" / "runners", name="faster_whisper", deps=["pip"])
+    monkeypatch.setattr(worker, "_PACKAGE_DIR", str(pkg))
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(runner, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
+        recorded = json.load(fh)["path"]
+    assert recorded == "<fused_render>/ai/runners/faster_whisper"
+
+
+@requires_fused
+def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, monkeypatch):
+    """The identity only relativises what is genuinely inside the package.
+
+    A user's folder recorded as anything but its own path could not be checked for
+    deletion at all, and moving a folder is meant to orphan its venv (that is what
+    `gc` reclaims).
+    """
+    worker = _worker_module("_env_install_worker_sidecar_abspath")
+    proj = _project(tmp_path, deps=["pip"])
+    venv_dir = str(tmp_path / "home" / "venvs" / "abc")
+
+    def _fake_run(cmd, **kw):
+        os.makedirs(os.path.join(venv_dir, "bin"), exist_ok=True)
+        open(os.path.join(venv_dir, "bin", "python"), "w").close()
+
+        class _P:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _P()
+
+    monkeypatch.setattr(worker.subprocess, "Popen", _fake_popen(_fake_run))
+    # `_build` now tries a pty first on POSIX, whose actual bytes travel
+    # over a real OS-level fd this mock never writes to (only its process
+    # lifecycle — spawn, wait, returncode — is faked). `pty=None` forces
+    # the same fallback a real pty-less sandbox takes, keeping this test
+    # on the exact, already-verified path it always exercised.
+    monkeypatch.setattr(worker, "pty", None)
+    monkeypatch.setattr(worker.shutil, "which", lambda name: "/usr/bin/uv")
+
+    worker._build(proj, venv_dir, str(tmp_path / "cache"), "3.12")
+
+    with open(os.path.join(venv_dir, ".fused-source.json"), encoding="utf-8") as fh:
+        assert json.load(fh)["path"] == proj
 
 
 @requires_fused
@@ -2226,7 +2971,7 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     seen = []
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             seen.append(python_executable) or "/x/bin/python"
         ),
     )
@@ -2444,6 +3189,60 @@ def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
 # the wire and the page then polls forever — the same symptom, made permanent.
 
 
+def _fake_popen(fake_run):
+    """Adapts a `subprocess.run`-shaped fake to the `subprocess.Popen`-shaped
+    call `_build` now makes to stream uv's stderr line by line (see the worker
+    module docstring and `_UvProgress`).
+
+    These fakes predate that rewrite and describe uv's OBSERVABLE behaviour —
+    what it wrote to disk, what it returned — which has not changed; only how
+    `_build` reads uv's output has. Rather than rewrite every one of them
+    around a line-iterator, this adapter runs the existing fake and repackages
+    its `.stderr` string as the single-line-at-a-time object `_build` now
+    iterates, so every fake below still describes "what uv did" and nothing
+    about "how its output arrived".
+    """
+
+    class _Lines:
+        """A `Popen.stderr`-shaped iterator: line by line, closeable."""
+
+        def __init__(self, text):
+            self._lines = (text or "").splitlines(keepends=True)
+
+        def __iter__(self):
+            return iter(self._lines)
+
+        def close(self):
+            pass
+
+    def _popen(cmd, **kw):
+        result = fake_run(cmd, **kw)
+
+        class _FakeProc:
+            """Also a context manager: `_build` now does `with Popen(...) as
+            proc:`, matching `subprocess.run`'s own kill-on-exception
+            discipline (see `_build`'s comment)."""
+
+            stderr = _Lines(result.stderr)
+            returncode = result.returncode
+
+            def wait(self):
+                return self.returncode
+
+            def kill(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+        return _FakeProc()
+
+    return _popen
+
+
 def _worker_module(name="_env_install_worker_hb"):
     import importlib.util
 
@@ -2488,8 +3287,8 @@ def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
 
     real_write = worker._write
 
-    def _watch(progress_dir, stage, pct, detail="", done=False, error=None):
-        out = real_write(progress_dir, stage, pct, detail, done, error)
+    def _watch(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
+        out = real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
         if _is_beat(stage, detail):
             # `ts` is read back off DISK, because that is what the client polls.
             seen.append((pct, detail, _record(progress_dir)["ts"]))
@@ -2500,7 +3299,7 @@ def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
     monkeypatch.setattr(worker, "_write", _watch)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (beats.wait(10), "/x/venv/bin/python")[1]
         ),
     )
@@ -2534,8 +3333,8 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     calls = []
     real_write = worker._write
 
-    def _log(progress_dir, stage, pct, detail="", done=False, error=None):
-        out = real_write(progress_dir, stage, pct, detail, done, error)
+    def _log(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
+        out = real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
         calls.append((stage, done))
         return out
 
@@ -2544,12 +3343,12 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     beats = threading.Event()
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (beats.wait(10), "/x/venv/bin/python")[1]
         ),
     )
 
-    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _wait_for_beats(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if _is_beat(stage, detail) and len(
                 [c for c in calls if c == ("install", False)]) >= 2:
             beats.set()
@@ -2564,7 +3363,7 @@ def test_the_terminal_record_is_written_last_even_with_a_heartbeat_running(
     calls.clear()
     beats.clear()
 
-    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable):
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
         beats.wait(10)
         raise RuntimeError("Failed to install: no wheels for imagecodecs")
 
@@ -2598,16 +3397,16 @@ def test_a_late_heartbeat_cannot_undo_the_terminal_record(tmp_path, monkeypatch)
     first_beat = threading.Event()
     real_write = worker._write
 
-    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _hold_the_first_beat(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if _is_beat(stage, detail) and not first_beat.is_set():
             first_beat.set()
             held.wait(10)  # the build finishes while this beat is parked here
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", _hold_the_first_beat)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             (first_beat.wait(10), "/x/venv/bin/python")[1]
         ),
     )
@@ -2669,9 +3468,9 @@ def test_the_python_stage_reports_LIVENESS_not_an_invented_percentage(
     seen = []
     real_write = worker._write
 
-    def record_every(progress_dir, stage, pct, detail="", done=False, error=None):
+    def record_every(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         seen.append((stage, pct, detail))
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", record_every)
     monkeypatch.setattr(worker, "_HEARTBEAT_S", 0.05)
@@ -2742,15 +3541,15 @@ def test_a_failed_terminal_write_does_not_latch_out_the_error_record(tmp_path, m
     d = str(tmp_path / "prog")
     real_write = worker._write
 
-    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None):
+    def _fail_the_done_record(progress_dir, stage, pct, detail="", done=False, error=None, **kwargs):
         if stage == "done":
             raise OSError(28, "No space left on device")
-        return real_write(progress_dir, stage, pct, detail, done, error)
+        return real_write(progress_dir, stage, pct, detail, done, error, **kwargs)
 
     monkeypatch.setattr(worker, "_write", _fail_the_done_record)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: "/x/venv/bin/python",
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: "/x/venv/bin/python",
     )
     with pytest.raises(OSError):
         worker.install("k", d, str(tmp_path / "proj"), str(tmp_path / "venv"), str(tmp_path / "cache"))
@@ -2779,13 +3578,13 @@ def test_the_heartbeat_thread_does_not_outlive_the_install(tmp_path, monkeypatch
     monkeypatch.setattr(worker.threading, "Thread", _capture)
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: "/x/venv/bin/python",
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: "/x/venv/bin/python",
     )
     worker.install("k", str(tmp_path / "a"), str(tmp_path / "proj"), str(tmp_path / "venv"), str(tmp_path / "cache"))
     assert threads and all(t.daemon for t in threads)
     assert not any(t.is_alive() for t in threads), "the heartbeat outlived the install"
 
-    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable):
+    def _boom(project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw):
         raise RuntimeError("nope")
 
     monkeypatch.setattr(worker, "_build", _boom)
@@ -2840,7 +3639,7 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     seen = []
     monkeypatch.setattr(
         worker, "_build",
-        lambda project_dir, venv_dir, uv_cache_dir, python_executable: (
+        lambda project_dir, venv_dir, uv_cache_dir, python_executable, *a, **kw: (
             seen.append(python_executable) or "/x/bin/python"
         ),
     )

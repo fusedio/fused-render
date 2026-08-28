@@ -1,0 +1,124 @@
+"""The video-generation additions to `fused_render.ai.supervisor` (SPEC §40).
+
+**Not `tests/test_supervisor_core.py`** — that file drives the platform-neutral
+OS tray supervisor (`fused_render.supervisor.core`) and is unrelated to the AI
+one; there is no dedicated unit-test file for `fused_render.ai.supervisor`'s
+own functions today (its job-id/timeout/unload/cancel behaviour is exercised
+indirectly, through the HTTP routes, in `test_ai_runtime.py`). This file is
+new for that reason — a direct, HTTP-free look at the four video pieces:
+`video_job_id`'s shape, `VIDEO_TIMEOUT_S`'s wiring into the leak ceiling, and
+`unload`/`cancel_generation` accepting the new capability like every other one
+they already accept.
+"""
+import threading
+
+import pytest
+
+from fused_render.ai import registry, supervisor
+
+
+@pytest.fixture(autouse=True)
+def _clean_workers():
+    """`supervisor._workers` is process-global state; a test that adds a
+    fake resident worker must not leak it into the next test."""
+    yield
+    with supervisor._lock:
+        supervisor._workers.clear()
+        supervisor._worker_tokens.clear()
+
+
+def test_video_job_prefix_is_its_own_and_sanitizes_like_image_does():
+    assert supervisor.VIDEO_JOB_PREFIX == supervisor.JOB_PREFIX.rsplit("ai-model:", 1)[0] + "ai-video:"
+    assert supervisor.video_job_id("abc-123") == supervisor.VIDEO_JOB_PREFIX + "abc-123"
+    # Non alnum/._- characters are stripped, exactly like `image_job_id`.
+    assert supervisor.video_job_id("a b/c!d") == supervisor.VIDEO_JOB_PREFIX + "abcd"
+
+
+def test_video_job_prefix_is_distinct_from_every_other_prefix():
+    prefixes = {supervisor.IMAGE_JOB_PREFIX, supervisor.TRANSCRIBE_JOB_PREFIX,
+                supervisor.VIDEO_JOB_PREFIX, supervisor.JOB_PREFIX}
+    assert len(prefixes) == 4
+
+
+def test_video_timeout_is_two_hours():
+    assert supervisor.VIDEO_TIMEOUT_S == 2 * 3600.0
+
+
+def test_leak_ceiling_uses_the_video_timeout_for_video_generation():
+    window = 60.0
+    assert supervisor._leak_ceiling(registry.VIDEO_GENERATION, window) == (
+        supervisor.VIDEO_TIMEOUT_S + supervisor._LEAK_CEILING_MARGIN_S)
+    # Unaffected: the other capabilities' ceilings are unchanged by this addition.
+    assert supervisor._leak_ceiling(registry.SPEECH_TO_TEXT, window) == (
+        supervisor.TRANSCRIBE_TIMEOUT_S + supervisor._LEAK_CEILING_MARGIN_S)
+    assert supervisor._leak_ceiling(registry.IMAGE_GENERATION, window) == (
+        supervisor.GENERATE_TIMEOUT_S + supervisor._LEAK_CEILING_MARGIN_S)
+
+
+def _fake_worker(capability, model="dgrauet/ltx-2.3-mlx-q4"):
+    worker = supervisor.Worker(model=model, capability=capability,
+                               runner_code="ltx-video", token="tok-video")
+    worker.state = "ready"
+    with supervisor._lock:
+        supervisor._workers[capability] = worker
+        supervisor._worker_tokens.add(worker.token)
+    return worker
+
+
+def test_unload_accepts_the_video_capability(monkeypatch):
+    worker = _fake_worker(registry.VIDEO_GENERATION)
+    monkeypatch.setattr(supervisor, "_terminate", lambda w: None)
+    assert supervisor.unload(capability=registry.VIDEO_GENERATION, reason="test") is True
+    with supervisor._lock:
+        assert registry.VIDEO_GENERATION not in supervisor._workers
+
+
+def test_unload_by_model_also_reaches_a_video_worker(monkeypatch):
+    worker = _fake_worker(registry.VIDEO_GENERATION, model="some/other-video-model")
+    monkeypatch.setattr(supervisor, "_terminate", lambda w: None)
+    assert supervisor.unload(model="some/other-video-model", reason="test") is True
+
+
+def test_cancel_generation_reaches_a_video_worker(monkeypatch):
+    """Pins `_RUNNERS` to ltx-video alone, matching `_fake_worker`'s hardcoded
+    `runner_code` — since `ltx-video` was registered ahead of it (SPEC §40's
+    LTX-2.3 plan), `ready_worker` (which `cancel_generation` calls) evicts a
+    resident whose `runner_code` no longer matches the capability's RESOLVED
+    runner (`ready_worker`'s own "a mismatch EVICTS" contract). On a machine
+    that resolves `text-to-video` to `ltx-video` (any Apple Silicon box with
+    no engine preference set — this suite's own dev machine among them) the
+    unpinned fixture would evict the fake worker before `cancel_generation`
+    ever reached it, which is a fact about WHICH ENGINE the test asked for,
+    not a bug in eviction. Pinning removes that hardware dependency, the same
+    way `test_ai_runtime.py::test_a_video_off_apple_silicon_says_so` pins the
+    registry to test one runner's behaviour in isolation.
+    """
+    monkeypatch.setattr(registry, "_RUNNERS", (registry.by_code("ltx-video"),))
+    worker = _fake_worker(registry.VIDEO_GENERATION)
+    calls = {}
+
+    def fake_worker_request(w, path, body=None, timeout=None):
+        calls["path"] = path
+
+        class _Resp:
+            def close(self):
+                pass
+        return _Resp()
+
+    monkeypatch.setattr(supervisor, "_worker_request", fake_worker_request)
+    assert supervisor.cancel_generation(capability=registry.VIDEO_GENERATION) is True
+    assert calls["path"] == "/cancel"
+
+
+def test_cancel_generation_with_no_video_worker_is_a_no_op():
+    assert supervisor.cancel_generation(capability=registry.VIDEO_GENERATION) is False
+
+
+def test_start_video_raises_before_opening_a_job_off_apple_silicon(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    with pytest.raises(supervisor.SupervisorError, match="Apple Silicon"):
+        supervisor.start_video("dgrauet/ltx-2.3-mlx-q4", {"prompt": "x"},
+                               "sys:ai-video:test")
+
+

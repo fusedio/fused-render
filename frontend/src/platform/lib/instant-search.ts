@@ -34,6 +34,20 @@ export const PENDING_INDICATOR_MS = 200;
 // clears it wholesale).
 export const QUERY_MEMO_LIMIT = 20;
 
+// How long a request may run before the rows still on screen (an OLDER
+// query's answer, since the list is never blanked) are dropped rather than
+// held. Never-blank was written for a ~40 ms local round trip, where showing
+// the previous answer for one more frame is free; a server round trip can run
+// into seconds, and past this long the rows on screen stop being "a little
+// behind" and start being flatly wrong — narrowing them locally (home-search's
+// `narrowAnswer`) is the first line of defense, and this is what fires when
+// narrowing leaves nothing: no rows and an honest "Searching…" beats rows for
+// a query the user has visibly moved past. Longer than PENDING_INDICATOR_MS
+// for the same reason a doctor's second opinion takes longer than the first
+// glance: this is a decision to throw away information, not just to admit a
+// wait is happening.
+export const STALE_CLEAR_MS = 600;
+
 /**
  * Milliseconds to wait before issuing the request for a freshly typed query.
  *

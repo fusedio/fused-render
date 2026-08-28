@@ -10,10 +10,11 @@
 // The shell gives it one sidebar route under the CLAUDE heading, gated on
 // `useClaudeConfigAvailable` (./available.ts, checked from
 // shell/GlobalSidebar.tsx and dispatched in shell/App.tsx): `/claude-config`,
-// the settings panel, whose "MD Files" section is the CLAUDE.md explorer
-// (`?cctab=claudemd`; the old `/claude-md` page redirects there). It briefly
-// also hung off the Preferences page as a tab; a settings page with a second
-// settings app nested inside one of its tabs was one surface too many.
+// the settings panel. It briefly also hung off the Preferences page as a tab;
+// a settings page with a second settings app nested inside one of its tabs
+// was one surface too many. It also briefly had a "MD Files" section (the
+// CLAUDE.md explorer) — deleted in round 2; the old `/claude-md` page and a
+// stale `?cctab=claudemd` both redirect to the bare panel now.
 // Mutable state (settings.json, the git history, MCP registrations) is written
 // by the server-side modules to ~/.claude — this app owns none of it.
 //

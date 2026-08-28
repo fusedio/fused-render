@@ -90,7 +90,7 @@ import time
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from fused_render import schedule, tasks_store
+from fused_render import current_apps, schedule, tasks_store, tasks_watch
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.routers import claude_sessions as sessions
 
@@ -158,6 +158,7 @@ def reset_cache() -> None:
     _FULL.clear()
     _WINDOW.clear()
     tasks_store.reset_cache()
+    tasks_watch.reset()
 
 
 # --------------------------------------------------------------- transcripts
@@ -399,21 +400,38 @@ def _entry_state(entry: dict) -> str:
     return state
 
 
-def _entry_turn(entry: dict, live: bool) -> str:
+def _entry_turn(entry: dict) -> str:
     """How the turn a scheduled message started is going: "" while it is in
-    flight, `done` once it ended, `idle` for one that started and stopped
-    reporting with nothing running now, `unknown` where the watcher said so."""
+    flight, `done` once it ended, `cancelled` for one the user stopped,
+    `unknown` where the watcher said so.
+
+    THE STORE IS THE AUTHORITY on "in flight", and this deliberately no longer
+    folds transcript liveness in. `turn` is written exactly once, when the
+    turn ends, and the sweep closes an abandoned turn as `unknown` within one
+    tick (schedule.py `_claim_due`) — so `sent` with no `turn` IS a running
+    turn, whatever the transcript's mtime says. Folding liveness in was the
+    board's half of the queue/board desync: a turn thinking through a long
+    tool call appends nothing for minutes, this read that as `idle`, and
+    `_message_verdict` then filed a RUNNING task under Done — the board said
+    finished while the dock, reading the store, said thinking. The dock's own
+    live list has always been `sent && !turn`; this makes the board read the
+    same store fact instead of second-guessing it with a heuristic that
+    exists for pure chat turns (which have no watcher and keep it —
+    `_turn_of_newest_chat`).
+
+    `cancelled` passes through by name rather than collapsing into `done`:
+    the dock and the schedule list say "Stopped" for it, and the board's rows
+    must use the same word. The LANE is still Done (`_message_verdict`) —
+    a stop the user asked for is a settled outcome, not a fault."""
     turn = str(entry.get("turn") or "")
-    if turn == "unknown":
-        return "unknown"
+    if turn in ("unknown", "cancelled"):
+        return turn
     if turn:
         return "done"
-    if str(entry.get("state") or "") in _IN_TRANSCRIPT:
-        return "" if live else "idle"
     return ""
 
 
-def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
+def _scheduled_message(entry: dict, at: float, ran_at: float,
                        anchor: str) -> dict:
     return {
         "message_id": "",
@@ -425,10 +443,22 @@ def _scheduled_message(entry: dict, live: bool, at: float, ran_at: float,
         "at": at,
         "ran_at": ran_at,
         "state": _entry_state(entry),
+        # When the turn's verdict LANDED — 0.0 until it has (and for entries a
+        # pre-stamp version of the store wrote). `ran_at` is when the run
+        # started; this is when it was pronounced over, which is the moment
+        # `_verdict_outvotes_live` measures the transcript's tail against.
+        "turn_at": tasks_store.epoch(entry.get("turn_at")) or 0.0,
         "unread": False,
         "entry_id": str(entry.get("id") or ""),
         "template_id": str(entry.get("template_id") or ""),
-        "turn": _entry_turn(entry, live),
+        # Was this message PLANNED for its time, or does it merely have one?
+        # A task typed into the List or the Board with the when-row untouched
+        # runs now because now is the form's default — nobody put it on a
+        # calendar, so the calendar does not draw it (schedule-lib.taskChips).
+        # False for every entry stored before the flag existed, which is the
+        # right reading: they all came from a form that asked for a time.
+        "immediate": bool(entry.get("immediate")),
+        "turn": _entry_turn(entry),
         "anchor": anchor,
     }
 
@@ -447,6 +477,9 @@ def _chat_message(prompt: dict) -> dict:
         # A typed message was delivered the moment it was typed. The state
         # vocabulary is the schedule's, and `sent` is the word in it for that.
         "state": schedule.SENT,
+        # A typed message carries no verdict stamp — only the watcher writes
+        # one — and 0.0 is how every stamp here says "never".
+        "turn_at": 0.0,
         "unread": False,
         "entry_id": "",
         "template_id": "",
@@ -455,7 +488,7 @@ def _chat_message(prompt: dict) -> dict:
     }
 
 
-def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
+def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
     """One thread, oldest first, with the scheduled entries joined onto the
     prompts they became.
 
@@ -494,7 +527,7 @@ def _merge(prompts: list[dict], entries: list[dict], live: bool) -> list[dict]:
                 matched = prompts[best[1]]
                 ran_at = matched["at"] or ran_at
                 anchor = matched["anchor"]
-        messages.append(_scheduled_message(entry, live, at, ran_at, anchor))
+        messages.append(_scheduled_message(entry, at, ran_at, anchor))
     for j, prompt in enumerate(prompts):
         if j not in taken:
             messages.append(_chat_message(prompt))
@@ -576,12 +609,30 @@ def _message_verdict(message: dict) -> str | None:
     that set FUSED_RENDER_SCHEDULE_MAX_LATE (a missed OCCURRENCE reads as
     `skipped`), the row already paints it red off the `failed` flag, and
     promoting it to the Failed lane is a separate decision nobody has made.
+
+    A scheduled `sent` with NO turn yet is the other promise: the session
+    started and the watcher has not pronounced it over, so it has nothing to
+    say — it is RUNNING (`_message_running`), not done. Answering `done` here
+    was the premature-Done half of the queue/board desync: in the window
+    between the spawn and the watcher's first report (no claude_session_id in
+    the busy set yet, no transcript to be live) the board filed a running task
+    under Done while the dock said thinking. Scheduled only: a CHAT message's
+    empty turn means the transcript's own liveness ran out, which has no
+    watcher behind it and keeps its old reading.
+
+    A turn the user STOPPED (`cancelled`) still answers `done` — the lane for
+    a settled outcome — and the word "Stopped" rides on the message's `turn`
+    (`_entry_turn`), so the board and the dock describe the stop identically.
     """
     state = message["state"]
     if state == "error":
         return "failed"
     if state == "sent":
-        return "failed" if message["turn"] == "unknown" else "done"
+        if message["turn"] == "unknown":
+            return "failed"
+        if message["kind"] == "scheduled" and not message["turn"]:
+            return None
+        return "done"
     if state == "missed":
         return "done"
     return None
@@ -715,7 +766,29 @@ def _running_now(session_id: str, live: bool, busy: set[str]) -> bool:
     return live or (bool(session_id) and session_id in busy)
 
 
-def _verdict_outvotes_live(messages: list[dict]) -> bool:
+# How much newer than its verdict the transcript's tail must be before the tail
+# stops being the finished turn's own echo and starts being evidence of new
+# work. The closing records land in the same breath as the verdict (the watcher
+# stamps `turn_at` the moment the run reports done, seconds after the last real
+# record) — this window absorbs that ordering jitter and clock skew, while a
+# session genuinely still working appends records well past it.
+#
+# WIDENED FROM 5s (2026-08-21). Five seconds only covered the watcher's own
+# ordering jitter, and the CLI's teardown is slower than that on a busy
+# machine: one late record dated 6-20s after `turn_at` put the board back on In
+# Progress for the rest of the 45-second liveness window while the dock, which
+# reads the store, had said finished — the same two-surface disagreement from
+# the other side. 15s is the largest value that still lets a session which is
+# GENUINELY still working keep its vote: sustained work appends records
+# continuously, so its tail runs past any fixed window (TASK-001's pin is 27s
+# past the verdict and must stay In Progress), while an echo is a handful of
+# rows and stops. The cost of a fixed window is bounded and one-directional —
+# real follow-up work that goes quiet for a moment is announced up to 15s
+# late, never announced wrongly.
+_VERDICT_ECHO_SEC = 15.0
+
+
+def _verdict_outvotes_live(messages: list[dict], active: float) -> bool:
     """Is the transcript's liveness just the echo of a run that has already
     reported its verdict?
 
@@ -738,6 +811,20 @@ def _verdict_outvotes_live(messages: list[dict]) -> bool:
     prompt a scheduled run fired is consumed by the join (`_merge`) and cannot
     also stand on the chat side, so an equal stamp is the run's own.
 
+    BUT THE VERDICT MAY ONLY SILENCE ITS OWN ECHO (TASK-001, Akshil,
+    2026-08-19: a task wore the green Done ring while Claude was visibly still
+    building the app in its session). A resolved turn is not the end of a
+    conversation — the session can keep working with no new prompt to show for
+    it (follow-up turns, background work), and none of that is a "message"
+    here, so the newest thing that HAPPENED stayed the verdict for as long as
+    the work ran and the suppression never lifted. `active` is the transcript's
+    own answer — the timestamp of its newest real (non-housekeeping) record —
+    and `turn_at` is the moment the watcher pronounced the turn over: a tail
+    meaningfully newer than the verdict (`_VERDICT_ECHO_SEC`) is new work, and
+    the transcript keeps its vote. An entry a pre-stamp store wrote has no
+    `turn_at` and keeps the old rule — by the time such an entry matters its
+    transcript has long gone stale anyway.
+
     Deliberately NOT consulted: `busy_sessions`. The scheduler holding a send in
     flight is an independent claim and `_running_now` keeps asking it whatever
     this answers — this function only decides whether the TRANSCRIPT gets a
@@ -746,14 +833,20 @@ def _verdict_outvotes_live(messages: list[dict]) -> bool:
     if any(_message_running(m) for m in messages):
         return False  # something really is in flight; liveness corroborates it
     verdict_at = 0.0
+    resolved_at = 0.0
     other_at = 0.0
     for message in messages:
         happened = message["ran_at"] or 0.0
         if message["kind"] == "scheduled" and _message_verdict(message) is not None:
             verdict_at = max(verdict_at, happened)
+            resolved_at = max(resolved_at, message["turn_at"] or 0.0)
         else:
             other_at = max(other_at, happened)
-    return verdict_at > 0.0 and verdict_at >= other_at
+    if not (verdict_at > 0.0 and verdict_at >= other_at):
+        return False
+    if resolved_at > 0.0 and active > resolved_at + _VERDICT_ECHO_SEC:
+        return False  # written to well after the verdict: that is a pulse
+    return True
 
 
 def _status(messages: list[dict], filed: bool, session_id: str, live: bool,
@@ -1079,12 +1172,21 @@ def _place(task: dict) -> None:
     The project is the transcript's own `cwd` where there is one — the encoded
     directory name is lossy (Claude Code turns literal hyphens into separators
     too), so it is only the fallback — and otherwise the folder of whatever the
-    scheduled message was pointed at."""
+    scheduled message was pointed at.
+
+    The target, for a chat with no scheduled entry, prefers the FILE the chat's
+    pane was on (`tasks_store.head`'s fourth answer, read out of the
+    `<live-app-state>` block) over the project folder: opening the task should
+    land where the user was actually looking. A scheduled entry's own target
+    still wins — it is the thing the job was pointed at — and a pane file that
+    no longer exists on disk falls back to the folder rather than opening a
+    view of nothing."""
     cwd = None
     first_ts = None
     prompt = ""
+    pane = ""
     if task["path"]:
-        cwd, first_ts, prompt = tasks_store.head(task["path"])
+        cwd, first_ts, prompt, pane = tasks_store.head(task["path"])
     task["first_prompt"] = prompt
     entries = task["entries"]
     target = str(entries[-1].get("target") or "") if entries else ""
@@ -1093,7 +1195,8 @@ def _place(task: dict) -> None:
             sessions._decode_project_dir(os.path.basename(os.path.dirname(
                 task["path"]))) if task["path"] else "")
     task["project"] = tasks_store.project_of(cwd or "")
-    task["target"] = target or task["project"]
+    task["target"] = target or (
+        pane if pane and os.path.isfile(pane) else task["project"])
     if first_ts is None and entries:
         first_ts = (tasks_store.epoch(entries[0].get("created"))
                     or _entry_at(entries[0]))
@@ -1143,6 +1246,22 @@ def _live(path: str | None, now: float) -> tuple[bool, float]:
         mtime = os.path.getmtime(path)
     except OSError:
         return False, 0.0
+    # The live registry (tasks_watch) knows what a running `claude` SAYS it is
+    # doing, which beats inferring it from the file: `busy` is running whatever
+    # the tail's timestamps add up to, and `idle` is not, even if housekeeping
+    # touched the file a second ago. Its last-active stamp is used only when it
+    # is newer than the transcript's — a registry row is rewritten on status
+    # changes, not on every message, so the file can know the later moment.
+    from_registry = tasks_watch.live_from_registry(
+        os.path.splitext(os.path.basename(path))[0], mtime)
+    if from_registry is not None:
+        running, active = from_registry
+        if now - mtime <= sessions._STALE_TAIL_SEC:
+            _activity, last = sessions._tail(path, mtime)
+            file_active = last.timestamp() if last is not None else mtime
+        else:
+            file_active = mtime
+        return running, max(active, file_active)
     if now - mtime > sessions._STALE_TAIL_SEC:
         return False, mtime
     activity, last = sessions._tail(path, mtime)
@@ -1237,7 +1356,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # prompts and the unfired entries — a prompt outside that window cannot be
     # in the last three of a list it is in the same order as. Their ids follow
     # from the total, whatever else is below them.
-    merged = _merge(prompts, task["entries"], live)
+    merged = _merge(prompts, task["entries"])
     # A run that has already reported its verdict does not keep the row In
     # Progress off its own closing transcript records: the queue card in the
     # corner says finished within seconds of the result row, and this page
@@ -1247,7 +1366,10 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # `live` — the status, the newest chat message's turn, and the row's own
     # `live` flag — so the row cannot half-agree with itself. See
     # `_verdict_outvotes_live` for why a genuinely new turn is safe.
-    if live and _verdict_outvotes_live(merged):
+    # `active` rides along because it is the tie-breaker the bug demanded:
+    # a transcript still being written to meaningfully after the verdict is a
+    # session that kept working, and only the verdict's own echo is set aside.
+    if live and _verdict_outvotes_live(merged, active):
         live = False
     # BEFORE the cut, from the whole set: the one fact about the future that the
     # three-message window cannot be trusted to hold. See `_next_run`.
@@ -1389,18 +1511,26 @@ def _unread_count(task: dict, total: int, unfired: list[dict],
                - waiting)
 
 
-def _task_rows() -> list[dict]:
+def _task_rows(only: frozenset | set | None = None) -> list[dict]:
     """Build the authoritative task rows shared by the two listing shapes.
 
     Keeping collection here makes the compact sidebar endpoint a projection of
     exactly the same status, unread and activity decisions as the Tasks page.
     FastAPI serializes only the projection returned by that endpoint, so the
     large titles, descriptions and message bodies never cross the wire there.
+
+    `only` narrows the answer to those task keys — the changes endpoint's
+    shape. Collection still runs over everything (it is a glob and a store
+    read, and a task's key can depend on entries filed under another), but rows
+    are built for the named keys alone, and the day-one read initialisation is
+    left to the full listing, which is the only caller that knows every count.
     """
     triage = sessions._load_state("triage.json")
     read = tasks_store.read_state()
     now = time.time()
     tasks = _collect()
+    if only is not None:
+        tasks = {key: task for key, task in tasks.items() if key in only}
     # One pass over the store for every row: which conversations the scheduler
     # is still waiting on. See `_status`.
     busy = schedule.busy_sessions(schedule.list_entries())
@@ -1433,9 +1563,20 @@ def _task_rows() -> list[dict]:
     # counts the rows just produced, because this is the only place that knows
     # them — and done after the rows are built rather than before, so it costs
     # one extra pass on exactly one request in the store's lifetime.
-    if not tasks_store.initialized(read):
+    if only is None and not tasks_store.initialized(read):
         tasks_store.initialize([(r["key"], r["message_count"]) for r in rows])
     rows.sort(key=lambda r: r["last_active"], reverse=True)
+    # The Current apps desk (current_apps.py) learns about NEW tasks here —
+    # the one place every task on the machine passes, whatever started it.
+    # Best-effort: the desk is a side table, and a store that cannot be
+    # written costs an app on the sidebar, never the listing.
+    # Not from a partial listing: `observe` reads its argument as EVERY live
+    # task and prunes what it does not see (bugbot, PR #892).
+    if only is None:
+        try:
+            current_apps.observe(rows)
+        except OSError:
+            pass
     return rows
 
 
@@ -1449,10 +1590,51 @@ def api_tasks():
     run — see `_is_task`. That is an absence of a task, not a filter hiding one.
     """
     rows = _task_rows()
-    return {"tasks": rows}
+    return {"tasks": rows, "generation": tasks_watch.generation()}
 
 
-_PULSE_FIELDS = ("key", "status", "unread", "last_active")
+@router.get("/api/tasks/changes")
+def api_tasks_changes(since: int = Query(-1), wait: float = Query(tasks_watch.MAX_WAIT_SEC)):
+    """What moved since generation `since` — the Tasks page's fast lane.
+
+    Long-poll: answers the moment the watcher (tasks_watch) sees a session
+    start, resume, take a prompt or grow its transcript, and otherwise after
+    `wait` seconds with nothing. The answer is the full rows for exactly the
+    tasks that changed (`rows`), plus the keys that changed but are no longer
+    listed (`gone` — archived-into-silence, deleted, or a pending message
+    whose session id it has just been rekeyed under). A client further behind
+    than the watcher remembers gets `full: true` and reloads the listing.
+
+    The 20-second full listing stays the truth; this only makes the page hear
+    about a change without waiting for it."""
+    gen, keys = tasks_watch.wait(since, wait)
+    if keys is None:
+        return {"generation": gen, "full": True}
+    if not keys:
+        return {"generation": gen, "rows": [], "gone": []}
+    rows = _task_rows(only=keys)
+    listed = {row["key"] for row in rows}
+    gone = {key for key in keys if key not in listed}
+    # A pending message that has just RUN is now filed under its session id
+    # (§5): the watcher names the session, the session is listed, and the
+    # `pending:<entry>` row the client still shows is nobody's key. Name it
+    # gone, or two rows stand for one task until the full poll (bugbot #892).
+    tasks = _collect()
+    for key in listed:
+        task = tasks.get(key)
+        for entry in (task or {}).get("entries", ()):
+            pending = tasks_store.pending_key(str(entry.get("id") or ""))
+            if pending != key:
+                gone.add(pending)
+    return {"generation": gen, "rows": rows, "gone": sorted(gone)}
+
+
+# `project` rides along for the sidebar's Current apps section (D487): the
+# section's membership is its own store now (current_apps.py) but the running
+# dot on a row still reads the pulse — which task is under which app is a
+# listing fact, and a second GET /api/tasks poll from the sidebar is the
+# double-poll the pulse store exists to prevent.
+_PULSE_FIELDS = ("key", "status", "unread", "last_active", "project")
 
 
 @router.get("/api/tasks/pulse")
@@ -1470,7 +1652,7 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
     """One task's whole thread, oldest first, ids and unread flags set."""
     live, _active = _live(task["path"], now)
     prompts = _full_prompts(task["path"]) if task["path"] else []
-    messages = _merge(prompts, task["entries"], live)
+    messages = _merge(prompts, task["entries"])
     _turn_of_newest_chat(messages, live)
     _mark_unread(messages, task["key"], read)
     return messages
@@ -1737,7 +1919,16 @@ def api_task_archive(patch: ArchivePatch):
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    cancelled, filed = archive_task(task)
+    tasks_watch.notify({key})
+    return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed}
 
+
+def archive_task(task: dict) -> tuple[int, bool]:
+    """The archive gesture on one collected task: how many messages were
+    called off, and whether a session was filed. Shared with the Current apps
+    router (server/routers/current_apps.py), where removing an app archives
+    every task under it."""
     cancelled = 0
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
@@ -1755,8 +1946,7 @@ def api_task_archive(patch: ArchivePatch):
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return {"ok": True, "key": key, "cancelled": cancelled,
-            "filed": bool(session_id)}
+    return cancelled, bool(session_id)
 
 
 class UnarchivePatch(BaseModel):
@@ -1811,6 +2001,7 @@ def api_task_unarchive(patch: UnarchivePatch):
     row = _row(task, "", sessions._load_state("triage.json"),
                tasks_store.read_state(), time.time(),
                schedule.busy_sessions(schedule.list_entries()), [])
+    tasks_watch.notify({key})
     return {"ok": True, "key": key, "unfiled": unfiled,
             "status": row["status"]}
 
@@ -1888,6 +2079,7 @@ def api_task_delete(patch: DeletePatch):
             cancelled += 1
 
     tasks_store.mark_deleted(key)
+    tasks_watch.notify({key})
     return {"ok": True, "key": key, "cancelled": cancelled,
             "erased_transcript": False}
 

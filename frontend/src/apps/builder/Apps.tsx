@@ -2,74 +2,97 @@
 // breadcrumb). Every detected app in the workspace (GET /api/apps) as a grid
 // of big preview cards — each thumbnail is the app itself rendered in a
 // scaled, non-interactive iframe (AppPreviewCard). The list is narrowed by a
-// filter row — a Category/Repo mode selector with chips derived from the apps
-// themselves (categories from each folder's metadata.json, ordered learn-first
-// then locale-alphabetical by app-categories; repos from the top-level tag
-// dirs, plain code-unit sort) — and a search box (name/title/tag/category,
-// case-insensitive). Order is always recently-opened (modified time stands in
+// filter row — a Category/Folders mode selector with chips derived from the
+// apps themselves (categories from each folder's metadata.json, ordered
+// curated-first then locale-alphabetical by app-categories; folders from the
+// top-level tag dirs, plain code-unit sort) — and a search box
+// (name/title/tag/category, case-insensitive); the selector sits at the row's
+// left edge with the chips and search gathered at the right.
+// Order is always recently-opened (modified time stands in
 // for an app never opened — appEntry.sortApps); filtering never reorders cards
 // relative to each other.
-import { useEffect, useMemo, useState } from "react";
-import { getApps } from "@platform/lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { getApps, getBackgroundAppsRunning, getHomeApps } from "@platform/lib/api";
 import type { AppInfo, Config } from "@platform/lib/api";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { sortApps } from "@platform/lib/appEntry";
-import { runCommunity, SHOWCASE_TAG } from "@platform/lib/community";
+import { runCommunity } from "@platform/lib/community";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
-import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
-import { orderCategories } from "@apps/builder/app-categories";
+import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
+import { orderCategories, repoChips } from "@apps/builder/app-categories";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { navigateUrl } from "@platform/lib/router";
 import { HomeHero } from "./HomeHero";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
 
-type Loaded<T> = { status: "loading" } | { status: "ok"; data: T } | { status: "error"; message: string };
+// The grid's three phases. "partial" is a REAL, OPENABLE prefix of the final
+// grid — Home's recent-first row (see the fetch effect) — not a placeholder:
+// sortApps is recency-first, so the cards it holds are the ones the exhaustive
+// catalog will also rank first, and the swap to "ok" appends rather than
+// reshuffles. Errors ride alongside in their own state rather than as a fourth
+// phase: a failed catalog fetch must not throw away a partial grid the user
+// can already click.
+type Loaded<T> =
+  | { status: "loading" }
+  | { status: "partial"; data: T }
+  | { status: "ok"; data: T };
+
+// How many cards the fast row asks for. The server caps it at HOME_APPS_LIMIT
+// (12) and its fast path only skips the exhaustive walk when the recents FILL
+// the request, so asking for more than a hub's first rows would buy nothing and
+// cost the walk twice — see /api/apps/home.
+const FAST_ROW = 12;
+
+// The last exhaustive catalog this tab fetched, kept at MODULE scope so it
+// outlives the page's unmount. Revisiting /apps is a common move (open an app,
+// come back) and a full grid drawn instantly from the previous answer, then
+// quietly replaced, beats a skeleton every time. Stale for as long as one
+// fetch takes: a card for an app deleted since is clickable and 404s on open,
+// the same as one deleted while the page sat open.
+let catalogCache: AppInfo[] | null = null;
 
 // Which facet the chips filter by. "category" reads each app's authored
 // metadata.json category; "repo" is the top-level workspace folder (tag):
 // all / examples / local / showcase in a stock workspace.
 type FilterMode = "category" | "repo";
 
+// The `key`s are internal (mode is local state derived from which URL param is
+// set, never a param itself), so the labels are free to say what a user calls
+// the thing: the "repo" facet's chips are the top-level workspace FOLDERS apps
+// were scanned out of, which is what a reader of the chip row sees.
 const MODES: { key: FilterMode; label: string }[] = [
   { key: "category", label: "Category" },
-  { key: "repo", label: "Repo" },
+  { key: "repo", label: "Folders" },
 ];
 
-type ShowcaseCatalog = { status?: string; apps?: { slug: string; installed?: boolean }[] };
+const modeLabel = (m: FilterMode): string =>
+  MODES.find((x) => x.key === m)?.label ?? m;
 
-const clonedSet = (c: ShowcaseCatalog) =>
-  new Set((c.apps ?? []).filter((a) => a.installed).map((a) => a.slug));
+type ShowcaseCatalog = { status?: string };
 
-// Read the showcase install records once per mount; feeds the "cloned"
-// badges on showcase cards.
+// Read the showcase catalog once per mount, purely to force the clone when
+// it's missing.
 //
-// `catalog` first — a cheap local read (installs.json + folder scan), no lock,
-// no network, so badges never wait on git. Only when it reports no-cache
-// (the clone is missing or the startup clone is still running) does this
-// escalate to `refresh`: that call parks on the cache lock behind an
-// in-flight startup clone (or performs the clone itself after a failed
-// start), and its completion is the signal that <workspace>/showcase just
-// landed — `onSynced` then refetches the grid so the first visit doesn't
-// keep a stale listing until reload. An already-cloned catalog never
-// touches the network here (server start owns the fetch+ff sync), so a
-// Clone click right after mount isn't stuck behind a fetch holding the
-// lock. Decoration plus refetch only — failures just mean no badges.
-function useShowcaseSync(onSynced: () => void): Set<string> {
-  const [slugs, setSlugs] = useState<Set<string>>(new Set());
+// `catalog` first — a cheap local read (a folder scan), no lock, no network.
+// Only when it reports no-cache (the clone is missing or the startup clone
+// is still running) does this escalate to `refresh`: that call parks on the
+// cache lock behind an in-flight startup clone (or performs the clone itself
+// after a failed start), and its completion is the signal that
+// <workspace>/showcase just landed — `onSynced` then refetches the grid so
+// the first visit doesn't keep a stale listing until reload. An
+// already-cloned catalog never touches the network here (it's cloned once,
+// then left alone), so this never blocks on git after the first visit.
+function useShowcaseSync(onSynced: () => void): void {
   useEffect(() => {
     let alive = true;
     (async () => {
       const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
       if (!alive) return;
-      if (local.status !== "no-cache") {
-        setSlugs(clonedSet(local));
-        return;
-      }
-      const synced = await runCommunity<ShowcaseCatalog>({ action: "refresh" });
+      if (local.status !== "no-cache") return;
+      await runCommunity<ShowcaseCatalog>({ action: "refresh" });
       if (!alive) return;
-      setSlugs(clonedSet(synced));
       onSynced();
     })().catch(() => undefined);
     return () => {
@@ -77,11 +100,36 @@ function useShowcaseSync(onSynced: () => void): Set<string> {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
   }, []);
-  return slugs;
+}
+
+// Folder paths (keys of GET /api/apps/background/running) whose background
+// daemon is currently live — feeds the "running" badge on background-app
+// cards. Same decoration-only posture as useShowcaseSync above: one fetch per
+// mount, no polling (a stale badge just means "reload to see it flip"), and a
+// failure yields an empty set rather than a card-breaking error — failures
+// just mean no badges.
+function useRunningBackgroundApps(): Set<string> {
+  const [running, setRunning] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let alive = true;
+    getBackgroundAppsRunning()
+      .then(({ running: byPath }) => {
+        if (!alive) return;
+        setRunning(new Set(Object.keys(byPath).filter((path) => byPath[path])));
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return running;
 }
 
 export default function Apps({ config }: { config: Config }) {
-  const [apps, setApps] = useState<Loaded<AppInfo[]>>({ status: "loading" });
+  const [apps, setApps] = useState<Loaded<AppInfo[]>>(
+    catalogCache ? { status: "ok", data: catalogCache } : { status: "loading" },
+  );
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   // The selected filter lives in the URL (`?category=` or `?tag=`), not in
   // state — the AiModels pattern: it makes the filter bookmarkable, survives a
@@ -126,14 +174,63 @@ export default function Apps({ config }: { config: Config }) {
   const openCardMenu = (e: React.MouseEvent, app: AppInfo) => {
     // The card is an anchor: without this the browser's own link menu wins.
     e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app) });
+    // The card's thumb rides along as the export entry's capture crop source
+    // (appShot, D396) — currentTarget is the card anchor the thumb sits in.
+    // `[data-capture-ready]` is the card's own statement that the thumb has
+    // PAINTED the app (AppPreviewCard sets it on the body iframe's load): only
+    // two previews start at a time, so an unpainted thumb is the common case,
+    // and cropping one would bake an empty box into the .fused as its permanent
+    // thumbnail. No match → no crop source → appShot stages the app instead.
+    const thumb = (e.currentTarget as Element).querySelector(
+      ".app-pcard-thumb[data-capture-ready]",
+    );
+    setMenu({ x: e.clientX, y: e.clientY, items: appCardMenu(app, thumb) });
   };
 
+  // Two fetches, in parallel, drawing the grid in two steps.
+  //
+  // The exhaustive catalog (GET /api/apps) is a recursive workspace walk plus
+  // an index query — a few hundred ms cold — and the hub used to show nothing
+  // but a skeleton for all of it. Home's row endpoint answers the same shape
+  // from the two recents stores by explicit path, so firing it alongside puts
+  // the apps the user actually uses on screen (and, more to the point, starts
+  // their preview iframes, which is the slow part) while the walk finishes.
+  //
+  // PARALLEL, not sequential: the fast row is only fast for a user with a full
+  // recents store — with fewer than FAST_ROW valid recents the server falls
+  // back to the same exhaustive walk — so it must never be a gate in front of
+  // the catalog. Its failure is likewise silent: the catalog is the answer,
+  // this is a head start.
+  //
+  // And ONLY while there is a skeleton for it to replace (`cold`). Once a full
+  // grid is on screen the fast row's answer is discarded on arrival anyway —
+  // the setApps guard below refuses to overwrite one — but for the thin-recents
+  // user the request is not free on the server either: /api/apps/home falls
+  // back to the SAME workspace walk, so firing it on a cache-warm revisit or on
+  // a `nonce` refetch (create, showcase sync) would pay that walk twice for an
+  // answer nothing reads.
+  const cold = useRef(catalogCache === null);
   useEffect(() => {
     let alive = true;
+    if (cold.current) {
+      getHomeApps(FAST_ROW).then(
+        ({ apps: fast }) => {
+          // Never overwrite a full grid — a catalog that simply won this race.
+          if (!alive || fast.length === 0) return;
+          setApps((prev) => (prev.status === "loading" ? { status: "partial", data: fast } : prev));
+        },
+        () => undefined,
+      );
+    }
     getApps().then(
-      ({ apps }) => alive && setApps({ status: "ok", data: apps }),
-      (e: Error) => alive && setApps({ status: "error", message: e.message }),
+      ({ apps }) => {
+        if (!alive) return;
+        catalogCache = apps;
+        cold.current = false;
+        setError(null);
+        setApps({ status: "ok", data: apps });
+      },
+      (e: Error) => alive && setError(e.message),
     );
     return () => {
       alive = false;
@@ -144,24 +241,35 @@ export default function Apps({ config }: { config: Config }) {
   // community repo into <workspace>/showcase in the background on startup,
   // and the workspace scan picks it up like any other tag dir. No synthetic
   // chip, no separate catalog surface.
+  //
+  // `all` is the CATALOG — chips, the count and the empty state all speak for
+  // the whole workspace, so they stay empty until the exhaustive answer lands
+  // (a chip row derived from twelve recents would drop options as the rest
+  // arrived, which reads as the page mis-drawing itself). `cards` is whatever
+  // is drawable NOW, partial row included.
   const all = apps.status === "ok" ? apps.data : [];
-  const tags = useMemo(() => [...new Set(all.map((a) => a.tag))].sort(), [all]);
+  const cards = apps.status === "loading" ? [] : apps.data;
+  // Folders chips, minus the exported `.fused` rows — see repoChips for why an
+  // app FILE contributes none.
+  const tags = useMemo(() => repoChips(all), [all]);
   // Categories scanned from the apps themselves (metadata.json `category`).
   // Apps without one carry null and so only ever appear under All. Ordered by
-  // orderCategories: learn-first so the tutorial and starter chips lead the
-  // row, then locale-alphabetical (which also replaces the code-unit sort the
-  // repo chips still use — see app-categories). Card order in the grid is
-  // unaffected.
+  // orderCategories: the curated running order (starters, local-ai,
+  // productivity, geospatial) leads the row, then locale-alphabetical for
+  // anything else a workspace turns up (which also replaces the code-unit sort
+  // the Folders chips still use — see app-categories). Card order in the grid
+  // is unaffected.
   const categories = useMemo(
     () => orderCategories(all.map((a) => a.category).filter((c): c is string => !!c)),
     [all],
   );
-  const clonedSlugs = useShowcaseSync(() => setNonce((n) => n + 1));
+  useShowcaseSync(() => setNonce((n) => n + 1));
+  const runningPaths = useRunningBackgroundApps();
   const q = query.trim().toLowerCase();
   const shown = useMemo(
     () =>
       sortApps(
-        all.filter(
+        cards.filter(
           (a) =>
             (tag === null || a.tag === tag) &&
             (category === null || a.category === category) &&
@@ -172,7 +280,7 @@ export default function Apps({ config }: { config: Config }) {
               a.tag.toLowerCase().includes(q)),
         ),
       ),
-    [all, tag, category, q],
+    [cards, tag, category, q],
   );
   const chips = mode === "repo" ? tags : categories;
   const active = mode === "repo" ? tag : category;
@@ -211,8 +319,13 @@ export default function Apps({ config }: { config: Config }) {
               </button>
             ))}
           </div>
-          {(chips.length > 0 || tag !== null || category !== null) && (
-            <div className="apps-tags" role="group" aria-label={`Filter by ${mode}`}>
+          {/* Held open through the partial phase (chips are catalog-derived and
+              so still empty then): letting the row appear when the catalog
+              lands would push the grid down under a pointer already on a
+              card. */}
+          {(chips.length > 0 || tag !== null || category !== null
+            || apps.status === "partial") && (
+            <div className="apps-tags" role="group" aria-label={`Filter by ${modeLabel(mode)}`}>
               {/* Active only when nothing filters; clicking clears both params. */}
               <button
                 type="button"
@@ -248,21 +361,30 @@ export default function Apps({ config }: { config: Config }) {
           </div>
         </div>
 
-        {apps.status === "error" && <ErrorBanner>{apps.message}</ErrorBanner>}
-        {apps.status === "loading" && <SkeletonLines rows={4} label="Loading apps" />}
-        {apps.status === "ok" && (
+        {error && <ErrorBanner>{error}</ErrorBanner>}
+        {/* Skeleton only while there is nothing drawable at all: once the fast
+            row has landed the cards themselves are the loading indicator, and
+            the count line below says the rest is still coming. */}
+        {apps.status === "loading" && !error && <SkeletonLines rows={4} label="Loading apps" />}
+        {apps.status !== "loading" && (
           <>
             <div className="apps-count">
-              {shown.length === all.length
-                ? `${all.length} app${all.length === 1 ? "" : "s"}`
-                : `${shown.length} of ${all.length} apps`}
+              {apps.status === "partial"
+                ? "Recently opened — loading all apps…"
+                : shown.length === all.length
+                  ? `${all.length} app${all.length === 1 ? "" : "s"}`
+                  : `${shown.length} of ${all.length} apps`}
             </div>
             {shown.length === 0 ? (
-              <div className="home-empty">
-                {all.length === 0
-                  ? "No apps yet. Describe one in the composer above to create it."
-                  : "No apps match — clear the search or filter."}
-              </div>
+              // Nothing to say yet during the partial phase: "no apps match" is
+              // a claim about the whole catalog, which has not arrived.
+              apps.status === "partial" ? null : (
+                <div className="home-empty">
+                  {all.length === 0
+                    ? "No apps yet. Describe one in the composer above to create it."
+                    : "No apps match — clear the search or filter."}
+                </div>
+              )
             ) : (
               <div className="apps-cards">
                 {shown.map((app) => (
@@ -270,9 +392,7 @@ export default function Apps({ config }: { config: Config }) {
                     key={app.path}
                     app={app}
                     onContextMenu={openCardMenu}
-                    badge={
-                      app.tag === SHOWCASE_TAG && clonedSlugs.has(app.name) ? "cloned" : undefined
-                    }
+                    badge={runningPaths.has(app.path) ? "running" : undefined}
                   />
                 ))}
               </div>

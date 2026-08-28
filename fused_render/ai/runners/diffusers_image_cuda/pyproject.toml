@@ -1,0 +1,74 @@
+# The diffusers image runner's environment — the CUDA variant (SPEC §40, PY-16).
+#
+# Identical to `diffusers_image/pyproject.toml` except for the one thing a hardware
+# variant is allowed to change: where torch comes from. Read that file first — it
+# carries the reasoning for the dependency list, the ceilings, the wheels-only rule
+# and the three-folder shape, and this one only states its difference.
+#
+# **The difference is WHERE torch comes from, and it is asked per platform.** PyPI's
+# `torch` wheel for Linux IS the CUDA build: its `nvidia-*` requirements are marked
+# `platform_system == "Linux"`, which is why a Linux install of the old
+# single-folder runner silently pulled several GB of CUDA runtime for every user,
+# card or no card. That resolution was the wrong DEFAULT and is exactly the right
+# variant, so on Linux this folder resolves from PyPI unchanged.
+#
+# **Windows is the half that needs the override, because PyPI has no CUDA wheel
+# for it.** `pip install torch` on Windows gets the CPU build and there is no flag
+# that changes it — CUDA on Windows means `download.pytorch.org/whl/cuXXX`. Without
+# the index below, this folder would offer a Windows user with a working card a
+# variant named CUDA that installs a CPU wheel, and `_cuda()` in the registry DOES
+# admit Windows, so the row really is offered there. A marker keeps the override to
+# the platform that needs it:
+#
+#     torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]
+#
+# so the lock carries two torch entries — `2.13.0` from PyPI for Linux and macOS,
+# and `2.13.0+cu130` from the mirror with win_amd64 wheels only. Linux resolution
+# is byte-for-byte what it was before this file grew an index.
+#
+# **`cu130` tracks the toolkit PyPI's own wheel already carries** (`nvidia-*-cu13`),
+# so the two platforms are on one CUDA generation rather than two, and the URL is
+# the one thing here that has to be revisited when torch moves generation — the
+# cost the CPU and ROCm manifests pay too, and the reason all three name their
+# index explicitly instead of one of them relying on a default.
+#
+# Whatever the environment REALLY got is still reported rather than claimed:
+# `load()` passes the device it placed the model on to
+# `worker_base.set_state(device=…)`, so a `/health` that says `cpu` is a
+# measurement, not an assumption about the wheel.
+#
+# The dependency list below is a verbatim copy of the CPU folder's and must stay
+# one. A version that drifted between the three would make "which hardware" also
+# mean "which diffusers", and a render that reproduces on one card and not another
+# for a reason nobody would look for.
+[project]
+name = "fused-render-runner-diffusers-image-cuda"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "diffusers>=0.39,<0.40",
+    "transformers<6",
+    "accelerate>=1.14,<2",
+    "sentencepiece",
+    "protobuf",
+    "gguf",
+    "torchao>=0.15,<1",
+    "pillow",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+# CUDA on Windows only — see the header. Linux keeps PyPI's resolution, which is
+# already the CUDA build.
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'win32'" }]

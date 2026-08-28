@@ -66,22 +66,33 @@ def report_open_rejected(path: str) -> None:
     )
 
 
-def pick_file() -> str | None:
+def pick_file(types: list[str] | None = None) -> str | None:
     """Show the Open-file common dialog; return the chosen path or None if the
     user cancelled. `GetOpenFileNameW` pumps its own message loop and needs an
     STA COM apartment for shell extensions — the caller
     (`core._spawn_file_dialog`) owns the dedicated thread and single-dialog
     lock this runs under, and CoInitialize/CoUninitialize bracket the call
-    here."""
+    here.
+
+    `types` is a list of bare extensions to narrow the dialog to. `Filter` is a
+    NUL-separated label/pattern pair list terminated by a second NUL, patterns
+    within one entry joined by semicolons — hence the assembly below rather than
+    a format string. The narrow entry goes FIRST because the dialog opens on
+    entry one, with All files kept reachable behind it. The tray's own call
+    passes nothing and gets exactly the filter it always had."""
     import pythoncom
     import pywintypes
     import win32con
     import win32gui
 
+    globs = ";".join("*." + str(t).lstrip(".")
+                     for t in (types or []) if str(t).strip("."))
+    file_filter = (f"Allowed files\0{globs}\0All files\0*.*\0\0" if globs
+                   else "All files\0*.*\0\0")
     pythoncom.CoInitialize()
     try:
         path, _filter_index, _flags = win32gui.GetOpenFileNameW(
-            Filter="All files\0*.*\0\0",
+            Filter=file_filter,
             Flags=win32con.OFN_FILEMUSTEXIST | win32con.OFN_PATHMUSTEXIST,
         )
     except pywintypes.error:

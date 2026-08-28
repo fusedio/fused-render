@@ -1,6 +1,6 @@
 // `useSelfFixReadiness`, DRIVEN — the hook the download manager's failed row and
 // the Preferences panel use to decide what it is honest to OFFER, before anyone
-// clicks (SPEC §43, SF-13d, SF-13f).
+// clicks (SPEC §48, SF-13d, SF-13f).
 //
 // Worth driving rather than asserting on source, because three of the four
 // things it has to get right are invisible in a screenshot and in a grep: how

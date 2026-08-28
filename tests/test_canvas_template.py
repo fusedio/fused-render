@@ -14,7 +14,6 @@ Two surfaces:
 """
 import importlib.util
 import os
-import sys
 
 import pytest
 
@@ -22,14 +21,6 @@ from fused_render.server import templates as _server_templates
 
 
 TEMPLATES_DIR = _server_templates.TEMPLATES_DIR
-
-# tomllib is 3.11+; the condition gate fails closed (returns False) without
-# it, same as for malformed TOML, so only the genuine-canvas assertions
-# (which need a real parse to come back True) can't run on 3.10.
-requires_tomllib = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="canvas.toml parsing needs tomllib (Python 3.11+)"
-)
-
 
 def modes(path, is_dir=False):
     entries, error = _server_templates._templates_for(path, is_dir)
@@ -104,14 +95,13 @@ def _write_canvas(dir_path, name="canvas.toml", body=CANVAS_TOML):
 
 # ------------------------------------------------------- condition gate (CT-12)
 
-@requires_tomllib
 def test_canvas_toml_gets_canvas_mode_first(tmp_path):
     p = _write_canvas(tmp_path / "cv")
     m, error = modes(str(p))
     assert m == ["canvas", "code", "claude", "reader"]
     assert error is None
     entries, _ = _server_templates._templates_for(str(p), False)
-    assert entries[0]["path"].endswith("canvas/template.html")
+    assert entries[0]["path"].endswith(os.path.join("canvas", "template.html"))
     assert entries[0]["icon"] is not None
     # stat only MARKS the gate (deferred CT-12) …
     by_mode = {e["mode"]: e for e in entries}
@@ -175,7 +165,6 @@ def test_oversized_canvas_toml_skipped(tmp_path):
     assert allowed is False
 
 
-@requires_tomllib
 def test_condition_module_main_directly(tmp_path):
     # The condition runs in the server process (plain module, stdlib) — exercise
     # `main` (the CT-12 entrypoint) directly to prove it never raises on odd input.

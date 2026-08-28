@@ -9,9 +9,10 @@ can be told *before* a prompt has been typed:
   * is it new enough for the flag set `server/ai.py:_ai_cmd` spawns it with
   * is it signed in
 
-`/api/config` already establishes the pattern: it publishes `learn_mount_ready`
-so the sidebar's Learn entry renders only when it works, "so it's never a dead
-link". Claude Code had no equivalent, so every Claude-dependent surface rendered
+`/api/config` already establishes the pattern: it publishes
+`sessions_mount_ready` so a link into a bundled mount renders only when it
+works, "so it's never a dead link". Claude Code had no equivalent, so every
+Claude-dependent surface rendered
 as available and found out otherwise on click.
 
 **This module is the one place in the package that names an install directory.**
@@ -34,6 +35,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from typing import Any, Optional
@@ -67,7 +69,7 @@ BIN_ENV = "FUSED_RENDER_CLAUDE_BIN"
 # the *user* PATH afterwards stays invisible until the next sign-in.
 #
 # This is the UNION of the four lists that used to exist independently across
-# server/ai.py, claude_config/lib.py, core_apps/learn/check_env.py and
+# server/ai.py, claude_config/lib.py, the learn content's check_env.py and
 # core_apps/sessions/analyze.py. A directory only one of them knew about was a
 # directory where the app disagreed with itself.
 #
@@ -132,6 +134,10 @@ _SHELL_TIMEOUT_S = 8
 # it is not a round trip to the API). Bounded like everything else here so a
 # wedged CLI cannot pin the probe.
 _AUTH_TIMEOUT_S = 10
+# `claude doctor` measured at ~1.2s. It reads settings files and stats install
+# dirs; it starts no session and changes nothing, which is what makes it safe to
+# run behind a health probe at all.
+_DOCTOR_TIMEOUT_S = 20
 
 
 def _probe_cmd(path: str, *args: str):
@@ -254,7 +260,7 @@ def _shell_probe() -> Optional[str]:
     binary somewhere no list will ever guess, and all of them work by editing
     the user's shell profile. Asking that profile is what finds them.
 
-    Ported from core_apps/learn/check_env.py, which has been doing this
+    Ported from the learn content's check_env.py, which had been doing this
     correctly and alone. Its two hard-won details are kept:
 
       * PYTHONHOME/PYTHONPATH are scrubbed. The packaged app runs a bundled
@@ -466,6 +472,216 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
     return None
 
 
+# --- what kind of install is this, and can we repair it ----------------------
+#
+# Two questions the module never used to ask, both raised by the same finding:
+# every state below was DETECTED and then handed to the user as a sentence to go
+# and act on. Answering them is what lets the app act instead.
+
+#: How the native installers spell their target, per platform. The app runs this
+#: itself now (`claude_install.py`), so it is no longer only a thing to copy —
+#: but it is still shown before it runs, and `test_trouble_parity.py` pins it,
+#: because a wrong command in front of a user is worse than no command.
+#:
+#: The POSIX line is the one the download page and the chat template already
+#: carry. THE WINDOWS LINE IS NEW, and its absence was a real bug: the strip
+#: attached the bash line to every `missing` card regardless of platform, so a
+#: Windows user with no Claude Code was handed a command their shell cannot run.
+INSTALL_COMMAND_POSIX = "curl -fsSL https://claude.ai/install.sh | bash"
+INSTALL_COMMAND_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
+
+
+def install_command() -> str:
+    """The native install line for THIS platform, as a user would type it."""
+    return INSTALL_COMMAND_WINDOWS if os.name == "nt" else INSTALL_COMMAND_POSIX
+
+
+#: Install methods where `claude update` genuinely updates something, and the
+#: ones where it is a documented no-op.
+#:
+#: THE NO-OP LIST IS THE WHOLE POINT. Homebrew, WinGet and the Linux package
+#: managers do not auto-update and do not update through the CLI either: `claude
+#: update` answers "Claude is up to date!" and changes nothing, so putting an
+#: Update button in front of those users offers a fix that cannot work. The
+#: upgrade belongs to whoever owns the binary, so we name THAT command instead —
+#: and the two `sudo` ones we only ever name, never run.
+UPDATES_ITSELF = ("native", "npm")
+MANAGED_UPDATE_COMMANDS = {
+    "brew": "brew upgrade claude-code",
+    "winget": "winget upgrade Anthropic.ClaudeCode",
+    "apt": "sudo apt update && sudo apt upgrade claude-code",
+    "dnf": "sudo dnf upgrade claude-code",
+    "apk": "apk update && apk upgrade claude-code",
+}
+
+#: Path fingerprints for the install methods, for when `doctor` did not say.
+#: `(method, needles, anchored)` — anchored needles must START the path, the
+#: rest may appear anywhere in it.
+#:
+#: THE ANCHORING IS NOT A DETAIL. A system bindir is spelled `/bin/`, and as a
+#: substring that matches almost every path a binary ever sits in — it called
+#: `/opt/node22/bin/claude` (an npm install, which updates itself perfectly
+#: well) a system package, and `update_plan` then withheld the update offer from
+#: it. That is the wrong-advice failure this module is arranged around, produced
+#: by a needle that was too short. The distinctive needles below stay
+#: substrings; only the generic ones are anchored.
+#:
+#: Ordered most-specific first — a Homebrew Cellar path also contains "bin".
+_PATH_METHODS = (
+    ("brew", ("/opt/homebrew/", "/usr/local/cellar/", "/home/linuxbrew/"), False),
+    ("winget", ("\\microsoft\\winget\\", "/microsoft/winget/"), False),
+    ("npm", ("/node_modules/", "\\node_modules\\", "\\appdata\\roaming\\npm\\",
+             "/.npm-global/", "/library/pnpm/", "/.bun/bin/"), False),
+    ("native", ("/.local/bin/", "\\.local\\bin\\", "/.local/share/claude/",
+                "\\.local\\share\\claude\\"), False),
+    # A system bindir means a system package manager put it there. Which one is
+    # not knowable from the path, so this stays the generic answer and
+    # `update_plan` refuses to guess a command for it.
+    #
+    # `/usr/local/bin` is deliberately ABSENT. It is a common npm prefix, an
+    # Intel-Mac Homebrew link target and a hand-install location all at once, so
+    # the honest answer there is that we do not know — and unknown keeps the
+    # update on offer, where a wrong guess would take it away.
+    ("system", ("/usr/bin/", "/usr/lib/", "/bin/"), True),
+)
+
+#: `Running: native (2.1.246)` — doctor's own name for the install method.
+_DOCTOR_RUNNING_RE = re.compile(r"^Running:\s*([A-Za-z][\w-]*)", re.MULTILINE)
+#: `- <problem>` then an indented `Fix: <what to do>`. Doctor prints its
+#: warnings as exactly these pairs under an "N warnings found" heading.
+_DOCTOR_WARNING_RE = re.compile(
+    r"^-\s+(?P<problem>.+?)\s*$(?:\n\s+Fix:\s*(?P<fix>.+?)\s*$)?", re.MULTILINE
+)
+#: How much of doctor's report we are willing to carry into a payload. It is a
+#: short page today; the cap is so a future chattier version cannot bloat every
+#: health response.
+_DOCTOR_TEXT_MAX = 8000
+
+
+def parse_doctor(text: str) -> dict:
+    """`claude doctor`'s report, as facts. Pure, so it is testable without a CLI.
+
+    Doctor is READ-ONLY — it prints installation and settings diagnostics and
+    starts no session — which is the only reason a health probe may run it.
+
+    What we take from it: the install method (which decides whether an Update
+    button can work at all), and the warning/fix pairs, which are the CLI's own
+    words about its own installation and are therefore better than anything this
+    module could infer. Everything else stays in `text` for the user to read.
+    """
+    method_match = _DOCTOR_RUNNING_RE.search(text or "")
+    warnings = []
+    for match in _DOCTOR_WARNING_RE.finditer(text or ""):
+        problem = (match.group("problem") or "").strip()
+        if not problem:
+            continue
+        warnings.append({"problem": problem, "fix": (match.group("fix") or "").strip()})
+    return {
+        "install_method": (method_match.group(1).lower() if method_match else None),
+        "warnings": warnings,
+        "text": (text or "")[:_DOCTOR_TEXT_MAX],
+    }
+
+
+def _doctor(path: str) -> Optional[dict]:
+    """What `claude doctor` says, or None when it would not tell us.
+
+    None on every failure, like every other probe here: a CLI that cannot run
+    its own diagnostics has told us something (see `_measure`'s `broken`), but
+    it has not told us anything to REPEAT, and inventing a diagnosis is the
+    wrong-advice failure this module is arranged around.
+
+    Note it is run even when `--version` already failed. That looks redundant
+    and is not: a binary can be broken in ways that stop it reporting a version
+    while doctor still runs and names the cause — a leftover npm install
+    shadowing a native one, a launcher symlink pointing at a version directory
+    that was cleaned up. When both fail we have two independent probes agreeing,
+    which is a stronger claim than either alone.
+    """
+    try:
+        res = _run_probe(path, "doctor", timeout=_DOCTOR_TIMEOUT_S)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    text = ((res.stdout or "") + "\n" + (res.stderr or "")).strip()
+    if not text:
+        return None
+    return parse_doctor(text)
+
+
+def install_method(path: Optional[str], doctor: Optional[dict]) -> Optional[str]:
+    """How this copy of Claude Code was installed, or None when we cannot tell.
+
+    DOCTOR WINS. It reads its own install config and names the method outright;
+    the path sniffing below is a fallback for when doctor could not be asked, and
+    it is genuinely a guess — a user who moved a binary, or a distro that lays
+    Homebrew out somewhere unusual, will fool it.
+
+    None is a real answer and is treated as one everywhere downstream: an unknown
+    method never suppresses the update offer, because "we could not tell" is not
+    evidence that updating would fail.
+    """
+    named = (doctor or {}).get("install_method")
+    if named:
+        # Doctor's vocabulary is not guaranteed to be ours. Map what we
+        # recognise and keep anything else verbatim — an unknown name is
+        # reported as-is and simply does not match `UPDATES_ITSELF` or
+        # `MANAGED_UPDATE_COMMANDS`, which lands it in the unknown branch.
+        aliases = {"homebrew": "brew", "cask": "brew", "unknown": None}
+        return aliases.get(named, named)
+    if not path:
+        return None
+    # Lowercased only — the needle lists spell both separators, because a
+    # Windows path can carry either and normalising to one would have to pick.
+    lowered = path.lower()
+    for method, needles, anchored in _PATH_METHODS:
+        match = lowered.startswith if anchored else lowered.__contains__
+        if any(match(needle) for needle in needles):
+            return method
+    return None
+
+
+def update_plan(method: Optional[str], environ=None) -> dict:
+    """Whether an update can be offered, and what would actually run.
+
+    Three outcomes, and the middle one is the reason this function exists:
+
+      * `updatable: True`  — `claude update` will do the job. Native and npm
+        installs update through the CLI, so the app can run it.
+      * `updatable: False` — running `claude update` would change nothing. Either
+        a package manager owns the binary (it answers "Claude is up to date!" and
+        stops), or updates are switched off outright. We name the command that
+        WOULD work, when there is one, and never offer a button that no-ops.
+      * `updatable: None`  — we could not tell. `claude update` is the CLI's own
+        generic answer and is offered, because an unknown method is not evidence
+        against it.
+
+    `DISABLE_UPDATES` is checked separately from the method because it beats it:
+    the docs are explicit that it blocks manual updates too, where
+    `DISABLE_AUTOUPDATER` stops only the background check and leaves `claude
+    update` working. Reading the wrong one of those two would be the difference
+    between a button that works and a button that silently does nothing.
+    """
+    env = os.environ if environ is None else environ
+    if (env.get("DISABLE_UPDATES") or "").strip() not in ("", "0", "false"):
+        return {"updatable": False, "command": None, "manager": None,
+                "reason": "updates are disabled by DISABLE_UPDATES"}
+    if method in UPDATES_ITSELF:
+        return {"updatable": True, "command": "claude update", "manager": None,
+                "reason": None}
+    if method in MANAGED_UPDATE_COMMANDS:
+        return {"updatable": False, "command": MANAGED_UPDATE_COMMANDS[method],
+                "manager": method,
+                "reason": f"{method} owns this install, so it updates through {method}"}
+    if method == "system":
+        # We know a system package manager owns it and NOT which one, so there
+        # is no command to name. Saying "run claude update" anyway would be
+        # offering the one answer we know is wrong.
+        return {"updatable": False, "command": None, "manager": "system",
+                "reason": "a system package manager owns this install"}
+    return {"updatable": None, "command": "claude update", "manager": None,
+            "reason": None}
+
+
 # --- the cached snapshot ------------------------------------------------------
 #
 # Resolution can cost seconds (the login-shell probe sources a whole profile)
@@ -483,7 +699,7 @@ _LOCK = threading.Lock()
 #: answer `null` on macOS by rule, and every one of those snapshots would keep
 #: being served to the fixed code — the strip staying silent on a signed-out
 #: machine because a stale file said the question was unanswerable.
-_CACHE_VERSION = 2
+_CACHE_VERSION = 3
 
 #: How long a snapshot may be served before it is re-measured.
 #:
@@ -596,6 +812,26 @@ def _measure(allow_shell: bool = True) -> dict:
     # is `executable` — while an override is taken entirely on faith, which is
     # exactly why it is the one that can be wrong.
     usable = bool(path) and (source != "override" or executable(path))
+    outdated = is_outdated(version)
+    # A resolved, runnable-looking file that will not report its own version.
+    # This state was measured before and said NOTHING — the module correctly
+    # refused to guess a cause, and so a user whose install was half-replaced or
+    # shadowed got silence and an app that did not work. Doctor is what turns it
+    # into something sayable.
+    broken = usable and version is None
+
+    # DOCTOR RUNS ONLY WHEN THERE IS SOMETHING FOR IT TO EXPLAIN, and the gate is
+    # the same argument the endpoint's own docstring makes about /api/config: a
+    # ~1.2s spawn is fine to pay for a card that renders while something is
+    # wrong, and is not fine on every health read of a machine that is fine.
+    #
+    # The two states that need it are exactly the two this answers:
+    #   * `broken` — doctor names the cause in the CLI's own words.
+    #   * `outdated` — the install METHOD decides whether an update can work at
+    #     all, and doctor is the only party that reports it authoritatively.
+    doctor = _doctor(path) if (usable and (broken or outdated)) else None
+    method = install_method(path, doctor)
+    plan = update_plan(method)
     return {
         "found": usable,
         "path": path,
@@ -604,12 +840,27 @@ def _measure(allow_shell: bool = True) -> dict:
         "min_version": MIN_VERSION,
         # Only ever True on a version we actually read AND that is below the
         # floor — see is_outdated.
-        "outdated": is_outdated(version),
+        "outdated": outdated,
+        "broken": broken,
         # The resolved path only when it is RUNNABLE: asking a binary that
         # isn't there for its auth state wastes a spawn on a certain failure,
         # and the fallback below still answers True on positive evidence.
         "signed_in": signed_in(path if usable else None),
         "config_dir": config_dir(),
+        # Which platform this is, so the UI never has to guess which install
+        # line to show. It used to guess, and it guessed wrong on Windows.
+        "platform": sys.platform,
+        "install_command": install_command(),
+        # None whenever doctor was not run or could not answer — never inferred
+        # from silence.
+        "install_method": method,
+        # True / False / None-for-unknown. Only `False` withholds the update
+        # offer; see update_plan for why unknown must not.
+        "updatable": plan["updatable"],
+        "update_command": plan["command"],
+        "update_manager": plan["manager"],
+        "update_blocked_reason": plan["reason"],
+        "doctor": doctor,
         "checked_at": time.time(),
         "fingerprint": _fingerprint(path),
     }
@@ -683,7 +934,7 @@ def warm_in_background() -> None:
     """Fill the cache off the request path, so the first GET is a disk read.
 
     Called from the server entry points, never from create_app — the same rule
-    community.refresh_in_background follows, and for the same reason: importing
+    community.ensure_showcase_in_background follows, and for the same reason: importing
     the server in a test must not spawn the user's login shell.
 
     Failures are swallowed. A cold cache costs the first request its probe; a

@@ -4,11 +4,14 @@ and the index-first swap must not change what search shows.
 See fused_render/server/index_gitignore.py.
 """
 import json
+import logging
 import os
 import subprocess
 import time
 from threading import Event, Thread
 
+from fused_render.index.cancel import CancelToken, Cancelled
+from fused_render.index.ignore import norm
 from fused_render.server import index_gitignore
 from fused_render.server.index_gitignore import filter_corpus
 
@@ -76,9 +79,9 @@ def _counting_queries(monkeypatch):
     asked = []
     real = index_gitignore._ignored
 
-    def counting(root, entries, top, deciders, want):
+    def counting(root, entries, top, deciders, want, **kwargs):
         asked.append(sorted(entries[i]["rel"] for i in want))
-        return real(root, entries, top, deciders, want)
+        return real(root, entries, top, deciders, want, **kwargs)
 
     monkeypatch.setattr(index_gitignore, "_ignored", counting)
     return asked
@@ -153,12 +156,19 @@ def test_a_folder_is_answered_out_of_its_index_root_pool(tmp_path, monkeypatch):
     proj = tmp_path / "proj"
     proj.mkdir()
     (proj / ".gitignore").write_text("*.log\n", encoding="utf-8")
-    root = str(tmp_path)
+    # `_rel_prefix` (index_gitignore.py) checks `root.startswith(base + "/")`
+    # with a literal "/" — it is only ever handed roots that already went
+    # through `search_under`/`search_ranked`'s own canonicalization in
+    # production, so a raw native (backslash, on Windows) `str(Path)` here
+    # would make that startswith miss and silently fall back to a pool of
+    # its own, which is exactly the un-pooled behaviour this test exists to
+    # rule out.
+    root = norm(str(tmp_path))
     filter_corpus(_out(root, ["proj/.gitignore", "proj/a.log", "proj/a.py"]),
                   index_root=root)
     asked = _counting_queries(monkeypatch)
     # Now the in-folder search of proj/, whose rels are relative to proj/.
-    out = filter_corpus(_out(str(proj), [".gitignore", "a.log", "a.py"]),
+    out = filter_corpus(_out(norm(str(proj)), [".gitignore", "a.log", "a.py"]),
                         index_root=root)
     assert asked == []  # every verdict was already pooled
     assert [e["rel"] for e in out["entries"]] == [".gitignore", "a.py"]
@@ -504,6 +514,59 @@ def test_a_waiting_caller_still_sweeps_what_the_other_did_not_cover(tmp_path,
                                                   "proj/a.py", "proj/b.py"]
 
 
+def test_a_cancelled_waiter_stops_in_a_poll_slice_not_the_full_ceiling(
+    tmp_path, monkeypatch,
+):
+    """Section 1, phase 2: an abandoned rank request must not sit out
+    SOMEONE ELSE'S in-flight sweep for up to SWEEP_WAIT_MAX_S (30s) of pure
+    dead time — it should stop in about one `_SWEEP_POLL_S` slice once its own
+    token is cancelled, the same way `test_a_waiting_caller_still_sweeps_...`
+    above proves the ORIGINAL wait-then-sweep behaviour still works when
+    nothing is cancelled."""
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(index_gitignore, "SWEEP_WAIT_MAX_S", 30.0)
+    monkeypatch.setattr(index_gitignore, "_SWEEP_POLL_S", 0.05)
+    root, rels = _proj_with_a_log(tmp_path)
+    real = index_gitignore._ignored
+    started = Event()
+
+    def slow(*a, **k):
+        started.set()
+        # Long enough that the second caller's cancellation (below) has to
+        # actually fire for this test to finish quickly, but short enough to
+        # keep the test itself fast — the assertion is on ELAPSED TIME, not
+        # on outliving this sleep.
+        time.sleep(1.0)
+        return real(*a, **k)
+
+    monkeypatch.setattr(index_gitignore, "_ignored", slow)
+    first = Thread(target=lambda: filter_corpus(_out(root, rels), index_root=root))
+    first.start()
+    started.wait(timeout=10)
+
+    token = CancelToken()
+
+    def cancel_soon():
+        time.sleep(0.15)  # a couple of poll slices into the wait
+        token.cancel()
+
+    Thread(target=cancel_soon, daemon=True).start()
+
+    t0 = time.monotonic()
+    try:
+        with_token_raised = False
+        filter_corpus(_out(root, rels + ["proj/b.log", "proj/b.py"]),
+                     index_root=root, token=token)
+    except Cancelled:
+        with_token_raised = True
+    elapsed = time.monotonic() - t0
+    assert with_token_raised
+    # Comfortably under the 30s ceiling — a regression here would time out
+    # this test at 5s+ instead of finishing in well under a second.
+    assert elapsed < 2.0
+    first.join(timeout=30)
+
+
 def test_the_disk_load_does_not_hold_the_cache_lock(tmp_path, monkeypatch):
     """A home-sized pool is a multi-megabyte json.load plus ~400k inserts.
     Under the module-global lock that blocks every concurrent search and the
@@ -610,3 +673,190 @@ def test_an_orphaned_temp_file_is_swept_on_the_next_save(tmp_path, monkeypatch):
     os.utime(orphan, (0, 0))  # from a long-dead process
     filter_corpus(_out(root, rels), index_root=root)
     assert not os.path.exists(orphan)
+
+
+# -- DEBUG timing --------------------------------------------------------------
+#
+# The rank path had no server-side timing at all, so a slow report could only
+# be diagnosed by inference. These assert the log lines exist and are at
+# DEBUG (never louder — this fires on every keystroke, see query.py's
+# pass_over docstring for the reasoning), not their exact wording.
+
+def test_debug_logs_the_repo_toplevel_lookup(tmp_path, monkeypatch, caplog):
+    _fresh_cache(monkeypatch)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("*.gen\n", encoding="utf-8")
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(str(repo), ["keep.py", "junk.gen"]))
+    assert any("_repo_toplevel" in r.message and r.levelno == logging.DEBUG
+              for r in caplog.records)
+
+
+def test_debug_logs_the_git_sweep_with_the_path_count(tmp_path, monkeypatch,
+                                                       caplog):
+    _fresh_cache(monkeypatch)
+    root, rels = _proj_with_a_log(tmp_path)
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(root, rels))
+    sweep_lines = [r.message for r in caplog.records if "git sweep" in r.message]
+    assert sweep_lines
+    assert "queried" in sweep_lines[0]
+
+
+def test_debug_logs_a_wait_on_someone_elses_inflight_sweep(tmp_path,
+                                                           monkeypatch, caplog):
+    """The dead-time-vs-sweep-time distinction: a second caller of the same
+    base waits on the sweep already running rather than starting its own, and
+    that wait gets its own log line so it isn't mistaken for sweep cost."""
+    _fresh_cache(monkeypatch)
+    root, rels = _proj_with_a_log(tmp_path)
+    real = index_gitignore._ignored
+    started = Event()
+
+    def slow(*a, **k):
+        started.set()
+        time.sleep(0.3)
+        return real(*a, **k)
+
+    monkeypatch.setattr(index_gitignore, "_ignored", slow)
+    first = Thread(target=lambda: filter_corpus(_out(root, rels),
+                                                index_root=root))
+    first.start()
+    started.wait(timeout=10)
+    with caplog.at_level(logging.DEBUG,
+                        logger="fused_render.server.index_gitignore"):
+        filter_corpus(_out(root, rels), index_root=root)
+    first.join(timeout=30)
+    assert any("in-flight sweep" in r.message for r in caplog.records)
+
+
+# -- consolidation: one oracle instead of one per marker, ONLY when the -------
+# -- caller proved its marker discovery complete (`oracle_rels`) -------------
+
+def _counting_oracles(monkeypatch):
+    """Every root `_IgnoreOracle` was actually constructed with, one entry per
+    check-ignore co-process spawned — real oracles underneath, just counted."""
+    real = index_gitignore._IgnoreOracle
+    roots = []
+
+    class Counting(real):
+        def __init__(self, repo_root):
+            roots.append(repo_root)
+            super().__init__(repo_root)
+
+    monkeypatch.setattr(index_gitignore, "_IgnoreOracle", Counting)
+    return roots
+
+
+def test_supplied_oracle_rels_consolidate_to_one_oracle_at_root(
+        tmp_path, monkeypatch):
+    """The whole point of the fix: a caller that proved its marker discovery
+    complete (`oracle_rels`, e.g. the ranked search reading them out of the
+    whole index) gets ONE check-ignore co-process for the request, not one
+    per outermost marker."""
+    _fresh_cache(monkeypatch)
+    root = str(tmp_path)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    spawned = _counting_oracles(monkeypatch)
+    out = filter_corpus(_out(root, [
+        "a/.gitignore", "a/keep.py", "a/drop.log",
+        "b/.gitignore", "b/keep.py", "b/drop.tmp"]),
+        index_root=root, oracle_rels=["a", "b"])
+    assert spawned == [root]
+    rels = [e["rel"] for e in out["entries"]]
+    assert "a/drop.log" not in rels and "b/drop.tmp" not in rels
+    assert "a/keep.py" in rels and "b/keep.py" in rels
+
+
+def test_no_oracle_rels_still_spawns_one_oracle_per_marker(tmp_path, monkeypatch):
+    """The gate itself, pinned: WITHOUT a caller-supplied `oracle_rels`,
+    discovery keeps the ORIGINAL per-marker behaviour — one co-process per
+    outermost marker — even for a corpus shaped exactly like the one above
+    that consolidation collapses to one."""
+    _fresh_cache(monkeypatch)
+    root = str(tmp_path)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / ".gitignore").write_text("*.log\n", encoding="utf-8")
+    (tmp_path / "b").mkdir()
+    (tmp_path / "b" / ".gitignore").write_text("*.tmp\n", encoding="utf-8")
+    spawned = _counting_oracles(monkeypatch)
+    filter_corpus(_out(root, [
+        "a/.gitignore", "a/keep.py", "a/drop.log",
+        "b/.gitignore", "b/keep.py", "b/drop.tmp"]))  # oracle_rels omitted
+    assert sorted(spawned) == sorted(
+        [str(tmp_path / "a"), str(tmp_path / "b")])
+
+
+def test_supplied_and_discovered_oracle_rels_agree_on_a_nested_corpus(
+        tmp_path, monkeypatch):
+    """Differential: the consolidated (`oracle_rels`-supplied) path and the
+    per-marker (discovery) path must call the exact same entries ignored for
+    a corpus with several nested and independent markers — a handful of
+    repos' worth of shape, not 300."""
+    root = str(tmp_path)
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / ".gitignore").write_text("*.outer\n", encoding="utf-8")
+    (tmp_path / "proj" / "sub").mkdir()
+    (tmp_path / "proj" / "sub" / ".gitignore").write_text(
+        "*.inner\n", encoding="utf-8")
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / ".gitignore").write_text("*.oth\n", encoding="utf-8")
+    (tmp_path / "clean").mkdir()  # no .gitignore anywhere near it
+    rels = [
+        "proj/.gitignore", "proj/a.outer", "proj/keep.py",
+        "proj/sub/.gitignore", "proj/sub/a.inner", "proj/sub/a.outer",
+        "proj/sub/keep.py",
+        "other/.gitignore", "other/a.oth", "other/keep.py",
+        "clean/keep.py",
+    ]
+    _fresh_cache(monkeypatch)
+    discovered = filter_corpus(_out(root, rels))
+    _fresh_cache(monkeypatch)
+    consolidated = filter_corpus(
+        _out(root, rels), index_root=root,
+        oracle_rels=["proj", "proj/sub", "other"])
+    assert ([e["rel"] for e in discovered["entries"]]
+           == [e["rel"] for e in consolidated["entries"]])
+
+
+def test_consolidation_does_not_reach_above_a_narrower_search_root(
+        tmp_path, monkeypatch):
+    """A caller may rank-search a SUBFOLDER of the configured index root (the
+    ranked endpoint answers in-folder queries too, not only the home root).
+    `oracle_rels` is only ever complete for what lies UNDER that subfolder —
+    an ancestor `.gitignore` between the subfolder and the wider index root
+    is invisible to it, exactly as it is invisible to the per-marker path and
+    to the live walk (which derives its own repo boundary from the browsed
+    folder, never from a wider ancestor). Consolidating must graft at the
+    REQUEST's OWN root, not at the wider index root — grafting any higher
+    would cascade that ancestor rule in, which is over-filtering: hiding a
+    file the per-marker path (and the live walk) would have shown.
+    """
+    _fresh_cache(monkeypatch)
+    base = str(tmp_path)
+    (tmp_path / "proj").mkdir()
+    # The ANCESTOR marker: sits ABOVE the subfolder actually being searched.
+    (tmp_path / "proj" / ".gitignore").write_text(
+        "*.secret\n", encoding="utf-8")
+    (tmp_path / "proj" / "sub").mkdir()
+    # The subfolder's OWN marker: the only one `oracle_rels` can ever see.
+    (tmp_path / "proj" / "sub" / ".gitignore").write_text(
+        "*.log\n", encoding="utf-8")
+    sub_root = str(tmp_path / "proj" / "sub")
+    # oracle_rels exactly as `index/query.py:_ignore_roots` computes them:
+    # scoped to `.gitignore` files UNDER the searched subfolder only, so the
+    # ancestor's marker never appears in this list.
+    out = filter_corpus(_out(sub_root, [
+        ".gitignore", "a.log", "a.secret", "keep.py"]),
+        index_root=base, oracle_rels=[""])
+    rels = [e["rel"] for e in out["entries"]]
+    assert "a.log" not in rels     # the subfolder's own rule still applies
+    assert "a.secret" in rels      # the ancestor's rule must NOT leak in
+    assert "keep.py" in rels

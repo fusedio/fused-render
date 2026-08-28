@@ -1,458 +1,884 @@
 <!doctype html>
-<!-- The landing + download page served at the root of the fused-render CDN
-     (render.fused.io). Published to s3://fused-render/index.html by
-     .github/workflows/release.yml on every release, alongside latest.json
-     (written by write_manifest.py), which this page reads to fill in the
-     current version and artifact links, and og-image.png (the social-preview
-     card referenced by the Open Graph/Twitter tags below). Screenshots live
-     under /assets/ next to this page and must be published with it.
-     The only network calls at load are same-origin: /latest.json and the
-     /assets/ images. -->
+<!-- VARIANT: "Bento Editorial" — the bento variant's asymmetric tile grids and
+     partitioned hierarchy, dressed in the editorial variant's quiet monochrome
+     paper-and-ink aesthetic. Content and hierarchy follow ai.html verbatim.
+     Dark is home; light stays reachable via data-theme="light". Zero external requests:
+     system fonts, relative assets/*, same-origin /latest.json. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fused Render — see your files</title>
-<meta name="description" content="A local file explorer that renders your data in the browser: parquet, maps, 3D, PDFs and 40+ formats. Runs on 127.0.0.1. Nothing else to install.">
-<meta name="theme-color" content="#141414">
+<title>Fused Render — your files, your AI, your apps</title>
+<meta name="description" content="Open any file, run AI models locally, and build AI-powered apps with Claude. Free — one download, no account, everything stays on your machine.">
+<meta name="theme-color" content="#000000">
+<!-- This page is also proxied at www.fused.io/render/; render.fused.io is canonical. -->
+<link rel="canonical" href="https://render.fused.io/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Fused Render">
-<meta property="og:title" content="Fused Render">
-<meta property="og:description" content="Browse any folder in the browser. Every file just opens. 100% local.">
+<meta property="og:title" content="Fused Render — your files, your AI, your apps">
+<meta property="og:description" content="Open any file, run AI models locally, and build AI-powered apps with Claude. Free — one download, no account.">
 <meta property="og:url" content="https://render.fused.io/">
 <meta property="og:image" content="https://render.fused.io/og-image.png">
-<meta property="og:image:type" content="image/png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Fused Render — a local file explorer that renders your files in the browser">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='28' fill='%23E5FF44'>%E2%9C%A6</text></svg>">
 <script type="application/fused-bundle">
-{ "include": ["about.html", "assets/*.jpg"] }
+{ "include": ["about.html", "ai.html", "assets/*.jpg", "assets/showcase/*.jpg", "assets/showcase/*.png", "assets/showcase/*.mp4"] }
 </script>
 <style>
-  /* Dark-only, matching the Fused Render app (its learn/ surface + app icon:
-     the #E5FF44 sparkle on near-black). */
+  /* ============================================================
+     Tokens. Every colour is declared here on bare :root, so an
+     un-stamped document already resolves to a complete palette.
+     The two blocks below only REDEFINE tokens for the dark ground.
+     ============================================================ */
   :root {
-    --bg: #141414;
-    --panel: #1b1b1d;
-    --border: #2e2e31;
-    --text: #ffffff;
-    --muted: #b9b9bf;
-    --code-bg: #0f0f10;
-    --accent: #e5ff44;
-    --accent-dim: rgba(229, 255, 68, 0.14);
-    --accent-text: #141414;
     color-scheme: dark;
+
+    /* Dark is home: warm near-black ground, tiles one step up, hairlines
+       heavy enough to survive the darker field. The accent is the full lime
+       because on this ground it reads as ink. */
+    --paper:     #000;
+    --tile:      #1a1a18;
+    --tile-2:    #151513;
+    --ink:       #f3f2ed;
+    --ink-2:     #b3b2aa;
+    --ink-3:     #8b8a82;
+    --ink-4:     #706f68;
+    --rule:      #2e2d2a;
+    --rule-2:    #262523;
+    --rule-hi:   #46443f;
+    --shot-bg:   #0f0f0e;
+    --accent-fill: #e5ff44;
+    --accent-on:   #14150a;
+    --accent-text: #dcf24a;
+    --accent-edge: #6e7a1f;
+    --accent-wash: #21240f;
+
+    /* Type — restrained scale, one step per level. */
+    --t-xs:   12px;
+    --t-sm:   14px;
+    --t-base: 16px;
+    --t-md:   17.5px;
+    --t-lg:   clamp(1.55rem, 2.9vw, 2.15rem);
+    --t-xl:   clamp(2.5rem, 6.4vw, 4.15rem);
+
+    /* Space — 8pt, fluid at the top. */
+    --s1: 8px; --s2: 16px; --s3: 24px; --s4: 32px;
+    --s5: clamp(34px, 4vw, 48px);
+    --gap: clamp(64px, 9vw, 116px);
+
+    --r:    14px;
+    --r-sm: 10px;
+    --ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
+
+  /* Light stays reachable only by explicit stamp — the page ships dark. */
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --paper:     #faf9f6;
+    --tile:      #ffffff;
+    --tile-2:    #f6f5f1;
+    --ink:       #121211;
+    --ink-2:     #4d4d48;
+    --ink-3:     #78776f;
+    --ink-4:     #93928a;
+    --rule:      #e2e0d8;
+    --rule-2:    #eceae3;
+    --rule-hi:   #c9c6bb;
+    --shot-bg:   #f0efe9;
+    --accent-fill: #e5ff44;
+    --accent-on:   #14150a;
+    --accent-text: #55650a;
+    --accent-edge: #b3c92c;
+    --accent-wash: #f4f9dc;
+  }
+
   * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
+  html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
   body {
     margin: 0;
-    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
-    background: var(--bg);
-    color: var(--text);
+    background: var(--paper);
+    color: var(--ink);
+    font: var(--t-base)/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
   a { color: inherit; }
   img { max-width: 100%; display: block; }
-  /* Wide gutters on desktop, but never less than 18px of breathing room on a
-     phone (92vw alone leaves 15px at 375px). */
-  .wrap { width: min(1080px, 100% - clamp(36px, 8vw, 86px)); margin: 0 auto; }
-  code, pre, .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  h1, h2, h3 { margin: 0; text-wrap: balance; }
+  p { margin: 0; }
+  ul, ol { margin: 0; padding: 0; list-style: none; }
+  ::selection { background: var(--accent-fill); color: var(--accent-on); }
+  a:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 3px; }
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { width: min(1140px, 100% - clamp(28px, 7vw, 96px)); margin-inline: auto; }
+  .sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
   }
 
-  /* ---------- top bar ---------- */
+  /* ---------- masthead ---------- */
   .top {
     display: flex; align-items: center; justify-content: space-between;
-    flex-wrap: wrap; row-gap: 12px;
-    padding: 22px 0 0;
+    flex-wrap: wrap; gap: 12px var(--s3);
+    padding: var(--s3) 0;
   }
-  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; }
-  .brand .spark { color: var(--accent); font-size: 22px; line-height: 1; }
-  .version {
-    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    padding: 4px 10px;
+  .brand {
+    display: inline-flex; align-items: center; gap: 9px;
+    font-weight: 620; letter-spacing: -0.01em; text-decoration: none;
+    font-size: 15.5px;
   }
-  .top nav { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
-  .top nav a { text-decoration: none; }
-  .top nav a:hover { color: var(--text); }
-  /* Too narrow to sit beside the brand: the nav wraps onto its own row rather
-     than disappearing (it is the only route to about.html above the footer). */
-  @media (max-width: 560px) {
-    .top nav { gap: 18px; font-size: 13px; }
+  .brand .spark { color: var(--accent-fill); font-size: 19px; line-height: 1; }
+  .top nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
+  a.gh { display: inline-flex; align-items: center; gap: 7px; }
+  a.gh svg { width: 15px; height: 15px; flex: none; }
+  .top nav .navcta {
+    padding: 8px 16px; border-radius: 99px;
+    background: var(--accent-fill); color: var(--accent-on) !important;
+    border: 1px solid var(--accent-edge);
   }
+  .top nav a {
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em;
+    color: var(--ink-3); text-decoration: none; padding: 6px 0;
+    transition: color 0.2s var(--ease);
+  }
+
+  /* ---------- section rhythm ----------
+     Sections carry the gap as padding-top only, so the space between any two
+     of them is exactly one gap and cannot compound. A hairline marks each
+     partition; the hero and the first section own none. */
+  section { padding: var(--gap) 0 0; }
+  .sec-head { padding-bottom: var(--s5); }
+  h2 {
+    font-size: var(--t-lg);
+    line-height: 1.1; letter-spacing: -0.03em; font-weight: 660;
+    max-width: 26ch;
+  }
+  .deck {
+    margin-top: 12px; max-width: 56ch;
+    color: var(--ink-2); font-size: var(--t-md); line-height: 1.5;
+    text-wrap: pretty;
+  }
+  .deck-list {
+    margin-top: 12px;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  /* Section subtitles + bullet lists hidden for now; drop this rule to bring them back. */
+  .deck, .deck-list { display: none; }
+  .deck-list li {
+    position: relative; padding-left: 18px;
+    font-size: var(--t-base); color: var(--ink-2); line-height: 1.5;
+  }
+  .deck-list li::before {
+    content: ""; position: absolute; left: 0; top: 0.62em;
+    width: 8px; height: 1px; background: var(--ink-3);
+  }
+  .rule-top { border-top: 1px solid var(--rule); padding-top: var(--s5); }
 
   /* ---------- hero ---------- */
-  .hero {
-    display: grid;
-    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-    gap: clamp(28px, 5vw, 64px);
-    align-items: center;
-    padding: clamp(48px, 9vh, 96px) 0 clamp(40px, 7vh, 72px);
-  }
+  .hero { padding: clamp(30px, 5vw, 60px) 0 0; }
   h1 {
-    font-size: clamp(2.5rem, 5.6vw, 4rem);
-    line-height: 1.04;
-    letter-spacing: -0.03em;
-    margin: 0;
-    text-wrap: balance;
+    font-size: clamp(2rem, 4.2vw, 4rem);
+    line-height: 1.05; letter-spacing: -0.045em; font-weight: 700;
+    text-align: left; margin: 0;
   }
-  h1 .lit { color: var(--accent); }
-  .sub-points {
-    list-style: none;
-    padding: 0;
-    margin: 22px 0 28px;
-    color: var(--muted);
-    font-size: 17px;
+  .herobg { display: flex; align-items: center; }
+  .herobg .hero-left { flex: 0 0 36%; order: -1; position: relative; z-index: 1; }
+  .herobg .hero-media { flex: 1; min-width: 0; position: relative; }
+  .herobg .hero-media video {
+    display: block; width: 100%; height: auto;
+    -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
+    mask-image: linear-gradient(90deg, transparent 0%, #000 6%, #000 94%, transparent 100%);
   }
-  /* The text lives in a <span> so that a wrapping line keeps <strong> inline —
-     as bare flex items the bold run would be pushed into its own column. */
-  .sub-points li { display: flex; gap: 10px; align-items: baseline; margin: 8px 0; }
-  .sub-points li::before { content: "✦"; color: var(--accent); font-size: 12px; flex: none; }
-  .sub-points li > span { min-width: 0; }
-  .sub-points strong { color: var(--text); font-weight: 600; }
-  .cta-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  @media (max-width: 860px) {
+    .herobg { display: block; }
+    .herobg .hero-media { margin-top: 24px; }
+  }
+  .vid-toggle {
+    position: absolute; right: 14px; bottom: 14px;
+    width: 36px; height: 36px; border-radius: 50%;
+    display: grid; place-items: center; padding: 0;
+    background: rgba(0, 0, 0, 0.72);
+    border: 1px solid rgba(243, 242, 237, 0.22);
+    color: var(--ink-2); cursor: pointer;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    opacity: 0; transition: opacity 0.25s var(--ease);
+  }
+  /* Only pops on hover — but stays visible for keyboard focus and while paused. */
+  .hero-media:hover .vid-toggle,
+  .vid-toggle:focus-visible,
+  .vid-toggle.paused:not(.vid-mute) { opacity: 1; }
+  .vid-toggle:hover { color: var(--ink); border-color: rgba(243, 242, 237, 0.4); }
+  .vid-toggle svg { width: 14px; height: 14px; }
+  .vid-toggle .ic-play { display: none; }
+  .vid-toggle.paused .ic-play { display: block; }
+  .vid-toggle.paused .ic-pause { display: none; }
+  /* The mute button sits beside pause; .paused here means "muted". */
+  .vid-mute { right: 58px; }
+  .vid-mute .ic-sound { display: block; }
+  .vid-mute .ic-muted { display: none; }
+  .vid-mute.paused .ic-sound { display: none; }
+  .vid-mute.paused .ic-muted { display: block; }
+  .hero-media:hover .vid-mute { opacity: 1; }
+  .points {
+    display: grid; grid-template-columns: minmax(0, 1fr);
+    gap: var(--s3);
+    margin-top: clamp(40px, 5.6vw, 64px);
+  }
+  .points li { display: block; }
+  .points .pt {
+    display: grid; grid-template-columns: 20px minmax(0, 1fr);
+    column-gap: 13px; align-items: start;
+    text-decoration: none; color: inherit;
+    background: var(--tile);
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
+    padding: clamp(16px, 1.8vw, 22px) clamp(16px, 2vw, 24px);
+    transition: border-color 0.2s var(--ease), transform 0.2s var(--ease);
+  }
+  .points .pt:hover { border-color: var(--rule-hi); transform: translateY(-2px); }
+  .points .pt > svg {
+    grid-row: span 2; width: 19px; height: 19px;
+    color: var(--ink-3); margin-top: 0.24em;
+  }
+  .points b {
+    grid-column: 2; display: block;
+    font-size: var(--t-md); font-weight: 640; letter-spacing: -0.018em;
+    line-height: 1.35;
+  }
+  .points span {
+    grid-column: 2; display: block; margin-top: 3px;
+    font-size: var(--t-sm); color: var(--ink-2); line-height: 1.5;
+    text-wrap: pretty;
+  }
+  @media (min-width: 760px) {
+    .points { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  }
+  .acts {
+    display: flex; align-items: center; gap: var(--s3);
+    flex-wrap: wrap; margin-top: clamp(28px, 3.4vw, 42px);
+  }
+  /* The one accent in the first viewport. */
   .btn {
-    display: inline-block;
-    background: var(--accent);
-    color: var(--accent-text);
-    font-weight: 650;
-    font-size: 15px;
+    display: inline-flex; align-items: center; gap: 11px; min-height: 46px;
+    padding: 0 26px; border-radius: 99px;
+    background: var(--accent-fill); color: var(--accent-on);
+    border: 1px solid var(--accent-edge);
+    font-size: 15px; font-weight: 640; letter-spacing: -0.01em;
     text-decoration: none;
-    padding: 12px 22px;
-    border-radius: 10px;
-    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
-                box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: transform 0.22s var(--ease);
   }
-  .btn-ghost {
-    display: inline-block;
-    color: var(--text);
-    font-size: 15px;
-    text-decoration: none;
-    padding: 12px 18px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    transition: border-color 0.18s ease-out;
+  .btn svg { width: 17px; height: 17px; }
+  .link-plain {
+    display: inline-flex; align-items: center; min-height: 40px;
+    font-size: 15px; text-decoration: none;
+    border-bottom: 1px solid var(--ink);
+    transition: border-color 0.22s var(--ease);
   }
-  .btn-ghost:hover { border-color: var(--muted); }
-  .fineprint { font-size: 13px; color: var(--muted); margin-top: 14px; }
+  .fine {
+    margin-top: clamp(18px, 2.2vw, 26px);
+    text-align: left;
+    font: 500 var(--t-xs)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
+  }
 
-  /* hero screenshot rotator, framed as a browser window */
-  .window {
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    background: var(--panel);
+  /* ============================================================
+     Bento — a 12-column field. Every grid on the page is a
+     pinwheel of two wide and two narrow tiles, so the eye is told
+     where to land rather than asked to scan equal boxes.
+     ============================================================ */
+  .bento {
+    display: grid; gap: 14px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  @media (min-width: 860px) {
+    .bento { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+    .w7 { grid-column: span 7; }
+    .w5 { grid-column: span 5; }
+    .w10 { grid-column: span 10; }
+    .w2 { grid-column: span 2; }
+    .w4 { grid-column: span 4; }
+    .w6 { grid-column: span 6; }
+    .w12 { grid-column: span 12; }
+  }
+  .tile {
+    background: var(--tile);
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
     overflow: hidden;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(229, 255, 68, 0.05);
   }
-  .window-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
+  .pad {
+    padding: clamp(20px, 2.2vw, 28px);
+    display: flex; flex-direction: column; gap: var(--s2);
+    height: 100%;
   }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: #3a3a3e; }
-  .url {
-    flex: 1;
-    font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted);
-    background: var(--code-bg);
-    border-radius: 6px;
-    padding: 6px 10px;
-    margin-left: 6px;
-    white-space: nowrap; overflow: hidden;
-    position: relative; height: 24px;
+  .tile h3 {
+    font-size: var(--t-md); font-weight: 640;
+    letter-spacing: -0.018em; line-height: 1.3;
   }
-  .url span {
-    position: absolute; inset: 6px 10px;
-    overflow: hidden; text-overflow: ellipsis;
-    opacity: 0;
-    transition: opacity 0.3s ease-out;
-  }
-  .url span.active { opacity: 1; }
-  .shots { position: relative; aspect-ratio: 1400 / 813; }
-  .shots a {
-    position: absolute; inset: 0;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.5s ease-out;
-  }
-  .shots a.active { opacity: 1; pointer-events: auto; }
-  .shots img { width: 100%; height: 100%; object-fit: cover; }
-  /* The dot is drawn by ::after so the <button> itself can carry a ~32px
-     touch target without growing the 9px visual. */
-  .hero-dots { display: flex; justify-content: center; padding-top: 4px; }
-  .nav-dot {
-    appearance: none; border: none; background: none; cursor: pointer;
-    display: grid; place-items: center;
-    padding: 12px 9px;
-  }
-  .nav-dot::after {
-    content: "";
-    width: 9px; height: 9px; border-radius: 50%;
-    background: #3a3a3e;
-    transition: background 0.2s ease-out, transform 0.2s ease-out;
-  }
-  .nav-dot.active::after { background: var(--accent); transform: scale(1.25); }
 
-  /* ---------- format ticker ---------- */
-  .ticker-block { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
-  .ticker-block h2 { margin: 0 0 6px; }
-  .ticker-block p { color: var(--muted); margin: 0 0 26px; }
-  h2 {
-    font-size: clamp(1.5rem, 2.6vw, 2rem);
-    letter-spacing: -0.02em;
-    line-height: 1.15;
-    text-wrap: balance;
+  /* ---------- §1 : the finder panel ---------- */
+  .field {
+    display: flex; align-items: center; gap: 12px;
+    padding: 18px clamp(18px, 2.4vw, 26px);
+    border-bottom: 1px solid var(--rule-2);
   }
-  .ticker {
-    overflow: hidden;
-    /* 8% is only ~30px on a phone — too abrupt to read as a fade, so the edge
-       falloff never drops below 44px. */
-    -webkit-mask-image: linear-gradient(90deg, transparent, #000 max(8%, 44px), #000 calc(100% - max(8%, 44px)), transparent);
-    mask-image: linear-gradient(90deg, transparent, #000 max(8%, 44px), #000 calc(100% - max(8%, 44px)), transparent);
+  .field svg { width: 18px; height: 18px; color: var(--ink-3); flex: none; }
+  .field .q { font-size: var(--t-md); font-weight: 600; letter-spacing: -0.01em; }
+  .caret {
+    display: inline-block; width: 1.5px; height: 1.1em;
+    background: var(--ink); vertical-align: -0.16em;
   }
-  .ticker-run { display: flex; gap: 12px; padding-right: 12px; }
-  .ticker-inner {
-    display: flex; width: max-content;
-    animation: scroll 46s linear infinite;
+  .hits { padding: 6px 0 10px; }
+  .hit {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px clamp(18px, 2.4vw, 26px);
+    font: var(--t-sm)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ink-3);
   }
-  @keyframes scroll { to { transform: translateX(-50%); } }
-  .ext {
-    font: 14px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 9px 13px;
+  .hit .fico { width: 16px; height: 16px; flex: none; color: var(--ink-4); }
+  .hit b { color: var(--ink); font-weight: 620; }
+  .hit em {
+    font-style: normal; font-weight: 620;
+    box-shadow: inset 0 -0.14em 0 var(--rule-hi);
+  }
+  /* The view switcher. The lit pill is this section's single accent. */
+  .modes {
+    display: flex; align-items: center; gap: clamp(10px, 2vw, 20px);
+    flex-wrap: wrap;
+    padding: 14px clamp(18px, 2.4vw, 26px);
+    border-top: 1px solid var(--rule-2);
+    background: var(--tile-2);
+  }
+  .modes .fname {
+    font: var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--ink-3);
+  }
+  .modes .pills { display: flex; gap: 7px; flex-wrap: wrap; }
+  .modes .pill {
+    padding: 6px 12px; border-radius: 99px;
+    border: 1px solid var(--rule);
+    font-size: var(--t-xs); color: var(--ink-3);
     white-space: nowrap;
   }
-  .ext.hot { color: var(--accent); border-color: rgba(229, 255, 68, 0.35); }
-  .ext.build {
+  .modes .pill.on {
+    border-color: var(--accent-edge);
+    background: var(--accent-wash);
     color: var(--accent-text);
-    background: var(--accent);
-    border-color: var(--accent);
-    font-weight: 600;
-    text-decoration: none;
+    font-weight: 620;
   }
 
-  /* ---------- three truths ---------- */
-  /* One column on phones (separated by rules), two on tablets, three with
-     vertical dividers on desktop. auto-fit + a blanket "max-width: 899px"
-     rule used to draw a top border on the second column's first cell too. */
-  .truths {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: clamp(24px, 4vw, 56px);
-    padding: clamp(36px, 6vh, 64px) 0;
-    border-top: 1px solid var(--border);
-  }
-  .truths p { margin: 0; color: var(--muted); font-size: 15.5px; text-wrap: pretty; }
-  @media (max-width: 619px) {
-    .truths { gap: 22px; }
-    .truths p + p { border-top: 1px solid var(--border); padding-top: 22px; }
-  }
-  @media (min-width: 620px) {
-    .truths { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (min-width: 900px) {
-    .truths { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .truths p + p { border-left: 1px solid var(--border); padding-left: clamp(24px, 3vw, 48px); }
-  }
-  .truths strong { display: block; color: var(--text); font-size: 19px; letter-spacing: -0.01em; margin-bottom: 6px; }
-
-  /* ---------- gallery ---------- */
-  .gallery { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
-  .gallery-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 26px; }
-  .gallery-head h2 { margin: 0; }
-  .gallery-head a { color: var(--muted); font-size: 14px; text-decoration: none; }
-  .gallery-head a:hover { color: var(--accent); }
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
-    gap: 18px;
-  }
-  .grid figure {
-    margin: 0;
-    border: 1px solid var(--border);
-    border-radius: 12px;
+  /* --- formats: a slow marquee band of extensions --- */
+  .fmt-band {
+    margin-top: var(--s3); padding: var(--s3) 0;
+    border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
     overflow: hidden;
-    background: var(--panel);
-    transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
-                border-color 0.22s ease-out;
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
   }
-  .grid img { aspect-ratio: 1400 / 813; object-fit: cover; }
-  .grid figcaption { padding: 12px 14px; font-size: 13.5px; color: var(--muted); }
-  .grid figcaption b { color: var(--text); font-weight: 600; }
+  .fmt-track { display: flex; width: max-content; }
+  html.anim .fmt-track { animation: fmt-slide 48s linear infinite; }
+  .fmt-band:hover .fmt-track, .fmt-band:focus-within .fmt-track { animation-play-state: paused; }
+  @keyframes fmt-slide { to { transform: translateX(-50%); } }
+  .fmt-track ul { display: flex; align-items: center; }
+  .fmt-track li {
+    font: 500 var(--t-sm)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-3);
+    padding: 0 var(--s3); white-space: nowrap;
+    border-right: 1px solid var(--rule);
+  }
+  .fmt-track li.rest {
+    color: var(--ink-4); text-transform: none; letter-spacing: 0.04em;
+  }
 
-  /* ---------- how ---------- */
-  .how { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
-  .how h2 { margin: 0 0 22px; }
-  /* min() so a 375px phone gets one full-width step instead of an overflowing
-     240px track; the low floor keeps all three side by side from tablet up. */
-  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 18px; }
-  .steps li { list-style: none; color: var(--muted); font-size: 15.5px; }
-  .steps { padding: 0; margin: 0; counter-reset: step; }
-  .steps li::before {
-    counter-increment: step;
-    content: counter(step);
-    display: block;
-    font: 600 13px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--accent);
-    border: 1px solid rgba(229, 255, 68, 0.35);
-    border-radius: 6px;
-    width: 24px; height: 24px;
-    display: grid; place-items: center;
-    margin-bottom: 10px;
+  /* ---------- §2 : the model bento ---------- */
+  .flow {
+    position: relative;
+    display: flex; align-items: center; justify-content: center; gap: clamp(8px, 1.4vw, 16px);
+    flex-wrap: wrap;
+    padding: clamp(26px, 2.6vw, 34px) clamp(14px, 1.8vw, 20px) clamp(52px, 4.4vw, 62px);
+    border: 1px dashed var(--rule-hi);
+    border-radius: var(--r-sm);
   }
-  .steps b { color: var(--text); }
-  .how .dev { margin: 26px 0 0; color: var(--muted); font-size: 14.5px; }
-  .how .dev code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; font-size: 13px; }
+  .node {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 10px 14px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r-sm);
+    background: var(--tile-2);
+    font-size: var(--t-sm); font-weight: 560;
+    white-space: nowrap;
+  }
+  .node svg { width: 17px; height: 17px; color: var(--ink-3); flex: none; }
+  .arw { width: 32px; height: 12px; color: var(--ink-4); flex: none; }
+  .flow-tag {
+    position: absolute; top: -1px; right: -1px;
+    padding: 7px 12px;
+    border: 1px dashed var(--rule-hi);
+    border-radius: 0 var(--r-sm) 0 var(--r-sm);
+    background: var(--tile-2);
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
+  }
 
-  /* ---------- downloads ---------- */
-  .downloads { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
-  .downloads h2 { margin: 0 0 22px; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-  .tab {
-    appearance: none; background: none; border: none;
-    font: 600 14px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
-    color: var(--muted);
-    padding: 12px 16px;
-    margin-bottom: -1px;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    transition: color 0.15s ease-out;
+  .t-lock .pad { justify-content: center; align-items: center; gap: 14px; text-align: center; padding: 18px 10px; }
+  .t-lock .big { width: clamp(44px, 4.4vw, 60px); height: clamp(44px, 4.4vw, 60px); color: var(--ink); }
+  .t-lock h3 { font-size: var(--t-sm); line-height: 1.3; }
+
+  .caps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .caps li {
+    padding: 11px 12px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r-sm);
+    font-size: var(--t-sm);
+    text-align: center;
   }
-  .tab:hover { color: var(--text); }
-  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-  @media (pointer: coarse) { .tab { padding: 15px 16px; } }
-  .dl {
-    display: none;
-    padding: 28px 2px 4px;
+
+  .track { display: flex; align-items: center; gap: clamp(8px, 1.4vw, 14px); flex-wrap: wrap; }
+  .step {
+    padding: 10px 16px; border-radius: 99px;
+    border: 1px solid var(--rule);
+    font-size: var(--t-sm); color: var(--ink-2);
+    white-space: nowrap;
   }
-  .dl.active { display: block; }
-  .dl > :first-child { margin-top: 0; }
-  .dl p { max-width: 62ch; }
-  .dl pre { max-width: 560px; }
-  .dl p { margin: 10px 0 0; font-size: 13.5px; color: var(--muted); }
-  .dl pre {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 12px;
-    overflow-x: auto;
-    font-size: 12.5px;
-    line-height: 1.5;
-    color: var(--text);
-    margin: 10px 0 0;
+  /* This section's single accent. */
+  .step.on {
+    border-color: var(--accent-edge);
+    background: var(--accent-wash);
+    color: var(--accent-text);
+    font-weight: 620;
   }
-  /* The brew line is wider than a phone, and a sideways-scrolling <pre> just
-     looks truncated on touch — wrap it instead. */
-  @media (max-width: 640px) {
-    .dl pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+  /* ---------- §3 : the app plates ---------- */
+  .shot { display: block; text-decoration: none; color: inherit; }
+  .shot img {
+    width: 100%; height: auto; aspect-ratio: 760 / 470; object-fit: cover;
+    background: var(--shot-bg);
+    border-bottom: 1px solid var(--rule);
   }
-  /* Copy icon button pinned inside the command block. The pre gets right
-     padding so a long command scrolls under its own edge, not under the icon. */
-  .dl pre { position: relative; padding-right: 46px; }
-  .copy-cmd {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    right: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    color: var(--muted);
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    cursor: pointer;
+  .shot .cap { padding: 15px clamp(16px, 2vw, 20px) 18px; }
+  .shot-sq img { aspect-ratio: 1 / 1; }
+  /* Illustration plates: transparent cutouts floating on the page. */
+  .illo { display: flex; flex-direction: column; }
+  .illo img { width: 100%; height: auto; object-fit: contain; flex: 1; }
+  .illo .cap {
+    margin-top: 18px; border-top: 1px solid var(--rule);
+    padding: 14px 4px 0;
   }
-  .copy-cmd svg { width: 14px; height: 14px; display: block; }
-  .copy-cmd:hover { color: var(--text); border-color: var(--accent); }
-  /* Feedback state after a successful copy: the icon flips to a check. */
-  .copy-cmd.copied { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
-  .copy-cmd .check { display: none; }
-  .copy-cmd.copied .check { display: block; }
-  .copy-cmd.copied .sheets { display: none; }
-  /* Mobile visitors can't install a desktop app; say so before they tap a
-     .dmg onto their phone. */
-  .mobile-note { display: none; }
-  @media (pointer: coarse) and (max-width: 900px) {
-    .mobile-note {
-      display: block;
-      margin: -6px 0 20px;
-      padding-left: 12px;
-      border-left: 2px solid var(--accent);
-      color: var(--muted);
-      font-size: 14px;
+  #models-alt .illo img { max-height: 360px; }
+  .illo .cap b {
+    display: block; font-size: var(--t-md); font-weight: 640;
+    letter-spacing: -0.018em; line-height: 1.35;
+  }
+  .illo .cap span {
+    display: block; margin-top: 3px;
+    font-size: var(--t-sm); color: var(--ink-2); line-height: 1.5;
+  }
+  .shot .cap b {
+    display: block; font-size: var(--t-md); font-weight: 640;
+    letter-spacing: -0.018em;
+  }
+  .shot .cap span {
+    display: block; margin-top: 4px;
+    font-size: var(--t-sm); line-height: 1.5; color: var(--ink-2);
+  }
+
+  /* ---------- download ---------- */
+  /* The download closer: the Mac window grows as you scroll, then hands
+     over to the headline and one detected-OS download button. */
+  #get { margin-top: var(--gap); padding-top: var(--s5); border-top: 1px solid var(--rule); }
+  .get-stage { display: flex; flex-direction: column; align-items: center; }
+  .macwrap { position: relative; width: min(1020px, 100%); }
+  .mac {
+    border: 1px solid var(--rule-hi);
+    border-radius: 16px;
+    background: var(--tile); overflow: hidden;
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.6);
+  }
+  .mac-bar {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    padding: 13px 16px;
+    background: #1c1c1a; border-bottom: 1px solid var(--rule);
+  }
+  .tl { width: 12px; height: 12px; border-radius: 50%; }
+  .tl.r { background: #ff5f57; } .tl.y { background: #febc2e; } .tl.g { background: #28c840; }
+  .mac-title {
+    position: absolute; left: 0; right: 0; text-align: center;
+    font-size: 12.5px; color: var(--ink-3); pointer-events: none;
+  }
+  .mac-shot { display: block; width: 100%; height: auto; }
+  .getbody { text-align: center; margin-top: var(--gap); }
+  .getbody h2 { max-width: none; }
+  .getbody .deck { margin: 8px auto 0; }
+  .dl { display: flex; flex-direction: column; align-items: center; gap: 16px; margin-top: clamp(22px, 2.6vw, 32px); }
+  .dl-btn {
+    display: inline-flex; align-items: center; gap: 12px;
+    min-height: 56px; padding: 0 36px; border-radius: 99px;
+    background: var(--accent-fill); color: var(--accent-on);
+    border: 1px solid var(--accent-edge);
+    font-size: 16.5px; font-weight: 640; letter-spacing: -0.01em;
+    text-decoration: none;
+    transition: transform 0.22s var(--ease);
+  }
+  .dl-btn:hover { transform: translateY(-1px); }
+  .dl-btn svg { width: 19px; height: 19px; }
+  .dl-others summary {
+    list-style: none; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: var(--t-sm); color: var(--ink-3);
+  }
+  .dl-others summary::-webkit-details-marker { display: none; }
+  .dl-others summary::after {
+    content: ""; width: 8px; height: 8px;
+    border-right: 1.5px solid var(--ink-3); border-bottom: 1.5px solid var(--ink-3);
+    transform: rotate(45deg) translateY(-2px);
+    transition: transform 0.25s var(--ease);
+  }
+  .dl-others[open] summary::after { transform: rotate(225deg) translateY(-1px); }
+  .dl-others summary:hover { color: var(--ink-2); }
+  .dl-note {
+    margin: 0; max-width: 34ch; text-align: center;
+    font: 500 var(--t-xs)/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em; color: var(--ink-3);
+  }
+  .dl-brew {
+    display: inline-flex; align-items: center; gap: 10px; max-width: 100%;
+    height: 34px; padding: 0 14px; border-radius: 99px;
+    background: none; border: 1px solid var(--rule); color: var(--ink-3); cursor: pointer;
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
+    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
+  }
+  .dl-brew[hidden] { display: none; }
+  .dl-brew code { font: inherit; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dl-brew svg { width: 14px; height: 14px; flex: none; }
+  .dl-brew:hover { border-color: var(--rule-hi); color: var(--ink-2); }
+  .dl-brew.copied { border-color: var(--accent-edge); color: var(--accent); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .dl-list-note {
+    margin: 6px 4px 2px; font-size: var(--t-xs); line-height: 1.5; color: var(--ink-4);
+  }
+  .dl-others { position: relative; }
+  .dl-list {
+    position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+    z-index: 6; width: min(300px, 80vw);
+    display: flex; flex-direction: column;
+    padding: 5px; border-radius: var(--r-sm);
+    background: var(--tile); border: 1px solid var(--rule);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5);
+  }
+  .dl-list a, .dl-list .dl-brew-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 9px 11px; border-radius: 8px;
+    text-decoration: none; color: var(--ink-2); font-size: var(--t-xs);
+    transition: background 0.18s var(--ease), color 0.18s var(--ease);
+  }
+  .dl-list .dl-brew-row { width: 100%; background: none; border: 0; cursor: pointer; font-family: inherit; text-align: left; }
+  .dl-list a:hover, .dl-list .dl-brew-row:hover { background: rgba(243, 242, 237, 0.05); color: var(--ink); }
+  .dl-list .nm { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; }
+  .dl-list .nm svg { width: 13px; height: 13px; color: var(--ink-3); }
+  .dl-list .sub { color: var(--ink-4); }
+  .version { display: block; margin-top: 6px; font-size: var(--t-xs); color: var(--ink-4);
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; }
+  /* The zoom: scroll grows the window past the page measure, then it fades
+     into the download block. Motion opts in under html.anim, desktop only. */
+  @media (min-width: 861px) {
+    html.anim .get-scroll { height: 165vh; }
+    html.anim .get-stage {
+      position: sticky; top: 0; height: 100vh;
+      justify-content: center; overflow: visible;
     }
+    html.anim .macwrap { will-change: transform, opacity; }
+    /* the image stays behind: clear up top, sinking into black below */
+    html.anim .get-stage::after {
+      content: ""; position: absolute; top: 0; bottom: 0;
+      left: calc(50% - 50vw); width: 100vw; z-index: 1;
+      background: linear-gradient(0deg,
+        var(--paper) 10%, rgba(0, 0, 0, 0.82) 30%, rgba(0, 0, 0, 0.25) 52%, rgba(0, 0, 0, 0) 72%);
+      opacity: var(--gfade, 0); pointer-events: none;
+    }
+    html.anim .getbody {
+      position: absolute; inset: 0; z-index: 2;
+      display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+      padding-bottom: 7vh;
+      margin: 0; opacity: 0; pointer-events: none;
+    }
+    html.anim .getbody.on { pointer-events: auto; }
   }
 
-  /* ---------- user guide ---------- */
-  /* Same tab component as the downloads section (data-guide instead of
-     data-os so the two switchers never cross-activate). One panel at a time:
-     the three blocks as one long scroll read as a wall of text. */
-  .guide { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
-  .guide h2 { margin: 0 0 6px; }
-  .guide > p { color: var(--muted); margin: 0 0 22px; max-width: 62ch; }
-  .guide .tab .n {
-    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--accent);
-    border: 1px solid rgba(229, 255, 68, 0.35);
-    border-radius: 5px;
-    padding: 3px 6px;
-    margin-right: 7px;
+  /* ---------- §how : the how-it-works app's flow diagram, geometry copied
+     verbatim, colours mapped onto the page tokens so both themes hold. ---------- */
+  #how h2, #under-the-hood h2, #apps h2 { max-width: none; }
+  #how .deck, #under-the-hood .deck { max-width: none; }
+  #how .deck .hl, #under-the-hood .deck .hl { color: var(--accent-text); font-weight: 600; }
+  .howflow {
+    background: var(--tile); border: 1px solid var(--rule);
+    border-radius: 16px; padding: 26px 26px 20px;
   }
-  .gdl { display: none; padding: 28px 2px 4px; }
-  .gdl.active { display: block; }
-  /* Vertical steps: the 3-across grid read as unpartitioned columns here, so
-     the guide stacks them — number chip inline-left, one step per row. */
-  .guide .steps { grid-template-columns: 1fr; gap: 16px; }
-  .guide .steps li {
-    display: flex;
-    align-items: baseline;
-    gap: 14px;
+  .howrow.duo {
+    display: grid; justify-content: center; align-items: center;
+    grid-template-columns: minmax(170px, 215px) minmax(230px, 320px) minmax(170px, 215px);
   }
-  .guide .steps li::before { margin-bottom: 0; flex: none; }
-  .guide .steps li > div { min-width: 0; flex: 1; }
-  .guide .steps .guide-shot { margin-top: 16px; }
-  .guide-shot { margin: 26px 0 0; }
-  .guide-shot img {
-    border: 1px solid var(--border);
-    border-radius: 10px;
+  @media (max-width: 900px) {
+    .howrow.duo { grid-template-columns: 1fr; gap: 14px; }
   }
-  .guide-shot figcaption {
-    margin-top: 8px;
-    font-size: 13px;
-    color: var(--muted);
+  /* Minimal duo: two icon cards, one dashed line, one code chip. */
+  .howrow.duo .howside {
+    min-height: 122px; align-items: center; justify-content: center; gap: 11px;
+    padding: 18px 16px;
   }
+  .howrow.duo .howside > .dot { width: 30px; height: 30px; }
+  .howrow.duo .howside h3 { margin: 0; font-size: 15.5px; }
+  .howrow.duo .howarrow { position: relative; width: 100%; }
+  .howrow.duo .track {
+    background: none; height: 0; border-radius: 0;
+    border-top: 2px dashed var(--rule-hi);
+  }
+  .howrow.duo .pulse { width: 10px; height: 10px; }
+  .howrow.duo .chip {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    background: var(--paper);
+    border: 1px solid var(--accent-edge); border-radius: 99px;
+    padding: 8px 15px;
+    font-size: 12px; color: var(--accent-text); white-space: nowrap;
+  }
+  .howrow.hub {
+    display: grid;
+    grid-template-columns: 1fr 104px 1.1fr 104px 1fr;
+    align-items: center;
+  }
+  .howstack { display: flex; flex-direction: column; gap: 10px; }
+  .howside.mini { min-height: 0; padding: 13px 16px; }
+  .howside.mini h3 { font-size: 14.5px; margin-bottom: 2px; }
+  .howside.mini .eg { font-size: 12px; }
+  .howside.mini .loc { padding-top: 6px; font-size: 11px; }
+  .howside.nd { border-top: 3px solid var(--rule-hi); }
+  .howside.nd .dot { background: var(--ink-3); }
+  .howside {
+    border-radius: 12px; padding: 18px 20px;
+    border: 1px solid var(--rule); background: var(--tile-2);
+    min-height: 118px; display: flex; flex-direction: column; position: relative;
+  }
+  .howside.pg { border-top: 3px solid var(--ink); }
+  .howside.py { border-top: 3px solid var(--accent-fill); }
+  .howside h3 {
+    margin: 0 0 6px; font-size: 16px; font-weight: 660;
+    display: flex; align-items: center; gap: 9px;
+  }
+  .howside h3 .dot { width: 17px; height: 17px; flex: 0 0 auto; }
+  .howside.pg .dot { color: var(--ink); }
+  .howside.py .dot { color: var(--accent-fill); }
+  .howside .what { color: var(--ink); font-size: 13.5px; font-weight: 600; }
+  .howside .eg { color: var(--ink-2); font-size: 12.5px; margin-top: 2px; }
+  .howside .loc { color: var(--ink-3); font-size: 11.5px; margin-top: auto; padding-top: 10px; }
+  .howconn { display: flex; flex-direction: column; gap: 22px; padding: 0 12px; }
+  .pulse {
+    position: absolute; top: 50%; width: 8px; height: 8px; border-radius: 50%;
+    transform: translate(-50%, -50%); opacity: 0;
+    background: var(--accent-fill);
+  }
+  @keyframes pulse-fwd  { 0% { left: 0; opacity: 0; } 12% { opacity: 1; } 42% { opacity: 1; } 55% { left: 100%; opacity: 0; } 100% { left: 100%; opacity: 0; } }
+  @keyframes pulse-back { 0% { left: 100%; opacity: 0; } 12% { opacity: 1; } 42% { opacity: 1; } 55% { left: 0; opacity: 0; } 100% { left: 0; opacity: 0; } }
+
+  /* One 10s beat in the duo diagram: page lit 1s, 1s in transit, Python lit
+     1s, 1s back, page lit 2s — then every glow goes away for a 4s rest
+     before the cycle repeats.
+     Gated on html.anim so reduced-motion visitors keep the static diagram. */
+  html.anim #under-the-hood .howside.pg { animation: duo-pg 10s linear infinite; }
+  html.anim #under-the-hood .howside.py { animation: duo-py 10s linear infinite; }
+  html.anim #under-the-hood .pg .dot { animation: duo-pg-dot 10s linear infinite; }
+  html.anim #under-the-hood .py .dot { animation: duo-py-dot 10s linear infinite; }
+  html.anim #under-the-hood .pulse.pf { animation: duo-pf 10s linear infinite; }
+  html.anim #under-the-hood .pulse.pb { animation: duo-pb 10s linear infinite; }
+  @keyframes duo-pg {
+    0%, 9.9%    { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    10%, 39.9%  { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+    40%, 59.9%  { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    60%, 100%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+  }
+  @keyframes duo-pg-dot {
+    0%, 9.9%    { color: var(--accent-fill); }
+    10%, 39.9%  { color: var(--ink-2); }
+    40%, 59.9%  { color: var(--accent-fill); }
+    60%, 100%   { color: var(--ink-2); }
+  }
+  @keyframes duo-py {
+    0%, 19.9%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+    20%, 29.9%  { border-color: var(--accent-fill); border-top-color: var(--accent-fill);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0.35), 0 0 52px rgba(229, 255, 68, 0.18); }
+    30%, 100%   { border-color: var(--rule); border-top-color: var(--rule-hi);
+                  box-shadow: 0 0 18px rgba(229, 255, 68, 0), 0 0 52px rgba(229, 255, 68, 0); }
+  }
+  @keyframes duo-py-dot {
+    0%, 19.9%   { color: var(--ink-2); }
+    20%, 29.9%  { color: var(--accent-fill); }
+    30%, 100%   { color: var(--ink-2); }
+  }
+  @keyframes duo-pf {
+    0%, 10% { left: 0; opacity: 0; }
+    11.3%   { opacity: 1; }
+    18.7%   { opacity: 1; }
+    20%     { left: 100%; opacity: 0; }
+    100%    { left: 100%; opacity: 0; }
+  }
+  @keyframes duo-pb {
+    0%, 30% { left: 100%; opacity: 0; }
+    31.3%   { opacity: 1; }
+    38.7%   { opacity: 1; }
+    40%     { left: 0; opacity: 0; }
+    100%    { left: 0; opacity: 0; }
+  }
+  .howarrow { display: flex; flex-direction: column; align-items: center; }
+  .howarrow .lbl { font-size: 11px; color: var(--ink-2); margin-bottom: 6px; white-space: nowrap; }
+  .track { position: relative; width: 100%; height: 2px; border-radius: 2px; }
+  .track.fwd { background: linear-gradient(90deg, var(--rule-hi), var(--accent-edge)); }
+  .track.back { background: linear-gradient(90deg, var(--accent-edge), var(--rule-hi)); }
+  .track .head {
+    position: absolute; top: 50%; width: 0; height: 0;
+    border-top: 5px solid transparent; border-bottom: 5px solid transparent;
+    transform: translateY(-50%);
+  }
+  .track.fwd .head { right: -6px; border-left: 8px solid var(--accent-edge); }
+  .track.back .head { left: -6px; border-right: 8px solid var(--accent-edge); }
+  .bridge { text-align: center; color: var(--ink-3); font-size: 12px; margin-top: 16px; }
+  .bridge code { color: var(--accent-text); }
+  /* thin page progress bar pinned to the very top */
+  .scrollbar {
+    position: fixed; top: 0; left: 0; height: 2px; width: 100%;
+    background: var(--accent-fill);
+    transform-origin: 0 50%; transform: scaleX(0);
+    z-index: 60; pointer-events: none;
+  }
+
+  /* ---------- ecosystem: isometric pipeline board, scroll-scrubbed ---------- */
+  /* Resting CSS is the finished page: without JS (or reduced motion) this is
+     a static isometric diagram with all four captions listed beside it. */
+  .eco-stage { display: flex; flex-direction: column; }
+  .eco-stage .sec-head { padding-bottom: clamp(18px, 2.4vw, 30px); }
+  .eco-row {
+    display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr);
+    gap: clamp(20px, 3vw, 44px); align-items: center;
+    flex: 1; min-height: 0;
+  }
+  .eco-copy { display: flex; flex-direction: column; gap: 12px; }
+  .eco-step {
+    padding: 4px 0 16px;
+    border-bottom: 2px solid var(--rule);
+    cursor: pointer;
+    transition: border-color 0.4s var(--ease), opacity 0.4s var(--ease);
+  }
+  .eco-step:hover { border-bottom-color: var(--rule-hi); }
+  .eco-step h3 {
+    margin: 0 0 4px; font-size: var(--t-md); font-weight: 640;
+    letter-spacing: -0.018em;
+  }
+  .eco-step p { margin: 0; font-size: var(--t-sm); color: var(--ink-2); line-height: 1.5; }
+  .eco-svg { width: 100%; height: auto; display: block; }
+  .eco-groundg path { stroke: rgba(243, 242, 237, 0.05); stroke-width: 1; fill: none; }
+  /* 3D pipeline: a sunken channel in the ground plane */
+  .eco-pipe-bed { fill: #131312; }
+  .eco-pipe-edge { fill: none; stroke: rgba(243, 242, 237, 0.11); stroke-width: 1; }
+  .eco-pipe-core { fill: none; stroke: rgba(0, 0, 0, 0.55); stroke-width: 3; }
+  .eco-stream {
+    fill: none; stroke: var(--accent-fill); stroke-width: 3.5;
+    stroke-linecap: round; opacity: 0;
+  }
+  /* iso slabs */
+  .pad-t { fill: #191917; stroke: rgba(243, 242, 237, 0.1); stroke-width: 1; }
+  .pad-l { fill: #0c0c0b; } .pad-r { fill: #121211; }
+  .hubb-t { fill: #191917; stroke: rgba(243, 242, 237, 0.12); stroke-width: 1; }
+  .hubb-l { fill: #0b0b0a; } .hubb-r { fill: #111110; }
+  .hubg-t { fill: rgba(229, 255, 68, 0.07); stroke: rgba(229, 255, 68, 0.32); stroke-width: 1; }
+  .hubg-l { fill: rgba(229, 255, 68, 0.03); } .hubg-r { fill: rgba(229, 255, 68, 0.05); }
+  .eco-hubglow { fill: rgba(229, 255, 68, 0.22); }
+  .eco-hubmark { fill: var(--accent-fill); }
+  /* icons printed flat on the pads */
+  .eco-flat use { color: var(--ink-2); }
+  .eco-node { cursor: pointer; outline: none; }
+  .eco-node:hover .pad-t, .eco-node:focus-visible .pad-t { stroke: rgba(243, 242, 237, 0.24); }
+  .eco-node.live .pad-t { fill: var(--accent-wash); stroke: rgba(229, 255, 68, 0.45); }
+  .eco-node.live .eco-flat use { color: var(--ink); }
+  .eco-livelbl {
+    font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.08em; fill: var(--ink-2);
+  }
+  /* Motion opts in under html.anim only. */
+  html.anim .eco-scroll { height: 400vh; }
+  html.anim .eco-stage {
+    position: sticky; top: 0; height: 100vh;
+    box-sizing: border-box; padding: 4vh 0 3vh;
+  }
+  html.anim .eco-step { opacity: 0.35; }
+  html.anim .eco-step.on {
+    opacity: 1;
+    border-bottom-color: var(--accent-fill);
+  }
+  @media (max-width: 860px) {
+    .eco-row { grid-template-columns: minmax(0, 1fr); }
+    html.anim .eco-scroll { height: auto; }
+    html.anim .eco-stage { position: static; height: auto; padding: 0; }
+    html.anim .eco-step { opacity: 1; }
+  }
+
+  /* ---------- §claude : the sessions list ---------- */
+  .sess { padding: clamp(14px, 1.6vw, 20px); display: flex; flex-direction: column; }
+  .sess-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 4px 6px 14px;
+  }
+  .sess-title { font-weight: 660; font-size: var(--t-md); letter-spacing: -0.015em; }
+  .sess-new {
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 8px 13px; border-radius: 99px;
+    background: var(--accent-fill); color: var(--accent-on);
+    border: 1px solid var(--accent-edge);
+  }
+  .sess-row {
+    display: grid; grid-template-columns: 10px minmax(0, 1fr) auto;
+    gap: 12px; align-items: center;
+    padding: 13px 6px;
+    border-top: 1px solid var(--rule-2);
+    font-size: var(--t-sm);
+  }
+  .sess-name { font-weight: 560; }
+  .sess-meta { font-size: var(--t-xs); color: var(--ink-3); }
+  .st { width: 9px; height: 9px; border-radius: 50%; }
+  .sched { display: flex; }
+  .sched img { width: 100%; height: 100%; object-fit: contain; }
+  .st.run { background: var(--accent-fill); border: 1px solid var(--accent-edge); }
+  .st.sch { background: transparent; border: 1.5px dashed var(--ink-3); }
+  .st.done { background: var(--ink-4); }
 
   /* ---------- troubleshooting ---------- */
-  .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--border); }
+  .trouble-sec { padding: clamp(36px, 6vh, 64px) 0; border-top: 1px solid var(--rule); }
   .trouble-sec h2 { margin: 0 0 6px; }
-  .trouble-sec > p { color: var(--muted); margin: 0 0 26px; max-width: 62ch; }
+  .trouble-sec > p { color: var(--ink-2); margin: 0 0 26px; max-width: 62ch; }
   .guide .steps code, .tfix code {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
+    background: var(--shot-bg);
+    border: 1px solid var(--rule);
     border-radius: 5px;
     padding: 2px 6px;
     font-size: 13px;
   }
   .guide pre {
     position: relative;
-    background: var(--code-bg);
-    border: 1px solid var(--border);
+    background: var(--shot-bg);
+    border: 1px solid var(--rule);
     border-radius: 8px;
     padding: 10px 46px 10px 12px;
     overflow-x: auto;
     font-size: 12.5px;
     line-height: 1.5;
-    color: var(--text);
+    color: var(--ink);
     margin: 14px 0 0;
   }
   @media (max-width: 640px) {
@@ -466,14 +892,18 @@
     gap: 22px;
     align-items: start;
   }
+  @media (max-width: 760px) {
+    .trouble-split { grid-template-columns: minmax(0, 1fr); }
+  }
   .trouble-list { display: grid; gap: 8px; align-content: start; }
+  .tfix ol { list-style: decimal; padding-left: 22px; display: grid; gap: 8px; }
   .terr {
     appearance: none;
     text-align: left;
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
-    color: var(--muted);
-    background: var(--panel);
-    border: 1px solid var(--border);
+    color: var(--ink-2);
+    background: var(--tile);
+    border: 1px solid var(--rule);
     border-radius: 10px;
     padding: 13px 15px;
     cursor: pointer;
@@ -481,22 +911,22 @@
   }
   /* Plain-words title first; the exact on-screen error underneath, small,
      so a user can match it without having to parse it. */
-  .terr b { display: block; color: var(--text); font-weight: 600; }
+  .terr b { display: block; color: var(--ink); font-weight: 600; }
   .terr .raw {
     display: block;
     margin-top: 4px;
     font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
   }
-  .terr:hover { color: var(--text); }
+  .terr:hover { color: var(--ink); }
   .terr.active {
-    color: var(--text);
+    color: var(--ink);
     border-color: rgba(229, 255, 68, 0.45);
-    background: var(--accent-dim);
+    background: var(--accent-wash);
   }
   .trouble-detail {
-    border: 1px solid var(--border);
+    border: 1px solid var(--rule);
     border-radius: 12px;
-    background: var(--panel);
+    background: var(--tile);
     padding: 22px 24px;
   }
   .tfix { display: none; }
@@ -505,21 +935,21 @@
     font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--accent);
+    color: var(--accent-fill);
     margin: 22px 0 8px;
   }
   .tfix h3:first-child { margin-top: 0; }
-  .tfix p { margin: 0; color: var(--muted); font-size: 14.5px; }
+  .tfix p { margin: 0; color: var(--ink-2); font-size: 14.5px; }
   .tfix p + p { margin-top: 8px; }
-  .tfix ol { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14.5px; }
+  .tfix ol { margin: 0; padding-left: 20px; color: var(--ink-2); font-size: 14.5px; }
   .tfix ol li { margin: 6px 0; }
-  .tfix ol li::marker { color: var(--accent); font-weight: 600; }
+  .tfix ol li::marker { color: var(--accent-fill); font-weight: 600; }
 
   /* Mini terminal window: shows what typing the fix actually looks like.
      Drawn in HTML so it stays crisp and on-palette — not a screenshot. */
   .term {
-    background: var(--code-bg);
-    border: 1px solid var(--border);
+    background: var(--shot-bg);
+    border: 1px solid var(--rule);
     border-radius: 10px;
     overflow: hidden;
     margin: 18px 0 0;
@@ -528,31 +958,31 @@
   .term-bar {
     display: flex; align-items: center; gap: 6px;
     padding: 9px 12px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--rule);
   }
   .term-bar i { width: 9px; height: 9px; border-radius: 50%; background: #3a3a3e; }
   .term-bar em {
     font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
     font-style: normal;
-    color: var(--muted);
+    color: var(--ink-2);
     margin-left: 6px;
   }
   .term-body {
     padding: 12px 16px 14px;
     font: 12.5px/2 ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--muted);
+    color: var(--ink-2);
     overflow-x: auto;
   }
   .term-body div { white-space: pre; }
   /* Two prompts, deliberately distinct: `$` = the shell (Terminal itself),
      `>` = typed INSIDE the running claude session. Drawing /login after a `$`
      would teach the exact mistake D300's rewritten errors exist to prevent. */
-  .term-body .in { color: var(--text); }
-  .term-body .in::before { content: "$ "; color: var(--accent); font-weight: 600; }
-  .term-body .in2 { color: var(--text); }
-  .term-body .in2::before { content: "> "; color: var(--muted); font-weight: 600; }
-  .term-body .ok::before { content: "✓ "; color: var(--accent); }
-  .term-body .bot::before { content: "✦ "; color: var(--accent); }
+  .term-body .in { color: var(--ink); }
+  .term-body .in::before { content: "$ "; color: var(--accent-fill); font-weight: 600; }
+  .term-body .in2 { color: var(--ink); }
+  .term-body .in2::before { content: "> "; color: var(--ink-2); font-weight: 600; }
+  .term-body .ok::before { content: "✓ "; color: var(--accent-fill); }
+  .term-body .bot::before { content: "✦ "; color: var(--accent-fill); }
 
   /* Mock of the error message as the app shows it, so the panel opens with
      the thing the user is looking at. */
@@ -567,251 +997,613 @@
     max-width: 640px;
   }
 
-  /* DMG → Applications: a screen recording of the real drag, not a diagram.
-     Held under the 640px the other guide shots use — the window is small and
-     upscaling a GIF past its own pixels only makes the dither visible. */
-  .dmg-art { max-width: 470px; }
-  .dmg-art img { width: 100%; height: auto; display: block; }
-  @media (max-width: 760px) {
-    .trouble-split { grid-template-columns: 1fr; }
-  }
 
+  /* ---------- apps carousel: one row, auto-scrolling loop ---------- */
+  .carousel {
+    display: flex; gap: 14px;
+    overflow-x: auto;
+    padding-bottom: 14px;
+    scrollbar-width: none;
+  }
+  .carousel::-webkit-scrollbar { display: none; }
+  .carousel .tile {
+    flex: 0 0 clamp(300px, 34vw, 430px);
+  }
+  #apps .sec-head { position: relative; }
+  .car-nav {
+    position: absolute; right: 0; bottom: var(--s5);
+    display: flex; gap: 8px;
+  }
+  .car-btn {
+    width: 34px; height: 34px;
+    display: grid; place-items: center;
+    background: var(--tile);
+    border: 1px solid var(--rule-hi);
+    color: var(--ink-2);
+    padding: 0; cursor: pointer;
+  }
+  .car-btn:hover { border-color: var(--accent-edge); color: var(--ink); }
+  .car-btn svg { width: 14px; height: 14px; }
+  @media (max-width: 700px) { .car-nav { display: none; } }
+
+  /* ---------- footer ---------- */
   footer {
-    text-align: center;
-    color: var(--muted);
-    font-size: 13px;
-    padding: 36px 0 32px;
-    margin-top: 32px;
-    border-top: 1px solid var(--border);
+    position: relative; overflow: hidden;
+    margin-top: var(--s4);
+    border-top: 1px solid var(--rule);
+    padding: var(--s5) 0 clamp(120px, 14vw, 200px);
   }
-  footer a { text-decoration: none; }
-  footer a:hover { color: var(--accent); }
+  footer .inner {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; gap: 14px var(--s5);
+  }
+  footer .mark-bg {
+    position: absolute;
+    right: 2px;
+    bottom: -0.2em;
+    display: flex; align-items: baseline; gap: 0.14em;
+    font-size: clamp(76px, 14vw, 196px);
+    font-weight: 700;
+    letter-spacing: -0.05em;
+    line-height: 0.8;
+    color: var(--ink);
+    opacity: 0.05;
+    pointer-events: none;
+    user-select: none;
+  }
+  footer .mark-bg .spark { color: var(--accent-fill); opacity: 0.65; }
+  footer .foot-left { display: flex; flex-direction: column; gap: 8px; }
+  footer .legal {
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    letter-spacing: 0.06em; color: var(--ink-4);
+  }
+  footer .foot-nav { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+  footer .foot-link {
+    display: inline-flex; align-items: center; height: 34px; padding: 0 14px;
+    border: 1px solid var(--rule); border-radius: 99px;
+    font: 500 var(--t-xs)/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: 0.11em;
+    color: var(--ink-2); text-decoration: none;
+    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
+  }
+  footer .foot-sep { width: 1px; height: 18px; background: var(--rule); margin: 0 6px; }
+  footer .foot-ic {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: grid; place-items: center;
+    border: 1px solid var(--rule); color: var(--ink-2);
+    transition: border-color 0.2s var(--ease), color 0.2s var(--ease);
+  }
+  footer .foot-ic svg { width: 14px; height: 14px; }
+  footer .foot-link:hover, footer .foot-ic:hover { border-color: var(--rule-hi); color: var(--ink); }
+  @media (max-width: 620px) {
+    footer .inner { flex-direction: column; align-items: flex-start; }
+  }
 
-  @media (max-width: 820px) {
-    .hero { grid-template-columns: 1fr; }
-  }
-  /* Transform/pause effects only where a pointer can actually leave again —
-     on touch they stick to the last-tapped element. */
+  /* ---------- hovers ---------- */
   @media (hover: hover) {
-    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px var(--accent-dim); }
-    .grid figure:hover { transform: translateY(-4px); border-color: rgba(229, 255, 68, 0.4); }
-    /* :not(.active) because this block sits after the .active rule and matches
-       at the same specificity — a bare :hover would grey out the current dot. */
-    .nav-dot:not(.active):hover::after { background: var(--muted); }
-    .ticker:hover .ticker-inner { animation-play-state: paused; }
+    .top nav a:hover { color: var(--ink); }
+    .btn:hover { transform: translateY(-2px); }
+    .link-plain:hover { border-color: var(--ink-3); }
+    .tile.hoverable:hover { border-color: var(--rule-hi); }
+    .shot:hover img { filter: contrast(1.03) saturate(1.03); }
+    .os:hover { border-color: var(--rule-hi); transform: translateY(-2px); }
+    .os.primary:hover { border-color: var(--accent-edge); }
   }
-  a:focus-visible, .btn:focus-visible, .tab:focus-visible, .nav-dot:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 3px;
+
+  /* ============================================================
+     Motion — ONE authored moment: the bento tiles settle in.
+     The resting CSS above IS the finished page; the start state
+     exists only inside the keyframes' `backwards` fill, and the
+     class is never added when the tab is hidden or motion is
+     reduced. JS off = complete page.
+     ============================================================ */
+  @keyframes settle {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: none; }
   }
+  /* Scroll fade-ins: the class pair is only ever attached by JS, and only
+     when html.anim says motion is allowed — resting CSS stays the finished page. */
+  html.anim .fadein {
+    opacity: 0; transform: translateY(16px);
+    transition: opacity 0.65s var(--ease), transform 0.65s var(--ease);
+  }
+  html.anim .fadein.in { opacity: 1; transform: none; }
+
+  .bento.animate > * { animation: settle 0.5s var(--ease) backwards; }
+  .bento.animate > *:nth-child(2) { animation-delay: 70ms; }
+  .bento.animate > *:nth-child(3) { animation-delay: 140ms; }
+  .bento.animate > *:nth-child(4) { animation-delay: 210ms; }
+
   @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }
-    .shots a, .url span, .nav-dot::after { transition: none; }
-    /* Static wrapped list, so the marquee edge fade would just dim the first
-       and last chip of every row. */
-    .ticker { -webkit-mask-image: none; mask-image: none; }
-    .ticker-inner { animation: none; flex-wrap: wrap; width: auto; }
-    .ticker-run { flex-wrap: wrap; }
-    .ticker-run + .ticker-run { display: none; }
-    .btn, .btn-ghost, .grid figure { transition: none; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .btn:hover, .os:hover { transform: none; }
+  }
+
+  /* ---------- narrow ---------- */
+  @media (max-width: 859px) {
+    .flow { flex-direction: column; align-items: flex-start; }
+    .flow .arw { transform: rotate(90deg); margin-left: 20px; }
+  }
+  @media (max-width: 420px) {
+    h1 { font-size: 2.3rem; }
+    .caps { grid-template-columns: minmax(0, 1fr); }
   }
 </style>
 </head>
 <body>
+
+<!-- Icons: authored SVG, one 1.6 stroke weight throughout. The ✦ is the brand
+     mark and the only glyph anywhere doing an icon's job. -->
+<svg class="sr" aria-hidden="true"><defs>
+  <g id="i-check"><path d="M4 10.5l4 4 8-9" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g id="i-down"><path d="M10 3.4v8.2M6.6 8.6l3.4 3.4 3.4-3.4" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4.2 13.8v1.4a1.6 1.6 0 0 0 1.6 1.6h8.4a1.6 1.6 0 0 0 1.6-1.6v-1.4" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+  <g id="i-search"><circle cx="9.1" cy="9.1" r="5.2" fill="none" stroke="currentColor"
+     stroke-width="1.6"/><path d="M12.9 12.9L16.1 16.1" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round"/></g>
+  <!-- Brain mark: Lucide "brain" (ISC), rescaled from its 24 grid to ours. -->
+  <g id="i-brain" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" transform="translate(10 10) scale(0.84) translate(-12 -11.5)">
+    <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"/>
+    <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z"/>
+    <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4"/>
+    <path d="M17.599 6.5a3 3 0 0 0 .399-1.375"/>
+    <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"/>
+    <path d="M3.477 10.896a4 4 0 0 1 .585-.396"/>
+    <path d="M19.938 10.5a4 4 0 0 1 .585.396"/>
+    <path d="M6 18a4 4 0 0 1-1.967-.516"/>
+    <path d="M19.967 17.484A4 4 0 0 1 18 18"/></g>
+  <g id="i-chip"><rect x="6.2" y="6.2" width="7.6" height="7.6" rx="1.4" fill="none"
+     stroke="currentColor" stroke-width="1.6"/>
+     <rect x="8.9" y="8.9" width="2.2" height="2.2" fill="currentColor"/>
+     <path d="M8.4 3.9v2.3M11.6 3.9v2.3M8.4 13.8v2.3M11.6 13.8v2.3M3.9 8.4h2.3M3.9 11.6h2.3M13.8 8.4h2.3M13.8 11.6h2.3"
+     fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></g>
+  <g id="i-shield"><path d="M10 2.6l6 2.2v4.6c0 3.6-2.4 6.2-6 7.9-3.6-1.7-6-4.3-6-7.9V4.8z" fill="none"
+     stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+    <path d="M7.2 9.9l2 2 3.6-4" fill="none" stroke="currentColor" stroke-width="1.6"
+     stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g id="i-lock"><rect x="4.8" y="8.9" width="10.4" height="7.2" rx="1.5" fill="none"
+     stroke="currentColor" stroke-width="1.6"/>
+     <path d="M7.4 8.9V7.1a2.6 2.6 0 015.2 0v1.8" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round"/>
+     <circle cx="10" cy="12.5" r="1" fill="currentColor"/></g>
+  <g id="i-qwen"><path transform="scale(0.8333)" d="M23.919 14.545 20.817 9.17l1.47-2.544a.56.56 0 0 0 0-.566l-1.633-2.83a.57.57 0 0 0-.49-.283h-6.207L12.487.402a.57.57 0 0 0-.49-.284H8.732a.56.56 0 0 0-.49.284L5.139 5.775h-2.94a.56.56 0 0 0-.49.284L.077 8.887a.56.56 0 0 0 0 .567L3.18 14.83l-1.47 2.545a.56.56 0 0 0 0 .566l1.634 2.83a.57.57 0 0 0 .49.283h6.205l1.47 2.545a.57.57 0 0 0 .49.284h3.266a.57.57 0 0 0 .49-.284l3.104-5.375h2.94a.57.57 0 0 0 .49-.283l1.634-2.828a.55.55 0 0 0-.004-.568M8.733.686l1.634 2.828-1.634 2.828H21.8L20.164 9.17H7.425L5.63 6.06Zm1.306 19.801-6.205-.002 1.634-2.83h3.265L2.201 6.344h3.267q3.182 5.517 6.367 11.032zm10.124-5.66L18.53 12l-6.532 11.315-1.634-2.83c2.129-3.673 4.25-7.351 6.373-11.028h3.592l3.102 5.374z" fill="currentColor"/></g>
+  <g id="i-gemma"><path transform="scale(0.8333)" d="M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81" fill="currentColor"/></g>
+  <g id="i-claude"><path transform="scale(0.8333)" d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" fill="currentColor"/></g>
+  <g id="i-build" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+     <rect x="2.8" y="2.8" width="6.2" height="6.2" rx="1.3"/>
+     <rect x="11" y="11" width="6.2" height="6.2" rx="1.3"/>
+     <path d="M14.1 3.2v5M11.6 5.7h5M3.4 14.1h5.4"/></g>
+  <g id="i-window"><rect x="2.6" y="3.6" width="14.8" height="12.8" rx="1.6" fill="none"
+     stroke="currentColor" stroke-width="1.5"/>
+     <path d="M2.6 7.2h14.8" fill="none" stroke="currentColor" stroke-width="1.5"/>
+     <circle cx="5.2" cy="5.4" r="0.75" fill="currentColor"/>
+     <circle cx="7.5" cy="5.4" r="0.75" fill="currentColor"/></g>
+  <g id="i-python-mark" transform="scale(0.8333)"><path fill="currentColor" d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></g>
+  <g id="i-github" transform="scale(0.8333)"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></g>
+  <g id="i-term"><path d="M3.5 5.5l5 4.5-5 4.5M10 14.5h6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g id="i-copy"><rect x="7" y="7" width="9.5" height="9.5" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 7V5.3A1.8 1.8 0 0011.2 3.5H5.3A1.8 1.8 0 003.5 5.3v5.9A1.8 1.8 0 005.3 13H7" fill="none" stroke="currentColor" stroke-width="1.6"/></g>
+  <g id="i-apple" transform="scale(0.8333)"><path fill="currentColor" d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701"/></g>
+  <g id="i-windows"><path fill="currentColor" d="M3 5.7l6.4-.9v4.7H3zM10.4 4.6L17 3.7v6.1h-6.6zM3 10.5h6.4v4.7L3 14.3zM10.4 10.5H17v6.2l-6.6-.9z"/></g>
+  <g id="i-linux" transform="scale(0.8333)"><path fill="currentColor" d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></g>
+  <g id="i-linkedin" transform="scale(0.8333)"><path fill="currentColor" d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></g>
+  <g id="i-x" transform="scale(0.8333)"><path fill="currentColor" d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></g>
+  <g id="i-discord" transform="scale(0.8333)"><path fill="currentColor" d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1568 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></g>
+  <g id="i-folder"><path d="M2.6 5.4a1.4 1.4 0 011.4-1.4h3.2l1.6 2h7.2a1.4 1.4 0 011.4 1.4v7.2a1.4 1.4 0 01-1.4 1.4H4a1.4 1.4 0 01-1.4-1.4z"
+     fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></g>
+</defs></svg>
+
+<div class="scrollbar" id="scrollbar" aria-hidden="true"></div>
+
 <div class="wrap">
 
-  <div class="top">
-    <div class="brand">
-      <span class="spark" aria-hidden="true">✦</span>
+  <header class="top">
+    <a class="brand" href="index.html">
+      <span class="spark" aria-hidden="true">&#10022;</span>
       Fused Render
-      <span class="version" id="version" hidden></span>
-    </div>
+    </a>
     <nav>
-      <a href="#gallery">Examples</a>
-      <a href="#how">How it works</a>
-      <a href="#guide">User guide</a>
-      <a href="about.html">Why we built it</a>
+      <a class="gh" rel="noopener" href="https://github.com/fusedio/fused-render"><svg class="mk mk-github" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-github"/></svg>GitHub</a>
+      <a class="navcta" href="#get">Get the app</a>
     </nav>
-  </div>
+  </header>
 
-  <section class="hero">
-    <div>
-      <h1>Your files,<br><span class="lit">rendered.</span></h1>
-      <ul class="sub-points">
-        <li><span>Browse any folder in your browser</span></li>
-        <li><span>Parquet, maps, 3D, PDFs — <strong>everything just opens</strong></span></li>
-        <li><span>No cloud, no account, no setup</span></li>
-      </ul>
-      <div class="cta-row">
-        <a class="btn" href="#downloads">Download</a>
-        <a class="btn-ghost" href="#gallery">See it in action</a>
+  <!-- ============ HERO ============ -->
+  <section class="hero herobg">
+    <div class="hero-media">
+      <video id="hero-vid" src="assets/showcase/hero.mp4" autoplay muted loop playsinline
+             aria-label="A tour of Fused Render: files opening, AI models running, apps being built."></video>
+      <button class="vid-toggle vid-mute paused" id="vid-mute" type="button" aria-label="Unmute video">
+        <svg class="ic-muted" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.6 6.2l3 3.6M13.6 6.2l-3 3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <svg class="ic-sound" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.4 6.2h2.2L8 3.4v9.2L4.6 9.8H2.4z" fill="currentColor"/>
+          <path d="M10.4 5.6a3.4 3.4 0 010 4.8M12.2 4a5.8 5.8 0 010 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </button>
+      <button class="vid-toggle" id="vid-toggle" type="button" aria-label="Pause video">
+        <svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5 3.2v9.6M11 3.2v9.6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+        <svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M5.4 3.4v9.2L12.6 8z" fill="currentColor"/></svg>
+      </button>
+    </div>
+    <div class="hero-left">
+      <h1>Your files,<br>your AI,<br>your apps.</h1>
+      <div class="acts">
+        <a class="btn" id="hero-cta" rel="noopener" href="https://github.com/fusedio/fused-render/releases"><svg viewBox="0 0 20 20" aria-hidden="true"><use id="hero-cta-icon" href="#i-apple"/></svg><span id="hero-cta-label">Download for macOS</span></a>
+      </div>
+      <p class="fine">No account needed.</p>
+    </div>
+  </section>
+
+  <!-- ============ §1 · THE EXPLORER ============ -->
+  <section id="under-the-hood" hidden>
+    <div class="sec-head rule-top">
+      <h2>HTML powered by local Python</h2>
+      <p class="deck">A web page you see, a Python file that does the work.</p>
+    </div>
+
+    <div class="howrow duo">
+      <div class="howside pg">
+        <svg class="dot" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-window"/></svg>
+        <h3>View</h3>
+      </div>
+      <div class="howconn" aria-hidden="true">
+        <div class="howarrow">
+          <div class="track fwd"><span class="pulse pf"></span><span class="pulse pb"></span></div>
+          <div class="chip mono">fused.runPython()</div>
+        </div>
+      </div>
+      <div class="howside py">
+        <svg class="dot" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-python-mark"/></svg>
+        <h3>Execution</h3>
       </div>
     </div>
-    <div class="hero-media">
-      <div class="window" aria-label="Fused Render example screenshots">
-        <div class="window-bar">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="url">
-            <span class="active">127.0.0.1:8765/data/buildings.parquet</span>
-            <span>127.0.0.1:8765/maps/storm_response.html</span>
-            <span>127.0.0.1:8765/rasters/satellite.tif</span>
-            <span>127.0.0.1:8765/notes/tasks.parquet</span>
+  </section>
+
+  <section id="how">
+    <div class="eco-scroll" id="eco-scroll">
+      <div class="eco-stage">
+        <div class="sec-head rule-top">
+          <h2>Local Ecosystem</h2>
+          <p class="deck">Connects with Python, Claude Code, local AI models and your
+          machine&rsquo;s own APIs.</p>
+        </div>
+        <div class="eco-row">
+        <div class="eco-copy">
+          <div class="eco-step" data-step="0">
+            <h3>Use frontier AI models</h3>
+            <p>Claude Code, on your existing subscription.</p>
+          </div>
+          <div class="eco-step" data-step="1">
+            <h3>Run AI models on device</h3>
+            <p>Text, image and video generation, all local.</p>
+          </div>
+          <div class="eco-step" data-step="2">
+            <h3>Run code locally</h3>
+            <p>Python execution by the Fused engine.</p>
+          </div>
+          <div class="eco-step" data-step="3">
+            <h3>Access native APIs</h3>
+            <p>Microphone, screen and camera.</p>
+          </div>
+        </div>
+
+        <svg class="eco-svg" viewBox="0 0 900 560" role="img" aria-label="Fused Render at the center of an isometric board, piping data to Claude Code, local AI models, Python and your Mac.">
+          <defs><filter id="f-soft" x="-120%" y="-120%" width="340%" height="340%"><feGaussianBlur stdDeviation="10"/></filter><radialGradient id="g-fade" cx="50%" cy="50%" r="52%"><stop offset="0%" stop-color="#fff"/><stop offset="72%" stop-color="#fff" stop-opacity="0.5"/><stop offset="100%" stop-color="#000"/></radialGradient><mask id="m-fade"><rect x="0" y="0" width="900" height="560" fill="url(#g-fade)"/></mask></defs>
+          <g class="eco-groundg" mask="url(#m-fade)"><path d="M -427.0 572.0 L 543.0 12.0"/><path d="M 543.0 572.0 L -427.0 12.0"/><path d="M -371.0 572.0 L 599.0 12.0"/><path d="M 599.0 572.0 L -371.0 12.0"/><path d="M -315.0 572.0 L 655.0 12.0"/><path d="M 655.0 572.0 L -315.0 12.0"/><path d="M -259.0 572.0 L 711.0 12.0"/><path d="M 711.0 572.0 L -259.0 12.0"/><path d="M -203.0 572.0 L 767.0 12.0"/><path d="M 767.0 572.0 L -203.0 12.0"/><path d="M -147.0 572.0 L 823.0 12.0"/><path d="M 823.0 572.0 L -147.0 12.0"/><path d="M -91.0 572.0 L 879.0 12.0"/><path d="M 879.0 572.0 L -91.0 12.0"/><path d="M -35.0 572.0 L 935.0 12.0"/><path d="M 935.0 572.0 L -35.0 12.0"/><path d="M 21.0 572.0 L 991.0 12.0"/><path d="M 991.0 572.0 L 21.0 12.0"/><path d="M 77.0 572.0 L 1047.0 12.0"/><path d="M 1047.0 572.0 L 77.0 12.0"/><path d="M 133.0 572.0 L 1103.0 12.0"/><path d="M 1103.0 572.0 L 133.0 12.0"/><path d="M 189.0 572.0 L 1159.0 12.0"/><path d="M 1159.0 572.0 L 189.0 12.0"/><path d="M 245.0 572.0 L 1215.0 12.0"/><path d="M 1215.0 572.0 L 245.0 12.0"/><path d="M 301.0 572.0 L 1271.0 12.0"/><path d="M 1271.0 572.0 L 301.0 12.0"/><path d="M 357.0 572.0 L 1327.0 12.0"/><path d="M 1327.0 572.0 L 357.0 12.0"/></g>
+          <g class="eco-pipe"><polygon class="eco-pipe-bed" points="458.0,273.8 458.0,115.5 442.0,115.5 442.0,273.8"/><path class="eco-pipe-edge" d="M 458.0 273.8 L 458.0 115.5"/><path class="eco-pipe-edge" d="M 442.0 273.8 L 442.0 115.5"/><path class="eco-pipe-core" id="p-claude" d="M 450.0 273.8 L 450.0 115.5"/><path class="eco-stream" id="st-claude" d="M 450.0 273.8 L 450.0 115.5"/></g>
+          <g class="eco-pipe"><polygon class="eco-pipe-bed" points="481.5,300.0 755.8,300.0 755.8,284.0 481.5,284.0"/><path class="eco-pipe-edge" d="M 481.5 300.0 L 755.8 300.0"/><path class="eco-pipe-edge" d="M 481.5 284.0 L 755.8 284.0"/><path class="eco-pipe-core" id="p-mac" d="M 481.5 292.0 L 755.8 292.0"/><path class="eco-stream" id="st-mac" d="M 481.5 292.0 L 755.8 292.0"/></g>
+          <g class="eco-pipe"><polygon class="eco-pipe-bed" points="458.0,310.2 458.0,468.5 442.0,468.5 442.0,310.2"/><path class="eco-pipe-edge" d="M 458.0 310.2 L 458.0 468.5"/><path class="eco-pipe-edge" d="M 442.0 310.2 L 442.0 468.5"/><path class="eco-pipe-core" id="p-python" d="M 450.0 310.2 L 450.0 468.5"/><path class="eco-stream" id="st-python" d="M 450.0 310.2 L 450.0 468.5"/></g>
+          <g class="eco-pipe"><polygon class="eco-pipe-bed" points="418.5,300.0 144.2,300.0 144.2,284.0 418.5,284.0"/><path class="eco-pipe-edge" d="M 418.5 300.0 L 144.2 300.0"/><path class="eco-pipe-edge" d="M 418.5 284.0 L 144.2 284.0"/><path class="eco-pipe-core" id="p-brain" d="M 418.5 292.0 L 144.2 292.0"/><path class="eco-stream" id="st-brain" d="M 418.5 292.0 L 144.2 292.0"/></g>
+          <g class="eco-hub">
+          <polygon class="hubb-l" points="338.0,292.0 450.0,348.0 450.0,368.0 338.0,312.0"/><polygon class="hubb-r" points="450.0,348.0 562.0,292.0 562.0,312.0 450.0,368.0"/><polygon class="hubb-t" points="450.0,236.0 562.0,292.0 450.0,348.0 338.0,292.0"/>
+          <polygon class="hubg-l" points="378.0,277.0 450.0,313.0 450.0,323.0 378.0,287.0"/><polygon class="hubg-r" points="450.0,313.0 522.0,277.0 522.0,287.0 450.0,323.0"/><polygon class="hubg-t" points="450.0,241.0 522.0,277.0 450.0,313.0 378.0,277.0"/>
+          <ellipse class="eco-hubglow" cx="450.0" cy="277.0" rx="58" ry="22" filter="url(#f-soft)"/>
+          <text class="eco-hubmark" transform="matrix(1 0 0 0.5 450.0 277.0)" x="0" y="22" text-anchor="middle" font-size="72">&#10022;</text>
+          </g>
+          <g class="eco-node" data-node="claude" tabindex="0"><polygon class="pad-l" points="372.0,110.0 450.0,149.0 450.0,162.0 372.0,123.0"/><polygon class="pad-r" points="450.0,149.0 528.0,110.0 528.0,123.0 450.0,162.0"/><polygon class="pad-t" points="450.0,71.0 528.0,110.0 450.0,149.0 372.0,110.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 450.0 109.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-claude"/></g></g></g>
+          <g class="eco-node" data-node="mac" tabindex="0"><polygon class="pad-l" points="687.2,292.0 765.2,331.0 765.2,344.0 687.2,305.0"/><polygon class="pad-r" points="765.2,331.0 843.2,292.0 843.2,305.0 765.2,344.0"/><polygon class="pad-t" points="765.2,253.0 843.2,292.0 765.2,331.0 687.2,292.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 765.2 291.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-apple"/></g></g></g>
+          <g class="eco-node" data-node="python" tabindex="0"><polygon class="pad-l" points="372.0,474.0 450.0,513.0 450.0,526.0 372.0,487.0"/><polygon class="pad-r" points="450.0,513.0 528.0,474.0 528.0,487.0 450.0,526.0"/><polygon class="pad-t" points="450.0,435.0 528.0,474.0 450.0,513.0 372.0,474.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 450.0 473.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-python-mark"/></g></g></g>
+          <g class="eco-node" data-node="brain" tabindex="0"><polygon class="pad-l" points="56.8,292.0 134.8,331.0 134.8,344.0 56.8,305.0"/><polygon class="pad-r" points="134.8,331.0 212.8,292.0 212.8,305.0 134.8,344.0"/><polygon class="pad-t" points="134.8,253.0 212.8,292.0 134.8,331.0 56.8,292.0"/><g class="eco-flat" transform="matrix(1 0 0 0.5 134.8 291.0)"><g transform="translate(-24 -24) scale(2.4)"><use href="#i-brain"/></g></g></g>
+          <text class="eco-livelbl" id="eco-live" x="450" y="548" text-anchor="middle"></text>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Hidden for now: the illustrated set below (#models-alt) is live instead. -->
+  <section id="models" hidden>
+    <div class="sec-head rule-top">
+      <h2>AI models run on your local machine.</h2>
+      <p class="deck">No account, no API key, no per-token bill.</p>
+    </div>
+
+    <div class="bento">
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-playground.png" width="1024" height="1024" loading="lazy" decoding="async"
+             alt="Illustration of the Playground: an AI model picked from a list, a typed prompt, and the generated lighthouse drawing.">
+        <div class="cap"><b>Playground</b><span>Type a prompt, see the output.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-models.png" width="1024" height="1024" loading="lazy" decoding="async"
+             alt="Illustration of the AI model library: a bookshelf of AI models for chat, images, speech and video, inside a dashed boundary labeled your machine.">
+        <div class="cap"><b>AI Models</b><span>Bring any AI model: text, images, transcription, video.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo-benchmark.png" width="1024" height="1024" loading="lazy" decoding="async"
+             alt="Illustration of the benchmark: a stopwatch over a laptop and a race chart of AI models timed per step.">
+        <div class="cap"><b>Benchmark</b><span>Time any AI model on your machine.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="models-alt">
+    <div class="sec-head rule-top">
+      <h2>AI models run on your local machine.</h2>
+      <p class="deck">No account, no API key, no per-token bill.</p>
+    </div>
+
+    <div class="bento">
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-playground.png" width="652" height="332" loading="lazy" decoding="async"
+             alt="Illustration of the Playground: a typed prompt goes into a spark and comes out as image, audio and text.">
+        <div class="cap"><b>Playground</b><span>Type a prompt, see the output.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-models.png" width="864" height="914" loading="lazy" decoding="async"
+             alt="Illustration of the AI model library: AI model boxes riding a conveyor from the cloud down into a laptop, the picked one lime.">
+        <div class="cap"><b>AI Models</b><span>Bring any AI model: text, images, transcription, video.</span></div>
+      </div>
+
+      <div class="w4 illo">
+        <img src="assets/showcase/illo2-benchmark.png" width="1024" height="1001" loading="lazy" decoding="async"
+             alt="Illustration of the benchmark: chip characters racing toward a checkered flag, the fastest one highlighted.">
+        <div class="cap"><b>Benchmark</b><span>Time any AI model on your machine.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="claude">
+    <div class="sec-head rule-top">
+      <h2>Claude Code, without the terminal.</h2>
+      <p class="deck">Every task on your machine, in one list. Start one, pick one up
+      where it stopped, or schedule one for later.</p>
+    </div>
+
+    <div class="bento">
+      <div class="tile w7 hoverable">
+        <div class="sess" role="img"
+             aria-label="A list of Claude tasks: one running, two on a schedule, three finished.">
+          <div class="sess-head">
+            <span class="sess-title">Tasks</span>
+            <span class="sess-new">&#43; New task</span>
+          </div>
+          <div class="sess-row">
+            <span class="st run" aria-hidden="true"></span>
+            <span class="sess-name">Summarise this quarter&rsquo;s invoices</span>
+            <span class="sess-meta mono">running</span>
+          </div>
+          <div class="sess-row">
+            <span class="st sch" aria-hidden="true"></span>
+            <span class="sess-name">Tidy the Downloads folder</span>
+            <span class="sess-meta mono">daily &middot; 9:00</span>
+          </div>
+          <div class="sess-row">
+            <span class="st sch" aria-hidden="true"></span>
+            <span class="sess-name">Back up the photo library</span>
+            <span class="sess-meta mono">Fri &middot; 17:00</span>
+          </div>
+          <div class="sess-row">
+            <span class="st done" aria-hidden="true"></span>
+            <span class="sess-name">Build a CSV cleaner</span>
+            <span class="sess-meta mono">done</span>
+          </div>
+          <div class="sess-row">
+            <span class="st done" aria-hidden="true"></span>
+            <span class="sess-name">Rename scanned receipts by date</span>
+            <span class="sess-meta mono">done</span>
+          </div>
+          <div class="sess-row">
+            <span class="st done" aria-hidden="true"></span>
+            <span class="sess-name">Chart last month&rsquo;s expenses</span>
+            <span class="sess-meta mono">done</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="w5 sched">
+        <img src="assets/showcase/schedule.png" width="675" height="496" loading="lazy" decoding="async"
+             alt="A calendar with 9:00 highlighted and an alarm clock; an arrow hands the prompt to a Claude window that runs on time.">
+      </div>
+    </div>
+  </section>
+
+  <section id="views">
+    <div class="sec-head rule-top">
+      <h2>One window for 100+ kinds of file.</h2>
+      <p class="deck">Stop hunting for the app that opens it.</p>
+      <ul class="deck-list">
+        <li>Query a table.</li>
+        <li>Map a dataset.</li>
+        <li>Ask Claude about the file beside it.</li>
+      </ul>
+    </div>
+
+    <div class="bento">
+      <div class="tile w12 hoverable">
+        <div class="field">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-search"/></svg>
+          <span class="q mono">invoice<span class="caret" aria-hidden="true"></span></span>
+        </div>
+        <div class="hits">
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Documents / Freelance / <b><em>invoice</em>-2026-04.pdf</b></span>
+          </div>
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Desktop / <b>old-<em>invoice</em>s.zip</b></span>
+          </div>
+          <div class="hit">
+            <svg class="fico" viewBox="0 0 20 20" aria-hidden="true"><use href="#i-folder"/></svg>
+            <span>Projects / billing / templates / <b><em>invoice</em>.html</b></span>
+          </div>
+        </div>
+        <div class="modes" role="img"
+             aria-label="The open file offers several views: table, structure, map, and a Claude chat, with the Claude view selected.">
+          <span class="fname">sales.parquet</span>
+          <span class="pills">
+            <span class="pill">Table</span>
+            <span class="pill">Structure</span>
+            <span class="pill">Map</span>
+            <span class="pill on">Ask Claude</span>
           </span>
         </div>
-        <div class="shots">
-          <a class="active" href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/hexagon_lab" target="_blank" rel="noopener">
-            <img src="assets/hexagon_lab.jpg" alt="Interactive 3D hexagon map rendered from a parquet file — open the Hexagon lab example on GitHub" fetchpriority="high">
-          </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/disaster_response_dashboard" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
-            <img src="assets/disaster_response_dashboard.jpg" alt="Disaster response dashboard fusing satellite imagery and building footprints — open the example on GitHub">
-          </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/geospatial/cog_overview_pyramid" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
-            <img src="assets/cog_overview_pyramid.jpg" alt="Satellite GeoTIFF resolution pyramid in 3D — open the example on GitHub">
-          </a>
-          <a href="https://github.com/fusedio/fused-render-examples/tree/main/local-tools/notion_db" target="_blank" rel="noopener" aria-hidden="true" tabindex="-1">
-            <img src="assets/notion_db.jpg" alt="Task tracker rendered from local parquet files — open the example on GitHub">
-          </a>
+      </div>
+    </div>
+
+    <!-- Marquee: doubled in markup so the loop is seamless with no JS. The
+         second copy is hidden from assistive tech. -->
+    <div class="fmt-band" role="group" aria-label="Some of the file types Fused Render previews">
+      <div class="fmt-track">
+        <ul>
+          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
+        </ul>
+        <ul aria-hidden="true">
+          <li>CSV</li><li>Parquet</li><li>PDF</li><li>XLSX</li><li>SQLite</li>
+          <li>ZIP</li><li>JSON</li><li>Markdown</li><li>GeoTIFF</li><li>NetCDF</li>
+          <li>Shapefile</li><li>GLB</li><li class="rest">and 100+ more</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="apps" hidden>
+    <div class="sec-head rule-top">
+      <h2>Use community apps, or build your own.</h2>
+      <p class="deck">A chatbot answers questions. A tool does the work.</p>
+      <div class="car-nav">
+        <button class="car-btn car-prev" type="button" aria-label="Previous apps">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 2 4 8l6 6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+        <button class="car-btn car-next" type="button" aria-label="Next apps">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2l6 6-6 6" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="carousel">
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-imagegen.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="An image generation app: a prompt on the left, the finished picture of a cliffside eco-city on the right.">
+        <div class="cap"><b>Image Generator</b><span>Describe a picture and watch it appear.</span></div>
+      </div>
+
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-voice.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="A voice recognition app: a live waveform recording on the left, the transcription and insights on the right.">
+        <div class="cap"><b>Voice Recognition</b><span>Speech to text, live on your machine.</span></div>
+      </div>
+
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-finance.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="A personal finance copilot: a spending dashboard with local AI answering where the money went.">
+        <div class="cap"><b>Personal Finance Copilot</b><span>Ask your own statements where the money went.</span></div>
+      </div>
+
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-photobook.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="A photo book creator: an open album spread being laid out from a strip of photos.">
+        <div class="cap"><b>Photo Book Creator</b><span>Lay out an album from your photos.</span></div>
+      </div>
+
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-journal.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="A journal vault: encrypted local timeline of thoughts and photos, with an ask-your-past-self answer.">
+        <div class="cap"><b>Journal Vault</b><span>A private journal you can ask questions.</span></div>
+      </div>
+
+      <div class="tile shot hoverable">
+        <img src="assets/showcase/app-modifier.jpg" width="760" height="470" loading="lazy" decoding="async"
+             alt="An image modifier: an original temple photo beside its cosmic-impressionism styled output.">
+        <div class="cap"><b>Image Modifier</b><span>Restyle any picture with a local AI model.</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DOWNLOAD ============ -->
+
+  <section id="get">
+    <div class="get-scroll" id="get-scroll">
+      <div class="get-stage">
+        <div class="macwrap" id="macwrap">
+          <div class="mac">
+            <div class="mac-bar" aria-hidden="true">
+              <span class="tl r"></span><span class="tl y"></span><span class="tl g"></span>
+              <span class="mac-title">Fused Render</span>
+            </div>
+            <img class="mac-shot" src="assets/showcase/app-home.jpg" width="3024" height="1572"
+                 loading="lazy" decoding="async" alt="The Fused Render home screen: apps, AI playground and Claude tasks.">
+          </div>
+        </div>
+        <div class="getbody" id="getbody">
+          <h2>Open source, and it stays on your machine.</h2>
+          <p class="deck">Free. No account, no key, no card.</p>
+          <div class="dl">
+            <a class="dl-btn" id="dl-primary" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><use id="dl-primary-icon" href="#i-apple"/></svg>
+              <span id="dl-primary-label">Download for macOS</span>
+            </a>
+            <p class="dl-note" id="dl-note" hidden></p>
+            <button class="dl-brew" id="dl-brew" type="button" hidden title="Copy the Homebrew install command">
+              <code>brew install --cask fusedio/tap/fused-render</code>
+              <svg viewBox="0 0 20 20" aria-hidden="true"><use class="brew-ic" href="#i-copy"/></svg>
+              <span class="sr" aria-live="polite"></span>
+            </button>
+            <details class="dl-others">
+              <summary>Other platforms</summary>
+              <div class="dl-list">
+                <a id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-apple"/></svg>macOS</span>
+                  <span class="sub">Apple silicon &middot; .dmg</span>
+                </a>
+                <a id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-windows"/></svg>Windows</span>
+                  <span class="sub">64-bit installer &middot; .exe</span>
+                </a>
+                <a id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux</span>
+                  <span class="sub">AppImage</span>
+                </a>
+                <button class="dl-brew-row" type="button" title="Copy the Homebrew install command">
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-term"/></svg>Homebrew</span>
+                  <span class="sub">macOS &middot; copy command</span>
+                </button>
+                <p class="dl-list-note">Native support on macOS; limited support on
+                Windows &amp; Linux.</p>
+              </div>
+            </details>
+            <span class="version" id="version" hidden></span>
+          </div>
         </div>
       </div>
-      <div class="hero-dots">
-        <button class="nav-dot active" type="button" aria-label="Show Hexagon lab screenshot"></button>
-        <button class="nav-dot" type="button" aria-label="Show disaster response dashboard screenshot"></button>
-        <button class="nav-dot" type="button" aria-label="Show satellite GeoTIFF pyramid screenshot"></button>
-        <button class="nav-dot" type="button" aria-label="Show task tracker screenshot"></button>
-      </div>
     </div>
   </section>
 
-  <section class="ticker-block">
-    <h2>Point it at a folder. Everything opens.</h2>
-    <p>40+ formats render instantly. No notebooks, no plugins, no converters.</p>
-    <div class="ticker">
-      <div class="ticker-inner" aria-hidden="true">
-        <div class="ticker-run"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
-        <div class="ticker-run" aria-hidden="true"><span class="ext hot">.parquet</span><span class="ext">.csv</span><span class="ext hot">.geotiff</span><span class="ext">.duckdb</span><span class="ext">.pdf</span><span class="ext hot">.glb</span><span class="ext">.xlsx</span><span class="ext">.zarr</span><span class="ext">.las</span><span class="ext hot">.pmtiles</span><span class="ext">.sqlite</span><span class="ext">.netcdf</span><span class="ext">.md</span><span class="ext">.usd</span><span class="ext hot">.h3</span><span class="ext">.tar</span><span class="ext">.plist</span><span class="ext">.svg</span><span class="ext">.png</span><span class="ext">.mp4</span><a class="ext build" tabindex="-1" href="about.html#templates">+ build your own</a></div>
-      </div>
-    </div>
-  </section>
-
-  <section class="truths">
-    <p><strong>Local by design.</strong> Runs on 127.0.0.1. Your data never
-    leaves your machine: no uploads, no accounts, no telemetry.</p>
-    <p><strong>Zero setup.</strong> The app bundles Python and the fused CLI.
-    Download, open, browse. Works offline.</p>
-    <p><strong>Make it yours.</strong> A <span class="mono">.py</span> +
-    <span class="mono">.html</span> pair is a live local app. Build dashboards
-    over your own files in minutes.</p>
-  </section>
-
-  <section class="how" id="how">
-    <h2>Three steps, no terminal</h2>
-    <ol class="steps">
-      <li><b>Download the app.</b> It ships with everything it needs.</li>
-      <li><b>Point it at a folder.</b> Your files appear in the browser.</li>
-      <li><b>Click anything.</b> Data, maps, models and docs just render.</li>
-    </ol>
-    <p class="dev">For developers: drop a <code>.py</code> next to an
-    <code>.html</code> and you have a live page that calls local Python.
-    Params sync to the URL, so every view is bookmarkable and shareable.</p>
-  </section>
-
-  <section class="downloads" id="downloads">
-    <h2>Get Fused Render</h2>
-    <p class="mobile-note">Fused Render is a desktop app — open this page on your
-    Mac, Windows PC or Linux machine to install it.</p>
-    <div class="tabs" role="tablist">
-      <button class="tab active" data-os="mac" role="tab">macOS</button>
-      <button class="tab" data-os="win" role="tab">Windows</button>
-      <button class="tab" data-os="linux" role="tab">Linux</button>
-    </div>
-    <div class="dl active" data-os="mac">
-      <!-- Usable before/without latest.json: falls back to the releases page,
-           upgraded to the direct DMG link once the manifest loads. -->
-      <a class="btn" id="dmg" href="https://github.com/fusedio/fused-render/releases">Download for macOS</a>
-      <p>Signed and notarized, macOS 11+. Bundles Python, the fused CLI and rclone.</p>
-      <!-- The button sits INSIDE the <pre> (absolutely positioned) so the text
-           node stays exactly the command — selecting the block by hand grabs
-           the command and nothing else. Icon-only; the aria-label carries the
-           name and the check icon carries the feedback. -->
-      <pre>brew install --cask fusedio/tap/fused-render<button class="copy-cmd" type="button" aria-label="Copy the brew command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre>
-    </div>
-    <div class="dl" data-os="win">
-      <!-- Usable before/without latest.json: falls back to the releases page,
-           upgraded to the direct installer link once the manifest loads. -->
-      <a class="btn" id="windows-exe" href="https://github.com/fusedio/fused-render/releases">Download for Windows</a>
-      <p>Installer (.exe), Windows 10+. Bundles Python and the fused CLI.</p>
-    </div>
-    <div class="dl" data-os="linux">
-      <!-- Usable before/without latest.json: falls back to the releases page,
-           upgraded to the direct AppImage link once the manifest loads. -->
-      <a class="btn" id="linux-appimage" href="https://github.com/fusedio/fused-render/releases">Download for Linux</a>
-      <p>AppImage (x86_64): make it executable and run. Bundles Python and the fused CLI.</p>
-    </div>
-  </section>
-
-  <section class="guide" id="guide">
-    <h2>User guide</h2>
-    <p>Everything you need to go from download to your first rendered file.
-    Browsing works out of the box; building apps with Claude needs
-    <a rel="noopener" href="https://code.claude.com/docs/en/overview">Claude Code</a>
-    installed and logged in.</p>
-
-    <div class="tabs" role="tablist">
-      <button class="tab active" data-guide="claude" role="tab"><span class="n" aria-hidden="true">1</span>Claude Code</button>
-      <button class="tab" data-guide="app" role="tab"><span class="n" aria-hidden="true">2</span>Install the app</button>
-    </div>
-
-    <div class="gdl active" data-guide="claude">
-    <ol class="steps">
-      <li><div><b>Install it.</b> Open the Terminal app (press
-      <code>⌘ Space</code>, type <b>Terminal</b>, press Return), paste the
-      command below and press Return.
-      <pre>curl -fsSL https://claude.ai/install.sh | bash<button class="copy-cmd" type="button" aria-label="Copy the Claude Code install command" title="Copy"><svg class="sheets" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.75" y="5.75" width="7.5" height="7.5" rx="1.5"/><path d="M10.25 3.75v-.5a1.5 1.5 0 0 0-1.5-1.5h-4.5a1.5 1.5 0 0 0-1.5 1.5v4.5a1.5 1.5 0 0 0 1.5 1.5h.5"/></svg><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3.2L13 5"/></svg></button></pre></div></li>
-      <li><div><b>Sign in.</b> Type <code>claude</code> and press Return, then
-      type <code>/login</code> — your browser opens so you can sign in with
-      your Claude account (the one you use at claude.ai).</div></li>
-      <li><div><b>Say hi.</b> Type <code>hi</code> and press Return. If Claude
-      replies, you're all set. The whole thing looks like this:
-      <div class="term" aria-hidden="true">
-        <div class="term-bar"><i></i><i></i><i></i><em>Terminal</em></div>
-        <div class="term-body">
-          <div class="in">claude</div>
-          <div class="in2">/login</div>
-          <div class="ok">Signed in — your browser did the hard part</div>
-          <div class="in2">hi</div>
-          <div class="bot">Hi! Ready when you are.</div>
-        </div>
-      </div></div></li>
-    </ol>
-    </div>
-
-    <div class="gdl" data-guide="app">
-    <ol class="steps">
-      <li><div><b>Download the DMG</b> — the <a href="#downloads">Download for
-      macOS</a> button above grabs it directly. On the GitHub releases page
-      instead? Scroll to <b>Assets</b> on the latest release and click
-      <code>FusedRender-&lt;version&gt;.dmg</code>.
-      <figure class="guide-shot">
-        <img src="assets/guide_dmg_asset.jpg" loading="lazy"
-             alt="The GitHub release's Assets list with the FusedRender .dmg file highlighted — that is the one to click">
-        <figcaption>On the releases page: the highlighted <span class="mono">.dmg</span>
-        under <b>Assets</b> is the macOS download (your version number will be newer).</figcaption>
-      </figure></div></li>
-      <li><div><b>Drag it in.</b> Double-click the downloaded file — a window
-      opens. Drag the Fused Render icon onto the Applications folder, like
-      this:
-      <figure class="guide-shot dmg-art">
-        <img src="assets/guide_install_drag.gif" width="470" height="384" loading="lazy"
-             alt="The FusedRender disk image window: the Fused Render icon is dragged up onto the Applications folder, which highlights as it accepts the drop">
-      </figure></div></li>
-      <li><div><b>Open it.</b> Find Fused Render in your Applications folder
-      (or press <code>⌘ Space</code> and type its name). It opens like any
-      other Mac app — no warnings, it's signed and notarized.</div></li>
-    </ol>
-    </div>
-  </section>
-
-  <section class="trouble-sec" id="troubleshooting">
+  <!-- Hidden for now; the app's error screens deep-link here, so a
+       #troubleshooting-* hash (or #troubleshooting) unhides it. -->
+  <section class="trouble-sec" id="troubleshooting" hidden>
     <h2>Troubleshooting</h2>
     <p>Something not working? Pick what's happening on the left — the fix is
     on the right.</p>
@@ -870,8 +1662,8 @@
           installed, or it's somewhere the app can't see.</p>
           <h3>How to fix it</h3>
           <ol>
-            <li>Install Claude Code — the <a href="#guide">guide above</a>
-            walks you through it (step 1).</li>
+            <li>Install Claude Code from
+            <a rel="noopener" href="https://claude.com/claude-code">claude.com/claude-code</a>.</li>
             <li>Check it worked: open Terminal (<code>⌘ Space</code>, type
             <b>Terminal</b>), type <code>claude</code>, press Return. It
             should start.</li>
@@ -922,211 +1714,505 @@
     </div>
   </section>
 
-  <section class="gallery" id="gallery">
-    <div class="gallery-head">
-      <h2>Built with Fused Render</h2>
-      <a href="https://github.com/fusedio/fused-render-examples">All examples on GitHub →</a>
-    </div>
-    <div class="grid">
-      <figure>
-        <img src="assets/buildings_to_hexagons.jpg" loading="lazy" alt="2.6 billion buildings rendered as hexagons">
-        <figcaption><b>2.6B buildings</b>: Earth's buildings as interactive hexagons</figcaption>
-      </figure>
-      <figure>
-        <img src="assets/forest_carbon_monitor.jpg" loading="lazy" alt="Deforestation monitor over protected areas">
-        <figcaption><b>Forest carbon</b>: deforestation tracking in protected parks</figcaption>
-      </figure>
-      <figure>
-        <img src="assets/locker_network_simulator.jpg" loading="lazy" alt="Parcel locker placement with live route optimization">
-        <figcaption><b>Locker network</b>: courier routes re-optimized live</figcaption>
-      </figure>
-      <figure>
-        <img src="assets/store_site_selection.jpg" loading="lazy" alt="Census-based store site selection map">
-        <figcaption><b>Site selection</b>: where to open the next store, by the numbers</figcaption>
-      </figure>
-      <figure>
-        <img src="assets/disk_usage.jpg" loading="lazy" alt="Treemap of local disk usage">
-        <figcaption><b>Disk usage</b>: a treemap of your own machine</figcaption>
-      </figure>
-      <figure>
-        <img src="assets/pytop.jpg" loading="lazy" alt="Live CPU and process monitor">
-        <figcaption><b>pytop</b>: live CPU, memory and processes in the browser</figcaption>
-      </figure>
-    </div>
-  </section>
-
   <footer>
-    <a href="about.html">Why we built it</a>
-    · <a href="#guide">User guide</a>
-    · <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a>
-    · <a rel="noopener" href="https://github.com/fusedio/fused-render-examples">Examples</a>
-    · <a rel="noopener" href="https://www.fused.io">fused.io</a>
+    <div class="mark-bg" aria-hidden="true"><span class="spark">&#10022;</span><span class="word">FUSED</span></div>
+    <div class="inner">
+      <div class="foot-left">
+        <a class="brand" href="index.html">
+          <span class="spark" aria-hidden="true">&#10022;</span>
+          Fused Render
+        </a>
+        <span class="legal">&copy; 2026 Fused Labs, Inc.</span>
+      </div>
+      <nav class="foot-nav" aria-label="Links">
+        <a class="foot-link" rel="noopener" href="https://github.com/fusedio/fused-render">GitHub</a>
+        <a class="foot-link" rel="noopener" href="https://www.fused.io">fused.io</a>
+        <span class="foot-sep" aria-hidden="true"></span>
+        <a class="foot-ic" rel="noopener" href="https://www.linkedin.com/company/fusedio/" aria-label="Fused on LinkedIn"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linkedin"/></svg></a>
+        <a class="foot-ic" rel="noopener" href="https://x.com/fused_io" aria-label="Fused on X"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-x"/></svg></a>
+        <a class="foot-ic" rel="noopener" href="https://discord.com/invite/Eryz9P2DeY" aria-label="Fused on Discord"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-discord"/></svg></a>
+      </nav>
+    </div>
   </footer>
 </div>
 
 <script>
-  // Inside Fused Render (local app or a deployed share), relative image and
-  // cross-page link paths don't resolve against the page; route images through
-  // the injected fused.rawUrl and point about.html links at the right route.
-  // When about.html is the deployed entry instead, this page is served via
-  // <mount>/_asset?name=index.html with NO injected runtime — rewrite images
-  // to sibling _asset URLs and about.html links back to the mount root.
-  // No-op on plain static hosting.
-  const assetMode = location.pathname.match(/^(.*)\/_asset$/);
-  if (assetMode && new URLSearchParams(location.search).get("name") === "index.html") {
-    document.querySelectorAll("img[src]").forEach((img) => {
-      const src = img.getAttribute("src");
-      if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = assetMode[0] + "?name=" + encodeURIComponent(src);
-    });
-    document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
-      a.href = (assetMode[1] || "/") + a.getAttribute("href").slice("about.html".length);
-    });
-  } else if (window.fused && window.fused.rawUrl) {
-    document.querySelectorAll("img[src]").forEach((img) => {
-      const src = img.getAttribute("src");
-      if (src && !/^(?:[a-z]+:)?\//i.test(src)) img.src = window.fused.rawUrl(src);
-    });
-    const ownPath = new URLSearchParams(location.search).get("path");
-    document.querySelectorAll('a[href^="about.html"]').forEach((a) => {
-      const hash = a.getAttribute("href").slice("about.html".length);
-      if (window.fused.env === "local" && ownPath) {
-        const dir = ownPath.replace(/\/[^/]*$/, "").replace(/^\//, "")
-          .split("/").map(encodeURIComponent).join("/");
-        a.href = "/view/" + dir + "/about.html" + hash;
-        a.target = "_top";
-      } else {
-        a.href = window.fused.rawUrl("about.html") + hash;
+  // Resting CSS is the finished page; .anim only opts decorative motion in,
+  // and only for visitors who have not asked for reduced motion.
+  (function () {
+    var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var apply = function () {
+      document.documentElement.classList.toggle("anim", !mq.matches);
+    };
+    apply();
+    mq.addEventListener ? mq.addEventListener("change", apply) : mq.addListener(apply);
+  })();
+
+  // ---- OS detection: one answer, shared by the hero CTA and the cards ----
+  // Default to macOS when unsure; a mobile visitor keeps that default.
+  var visitorOS = (function () {
+    var p = navigator.platform || "", ua = navigator.userAgent || "";
+    if (/Android/.test(ua)) return "mac";
+    if (/Win/.test(p) || /Windows/.test(ua)) return "win";
+    if (/Linux|X11/.test(p) || /Linux/.test(ua)) return "linux";
+    return "mac";
+  })();
+  var osCardId = { mac: "dmg", win: "windows-exe", linux: "linux-appimage" }[visitorOS];
+  var osLabel = { mac: "macOS", win: "Windows", linux: "Linux" }[visitorOS];
+
+  // Hero CTA and the big download button both speak the visitor's OS,
+  // hrefs mirroring the matching accordion row (releases page until the
+  // manifest lands, the direct artifact after).
+  var heroCta = document.getElementById("hero-cta");
+  var dlBtn = document.getElementById("dl-primary");
+  var osIcon = { mac: "#i-apple", win: "#i-windows", linux: "#i-linux" }[visitorOS];
+  function syncCta() {
+    var href = document.getElementById(osCardId).href;
+    document.getElementById("hero-cta-label").textContent = "Download for " + osLabel;
+    document.getElementById("hero-cta-icon").setAttribute("href", osIcon);
+    heroCta.href = href;
+    dlBtn.href = href;
+    document.getElementById("dl-primary-label").textContent = "Download for " + osLabel;
+    document.getElementById("dl-primary-icon").setAttribute("href", osIcon);
+    // macOS is the native build; say so where it matters, on the other two.
+    var note = document.getElementById("dl-note");
+    if (note) {
+      if (visitorOS === "mac") { note.hidden = true; }
+      else {
+        note.textContent = "Limited support on " + osLabel + " \u00b7 native on macOS";
+        note.hidden = false;
       }
+    }
+  }
+  syncCta();
+
+  // ---- Homebrew ----
+  // The chip only shows itself to macOS visitors; the dropdown row is for
+  // everyone. Both copy the same command.
+  var BREW_CMD = "brew install --cask fusedio/tap/fused-render";
+  var brewChip = document.getElementById("dl-brew");
+  if (brewChip && visitorOS === "mac") brewChip.hidden = false;
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    return new Promise(function (ok, no) {
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      var done = false;
+      try { done = document.execCommand("copy"); } catch (e) {}
+      document.body.removeChild(ta);
+      done ? ok() : no(new Error("copy"));
     });
   }
-
-  // The shell iframes this page via /render?path=... with no hash; honor a
-  // #section deep link on the parent /view URL (same-origin) by scrolling here.
-  if (window.fused && window.fused.env === "local" && window.parent !== window) {
-    try {
-      const h = window.parent.location.hash;
-      const t = h && document.querySelector(h);
-      if (t) t.scrollIntoView();
-    } catch (e) { /* cross-origin parent: not the shell */ }
+  var brewTimer = 0;
+  function brewCopied() {
+    if (!brewChip) return;
+    brewChip.classList.add("copied");
+    brewChip.querySelector(".brew-ic").setAttribute("href", "#i-check");
+    brewChip.querySelector(".sr").textContent = "Copied";
+    clearTimeout(brewTimer);
+    brewTimer = setTimeout(function () {
+      brewChip.classList.remove("copied");
+      brewChip.querySelector(".brew-ic").setAttribute("href", "#i-copy");
+      brewChip.querySelector(".sr").textContent = "";
+    }, 1600);
   }
-
-  // Copy buttons on command blocks. The command is the <pre>'s text nodes only
-  // — the button is a child of the pre, so a plain textContent read would drag
-  // in whatever the button holds (today an <svg>, empty; tomorrow, who knows).
-  // navigator.clipboard needs a secure context — true on https and on the
-  // app's 127.0.0.1 — so no execCommand fallback. "Copied" confirms, then the
-  // label resets so the button reads as pressable again.
-  document.querySelectorAll(".copy-cmd").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const cmd = Array.from(btn.parentElement.childNodes)
-        .filter((n) => n.nodeType === Node.TEXT_NODE)
-        .map((n) => n.nodeValue).join("").trim();
-      navigator.clipboard.writeText(cmd).then(() => {
-        // The .copied class swaps the sheets icon for a check (CSS above).
-        btn.classList.add("copied");
-        setTimeout(() => btn.classList.remove("copied"), 1600);
-      }).catch(() => { /* clipboard permission denied: leave the button as-is */ });
+  document.querySelectorAll("#dl-brew, .dl-brew-row").forEach(function (el) {
+    var sub = el.querySelector(".sub"), subWas = sub ? sub.textContent : "", subTimer = 0;
+    el.addEventListener("click", function () {
+      copyText(BREW_CMD).then(function () {
+        if (sub) {
+          sub.textContent = "Copied \u2713";
+          clearTimeout(subTimer);
+          subTimer = setTimeout(function () { sub.textContent = subWas; }, 1600);
+        } else brewCopied();
+      }, function () { window.prompt("Copy the install command:", BREW_CMD); });
     });
   });
 
-  // Fill version + direct artifact links from the release manifest.
-  fetch("/latest.json", { cache: "no-cache" })
-    .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
-    .then((m) => {
-      if (m.version) {
-        const v = document.getElementById("version");
-        v.textContent = "v" + m.version;
-        v.hidden = false;
-      }
-      if (m.dmg_url) document.getElementById("dmg").href = m.dmg_url;
-      if (m.windows_url) document.getElementById("windows-exe").href = m.windows_url;
-      if (m.linux_url) document.getElementById("linux-appimage").href = m.linux_url;
-    })
-    .catch(() => { /* buttons + footer already point at the releases page */ });
-
-  // Hero rotator: auto-shuffle by default; a dot click jumps to that
-  // screenshot and stops the shuffle. Slides link to their example on GitHub.
-  (function () {
-    const slides = document.querySelectorAll(".shots a");
-    const urls = document.querySelectorAll(".url span");
-    const dots = document.querySelectorAll(".nav-dot");
-    let idx = 0;
-    let timer = null;
-    function show(i) {
-      idx = i;
-      slides.forEach((el, n) => {
-        const on = n === i;
-        el.classList.toggle("active", on);
-        el.setAttribute("aria-hidden", String(!on));
-        el.tabIndex = on ? 0 : -1;
+  // ---- release manifest ----
+  // The links already work before this resolves, and simply stay pointed at
+  // the releases page if it never does.
+  // Relative, not root-absolute: the page is also proxied at
+  // www.fused.io/render/, where /latest.json is not ours.
+  fetch("latest.json", { cache: "no-cache" })
+    .then(function (r) { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+    .then(function (m) {
+      var v = document.getElementById("version");
+      if (m.version && v) { v.textContent = "v" + m.version + " · free · open source"; v.hidden = false; }
+      var map = { dmg: m.dmg_url, "windows-exe": m.windows_url, "linux-appimage": m.linux_url };
+      Object.keys(map).forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && map[id]) el.href = map[id];
       });
-      urls.forEach((el, n) => el.classList.toggle("active", n === i));
-      dots.forEach((el, n) => el.classList.toggle("active", n === i));
+      syncCta();
+    })
+    .catch(function () {});
+
+  // ---- the one motion moment ----
+  // Resting CSS is the finished page; the class is only ever added when a
+  // visitor is actually watching and motion is allowed.
+  if (!document.hidden && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    Array.prototype.forEach.call(document.querySelectorAll(".bento"), function (b) {
+      b.classList.add("animate");
+    });
+  }
+
+  // Apps carousel: the card row is doubled so it can wrap seamlessly; every
+  // 2.5s it snaps one card forward, pausing on hover and for 6s after any
+  // user input. Arrows step the same way.
+  (function () {
+    var car = document.querySelector(".carousel");
+    if (!car || !car.children.length) return;
+    var count = car.children.length;
+    for (var i = 0; i < count; i++) {
+      var clone = car.children[i].cloneNode(true);
+      clone.setAttribute("aria-hidden", "true");
+      car.appendChild(clone);
     }
-    dots.forEach((d, i) => d.addEventListener("click", () => {
-      if (timer) { clearInterval(timer); timer = null; }
-      show(i);
-    }));
-    show(0);
-    if (!matchMedia("(prefers-reduced-motion: reduce)").matches) {
-      timer = setInterval(() => show((idx + 1) % slides.length), 5000);
+    function half() { return car.scrollWidth / 2; }
+    function cardStep() { return car.children[0].offsetWidth + 14; }
+    var mq = matchMedia("(prefers-reduced-motion: reduce)");
+    var hovered = false, holdUntil = 0;
+    car.addEventListener("pointerenter", function () { hovered = true; });
+    car.addEventListener("pointerleave", function () { hovered = false; });
+    ["pointerdown", "wheel", "touchstart"].forEach(function (ev) {
+      car.addEventListener(ev, function () { holdUntil = performance.now() + 6000; }, { passive: true });
+    });
+    function step(dir) {
+      var h = half(), s = cardStep();
+      var cur = car.scrollLeft;
+      // Normalize into the first copy before every step: the viewport shows
+      // identical content h pixels apart, so this jump is invisible and the
+      // smooth scroll that follows never runs into the real end of the row.
+      if (cur >= h) { cur -= h; car.scrollLeft = cur; }
+      else if (dir < 0 && cur < s) { cur += h; car.scrollLeft = cur; }
+      // Land exactly on a card boundary so every stop is a clean snap.
+      var target = (Math.round(cur / s) + dir) * s;
+      car.scrollTo({ left: target, behavior: mq.matches ? "auto" : "smooth" });
     }
+    function nudge(dir) {
+      holdUntil = performance.now() + 6000;
+      step(dir);
+    }
+    document.querySelector(".car-prev").addEventListener("click", function () { nudge(-1); });
+    document.querySelector(".car-next").addEventListener("click", function () { nudge(1); });
+    setInterval(function () {
+      if (!hovered && !document.hidden && !mq.matches && performance.now() > holdUntil) step(1);
+    }, 2500);
   })();
 
-  // Guide tabs: one panel at a time. Troubleshooting is its own always-visible
-  // section, so the app's #troubleshooting deep links are plain anchors.
+  // Hero video pause/play (WCAG 2.2.2: auto-motion needs a pause affordance).
   (function () {
-    function activate(g) {
-      document.querySelectorAll(".guide .tab, .gdl").forEach((el) => {
-        el.classList.toggle("active", el.dataset.guide === g);
-      });
+    var vid = document.getElementById("hero-vid");
+    var btn = document.getElementById("vid-toggle");
+    if (!vid || !btn) return;
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      vid.removeAttribute("autoplay"); vid.pause();
+      btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video");
     }
-    document.querySelectorAll(".guide .tab").forEach((t) => {
-      t.addEventListener("click", () => activate(t.dataset.guide));
+    btn.addEventListener("click", function () {
+      if (vid.paused) { vid.play(); btn.classList.remove("paused"); btn.setAttribute("aria-label", "Pause video"); }
+      else { vid.pause(); btn.classList.add("paused"); btn.setAttribute("aria-label", "Play video"); }
+    });
+    var mute = document.getElementById("vid-mute");
+    if (mute) mute.addEventListener("click", function () {
+      vid.muted = !vid.muted;
+      mute.classList.toggle("paused", vid.muted);
+      mute.setAttribute("aria-label", vid.muted ? "Unmute video" : "Mute video");
     });
   })();
 
-  // Troubleshooting master–detail: clicking an error on the left shows its
-  // explanation + fix on the right. The app's error messages deep-link with a
-  // per-error suffix (#troubleshooting-login/-notfound/-limit) — honor it, or
-  // a plan-limit user would land on a panel telling them to run /login. The
-  // suffix is not an element id, so the scroll is ours to do too.
+  // Page scroll progress bar.
+  (function () {
+    var bar = document.getElementById("scrollbar");
+    if (!bar) return;
+    function up() {
+      var max = document.documentElement.scrollHeight - innerHeight;
+      bar.style.transform = "scaleX(" + (max > 0 ? scrollY / max : 0) + ")";
+    }
+    addEventListener("scroll", up, { passive: true });
+    addEventListener("resize", up, { passive: true });
+    up();
+  })();
+
+  // Ecosystem board: scroll scrubs four chapters. A short lime stream runs
+  // through the pipeline to a pad, the pad's surface lights while it works,
+  // the stream runs home. Narration sits on one line under the board.
+  // Clicking a pad or a caption card scrubs to that chapter.
+  (function () {
+    var scroller = document.getElementById("eco-scroll");
+    if (!scroller || !document.documentElement.classList.contains("anim")) return;
+    if (matchMedia("(max-width: 860px)").matches) return;
+    var ORDER = ["claude", "brain", "python", "mac"];
+    var CH = {
+      claude: { out: "\u201cnew task \u2014 summarise my invoices\u201d", work: "claude is working\u2026", done: "task done \u2713" },
+      python: { out: "\u201crun the code\u201d", work: "python is running\u2026", done: "here\u2019s the result \u2713" },
+      brain:  { out: "\u201ctranscribe this recording\u201d", work: "local ai is transcribing\u2026", done: "transcript ready \u2713" },
+      mac:    { out: "\u201cuse the microphone\u201d", work: "recording\u2026", done: "recording saved \u2713" }
+    };
+    var STREAM = 52;
+    var stream = {}, lens = {};
+    ORDER.forEach(function (k) {
+      var el = document.getElementById("st-" + k);
+      stream[k] = el;
+      lens[k] = el.getTotalLength();
+      el.style.strokeDasharray = STREAM + " " + Math.ceil(lens[k] + STREAM * 2);
+    });
+    var live = document.getElementById("eco-live");
+    var nodes = {};
+    Array.prototype.slice.call(scroller.querySelectorAll(".eco-node")).forEach(function (n) {
+      nodes[n.dataset.node] = n;
+    });
+    var steps = Array.prototype.slice.call(scroller.querySelectorAll(".eco-step"));
+
+    var target = 0, cur = 0, shown = -1;
+    function measure() {
+      var r = scroller.getBoundingClientRect();
+      var span = r.height - innerHeight;
+      target = span > 0 ? Math.max(0, Math.min(1, -r.top / span)) : 0;
+    }
+    addEventListener("scroll", measure, { passive: true });
+    addEventListener("resize", measure, { passive: true });
+    measure();
+    var forced = /[?&]eco=([0-9.]+)/.exec(location.search);
+
+    function render(p) {
+      var ci = Math.min(3, Math.floor(p * 4));
+      var local = (p * 4) - ci;
+      var key = ORDER[ci];
+      var ch = CH[key];
+
+      if (shown !== ci) {
+        shown = ci;
+        steps.forEach(function (el, i) { el.classList.toggle("on", i === ci); });
+        ORDER.forEach(function (k) { if (k !== key) stream[k].style.opacity = 0; });
+      }
+      ORDER.forEach(function (k) {
+        nodes[k].classList.toggle("live", k === key && local >= 0.28 && local < 0.92);
+      });
+
+      // phases: 0-.3 stream out, .3-.6 working, .6-.9 stream home, .9-1 rest
+      var el = stream[key], len = lens[key];
+      function sweep(t) { el.style.strokeDashoffset = STREAM - t * (len + STREAM * 2); }
+      if (local < 0.3) {
+        el.style.opacity = 1; sweep(local / 0.3);
+        live.textContent = ch.out;
+      } else if (local < 0.6) {
+        el.style.opacity = 0;
+        live.textContent = ch.work;
+      } else if (local < 0.9) {
+        el.style.opacity = 1; sweep(1 - (local - 0.6) / 0.3);
+        live.textContent = ch.done;
+      } else {
+        el.style.opacity = 0;
+        live.textContent = ch.done;
+      }
+    }
+
+    function tick() {
+      if (forced) { render(parseFloat(forced[1])); return; }
+      if (play) {
+        var pt = (performance.now() - play.t0) / play.dur;
+        var eased = pt <= 0 ? 0 : (pt < 0.5 ? 2*pt*pt : 1 - Math.pow(-2*pt + 2, 2) / 2);
+        cur = (play.ci + 0.93 * Math.min(1, eased)) / 4;
+        render(cur);
+        if (pt >= 1) {
+          // park the page where the playhead ended, so scrolling resumes seamlessly
+          scrollTo({ top: play.end, behavior: "instant" });
+          play = null; measure(); cur = target;
+        }
+        requestAnimationFrame(tick);
+        return;
+      }
+      cur += (target - cur) * 0.14;
+      if (Math.abs(target - cur) < 0.0005) cur = target;
+      render(cur);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    var play = null;
+    ["wheel", "touchstart", "keydown"].forEach(function (ev) {
+      addEventListener(ev, function () { play = null; }, { passive: true });
+    });
+    function goTo(ci) {
+      var top = scroller.getBoundingClientRect().top + scrollY;
+      var span = scroller.offsetHeight - innerHeight;
+      // park instantly at the chapter opening — one animation only: the story
+      // (behavior:"instant" beats the page's global scroll-behavior:smooth)
+      scrollTo({ top: top + span * (ci / 4 + 0.005), behavior: "instant" });
+      measure();
+      play = { ci: ci, t0: performance.now() + 250, dur: 3400,
+               end: top + span * (ci / 4 + 0.93 / 4) };
+    }
+    Object.keys(nodes).forEach(function (k) {
+      var n = nodes[k];
+      n.addEventListener("click", function () { goTo(ORDER.indexOf(k)); });
+      n.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); goTo(ORDER.indexOf(k)); } });
+    });
+    steps.forEach(function (el, i) {
+      el.addEventListener("click", function () { goTo(i); });
+    });
+  })();
+
+  // Download closer: scrolling grows the Mac window past the measure, then
+  // crossfades it into the headline + download button.
+  (function () {
+    var scroller = document.getElementById("get-scroll");
+    if (!scroller || !document.documentElement.classList.contains("anim")) return;
+    if (matchMedia("(max-width: 860px)").matches) return;
+    var mac = document.getElementById("macwrap");
+    var body = document.getElementById("getbody");
+    var target = 0, cur = 0;
+    function measure() {
+      var r = scroller.getBoundingClientRect();
+      var span = r.height - innerHeight;
+      target = span > 0 ? Math.max(0, Math.min(1, -r.top / span)) : 0;
+    }
+    addEventListener("scroll", measure, { passive: true });
+    addEventListener("resize", measure, { passive: true });
+    measure();
+    var stage = scroller.querySelector(".get-stage");
+    function render(p) {
+      var grow = Math.min(1, p / 0.55);
+      var scale = 1 + 0.42 * (1 - Math.pow(1 - grow, 2));
+      var fade = Math.max(0, Math.min(1, (p - 0.42) / 0.22));
+      mac.style.transform = "scale(" + scale + ")";
+      // the window stays in view behind the gradient, only slightly dimmed
+      mac.style.opacity = 1 - 0.3 * fade;
+      stage.style.setProperty("--gfade", fade);
+      var reveal = Math.max(0, Math.min(1, (p - 0.5) / 0.26));
+      body.style.opacity = reveal;
+      body.style.transform = "translateY(" + (24 * (1 - reveal)) + "px)";
+      body.classList.toggle("on", reveal > 0.5);
+    }
+    (function tick() {
+      cur += (target - cur) * 0.16;
+      if (Math.abs(target - cur) < 0.0005) cur = target;
+      render(cur);
+      requestAnimationFrame(tick);
+  
+    // "Get the app" should land on the button, not the zoom's first frame:
+    // send #get arrivals to the revealed end of the closer.
+    function landAtButton(e) {
+      if (e) e.preventDefault();
+      var top = scroller.getBoundingClientRect().top + scrollY;
+      scrollTo({ top: top + (scroller.offsetHeight - innerHeight) * 0.995, behavior: "smooth" });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('a[href="#get"]'), function (a) {
+      a.addEventListener("click", landAtButton);
+    });
+    if (location.hash === "#get") setTimeout(function () { landAtButton(); }, 60);
+  })();
+
+    // "Get the app" should land on the button, not the zoom's first frame:
+    // send #get arrivals to the revealed end of the closer.
+    function landAtButton(e) {
+      if (e) e.preventDefault();
+      var top = scroller.getBoundingClientRect().top + scrollY;
+      scrollTo({ top: top + (scroller.offsetHeight - innerHeight) * 0.995, behavior: "smooth" });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll('a[href="#get"]'), function (a) {
+      a.addEventListener("click", landAtButton);
+    });
+    if (location.hash === "#get") setTimeout(function () { landAtButton(); }, 60);
+  })();
+
+  // Scroll-reactive marquee: the format band drifts on its own and leans
+  // into the scroll — flick the page and the strip surges with you, then
+  // settles back to its base speed. One rAF owns the transform so the two
+  // motions never fight; it only runs while the band is on screen.
+  (function () {
+    var band = document.querySelector(".fmt-band");
+    var track = band && band.querySelector(".fmt-track");
+    if (!track || !document.documentElement.classList.contains("anim")) return;
+    if (!("IntersectionObserver" in window)) return;
+
+    var owned = false;
+    function takeOver() {
+      if (owned) return;
+      owned = true;
+      track.style.animation = "none";
+    }
+
+    var half = 0, x = 0, base = 26, boost = 0, last = 0, raf = 0, hovered = false;
+    var lastScroll = window.scrollY;
+    function measureBand() { half = track.scrollWidth / 2; }
+    measureBand();
+    addEventListener("resize", measureBand, { passive: true });
+    addEventListener("load", measureBand);
+
+    addEventListener("scroll", function () {
+      var y = window.scrollY;
+      var d = y - lastScroll;
+      lastScroll = y;
+      boost = Math.max(-900, Math.min(900, boost + d * 9));
+    }, { passive: true });
+    band.addEventListener("pointerenter", function () { hovered = true; });
+    band.addEventListener("pointerleave", function () { hovered = false; });
+
+    function frame(t) {
+      raf = requestAnimationFrame(frame);
+      if (!last) { last = t; return; }
+      var dt = Math.min(0.05, (t - last) / 1000);
+      last = t;
+      boost *= Math.pow(0.0016, dt);
+      if (Math.abs(boost) < 0.5) boost = 0;
+      if (!half) { measureBand(); return; }
+      takeOver();
+      x -= (hovered ? 0 : base) * dt + boost * dt;
+      if (x <= -half) x += half;
+      if (x > 0) x -= half;
+      track.style.transform = "translate3d(" + x.toFixed(2) + "px,0,0)";
+    }
+    function start() { if (!raf) { last = 0; raf = requestAnimationFrame(frame); } }
+    function stop() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+    var io = new IntersectionObserver(function (e) {
+      e[0].isIntersecting && !document.hidden ? start() : stop();
+    }, { rootMargin: "120px 0px" });
+    io.observe(band);
+    document.addEventListener("visibilitychange", function () {
+      document.hidden ? stop() : (band.getBoundingClientRect().bottom > 0 && start());
+    });
+  })();
+
+  // Scroll fade-ins: sections drift up as they enter the viewport.
+  // Gated on html.anim; without JS or with reduced motion nothing is hidden.
+  (function () {
+    if (!document.documentElement.classList.contains("anim")) return;
+    if (!("IntersectionObserver" in window)) return;
+    var els = Array.prototype.slice.call(
+      document.querySelectorAll(".wrap > section:not([hidden]):not(#how)"));
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+    els.forEach(function (el) { el.classList.add("fadein"); io.observe(el); });
+  })();
+
+  // Troubleshooting master-detail: the app's error screens deep-link with
+  // #troubleshooting-login/-notfound/-limit — honor the suffix and scroll.
   (function () {
     function activate(err) {
-      document.querySelectorAll(".terr, .tfix").forEach((el) => {
+      document.querySelectorAll(".terr, .tfix").forEach(function (el) {
         el.classList.toggle("active", el.dataset.err === err);
       });
     }
-    document.querySelectorAll(".terr").forEach((b) => {
-      b.addEventListener("click", () => activate(b.dataset.err));
+    document.querySelectorAll(".terr").forEach(function (b) {
+      b.addEventListener("click", function () { activate(b.dataset.err); });
     });
     function honorHash() {
-      const m = location.hash.match(/^#troubleshooting-(\w+)$/);
-      if (!m || !document.querySelector('.terr[data-err="' + m[1] + '"]')) return;
-      activate(m[1]);
-      document.getElementById("troubleshooting").scrollIntoView();
+      var sec = document.getElementById("troubleshooting");
+      var m = location.hash.match(/^#troubleshooting(?:-(\w+))?$/);
+      if (!m) return;
+      sec.hidden = false;
+      if (m[1] && document.querySelector('.terr[data-err="' + m[1] + '"]')) activate(m[1]);
+      sec.scrollIntoView();
     }
     window.addEventListener("hashchange", honorHash);
     honorHash();
-  })();
-
-  // Download tabs: click to switch; auto-select the visitor's OS.
-  (function () {
-    // Scoped to the downloads section: the guide has its own .tab bar, and a
-    // blanket ".tab" toggle here would strip its active state on every click.
-    function activate(os) {
-      document.querySelectorAll(".downloads .tab, .dl").forEach((el) => {
-        el.classList.toggle("active", el.dataset.os === os);
-      });
-    }
-    document.querySelectorAll(".downloads .tab").forEach((t) => {
-      t.addEventListener("click", () => activate(t.dataset.os));
-    });
-    const ua = navigator.userAgent;
-    const mobile = /iPhone|iPad|iPod|Android/.test(ua) || (/Mac/.test(ua) && navigator.maxTouchPoints > 1);
-    const os = mobile ? null : /Mac/.test(ua) ? "mac" : /Win/.test(ua) ? "win" : /Linux|X11/.test(ua) ? "linux" : null;
-    if (!os) return;
-    activate(os);
   })();
 </script>
 </body>

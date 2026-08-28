@@ -66,10 +66,36 @@ walk takes the same posture when git is missing):
 
   * root inside a repo -> ONE oracle at the repo toplevel; `git -C toplevel
     check-ignore` cascades every nested .gitignore below it by itself.
-  * root outside any repo -> an oracle at each corpus directory that holds a
-    `.gitignore`, the OUTERMOST marker claiming each entry; the oracle's
-    work-tree graft cascades the nested ones below it. A repo whose rules
-    live only in .git/info/exclude (no .gitignore anywhere) goes unfiltered.
+  * root outside any repo -> the OUTERMOST marker claiming each entry, one
+    graft per entry's marker set — UNLESS the caller supplied `oracle_rels`
+    (see `filter_corpus`), in which case every entry decided under some
+    marker is answered by ONE oracle grafted at `root` itself instead of one
+    per marker. That collapse is only sound because `oracle_rels` came from
+    somewhere that already enumerated every `.gitignore` UNDER `root` — a
+    marker this module could not otherwise see is impossible by
+    construction, so a single graft at `root` cascades exactly the same
+    rules a graft at each individual marker would have, no more and no less.
+    Grafted at `root` and nowhere wider: a caller's `root` can itself be a
+    narrower folder than the configured scan root (an in-folder rank
+    search), and `oracle_rels` is only ever complete for what lies UNDER
+    `root` — a graft any higher could cascade a plain `.gitignore` between
+    `root` and the wider root that neither this discovery nor the live walk
+    (which computes its own repo boundary from the browsed folder, never
+    from a wider ancestor) would ever have honored. That would be
+    over-filtering, the one direction this module refuses to move in.
+
+    One behavioural difference IS real and deliberate: a marker directory
+    that is ITSELF a git repository (has its own `.git`) used to get its own
+    plain `git -C` oracle in the per-marker path, which incidentally reads
+    that repo's `.git/info/exclude` too. A `root`-grafted oracle is a
+    synthetic work-tree (no real `.git` at `root`), so it never reads any
+    nested repo's `info/exclude` the way a per-marker oracle rooted AT that
+    nested repo did. This can only ever show a file that used to be hidden,
+    never the reverse — the same direction as the header's other admission
+    that a repo whose rules live only in `.git/info/exclude` (no
+    `.gitignore` anywhere) goes unfiltered; consolidation just makes that
+    admission true uniformly instead of true only for a root that happens
+    to have no `.gitignore` of its own.
 
 Mount-backed roots never get here: the index refuses to scan them, so they
 are never `covered` — no check-ignore (kernel I/O) can be aimed at a mount.
@@ -108,6 +134,14 @@ _inflight: dict = {}
 # sweep — what every caller did before this existed — so it is set generously
 # against the ~1.5 s a home-sized sweep takes rather than tightly.
 SWEEP_WAIT_MAX_S = 30.0
+
+# How often a waiting caller re-checks its CancelToken (when it has one)
+# instead of blocking the whole SWEEP_WAIT_MAX_S in one call. This is per
+# ABANDONED-REQUEST cost, not per sweep: a rank request that outlives its
+# client used to sit out someone else's sweep for up to 30s of pure dead
+# time; polling this often is what turns that into ~0.25s. Small enough that
+# the added wakeups are noise against a sweep that is itself seconds long.
+_SWEEP_POLL_S = 0.25
 
 # How long a pool may live before it is discarded and git is re-asked about
 # everything.
@@ -170,7 +204,7 @@ class _Verdicts:
 
 
 def filter_corpus(out: dict, index_root: str | None = None,
-                  oracle_rels: list | None = None) -> dict:
+                  oracle_rels: list | None = None, token=None) -> dict:
     """`search_under`'s response with gitignored entries removed.
 
     Only a covered response with entries is touched; `total` is recomputed and
@@ -191,6 +225,11 @@ def filter_corpus(out: dict, index_root: str | None = None,
     which its SQL has already dropped every dot-leading rel, so no `.gitignore`
     could ever be among them, every entry came back undecided and nothing was
     filtered at all. `index/query.py` reads them out of the index instead.
+
+    `token` (index/cancel.CancelToken), when given, is forwarded to
+    `_pooled_verdicts` — it is what lets an abandoned rank request stop
+    waiting for someone ELSE's in-flight sweep (`SWEEP_WAIT_MAX_S`) in ~0.25s
+    instead of riding it out to the full 30.
     """
     root = out.get("root") or ""
     entries = out.get("entries")
@@ -214,7 +253,7 @@ def filter_corpus(out: dict, index_root: str | None = None,
     # today, but nothing here should depend on that) and the decider is
     # per-entry.
     drop = _pooled_verdicts(base, prefix, root, entries, persist=persist,
-                            oracle_rels=oracle_rels)
+                            oracle_rels=oracle_rels, token=token)
     if not drop:
         return {**out, "total": len(entries)}
     kept = [e for i, e in enumerate(entries) if i not in drop]
@@ -234,9 +273,31 @@ def _rel_prefix(base: str, root: str):
     return None
 
 
+def _wait_for_sweep(waiter, token=None) -> None:
+    """Wait for `waiter` to fire, up to `SWEEP_WAIT_MAX_S` total — but in
+    `_SWEEP_POLL_S` slices with a `token.check()` between them when a token is
+    given, rather than blocking the whole ceiling in one call.
+
+    This is the difference between an abandoned rank request riding out up to
+    30s of SOMEONE ELSE'S sweep and returning in ~0.25s once its own client
+    has gone. Scoped separately from the rest of section 1's cancellation
+    work because this module is shared with `api_index_search` (the in-folder
+    corpus route, which passes no token) and the corpus-building path — a
+    wrong change here under-filters gitignored files for those callers too."""
+    deadline = time.monotonic() + SWEEP_WAIT_MAX_S
+    while True:
+        if token is not None:
+            token.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        if waiter.wait(timeout=remaining if token is None else min(_SWEEP_POLL_S, remaining)):
+            return
+
+
 def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
                      persist: bool = True,
-                     oracle_rels: list | None = None) -> set:
+                     oracle_rels: list | None = None, token=None) -> set:
     """The INDEXES into `entries` that git calls ignored.
 
     Reads what the pool already decided UNDER THE SAME ORACLE, queries git for
@@ -256,6 +317,11 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
     not hypothetical: the startup warm sweeps on a detached thread for exactly
     the ~2.2 s in which the user's first keystroke arrives, and both used to
     build the same 200k-entry query set and shell out to git for it twice.
+
+    `token`, when given, lets the WAIT for someone else's sweep be abandoned
+    early (`_wait_for_sweep`) — it does not shorten the sweep this call itself
+    performs, which is a bounded git subprocess call, not a loop with anywhere
+    natural to check.
     """
     # Pure string work, no git: which oracle this request would consult for
     # each entry. Computed for the WHOLE corpus every time — a few tens of
@@ -312,17 +378,40 @@ def _pooled_verdicts(base: str, prefix: str, root: str, entries: list,
         # Someone else is asking git for this very base. Their answers land in
         # the pool we just read, so wait and read it again. The timeout is the
         # floor under a sweeper that somehow never finishes: worst case we do
-        # what the old code always did and sweep concurrently.
-        waiter.wait(timeout=SWEEP_WAIT_MAX_S)
+        # what the old code always did and sweep concurrently. Polled in
+        # slices when a token is given (`_wait_for_sweep`) so an abandoned
+        # caller can stop waiting in ~_SWEEP_POLL_S rather than riding this
+        # out to the full ceiling.
+        _wait_t0 = time.monotonic()
+        _wait_for_sweep(waiter, token)
+        # DEBUG: this is dead time on the request thread spent waiting for
+        # SOMEONE ELSE'S sweep rather than doing any of its own work — worth
+        # separating from the sweep's own timing below when a rank request
+        # is slow and the sweep it ran looks fast in isolation.
+        logger.debug("index rank: waited %.1fms for %s's in-flight sweep",
+                    (time.monotonic() - _wait_t0) * 1000, base)
         waited = True
 
+    _sweep_t0 = time.monotonic()
     try:
-        fresh = _ignored(root, entries, top, deciders, want)
+        # `oracle_rels is not None` is the WHOLE gate: it means the caller
+        # (index/query.py, for the ranked search) enumerated every
+        # `.gitignore` under `root` from the index itself, not from this
+        # possibly-narrowed payload — see the module header and
+        # `_ignored`'s `consolidate` parameter for why that is what makes
+        # collapsing to one oracle safe.
+        fresh = _ignored(root, entries, top, deciders, want,
+                         consolidate=oracle_rels is not None)
     finally:
         with _cache_lock:
             if _inflight.get(base) is mine:
                 del _inflight[base]
         mine.set()
+        # DEBUG: `len(want)` is the number of paths actually queried against
+        # git — the pool hit count (len(deciders) - len(want)) is what made it
+        # small, and this is the line that shows whether it did.
+        logger.debug("index rank: git sweep of %s queried %d path(s) in %.1fms",
+                    base, len(want), (time.monotonic() - _sweep_t0) * 1000)
 
     # The pool's parts to write back, or None for "nothing to write". One
     # value, not three: they are only ever meaningful together, and three
@@ -526,7 +615,15 @@ def _deciders(root: str, entries: list, prefix: str,
     payload cannot contain its own markers (the ranked search) passes
     `oracle_rels` instead, and then the payload is not consulted at all.
     """
+    t0 = time.monotonic()
     top = _repo_toplevel(root)
+    # DEBUG, not WARNING: this runs on every rank request (twice if the query
+    # escalates to the subsequence pass) and is normally near-instant once
+    # `_repo_toplevel`'s own cache is warm — logging it is what makes a COLD
+    # cache (or a git that is slow to answer) visible after the fact instead
+    # of only inferred from a slow request report.
+    logger.debug("index rank: _repo_toplevel(%s) -> %s in %.1fms",
+                root, top, (time.monotonic() - t0) * 1000)
     if top is not None:
         # Inside a repo the oracle sits at the TOPLEVEL — an oracle at the
         # searched subfolder would take the no-repo graft path (no .git there)
@@ -553,8 +650,20 @@ def _deciders(root: str, entries: list, prefix: str,
     return None, out
 
 
-def _ignored(root: str, entries: list, top, deciders: list, want: set) -> set:
-    """The indexes in `want` that git calls ignored."""
+def _ignored(root: str, entries: list, top, deciders: list, want: set,
+            consolidate: bool = False) -> set:
+    """The indexes in `want` that git calls ignored.
+
+    `consolidate` is `_pooled_verdicts`'s translation of "the caller supplied
+    `oracle_rels`" — see the module header. When true, every index in `want`
+    is already known (via `_deciders`) to sit under SOME outermost marker at
+    or below `root`, so ONE oracle grafted at `root` cascades every one of
+    those markers in a single co-process. Grafted at `root` specifically, not
+    at whatever wider index root `filter_corpus` is pooling under: `root` is
+    the only thing `oracle_rels` is proven complete for, and a graft any
+    higher could cascade a `.gitignore` between `root` and that wider root
+    that nothing here ever discovered — over-filtering, which this module
+    does not do."""
     if top is not None:
         base = os.path.relpath(root, top).replace(os.sep, "/")
         prefix = "" if base in (".", "") else base + "/"
@@ -563,6 +672,19 @@ def _ignored(root: str, entries: list, top, deciders: list, want: set) -> set:
         idxs = sorted(want)
         queries = [prefix + entries[i]["rel"] for i in idxs]
         oracle = _IgnoreOracle(top)
+        try:
+            verdicts = oracle.ignored(queries)
+        finally:
+            oracle.close()
+        if not verdicts:
+            return set()
+        return {i for i, q in zip(idxs, queries) if q in verdicts}
+    if not want:
+        return set()
+    if consolidate:
+        idxs = sorted(want)
+        queries = [entries[i]["rel"] for i in idxs]
+        oracle = _IgnoreOracle(root)
         try:
             verdicts = oracle.ignored(queries)
         finally:

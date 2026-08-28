@@ -1,29 +1,37 @@
 // THE sidebar — one for the whole app, on every route. Replaces the old pair
 // (ShellSidebar app-switcher on shell routes, ExplorerSidebar on fs routes):
-// primary nav on top (Home / Tasks, plus Workbench canvases once this machine
-// is signed in to Fused), the explorer's Bookmarks below it,
-// and a single Settings trigger pinned to the
-// bottom that opens a menu holding everything else (Config / App Basics for
-// now, plus Templates / Mounts / AI Models / Preferences).
+// primary nav on top (Home / Tasks / AI Models, plus Canvases once the feature
+// is turned on in Preferences AND this machine is signed in to Fused), the
+// explorer's Bookmarks below it, and a
+// single Settings trigger pinned to the bottom that opens a menu holding
+// everything else (Config for now, plus Templates / Mounts /
+// Preferences).
 //
 // Lives in the shell layer on purpose: it composes both platform chrome
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
+import { ListTodo } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import UpdateBadge from "@platform/ui/UpdateBadge";
+import VersionChip from "@platform/ui/VersionChip";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import { LearnIcon } from "@platform/ui/FileIcons";
 import type { Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
-import { useUrlVersion, useLearnMountReady } from "@platform/lib/hooks";
+import { isBrowserHandledClick } from "@platform/lib/appEntry";
+import { TOURS, startTour } from "@platform/lib/tours";
+import { useUrlVersion } from "@platform/lib/hooks";
 import { useClaudeConfigAvailable } from "@apps/claude_config/available";
 import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
-import { useAiRuntime } from "@shell/aiRuntime";
+import { useCanvasesFeature } from "@apps/canvases/feature-flag";
+import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
 import { pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
+import CurrentAppsSection from "@shell/CurrentAppsSection";
+import { useSidebarArrowNav } from "@shell/sidebarArrowNav";
 
 // House — the Home page (/home): search hero + the three recency strips.
 const HOME_ICON = (
@@ -54,13 +62,16 @@ const CLAUDE_CONFIG_ICON = (
 // sessions.. let's remove this we don't need this") — Tasks supersedes it, and
 // a route nothing links to is a page nobody maintains.
 
-// Stacked disks — the AI Models entry is an inventory of what the Hugging
-// Face cache is storing on this machine, so it reads as storage, not as a chip.
+// A processor die with its pins (ionicons' hardware-chip-outline): the AI
+// Models entry is about what this machine can RUN, not about the bytes the
+// Hugging Face cache is parking on disk — the stacked-disks storage icon it
+// replaces read as the latter. Three pins a side, not ionicons' four: at 16px
+// the fourth pair closes the gap into a smudge.
 const AI_MODELS_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <ellipse cx="12" cy="5" rx="8" ry="3" />
-    <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-    <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="5" y="5" width="14" height="14" rx="3" />
+    <rect x="9" y="9" width="6" height="6" rx="1" />
+    <path d="M8.5 5V2.5M12 5V2.5M15.5 5V2.5M8.5 19v2.5M12 19v2.5M15.5 19v2.5M5 8.5H2.5M5 12H2.5M5 15.5H2.5M19 8.5h2.5M19 12h2.5M19 15.5h2.5" />
   </svg>
 );
 
@@ -79,13 +90,11 @@ const MOUNTS_ICON = (
   </svg>
 );
 
-// A clock: scheduled messages are the one page about *when* something happens.
-const SCHEDULED_ICON = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <circle cx="12" cy="12" r="9" />
-    <path d="M12 7v5l3.5 2" />
-  </svg>
-);
+// A to-do list (lucide ListTodo, sized like the hand-drawn icons around it):
+// Tasks is the page about work, and the app page's Tasks tab wears the same
+// glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
+// page was "Scheduled".
+const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
 // Connected nodes: a canvas is a graph of UDFs.
 const CANVASES_ICON = (
@@ -104,11 +113,32 @@ const PREFERENCES_ICON = (
   </svg>
 );
 
+// A circled question mark — the app's one help affordance, and what a reader
+// looks for when they want the walkthrough back.
+const TOURS_ICON = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M9.4 9.2a2.7 2.7 0 1 1 3.4 2.6v1.6" />
+    <circle cx="12.8" cy="16.8" r="0.6" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 interface PrefsMenuEntry {
+  /** Where the entry goes — or, for an `onPick` entry, a stable key that also
+      says where its subject lives (the tours have no page of their own). */
   href: string;
   label: string;
-  icon: React.ReactNode;
+  /** Optional, because a flyout of plain titles (the tours) has none: the icon
+      column is reserved per group, so those rows sit flush instead of behind an
+      empty gutter — the same rule ContextMenu's `showIcon` applies. */
+  icon?: React.ReactNode;
   extra?: React.ReactNode;
+  /** Run this instead of navigating to `href` — the tour entries replay a
+      walkthrough in place rather than going anywhere. */
+  onPick?: () => void;
+  /** A one-level flyout hung off this row (Tours). Its own entries never carry
+      a `submenu` of their own — one level, like ContextMenu's. */
+  submenu?: PrefsMenuEntry[];
 }
 
 // The bottom Settings trigger (a NavItem-shaped row in the expanded sidebar,
@@ -119,58 +149,16 @@ interface PrefsMenuEntry {
 // position lives in GlobalSidebar and the popover renders as a sibling of
 // SidebarFrame rather than nested inside one trigger's markup.
 
-// The expanded-sidebar trigger row.
-function PreferencesTrigger({
-  open,
-  dot,
-  active,
-  onToggle,
-}: {
-  open: boolean;
-  dot?: React.ReactNode;
-  /** The current route is one of the menu's destinations — the trigger is
-      the only sidebar chrome that can show it. */
-  active: boolean;
-  onToggle: (el: HTMLElement) => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
-      aria-haspopup="menu"
-      aria-expanded={open}
-      onClick={(e) => onToggle(e.currentTarget)}
-    >
-      <span className="icon">
-        {PREFERENCES_ICON}
-        {dot}
-      </span>{" "}
-      Settings
-    </button>
-  );
-}
-
-// The floating menu itself — a fixed-position panel growing UP from whichever
-// trigger opened it (that row/icon sits on the sidebar's bottom edge). Closes
-// on outside pointerdown / Escape / blur, or on picking an entry.
-function PreferencesPopover({
-  pos,
-  entries,
-  onClose,
-  triggerRef,
-}: {
-  pos: { left: number; bottom: number };
-  entries: (PrefsMenuEntry | "separator")[];
-  onClose: () => void;
-  /** The element that opened this popover. A click there is NOT an outside
-      click — it's the trigger's own toggle-closed, and must be left to that
-      handler. Otherwise pointerdown closes it here first, and by the time
-      the paired click re-checks "is it open" (React 18 batches the setState
-      before that click fires), it sees closed and reopens it right back. */
-  triggerRef: React.RefObject<HTMLElement | null>;
-}) {
-  const rootRef = useRef<HTMLDivElement | null>(null);
-
+// Close-on-outside-pointerdown / Escape / window blur, shared by the two
+// bottom-edge popovers. `triggerRef`'s element is NOT outside: a click there is
+// the trigger's own toggle-closed and must be left to that handler, or
+// pointerdown closes the menu here first and the paired click — which re-checks
+// "is it open" after React 18 has batched the setState — reopens it right back.
+function useDismiss(
+  rootRef: React.RefObject<HTMLElement | null>,
+  triggerRef: React.RefObject<HTMLElement | null>,
+  onClose: () => void,
+) {
   useEffect(() => {
     const onDown = (e: PointerEvent) => {
       const target = e.target as Node;
@@ -190,6 +178,172 @@ function PreferencesPopover({
       window.removeEventListener("blur", onClose);
     };
   }, [onClose]);
+}
+
+// The expanded-sidebar trigger row.
+function PreferencesTrigger({
+  open,
+  dot,
+  active,
+  trailing,
+  onToggle,
+}: {
+  open: boolean;
+  dot?: React.ReactNode;
+  /** The current route is one of the menu's destinations — the trigger is
+      the only sidebar chrome that can show it. */
+  active: boolean;
+  /** Trailing-edge content, same slot NavItem gives Tasks its count — this
+      row's is the version chip. */
+  trailing?: React.ReactNode;
+  onToggle: (el: HTMLElement) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"sidebar-item sidebar-prefs-trigger" + (active ? " active" : "")}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      onClick={(e) => onToggle(e.currentTarget)}
+    >
+      <span className="icon">
+        {PREFERENCES_ICON}
+        {dot}
+      </span>{" "}
+      Settings
+      {trailing && <span className="sidebar-item-trail">{trailing}</span>}
+    </button>
+  );
+}
+
+// Whether a group of entries reserves the fixed icon column: true if any real
+// entry in it carries an icon. Same rule (and same reason) as ContextMenu's
+// `showIcon` — a flyout of pure-text rows sits flush rather than behind a 20px
+// gutter nothing is ever drawn in.
+function groupHasIcon(entries: (PrefsMenuEntry | "separator")[]): boolean {
+  return entries.some((e) => e !== "separator" && e.icon != null);
+}
+
+// One menu row, used for both the popover's own entries and a flyout's. The
+// markup is deliberately the shared .context-menu-item / -icon / -label / -arrow
+// vocabulary the explorer's right-click menu uses (ContextMenu.tsx), so the two
+// surfaces stay one thing to restyle rather than two.
+function PrefsRow({
+  entry,
+  open,
+  showIcon,
+  onActivate,
+  onClose,
+}: {
+  entry: PrefsMenuEntry;
+  /** This row's flyout is showing — the same `open` tint a submenu parent gets
+      in the context menu. */
+  open: boolean;
+  showIcon: boolean;
+  onActivate: () => void;
+  /** Closes the whole popover — passed straight through so a real link (below)
+      can close it even on a gesture the browser owns, one that never reaches
+      `onActivate` because navigation itself is left to the anchor. */
+  onClose: () => void;
+}) {
+  const hasSub = !!entry.submenu;
+  // A row with neither a flyout nor an in-place action actually GOES
+  // somewhere — that's the only shape a real `<a href>` makes sense for.
+  // A flyout parent has no page, and a tour's onPick replays in place, so
+  // both stay plain <div>s with nothing for the browser to open elsewhere.
+  const isLink = !hasSub && !entry.onPick;
+  const className =
+    "context-menu-item" +
+    (hasSub ? " has-submenu" : "") +
+    (open ? " open" : "") +
+    // A flyout parent is never "the page you are on": it has no page.
+    (!hasSub && !entry.onPick && location.pathname === entry.href ? " active" : "");
+  const content = (
+    <>
+      {showIcon && (
+        <span className="context-menu-icon" aria-hidden="true">
+          {entry.icon}
+        </span>
+      )}
+      <span className="context-menu-label">{entry.label}</span>
+      {entry.extra}
+      {hasSub && <span className="context-menu-arrow">›</span>}
+    </>
+  );
+  if (isLink) {
+    return (
+      <a
+        href={entry.href}
+        role="menuitem"
+        className={className}
+        onClick={(e) => {
+          // Picking a real destination closes the popover either way. A
+          // plain left click also hijacks the navigation into the SPA's own
+          // route via onActivate (pick → navigateUrl); anything the browser
+          // already owns (middle-click, ctrl/cmd/shift/alt-click) is left
+          // alone so "open in new tab" and friends work on the real href
+          // (see appEntry.isBrowserHandledClick).
+          onClose();
+          if (isBrowserHandledClick(e)) return;
+          e.preventDefault();
+          onActivate();
+        }}
+        // Middle-click never fires `click` in modern browsers — it fires
+        // `auxclick` instead — so the close above would otherwise never run
+        // for that gesture. `auxclick` also covers right-click, though, which
+        // must reach the native context menu (copy link, open in new tab)
+        // undisturbed — button 1 singles out the middle button.
+        onAuxClick={(e) => {
+          if (e.button === 1) onClose();
+        }}
+      >
+        {content}
+      </a>
+    );
+  }
+  return (
+    <div
+      role="menuitem"
+      aria-haspopup={hasSub ? "menu" : undefined}
+      aria-expanded={hasSub ? open : undefined}
+      className={className}
+      onClick={onActivate}
+    >
+      {content}
+    </div>
+  );
+}
+
+// The floating menu itself — a fixed-position panel growing UP from whichever
+// trigger opened it (that row/icon sits on the sidebar's bottom edge). Closes
+// on outside pointerdown / Escape / blur, or on picking an entry.
+function PreferencesPopover({
+  pos,
+  entries,
+  onClose,
+  triggerRef,
+}: {
+  pos: { left: number; bottom: number };
+  entries: (PrefsMenuEntry | "separator")[];
+  onClose: () => void;
+  /** The element that opened this popover — see useDismiss. */
+  triggerRef: React.RefObject<HTMLElement | null>;
+}) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useDismiss(rootRef, triggerRef, onClose);
+  // Which row's flyout is open, keyed by href rather than index so a menu whose
+  // gated entries change under it can't point the flyout at another row. One at
+  // a time; null is none.
+  const [openSub, setOpenSub] = useState<string | null>(null);
+
+  // Picking anything — top level or inside the flyout — closes the WHOLE menu.
+  const pick = (entry: PrefsMenuEntry) => {
+    onClose();
+    if (entry.onPick) entry.onPick();
+    else navigateUrl(entry.href);
+  };
+
+  const showIcon = groupHasIcon(entries);
 
   return (
     <div
@@ -197,6 +351,9 @@ function PreferencesPopover({
       className="context-menu placed sidebar-prefs-menu"
       role="menu"
       style={{ left: pos.left, bottom: pos.bottom }}
+      /* The pointer leaving the menu takes the flyout with it; while it is
+         inside, entering any row is what closes the previous one (below). */
+      onMouseLeave={() => setOpenSub(null)}
     >
       {entries.map((entry, i) =>
         entry === "separator" ? (
@@ -204,18 +361,37 @@ function PreferencesPopover({
         ) : (
           <div
             key={entry.href}
-            role="menuitem"
-            className={"context-menu-item" + (location.pathname === entry.href ? " active" : "")}
-            onClick={() => {
-              onClose();
-              navigateUrl(entry.href);
-            }}
+            className="context-menu-row"
+            /* Hover opens the flyout and hovering any other row closes it —
+               click also toggles it (PrefsRow's onActivate), which is the
+               keyboard/touch path onto the same state. */
+            onMouseEnter={() => setOpenSub(entry.submenu ? entry.href : null)}
           >
-            <span className="context-menu-icon" aria-hidden="true">
-              {entry.icon}
-            </span>
-            <span className="context-menu-label">{entry.label}</span>
-            {entry.extra}
+            <PrefsRow
+              entry={entry}
+              open={openSub === entry.href}
+              showIcon={showIcon}
+              onActivate={() =>
+                entry.submenu
+                  ? setOpenSub(openSub === entry.href ? null : entry.href)
+                  : pick(entry)
+              }
+              onClose={onClose}
+            />
+            {entry.submenu && openSub === entry.href && (
+              <div className="context-menu context-submenu placed" role="menu">
+                {entry.submenu.map((sub) => (
+                  <PrefsRow
+                    key={sub.href}
+                    entry={sub}
+                    open={false}
+                    showIcon={groupHasIcon(entry.submenu ?? [])}
+                    onActivate={() => pick(sub)}
+                    onClose={onClose}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         )
       )}
@@ -223,23 +399,44 @@ function PreferencesPopover({
   );
 }
 
+// Where the sidebar row points: the page's DEFAULT tab by name, not the bare
+// prefix. Both work — App.tsx redirects the bare one — but a nav link that is
+// rewritten the moment it lands puts a URL in the address bar that the user
+// never clicked, and leaves the row's href disagreeing with where it went. An
+// empty search, deliberately: this is an entry point, not a tab switch, so
+// there is nothing to carry (see `tabHref`).
+const AI_MODELS_HOME = tabHref("playground", "");
+
 export default function GlobalSidebar({ config }: { config: Config }) {
   // Re-render on any nav/url change (active-item highlight).
   useUrlVersion();
+  // Up/Down step through the Projects + Bookmarks rows (sidebarArrowNav.ts).
+  useSidebarArrowNav();
 
-  const learnMountReady = useLearnMountReady(config.learn_mount_ready);
-  // No sessions-mount gate any more: the one entry it guarded (Inbox) is gone
-  // from the sidebar. The route and its mount are untouched.
+  // No builtin-mount gate any more: the entries they guarded (Inbox, App
+  // Basics) are gone from the sidebar — the learn content ships as a community
+  // app now. The sessions route and its mount are untouched.
   const claudeConfigAvailable = useClaudeConfigAvailable();
 
   // A model resident in memory is the one piece of app state that costs
   // something while you are not looking at it — surfaced as a dot on the
-  // bottom trigger now that AI Models lives inside the menu.
+  // AI Models row itself now that it is primary nav.
   const aiRuntime = useAiRuntime();
   const residentModels = aiRuntime.loaded.filter((m) => m.state === "ready");
+  // `.sidebar-rail-dot`, the SAME dot the Tasks row wears, since 2026-08-24
+  // (Akshil: "the dots in left sidebar are not consistent, make dot on ai models
+  // page similar to one we have in tasks page"). It wore
+  // `.account-signedin-dot` before — a class from account.css that happens to be
+  // 7px too, and that is where the resemblance stopped. Two differences, both
+  // visible on the collapsed rail: that class positions at `top: -2px; right:
+  // -3px`, which against the 28px rail BUTTON lands outside its corner instead of
+  // on the glyph, so the mark floated off to the right while the Tasks dot hugged
+  // its icon; and it is border-box against the other's `content-box`, so its 1px
+  // ring ate the dot down to 5px of fill beside a 7px neighbour. One dot
+  // vocabulary in this sidebar, one class that draws it.
   const residentDot = residentModels.length ? (
     <span
-      className="account-signedin-dot"
+      className="sidebar-rail-dot is-resident"
       title={
         `In memory: ${residentModels.map((m) => m.model).join(", ")}` +
         (aiRuntime.totalResidentBytes ? ` — ${formatSize(aiRuntime.totalResidentBytes)}` : "")
@@ -257,6 +454,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // not the list page, and lighting the row while you are inside a canvas reads
   // as two selections.
   const canvasesActive = pathname === "/canvases";
+  // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
+  // through a different tab, not a second destination, so every one of the five
+  // lights the row. (The bare prefix is redirected to the default tab before
+  // this runs, so it is matched for completeness rather than in practice.)
+  const aiModelsActive = isAiModelsPath(pathname);
   // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
   // would lead to a sign-in wall — the menu entry is the right weight for
   // "there is a thing here you could set up"; a top-of-sidebar row is for a
@@ -264,6 +466,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
   // for why this is a shared store and not a one-shot probe).
   const canvasesLoggedIn = useCanvasesLoggedIn();
+  // AND THE FEATURE HAS TO BE ON AT ALL (D427, default off). Two conditions,
+  // deliberately not one store: this one is "does this machine offer Canvases",
+  // the one above is "is there an account behind it". The MENU entry needs only
+  // this — it has always been ungated on login, since the page explains a
+  // signed-out state itself, and gating it on the account would delete the only
+  // affordance for reaching a feature you have not set up yet. The primary row
+  // needs both.
+  const canvasesEnabled = useCanvasesFeature();
+  const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
 
   // WHAT THE TASKS ENTRY KNOWS: what is running, and what finished with
   // something unread (shell/tasksPulse — one poll shared with the page, which
@@ -345,13 +556,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ) : undefined;
 
   // Everything that is not primary nav lives in the bottom menu for now:
-  // the former sidebar entries (Config / App Basics), then the settings
+  // the former sidebar entries (Config), then the settings
   // pages. Same gates as before — an entry a machine can't use stays hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [
     ...(claudeConfigAvailable
       ? [{ href: "/claude-config", label: "Claude Config", icon: CLAUDE_CONFIG_ICON }]
       : []),
-    ...(learnMountReady ? [{ href: "/learn", label: "App Basics", icon: <LearnIcon /> }] : []),
   ];
   if (menuEntries.length > 0) menuEntries.push("separator");
   menuEntries.push(
@@ -362,23 +572,58 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // row and the Preferences trigger at once, since `prefsActive` treats every
     // menu href as "you are on one of my pages" — the same double-selection the
     // Home comment above rejects.
-    // Ungated like Tasks: the page explains CLI-missing / signed-out states
-    // itself, and there is no machine state that hides the concept. It stays
-    // here even while the primary row above is showing — the menu is where
-    // someone looks for a named destination — and `prefsActive` below drops it
-    // instead, so the two never light at once.
-    { href: "/canvases", label: "Workbench canvases", icon: CANVASES_ICON },
-    { href: "/ai-models", label: "AI Models", icon: AI_MODELS_ICON, extra: residentDot },
+    // Gated on the FEATURE only (D427), not on the account: the page explains a
+    // CLI-missing / signed-out state itself, so the entry is what "there is a
+    // thing here you could set up" looks like — and the whole point of the
+    // preference is that a machine which has not turned Canvases on is not
+    // shown it anywhere. It stays here even while the primary row above is
+    // showing — the menu is where someone looks for a named destination — and
+    // `prefsActive` below drops it instead, so the two never light at once.
+    ...(canvasesEnabled
+      ? [{ href: "/canvases", label: "Canvases", icon: CANVASES_ICON }]
+      : []),
+    // No /ai-models entry either, and unlike Canvases it is dropped outright:
+    // its primary row is ungated, so a menu copy would only ever be the
+    // double-selection the Tasks note rejects.
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
+  // The tour replays, at the menu's tail, behind ONE row: four sibling entries
+  // each prefixed "Tour: " repeated the category name in every line and made a
+  // short settings menu twice as long as its actual destinations. Nested, the
+  // menu reads as its pages plus one help affordance, and the four titles are
+  // just titles.
+  //
+  // Picking one runs it against the DOM on screen NOW — steps whose targets
+  // aren't there drop out (presentSteps), seen keys are ignored: this is the
+  // deliberate ask. From a route the tour is not about, startTour goes to its
+  // `startPath` first and waits for the page's chrome.
+  menuEntries.push("separator");
+  menuEntries.push({
+    href: "/preferences#tours",
+    // "Help", not "Tours": what a stuck reader scans a settings menu for is
+    // help — the walkthroughs are what the row holds, not what it is named.
+    label: "Help",
+    icon: TOURS_ICON,
+    submenu: TOURS.map((tour) => ({
+      href: `/preferences#tour-${tour.id}`,
+      label: tour.title,
+      // Next frame, not now: driver.js measures its highlight the moment it is
+      // told to drive, and closing the menu only queues the unmount — it is
+      // still over the sidebar rows some tours point at until React has painted
+      // without it.
+      onPick: () => requestAnimationFrame(() => startTour(tour)),
+    })),
+  });
 
   // The trigger (and its rail icon) is the only sidebar chrome that can show
   // "you are on one of the menu's pages" — highlight it on any of them.
   // ...except a page primary nav is ALSO showing: the Tasks note above rejects
   // lighting a row and the Preferences trigger over one destination, and
-  // Canvases is listed in both places whenever the reader is signed in.
+  // Canvases is listed in both places whenever it is in the primary nav. With
+  // the feature off it is in NEITHER, so a deep link to /canvases lights
+  // nothing here — the entry is not in the list to be matched.
   const prefsActive = menuEntries.some(
-    (e) => e !== "separator" && e.href === pathname && !(canvasesLoggedIn && e.href === "/canvases")
+    (e) => e !== "separator" && e.href === pathname && !(canvasesInNav && e.href === "/canvases")
   );
 
   // Owned here, not inside either trigger, because the popover must stay
@@ -411,17 +656,25 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
     // Same gate and same order as the expanded row below — a row that exists
     // only until you collapse the sidebar is a destination people lose.
-    ...(canvasesLoggedIn
+    ...(canvasesInNav
       ? [
           {
             key: "canvases",
-            label: "Workbench canvases",
+            label: "Canvases",
             icon: CANVASES_ICON,
             href: "/canvases",
             active: canvasesActive,
           },
         ]
       : []),
+    {
+      key: "ai-models",
+      label: "AI Models",
+      icon: AI_MODELS_ICON,
+      href: AI_MODELS_HOME,
+      active: aiModelsActive,
+      badge: residentDot,
+    },
     {
       key: "preferences",
       label: "Preferences",
@@ -435,19 +688,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     },
   ];
 
-  // The trigger's own dot mirrors the strongest signal inside the menu, so
-  // it is not silently hidden while the menu is closed.
-  const triggerDot = residentDot;
-
   return (
     <>
-      <SidebarFrame
-        title="Render"
-        version={config.version}
-        modifiedInstall={config.modified_install ?? null}
-        homeHref="/home"
-        rail={rail}
-      >
+      <SidebarFrame title="Render" homeHref="/home" rail={rail}>
         <div className="sidebar-section sidebar-group">
           <NavItem
             href="/home"
@@ -468,23 +711,59 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
-          {canvasesLoggedIn && (
+          {canvasesInNav && (
             <NavItem
               href="/canvases"
               id="canvases-link"
-              label="Workbench canvases"
+              label="Canvases"
               icon={CANVASES_ICON}
               active={canvasesActive}
             />
           )}
+          <NavItem
+            href={AI_MODELS_HOME}
+            id="ai-models-link"
+            label="AI Models"
+            icon={AI_MODELS_ICON}
+            active={aiModelsActive}
+            extra={residentDot}
+            trailing={
+              // Beta while the surface (playground foremost) is still settling —
+              // the chip skin is the shared one, the modifier only recolours it.
+              <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+            }
+          />
         </div>
+        {/* Projects (D487, "Current apps" until 2026-08-26): the apps on the
+            desk, above the permanent Bookmarks tree. Collapsible; always ends
+            in a "+ New app" row. */}
+        <CurrentAppsSection />
         <BookmarksSection />
         <div className="sidebar-section sidebar-settings">
           <UpdateBadge />
+          {/* The version rides the Settings row's trailing edge rather than the
+              brand row it used to sit in. Two reasons it moved: the brand row is
+              one click target for Home, so a version glued to the title read as
+              part of the app's NAME; and it competed for the line the title
+              ellipsises on when the sidebar is dragged narrow. Down here it is
+              what it is — a footnote about this install, in the same trailing
+              slot the Tasks row states its count in. */}
           <PreferencesTrigger
             open={prefsPos !== null}
-            dot={triggerDot}
             active={prefsActive}
+            trailing={
+              config.version ? (
+                /* VersionChip rather than a plain span: a version string is a
+                   claim about which bytes are running, so when a self-fix
+                   session has changed this install the chip is what says so and
+                   opens its report (SPEC §48). Until then it renders the same
+                   v-string this slot always showed. */
+                <VersionChip
+                  version={config.version}
+                  modified={config.modified_install ?? null}
+                />
+              ) : undefined
+            }
             onToggle={togglePrefsMenu}
           />
         </div>

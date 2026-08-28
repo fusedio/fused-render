@@ -9,7 +9,8 @@
 // ServerStatusBanner's 5s one: the two components live in different trees and
 // update state changes rarely. Once the install lands, installed_version
 // drifts from the running version and ServerStatusBanner's restart card takes
-// over — this panel just says "restart to finish" and points there.
+// over — so the row drops to a plain "Ready to restart" status line with
+// nothing to expand, and the restart card carries the button and the wording.
 import { useEffect, useRef, useState } from "react";
 
 import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
@@ -17,9 +18,10 @@ import { getConfig, updateInstall, type UpdateStatus } from "@platform/lib/api";
 const POLL_IDLE_MS = 60_000;
 const POLL_BUSY_MS = 2_000;
 
-function formatMb(bytes: number | null): string {
-  if (!bytes) return "";
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
+function formatProgress(done: number | null, total: number | null): string {
+  if (total) return `${Math.min(100, Math.round((100 * (done ?? 0)) / total))}%`;
+  if (!done) return "";
+  return `${Math.round(done / (1024 * 1024))} MB`;
 }
 
 export default function UpdateBadge() {
@@ -80,6 +82,27 @@ export default function UpdateBadge() {
     window.setTimeout(() => setCopied(false), 2000);
   };
 
+  const label =
+    status.state === "installing"
+      ? "Updating…"
+      : status.state === "installed"
+        ? "Ready to restart"
+        : `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`;
+  const dot = <span className="update-badge-dot" aria-hidden="true" />;
+
+  // The installed state has no panel of its own — ServerStatusBanner's restart
+  // card says the rest — so the row is a status line, not a dead toggle.
+  if (status.state === "installed") {
+    return (
+      <div className="update-badge">
+        <div className="update-badge-row update-badge-row-static">
+          {dot}
+          {label}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="update-badge">
       <button
@@ -88,12 +111,8 @@ export default function UpdateBadge() {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
       >
-        <span className="update-badge-dot" aria-hidden="true" />
-        {status.state === "installing"
-          ? "Updating…"
-          : status.state === "installed"
-            ? "Update installed"
-            : `Update available${status.latest_version ? ` — v${status.latest_version}` : ""}`}
+        {dot}
+        {label}
       </button>
       {open && (
         <div className="update-badge-panel">
@@ -124,13 +143,7 @@ export default function UpdateBadge() {
           )}
           {status.state === "installing" && (
             <div className="update-badge-text">
-              Downloading… {formatMb(status.progress)}
-            </div>
-          )}
-          {status.state === "installed" && (
-            <div className="update-badge-text">
-              Installed. Restart fused-render to finish — the restart card has a
-              button for it.
+              Downloading… {formatProgress(status.progress, status.progress_total)}
             </div>
           )}
           {status.state === "error" && (

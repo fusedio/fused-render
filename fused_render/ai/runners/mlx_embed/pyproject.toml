@@ -1,0 +1,52 @@
+# The MLX embedding runner's environment (SPEC §40, PY-16).
+#
+# This folder exists so that `mlx-embeddings` is named in exactly one place and
+# lives in exactly one interpreter — not fused-render's, and not `mlx_text`'s:
+# it is a separate package from `mlx-lm`, with its own model zoo and its own
+# ceiling to track, so sharing a folder would tie an unrelated bump in one to a
+# forced rebuild of the other.
+#
+# `envinstall` (PY-18) builds this on first use with the same detached
+# `uv sync`, progress record and verbatim errors any declaring folder gets.
+#
+# **The engine line carries a CEILING**, for the reason `mflux_image/
+# pyproject.toml` states at length: no lockfile is committed beside these
+# manifests and `uv sync` runs bare, so an unbounded requirement re-resolves
+# from PyPI on every new venv key — the exact way an unrelated minor bump has
+# reached users with no commit behind it before. `mlx-embeddings` is
+# pre-1.0, where a minor is the breaking one, hence `>=0.1,<0.2` rather than a
+# looser `<1`.
+#
+# What each earns:
+#   mlx-embeddings  loads the SigLIP checkpoint and runs its two towers
+#                   (`get_text_features`/`get_image_features`). Pulls `mlx` and
+#                   `transformers` in itself (the processor half of a load is
+#                   transformers' `AutoProcessor` even on this engine — see
+#                   `worker.py`'s module docstring); named here rather than
+#                   assumed because both are load-bearing.
+#   pillow          opens the image half of a request
+#                   (`embed_common.open_image`) — the same reason
+#                   `onnx_embed/pyproject.toml` declares it, so both
+#                   folders can serve the identical `generate()` contract.
+#   huggingface_hub downloads
+#   psutil          the RSS half of "how much memory is this costing" — the
+#                   MLX half comes from mlx's own allocator (see `memory()`),
+#                   exactly `mlx_text/pyproject.toml`'s reasoning.
+[project]
+name = "fused-render-runner-mlx-embed"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mlx-embeddings>=0.1,<0.2",
+    "pillow",
+    # HEIC/HEIF and AVIF, which plain Pillow cannot open. iPhones have shot
+    # HEIC by default since iOS 11, so without this the `paths` half of an
+    # embed request works on screenshots and fails on the photographs.
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

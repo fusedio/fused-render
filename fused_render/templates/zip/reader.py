@@ -91,12 +91,40 @@ def _extract_one(zf, info, dest_root, readonly=False):
             shutil.copyfileobj(src, dst)
         return os.path.realpath(target)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or dest_root)
+    prior_mode = None  # the stale target's mode, for the failure path below
     try:
         with zf.open(info) as src, os.fdopen(fd, "wb") as dst:
             shutil.copyfileobj(src, dst)
         os.chmod(tmp, 0o444)
+        # Clear the read-only bit on a STALE target before the swap: POSIX's
+        # rename(2) only cares about the parent directory's write permission
+        # and happily replaces a 0444 file, but Windows' MoveFileExW (what
+        # os.replace becomes there) refuses to replace a destination that
+        # carries the read-only ATTRIBUTE — so a re-preview of a changed
+        # member, which is this whole function's reason for going through a
+        # temp file rather than a plain open("wb"), would otherwise fail
+        # every time on Windows once the first preview had landed. A no-op on
+        # POSIX and on a first preview (target doesn't exist yet); the
+        # replacement file's own 0444 (set above) is what ends up on disk
+        # either way.
+        try:
+            prior_mode = os.stat(target).st_mode & 0o777
+            os.chmod(target, 0o644)
+        except OSError:
+            prior_mode = None
         os.replace(tmp, target)
     except BaseException:
+        # The swap did NOT happen, so the stale copy above is still the live
+        # preview — put the read-only bit we just cleared back on it. Without
+        # this, a failed replace (on Windows, a sharing violation from the old
+        # preview still being open somewhere) left that copy 0644: the one
+        # property `readonly=True` exists to guarantee, silently dropped on
+        # the error path.
+        if prior_mode is not None:
+            try:
+                os.chmod(target, prior_mode)
+            except OSError:
+                pass
         try:
             os.unlink(tmp)
         except OSError:

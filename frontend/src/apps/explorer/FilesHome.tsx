@@ -4,7 +4,7 @@
 // bookmarks and recent files. Entering any target navigates into
 // /explorer/view/... (the explorer proper).
 import { useEffect, useRef, useState } from "react";
-import { navigate, replaceSearch, urlForFsPath } from "@platform/lib/router";
+import { navigate, navigateUrl, replaceSearch, urlForFsPath } from "@platform/lib/router";
 import { basename, formatMtime, formatMtimeFull, formatSize } from "@platform/lib/format";
 import { iconForEntry } from "@platform/ui/FileIcons";
 import type { Config, ClaudeSessionFolder, GitRepos, IndexStatus } from "@platform/lib/api";
@@ -32,15 +32,19 @@ import { useIndexStatus } from "@platform/lib/index-status";
 import {
   PENDING_INDICATOR_MS,
   QueryMemo,
+  STALE_CLEAR_MS,
   searchDelay,
 } from "@platform/lib/instant-search";
 import {
+  MIN_QUERY_CHARS,
   RANK_FETCH_LIMIT,
   activeRow,
   answerFrom,
   homeCountNote,
   isAiRow,
+  isOpenRow,
   nameStart,
+  narrowAnswer,
   pathShortcut,
   positionsWithin,
   rankingSettled,
@@ -49,6 +53,7 @@ import {
   submitRow,
   type HomeAnswer,
   type HomeHit,
+  type RowModel,
 } from "@apps/explorer/lib/home-search";
 import { renderHighlight } from "@apps/explorer/listing/bits";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -174,9 +179,56 @@ function FileRow({
   );
 }
 
+// Row 0, when the query is really an ADDRESS that resolved: an ACTION, like
+// the AI row below, but at the OPPOSITE end of the list and for the opposite
+// reason — this one is offered because ranking would have been noise on a
+// literal path, not because ranking came up empty. No query echo (the
+// resolved path already answers "what did this address mean"), and the icon
+// follows `isDir` the same way a file row's does.
+function OpenRow({
+  path,
+  isDir,
+  active,
+  id,
+  onOpen,
+}: {
+  path: string;
+  isDir: boolean;
+  active: boolean;
+  id: string;
+  onOpen: () => void;
+}) {
+  return (
+    <li role="option" id={id} aria-selected={active}>
+      <button
+        type="button"
+        className={"fh-result fh-open-row" + (active ? " is-active" : "")}
+        onClick={onOpen}
+      >
+        <span className="fh-result-icon" aria-hidden="true">
+          {iconForEntry(basename(path), isDir)}
+        </span>
+        <span className="fh-result-name">Open</span>
+        <span className="fh-result-path">{path}</span>
+        <span className="fh-result-meta">
+          <kbd>↵</kbd>
+        </span>
+      </button>
+    </li>
+  );
+}
+
 // The last row: an ACTION, not a hit. Deliberately unlike the file rows above
 // it (accent glyph, no path, no size) because activating it costs a model call
 // and a wait, and because on a zero-hit query it is the only thing on screen.
+//
+// It does NOT reuse `.fh-result-path` / `.fh-result-meta` for the query echo
+// and the `↵` hint, even though it reuses `.fh-result`/`.fh-result-name` for
+// layout: those two classes are the file rows' PATH and DATE/SIZE columns, and
+// borrowing them here made the query — "parquet" — land in the same visual
+// column as a file's `~/Work/...` path, and the `↵` align with a date. Nothing
+// about this row is a file, so it gets its own two classes instead
+// (`.fh-ai-query`, `.fh-ai-hint`; preferences.css).
 //
 // Deliberately NOT hoverable, unlike the file rows: setting the highlight on
 // mousemove meant nudging the pointer across the list armed Enter to spend a
@@ -196,10 +248,17 @@ function AiActionRow({
   onRun: () => void;
 }) {
   return (
-    <li role="option" id={id} aria-selected={active}>
+    // `fh-ai-row` (sticky/background/border-top — preferences.css) lives on
+    // THIS <li>, not the button inside it: `position: sticky` is bound to its
+    // element's own containing block, and a <li> that wraps exactly one
+    // full-width button has no room of its own to offset within — sticky on
+    // the button was a no-op that never actually stuck. `fh-ai-action`
+    // carries what genuinely IS about the button (the accent name, the
+    // disabled cursor).
+    <li className="fh-ai-row" role="option" id={id} aria-selected={active}>
       <button
         type="button"
-        className={"fh-result fh-ai-row" + (active ? " is-active" : "")}
+        className={"fh-result fh-ai-action" + (active ? " is-active" : "")}
         disabled={running}
         onClick={onRun}
       >
@@ -207,9 +266,17 @@ function AiActionRow({
           <SparkIcon />
         </span>
         <span className="fh-result-name">Search with AI</span>
-        <span className="fh-result-path">“{query}”</span>
-        <span className="fh-result-meta">
-          {running ? "Asking…" : <kbd>↵</kbd>}
+        <span className="fh-ai-query">“{query}”</span>
+        {/* The badge only claims Enter when Enter actually runs THIS row.
+            `activeRow` pre-selects the AI row exactly when it is the only
+            content on screen (settled, zero file hits) — every other time
+            Enter opens the top file hit instead, and showing `↵` here would
+            be the strongest affordance in the row pointing the wrong way.
+            The span stays in the layout (not conditionally rendered) even
+            empty, so the row's columns do not reflow as the highlight moves
+            onto or off it. */}
+        <span className="fh-ai-hint">
+          {running ? "Asking…" : active ? <kbd>↵</kbd> : null}
         </span>
       </button>
     </li>
@@ -275,7 +342,111 @@ export function FilesSearch({
   const [highlight, setHighlight] = useState<number | null>(null);
   const q = query.trim();
   const active = q !== "";
+  // Below MIN_QUERY_CHARS the REQUEST is gated, not `active`: `active` is what
+  // hides bookmarks/recents and hands the page body to this panel, and doing
+  // that on the first character would bounce the whole page as the user types
+  // their second one. `searchable` instead governs whether a rank request goes
+  // out and whether the AI row can ever be armed for the current query.
+  const searchable = q.length >= MIN_QUERY_CHARS;
   useEffect(() => onActiveChange(active), [active, onActiveChange]);
+
+  // -- a query that is really an address --------------------------------------
+  //
+  // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…`, `C:\…` —
+  // on every render, not just at submit: consulting it only on Enter left the
+  // whole screen while typing lying about what Enter would do. A pasted
+  // `/tmp/report.csv` used to rank nothing, render "No file name matched…",
+  // and pre-arm the AI row — a paid model call offered on a filesystem path —
+  // while Enter would in fact have navigated straight there.
+  //
+  // `address` is pure and cheap (a regex), computed fresh every render. What
+  // it resolves TO takes a stat, so that part is debounced/abortable exactly
+  // like the rank request below (leading-edge `searchDelay`, one
+  // AbortController) — a query that merely LOOKS like a path is typed one
+  // character at a time same as any other.
+  const address = pathShortcut(q, home);
+  const [addr, setAddr] = useState<
+    | { status: "unknown" }
+    | { status: "exists"; path: string; is_dir: boolean }
+    | { status: "missing" }
+  >({ status: "unknown" });
+  const addrCtl = useRef<AbortController | null>(null);
+  const addrIssuedAt = useRef(0);
+  useEffect(() => {
+    addrCtl.current?.abort();
+    if (address === null) {
+      setAddr({ status: "unknown" });
+      return;
+    }
+    setAddr({ status: "unknown" });
+    const run = () => {
+      addrCtl.current?.abort();
+      const ctl = new AbortController();
+      addrCtl.current = ctl;
+      addrIssuedAt.current = Date.now();
+      statPath(address, ctl.signal).then(
+        (st) => {
+          if (ctl.signal.aborted) return;
+          setAddr({ status: "exists", path: st.path, is_dir: st.is_dir });
+        },
+        (err: Error) => {
+          if (ctl.signal.aborted || err.name === "AbortError") return;
+          // Not found, or not statable (permissions, a dead mount): either
+          // way it is not a navigable address, so it falls back to a search
+          // (7d) — a half-typed path is a legitimate query prefix.
+          setAddr({ status: "missing" });
+        },
+      );
+    };
+    const delay = searchDelay(Date.now(), addrIssuedAt.current);
+    if (delay === 0) {
+      run();
+      return;
+    }
+    const timer = window.setTimeout(run, delay);
+    return () => window.clearTimeout(timer);
+  }, [address]);
+  useEffect(() => () => addrCtl.current?.abort(), []);
+
+  // Enter pressed WHILE the stat above is still in flight (addr.status ===
+  // "unknown") used to be a silent no-op: `suppressRank` holds the rank
+  // request back, `showOpenRow` is false (nothing has resolved yet), and the
+  // AI row is suppressed too (`address !== null`) — so `submitRow` has
+  // nothing to commit. That drops exactly the paste-and-go gesture the
+  // address feature exists for: paste a path, hit Enter immediately, expect
+  // it to open the moment the stat lands.
+  //
+  // `awaitingCommit` remembers the SPECIFIC address Enter was pressed for.
+  // The effect below fires once `addr` settles (either resolution) and
+  // commits — navigating only on "exists", never on "missing" — but ONLY if
+  // `address` still equals the address the commit was requested for: a newer
+  // keystroke changes `address` before the stat answers (and aborts the old
+  // stat's controller, so a still-in-flight reply for the OLD address is
+  // also ignored on its own terms), and the mismatch here is what stops a
+  // late-arriving answer for an address the user has since typed past from
+  // committing anyway.
+  const awaitingCommit = useRef<string | null>(null);
+  useEffect(() => {
+    if (awaitingCommit.current === null || addr.status === "unknown") return;
+    const target = awaitingCommit.current;
+    awaitingCommit.current = null;
+    if (target !== address) return; // superseded by a newer keystroke
+    if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+    // "missing" resolves to nothing: Enter must not navigate to a path that
+    // does not exist.
+  }, [addr, address]);
+
+  // There is no "Open" row until the stat is back and says the address is
+  // real.
+  const showOpenRow = address !== null && addr.status === "exists";
+  // The rank request itself is suppressed more broadly than the open row: a
+  // query shaped like a path is held back from ranking THE MOMENT it looks
+  // like one, not only once it is confirmed to exist — firing a rank request
+  // for something that is very likely about to resolve is a wasted round
+  // trip, and a half-typed path is not yet a case anyone can rank sensibly.
+  // Only once the stat comes back "missing" does 7d's fallback apply: this IS
+  // a legitimate search query after all.
+  const suppressRank = address !== null && addr.status !== "missing";
 
   // -- the ranked answer -----------------------------------------------------
   //
@@ -342,7 +513,15 @@ export function FilesSearch({
   useEffect(() => () => inflight.current?.abort(), []);
 
   useEffect(() => {
-    if (!active) {
+    // `!searchable` is the same early-out as `!active`: nothing is asked, and
+    // anything already in flight (from a longer query since backspaced away)
+    // is abandoned rather than left to land over a query too short to have
+    // earned an answer. `suppressRank` is a THIRD early-out (7c/7d): a query
+    // shaped like a path is held back from ranking the moment it looks like
+    // one — the noise that used to produce "No file name matched" over a
+    // path that Enter would have navigated to — until the stat says it is
+    // NOT one, at which point it is a legitimate search query again.
+    if (!active || !searchable || suppressRank) {
       inflight.current?.abort();
       setPending(false);
       return;
@@ -397,7 +576,7 @@ export function FilesSearch({
     }
     const timer = window.setTimeout(run, delay);
     return () => window.clearTimeout(timer);
-  }, [home, q, active, lifecycle, mutations, retryNonce]);
+  }, [home, q, active, searchable, suppressRank, lifecycle, mutations, retryNonce]);
 
   useEffect(() => {
     if (!pending) {
@@ -412,8 +591,53 @@ export function FilesSearch({
   // next answer is in flight: results → nothing → results is the single most
   // visible way this can feel worse than ranking locally, which never had an
   // empty frame. `behind` is what dims them and what the caveat chip explains.
-  const hits = answer?.hits ?? [];
+  //
+  // While behind, render `narrowAnswer`'s re-filtered subset rather than the
+  // held answer's raw hits: the overwhelmingly common case is the query
+  // EXTENDING the held one ("read" -> "readme"), and re-running fuzzyMatch
+  // over hits already in hand narrows the list with no round trip and no
+  // blank frame — strictly better than dimming rows that cannot possibly
+  // match. It can only ever remove rows, never add or reorder them, so this
+  // is always a subset of the true (still in-flight) answer.
   const behind = answer !== null && answer.query !== q;
+  const hits = behind && answer ? narrowAnswer(answer, q) : (answer?.hits ?? []);
+
+  // The staleness deadline: past STALE_CLEAR_MS of a request outliving the
+  // query it was asked for, "a little behind" stops being true — this used to
+  // hold for a ~40ms local rank, not a multi-second round trip. Narrowing
+  // (above) is tried FIRST and takes priority: if it leaves real rows, those
+  // are a provable subset of the answer to THIS query, and the deadline must
+  // not throw them away out from under the user. Only when narrowing leaves
+  // nothing (an unrelated query, a paste, a select-all retype) does the
+  // deadline drop to `answer = null`, which renders as the plain "Searching…"
+  // note — no rows and an honest label beats rows for a query the user has
+  // visibly moved past.
+  //
+  // `pending` was the only qualifying condition before `suppressRank`
+  // existed — there was always a real request "outliving" the query to time
+  // out on. An address-shaped query holds ranking back entirely (`suppressRank`
+  // is a THIRD reason `behind` can be true, alongside `pending` and, briefly,
+  // neither): `pending` is never true on that path (the rank effect
+  // early-returns before setting it), so a guard reading only `pending` never
+  // fires here at all — the held answer, and its `is-stale` dimming, stayed
+  // behind indefinitely regardless of how long the stat took. `suppressRank`
+  // is included in the gate for exactly the same reason `pending` is: it is
+  // the other case where nothing is going to replace `answer` for THIS query
+  // on its own — this one because the stat, not the ranking round trip, is
+  // what has to resolve first (and if it resolves to "missing", 7d's fallback
+  // fires a real rank request, which unsticks this the normal way, but until
+  // then the deadline is what stops a slow stat from pinning a stale answer
+  // in place).
+  useEffect(() => {
+    if (!behind || (!pending && !suppressRank)) return;
+    const timer = window.setTimeout(() => {
+      setAnswer((prev) => {
+        if (prev === null || prev.query === q) return prev;
+        return narrowAnswer(prev, q).length > 0 ? prev : null;
+      });
+    }, STALE_CLEAR_MS);
+    return () => window.clearTimeout(timer);
+  }, [pending, suppressRank, behind, q]);
 
   // -- the box is where typing goes ------------------------------------------
   //
@@ -449,16 +673,7 @@ export function FilesSearch({
 
   // -- AI search -------------------------------------------------------------
   const aiCtl = useRef<AbortController | null>(null);
-  // The path shortcut's stat, cancellable for the same reason: both outlive the
-  // gesture that started them, and both act on the app when they land.
-  const statCtl = useRef<AbortController | null>(null);
-  useEffect(
-    () => () => {
-      aiCtl.current?.abort();
-      statCtl.current?.abort();
-    },
-    [],
-  );
+  useEffect(() => () => aiCtl.current?.abort(), []);
   const syncQueryParam = (value: string | null) => {
     const params = new URLSearchParams(location.search);
     if (value) params.set("q", value);
@@ -497,7 +712,6 @@ export function FilesSearch({
 
   const clear = () => {
     aiCtl.current?.abort();
-    statCtl.current?.abort();
     setQuery("");
     setAi(AI_OFF);
     setHighlight(null);
@@ -507,9 +721,6 @@ export function FilesSearch({
   const edit = (value: string) => {
     setQuery(value);
     setHighlight(null);
-    // Editing the query retracts the address that was submitted from it, so a
-    // stat still in flight for the old one must not navigate when it lands.
-    statCtl.current?.abort();
     // Typing is a user gesture, so it is also the retry for a failed request —
     // the same way useWalkSearch re-arms its stream from setQuery. (Editing to
     // a query that was never asked re-runs anyway; this covers editing BACK to
@@ -536,8 +747,11 @@ export function FilesSearch({
   const showingAi = ai.status === "done" && ai.query === q;
   // Whether the instant list is a finished answer FOR THIS QUERY. Gates the AI
   // row's pre-selection, so Enter while the request is in flight cannot spend a
-  // model call on a query that was about to answer itself.
-  const settled = rankingSettled(answer, q, pending, failure !== "");
+  // model call on a query that was about to answer itself. `!searchable` short-
+  // circuits it to false outright: a query under MIN_QUERY_CHARS never asked
+  // anything, so there is nothing for it to be settled ON, and a model call on
+  // "a" is never the intent.
+  const settled = searchable && rankingSettled(answer, q, pending, failure !== "");
   // The indexing caveat, same helper and same two messages as the listing's
   // search chip (listing/index-caveat) so the two boxes make the same claim in
   // the same words. It is the piece that makes a lagging answer read as
@@ -554,44 +768,50 @@ export function FilesSearch({
   // changed a file, the server is re-indexing that folder, and until a status
   // poll catches the run nothing else would say so.
   const caveat =
-    active && !showingAi
+    active && !showingAi && searchable && !showOpenRow
       ? searchCaveat(indexScan, { behind, pending, rescanPending: indexRescanPending() })
       : null;
-  const current = activeRow(highlight, hits.length, settled);
 
-  const openRow = (row: number) => {
-    if (isAiRow(row, hits.length)) runAi(q);
-    else navigate(hits[row].path, { isDir: hits[row].is_dir });
+  // The row-model descriptor (lib/home-search): at most one leading "Open"
+  // row, then files, then at most one AI row. `showOpenRow` forces the other
+  // two off — the request that would have produced file hits was never sent
+  // (7c), and a paid model call is never the intent for something shaped like
+  // a path (7e, independent of whether it actually resolved).
+  const rowModel: RowModel = {
+    openRow: showOpenRow,
+    fileCount: showOpenRow ? 0 : hits.length,
+    aiRow: searchable && !showOpenRow && address === null,
+  };
+  const current = activeRow(highlight, rowModel, settled);
+
+  const activateRow = (row: number) => {
+    if (isOpenRow(row, rowModel)) {
+      if (addr.status === "exists") navigate(addr.path, { isDir: addr.is_dir });
+      return;
+    }
+    if (isAiRow(row, rowModel)) {
+      runAi(q);
+      return;
+    }
+    const fi = row - (rowModel.openRow ? 1 : 0);
+    navigate(hits[fi].path, { isDir: hits[fi].is_dir });
   };
 
-  // Enter with no row chosen: a query that is really an ADDRESS goes straight
-  // there (a pasted ~/Downloads is not a search); otherwise it commits the top
-  // hit, or — only once ranking has settled on nothing — the AI row.
-  const submit = async () => {
-    if (highlight === null) {
-      const target = pathShortcut(q, home);
-      if (target !== null) {
-        // A stat on a slow or network mount can outlive the intent behind it, and
-        // navigating on a stale answer is the worst kind of wrong: it yanks the
-        // user out of wherever they went next. Superseded by the next submit,
-        // cancelled by clear()/unmount, and re-checked after the await — a
-        // resolved-but-abandoned stat must not move anyone.
-        statCtl.current?.abort();
-        const ctl = new AbortController();
-        statCtl.current = ctl;
-        try {
-          const st = await statPath(target, ctl.signal);
-          if (ctl.signal.aborted) return;
-          navigate(st.path, { isDir: st.is_dir });
-          return;
-        } catch {
-          if (ctl.signal.aborted) return;
-          // not a real path — treat it as a search query
-        }
-      }
+  // Enter with no row chosen: a resolved address (the open row) or the top
+  // hit commits, or — only once ranking has settled on nothing — the AI row.
+  // The address itself is no longer resolved HERE: `addr` is kept live by the
+  // effect above as the query is typed, so by the time Enter is pressed the
+  // row model already reflects it — `activeRow`/`submitRow` do the rest.
+  const submit = () => {
+    if (address !== null && addr.status === "unknown") {
+      // The paste-and-go gesture: Enter fired before the stat came back.
+      // Await it instead of dropping the keystroke — the effect above
+      // commits once `addr` settles.
+      awaitingCommit.current = address;
+      return;
     }
-    const row = submitRow(highlight, hits.length, settled);
-    if (row !== null) openRow(row);
+    const row = submitRow(highlight, rowModel, settled);
+    if (row !== null) activateRow(row);
   };
 
   return (
@@ -607,10 +827,12 @@ export function FilesSearch({
           placeholder="Search your files — or paste a path like ~/Downloads"
           aria-label="Search your files"
           role="combobox"
-          aria-expanded={active && !showingAi}
+          aria-expanded={active && !showingAi && (searchable || showOpenRow)}
           aria-controls="fh-result-list"
           aria-activedescendant={
-            active && !showingAi && current !== null ? "fh-row-" + current : undefined
+            active && !showingAi && (searchable || showOpenRow) && current !== null
+              ? "fh-row-" + current
+              : undefined
           }
           autoComplete="off"
           spellCheck={false}
@@ -618,12 +840,17 @@ export function FilesSearch({
           onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-              if (!active || showingAi) return;
+              if (!active || showingAi || (!searchable && !showOpenRow)) return;
               e.preventDefault();
-              setHighlight((h) => stepHighlight(h, hits.length, e.key === "ArrowDown" ? 1 : -1));
+              // Step from `current` (the RESOLVED row, `activeRow` above), not
+              // the raw `highlight` state: the top file row can be active with
+              // `highlight` still null (activeRow's implicit pre-select), and
+              // stepping from null would land the first ArrowDown back on row
+              // 0 — the already-visible selection — instead of row 1.
+              setHighlight(stepHighlight(current, rowModel, e.key === "ArrowDown" ? 1 : -1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              void submit();
+              submit();
             } else if (e.key === "Escape" && active) {
               e.preventDefault();
               clear();
@@ -660,22 +887,90 @@ export function FilesSearch({
                 new query is in flight the previous answer is what is on screen,
                 and a note that denies having rows over rows that are visibly
                 there is the mid-rescan "still building" bug in another costume.
-                Only having never had an answer may say so. */}
-            {answer === null && failure !== "" ? (
+                Only having never had an answer may say so.
+
+                `!searchable` comes FIRST, ahead of every other branch: under
+                MIN_QUERY_CHARS no request went out, so `answer` (if any) is
+                whatever an earlier, longer query left behind, and reporting
+                on it here would describe a search that didn't happen. */}
+            {/* `showOpenRow` comes ahead of everything below it too: once an
+                address resolves, the row IS the content, and reporting on
+                `answer` (whatever a previous, non-address query left behind,
+                or nothing at all) would describe a search that was never
+                sent (7c skips it entirely). `suppressRank`, right below it,
+                is the SAME protection one beat earlier in the address's
+                lifecycle: the stat hasn't resolved yet (addr.status is
+                "unknown", neither "exists" nor "missing"), so no rank
+                request went out for this query either — `answer` is still
+                whatever the PREVIOUS, non-address query left behind. This
+                used to fall all the way through to the count-note branch
+                below, reporting that stale answer's total over rows that
+                (see `hits`, above) have likely narrowed to nothing. */}
+            {showOpenRow ? (
+              <>
+                <kbd>↵</kbd> to open · <kbd>esc</kbd> to clear
+              </>
+            ) : !searchable ? (
+              "Keep typing…"
+            ) : suppressRank ? (
+              "Checking…"
+            ) : answer === null && failure !== "" ? (
               `The file index could not be searched: ${failure}`
             ) : answer === null ? (
               "Searching…"
+            ) : !answer.covered && answer.reason === "disabled" ? (
+              // Distinct from "still building": nothing is coming, because
+              // nothing is scanning, because the user turned it off. Saying
+              // "still building" here would be a lie the user has no way to
+              // resolve by waiting.
+              <>
+                File indexing is off —{" "}
+                <button
+                  type="button"
+                  className="fh-link-button"
+                  onClick={() => navigateUrl("/preferences?tab=indexing")}
+                >
+                  enable it in Preferences
+                </button>
+                .
+              </>
             ) : !answer.covered ? (
               // Never "no matches" for an index that has not been built: that
               // would blame the user's files for the app's state.
               "The file index is still building — AI search can answer in the meantime."
-            ) : answer.hits.length === 0 && settled ? (
+            ) : hits.length === 0 && settled && rowModel.aiRow ? (
+              // `hits`, not `answer.hits`: `settled` already rules out
+              // `behind` (see `hits`'s own comment — `rankingSettled` is
+              // false whenever `answer.query !== q`), so the two agree here,
+              // but reading the rendered array rather than the held answer's
+              // is what keeps every branch below honest about what's on
+              // screen instead of what a previous request found.
               `No file name matched “${q}” — AI search can look at dates, types and sizes.`
-            ) : answer.hits.length === 0 ? (
+            ) : hits.length === 0 && settled ? (
+              // Settled, zero hits, but the AI row is suppressed (address !==
+              // null: this query is shaped like a path that did not resolve —
+              // 7e). Offering AI search here would point at a row that is not
+              // being rendered.
+              `No file name matched “${q}”.`
+            ) : hits.length === 0 ? (
+              // Reads `hits`, the narrowed set, not `answer.hits`: while
+              // `behind`, the previous answer can hold plenty of hits that
+              // narrowed to none for THIS query — "Searching…" (a new answer
+              // may yet fill the list) is the honest note there, not silence
+              // followed by whatever the old answer's non-zero count would
+              // have said below.
               "Searching…"
             ) : (
               <>
-                {homeCountNote(answer.total, answer.truncated)}
+                {/* `behind` (narrowed, no round trip landed for `q` yet) means
+                    `answer.total`/`answer.truncated` describe the PREVIOUS
+                    query, not this one — the only honest total for the
+                    current query is a LOWER bound, `hits.length` (narrowing
+                    can only ever remove rows, never add — see `narrowAnswer`),
+                    and `truncated` must read as true unconditionally: more
+                    could still be out there for `q` that the held answer
+                    never had a chance to include. */}
+                {homeCountNote(behind ? hits.length : answer.total, behind || answer.truncated)}
                 {" · "}
                 <kbd>↑</kbd>
                 <kbd>↓</kbd> to pick · <kbd>esc</kbd> to clear
@@ -685,7 +980,9 @@ export function FilesSearch({
                 PENDING_INDICATOR_MS the answer beats the words onto the screen,
                 and a note that appears and vanishes reads as slower than one
                 that never appeared. */}
-            {slow && hits.length > 0 && <span className="fh-searching-note"> · Searching…</span>}
+            {searchable && !showOpenRow && slow && hits.length > 0 && (
+              <span className="fh-searching-note"> · Searching…</span>
+            )}
             {caveat && (
               <span className="fh-index-chip" title={caveat.title}>
                 {/* Only while a scan is actually running. The chip also carries
@@ -699,30 +996,50 @@ export function FilesSearch({
               </span>
             )}
           </p>
-          <ul
-            className={"fh-results" + (behind ? " is-stale" : "")}
-            id="fh-result-list"
-            role="listbox"
-            aria-label="Search results"
-          >
-            {hits.map((hit, i) => (
-              <FileRow
-                key={hit.path}
-                hit={hit}
-                home={home}
-                active={current === i}
-                id={"fh-row-" + i}
-                onHover={() => setHighlight(i)}
-              />
-            ))}
-            <AiActionRow
-              query={q}
-              active={current === hits.length}
-              running={ai.status === "running"}
-              id={"fh-row-" + hits.length}
-              onRun={() => runAi(q)}
-            />
-          </ul>
+          {/* Nothing to show below MIN_QUERY_CHARS UNLESS an address resolved
+              (an "Open" row needs no search — it isn't ranked, it's stat'd —
+              so it is not gated on the same threshold): otherwise no request
+              went out, `hits` is stale leftover from a longer query, and
+              offering the AI row here would arm a model call on "a". The note
+              above already says why the list is empty. */}
+          {(searchable || showOpenRow) && (
+            <ul
+              className={"fh-results" + (behind ? " is-stale" : "")}
+              id="fh-result-list"
+              role="listbox"
+              aria-label="Search results"
+            >
+              {showOpenRow && addr.status === "exists" && (
+                <OpenRow
+                  path={addr.path}
+                  isDir={addr.is_dir}
+                  active={current === 0}
+                  id="fh-row-0"
+                  onOpen={() => navigate(addr.path, { isDir: addr.is_dir })}
+                />
+              )}
+              {!showOpenRow &&
+                hits.map((hit, i) => (
+                  <FileRow
+                    key={hit.path}
+                    hit={hit}
+                    home={home}
+                    active={current === i}
+                    id={"fh-row-" + i}
+                    onHover={() => setHighlight(i)}
+                  />
+                ))}
+              {rowModel.aiRow && (
+                <AiActionRow
+                  query={q}
+                  active={current === hits.length}
+                  running={ai.status === "running"}
+                  id={"fh-row-" + hits.length}
+                  onRun={() => runAi(q)}
+                />
+              )}
+            </ul>
+          )}
         </div>
       )}
     </div>

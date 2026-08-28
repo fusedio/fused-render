@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 import warnings
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,11 +28,10 @@ from urllib.parse import quote, urlsplit
 from blob_tokens import TOKENS, is_signed, refused_access
 from geo_paths import (
     is_http_url,
-    is_managed_mount,
-    is_native_remote_path,
     is_remote_path,
     is_vsi_path,
     normalize_remote_path,
+    resolve_source,
 )
 from optional_runtime import require
 from raster_categories import classify_categories, read_pam_aux_xml, resolve_render_mode
@@ -40,11 +40,24 @@ from raster_categories import classify_categories, read_pam_aux_xml, resolve_ren
 AUTO_OPTIMIZE_MAX_BYTES = int(
     os.environ.get("MAP_VIEWER_AUTO_OPTIMIZE_MAX_BYTES", str(512 << 20))
 )
+# A remote raster with no overview pyramid has to be read whole to show at all;
+# below this size that download happens quietly, above it the user is asked
+# first (see `awaiting_confirm` in `_describe`).
+DOWNLOAD_CONFIRM_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES", str(50 << 20))
+)
+# Cap the on-disk COG/preview derivative cache. Least-recently-opened entries
+# are evicted past this; a derivative backing a live layer is never removed.
+OPTIMIZED_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_OPTIMIZED_CACHE_MAX_BYTES", str(2 << 30))
+)
 PREVIEW_MAX_SIZE = int(os.environ.get("MAP_VIEWER_PREVIEW_MAX_SIZE", "512"))
 PREVIEW_VERSION = "v3"
 MAX_TILE_CACHE = int(os.environ.get("MAP_VIEWER_TILE_CACHE_SIZE", "512"))
 MAX_IDLE_PER_LOCATOR = int(os.environ.get("MAP_VIEWER_READER_POOL", "4"))
 MAX_IDLE_READERS = int(os.environ.get("MAP_VIEWER_READER_POOL_IDLE", "24"))
+# Half the Web Mercator world width in metres (EPSG:3857 spans [-x, x]).
+WEBMERC_HALF_WIDTH = 20037508.342789244
 RASTER_SUFFIXES = {
     ".tif",
     ".tiff",
@@ -62,8 +75,11 @@ RASTER_SUFFIXES = {
     ".hgt",
     ".grd",
     ".nc",
+    ".nc4",
     ".hdf",
     ".h5",
+    ".hdf5",
+    ".he5",
 }
 RASTER_RUNTIME = {
     "numpy": "numpy",
@@ -76,7 +92,47 @@ def _raster_dependency_error() -> str | None:
     return require("Raster layers", RASTER_RUNTIME)
 
 
-def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
+_TRANSPARENT_TILE: bytes | None = None
+
+
+def transparent_tile() -> bytes:
+    """One shared blank 256px PNG for any tile outside a source's bounds."""
+    global _TRANSPARENT_TILE
+    if _TRANSPARENT_TILE is None:
+        import io
+        from PIL import Image
+
+        output = io.BytesIO()
+        Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(output, "PNG")
+        _TRANSPARENT_TILE = output.getvalue()
+    return _TRANSPARENT_TILE
+
+
+def _web_mercator_x(lon: float) -> float:
+    """Web Mercator (EPSG:3857) easting for a longitude, unclamped past ±180."""
+    return math.radians(lon) * 6378137.0
+
+
+def _web_mercator_y(lat: float) -> float:
+    """Web Mercator northing for a latitude, clamped to the valid range."""
+    lat = max(-85.051129, min(85.051129, lat))
+    return math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)) * 6378137.0
+
+
+def _crossing_maxzoom(tms: Any, bounds: list[float], width: int, height: int) -> int:
+    """Native maxzoom estimated off the unwrapped extent. rio-tiler (and GDAL's
+    calculate_default_transform, even through +over) reprojects a 180-crossing
+    grid to a world-spanning box and caps it far short of native (h35 -> z3)."""
+    west, south, east, north = bounds[0], bounds[1], bounds[2], bounds[3]
+    east_continuous = east if east >= west else east + 360.0
+    x_res = (_web_mercator_x(east_continuous) - _web_mercator_x(west)) / width
+    y_res = (_web_mercator_y(north) - _web_mercator_y(south)) / height
+    return int(tms.zoom_for_res(max(x_res, y_res)))
+
+
+def error_descriptor(
+    artifact_id: str, message: str, detected_type: str = "raster"
+) -> dict[str, Any]:
     return {
         "id": artifact_id,
         "status": "error",
@@ -87,7 +143,7 @@ def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
         "style": {},
         "warnings": [],
         "message": message,
-        "detected_type": "raster",
+        "detected_type": detected_type,
     }
 
 
@@ -101,15 +157,6 @@ def _jsonable(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
-
-
-def _raw_url(origin: str, path: str) -> str:
-    return (
-        origin.rstrip("/")
-        + "/api/fs/raw?path="
-        + quote(path, safe="")
-        + "&pooled=1"
-    )
 
 
 @contextlib.contextmanager
@@ -182,7 +229,7 @@ def _source_fingerprint(
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
 
 
-def _ranges(data: Any) -> list[list[float]]:
+def band_ranges(data: Any) -> list[list[float]]:
     import numpy as np
 
     result: list[list[float]] = []
@@ -317,6 +364,7 @@ class RasterSource:
     colormap: str
     rescale: list[list[float]]
     indexes: list[int] = field(default_factory=lambda: [1])
+    crosses_antimeridian: bool = False
     true_color: bool = False
     auto_rescale: bool = True
     render_mode: str = "single"
@@ -356,11 +404,18 @@ class _ReaderPool:
     blocks — a fresh Reader is opened when no idle handle is available — and idle
     handles are reused, bounded per locator and overall. The caller supplies the
     GDAL environment so a freshly opened handle picks up the same options.
+
+    A local original is never pooled (gated by ``poolable``): a kept-open handle
+    locks the user's file on Windows until they quit the app, and reopening a
+    local file is cheap. Only remote ``/vsi`` sources and cache derivatives —
+    costly to reopen, and never the user's file — stay warm.
     """
 
-    def __init__(self, max_idle_per_locator: int, max_idle: int):
+    def __init__(self, max_idle_per_locator: int, max_idle: int,
+                 poolable=None):
         self.max_idle_per_locator = max_idle_per_locator
         self.max_idle = max_idle
+        self.poolable = poolable
         self.lock = threading.Lock()
         self.idle: OrderedDict[str, list[Any]] = OrderedDict()
         self.idle_count = 0
@@ -393,7 +448,7 @@ class _ReaderPool:
 
     def _return(self, locator: str, reader: Any, healthy: bool) -> None:
         pooled = False
-        if healthy:
+        if healthy and (self.poolable is None or self.poolable(locator)):
             with self.lock:
                 stack = self.idle.setdefault(locator, [])
                 if len(stack) < self.max_idle_per_locator:
@@ -430,8 +485,65 @@ class RasterEngine:
         self.upstreams: dict[str, tuple[str, str]] = {}
         self.lock = threading.RLock()
         self.tile_cache: OrderedDict[tuple[Any, ...], bytes] = OrderedDict()
-        self.readers = _ReaderPool(MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS)
-        self._transparent: bytes | None = None
+        self.readers = _ReaderPool(
+            MAX_IDLE_PER_LOCATOR, MAX_IDLE_READERS, poolable=self._poolable
+        )
+        # One persistent worker: an ephemeral /vsicurl thread deadlocks at exit
+        # on Windows (loader lock vs the GIL - see daemon.RENDER_POOL).
+        self.prepare_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="prepare"
+        )
+        self._evict_optimized()
+
+    def _poolable(self, locator: str) -> bool:
+        """Whether a Reader for *locator* may stay open between tiles: remote
+        ``/vsi`` sources and cache derivatives may; a local original may not —
+        pooling it would lock the user's file (see the pool docstring)."""
+        if locator.startswith("/vsi"):
+            return True
+        try:
+            return Path(locator).resolve().is_relative_to(self.cache_dir.resolve())
+        except OSError:
+            return False
+
+    def _evict_optimized(self) -> None:
+        """Keep the on-disk derivative cache under OPTIMIZED_CACHE_MAX_BYTES,
+        deleting least-recently-opened entries first. A derivative that backs a
+        live layer is never removed, and _describe touches a reused derivative's
+        mtime so the order reflects last open rather than build time."""
+        if OPTIMIZED_CACHE_MAX_BYTES <= 0:
+            return
+        try:
+            entries = [
+                (entry.path, entry.stat())
+                for entry in os.scandir(self.optimized_dir)
+                if entry.is_file()
+                and entry.name.endswith(".tif")
+                and ".tmp" not in entry.name
+                and ".stage" not in entry.name
+            ]
+        except OSError:
+            return
+        total = sum(stat.st_size for _, stat in entries)
+        if total <= OPTIMIZED_CACHE_MAX_BYTES:
+            return
+        with self.lock:
+            protected = {
+                os.path.abspath(path)
+                for record in self.sources.values()
+                for path in (record.optimized_path, record.preview_path)
+                if path
+            }
+        for path, stat in sorted(entries, key=lambda item: item[1].st_mtime):
+            if total <= OPTIMIZED_CACHE_MAX_BYTES:
+                break
+            if os.path.abspath(path) in protected:
+                continue
+            try:
+                os.remove(path)
+            except OSError:
+                continue
+            total -= stat.st_size
 
     @staticmethod
     def _needs_relay(url: str) -> bool:
@@ -540,33 +652,12 @@ class RasterEngine:
         if suffix in RASTER_SUFFIXES:
             dependency_error = _raster_dependency_error()
             if dependency_error:
-                return _dependency_descriptor(
+                return error_descriptor(
                     str(req.get("artifact_id") or ""),
                     dependency_error,
                 )
 
-        direct_target = str(req.get("target") or "")
-        if is_remote_path(direct_target):
-            direct_target = normalize_remote_path(direct_target)
-        supplied_url = str(req.get("source_url") or "")
-        if is_remote_path(supplied_url):
-            supplied_url = normalize_remote_path(supplied_url)
-        is_local_file = (
-            not is_remote_path(target)
-            and not is_managed_mount(target)
-            and os.path.isfile(target)
-        )
-        if is_local_file:
-            source = os.path.abspath(target)
-        elif is_native_remote_path(target):
-            source = target
-        elif target == direct_target and supplied_url:
-            source = supplied_url
-        elif is_http_url(target):
-            source = target
-        else:
-            origin = str(req.get("source_origin") or "")
-            source = _raw_url(origin, target) if origin else os.path.abspath(target)
+        source = resolve_source(req, target)
 
         try:
             return self._describe_signed(
@@ -577,18 +668,10 @@ class RasterEngine:
             )
         except Exception as error:
             if suffix in RASTER_SUFFIXES:
-                return {
-                    "id": str(req.get("artifact_id") or ""),
-                    "status": "error",
-                    "kind": None,
-                    "bounds": None,
-                    "data": {},
-                    "stats": {},
-                    "style": {},
-                    "warnings": [],
-                    "message": _read_failure_message(source, error),
-                    "detected_type": "raster",
-                }
+                return error_descriptor(
+                    str(req.get("artifact_id") or ""),
+                    _read_failure_message(source, error),
+                )
             return None
 
     def _open_path(self, record: RasterSource, locator: str) -> str:
@@ -623,6 +706,23 @@ class RasterEngine:
             if not TOKENS.learn(source, f"{type(error).__name__}: {error}"):
                 raise
         return self._describe(**arguments)
+
+    def _derivative_ready(self, path: Path, width: int, height: int) -> bool:
+        """Whether a cached derivative exists and matches the source grid.
+
+        A stale or truncated file at the fingerprint path is not "already
+        downloaded" — the confirm gate must still fire — so mere existence is
+        not enough.
+        """
+        import rasterio
+
+        if not path.exists():
+            return False
+        try:
+            with rasterio.open(path) as cached:
+                return cached.width == width and cached.height == height
+        except Exception:
+            return False
 
     def _describe(
         self, target: str, source: str, artifact_id: str, opts: dict[str, Any]
@@ -672,6 +772,9 @@ class RasterEngine:
                     dataset.crs, "EPSG:4326", *dataset.bounds, densify_pts=21
                 )
             ]
+            # Crosses 180: either it wrapped (west > east) or it is stored with
+            # an east edge past 180. Both need the shifted read in tile().
+            crosses_antimeridian = bounds[2] < bounds[0] or bounds[2] > 180.0 + 1e-9
             overviews = dataset.overviews(1) if dataset.count else []
             image_structure = dataset.tags(ns="IMAGE_STRUCTURE")
             block_shapes = [list(shape) for shape in dataset.block_shapes]
@@ -680,11 +783,39 @@ class RasterEngine:
             indexes = tuple(index_list) if len(index_list) > 1 else index_list[0]
             render_bands = len(index_list)
             true_color = _is_true_color(dataset, index_list)
+            # The size decides both whether to build a local pyramid and whether
+            # displaying a remote source means downloading the whole file; a
+            # source that already has overviews needs neither, so skip the HTTP
+            # HEAD when it cannot matter.
+            source_size = (
+                None if overviews and is_remote_path(source) else _source_size(source)
+            )
+            fingerprint = _source_fingerprint(target, source, source_size, locator)
+            derivative = self.optimized_dir / f"{fingerprint}.tif"
+            # A remote raster with no overview pyramid cannot be read cheaply at
+            # any zoom — even a coarse preview reads it at full resolution — so
+            # past a size threshold, stop before touching a pixel and let the
+            # user decide rather than silently pulling the whole file. A local
+            # copy already built, a local source, or a cloud-optimized one never
+            # reaches this.
+            awaiting_confirm = (
+                is_remote_path(source)
+                and not overviews
+                and not crosses_antimeridian
+                and not self._derivative_ready(
+                    derivative, dataset.width, dataset.height
+                )
+                and source_size is not None
+                and source_size > DOWNLOAD_CONFIRM_MAX_BYTES
+            )
             # A declared mask or alpha band already answers "which pixels are
-            # real", so there is nothing to infer from the collar.
+            # real", so there is nothing to infer from the collar. An unconfirmed
+            # download infers nothing either — that read is the whole file.
             inferred_nodata = (
                 _infer_background(dataset, index_list)
-                if dataset.nodata is None and not _has_own_mask(dataset)
+                if dataset.nodata is None
+                and not _has_own_mask(dataset)
+                and not awaiting_confirm
                 else None
             )
             requested = opts.get("rescale")
@@ -710,7 +841,7 @@ class RasterEngine:
                         np.ma.getmaskarray(preview_data),
                         np.all(preview_data.data == inferred_nodata, axis=0)[None, :, :],
                     )
-                rescale = _ranges(preview_data)
+                rescale = band_ranges(preview_data)
                 sample_data = preview_data
             else:
                 rescale = _dtype_ranges(dataset.dtypes, render_bands)
@@ -723,7 +854,7 @@ class RasterEngine:
             categories = None
             category_colors: dict[int, tuple[int, ...]] = {}
             embedded_colormap = None
-            if render_bands == 1:
+            if render_bands == 1 and not awaiting_confirm:
                 if sample_data is None:
                     try:
                         with Reader(locator) as reader:
@@ -759,14 +890,11 @@ class RasterEngine:
                 warnings.simplefilter("ignore", NoOverviewWarning)
                 with Reader(locator) as reader:
                     minzoom, maxzoom = int(reader.minzoom), int(reader.maxzoom)
+                    if crosses_antimeridian:
+                        maxzoom = _crossing_maxzoom(
+                            reader.tms, bounds, dataset.width, dataset.height
+                        )
 
-            # The size only decides whether to build a local pyramid, which a
-            # source that already has overviews never needs. Asking for it costs
-            # a separate HTTP HEAD, so skip it when the answer cannot matter.
-            source_size = None if overviews and is_remote_path(source) else _source_size(source)
-            fingerprint = _source_fingerprint(
-                target, source, source_size, locator
-            )
             record = RasterSource(
                 source_id=fingerprint,
                 target=target,
@@ -790,6 +918,7 @@ class RasterEngine:
                 colormap=str(opts.get("colormap") or "viridis"),
                 rescale=rescale,
                 indexes=index_list,
+                crosses_antimeridian=crosses_antimeridian,
                 true_color=true_color,
                 auto_rescale=auto_rescale,
                 render_mode=render_mode,
@@ -798,7 +927,6 @@ class RasterEngine:
                 category_colors=category_colors,
             )
 
-        derivative = self.optimized_dir / f"{fingerprint}.tif"
         preview_derivative = self.optimized_dir / (
             f"{fingerprint}.preview-{PREVIEW_VERSION}.tif"
         )
@@ -813,6 +941,8 @@ class RasterEngine:
                             "progress": 100,
                             "path": str(derivative),
                         }
+                        with contextlib.suppress(OSError):
+                            os.utime(derivative, None)
             except Exception:
                 pass
         if record.optimized_path is None and preview_derivative.exists():
@@ -820,8 +950,10 @@ class RasterEngine:
                 with rasterio.open(preview_derivative) as cached:
                     if cached.crs is not None and cached.count:
                         record.preview_path = str(preview_derivative)
+                        with contextlib.suppress(OSError):
+                            os.utime(preview_derivative, None)
                         if record.auto_rescale:
-                            record.rescale = _ranges(cached.read(masked=True))
+                            record.rescale = band_ranges(cached.read(masked=True))
                         record.optimization = {
                             "status": "available",
                             "progress": 15,
@@ -836,7 +968,24 @@ class RasterEngine:
         if not record.has_overviews and not record.preview_path:
             record.optimization = {"status": "available", "progress": 0}
 
-        needs_preparation = not record.has_overviews and not record.preview_path
+        # A COG derivative warped to Web Mercator drops every pixel east of 180,
+        # so a crossing source stays on the original via tile()'s shifted read.
+        if record.crosses_antimeridian:
+            record.optimization = {"status": "not_needed", "progress": 100}
+        # An oversized remote source with no pyramid waits for the user to accept
+        # the download before anything is fetched or built.
+        if awaiting_confirm:
+            record.optimization = {
+                "status": "confirm_download",
+                "progress": 0,
+                "download_bytes": source_size,
+            }
+        needs_preparation = (
+            not record.has_overviews
+            and not record.preview_path
+            and not record.crosses_antimeridian
+            and not awaiting_confirm
+        )
         auto_optimize = (
             needs_preparation
             and record.source_size is not None
@@ -877,6 +1026,11 @@ class RasterEngine:
         if existing is not None:
             return self.descriptor(existing, artifact_id, existing_notices)
 
+        if awaiting_confirm:
+            notices.append(
+                "This raster is not cloud-optimized, so displaying it means "
+                "downloading the whole file. Confirm to continue."
+            )
         if needs_preparation:
             notices.append(
                 "A cached coarse preview is being prepared so the raster "
@@ -959,6 +1113,7 @@ class RasterEngine:
                 "categories": record.categories,
                 "indexes": list(record.indexes),
                 "true_color": record.true_color,
+                "crosses_antimeridian": record.crosses_antimeridian,
             },
             "style": {
                 "opacity": 0.9,
@@ -1018,10 +1173,7 @@ class RasterEngine:
                 "full_requested": full_optimize,
                 "started_at": time.time(),
             }
-        thread = threading.Thread(
-            target=self._prepare, args=(source_id,), daemon=True
-        )
-        thread.start()
+        self.prepare_pool.submit(self._prepare, source_id)
         return self.job(source_id)
 
     def _prepare(self, source_id: str) -> None:
@@ -1141,7 +1293,7 @@ class RasterEngine:
                             range_data = np.ma.masked_equal(
                                 range_data, render_nodata
                             )
-                        record.rescale = _ranges(range_data)
+                        record.rescale = band_ranges(range_data)
                     record.optimization.update(
                         progress=15,
                         phase="preview_ready",
@@ -1200,6 +1352,7 @@ class RasterEngine:
                     "finished_at": time.time(),
                 }
                 self._drop_source_tiles(source_id)
+            self._evict_optimized()
         except Exception as error:
             with self.lock:
                 record.optimization = {
@@ -1221,14 +1374,65 @@ class RasterEngine:
             self.tile_cache.pop(key, None)
 
     def transparent_tile(self) -> bytes:
-        if self._transparent is None:
-            import io
-            from PIL import Image
+        return transparent_tile()
 
-            output = io.BytesIO()
-            Image.new("RGBA", (256, 256), (0, 0, 0, 0)).save(output, "PNG")
-            self._transparent = output.getvalue()
-        return self._transparent
+    @staticmethod
+    def _over_crs(crs: Any) -> Any:
+        """Same projection with PROJ's ``+over`` so longitudes are not wrapped
+        into [-180, 180]. ``+nadgrids=@null`` (in EPSG:3857) re-wraps and cancels
+        ``+over``, so it is dropped."""
+        from rasterio.crs import CRS
+
+        proj4 = crs.to_proj4()
+        if not proj4:
+            return crs
+        tokens = [
+            token
+            for token in proj4.split()
+            if not token.startswith("+nadgrids")
+        ]
+        if "+over" not in tokens:
+            tokens.append("+over")
+        return CRS.from_proj4(" ".join(tokens))
+
+    def _crossing_tile(
+        self, reader: Any, x: int, y: int, z: int, indexes: Any,
+        resampling_method: str, bounds: list[float],
+    ) -> Any:
+        """Read one XYZ tile of a 180-crossing raster: shift the tile's mercator
+        bounds by whole worlds until they land in the dataset's unwrapped domain,
+        then read a normal 256px tile there."""
+        import numpy as np
+        from morecantile import Tile
+        from rio_tiler.errors import TileOutsideBounds
+
+        src_over = self._over_crs(reader.dataset.crs)
+        dst_over = self._over_crs(reader.tms.rasterio_crs)
+        tile_bounds = reader.tms.xy_bounds(Tile(x=x, y=y, z=z))
+        west, east = bounds[0], bounds[2]
+        east_continuous = east if east >= west else east + 360.0
+        data_xmin = _web_mercator_x(west)
+        data_xmax = _web_mercator_x(east_continuous)
+        full_world = 2 * WEBMERC_HALF_WIDTH
+
+        for offset in (0.0, full_world, -full_world):
+            left = tile_bounds.left + offset
+            right = tile_bounds.right + offset
+            if right <= data_xmin or left >= data_xmax:
+                continue
+            image = reader.part(
+                (left, tile_bounds.bottom, right, tile_bounds.top),
+                dst_crs=dst_over,
+                bounds_crs=dst_over,
+                width=256,
+                height=256,
+                indexes=indexes,
+                resampling_method=resampling_method,
+                vrt_options={"src_crs": src_over},
+            )
+            if not np.ma.getmaskarray(image.array).all():
+                return image
+        raise TileOutsideBounds(f"Tile(x={x}, y={y}, z={z}) is outside bounds")
 
     def tile(self, source_id: str, z: int, x: int, y: int) -> bytes | None:
         import numpy as np
@@ -1239,10 +1443,23 @@ class RasterEngine:
             record = self.sources.get(source_id)
             if record is None:
                 return None
+            # Reading a tile of an unconfirmed source is the download the gate
+            # exists to withhold, so draw nothing until the user accepts it.
+            if record.optimization.get("status") == "confirm_download":
+                return self.transparent_tile()
+            # While a preparation is pulling a remote source and no coarse copy
+            # exists yet, an on-demand read would re-fetch the same bytes _prepare
+            # is already downloading, so draw nothing until a preview or the
+            # pyramid lands. A local source has no such duplicate fetch, so it
+            # keeps serving live reads at native zoom during preparation.
+            preparing_remote = (
+                record.optimization.get("status") in {"queued", "running"}
+                and is_remote_path(record.source)
+            )
             if (
                 not record.has_overviews
                 and not record.preview_path
-                and z < record.minzoom
+                and (z < record.minzoom or preparing_remote)
             ):
                 return self.transparent_tile()
             locator = record.locator_for_zoom(z)
@@ -1266,27 +1483,30 @@ class RasterEngine:
             colormap_name = record.colormap
             inferred_nodata = record.inferred_nodata
             category_colors = record.category_colors
+            crosses_antimeridian = record.crosses_antimeridian
+            geo_bounds = record.bounds
 
+        # Categorical class codes must never blend into bogus intermediate
+        # values, including at the lower-resolution preview derivative.
+        resampling_method = (
+            "nearest"
+            if categorical
+            or not (record.preview_path and locator == record.preview_path)
+            else "bilinear"
+        )
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", NoOverviewWarning)
                 with _gdal_env(open_path), self.readers.borrow(open_path) as reader:
-                    image = reader.tile(
-                        x,
-                        y,
-                        z,
-                        indexes=indexes,
-                        # Categorical class codes must never blend into
-                        # bogus intermediate values, including at the
-                        # lower-resolution preview derivative.
-                        resampling_method=(
-                            "nearest"
-                            if categorical or not (
-                                record.preview_path and locator == record.preview_path
-                            )
-                            else "bilinear"
-                        ),
-                    )
+                    if crosses_antimeridian:
+                        image = self._crossing_tile(
+                            reader, x, y, z, indexes, resampling_method, geo_bounds
+                        )
+                    else:
+                        image = reader.tile(
+                            x, y, z, indexes=indexes,
+                            resampling_method=resampling_method,
+                        )
             if inferred_nodata is not None:
                 invalid = np.all(
                     image.array.data == inferred_nodata, axis=0

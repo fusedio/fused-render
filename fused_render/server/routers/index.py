@@ -25,11 +25,12 @@ import os
 import re
 import threading
 
-from fastapi import APIRouter, Body, Header, Query
+from fastapi import APIRouter, Body, Header, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from fused_render.index import freshness, runner
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.freshness import enclosing_root
 from fused_render.index.config import IndexConfig, load_config, save_config
 from fused_render.index.guarded_query import MAX_LIMIT, run_guarded
@@ -54,6 +55,7 @@ from fused_render.server import ai as _server_ai
 from fused_render.server import index_touch
 from fused_render.server.common import _error, _require_fused
 from fused_render.server.index_gitignore import filter_corpus
+from fused_render.shell.prefs import indexing_enabled
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -111,6 +113,12 @@ def run_startup_scan(start_dir: str | None = None) -> None:
     Records each started run in `_startup_runs` for `run_startup_warm`, which
     warms only after the run covering its root has finished."""
     _startup_runs.clear()
+    if not indexing_enabled():
+        # No scan ever starts while the pref is off (shell/prefs.py). The
+        # warm still runs — it only searches the existing index, never
+        # scans — so search stays as snappy as the stale index allows.
+        logger.info("index: startup scan skipped (indexing is disabled)")
+        return
     try:
         cfg = load_config()
         runner.prune_runs(cfg, keep=KEEP_RUNS)
@@ -238,7 +246,8 @@ def _wait_for_scan(cfg: IndexConfig, run_id: str) -> bool:
 WARM_RANK_QUERY = "zqxjv"
 
 
-def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dict:
+def _rank_body(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT,
+               token: CancelToken | None = None) -> dict:
     """`search_ranked` with the server's gitignore filter wired in.
 
     The index package cannot import the server, so `search_ranked` takes the
@@ -251,14 +260,20 @@ def _ranked(cfg: IndexConfig, root: str, q: str, limit: int = RANK_LIMIT) -> dic
     `oracle_rels` comes from the caller, not from the payload: a ranked answer
     is ~200 rows with no dot-leading rels among them, so the filter's own
     discovery would find no `.gitignore`, decide nothing, and drop nothing
-    (index_gitignore.filter_corpus says this at length)."""
+    (index_gitignore.filter_corpus says this at length).
+
+    `token`, when given, is forwarded to `search_ranked` unchanged — it
+    already checks it right before calling `drop_ignored` (query.py's
+    `pass_over`), which is "before entering the sweep" from this function's
+    side without anything extra needed here."""
     def drop_ignored(canonical_root: str, hits: list, oracle_rels: list) -> list:
         index_root = enclosing_root(scan_roots(cfg), canonical_root)
         return filter_corpus({"covered": True, "root": canonical_root,
                               "entries": hits}, index_root=index_root,
-                             oracle_rels=oracle_rels)["entries"]
+                             oracle_rels=oracle_rels, token=token)["entries"]
 
-    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored)
+    return index_rank(cfg, root, q=q, limit=limit, gitignore_filter=drop_ignored,
+                      token=token)
 
 
 def _covers(a: str, b: str) -> bool:
@@ -358,9 +373,19 @@ def _rank_reason(cfg: IndexConfig, root: str, out: dict) -> str:
             return "mount"
         if out.get("reason") == "package":
             return "package"
+        # Highest precedence after mount/package: while the pref is off, no
+        # scan will ever fix an uncovered folder, which is exactly the claim
+        # `mount`/`package` make too — it just comes from a toggle rather
+        # than from the filesystem's shape.
+        if not indexing_enabled():
+            return "disabled"
         if ignored_for_index(cfg.rules, norm(os.path.abspath(root)), tree=True):
             return "ignored"
-    if _scan_in_flight(cfg, root):
+    # Never claim a scan is in flight while the pref is off — nothing can be
+    # in flight (every trigger that starts one is gated), and a stale
+    # `scanning` report would send the client into a poll loop for a scan
+    # that will never end.
+    if indexing_enabled() and _scan_in_flight(cfg, root):
         return "scanning"
     return str(out.get("reason") or "")
 
@@ -430,7 +455,7 @@ def run_startup_warm() -> None:
         # connection cost, same gitignore pool, but its own two-stage SQL —
         # warming only the corpus would leave the home page's first keystroke
         # paying for the ranked plan.
-        _ranked(cfg, out.get("root") or root, WARM_RANK_QUERY)
+        _rank_body(cfg, out.get("root") or root, WARM_RANK_QUERY)
     except Exception:  # noqa: BLE001 - a warm must never take the server down
         logger.exception("could not warm the index search path")
 
@@ -614,7 +639,14 @@ def note_folder_opened(path: str) -> bool:
 
     Returns whether a check was started. Called from /api/fs/list — the folder
     the user is looking at is the one whose search must not be stale, and the
-    listing request is the only signal that says so on every platform."""
+    listing request is the only signal that says so on every platform.
+
+    Returns immediately, starting nothing, while indexing is disabled — this
+    is the ONE gate for every caller of this function (fs_read.py,
+    git_repos.py, exported_apps.py), so a rescan-if-stale check never turns
+    into a scan behind the pref's back."""
+    if not indexing_enabled():
+        return False
     if not _freshness_slot.acquire(blocking=False):
         return False
     try:
@@ -634,6 +666,9 @@ def api_index_scan(body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    if not indexing_enabled():
+        return JSONResponse({"error": "indexing is disabled in Preferences"},
+                            status_code=409)
     cfg = load_config()
     full = bool(body.get("full"))
     root = body.get("root") or ""
@@ -700,6 +735,12 @@ def api_index_scan_folder(body: dict = Body(default={}),
 
     cfg = load_config()
     root = runner.canonical_root(path)
+    if not indexing_enabled():
+        # A durable "no", same as every other refusal here: the search box
+        # polls this on a retry loop, and "disabled" says as plainly as
+        # `refused` does that asking again will not change the answer.
+        return {"ok": True, "started": False, "why": "disabled",
+                "run_id": None, "root": root}
     # THE MOUNT GUARD FIRST, and the order is the point rather than a
     # preference: `blocks` is pure string work against the mount records,
     # while `foreign_device` stats the path — and a stat under a wedged rclone
@@ -737,6 +778,37 @@ def api_index_scan_folder(body: dict = Body(default={}),
     return {"ok": True, "started": True,
             "why": "joined" if started.get("already_running") else "started",
             "run_id": started.get("run_id"), "root": root}
+
+
+def cancel_all_scans() -> list:
+    """Cancel every scan run currently in flight, for any root.
+
+    The one caller is `shell/prefs.py`'s `PUT /api/prefs`, when the indexing
+    toggle flips to off: the contract is that a scan running at the moment of
+    toggle-off is cancelled outright, not merely refused going forward. Lives
+    here rather than in the index layer because it needs `_live_runs`'
+    request-scoped cache and the same live-run enumeration `_scan_in_flight`
+    uses, and the index package cannot import the server (this module
+    already owns that seam for scan/cancel/status).
+
+    Returns the run ids actually cancelled — a run already told to stop is
+    skipped, same as `active_run`'s own liveness rule."""
+    cfg = load_config()
+    cancelled = []
+    for r in _live_runs(cfg):
+        if not r.get("running"):
+            continue
+        rid = r.get("run_id")
+        if not rid:
+            continue
+        if os.path.exists(os.path.join(cfg.runs_dir, str(rid), "cancel")):
+            continue
+        try:
+            runner.cancel(cfg, str(rid))
+            cancelled.append(str(rid))
+        except ValueError:
+            pass
+    return cancelled
 
 
 @router.post("/api/index/cancel")
@@ -871,9 +943,30 @@ def api_index_search(root: str = Query(default=""), q: str = Query(default=""),
     return _corpus_response(_columnar({"ok": True, **out}), accept_encoding)
 
 
+# How often the disconnect watcher polls `request.is_disconnected()` while a
+# rank request is in flight on the worker thread. `is_disconnected()` is the
+# only signal an async route that is ALSO doing real work off the event loop
+# has for "the client gave up" — the same tradeoff `api_fs_walk` already makes
+# (fs_read.py's WALK_DISCONNECT_CHECK_EVERY) — and a `receive`-driven variant
+# is not worth the added complexity here.
+_RANK_DISCONNECT_POLL_S = 0.1
+
+
+async def _watch_disconnect(request: Request, token: CancelToken) -> None:
+    """Cancel `token` the moment `request` disconnects; otherwise run forever
+    until the caller cancels THIS task (the route's `finally`, once the rank
+    finished on its own — see `api_index_rank`)."""
+    while True:
+        if await request.is_disconnected():
+            token.cancel()
+            return
+        await asyncio.sleep(_RANK_DISCONNECT_POLL_S)
+
+
 @router.get("/api/index/rank")
-def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
-                   limit: int = Query(default=RANK_LIMIT)):
+async def api_index_rank(request: Request, root: str = Query(default=""),
+                         q: str = Query(default=""),
+                         limit: int = Query(default=RANK_LIMIT)):
     """The home search: filtered AND ranked here, top `limit` hits returned.
 
     The corpus route next door hands the client every entry under `root`
@@ -900,14 +993,62 @@ def api_index_rank(root: str = Query(default=""), q: str = Query(default=""),
     platform/lib/fuzzy.ts stays the single source of truth for what highlights
     — and the ranker here stays free to carry positions internally without
     them becoming a wire contract.
+
+    ASYNC, and doing real cancellation, not merely handling a request that
+    happens to be a coroutine — a fast typist fires and abandons this route
+    on every keystroke, and the abandoned ones used to run to completion:
+    both duckdb ladder passes, the Python ranking, and (worst case) up to
+    `SWEEP_WAIT_MAX_S` blocked on another request's git sweep
+    (index_gitignore.py). The actual query runs on a worker thread
+    (`asyncio.to_thread`), watched by `_watch_disconnect` polling
+    `request.is_disconnected()`; on disconnect it calls `token.cancel()`,
+    which is index/cancel.py's job from there. Two honest limitations:
+
+      * `asyncio.to_thread` cannot kill the thread it started — nothing in
+        Python can. `token.cancel()` is what makes the QUERY inside that
+        thread return (the `check()` calls between phases); `con.interrupt()`
+        (also part of `cancel()`) is what unblocks a `con.execute()` already
+        running, which a between-phase check cannot reach. The route still
+        `await`s the worker thread either way — cancellation makes that wait
+        take milliseconds instead of seconds, it does not make the `await`
+        itself skippable.
+      * `is_disconnected()` polling is the only disconnect signal available
+        to a route that is also doing work; a `receive`-driven variant is not
+        worth the complexity here (see `_watch_disconnect`).
+
+    `Cancelled` escaping the worker thread is NOT logged as an error — a
+    cancelled rank is a client that stopped waiting, which is normal
+    operation for a per-keystroke request (same reasoning the candidate-cap
+    line above already applies to `logger.debug`) — and the response is a
+    body nobody reads, because nobody is listening by the time it is sent.
     """
     if not root.strip():
         return _error("'root' is required")
+    import time
+    t0 = time.monotonic()
     cfg = load_config()
-    out = _ranked(cfg, root, q, limit)
+    token = CancelToken()
+    work = asyncio.create_task(asyncio.to_thread(_rank_body, cfg, root, q, limit, token))
+    watch = asyncio.create_task(_watch_disconnect(request, token))
+    try:
+        out = await work
+    except Cancelled:
+        logger.debug("index rank: %r under %s abandoned by the client after %.1fms",
+                    q, root, (time.monotonic() - t0) * 1000)
+        return Response(status_code=499)
+    finally:
+        watch.cancel()
     out["hits"] = [{k: v for k, v in h.items() if k != "positions"}
                    for h in out["hits"]]
     out["reason"] = _rank_reason(cfg, root, out)
+    # DEBUG: the request total, to set against the per-phase DEBUG lines
+    # logged underneath (stage A per pass, _repo_toplevel, the _inflight wait,
+    # the git sweep) — this fires on every keystroke of the home search, so it
+    # stays DEBUG (see query.py's pass_over for the same reasoning at length).
+    # Without this, a slow report has nothing server-side to diagnose it with
+    # beyond guessing which phase was the ~4s.
+    logger.debug("index rank: %r under %s answered in %.1fms (reason=%r)",
+                q, root, (time.monotonic() - t0) * 1000, out["reason"])
     return {"ok": True, **out}
 
 

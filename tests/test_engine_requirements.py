@@ -63,14 +63,11 @@ import re
 import pytest
 
 
-# tomllib is 3.11+, and so is the engine these tests describe: the `[fused]`
-# extra's wheel is marked `python_version >= "3.11"`, so on 3.10 the package is
-# never installed, `engine.available()` is False and no script venv is ever
-# built. There is nothing here for 3.10 to constrain, so skipping the whole
-# module is the honest answer rather than a workaround — the same reasoning as
-# `test_engine.py`'s `requires_tomllib`, applied at import time because this
-# module needs the parser to collect at all. The `fused-engine` CI job runs on
-# 3.11, so the module still runs where it means something.
+# tomllib is 3.11+, which is now the floor, so this never actually skips. Kept
+# as importorskip rather than flattened to a bare `import tomllib`: the reason it
+# was written this way was that the module needs the parser to COLLECT at all,
+# and a bare module-scope import errored a whole suite out when 3.10 was still
+# supported. The `fused-engine` CI job runs on 3.11.
 tomllib = pytest.importorskip(
     "tomllib", reason="tomllib (PEP 723 parsing) needs Python 3.11+"
 )
@@ -154,6 +151,13 @@ _IMPORT_TO_DIST = {
     # interpreter already meets a script's header (and so whether a venv is needed
     # at all). Import name and distribution name coincide.
     "packaging": "packaging",
+    # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402): hf
+    # owns the token store, so the app imports hf rather than keeping a
+    # credential of its own. Underscore in the import name, hyphen in the
+    # distribution — which is exactly the drift this map exists to record.
+    # NOT exempt from the completeness half: a template that reaches the Hub is
+    # a template that has to declare it, the same as `requests`.
+    "huggingface_hub": "huggingface-hub",
     # AppKit, for the macOS clipboard bridge (shell/pasteboard/_darwin.py).
     # Only installed on darwin, so on Linux and Windows these map names nothing
     # provides — the same harmless shape as `tomli` above, and listing them is
@@ -163,11 +167,31 @@ _IMPORT_TO_DIST = {
     "AppKit": "pyobjc-framework-cocoa",
     "Foundation": "pyobjc-framework-cocoa",
     "Cocoa": "pyobjc-framework-cocoa",
+    # Native capture (SPEC §45). Same split, two more distributions: the
+    # ScreenCaptureKit wheel carries only `ScreenCaptureKit`, and the
+    # AVFoundation one brings `Quartz`, `CoreMedia` and `CoreAudio` with it.
+    "ScreenCaptureKit": "pyobjc-framework-screencapturekit",
+    "AVFoundation": "pyobjc-framework-avfoundation",
+    "Quartz": "pyobjc-framework-avfoundation",
+    "CoreMedia": "pyobjc-framework-avfoundation",
+    "CoreAudio": "pyobjc-framework-avfoundation",
+    # The Linux half of the same feature (CP-11): the desktop portal's
+    # Screenshot interface over D-Bus. linux-only, so the same harmless
+    # maps-to-nothing shape as the pyobjc rows above on the other two platforms.
+    "dbus_fast": "dbus-fast",
     # The engine itself (a `[bundled]` requirement so the macOS force-list
     # derives it — see pyproject and setup_py2app.py). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
     # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
     "fused": "fused",
+    # A CONSTRAINT the engine drags in rather than a library any template of ours
+    # imports: `fused` depends on `mcp[cli]>=1.0.0`, whose 2.x line dropped
+    # `mcp.server.fastmcp` and so breaks `fused app serve` — the command the MCP
+    # panel registers globally (SPEC MC-5) — which is why `[bundled]`/`[fused]`
+    # pin `mcp<2`. Mapped so the completeness half stays honest; if a template
+    # ever does import it, the same declare-or-fail rule applies as to any other
+    # bundled distribution.
+    "mcp": "mcp",
 }
 
 # Distributions the app ships that a template may import WITHOUT declaring in its

@@ -41,6 +41,7 @@ Actions:
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session", answers=<json string, AskUserQuestion only>,
+       custom=<json string, the "Other" text per question, AskUserQuestion only>,
        note=<free text, ExitPlanMode deny only>)
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
@@ -61,6 +62,7 @@ Actions:
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
+import io
 import json
 import os
 import re
@@ -140,9 +142,12 @@ SHOTS = os.path.join(os.path.dirname(RUNS), "shots")
 # reading a path out of one turn's message, so a crop stops mattering when its
 # conversation does. The TTL is generously longer than a session anyone would
 # keep scrolling back through, and the count is the backstop for a machine that
-# never idles long enough for the TTL to fire.
-SHOTS_TTL = 12 * 3600
-SHOTS_KEEP = 200
+# never idles long enough for the TTL to fire. Was 12h / 200: a restored turn
+# re-reads its shots through /api/fs/raw, and a picture gone from a week-old
+# conversation reads as a bug, so both were raised (2026-08-27) to 30 days /
+# 1000 files — still bounded, no longer visible in ordinary use.
+SHOTS_TTL = 30 * 24 * 3600
+SHOTS_KEEP = 1000
 
 # Claude Code's own data dir, and it must be the SAME one the CLI itself uses —
 # reading the wrong dir loses history and resume. CLAUDE_CONFIG_DIR wins where
@@ -361,7 +366,7 @@ def _multi_answer_ok(value: str, labels: list) -> bool:
     return False
 
 
-def _answers_from(questions, answers):
+def _answers_from(questions, answers, custom=None):
     """The answer record that may be latched, or None — which means deny.
 
     MUST stay identical to `_answers_from` in permission_server.py: this copy
@@ -374,10 +379,23 @@ def _answers_from(questions, answers):
     exact question, because the alternative failure is the model acting on a
     choice the user never made. An omitted question is allowed (the CLI reads it
     as unanswered, which is true); an invented one is not.
+
+    `custom` is the one way a value that the model did not author gets through:
+    the card's "Other" box (D407), keyed by the same question text, carrying what
+    the USER typed. It is folded in as one extra option for that question and
+    nothing more — the answer still has to match the option list exactly, the
+    typed string still has to come last in a multi-select join, and free text for
+    a question nobody asked is refused like any other invented answer. The
+    distinction that survives is authorship: a label the model offered, or a
+    sentence the user wrote — never a string neither of them ever produced.
     """
     if not isinstance(questions, list) or not questions:
         return None
     if not isinstance(answers, dict) or not answers:
+        return None
+    if custom is None:
+        custom = {}
+    if not isinstance(custom, dict):
         return None
     asked = {}
     for question in questions:
@@ -395,6 +413,22 @@ def _answers_from(questions, answers):
         if not labels or text in asked:
             return None
         asked[text] = (labels, bool(question.get("multiSelect")))
+    # The typed answers, each folded in as one more option for its own question.
+    # Validated first and as a whole, on the same all-or-nothing rule as the
+    # labels: free text for a question that was never asked is the same
+    # fabrication as an invented label, and an empty box is not an answer.
+    for text, typed in custom.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(typed, str) or not typed:
+            return None
+        labels, multi = asked[text]
+        # Typing out an option's own wording is not a second option: appending it
+        # would let "Alpha, Alpha" match a multi-select join.
+        if typed not in labels:
+            # LAST, because the multi-select join is matched in option order and
+            # the card puts the typed answer after everything ticked.
+            asked[text] = (labels + [typed], multi)
     out = {}
     for text, value in answers.items():
         if not isinstance(text, str) or text not in asked:
@@ -926,6 +960,61 @@ def _wire_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _attach_dirs(raw: str) -> list:
+    """The directories THIS message's attachments live in, as the page reported
+    them — one `Read(//dir/**)` rule each on the spawn line (`extra_read_dirs`).
+
+    Why the page decides and not this module: the attachment list is the page's
+    own state (`shotAttached`), it is per MESSAGE, and by the time `start` runs
+    the paths are already inside the composed message where nothing can tell an
+    attachment path from a path the user happened to type. So it is sent
+    explicitly, as a JSON array of strings, on the same call as the message.
+
+    VALIDATED HERE ANYWAY, because a grant is a grant: the parameter crosses the
+    bridge as a plain string and this is the last place before it becomes a
+    permission rule. Only absolute paths to directories that exist survive,
+    deduplicated, and a filesystem ROOT is refused outright: `Read(///**)` is the
+    whole disk, which is exactly the blanket rule this feature's own test asserts
+    is never emitted.
+
+    There is NO COUNT LIMIT (D617). A `_ATTACH_DIRS_MAX` of 4 used to sit here to
+    keep the spawn line bounded, mirroring the page's own attachment cap; both
+    are gone. A drop of thirty rows out of one folder was always ONE rule (they
+    dedupe), and the pathological case — thirty rows out of thirty folders — is a
+    long argv string, not an unsafe one, on a local tool the user drove by hand.
+    Refusing the grant only cost them a permission card per attachment.
+
+    Anything unparseable is an empty list, never an error. A refused grant costs
+    the user one permission card; a refused SEND costs them their message.
+    """
+    if not raw:
+        return []
+    try:
+        vals = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(vals, list):
+        return []
+    out = []
+    for v in vals:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        path = v.strip()
+        if not os.path.isabs(path) or not os.path.isdir(path):
+            continue
+        wired = _wire_path(os.path.normpath(path))
+        # A root ("/", "C:/") has no parent to scope to — the rule would be the
+        # whole disk. Also drops the shots dir if the page ever names it, since
+        # its rule is unconditional.
+        if wired.rstrip("/").rstrip(":") in ("", "/"):
+            continue
+        if wired == _wire_path(SHOTS):
+            continue
+        if wired not in out:
+            out.append(wired)
+    return out
+
+
 def _read_rule(path: str) -> str:
     """A `Read(...)` permission rule scoped to everything under `path`.
 
@@ -1043,6 +1132,217 @@ def _shots_dir() -> dict:
     return {"dir": _wire_path(SHOTS)}
 
 
+# The longest edge a transcoded picture is given, and the byte budget it has to
+# land under. Both numbers are the PAGE's, deliberately: SHOT_VIEW_EDGE (1600) is
+# what a capture of the whole pane is capped at and what the page's own downscale
+# targets, and SHOT_ATTACH_MAX_BYTES (4 MB) is the downscale trigger it measures a picture
+# against — a conversion that came back bigger or sharper than the app's own
+# screenshots would be a second, quieter rule for the same thing.
+SHOT_PNG_EDGE = 1600
+SHOT_PNG_MAX_BYTES = 4 * 1024 * 1024
+# What a PNG that missed the budget is re-tried as. Quality before resolution,
+# same order as the page's encoder ladder: 1600px of a photo at q60 still answers
+# every question the agent has of it, where 800px of it may not.
+SHOT_JPEG_QUALITY = (90, 80, 70, 60)
+# `sips` is a one-shot converter on a file the user just handed us; 20s is long
+# enough for a 50 MP HEIC and short enough that a wedged binary does not hold the
+# composer.
+SHOT_SIPS_TIMEOUT = 20
+
+
+def _in_shots(target: str) -> bool:
+    """Whether `target` is a path INSIDE the shots directory.
+
+    The same four-step containment `_in_canvases_root` documents (abspath,
+    realpath, normcase, commonpath) and for the same four reasons — most sharply
+    realpath here, because SHOTS lives under the macOS temp dir where `/var` and
+    `/private/var` name one directory, so a string prefix would reject every real
+    path the page sends. A path that cannot be resolved is treated as OUTSIDE.
+
+    This is the whole authorisation for the transcode: the action reads bytes off
+    disk and writes a sibling next to them, and the only place either is allowed
+    to happen is the directory the page already uploads into and the pruner
+    already owns."""
+    if not target:
+        return False
+    try:
+        root = os.path.normcase(os.path.realpath(os.path.abspath(SHOTS)))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        return path != root and os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        return False
+
+
+def _sips_to_png(path: str) -> str | None:
+    """A macOS-only second opinion on bytes Pillow refused: `sips` through
+    ImageIO, which decodes what the OS itself can — HEIC/HEIF above all, and the
+    raw camera formats too.
+
+    It exists because HEIC is the DEFAULT camera format on every iPhone and the
+    one format both halves of this feature are blind to: no browser engine here
+    decodes it, and Pillow needs `pillow-heif`, which is a compiled wheel we do
+    not ship. Shelling out to a binary that is present on every macOS install
+    costs nothing at rest and turns "this attachment is useless" into a PNG.
+
+    Returns the temp file's path, or None for anything at all going wrong — a
+    missing binary, a non-zero exit, a timeout, a format ImageIO does not know.
+    The caller reports the ORIGINAL Pillow failure in that case, which is the
+    honest one: sips is the fallback, not the diagnosis."""
+    if sys.platform != "darwin" or not os.path.exists("/usr/bin/sips"):
+        return None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="conv-", suffix=".png", dir=SHOTS)
+        os.close(fd)
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/sips", "-s", "format", "png", path, "--out", tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=SHOT_SIPS_TIMEOUT, check=False)
+        if proc.returncode == 0 and os.path.getsize(tmp) > 0:
+            return tmp
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return None
+
+
+def _image_to_png(path: str) -> dict:
+    """Transcode one picture in the shots directory into a PNG (or JPEG) beside
+    it, and hand the page the copy's path and size.
+
+    WHY THIS EXISTS AT ALL. D613 made an image this browser cannot decode travel
+    as bytes with a note instead of a broken thumbnail, on the grounds that "the
+    AGENT may well know a format this browser does not". For the two formats
+    users actually drop — TIFF off a scanner or a GIS export, HEIC off an iPhone
+    — that turned out to be false: the Read tool cannot open either, so the
+    attachment was a path to bytes nobody in the conversation could look at. The
+    page could see it was undecodable; it just had nowhere to send it. This is
+    that somewhere, and it is on the python side because that is where Pillow and
+    the OS's own decoders are.
+
+    IT WRITES A SIBLING AND DELETES NOTHING. The original stays: it is what the
+    user actually attached, the page may still want its byte count, and the
+    pruner (30d/1000 files) already owns everything in this directory — a second
+    deletion policy for a second file in the same directory would be the only
+    thing here that could lose a user's picture early.
+
+    PNG FIRST, JPEG ONLY IF PNG MISSES THE BUDGET. A screenshot, a scan and a
+    diagram are the common TIFFs and all three are exactly what PNG is good at
+    (and what JPEG's ringing ruins); a 12 MP photo is the common HEIC and is
+    where a lossless 1600px re-encode blows past 4 MB. So the format follows the
+    content instead of the extension, decided by measuring rather than guessing.
+
+    NEVER RAISES. Every failure is `{"error": ...}` — the page's whole answer to
+    one is to keep the bytes-plus-glyph attachment it already had, so an
+    exception crossing the bridge would cost the user the attachment to report a
+    problem with the attachment."""
+    try:
+        if not path or not os.path.isabs(path):
+            return {"error": "not an absolute path"}
+        if not _in_shots(path):
+            # The page only ever asks about a file it just uploaded here. Anything
+            # else is a bug or a caller that should not be reading the disk
+            # through this action, and both get the same one sentence.
+            return {"error": "not inside the attachments directory"}
+        if not os.path.isfile(path):
+            return {"error": "no such file"}
+        try:
+            from PIL import Image
+        except ImportError:
+            return {"error": "pillow is not installed"}
+
+        tmp = None
+        try:
+            try:
+                img = Image.open(path)
+                img.load()
+            except Exception as first:
+                # HEIC without pillow-heif lands here, which is the common case
+                # rather than the exotic one — hence the OS decoder below.
+                tmp = _sips_to_png(path)
+                if tmp is None:
+                    return {"error": "could not decode: %s" % first}
+                img = Image.open(tmp)
+                img.load()
+            # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
+            # one frame the user means by "the picture", and it is the first.
+            try:
+                if getattr(img, "n_frames", 1) > 1:
+                    img.seek(0)
+            except Exception:
+                pass
+            source_w, source_h = img.size
+            if not source_w or not source_h:
+                return {"error": "the picture has no pixels"}
+            # Alpha is kept where it exists (a diagram with a transparent
+            # background reads wrong flattened onto black) and dropped where it
+            # does not — CMYK, 16-bit grey and palette all have to leave their
+            # own mode either way, since PNG will not take some of them and the
+            # agent's reader would not thank us for the rest.
+            if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info):
+                img = img.convert("RGBA")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            if max(source_w, source_h) > SHOT_PNG_EDGE:
+                img.thumbnail((SHOT_PNG_EDGE, SHOT_PNG_EDGE), Image.LANCZOS)
+            width, height = img.size
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            data, ext = buf.getvalue(), ".png"
+            if len(data) > SHOT_PNG_MAX_BYTES:
+                flat = img
+                if flat.mode != "RGB":
+                    # JPEG has no alpha. White rather than black because these
+                    # are documents and screenshots far more often than they are
+                    # neon on dark.
+                    bg = Image.new("RGB", flat.size, (255, 255, 255))
+                    bg.paste(flat, mask=flat.split()[-1])
+                    flat = bg
+                for q in SHOT_JPEG_QUALITY:
+                    jbuf = io.BytesIO()
+                    flat.save(jbuf, format="JPEG", quality=q, optimize=True,
+                              progressive=True)
+                    data, ext = jbuf.getvalue(), ".jpg"
+                    if len(data) <= SHOT_PNG_MAX_BYTES:
+                        break
+                # Past the ladder it goes out anyway: an oversize picture the
+                # agent CAN read beats a perfectly sized one it cannot, and the
+                # page reports the size it got.
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        base = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(SHOTS, base + ext)
+        # 0600 on the create itself, like `_open_private`: the directory is
+        # already 0700, and a converted picture of someone's screen or camera
+        # roll should never be briefly wider than the original was.
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+            raise
+        return {"path": _wire_path(out), "width": width, "height": height,
+                "bytes": len(data), "source_w": source_w, "source_h": source_h}
+    except Exception as e:
+        return {"error": "could not convert: %s" % e}
+
+
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
@@ -1073,7 +1373,20 @@ def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
             # (executor.py): in the packaged .app that is the bundled python.
             "command": sys.executable,
             "args": args,
-            "env": {"FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT)},
+            "env": {
+                "FUSED_RENDER_PERMISSION_TIMEOUT": str(PERMISSION_WAIT),
+                # UTF-8 stdio for the server, whatever the machine's locale is.
+                # The CLI's MCP client is Node: it writes raw UTF-8 JSON with
+                # non-ASCII unescaped, while Python decodes a pipe at the LOCALE
+                # encoding — the ANSI code page on Windows, where a curly quote
+                # in a `Write` payload used to kill the server before it parked
+                # the request (no card, dead permission bridge, a turn that
+                # simply stopped; see permission_server._utf8_stdio). It has to
+                # be named HERE to reach the child at all: the MCP client passes
+                # an allowlist of env vars plus exactly this dict, so an ambient
+                # PYTHONUTF8 would not survive the spawn.
+                "PYTHONUTF8": "1",
+            },
             # Hard per-call ceiling for this server, and a permission card is a
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
@@ -1203,7 +1516,8 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
 
 
 def _decide(run_id: str, request_id: str, decision: str, scope: str,
-            mode: str = "", answers: str = "", note: str = "") -> dict:
+            mode: str = "", answers: str = "", note: str = "",
+            custom: str = "") -> dict:
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"error": "unknown run_id"}
@@ -1246,12 +1560,21 @@ def _decide(run_id: str, request_id: str, decision: str, scope: str,
             # one is recorded as a deny rather than as an allow the model would
             # read as "the user did not answer the questions". Validated against
             # the parked request's own questions, never against what was sent.
-            picked = _answers_from(asked.get("questions"), _as_answers(answers))
+            typed = _as_answers(custom)
+            picked = _answers_from(asked.get("questions"), _as_answers(answers),
+                                   typed)
             if picked is None:
                 payload = {"decision": "deny", "scope": "once",
                            "message": BAD_ANSWER}
             else:
                 payload["answers"] = picked
+                # Latched BESIDE the answer, not folded into it: the answer is
+                # one string per question either way, and permission_server
+                # re-validates from scratch — so it needs to be told which part
+                # of that string the user typed rather than inferring it back
+                # out of a join it must not try to split (D407).
+                if typed:
+                    payload["custom"] = typed
         # Anywhere else `answers` is simply not a field: dropping it here is what
         # keeps the page from adding keys to a tool input it does not own.
     else:
@@ -1365,6 +1688,69 @@ def _strip_app_state(text: str) -> str:
     return _APP_STATE_BLOCK.sub("", text or "").strip()
 
 
+# ------------------------------------------------------- pane file on a record
+#
+# A MIRROR of `fused_render/tasks_store.py`'s `pane_file`, for the same reason
+# `_strip_machinery` below is one: a template may not import fused_render (SPEC
+# PY-15 / D166), and both sides have to get the same answer out of the same
+# `~/.claude/projects` records. **Change one, change the other** — the parity
+# test in tests/test_claude_sessions_merged.py pins them to identical output.
+#
+# What it reads and why it is the only durable record: the transcript's own
+# `cwd` is always a FOLDER (`_workdir` resolves a file target to its parent
+# before Claude Code ever sees it), so the pane's own url in the leading
+# app-state block is the only place the FILE a chat was opened on survives.
+_APP_STATE_LEAD = re.compile(
+    r"<%s>(.*?)</%s>" % (APP_STATE_TAG, APP_STATE_TAG), re.DOTALL)
+
+
+def _pane_file(text: str) -> str:
+    """The file the LEADING app-state block says the pane was on, or "".
+
+    Anchored, like every machinery matcher here: only a leading block is
+    machinery, and the tag further in may be something a human typed. The
+    state is prose followed by one JSON object, so the object is cut from
+    first `{` to last `}` and parsed properly rather than regexed — a title
+    containing `"url":` must not win.
+
+    Three answers, in order of honesty. `entry` is the state's own name for the
+    document the pane is about (template.html `appEntry`) and wins outright.
+    The url is the fallback for older blocks, and there `_file` must beat
+    `path`, because a templated preview's url is
+    `/render?path=<template>&_file=<file>`: `path` names OUR template, which
+    exists on disk and would sail through any isfile check as the target of
+    somebody's chat about their own parquet file.
+
+    A chat with no block ever — a folder chat, a terminal session — has no pane,
+    and "" is the right answer for it rather than a failure.
+    """
+    match = _APP_STATE_LEAD.match((text or "").lstrip())
+    if not match:
+        return ""
+    blob = match.group(1)
+    start, end = blob.find("{"), blob.rfind("}")
+    if start == -1 or end <= start:
+        return ""
+    try:
+        state = json.loads(blob[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    entry = state.get("entry")
+    if isinstance(entry, str) and entry:
+        return entry
+    url = state.get("url")
+    if not isinstance(url, str):
+        return ""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    for key in ("_file", "path"):
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return ""
+
+
 # ------------------------------------------------ machinery on a user record
 #
 # A MIRROR of `fused_render/tasks_store.py`'s `strip_machinery` — same tag
@@ -1395,19 +1781,93 @@ _MACHINERY_DROP = (
 # that boundary has to fail loudly rather than drift quietly. (`pane-shot` has no
 # constant on this side at all — only template.html, which writes the block,
 # names it.)
-_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 _LEADING_MACHINERY = re.compile(
     r"<(%s)>.*?</\1>\s*" % "|".join(_MACHINERY_TAGS), re.DOTALL)
 _LEADING_MACHINERY_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
+# The DROP half alone, for `_history`: those records are Claude Code writing on
+# the user's behalf and are never a turn, where a STRIP tag is a block this page
+# prepended to words the user really did type and must not take the turn with it.
+_LEADING_DROP_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_DROP))
 
-# `formatAnnotations`' preamble, which has no tag at all — the inverse of
-# template.html's `stripAnnBlock`, anchored on the json fence for the same
-# reason it is.
+# A synthetic `user` record the HARNESS writes when a background shell the turn
+# started finishes (or is stopped): it wakes the run, and everything the agent
+# says afterwards is the answer to it. Nobody typed it, so it may never render as
+# a user bubble — it used to, as a screenful of raw XML — but it may not be
+# silently dropped either, because it is the only explanation on screen for a
+# reply that arrives with no message above it (D415).
+_TASK_NOTIFICATION_OPEN = "<task-notification>"
+_TASK_FIELD = re.compile(r"<(summary|status)>(.*?)</\1>", re.DOTALL)
+
+
+def _task_notification(text: str) -> dict | None:
+    """`{"summary", "status"}` for a task-notification record, else None.
+
+    Matched on the OPENING tag only, and only at the head: the block is the
+    whole record in practice, and a message that merely mentions the tag
+    somewhere in its prose is a human writing about this feature, not the
+    harness. A record whose `<summary>` is missing or empty still answers — with
+    the status alone as its words — because the chip's job is to account for the
+    turn underneath it, and "a background task finished" says that much."""
+    if not isinstance(text, str) or not text.lstrip().startswith(_TASK_NOTIFICATION_OPEN):
+        return None
+    found = {m.group(1): m.group(2).strip() for m in _TASK_FIELD.finditer(text)}
+    status = found.get("status", "")
+    summary = found.get("summary", "")
+    if not summary:
+        summary = ("Background task %s" % status) if status \
+            else "A background task woke the agent"
+    return {"summary": summary, "status": status}
+
+
+# `formatAnnotations`' block as it is written TODAY: an `<annotations>` tag
+# holding one markdown stanza per pin. The tag is in `_MACHINERY_STRIP` above, so
+# `_LEADING_MACHINERY` peels it like the other two blocks and there is no strip
+# code of its own — but `_ann_notes` still has to read the user's words back out,
+# and prose has no `content` key to ask for. A MIRROR of `tasks_store.py`'s
+# `_ann_notes_md`, pinned to it over the shared corpus (D166: a template may not
+# import fused_render, so the rule is written twice and tested once).
+#
+# The shape rules are the ones `formatAnnotations` writes and nothing else:
+# stanzas separated by a blank line (the writer collapses any blank line INSIDE a
+# note, so that boundary is unambiguous even though the composer takes a newline
+# on Shift+Enter), the first paragraph the block's preamble (the only one not
+# opening with `**A** — `), and inside a stanza the first line is the heading,
+# the no-badge caveat and the no-words placeholder are OURS — matched exactly
+# rather than as "any wholly-italic line", since a note that is one emphasised
+# word is still a note — and what is left is what the user said.
+_ANN_TAG = "annotations"
+_ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
+
+# The same block as it was written BEFORE that tag existed: a prose preamble and
+# a fenced json payload, recognised at position ZERO because it has no tag —
+# exactly the fragility the tag ended. Sessions on disk carry it forever, so this
+# reader never goes away.
 _ANN_PREAMBLE = "The user annotated "
 _ANN_FENCE_OPEN = "\n```json\n"
 _ANN_FENCE_CLOSE = "\n```"
+
+
+def _ann_notes_md(block: str) -> str:
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
+    notes = []
+    for para in re.split(r"\n\s*\n", block.strip()):
+        lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
+            continue            # the preamble paragraph, or something we did not write
+        said = [ln for ln in lines[1:]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
+        if said:
+            notes.append(" ".join(said))
+    return " · ".join(notes)
 
 
 def _strip_ann_block(text: str) -> str:
@@ -1420,6 +1880,66 @@ def _strip_ann_block(text: str) -> str:
     if close_at == -1:
         return text
     return text[close_at + len(_ANN_FENCE_CLOSE):].lstrip("\n")
+
+
+def _ann_notes(text: str) -> str:
+    """The words the user typed INSIDE their pins, for a send that carried no
+    free text at all — or "" when there are none.
+
+    NOT part of `_strip_machinery`, deliberately. That function answers "what
+    did the human TYPE in the composer", it is duplicated in
+    `tasks_store.strip_machinery`, and the two are pinned character-identical
+    over a corpus — so widening it to reach into an annotation payload would
+    change every one of its readers at once. This is a SECOND source, consulted
+    only where a nameless row is worse than an approximate one.
+
+    Annotations carry a `content` field — the note the user wrote on the pin —
+    which the block strip drops with the rest of the payload. A send that is
+    ONLY annotations is therefore words the user typed, sitting in the record,
+    that no reader would show: the chat vanished from "Recent chats" entirely
+    (a `_cli_preview` of "" drops the session, not just its name) and its
+    snapshot runbox could only call it "chat" plus a short id. Both from the
+    same "".
+
+    Joined in `t` order across pins, because that is the order the walkthrough
+    was given in and the caller truncates to 80 chars anyway. A wordless send —
+    a pin with no note, a bare screenshot — still yields "": there is nothing
+    to name it with, which is the one case the empty answer was always for.
+    """
+    out = (text or "").strip()
+    # TODAY'S shape first, and searched rather than anchored: the tag made this
+    # block position-independent, so it is found wherever the send put it — no
+    # peeling loop needed to expose it, unlike the untagged form below.
+    found = _ANN_BLOCK.search(out)
+    if found:
+        return _ann_notes_md(found.group(1))
+    while True:
+        match = _LEADING_MACHINERY.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    if not out.startswith(_ANN_PREAMBLE):
+        return ""
+    open_at = out.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return ""
+    close_at = out.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return ""
+    try:
+        pins = json.loads(out[open_at + len(_ANN_FENCE_OPEN):close_at])
+    except ValueError:
+        return ""
+    if not isinstance(pins, list):
+        return ""
+    notes = []
+    for pin in pins:
+        if not isinstance(pin, dict):
+            continue
+        note = pin.get("content")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
+    return " · ".join(notes)
 
 
 def _strip_machinery(text: str) -> str:
@@ -1540,7 +2060,8 @@ _DETACH = (
 def _start(file: str, message: str, session_id: str, model: str,
            effort: str, permission_mode: str = "",
            message_via_stdin: bool = False,
-           has_pane: bool | None = None) -> dict:
+           has_pane: bool | None = None,
+           extra_read_dirs: list | None = None) -> dict:
     file = os.path.abspath(file)
     # A directory is a valid target too: this template's app-folder role opens
     # whole project folders (cwd/prompt handled by _workdir/_system_prompt).
@@ -1635,8 +2156,14 @@ def _start(file: str, message: str, session_id: str, model: str,
            #     prefix rule, so only a command that IS `fused ...` matches —
            #     compounds (`cd x && fused ...`) still card.
            "--allowed-tools",
+           #   extra_read_dirs — the caller's own attachment dirs, same rule
+           #     shape as SHOTS and for the same reason: the scheduler names
+           #     its task-shots dir here, whose images the user attached
+           #     deliberately in the New task form, and a headless run has
+           #     nobody at the screen to answer a card.
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else []) + [_read_rule(SHOTS)]
+                    + [_read_rule(d) for d in (extra_read_dirs or [])]
                     + (["Bash(fused:*)"] if _fused_cli_dir() else []))]
     cmd += _plugin_argv(file)
     # BOTH targets get an --append-system-prompt here, and they get different
@@ -1697,6 +2224,25 @@ def _start(file: str, message: str, session_id: str, model: str,
     # mean what the model actually typed on that command line.
     spawn_env = os.environ.copy()
     spawn_env.pop("FUSED_ENV", None)
+    # File-history checkpoints are OFF by default in a non-interactive session,
+    # and this run is always non-interactive (`-p`). Without this the snapshots
+    # panel (SPEC §34) can only ever show versions written by a TERMINAL claude
+    # in that folder, and reports "no recorded versions" for every file this
+    # chat itself edited — the panel's own reason to exist. D394.
+    #
+    # An ENV VAR, not a setting: the CLI's `fileHistoryEnabled` takes a separate
+    # branch when `isInteractive()` is false, and that branch reads only these
+    # two variables — the `fileCheckpointingEnabled` config that governs the
+    # interactive case is not consulted, so `--settings` cannot reach it. Named
+    # for the SDK and absent from the public settings docs, so it may move; what
+    # to re-check if snapshots go quiet again is that branch.
+    #
+    # setdefault, because a user who exported it themselves means it: the CLI
+    # coerces the value properly (`1/true/yes/on`, everything else false), so a
+    # deliberate `=0` is an opt-out rather than a truthy string. Their
+    # CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING still wins inside the CLI either
+    # way — it is ANDed into the same branch — so this cannot override it.
+    spawn_env.setdefault("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "1")
     try:
         with _private_open(os.path.join(run_dir, "out.jsonl")) as out, \
              _private_open(os.path.join(run_dir, "err.log")) as err:
@@ -1768,11 +2314,14 @@ def _commit_turn(file: str, message: str) -> None:
             encoding="utf-8", errors="replace")
 
     try:
-        # Legacy defense: nothing writes these files any more — the sidecar
-        # they belonged to is deleted outright (D359), and it had already moved
-        # out of the app dir before that (D83-reversal, D205) — but a repo from
-        # either era may still have one sitting in its tree, and this sweep's
-        # add -A would commit it into app history. Mirror
+        # The two sidecar patterns are a LEGACY defense: nothing writes those
+        # files any more — the sidecar they belonged to is deleted outright
+        # (D359), and it had already moved out of the app dir before that
+        # (D83-reversal, D205) — but a repo from either era may still have one
+        # sitting in its tree, and this sweep's add -A would commit it into app
+        # history. `.fused/` is the LIVE one: the app's own state folder (D548)
+        # is written continuously by the running app, so a turn's add -A would
+        # otherwise sweep a whole cache into the commit. Mirror
         # app_git._ensure_excludes: append missing patterns to the repo-local
         # .git/info/exclude (never the user's .gitignore). Keep the pattern
         # list in step with app_git._GITIGNORE.
@@ -1783,7 +2332,8 @@ def _commit_turn(file: str, message: str) -> None:
                     have = {ln.strip() for ln in fh}
             except OSError:
                 have = set()
-            missing = [p for p in ("*.html.json", ".claude-split.json")
+            missing = [p for p in ("*.html.json", ".claude-split.json",
+                                   ".fused/")
                        if p not in have]
             if missing:
                 with open(exclude, "a", encoding="utf-8") as fh:
@@ -1813,12 +2363,86 @@ def _alive(run_dir: str) -> bool:
         return False
 
 
+def _session_from_out(run_dir: str) -> str:
+    """The session id the CLI announced in its first system row, or "".
+
+    A fallback for the `session` file, which only exists once a poll has run
+    (see _poll): the id is sitting in the head of out.jsonl the moment claude
+    starts, and a lookup that needs it before any poll happened (see _live_run)
+    can read it there. Head-bounded — the announcement is the first row the CLI
+    writes, so anything past a handful of lines is a run whose head we cannot
+    parse, not one still warming up."""
+    try:
+        with open(os.path.join(run_dir, "out.jsonl"), encoding="utf-8",
+                  errors="replace") as fh:
+            for _ in range(5):
+                line = fh.readline()
+                if not line:
+                    break
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue  # half-written head; a later caller gets it
+                sid = row.get("session_id")
+                if sid:
+                    return str(sid)
+    except OSError:
+        pass
+    return ""
+
+
 # How far back a live-run lookup bothers to look. Run dirs are named
 # "<YYYYmmdd-HHMMSS>-<hex>", so a reverse sort is newest-first and a run that is
 # still going is by construction among the newest few — a turn does not outlive
 # 60 later ones. The cap is what keeps this O(1)-ish on a machine that has been
 # chatting for weeks, since nothing prunes RUNS.
 _LIVE_SCAN_LIMIT = 60
+
+
+def _registry_running(workdir: str) -> set:
+    """Session ids in `workdir` that a `claude` process on this machine holds
+    RIGHT NOW — per Claude Code's own registry, `~/.claude/sessions/<pid>.json`,
+    one file per running process (sessionId, cwd, status), deleted on exit.
+
+    `_live_sessions` above knows only the runs THIS app spawned. A session
+    resumed in a terminal, or started there, is invisible to it and read as
+    idle on the Recent chats list while it is plainly generating. The registry
+    is the same source the Tasks page reads (fused_render/tasks_watch.py), so
+    the two lists agree on who is running.
+
+    `busy`/`shell` is running; `idle`/`waiting` is not; a row with NO status is
+    a headless `claude -p` that is alive, which is running for as long as the
+    file exists. A dead pid (a crash left the file behind) counts for nothing.
+    Best-effort throughout: an unreadable registry is an empty answer."""
+    want = os.path.abspath(workdir)
+    try:
+        names = os.listdir(os.path.join(CLAUDE_DIR, "sessions"))
+    except OSError:
+        return set()
+    out = set()
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(CLAUDE_DIR, "sessions", name), encoding="utf-8") as fh:
+                row = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        sid = row.get("sessionId")
+        cwd = row.get("cwd")
+        if not isinstance(sid, str) or not isinstance(cwd, str):
+            continue
+        if os.path.abspath(cwd) != want:
+            continue
+        status = row.get("status")
+        if isinstance(status, str) and status and status not in ("busy", "shell"):
+            continue
+        if not _pid_alive(str(row.get("pid") or "")):
+            continue
+        out.add(sid)
+    return out
 
 
 def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LIMIT) -> dict:
@@ -1837,7 +2461,10 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
     one. Two ids can identify the same chat — the session the run resumed
     (`resumed_from` in meta.json) and the session the CLI minted for it (written
     to the `session` file by the first poll that sees one, because
-    `--fork-session` can hand back a NEW id) — so either matching is a match.
+    `--fork-session` can hand back a NEW id) — so either matching is a match,
+    and a run with no `session` file yet falls back to the id in out.jsonl's
+    head (_session_from_out), because "no poll ever ran" is precisely the state
+    a Back-mid-start leaves behind.
 
     `limit` is how many run dirs (newest first) the scan reads; `limit=None`
     reads all of them. The default cap is right for the ORIGINAL caller — a page
@@ -1875,6 +2502,18 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
                     own = fh.read().strip()
             except OSError:
                 pass
+            if not own:
+                # The `session` file is written by the FIRST POLL that sees the
+                # id (see _poll) — so a run nobody ever polled has none. That is
+                # not an exotic state: it is exactly what leaving mid-start
+                # leaves behind (Akshil, 2026-08-19 — the reopened chat "does
+                # not show me the streaming thing"): the page left before its
+                # first poll, a NEW chat has no `resumed_from` either, and this
+                # lookup answered "" for a run that was alive the whole time.
+                # The CLI announces the id in its first system row, so read it
+                # from the head of out.jsonl ourselves — a few lines, never the
+                # transcript.
+                own = _session_from_out(run_dir)
             if session_id not in (meta.get("resumed_from", ""), own):
                 continue
         # Liveness LAST: it is the only check that touches a pid, and the two
@@ -1882,6 +2521,57 @@ def _live_run(file: str, session_id: str = "", limit: int | None = _LIVE_SCAN_LI
         if _alive(run_dir):
             return {"run_id": name}
     return {"run_id": ""}
+
+
+def _live_sessions(file: str, limit: int | None = _LIVE_SCAN_LIMIT) -> set:
+    """Every session id under this target's FOLDER that has a run still going.
+
+    `_live_run` above answers the same question for ONE session and matches on
+    the exact target; a session list spans the whole folder — chats opened on
+    the folder's other files are rows in it — so this one matches on the
+    workdir instead, and answers for all of them in a single scan. Asking
+    `_live_run` per row would re-read every run dir once per row.
+
+    Both spellings of a run's session are collected, for the reason `_live_run`
+    spells out: a run knows the session it RESUMED (`resumed_from`) and the one
+    the CLI minted for it (the `session` file, or the head of out.jsonl before
+    the first poll has written one), and either can be the id a row carries.
+
+    Liveness is checked LAST and only for runs this folder owns — it is the one
+    test that touches a pid.
+    """
+    workdir = os.path.abspath(_workdir(file))
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)
+    except OSError:
+        return set()
+    if limit is not None:
+        names = names[:limit]
+    live = set()
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        target = meta.get("file", "")
+        if not target or os.path.abspath(_workdir(target)) != workdir:
+            continue
+        if not _alive(run_dir):
+            continue
+        own = ""
+        try:
+            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                own = fh.read().strip()
+        except OSError:
+            pass
+        if not own:
+            own = _session_from_out(run_dir)
+        for sid in (meta.get("resumed_from", ""), own):
+            if sid:
+                live.add(sid)
+    return live
 
 
 def _retry_info(row: dict):
@@ -2280,6 +2970,28 @@ def _segments_from_rows(rows: list) -> list:
                     by_tool_id[tool_id] = seg
                     if tool_id in orphans:
                         settle(seg, orphans.pop(tool_id))
+        elif t == "system" and row.get("subtype") == "task_notification":
+            # The harness waking the run because a background shell it started
+            # has finished or been stopped (D415). It is not the model speaking
+            # and it is not a tool call, so it is neither text nor a chip — it
+            # is the REASON the turn that follows exists, and without it a reply
+            # appears out of nowhere under a message the user never sent. One
+            # line, from the CLI's own `summary`; the page draws it as a system
+            # chip (buildNoticeView).
+            #
+            # This is the LIVE shape, the row `out.jsonl` carries. The persisted
+            # transcript records the same event as a synthetic `user` row of
+            # `<task-notification>` XML — the branch below — and both land here
+            # so a restored conversation and a streaming one show the same chip.
+            note = str(row.get("summary") or "").strip()
+            if note:
+                segments.append({"kind": "notice", "text": [note],
+                                 "status": str(row.get("status") or "")})
+        elif t == "user" and isinstance(content, str):
+            note = _task_notification(content)
+            if note:
+                segments.append({"kind": "notice", "text": [note["summary"]],
+                                 "status": note["status"]})
         elif t == "user" and isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
@@ -2311,6 +3023,37 @@ def _segments_from_rows(rows: list) -> list:
             continue
         out.append(seg)
     return out
+
+
+def _tool_detail(name, inp) -> str:
+    """The one short thing worth saying about a tool call on the status line.
+
+    Bash carries its own `description` (the model writes one per call); the
+    file tools name a file; Task/Agent describe the job. Anything else is just
+    its name. Kept to one line and ~80 chars — this rides inside "(47s · …)".
+    """
+    if not isinstance(inp, dict):
+        return ""
+    name = str(name or "")
+    if name == "Bash":
+        d = inp.get("description") or ""
+        if not d:
+            d = str(inp.get("command") or "").strip().splitlines()[:1]
+            d = d[0] if d else ""
+    elif name in ("Read", "Edit", "Write", "MultiEdit", "NotebookEdit"):
+        d = os.path.basename(str(inp.get("file_path") or inp.get("notebook_path") or ""))
+    elif name in ("Task", "Agent"):
+        d = inp.get("description") or inp.get("subagent_type") or ""
+    elif name in ("Grep", "Glob"):
+        d = inp.get("pattern") or ""
+    elif name == "Skill":
+        d = inp.get("skill") or ""
+    elif name in ("WebFetch", "WebSearch"):
+        d = inp.get("url") or inp.get("query") or ""
+    else:
+        d = ""
+    d = " ".join(str(d).split())
+    return d if len(d) <= 80 else d[:77] + "…"
 
 
 def _poll(run_id: str, file: str = "") -> dict:
@@ -2346,6 +3089,33 @@ def _poll(run_id: str, file: str = "") -> dict:
     text_parts = []
     result_text = None
     new_session = ""
+    # `done` IS PER TURN, AND A `result` ONLY ENDS ONE WHILE NOTHING FOLLOWS IT
+    # (D415). One claude process can run several turns: a turn that started a
+    # background shell is woken by the harness when the command finishes — a
+    # `<task-notification>` prompt this page never sent — and everything the
+    # agent then says is written to this same `out.jsonl`, after the `result`
+    # that closed the first turn. `done` used to latch True on that first
+    # `result` and stay there for the life of the run, so the woken turn was
+    # reported as a finished one: no working line, no streaming, an answer that
+    # only appeared on the next reload (Akshil, 2026-08-21 — the chat "showed
+    # nothing" until a few "continue"s later).
+    #
+    # So the answer is "the last thing in this file is a finished turn", which
+    # goes back to False the moment the wake writes its first row, and the page's
+    # standing live-run watch attaches to it like any other run it did not start.
+    # The alternative — done only at process exit — was rejected for what it does
+    # to the COMPOSER: the process outlives the turn for as long as the
+    # background command runs (an hour is not unusual), and the chat would sit
+    # busy, queueing everything the user typed, over a run that is not saying
+    # anything.
+    #
+    # Liveness is sampled BEFORE the read, and that order is the point: a process
+    # that dies between these two lines is read as alive for one more poll
+    # (400ms, and the tail is on disk by then), where the reverse order could
+    # call a run done over a file whose last rows had not been flushed yet.
+    alive = _alive(run_dir)
+    saw_result = False   # at least one turn of this run has finished
+    idle = False         # ...and nothing has been said since
     done = False
     error = ""
     tokens_done = 0      # output tokens of finished messages this turn
@@ -2357,6 +3127,25 @@ def _poll(run_id: str, file: str = "") -> dict:
     retry_total = 0      # how many retries this run has seen at all
     retry_status = 0     # HTTP status of the last one (529 overloaded, 429 …)
     gave_up = None       # the retry still in flight when the run ended badly
+    # WHAT THE RUN IS DOING RIGHT NOW, beyond the verb. Every one of these is a
+    # thing the CLI already writes to out.jsonl and the page used to ignore, so
+    # a long quiet stretch — a minute of extended thinking, a Bash `sleep 30`,
+    # a 40 KB Write streaming its input, a slow Stop hook — sat under a frozen
+    # "Thinking… (47s)" that was indistinguishable from a hang (Akshil,
+    # 2026-08-28). See `_activity` for the wire shape.
+    # Tools in flight, BY ID and in start order. One assistant message can
+    # carry several tool_use blocks (parallel calls); their results come back
+    # as separate `user` rows, so "a result arrived" is not "the tool phase is
+    # over" — only the LAST open call's result is (Bugbot, PR #908). The line
+    # shows the most recently started call that has not returned.
+    tools_open = {}        # tool_use id -> {"id", "name", "detail"}
+    tool_input_bytes = 0   # input_json_delta bytes streamed for the newest block
+    tool_inputs = {}       # tool_use id -> finalized input (from `assistant` rows)
+    thinking_tokens = 0    # CLI's running estimate for the message in flight
+    hooks_open = {}        # hook_id -> hook_name, started and not yet responded
+    bg_tasks = {}          # task_id -> description, started and not yet finished
+    agent_rows = 0         # rows a subagent wrote (parent_tool_use_id set)
+    after_tool = False     # a tool_result landed and nothing has streamed since
     # Every row this poll managed to parse, handed to `_segments_from_rows` once
     # the loop is done. Collected rather than parsed a second time: the file is
     # re-read from scratch on every 400 ms tick, so a second `json.loads` pass
@@ -2379,6 +3168,11 @@ def _poll(run_id: str, file: str = "") -> dict:
             continue  # half-written last line; next poll gets it
         parsed.append(row)
         t = row.get("type")
+        # Anything at all after a `result` is the run waking up for another turn
+        # (the harness's hooks fire first, then `init`, then the reply), so the
+        # quiet-verb window closes on the first row of any kind — see `idle`.
+        if t != "result":
+            idle = False
         # Any of these means the request the retries were for went THROUGH.
         # Rows are in file order, so anything the model produced after an
         # `api_retry` ends it: the live retry state has to be transient, or the
@@ -2393,16 +3187,84 @@ def _poll(run_id: str, file: str = "") -> dict:
             was_retrying, retry = retry, None
         else:
             was_retrying = None
+        # A subagent's rows come through the same stream tagged with the id of
+        # the Task/Agent call that spawned them (SDK contract; not yet seen in a
+        # local run, so counted rather than rendered). They must not move the
+        # main line's phase — the parent is still "running Agent".
+        if row.get("parent_tool_use_id"):
+            agent_rows += 1
+            continue
+        if t in ("stream_event", "assistant"):
+            after_tool = False
         if t == "system":
             new_session = row.get("session_id", new_session)
-            if row.get("subtype") == "api_retry":
+            sub = row.get("subtype")
+            if sub == "api_retry":
                 info = _retry_info(row)
                 if info is not None:
                     retry = info
                     retry_total += 1
                     retry_status = info["status"]
+            elif sub == "status":
+                # `{"status": "requesting"}` is the CLI saying the request is
+                # out and no token is back yet — the one gap the stream itself
+                # cannot describe, and the most common "what is it doing".
+                if row.get("status") == "requesting":
+                    phase = "requesting"
+                    after_tool = False
+            elif sub == "thinking_tokens":
+                est = row.get("estimated_tokens")
+                if isinstance(est, (int, float)):
+                    thinking_tokens = max(thinking_tokens, int(est))
+            elif sub == "hook_started" and row.get("hook_id"):
+                hooks_open[row["hook_id"]] = str(row.get("hook_name") or "hook")
+            elif sub == "hook_response":
+                hooks_open.pop(row.get("hook_id"), None)
+            elif sub == "task_started" and row.get("task_id"):
+                bg_tasks[row["task_id"]] = str(row.get("description") or "")
+            elif sub == "task_notification":
+                bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "task_updated":
+                if (row.get("patch") or {}).get("status") in (
+                        "completed", "killed", "failed", "stopped"):
+                    bg_tasks.pop(row.get("task_id"), None)
+            elif sub == "background_tasks_changed":
+                # Authoritative list when the CLI sends one.
+                tasks = row.get("tasks")
+                if isinstance(tasks, list):
+                    bg_tasks = {
+                        str(x.get("task_id")): str(x.get("description") or "")
+                        for x in tasks if isinstance(x, dict) and x.get("task_id")}
         elif t == "assistant":
             skills += _skill_calls(row)
+            for blk in (row.get("message") or {}).get("content") or []:
+                if isinstance(blk, dict) and blk.get("type") == "tool_use" \
+                        and blk.get("id"):
+                    tool_inputs[blk["id"]] = blk.get("input") or {}
+                    if blk["id"] in tools_open:
+                        tools_open[blk["id"]]["detail"] = _tool_detail(
+                            blk.get("name"), tool_inputs[blk["id"]])
+        elif t == "user":
+            # The tool's result went back in. From here until `status:
+            # requesting` (or the next delta) the run is packing the result
+            # into the next request — brief, but "Working" with no tool open
+            # was the lie this used to tell.
+            content = (row.get("message") or {}).get("content")
+            results = [b for b in (content if isinstance(content, list) else [])
+                       if isinstance(b, dict) and b.get("type") == "tool_result"]
+            for b in results:
+                # Close the call this result answers. An id we never saw
+                # opened (older CLI, or a result whose start row was lost)
+                # falls back to closing the oldest open call, so a missing id
+                # can never leave a finished tool on the line forever.
+                tid = b.get("tool_use_id")
+                if tid in tools_open:
+                    del tools_open[tid]
+                elif tools_open:
+                    del tools_open[next(iter(tools_open))]
+            if results and not tools_open:
+                tool_input_bytes = 0
+                after_tool = True
         elif t == "stream_event":
             ev = row.get("event", {})
             et = ev.get("type")
@@ -2416,6 +3278,10 @@ def _poll(run_id: str, file: str = "") -> dict:
                     phase = "composing"
                 elif delta.get("type") == "thinking_delta":
                     phase = "thinking"
+                elif delta.get("type") == "input_json_delta":
+                    tool_input_bytes += len(delta.get("partial_json") or "")
+            elif et == "message_start":
+                thinking_tokens = 0
             elif et == "message_delta":
                 usage = ev.get("usage") or {}
                 tokens_current = usage.get("output_tokens", tokens_current)
@@ -2426,11 +3292,18 @@ def _poll(run_id: str, file: str = "") -> dict:
                 # break their texts concatenate mid-word ("orange.After").
                 pending_sep = bool(text_parts)
             elif et == "content_block_start":
-                block = (ev.get("content_block") or {}).get("type")
+                cb = ev.get("content_block") or {}
+                block = cb.get("type")
                 if block == "tool_use":
                     phase = "tooling"
+                    tid = cb.get("id") or ""
+                    tools_open[tid] = {
+                        "id": tid, "name": str(cb.get("name") or "tool"),
+                        "detail": _tool_detail(cb.get("name"), tool_inputs.get(tid, {}))}
+                    tool_input_bytes = 0
         elif t == "result":
-            done = True
+            saw_result = True
+            idle = True
             new_session = row.get("session_id", new_session)
             result_text = row.get("result")
             if row.get("is_error"):
@@ -2444,13 +3317,20 @@ def _poll(run_id: str, file: str = "") -> dict:
     # indistinguishable from a hang, which is what an overload used to look like.
     if retry is not None:
         phase = "retrying"
+    elif after_tool and phase == "tooling" and not tools_open:
+        # Result in, nothing back yet, no `status` row (older CLI): the honest
+        # word is still "sending", not "Working" over a tool that has finished.
+        phase = "requesting"
 
-    if not done and not _alive(run_dir):
+    # Finished: a `result` with nothing after it (the turn ended and no wake has
+    # started another), or a process that is simply gone (D415).
+    done = idle or not alive
+
+    if not saw_result and done:
         # Dead without a `result` row = abnormal exit (crash, OOM, cancel),
         # even if some text streamed first. Report it as an error regardless
         # of partial text, so the UI doesn't render a truncated reply as a
         # clean success and the session-record guard below skips it.
-        done = True
         try:
             tail = open(os.path.join(run_dir, "err.log"), encoding="utf-8",
                         errors="replace").read().strip()
@@ -2556,7 +3436,11 @@ def _poll(run_id: str, file: str = "") -> dict:
     # accumulated stream; fall back to `result` only when nothing streamed
     # (older CLI without --include-partial-messages).
     text = "".join(text_parts)
-    if not text and done and result_text and not error:
+    # `saw_result`, not `done`: the fallback is about the row that carries the
+    # text, and a run whose process is still up between turns (D415) has that
+    # row already — waiting for the exit would blank a delta-less turn's reply
+    # for as long as the run stays awake.
+    if not text and saw_result and result_text and not error:
         text = result_text
     # `segments` is the authoritative record of the turn; `text` is the flat
     # legacy field, kept byte-identical to what it has always been for the
@@ -2577,6 +3461,22 @@ def _poll(run_id: str, file: str = "") -> dict:
             "app_state": app_state, "mode": _live_mode(meta, permissions),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
+            # WAS THIS RUN'S END ASKED FOR — read off the run rather than
+            # remembered by whoever asked. The page's own stop button sets a
+            # variable and can swallow the resulting error itself, but a stop
+            # from anywhere else (the tasks queue card's ✕, which goes through
+            # schedule.py) left this page reporting the kill as a crash. See
+            # `_cancel`, which writes the marker.
+            "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
+            "activity": {
+                "tool": next(reversed(tools_open.values())) if tools_open else None,
+                "tools_open": len(tools_open),
+                "tool_input_bytes": tool_input_bytes if tools_open else 0,
+                "thinking_tokens": thinking_tokens if phase == "thinking" else 0,
+                "hook": next(reversed(hooks_open.values())) if hooks_open else "",
+                "tasks": [{"id": k, "description": v} for k, v in bg_tasks.items()],
+                "agent_rows": agent_rows,
+            },
             "segments": _segments_from_rows(parsed)}
 
 
@@ -2700,9 +3600,18 @@ _CLI_SESSION_LIMIT = 30
 _CLI_HEAD_BYTES = 131072
 
 
-def _cli_preview(path: str, workdir: str) -> str:
-    """The first thing a HUMAN said in one transcript, truncated to an 80-char
-    preview — or "" for a transcript this list has no business showing.
+def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
+    """`(preview, pane)` for one transcript: the first thing a HUMAN said in it
+    truncated to 80 chars, and the FILE that chat was opened on. Either is ""
+    when the transcript has none — a preview of "" means a transcript this list
+    has no business showing at all.
+
+    The pane rides this read rather than getting one of its own: the first send
+    from a pane carries both the app-state block and the words, so the record
+    that answers the preview is the record that answers the pane, and a second
+    pass would double the opens to learn nothing new. It stops with the preview
+    for the same reason — scanning on past it would trade a bounded head read
+    for a full one on every pane-less chat.
 
     Read from the file's HEAD only, and only far enough to find that message:
     the alternative is parsing whole multi-MB transcripts to label a row.
@@ -2734,13 +3643,14 @@ def _cli_preview(path: str, workdir: str) -> str:
         with open(path, "rb") as fh:
             blob = fh.read(_CLI_HEAD_BYTES)
     except OSError:
-        return ""
+        return "", ""
     lines = blob.decode("utf-8", "replace").splitlines()
     # A head read cuts the last line mid-way. Drop it rather than let it look
     # like a corrupt transcript — we are the ones who truncated it.
     if len(blob) == _CLI_HEAD_BYTES and lines:
         lines.pop()
     cwd_seen = False
+    pane = ""
     for line in lines:
         if not line.startswith("{"):
             continue
@@ -2758,7 +3668,7 @@ def _cli_preview(path: str, workdir: str) -> str:
             cwd = row.get("cwd")
             if isinstance(cwd, str) and cwd:
                 if os.path.abspath(cwd) != workdir:
-                    return ""
+                    return "", ""
                 cwd_seen = True
         if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
             continue
@@ -2770,24 +3680,54 @@ def _cli_preview(path: str, workdir: str) -> str:
                                if isinstance(b, dict) and b.get("type") == "text")
         if not isinstance(content, str):
             continue
-        content = _strip_machinery(content)
+        # RAW, and before the stripper: the block the pane is named in is the
+        # very thing `_strip_machinery` exists to remove. Read once and kept,
+        # so a first send that turns out to be wordless still leaves the pane
+        # behind for the record two lines down to be titled with.
+        if not pane:
+            pane = _pane_file(content)
+        # The pins are the fallback, not the first choice: a send that carried
+        # both free text and annotations is named by the text (see `_ann_notes`
+        # for why that reading is not folded into the stripper).
+        content = _strip_machinery(content) or _ann_notes(content)
         if not content:
             continue
-        return content[:80] if cwd_seen else ""
-    return ""
+        return (content[:80], pane) if cwd_seen else ("", "")
+    return "", ""
 
 
 def _cli_sessions(file: str) -> list:
-    """Claude sessions about this target's folder — every transcript in this
-    cwd's project dir, whether it started in this page or in a terminal.
+    """Claude sessions about this target — every transcript in this cwd's
+    project dir when the target is a FOLDER, and only the ones opened on this
+    very file when it is a FILE.
 
     They need no import, no copy and no new resume path, which is the whole
     reason this is a dozen lines: a session's home is its cwd's project dir
     (`_munge(_workdir(file))`), the template keys on exactly the same dir, so
     these transcripts are already sitting where `_history` reads and where
     `--resume` looks from.
+
+    The folder collapse in `_workdir` is not a bug and is not undone here:
+    Claude Code keys its store by cwd and a file has no cwd, so resume, history
+    and spawn must all keep using the folder. What was wrong was only the LIST
+    — three files in one folder shared one pile of chats, and selecting file 1
+    offered you a chat that was entirely about file 3. The pane the chat was
+    opened on (`_pane_file`, off the leading app-state block) is what tells
+    them apart, and it is the same reading the server's Tasks list uses to
+    decide which file "open this task" lands on.
+
+    A transcript with no pane at all — a terminal session, a chat started on
+    the folder itself — belongs to the FOLDER, and is offered there. It is not
+    offered on a file, because it is not about one; showing it under every file
+    in the folder is the pile we are dismantling.
     """
     workdir = os.path.abspath(_workdir(file))
+    # "" for a folder target: the filter below is what a file target adds, and
+    # a folder is the case where every transcript in the dir already qualifies.
+    want = "" if os.path.isdir(file) else os.path.abspath(file)
+    # One scan for the whole list — see `_live_sessions` for why this is not
+    # `_live_run` asked once per row.
+    live = _live_sessions(file) | _registry_running(_workdir(file))
     proj = os.path.join(PROJECTS, _munge(workdir))
     try:
         names = os.listdir(proj)
@@ -2812,14 +3752,19 @@ def _cli_sessions(file: str) -> list:
     for mtime, sid in found:
         if len(out) >= _CLI_SESSION_LIMIT:
             break
-        preview = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
+        preview, pane = _cli_preview(os.path.join(proj, sid + ".jsonl"), workdir)
         if not preview:
+            continue
+        # Compared as an abspath, not as text: the block records the pane's own
+        # url, and the target arrives from the caller — the two can spell the
+        # same file differently and still be it.
+        if want and (not pane or os.path.abspath(pane) != want):
             continue
         # mtime is the only timestamp a transcript offers for free — it is the
         # last activity, so it lands on `last_used` and `created_at` borrows it.
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
-                    "cwd": workdir})
+                    "cwd": workdir, "pane": pane, "running": sid in live})
     return out
 
 
@@ -2827,9 +3772,13 @@ def _sessions(file: str) -> dict:
     """Every Claude session about this target, newest activity first.
 
     ONE list, from the cwd's project dir, because the user has one memory: a
-    chat they had about this folder is a chat they had about this folder, and
-    it being in a terminal an hour ago rather than in this page does not make
-    it a different thing to go back to.
+    chat they had about this thing is a chat they had about this thing, and it
+    being in a terminal an hour ago rather than in this page does not make it a
+    different thing to go back to.
+
+    "This thing" is the target, though, not always its folder — see
+    `_cli_sessions` for why a FILE target is offered only the chats that were
+    opened on that file.
     """
     file = os.path.abspath(file)
     sessions = _cli_sessions(file)
@@ -3019,6 +3968,81 @@ def _snapshot_revert(file: str, version_id: str, confirm_unique: bool) -> dict:
     return res
 
 
+def _stopped_last(file: str, session_id: str) -> bool:
+    """Was the most recent run of this conversation STOPPED by the user?
+
+    A killed run writes no `result` row, so a stopped turn is indistinguishable
+    in the transcript from one that crashed or one that simply streamed less
+    than usual — the transcript records what claude said, never why it stopped
+    saying it. The evidence lives in the run dir instead (`_cancel`'s marker),
+    which is why this reads runs rather than records.
+
+    NEWEST RUN ONLY, and that is the whole rule. The question a reopened chat
+    asks is about the turn at the bottom of it, so a run that was stopped
+    yesterday and followed by one that completed says nothing about what is on
+    screen now — answering True there would put "Stopped" under a finished
+    reply. So the newest run for this conversation decides, and it decides for
+    itself: no marker, no note.
+
+    Matched the way `_live_run` matches — the target, then either the session
+    the run RESUMED or the one the CLI minted for it, since `--fork-session`
+    makes those differ — and bounded by the same scan limit, because a run
+    buried under sixty newer ones is not the bottom of anybody's chat.
+
+    False for everything unreadable. A missing runs dir, a meta.json that will
+    not parse, a marker we cannot stat: the note is an explanation, and an
+    explanation nobody can substantiate is better left unsaid than guessed.
+    """
+    if not session_id:
+        return False
+    file = os.path.abspath(file)
+    try:
+        names = sorted(os.listdir(RUNS), reverse=True)[:_LIVE_SCAN_LIMIT]
+    except OSError:
+        return False
+    for name in names:
+        run_dir = os.path.join(RUNS, name)
+        try:
+            with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if os.path.abspath(meta.get("file", "")) != file:
+            continue
+        own = ""
+        try:
+            with open(os.path.join(run_dir, "session"), encoding="utf-8") as fh:
+                own = fh.read().strip()
+        except OSError:
+            pass
+        if not own:
+            own = _session_from_out(run_dir)
+        if own != session_id and str(meta.get("resumed_from") or "") != session_id:
+            continue
+        # The newest run of this conversation — whatever it says, it is the
+        # answer, so this returns rather than carrying on down the list.
+        return os.path.exists(os.path.join(run_dir, "cancelled"))
+    return False
+
+
+def _transcript_stat(path: str) -> dict:
+    """`{path, mtime, size}` for a session transcript — the page's watermark.
+
+    Its two readers are `_history` (which stats BEFORE it reads, see there) and
+    the page, which hands `path` to `/api/claude-sessions/liveness` on every lap
+    of its live watch and compares the pair. A missing file answers zeroes rather
+    than raising: a chat can be open on a session whose transcript does not exist
+    yet, and "0, 0" is the honest watermark for one — the first row written moves
+    it."""
+    try:
+        st = os.stat(path)
+        return {"path": path, "mtime": st.st_mtime, "size": st.st_size}
+    except OSError:
+        return {"path": path, "mtime": 0.0, "size": 0}
+
+
 def _history(file: str, session_id: str) -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
 
@@ -3044,12 +4068,23 @@ def _history(file: str, session_id: str) -> dict:
     turn a person clicked instead of to the top of the conversation. "" on a
     record that has none — the template treats the key as optional throughout."""
     if _bad_id(session_id):
-        return {"turns": []}
+        return {"turns": [], "transcript": _transcript_stat("")}
     file = os.path.abspath(file)
     path = os.path.join(PROJECTS, _munge(_workdir(file)),
                         session_id + ".jsonl")
+    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
+    # is the watermark the page follows the conversation by — it re-renders when
+    # the file moves past it — and a stat taken AFTER the read would describe
+    # rows this payload may not contain, which is a turn silently swallowed. Taken
+    # first, a write that lands mid-read shows up as a watermark the very next lap
+    # disagrees with: one redundant re-render, never a missed one.
+    #
+    # The PATH rides back for `/api/claude-sessions/liveness`: resolving an id to
+    # a transcript belongs here (the line above is the only place that knows the
+    # folder this chat is open on), and the endpoint refuses to do it.
+    stat = _transcript_stat(path)
     if not os.path.isfile(path):
-        return {"turns": []}
+        return {"turns": [], "transcript": stat}
 
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
@@ -3098,7 +4133,16 @@ def _history(file: str, session_id: str) -> dict:
             # never saw it — showing them a screenful of JSON they don't
             # recognise is the whole reason it is stripped here.
             text = _strip_app_state(text)
-            if text.strip() and not text.startswith(("<local-command", "<command-name")):
+            # Claude Code's own synthetic `user` records are not turns: nobody
+            # typed them and the reader has no use for their XML. Two of them
+            # were named literally here; the rest — `<task-notification>` the
+            # loudest, a whole notification block rendered as a message bubble —
+            # were not, so they arrived on screen verbatim (D415). One list now,
+            # the same `_MACHINERY_DROP` the session names are filtered by.
+            # Everything filtered here falls to `stretch`, where
+            # `_segments_from_rows` turns a task-notification into its chip and
+            # ignores the others.
+            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
                 turns.append({"role": "user", "text": text,
                               "uuid": str(row.get("uuid") or "")})
@@ -3119,7 +4163,18 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
-    return {"turns": turns}
+    # ...and whether the last of those turns was ENDED BY THE USER. The
+    # transcript cannot say — a killed run just stops writing — so it is read
+    # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
+    # which is the one the reader is looking at the bottom of. The page draws it
+    # as the same ⏹ note a live stop leaves behind, so a stop looks identical
+    # whether you watched it happen or came back to it later.
+    if turns and _stopped_last(file, session_id):
+        turns[-1]["stopped"] = True
+    # `transcript` is the watermark the page's live watch compares against
+    # (origin/main, D406) — the stat taken BEFORE this read, so a row appended
+    # while we were parsing shows up as a change rather than being missed.
+    return {"turns": turns, "transcript": stat}
 
 
 def _cancel(run_id: str) -> dict:
@@ -3128,6 +4183,26 @@ def _cancel(run_id: str) -> dict:
     # so reject anything that could resolve outside the runs dir.
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"cancelled": run_id}
+    # WHO ASKED, written down before anything is killed.
+    #
+    # Killing claude leaves the run dead with no `result` row, which `_poll`
+    # reports as an error BY DESIGN — a truncated reply must never read as a
+    # clean success. The page that PRESSED stop knows to swallow that error and
+    # say "Stopped" instead, but it knows it from a variable of its own
+    # (`stoppedRun`), so every other reader saw a crash: a stop from the tasks
+    # queue card left the chat showing "claude exited before completing the
+    # reply", and a chat reopened afterwards showed a half-finished reply with
+    # nothing at all to say the user had ended it (Akshil, 2026-08-21).
+    #
+    # This marker is the RUN's own record that its end was asked for, so `_poll`
+    # and `_history` can both say so however the stop arrived. Written first,
+    # because everything below can fail — an unreadable pid, a kill that does
+    # not land — and the intent is true regardless of how the kill went.
+    try:
+        with _private_open(os.path.join(run_dir, "cancelled")) as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass  # bookkeeping must never stand between the user and a kill
     # Answer before killing: the kill takes the whole tree (the MCP server
     # included) on both platforms, but if it fails, a parked approval would
     # otherwise sit there holding the subprocess open for the full timeout.
@@ -3165,7 +4240,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "",
+         read_dirs: str = "", path: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3176,7 +4252,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # API, which has no page — and only then does `_start` ask disk. "0" is a
         # real no, so it must not be read as absence.
         return _start(file, message, session_id, model, effort, permission_mode,
-                      has_pane=None if has_pane == "" else has_pane != "0")
+                      has_pane=None if has_pane == "" else has_pane != "0",
+                      extra_read_dirs=_attach_dirs(read_dirs))
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -3187,8 +4264,11 @@ def main(action: str = "start", file: str = "", message: str = "",
         # below — params cross into python string-shaped — and is only read for
         # an AskUserQuestion request (see _decide). `note` is the plan card's
         # equivalent: free text the user typed next to "keep planning", read only
-        # for an ExitPlanMode deny and only ever as part of its message.
-        return _decide(run_id, request_id, decision, scope, mode, answers, note)
+        # for an ExitPlanMode deny and only ever as part of its message. `custom`
+        # is the question card's sibling of both: a JSON record, keyed by the
+        # same question text as `answers`, of what the user typed into "Other".
+        return _decide(run_id, request_id, decision, scope, mode, answers, note,
+                       custom)
     if action == "app_state":
         # `state` arrives as a JSON string, not a nested object: params reach
         # main() through the URL/param binder (str-shaped), and the snapshot is
@@ -3238,6 +4318,13 @@ def main(action: str = "start", file: str = "", message: str = "",
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.
         return _shots_dir()
+    if action == "image_to_png":
+        # A picture the page uploaded but cannot DECODE (tiff, heic). Asked for
+        # right after the upload, so the chip can show a thumbnail and — the real
+        # point — so the agent's `Read` gets a format it can open. `path` is the
+        # file the page just wrote, and `_image_to_png` re-checks that it is
+        # inside SHOTS before touching it.
+        return _image_to_png(path)
     if action == "terminal_command":
         return _terminal_command(file, session_id)
     if action == "cancel":

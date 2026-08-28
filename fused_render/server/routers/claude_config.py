@@ -63,6 +63,12 @@ router = APIRouter()
 # name in the URL -> the feature module's dispatch entry point. Adding a feature
 # = one row here plus the module; there is no other registration.
 MODULES = {
+    # The "MD Files" tab (round 2 of the Claude config redesign) was deleted
+    # from the frontend — there is no `callModule("claude_md", ...)` left
+    # anywhere in frontend/src. The route stays registered deliberately:
+    # removing backend surface is a bigger call than the redesign asked for,
+    # and is the human's to make, not this branch's. Its only exerciser now
+    # is tests/test_claude_config_api.py, calling it directly.
     "claude_md": claude_md.main,
     "git_ops": git_ops.main,
     "marketplaces": marketplaces.main,

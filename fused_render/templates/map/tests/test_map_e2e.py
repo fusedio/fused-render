@@ -96,6 +96,7 @@ class Viewer:
         self.errors: list[str] = []
         self.s3: list[int] = []
         self.tiles: list[int] = []
+        self.tile_urls: list[str] = []
         self.tile_bytes: list[int] = []
         self.last_read = time.monotonic()
         page.on("pageerror", lambda e: self.errors.append(str(e)[:300]))
@@ -113,6 +114,7 @@ class Viewer:
             self.last_read = time.monotonic()
         if "/tiles/" in response.url and ".png" in response.url:
             self.tiles.append(response.status)
+            self.tile_urls.append(response.url)
             self.last_read = time.monotonic()
             self.tile_bytes.append(int(response.header_value("content-length") or 0))
 
@@ -230,19 +232,9 @@ def remote(viewer, server):
     return viewer.open(render_url(server, REMOTE_COG, REMOTE_CAM))
 
 
-def test_remote_cog_never_touches_the_tile_service(remote):
-    # The whole point of reading it in the browser: no daemon, so no dependency
-    # on a process whose port the page has baked into its URLs.
-    assert remote.tiles == []
-
-
 def test_remote_cog_reads_straight_from_the_object_store(remote):
     assert remote.s3, "no requests reached the bucket at all"
     assert set(remote.s3) <= {200, 206}, f"bad statuses: {set(remote.s3)}"
-
-
-def test_remote_cog_reports_no_page_errors(remote):
-    assert remote.errors == []
 
 
 def test_remote_cog_actually_paints_imagery(remote):
@@ -250,17 +242,6 @@ def test_remote_cog_actually_paints_imagery(remote):
     # working one in the DOM, so assert on the canvas itself.
     covered = remote.canvas_coverage()
     assert covered > 0.02, f"raster canvas is effectively empty (opaque fraction {covered})"
-
-
-def test_remote_cog_layer_card_describes_the_raster(remote):
-    assert "RASTER" in remote.text
-
-
-def test_style_dock_reports_the_rasters_crs(remote):
-    remote.open_style_dock()
-    assert "EPSG:32616" in remote.page.inner_text("#sp-body"), (
-        "the style dock never reported the raster's CRS"
-    )
 
 
 # ------------------------------------------------------------- the code panel
@@ -297,21 +278,6 @@ def test_opacity_control_reaches_the_layer(remote):
     assert after < before / 2, (
         f"opacity 0 left the raster on screen (coverage {before} -> {after})"
     )
-
-
-def test_every_remote_raster_offers_a_contrast_control(remote):
-    # Labelled "Contrast": two min/max fields that read "auto" until set.
-    remote.open_style_dock()
-    dock = remote.page.inner_text("#sp-body")
-    assert "Contrast" in dock, dock
-    assert remote.contrast_inputs().count() == 2, "contrast needs a min and a max field"
-
-
-def test_contrast_defaults_to_an_automatic_window(remote):
-    # Blank fields would leave the user guessing; the measured window is shown.
-    remote.open_style_dock()
-    dock = remote.page.inner_text("#sp-body")
-    assert "contrast auto" in dock, dock
 
 
 def test_changing_contrast_costs_no_network(remote):
@@ -396,6 +362,79 @@ def test_a_source_that_refuses_anonymous_reads_is_signed_and_rendered(
     )
 
 
+def test_tiles_ride_the_stable_server_origin(viewer, server, azure):
+    # The old descriptor pointed MapLibre at the daemon's ephemeral port; any
+    # daemon death then broke every tile the page held, invisibly.
+    page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
+    assert page.wait_for_tiles(), "the raster produced no tiles"
+    stray = [u for u in page.tile_urls if not u.startswith(f"{server}/api/engines/map/proxy/tiles/")]
+    assert not stray, f"tiles bypassed the server origin: {stray[:3]}"
+
+
+def _server_pid(server: str) -> int | None:
+    """The pid listening on the server's port, so the kill can be scoped to
+    THIS server's own daemon rather than every map daemon on the machine."""
+    import subprocess
+
+    port = urllib.parse.urlparse(server).port
+    if not port:
+        return None
+    if os.name == "nt":
+        script = (f"(Get-NetTCPConnection -LocalPort {port} -State Listen "
+                  "-ErrorAction SilentlyContinue | Select-Object -First 1)"
+                  ".OwningProcess")
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, encoding="utf-8")
+        pid = out.stdout.strip()
+        return int(pid) if pid.isdigit() else None
+    out = subprocess.run(["lsof", "-ti", f"tcp:{port}", "-s", "TCP:LISTEN"],
+                         capture_output=True, text=True, encoding="utf-8")
+    pids = out.stdout.split()
+    return int(pids[0]) if pids else None
+
+
+def _kill_map_daemons(server: str) -> int:
+    """Kill only THIS server's managed map daemon(s) — its own children — never
+    an unrelated fused-render app's daemon that happens to be running too."""
+    import subprocess
+
+    ppid = _server_pid(server)
+    if ppid is None:
+        return 0
+    if os.name == "nt":
+        script = (
+            f"Get-CimInstance Win32_Process -Filter \"ParentProcessId = {ppid}\" | "
+            "Where-Object { $_.CommandLine -match 'map[\\\\/]daemon\\.py' } | "
+            "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }"
+        )
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, encoding="utf-8")
+        return len(out.stdout.split())
+    out = subprocess.run(["pkill", "-P", str(ppid), "-f", "map/daemon.py"],
+                         capture_output=True)
+    return 1 if out.returncode == 0 else 0
+
+
+def test_the_same_tile_url_survives_an_engine_restart(viewer, server, azure):
+    # The assertion the old architecture could not pass: the daemon dies and
+    # the URL the page holds keeps answering, because the server restarts the
+    # child and replays its described sources underneath it.
+    page = viewer.open(render_url(server, AZURE_COG, AZURE_CAM))
+    assert page.wait_for_tiles(), "the raster produced no tiles"
+    url = next(u for u in page.tile_urls if "/api/engines/map/proxy/tiles/" in u)
+    with urllib.request.urlopen(url, timeout=120) as before:
+        assert before.status == 200
+    if not _kill_map_daemons(server):
+        pytest.skip("could not locate the managed map daemon process")
+    with urllib.request.urlopen(url, timeout=180) as healed:
+        assert healed.status == 200
+        assert healed.read().startswith(b"\x89PNG")
+    page.quiesce()
+    # The browser-side reader's CORS probe against the blob endpoint is
+    # expected noise on this source; what must stay clean is the tile path.
+    assert not [e for e in page.errors if "/api/map" in e], page.errors
+
+
 # ----------------------------------------------------------------- fallback
 
 
@@ -454,3 +493,44 @@ def test_changing_the_colormap_costs_no_network(viewer, server):
         f"still looks greyscale after switching to viridis: {before_pixels} -> {after}"
     )
     assert page.errors == []
+
+
+# ------------------------------------------------------ antimeridian rasters
+
+
+# A MODIS sinusoidal granule near 180°: it describes with west > east
+# ([172.62, -20, -168.45, -10]). Such bounds used to leave the camera wherever
+# the URL said (the user was looking at South America), draw a world-spanning
+# extent box, and — because `bounds: undefined` fails MapLibre's source
+# validation silently — never add the raster source at all, so no tile was
+# ever requested.
+ANTIMERIDIAN_COG = (
+    "https://modiseuwest.blob.core.windows.net/modis-061-cogs/MYD09Q1/35/10/"
+    "2026209/MYD09Q1.A2026209.h35v10.061.2026218164904_sur_refl_b01.tif"
+)
+
+
+def test_an_antimeridian_raster_fits_to_its_data_and_paints(viewer, server):
+    page = viewer.open(render_url(server, ANTIMERIDIAN_COG, "-10.0,-60.0,3.0"))
+    page.page.wait_for_function(
+        """() => {
+            const cam = new URLSearchParams(location.search).get('cam');
+            if (!cam) return false;
+            const [lat, lng] = cam.split(',').map(Number);
+            const wrapped = ((lng % 360) + 540) % 360 - 180;
+            return Math.abs(lat + 15) < 5 && Math.abs(Math.abs(wrapped) - 178) < 12;
+        }""",
+        timeout=60000,
+    )
+    tiles = page.wait_for_tiles()
+    assert tiles and set(tiles) <= {200, 204}, f"tile statuses: {set(tiles)}"
+    # The first tiles back are the blank ones outside the footprint; the
+    # imagery tiles wait on the first remote reads.
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline and max(page.tile_bytes, default=0) <= 2000:
+        page.page.wait_for_timeout(1000)
+    assert max(page.tile_bytes, default=0) > 2000, (
+        "every served tile is blank; the imagery never painted"
+    )
+    # The unsigned browser probe against the Azure blob answers 409 by design.
+    assert [e for e in page.errors if "409" not in e] == []

@@ -189,6 +189,76 @@ def test_a_chat_session_is_a_task(client, projects_dir, state_dir):
     assert message["unread"] is True
 
 
+def _pane_block(file_path):
+    from urllib.parse import quote
+    return ("<live-app-state>\nA snapshot of the preview the user is looking "
+            "at in the left pane.\n"
+            + json.dumps({"title": "t",
+                          "url": "/render?path=" + quote(file_path, safe=""),
+                          "dom_path": "/tmp/dom.json"})
+            + "\n</live-app-state>\n")
+
+
+def test_a_chat_opened_on_a_file_targets_that_file(
+        client, projects_dir, state_dir, tmp_path):
+    """The transcript's cwd is always a folder, but the pane's own
+    `<live-app-state>` block names the FILE the chat was opened on — and that
+    file, while it exists, is where opening the task should land."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "make the wave faster", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    # The API canonicalizes project/target (tasks.py: canonical_fs_path) — a
+    # forward-slash form, unlike the raw native-separator str(Path) on Windows.
+    assert task["target"] == tasks_mod.canonical_fs_path(str(file))
+    assert task["project"] == tasks_mod.canonical_fs_path(str(proj))
+    assert task["messages"][0]["body"] == "make the wave faster"
+
+
+def test_a_pane_file_that_is_gone_falls_back_to_the_folder(
+        client, projects_dir, state_dir, tmp_path):
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(proj / "deleted.html")) + "hello", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj))
+    assert task["project"] == tasks_mod.canonical_fs_path(str(proj))
+
+
+def test_a_scheduled_entry_target_beats_the_pane_file(
+        client, projects_dir, state_dir, tmp_path):
+    """A scheduled entry's target is the thing the job was pointed at; the
+    pane file only speaks for chats that have no entry of their own."""
+    _already_using(state_dir)
+    proj = tmp_path / "wave"
+    proj.mkdir()
+    file = proj / "index.html"
+    file.write_text("<html></html>")
+    _seed_schedule([_entry("e1", "run the report", T9,
+                           target=str(proj / "report.py"),
+                           state=schedule.SENT,
+                           claude_session_id="sess-a")])
+    _write_transcript(projects_dir, "sess-a", str(proj), [
+        _user(_pane_block(str(file)) + "run the report", T9),
+        _assistant("done", T10),
+    ])
+
+    task = _tasks(client)[0]
+    assert task["target"] == tasks_mod.canonical_fs_path(str(proj / "report.py"))
+
+
 def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
         client, projects_dir, state_dir):
     """The sidebar gets the same state without downloading page-only content."""
@@ -202,7 +272,9 @@ def test_sidebar_pulse_is_the_compact_projection_of_the_task_rows(
     full = _tasks(client)
     pulse = _pulse(client)
 
-    pulse_fields = ("key", "status", "unread", "last_active")
+    # `project` rides along for the sidebar's Current apps section (D487) —
+    # the one listing fact that reader needs beyond the status summary.
+    pulse_fields = ("key", "status", "unread", "last_active", "project")
     assert pulse == [
         {field: row[field] for field in pulse_fields}
         for row in full
@@ -483,8 +555,8 @@ def test_a_pending_scheduled_message_is_a_task_with_no_session(client,
     assert task["task_id"] == "TASK-001"
     # A task on a FILE belongs to the folder (§2) — files and folders do not get
     # separate session pools — and keeps the file as its displayed target.
-    assert task["project"] == str(target.parent)
-    assert task["target"] == str(target)
+    assert task["project"] == tasks_mod.canonical_fs_path(str(target.parent))
+    assert task["target"] == tasks_mod.canonical_fs_path(str(target))
     assert task["status"] == "upcoming"
     assert task["message_count"] == 1
     message = task["messages"][0]
@@ -550,6 +622,42 @@ def test_a_recurring_template_is_not_a_message(client, projects_dir):
     assert task["message_count"] == 2
     assert [m["entry_id"] for m in task["messages"]] == ["occ", ""]
     assert task["messages"][0]["template_id"] == "tpl"
+
+
+def test_immediate_reaches_the_message_the_calendar_reads(client, projects_dir):
+    """WAS THIS PLANNED, or merely due? A task typed on the List or the Board
+    with the when-row untouched runs now because "now" is the form's default —
+    nobody put it on a Tuesday — and the calendar draws nothing for it
+    (schedule-lib.taskChips). That reading is only possible if the flag the
+    entry was created with survives onto the MESSAGE, because a due date says
+    "now" for both kinds and the distinction cannot be re-derived later.
+
+    Per message, not per task: "do this now" and "and again on Thursday" are one
+    task with two very different messages, and only the second is a plan."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([
+        _entry("now", "do it now", T9, claude_session_id="sess-a",
+               immediate=True),
+        _entry("thu", "and again", T12, claude_session_id="sess-a"),
+    ])
+    task = _by_key(client)["sess-a"]
+    by_entry = {m["entry_id"]: m for m in task["messages"] if m["entry_id"]}
+    assert by_entry["now"]["immediate"] is True
+    assert by_entry["thu"]["immediate"] is False
+
+
+def test_an_entry_stored_before_the_flag_existed_reads_as_planned(
+        client, projects_dir):
+    """The right default: every one of them came from a form that asked for a
+    time, so they all belong on the calendar exactly as they always did."""
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "hello", T9, claude_session_id="sess-a")])
+    messages = _by_key(client)["sess-a"]["messages"]
+    scheduled = next(m for m in messages if m["kind"] == "scheduled")
+    assert scheduled["immediate"] is False
+    # A CHAT message never carries it at all: it was typed, so there was no
+    # when-row for anybody to touch.
+    assert "immediate" not in next(m for m in messages if m["kind"] == "chat")
 
 
 def test_a_skipped_occurrence_reads_as_skipped_and_files_itself_away(
@@ -1029,8 +1137,8 @@ def test_a_windowed_message_is_the_whole_task_message(client, tmp_path):
     item = _scheduled(client, DAY_START, DAY_END)[0]
     assert item["task_key"] == "pending:e1"
     assert set(item["message"]) == {
-        "message_id", "kind", "body", "at", "ran_at", "state", "unread",
-        "entry_id", "template_id", "turn", "anchor"}
+        "message_id", "kind", "body", "at", "ran_at", "state", "turn_at",
+        "unread", "entry_id", "template_id", "turn", "anchor", "immediate"}
     assert item["message"]["kind"] == "scheduled"
     assert item["message"]["message_id"] == "MSG-001"
     assert item["message"]["entry_id"] == "e1"
@@ -1456,15 +1564,19 @@ def test_a_send_the_scheduler_is_still_waiting_on_reads_as_running(
         client, projects_dir):
     """The transcript is not live — a turn thinking through a long tool call
     appends nothing for minutes — but the store still has the send in flight.
-    `schedule.busy_sessions` is the scheduler's own answer and the one that is
-    right here; the RENDERED turn cannot be the guard, because `_entry_turn`
-    folds liveness in and writes `idle` for exactly this case."""
+
+    The RENDERED turn is now the guard as well, and that is the change: it used
+    to fold liveness in and write `idle` here, which `_message_verdict` then
+    read as a finished run, so the board could file a task Done while the queue
+    card was still showing it thinking. `turn` is written once, when the turn
+    ends, so `sent` with no turn is a running turn — `busy_sessions` and the
+    message now AGREE rather than one covering for the other."""
     _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
     _seed_schedule([_entry("e1", "x", T12, state=schedule.SENT, fired=T12,
                            turn="", claude_session_id="sess-a")])
     task = _by_key(client)["sess-a"]
     assert task["live"] is False
-    assert task["messages"][0]["turn"] == "idle"
+    assert task["messages"][0]["turn"] == ""
     assert task["status"] == "in_progress"
 
 
@@ -1530,6 +1642,49 @@ def test_a_new_turn_after_the_resolved_run_still_reads_as_running(
     task = _by_key(client)["sess-a"]
     assert task["live"] is True
     assert task["status"] == "in_progress"
+
+
+def test_transcript_activity_after_the_verdict_restores_the_pulse(
+        client, projects_dir):
+    """TASK-001 (Akshil, 2026-08-19): a task wore the green Done ring while
+    Claude was visibly mid-build in its session. The run's verdict had landed
+    (`turn: ok`, stamped `turn_at`) but the session KEPT WORKING — follow-up
+    turns and background work append real transcript records without adding a
+    single new prompt, so nothing on the chat side of the thread ever outdates
+    the verdict and the transcript's vote stayed suppressed for as long as the
+    work ran. The verdict may only silence its own echo: a tail meaningfully
+    newer than the moment the turn resolved is NEW work, and the task is In
+    Progress."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-40), uuid="u1"),
+        _assistant("first turn done", _near_now(-32)),
+        _assistant("still building the app", _near_now(-3)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-40), state=schedule.SENT,
+                           fired=_near_now(-40), turn="ok",
+                           turn_at=_near_now(-30),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is True
+    assert task["status"] == "in_progress"
+
+
+def test_a_stamped_verdicts_own_echo_is_still_set_aside(client, projects_dir):
+    """The rule above must not reopen the split it was cut from: a tail whose
+    freshness IS the finished turn's closing records — written in the same
+    breath as the verdict — is the echo, and the task is done the moment the
+    corner card says so."""
+    _write_transcript(projects_dir, "sess-a", "/p", [
+        _user("go", _near_now(-30), uuid="u1"),
+        _assistant("all done", _near_now(-6)),
+    ])
+    _seed_schedule([_entry("e1", "go", _near_now(-30), state=schedule.SENT,
+                           fired=_near_now(-30), turn="ok",
+                           turn_at=_near_now(-5),
+                           claude_session_id="sess-a")])
+    task = _by_key(client)["sess-a"]
+    assert task["live"] is False
+    assert task["status"] == "done"
 
 
 def test_a_resolved_run_does_not_silence_a_sibling_still_in_flight(

@@ -40,7 +40,15 @@
 
 /* Drag handle riding the sidebar's right border. Fixed-positioned (the
    component sets `left` inline) so the sidebar's own overflow-y scroll can't
-   clip or move it; a 6px hit area around the 1px border line. */
+   clip or move it; a 6px hit area around the 1px border line.
+ *
+ * ON THE COLLAPSED RAIL TOO, at its 44px edge — the drag reads both ways, so the
+ * gesture that shut the sidebar is the gesture that brings it back. It is also
+ * why the element is rendered as a SIBLING of #sidebar rather than a child
+ * (SidebarFrame): the rail and the expanded sidebar are different subtrees, and
+ * a handle inside each would be unmounted mid-drag at the exact moment the pull
+ * crosses its threshold — which is capture lost, and a gesture that dies on
+ * success. */
 .sidebar-resize-handle {
   position: fixed;
   top: 0;
@@ -164,9 +172,16 @@ a.sidebar-rail-btn {
   flex: 1 1 auto;
 }
 
-/* Phones: give the whole width to the rendered view */
+/* Phones: give the whole width to the rendered view.
+ *
+ * The handle goes with it, and has to be named separately now that it is a
+ * SIBLING of #sidebar rather than a child (SidebarFrame — see the handle's own
+ * rule above for why it moved out). Left behind, it would be a 6px col-resize
+ * strip floating down the left edge of a phone layout, resizing a sidebar that
+ * is not on screen. */
 @media (max-width: 700px) {
-  #sidebar {
+  #sidebar,
+  .sidebar-resize-handle {
     display: none;
   }
 }
@@ -205,8 +220,7 @@ a.sidebar-rail-btn {
 }
 
 /* Title truncates when the sidebar is dragged narrow (min 180px) so the
-   brand row never overflows; logo, version and collapse button keep their
-   size and the version stays visible beside the ellipsis. */
+   brand row never overflows; logo and collapse button keep their size. */
 .sidebar-brand .brand-title {
   min-width: 0;
   overflow: hidden;
@@ -214,12 +228,27 @@ a.sidebar-rail-btn {
   white-space: nowrap;
 }
 
-/* Package version after the name — smaller and muted grey. */
-.sidebar-brand .brand-version {
-  font-size: 10.5px;
-  font-weight: 500;
+/* The version chip, on the Settings row's trailing edge (shell/GlobalSidebar):
+   a small outlined pill, quiet on purpose — it is a fact about the install, not
+   a control, so it must not out-shout the row it rides on. Background is a tint
+   wash rather than --bg-alt (the recipe .fh-index-chip uses), because the
+   sidebar IS --bg-alt and the chip would be an invisible ring on its own color.
+   Monospace + tabular figures so the pill doesn't change width when a digit
+   does. */
+.version-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(var(--tint), 0.05);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 14px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
   color: var(--fg-muted);
-  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* -- Modified installation (platform/ui/VersionChip, SPEC §42) --------------
@@ -430,6 +459,17 @@ a.update-badge-action {
   letter-spacing: normal;
 }
 
+/* The AI Models row's "Beta" tag: same chip element, recoloured to the accent
+   so it reads as a label about the feature rather than a count of anything. */
+.sidebar-beta-chip {
+  font-size: 9px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
 /* -- "N running" ---------------------------------------------------------------
    The In Progress hue (--status-progress: the status ring's own yellow, so the
    sidebar and the page name the state in one colour), with the ink SHIMMERING
@@ -527,13 +567,16 @@ a.update-badge-action {
   }
 }
 
-/* -- The Tasks entry's dot -----------------------------------------------------
+/* -- The nav dot ---------------------------------------------------------------
    One 7px dot in the icon's top-right corner, worn in BOTH sidebar modes (the
-   class keeps its `rail` name because that is where it started). Same shape as
-   the Settings row's resident-model dot (.account-signedin-dot, account.css) —
-   a dot on a nav icon means "there is something behind this" everywhere in this
-   sidebar — and the same border-hole trick, so the mark reads as sitting ON the
-   glyph rather than merging with it.
+   class keeps its `rail` name because that is where it started).
+
+   THE ONLY DOT IN THIS SIDEBAR, since 2026-08-24. It was "the Tasks entry's dot"
+   and the AI Models row wore a different class that looked almost like it —
+   which is the state Akshil reported: two nav dots, two positions, two sizes. A
+   dot on a nav icon means "there is something behind this", so there is one
+   class that draws it and a modifier per fact (below). The border-hole trick is
+   what makes the mark read as sitting ON the glyph rather than merging with it.
 
    The offsets below are the RAIL's: positioned against the 28px button, not the
    16px glyph, because the icon has no box of its own there (the rail renders the
@@ -564,7 +607,7 @@ a.update-badge-action {
   border-color: var(--bg-alt);
 }
 
-/* The two states, in the status ring's own hues (schedule.css): yellow while
+/* The Tasks states, in the status ring's own hues (schedule.css): yellow while
    anything is in flight, green for work that finished and has not been read.
    Yellow outranks green in the MARKUP (GlobalSidebar picks one), not here — two
    dots in one corner is not a state this can draw. */
@@ -574,6 +617,21 @@ a.update-badge-action {
 
 .sidebar-rail-dot.is-unread {
   background: var(--status-done);
+}
+
+/* AND THE AI MODELS ROW'S, which is another row's fact in the same vocabulary
+   (2026-08-24): a model is resident, and holds memory while nobody is looking.
+   It wore `.account-signedin-dot` until then — 7px like this one, and that was
+   the end of the resemblance, so on the rail it floated off the button's corner
+   instead of sitting on the glyph. See GlobalSidebar for the two reasons why.
+
+   It keeps `--success-bright`, the hue it already had and the one the Loaded
+   badge on the cards themselves wears, rather than joining `is-unread`'s
+   `--status-done`: those are two different claims — work nobody has read, versus
+   memory being held — and the rows are far enough apart that the shared SHAPE is
+   what had to match. Same class, same box, same corner, same ring. */
+.sidebar-rail-dot.is-resident {
+  background: var(--success-bright);
 }
 
 /* Bottom Preferences trigger (GlobalSidebar): a <button> wearing the
@@ -598,10 +656,29 @@ button.sidebar-prefs-trigger {
   background: rgba(var(--tint), 0.08);
 }
 
-.sidebar-prefs-menu .account-signedin-dot {
-  position: static;
-  margin-left: auto;
+/* The Tours flyout: the shared .context-submenu chassis (context-menu.css), with
+   one thing changed — it hangs from its parent row's BOTTOM edge, not its top.
+   This is the app's one menu that grows UPWARD out of the sidebar's bottom edge,
+   and its last row sits a few pixels off the floor, so a flyout aligned to that
+   row's top ran its own rows straight off the bottom of the window. Aligning the
+   bottom edges opens it the way the menu it belongs to opens: rightward and up.
+   Rightward always — the sidebar is against the left edge, so there is no side
+   to flip to and no `.left` case to carry. */
+.sidebar-prefs-menu .context-submenu {
+  top: auto;
+  bottom: -5px;
+  transform-origin: left bottom;
+  /* Narrower than the parent: the flyout holds four short titles, and the
+     parent's 180px floor would leave them swimming. */
+  min-width: 150px;
 }
+
+/* There is no `.sidebar-prefs-menu .account-signedin-dot` rule any more
+   (2026-08-24). It un-absolute-positioned that dot for the one place it appeared
+   in flow — a menu entry rather than an icon corner — and no element in this
+   sidebar wears that class since the AI Models dot moved onto
+   `.sidebar-rail-dot` above. The base class still lives in account.css for its
+   own surface; this override was the sidebar's and had nothing left to match. */
 
 .sidebar-heading {
   padding: 10px 10px 6px;
@@ -648,8 +725,7 @@ button.sidebar-prefs-trigger {
 
 /* Recents (SPEC §29): sits between the bookmark tree and the pinned footer.
    Rows reuse .bookmark-row/.bookmark-name/.bookmark-glyph for identical
-   metrics; heading click toggles the fold; the count pill carries the
-   collapsed signal — no chevron, matching D44's folder rows. */
+   metrics; heading click toggles the fold. */
 .sidebar-recents {
   flex: 0 0 auto;
   /* The bookmarks section above already ends in its own 8px padding — start
@@ -657,12 +733,52 @@ button.sidebar-prefs-trigger {
   padding-top: 0;
 }
 
+/* A foldable section heading (Projects, Bookmarks). Since 2026-08-26 it is set
+   in title case rather than the small-caps of the other headings, and the
+   label is followed by a chevron that says "this folds": pointing down when
+   open, right when collapsed. The count pill still rides the collapsed state. */
 .recents-heading {
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
   user-select: none;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+
+.sidebar-heading-chevron {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin: 0 1px 1px 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+  opacity: 0.8;
+}
+
+.recents-heading.collapsed .sidebar-heading-chevron {
+  transform: rotate(-45deg);
+  margin-bottom: 0;
+}
+
+/* Keyboard position: Up/Down walk the Projects + Bookmarks rows
+   (shell/sidebarArrowNav.ts) and land focus on the row's link, so the row
+   shows where the cursor is. `:has()` lifts the ring onto the row itself. */
+.bookmark-row:has(> a.bookmark-name:focus-visible) {
+  outline: 1.5px solid var(--accent, currentColor);
+  outline-offset: -1.5px;
+}
+.bookmark-row > a.bookmark-name:focus-visible {
+  outline: none;
+}
+
+/* The collapsed count sits at the row's far end, clear of the label+chevron. */
+.recents-heading > .sidebar-count-chip {
+  margin-left: auto;
 }
 
 /* The heading's collapsed count. No skin of its own since 2026-08-18: it wears
@@ -1107,6 +1223,13 @@ a.bookmark-name::after {
   background: rgba(var(--tint), 0.12);
 }
 
+/* Installed state: the row is a status line, not a toggle — nothing to click. */
+.update-badge-row-static,
+.update-badge-row-static:hover {
+  background: rgba(var(--tint), 0.07);
+  cursor: default;
+}
+
 .update-badge-dot {
   width: 7px;
   height: 7px;
@@ -1149,7 +1272,13 @@ a.bookmark-name::after {
 }
 
 .update-badge-command code {
-  flex: 1;
+  /* Not flex:1 — that stretched the plate to fill the row (the trouble card
+     is up to 640px wide) leaving the copy button stranded far past the end
+     of a short command. Sized to its own content instead, shrinking with
+     min-width:0 so a command too long for the row scrolls inside the plate
+     rather than pushing the button off it. */
+  flex: 0 1 auto;
+  min-width: 0;
   padding: 4px 6px;
   border-radius: 4px;
   background: rgba(var(--tint), 0.09);
@@ -1166,4 +1295,84 @@ a.bookmark-name::after {
   color: var(--fg-muted);
   font-size: 11px;
   cursor: pointer;
+}
+
+/* Projects (D487, "Current apps" until 2026-08-26): the apps on the desk, above
+   Bookmarks. Rows reuse .bookmark-row/.bookmark-name/.bookmark-actions for
+   identical metrics; the hover cross archives every task under the app. Fixed
+   height like .sidebar-recents — the bookmark tree below is the one that
+   scrolls. Keeps the section's own 8px bottom padding: with the bookmarks
+   heading's 18px sticky top padding that makes the gap to Bookmarks 26px — the
+   same 26px (8 + 8 + heading's 10) that separates the nav group from this
+   section, so the two seams read as one rhythm. */
+.sidebar-current-apps {
+  flex: 0 0 auto;
+}
+
+.current-app-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The app's own icon.svg, filling the 14px glyph slot as is — the author's
+   shape AND colours, untouched (owner, 2026-08-27). */
+.current-app-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  object-fit: contain;
+}
+
+/* The running dot sits after the name, in flow: the name gives up its
+   stretch so the dot hugs the text instead of drifting to the row's end
+   (under the hover-only actions). */
+.current-app-row.is-running .bookmark-name {
+  flex: 0 1 auto;
+}
+
+.current-app-running {
+  position: static;
+  flex: 0 0 auto;
+  margin-left: 6px;
+}
+
+.current-app-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* An app whose folder is gone stays on the desk until the user removes it
+   (the table never prunes itself); it reads as faded so the row says so. */
+.current-app-row.is-missing .bookmark-name {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+
+/* The "+ New app" row (D489) closes the list: a row in the desk's own metrics,
+   muted so it reads as a door rather than another app, full colour on hover. */
+.current-app-new {
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.current-app-new .bookmark-name {
+  color: inherit;
+}
+
+.current-app-new .current-app-glyph {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.current-app-new:hover,
+.current-app-new:focus-visible {
+  color: var(--fg);
+}
+
+/* The composer, in the modal: the hero's bottom margin was spacing under a
+   masthead and is dead space inside a dialog body. */
+.current-apps-compose .home-composer-wrap {
+  margin-bottom: 0;
 }

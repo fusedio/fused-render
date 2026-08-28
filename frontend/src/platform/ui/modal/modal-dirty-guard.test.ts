@@ -144,3 +144,30 @@ describe("the timer is gone", () => {
     expect(modal).toContain('dialog.addEventListener("keydown", onKey)');
   });
 });
+
+// ---- the ✕ while an action is in flight (2026-08-24) -------------------------
+// A busy modal is one whose action must not be abandoned — the mount sign-in
+// holds rclone's callback port, and closing out from under it leaves the next
+// attempt 409ing on a sign-in the user believes they dismissed. The ✕ was
+// therefore drawn and `disabled`, which is this app's usual posture and is
+// wrong HERE: a disabled button takes no pointer events, so the `title`
+// explaining itself never appears, and a busy modal is exactly when someone
+// reaches for the corner. Akshil, on the mount flow: "when mounting we have a X
+// button, i don't think that works." It worked as specified and was
+// indistinguishable from broken.
+describe("the close button while busy", () => {
+  test("is not rendered at all, rather than rendered dead", () => {
+    expect(modal).toContain("{!busy && (");
+    // The old spelling, gone: the ✕ never carries a disabled attribute now.
+    const close = modal.slice(modal.indexOf('className={"modal-close'));
+    expect(close.slice(0, close.indexOf("</button>"))).not.toContain("disabled={busy}");
+  });
+
+  test("still refuses Esc and the backdrop, which is the actual guard", () => {
+    // Hiding the ✕ is about not offering a dead control; it is NOT the thing
+    // that protects the action. `decideClose` is, and it still answers "no" to
+    // a busy modal however the close was asked for.
+    expect(decideClose({ busy: true, dirty: false, armed: false })).toBe("block");
+    expect(modal).toContain("const decision = decideClose({ busy, dirty, armed: confirmClose });");
+  });
+});

@@ -79,7 +79,7 @@ def test_a_folder_dropped_straight_into_the_workspace_is_an_app(tmp_path):
     assert app["name"] == "sine"
     assert app["entry"] == os.path.abspath(str(tmp_path / "sine" / "sine.html"))
     # Its own folder IS the top-level segment, so it is its own tag. Not "":
-    # an empty tag adds a nameless chip to the page's Repo facet and a `?tag=`
+    # an empty tag adds a nameless chip to the page's Folders facet and a `?tag=`
     # that filters on nothing.
     assert app["tag"] == "sine"
 
@@ -90,7 +90,7 @@ def test_a_page_less_top_level_folder_is_a_shelf_not_an_app(tmp_path):
     A folder at depth 1 with no page of its own is where apps LIVE —
     `examples/`, `local/`, `showcase/` — not an app. Listing it puts a blank,
     title-less card on the apps page for every tag folder the user has, named
-    after a chip that is already in the Repo facet right above the grid. Depth 2
+    after a chip that is already in the Folders facet right above the grid. Depth 2
     now answers the same way, for the same reason (see the shelf test below); it
     is asserted separately because it was the level that got this wrong twice.
     """
@@ -123,7 +123,7 @@ def test_a_third_level_folder_with_an_index_html_is_an_app(tmp_path):
     """Depth 3 lists on a TAGGED page like every other depth (the fixture's
     index.html carries the marker; its name buys nothing — see the next two
     tests). The tag is still the FIRST path segment, so a third-level app files
-    under the same Repo chip as its second-level neighbours."""
+    under the same Folders chip as its second-level neighbours."""
     _app(tmp_path / "showcase" / "sub", "bar")
 
     apps = {a["name"]: a for a in app_listing.workspace_apps(tmp_path)}
@@ -249,7 +249,7 @@ def test_the_shelf_of_people_folders_lists_the_apps_and_not_the_people(tmp_path)
 
     apps = app_listing.workspace_apps(tmp_path)
     assert [a["name"] for a in apps] == ["alphaearth", "clay"]
-    # Both still file under the top-level segment, so one Repo chip covers them.
+    # Both still file under the top-level segment, so one Folders chip covers them.
     assert {a["tag"] for a in apps} == {"sandbox"}
 
 
@@ -831,3 +831,29 @@ def test_the_marker_is_only_read_from_the_head_bytes(tmp_path):
     q.write_text('<html><head><meta NAME="fused-app"></head></html>',
                  encoding="utf-8")
     assert app_listing.has_fused_meta(str(q))
+
+
+# ----------------------------------------------- listed "path" is realpath'd
+
+
+def test_a_symlinked_app_folder_lists_at_its_realpath(tmp_path):
+    """Code review (2026-08-26): a listed app's `path` used to be abspath'd
+    only, which diverges from `background_apps.engine_id_for`'s realpath-based
+    identity (D509/D512) through a symlinked folder alias — the /apps grid's
+    running badge (`runningPaths.has(app.path)`) could never match a
+    background daemon's actual (realpath) folder for such an app. `path` must
+    come back already resolved to the same identity `engine_id_for` would
+    compute, so the two sides agree without the frontend needing to know
+    anything about symlinks."""
+    real = tmp_path / "outside" / "app"
+    real.mkdir(parents=True)
+    (real / "index.html").write_text(TAGGED, encoding="utf-8")
+    root = tmp_path / "ws"
+    root.mkdir()
+    link = root / "linked"
+    os.symlink(str(real), str(link))
+
+    apps = app_listing.workspace_apps(str(root))
+    assert len(apps) == 1
+    assert apps[0]["path"] == os.path.realpath(str(link))
+    assert apps[0]["path"] == os.path.realpath(str(real))

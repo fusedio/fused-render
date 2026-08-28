@@ -6,10 +6,12 @@ exhaustive GET /api/claude-sessions and Home's newest-first, early-stopping GET
 import json
 import os
 import shutil
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server import create_app
 from fused_render.server.routers import claude_sessions as claude_sessions_mod
 
@@ -25,6 +27,14 @@ def projects_dir(tmp_path, monkeypatch):
 @pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
+
+
+def _c(path) -> str:
+    """A folder's expected wire form: both endpoints canonicalize `path` to
+    forward slashes on the way out (see canonical_fs_path), even though the
+    transcript's own `cwd` and this test's `str(Path(...))` are backslashed
+    on Windows."""
+    return canonical_fs_path(str(path))
 
 
 def _session(projects_dir, encoded_dir, session_id, cwd, mtime=None):
@@ -45,7 +55,7 @@ def test_groups_by_transcript_cwd_not_encoded_dirname(client, projects_dir, tmp_
     real.mkdir()
     _session(projects_dir, "-tmp-my-project", "s1", str(real))
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(real)]
+    assert [f["path"] for f in data["folders"]] == [_c(real)]
 
 
 def test_sorted_by_latest_session_first(client, projects_dir, tmp_path):
@@ -56,7 +66,7 @@ def test_sorted_by_latest_session_first(client, projects_dir, tmp_path):
     _session(projects_dir, "proj-a", "s1", str(a), mtime=1000)
     _session(projects_dir, "proj-b", "s1", str(b), mtime=2000)
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(b), str(a)]
+    assert [f["path"] for f in data["folders"]] == [_c(b), _c(a)]
 
 
 def test_multiple_sessions_in_one_folder_collapse_to_one_row(client, projects_dir, tmp_path):
@@ -65,7 +75,7 @@ def test_multiple_sessions_in_one_folder_collapse_to_one_row(client, projects_di
     _session(projects_dir, "proj", "old", str(proj), mtime=1000)
     _session(projects_dir, "proj", "new", str(proj), mtime=5000)
     data = client.get("/api/claude-sessions").json()
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
 
 
 def test_folder_no_longer_on_disk_is_dropped(client, projects_dir, tmp_path):
@@ -102,7 +112,7 @@ def test_home_opens_only_enough_newest_transcripts_to_fill_the_row(
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
     assert [f["path"] for f in data["folders"]] == [
-        str(folders[19]), str(folders[18]), str(folders[17]),
+        _c(folders[19]), _c(folders[18]), _c(folders[17]),
     ]
     assert len(opened) == 3
 
@@ -135,7 +145,7 @@ def test_home_skips_duplicate_and_missing_folders_until_the_row_is_full(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(a), str(b), str(c)]
+    assert [f["path"] for f in data["folders"]] == [_c(a), _c(b), _c(c)]
     # Four, not five: a/old is never opened. Its directory was already resolved
     # by a/new, and a directory name IS the encoded cwd, so the second file
     # could only have reproduced a folder already in the row.
@@ -164,7 +174,7 @@ def test_home_opens_one_transcript_per_project_directory(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
     assert opened == [str(projects_dir / "proj" / "s9.jsonl")]
 
 
@@ -193,7 +203,7 @@ def test_home_falls_through_to_older_transcripts_of_an_unreadable_newest(
     monkeypatch.setattr(claude_sessions_mod, "_session_cwd", counted_session_cwd)
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
 
-    assert [f["path"] for f in data["folders"]] == [str(proj)]
+    assert [f["path"] for f in data["folders"]] == [_c(proj)]
     assert opened == [str(headless), str(projects_dir / "proj" / "readable.jsonl")]
 
 
@@ -211,10 +221,10 @@ def test_home_collapses_a_collided_directory_to_its_newest_folder(
     _session(projects_dir, "collide", "newer", str(hyphened), mtime=2000)
 
     data = client.get("/api/claude-sessions/home", params={"limit": 3}).json()
-    assert [f["path"] for f in data["folders"]] == [str(hyphened)]
+    assert [f["path"] for f in data["folders"]] == [_c(hyphened)]
     exhaustive = client.get("/api/claude-sessions").json()
     assert sorted(f["path"] for f in exhaustive["folders"]) == sorted(
-        [str(hyphened), str(nested)])
+        [_c(hyphened), _c(nested)])
 
 
 def test_home_session_limit_is_capped_to_its_single_row(
@@ -241,3 +251,133 @@ def test_home_session_limit_is_capped_to_its_single_row(
 def test_home_missing_projects_dir_is_empty(client, projects_dir):
     shutil.rmtree(projects_dir)
     assert client.get("/api/claude-sessions/home").json() == {"folders": []}
+
+
+# ── GET /api/claude-sessions/liveness — has this conversation moved? (D415) ──
+#
+# The claude chat's transcript-follower asks this on every lap for a session it
+# is showing and has no run of: a turn driven from a terminal writes no run dir,
+# so `live_run` cannot see it and the chat used to need a manual reload. One
+# stat, plus `session_liveness`' own running rule — never a second opinion about
+# what "mid-turn" means.
+
+def _liveness(client, path):
+    return client.get("/api/claude-sessions/liveness", params={"path": str(path)})
+
+
+def test_liveness_reports_the_stat_the_page_watermarks_by(client, projects_dir,
+                                                          tmp_path):
+    path = _session(projects_dir, "proj", "s1", str(tmp_path), mtime=1000)
+    body = _liveness(client, path).json()
+    assert body["exists"] is True
+    assert body["mtime"] == 1000
+    assert body["size"] == path.stat().st_size
+    # Both halves of the pair matter: a coarse clock can land two appends in one
+    # mtime tick, and the size is what tells them apart.
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "user"}) + "\n")
+    os.utime(path, (1000, 1000))
+    assert _liveness(client, path).json()["size"] > body["size"]
+
+
+def test_liveness_running_is_the_last_message_not_the_activity_window(
+        client, projects_dir, tmp_path, monkeypatch):
+    """`transcript_turn_open`, NOT the 45s window the Inbox badge shares. The
+    window is right for a badge and wrong under an open conversation: a run
+    started outside this app writes no turn-end record, so the window kept a
+    shimmering line under a reply that had already landed. Pinned by which
+    function is asked, because both answer a bool and only one is honest at the
+    moment a turn ends."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    seen = {}
+
+    def never(p, now):
+        raise AssertionError("the activity window must not decide this")
+
+    def fake(p, now):
+        seen["path"] = p
+        return True
+
+    monkeypatch.setattr(claude_sessions_mod.session_liveness,
+                        "transcript_running", never)
+    monkeypatch.setattr(claude_sessions_mod.session_liveness,
+                        "transcript_turn_open", fake)
+    assert _liveness(client, path).json()["running"] is True
+    assert seen["path"] == os.path.realpath(str(path))
+
+
+def _rows(path, *rows):
+    with open(path, "w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+    return path
+
+
+def _assistant(*blocks):
+    return {"type": "assistant", "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "assistant",
+                        "content": [{"type": b} for b in blocks]}}
+
+
+def test_a_reply_that_landed_ends_the_turn_the_moment_it_lands(client,
+                                                               projects_dir,
+                                                               tmp_path):
+    """The bug this rule replaced, stated as a test: the turn is over when the
+    reply is written, not 45 seconds later."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": "2026-01-01T00:00:00Z"},
+          _assistant("text"),
+          # ...and the records Claude Code drops afterwards do not revive it.
+          {"type": "last-prompt"}, {"type": "mode"})
+    assert _liveness(client, path).json()["running"] is False
+
+
+def test_a_prompt_with_no_reply_yet_is_a_turn_in_flight(client, projects_dir,
+                                                        tmp_path):
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _assistant("text"),
+          {"type": "user", "timestamp": "2026-01-01T00:00:00Z"})
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_an_assistant_still_calling_tools_is_a_turn_in_flight(client,
+                                                              projects_dir,
+                                                              tmp_path):
+    """Mid-turn is the common case for a long agent run, and the reply text that
+    precedes a tool call must not read as the end of it."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": "2026-01-01T00:00:00Z"},
+          _assistant("text", "tool_use"))
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_a_turn_left_open_by_a_dead_process_does_not_shimmer_forever(
+        client, projects_dir, tmp_path):
+    """A terminal closed mid-reply leaves a user row as the file's last word,
+    and no one is ever coming back to answer it. STALE_TAIL_SEC is the ceiling
+    on how long that lie may stand — the same ceiling the window rule uses."""
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, {"type": "user", "timestamp": "2026-01-01T00:00:00Z"})
+    old = time.time() - claude_sessions_mod.session_liveness.STALE_TAIL_SEC - 5
+    os.utime(path, (old, old))
+    assert _liveness(client, path).json()["running"] is False
+
+
+def test_liveness_of_a_transcript_not_written_yet_is_not_an_error(
+        client, projects_dir):
+    """A chat can be open on a session whose first turn is still being written;
+    the watch's next lap is where that gets noticed, not an exception here."""
+    body = _liveness(client, projects_dir / "proj" / "unborn.jsonl").json()
+    assert body == {"exists": False, "mtime": 0.0, "size": 0, "running": False}
+
+
+def test_liveness_refuses_anything_outside_the_projects_tree(client, tmp_path,
+                                                             projects_dir):
+    """The parameter is a PATH, so the guard is the endpoint's whole security
+    story: a stat of an arbitrary file is still a read of the filesystem."""
+    outside = tmp_path / "secrets.jsonl"
+    outside.write_text("{}")
+    assert _liveness(client, outside).status_code == 400
+    assert _liveness(client, projects_dir / "proj" / "s1.txt").status_code == 400
+    escape = projects_dir / "proj" / ".." / ".." / "secrets.jsonl"
+    assert _liveness(client, escape).status_code == 400

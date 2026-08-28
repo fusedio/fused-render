@@ -14,16 +14,23 @@ export interface Config {
   // Drifts from `version` after a DMG install replaces the bundle under a
   // still-running process — ServerStatusBanner then asks for an app restart.
   installed_version: string | null;
-  // Root of the mounts dir (~/.fused-render/mounts). The sidebar's "Learn"
-  // entry navigates to `${mounts_root}/learn`, the builtin read-only mount
-  // of the bundled learn.zip (D123) — same dir every mount lives under.
+  // Root of the mounts dir (~/.fused-render/mounts). A builtin read-only
+  // mount of a bundled zip (D123) lives at `${mounts_root}/<name>` — same dir
+  // every mount lives under.
   mounts_root: string;
-  // Whether the builtin learn mount record exists yet — the sidebar only
-  // renders the Learn entry when this is true, so it's never a dead link
+  // Where shell code may write scratch files — bytes the app made and can
+  // remake (`~/.fused-render/cache`), never the user's own folders. Path only:
+  // the writer mkdirs it, and /api/fs/mkdir makes ONE level at a time.
+  cache_dir: string;
+  // Whether this machine can raise the OS file/folder dialog from the server
+  // process (server/dirpicker.py) — false on a hosted deploy with no GUI
+  // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
+  // fallback. One backend set raises both dialogs, hence the one flag.
+  native_dir_picker: boolean;
+  // Whether the builtin sessions mount record exists yet — a surface linking
+  // into it renders only when this is true, so it's never a dead link
   // (unpackaged dev run with no zip, or the brief window before startup's
   // background automount thread has upserted the record).
-  learn_mount_ready: boolean;
-  // Same gate for the builtin sessions mount (the Claude Sessions sub-app).
   sessions_mount_ready: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
@@ -37,10 +44,17 @@ export interface Config {
   // would silently pass.
   modified_install?: ModifiedInstall;
   // The installation cannot be written to, so a self-fix session started here
-  // can only DIAGNOSE (fused_render/selffix.py, SPEC §43 SF-13). PRESENT ONLY
+  // can only DIAGNOSE (fused_render/selffix.py, SPEC §48 SF-13). PRESENT ONLY
   // WHEN READ-ONLY, for the same reason as `modified_install` above: the
   // ordinary install is one the user owns.
   read_only?: boolean;
+  // Full Disk Access nudge state (fused_render/shell/fda.py) — present only
+  // on the packaged mac app when the probe is conclusive. FdaCard renders
+  // off this; absent means render nothing and stop watching. `relevant`
+  // flips when this session first reads under a TCC-protected folder — the
+  // moment the Allow prompts start, which is the only moment the card is
+  // worth showing.
+  fda?: { granted: boolean; dismissed: boolean; relevant: boolean };
   // No claude_config gate here any more: the Claude Config app stopped being a
   // mounted html+py app and became native React over its own server bridge, so
   // its availability is GET /api/claude-config/status (useClaudeConfigAvailable
@@ -172,6 +186,16 @@ export function getConfig(): Promise<Config> {
   return getJson<Config>("/api/config");
 }
 
+// -- Full Disk Access nudge (fused_render/shell/fda.py) ----------------------
+// Both are packaged-mac-only mutations: X-Fused via postJson, 404 elsewhere.
+export function openFdaSettings(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/fda/settings", {});
+}
+
+export function dismissFdaNudge(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
+}
+
 // -- Is Claude Code usable (fused_render/claude_health.py) -------------------
 //
 // The proactive counterpart to the TroubleCard's reactive classification: these
@@ -202,7 +226,59 @@ export interface ClaudeHealth {
       no: the UI may only offer a sign-in fix on an explicit `false`. */
   signed_in: boolean | null;
   config_dir: string;
+  /** `sys.platform`. Here so the UI never guesses which install line to show —
+      it used to, and it guessed wrong on Windows. */
+  platform: string;
+  /** The native install line for THIS platform, stated by the server rather
+      than reconstructed here. */
+  install_command: string;
+  /** Found, and runnable-looking, but it would not report its own version.
+      Silent before this existed; `doctor` is what makes it sayable. */
+  broken: boolean;
+  /** "native" | "npm" | "brew" | "winget" | "system" | … , or null when we
+      could not tell. Only ever set from `claude doctor` or, failing that, the
+      shape of the resolved path. */
+  install_method: string | null;
+  /** Whether `claude update` would actually change anything.
+      `false` means it is a documented no-op here — a package manager owns the
+      binary, or updates are switched off — and the UI must NOT offer to run it.
+      `null` means we could not tell, which is not evidence against it. */
+  updatable: boolean | null;
+  /** What to actually run: `claude update`, or the owning manager's own upgrade
+      line. null when we know the CLI cannot update itself and cannot name the
+      command that would. */
+  update_command: string | null;
+  update_manager: string | null;
+  /** Why an update would not work, in a sentence, when `updatable` is false. */
+  update_blocked_reason: string | null;
+  /** `claude doctor`'s own report, when it was run. Only measured while
+      something already looks wrong — a healthy machine never pays for it. */
+  doctor: ClaudeDoctor | null;
   checked_at: number;
+}
+
+/** What `claude doctor` said about its own installation. */
+export interface ClaudeDoctor {
+  install_method: string | null;
+  /** The CLI's own problem/fix pairs, verbatim. Better than anything we could
+      infer, and the reason the broken-install card has something to show. */
+  warnings: { problem: string; fix: string }[];
+  text: string;
+}
+
+/** One run of the installer or of `claude update`, as the server holds it. */
+export interface ClaudeInstallStatus {
+  action: "install" | "update" | null;
+  state: "idle" | "running" | "done" | "error";
+  detail: string;
+  /** The child's own output, verbatim — a 403 from downloads.claude.ai and a
+      proxy eating the TLS handshake are different problems with different
+      fixes, and a reworded message throws both away. */
+  output: string;
+  error: string | null;
+  command: string | null;
+  started_at: number | null;
+  finished_at: number | null;
 }
 
 export function getClaudeHealth(): Promise<ClaudeHealth> {
@@ -215,6 +291,29 @@ export function refreshClaudeHealth(): Promise<ClaudeHealth> {
   return postJson<ClaudeHealth>("/api/claude/health/refresh", {});
 }
 
+/** Run the native installer, or `claude update`, on this machine.
+    Rejects with the server's own sentence when it refuses — an update that
+    would no-op comes back as a 409 naming the command that would work. */
+export function startClaudeInstall(
+  action: "install" | "update" = "install",
+): Promise<ClaudeInstallStatus> {
+  return postJson<ClaudeInstallStatus>("/api/claude/install", { action });
+}
+
+export function getClaudeInstall(): Promise<ClaudeInstallStatus> {
+  return getJson<ClaudeInstallStatus>("/api/claude/install");
+}
+
+/** `claude doctor` on demand — what the CLI thinks of its own installation. */
+export function runClaudeDoctor(): Promise<{
+  ok: boolean;
+  doctor: ClaudeDoctor | null;
+  path?: string;
+  error?: string;
+}> {
+  return postJson("/api/claude/doctor", {});
+}
+
 // -- Self-update (fused_render/server/routers/update.py) ---------------------
 
 export interface UpdateStatus {
@@ -224,9 +323,12 @@ export interface UpdateStatus {
   // dmg: the app downloads and swaps its own bundle; none: not updatable.
   method: string;
   latest_version: string | null;
-  // Bytes downloaded so far (dmg method only) — the manifest carries no total
-  // size, so the UI shows MB downloaded rather than a percentage.
+  // Bytes downloaded so far (dmg method only).
   progress: number | null;
+  // Total bytes to download, from the download response's Content-Length —
+  // the manifest itself carries no size field. Null when the CDN omits that
+  // header, in which case the UI falls back to showing MB downloaded.
+  progress_total: number | null;
   error: string | null;
   // Set when the user must run the update themselves (brew-managed installs,
   // state "available") — shown with a copy button.
@@ -416,15 +518,20 @@ export interface IndexRankHit {
 }
 
 // Why a ranked answer is what it is. `""` is a real answer; the rest are the
-// four ways the index cannot give one, and they are NOT interchangeable —
+// five ways the index cannot give one, and they are NOT interchangeable —
 // `uncovered` is fixed by scanning the folder, `scanning` by waiting, and the
-// other two never (see listing/index-source, which is the only place that
-// switches on this).
+// other three never (see listing/index-source, which is the only place that
+// switches on this). `disabled` is the one of those three that can become
+// fixable again — turning the indexing preference back on — but the client
+// does not wait around for that: it walks, exactly as it does for `mount` /
+// `package` / `ignored`, because there is no server signal to poll for "the
+// user flipped a switch in Preferences".
 export type RankReason =
   | ""
   | "mount"
   | "package"
   | "ignored"
+  | "disabled"
   | "uncovered"
   | "scanning";
 
@@ -432,10 +539,10 @@ export interface IndexRankResult {
   covered: boolean;
   fresh: boolean;
   // WHY this answer is what it is — "" when the index answered outright, else
-  // "mount" | "package" | "ignored" | "uncovered" | "scanning". The in-folder
-  // search picks its source from this (listing/index-source); the client
-  // deliberately holds no copy of the rules behind it, because the mount
-  // policy is MountGuard's and the ignore list is the scan config's.
+  // "mount" | "package" | "ignored" | "disabled" | "uncovered" | "scanning".
+  // The in-folder search picks its source from this (listing/index-source);
+  // the client deliberately holds no copy of the rules behind it, because the
+  // mount policy is MountGuard's and the ignore list is the scan config's.
   reason: RankReason;
   root: string;
   hits: IndexRankHit[];
@@ -625,6 +732,67 @@ export async function searchFiles(
   return data as SearchFilesResult;
 }
 
+// ---- the app page's API tab (routers/app_api.py) ----------------------------
+//
+// One .py described the way the `api` template describes it (inspector.py's
+// shape, plus `rel`/`path`): the module docstring, the project's declared
+// dependencies (fused engine only), and the entrypoint the ACTIVE engine would
+// call — `@fused.udf` or `main()` under fused, `main()` alone under builtin. A
+// file with no function but a top-level `result = …` is a parameterless run
+// under the fused engine (`static_result`).
+export interface PyParam {
+  name: string;
+  annotation: string | null;
+  has_default: boolean;
+  default: unknown;
+  /** Source of a non-literal default (a call, a name) — shown, never evaluated. */
+  default_repr: string | null;
+}
+
+export interface PyEndpoint {
+  rel: string;
+  path: string;
+  /** The file's fault: a syntax error, a null byte. */
+  parse_error: string | null;
+  /** The filesystem's fault: permissions, a vanished file. Not a syntax error. */
+  read_error?: string | null;
+  /** Which rule picked the entrypoint — a `@fused.udf` may itself be named
+   *  `main`, so the function's name cannot say. null = nothing to run. */
+  entrypoint?: "udf" | "main" | "result" | null;
+  module_docstring?: string | null;
+  dependencies?: string[];
+  project?: string | null;
+  ignored_manifests?: string[];
+  function?: { name: string; docstring: string | null; params: PyParam[] } | null;
+  static_result?: boolean;
+}
+
+export interface AppPyResult {
+  engine: "fused" | "builtin";
+  endpoints: PyEndpoint[];
+  truncated: boolean;
+}
+
+export function getAppPy(dir: string): Promise<AppPyResult> {
+  return getJson<AppPyResult>(`/api/apps/py?path=${encodeURIComponent(dir)}`);
+}
+
+// POST /api/run's wire shape (D69/§20): the same for both engines. A failed run
+// is a 200 with `ok:false` — the traceback is the payload, not an HTTP error.
+export interface RunResult {
+  ok: boolean;
+  result?: unknown;
+  error?: { type?: string; message?: string; traceback?: string };
+  stdout?: string;
+  stderr?: string;
+  duration_ms?: number;
+  resolved_py?: string;
+}
+
+export function runPy(py: string, params: Record<string, unknown>): Promise<RunResult> {
+  return postJson<RunResult>("/api/run", { py, params });
+}
+
 // `signal` matters for callers that stat on a user's behalf and then navigate:
 // a stat on a slow mount can resolve after the user has moved on, and acting on
 // it would move them back. See FilesHome's path shortcut.
@@ -656,6 +824,38 @@ export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
     inflightConditions.set(fsPath, p);
   }
   return p;
+}
+
+// One task attachment in, its stored path out (POST /api/schedule/shot). The
+// path is what scheduleMessage's `images` carries; the bytes live under the
+// server's task-shots dir, where the scheduled run is pre-allowed to Read.
+//
+// MULTIPART, not the data-URL JSON this was until 2026-08-28 (D618): the card
+// takes ANY file at ANY size now, and base64 is a 33% tax paid twice on a 40 MB
+// log. The browser sets the multipart boundary Content-Type, so we must NOT set
+// it ourselves; X-Fused still forces the write guard (see importTemplates).
+//
+// `kind` is the server's answer and may DISAGREE with what the client guessed:
+// a `.tif` goes up as bytes no browser draws and comes back as a PNG the chip
+// can show, at the converted path.
+export interface TaskShotUpload {
+  path: string;
+  kind: "image" | "file";
+  width?: number;
+  height?: number;
+}
+
+export async function uploadTaskShot(file: File): Promise<TaskShotUpload> {
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  const res = await fetch("/api/schedule/shot", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as TaskShotUpload;
 }
 
 export function rawUrl(fsPath: string): string {
@@ -756,6 +956,10 @@ export interface Prefs {
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
   // default off).
   reader: { enabled: boolean };
+  // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
+  // the shell's entry points to it (the sidebar row and the Settings menu
+  // entry), not the /canvases routes, which keep answering a deep link.
+  canvases: { enabled: boolean };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
   // relay's haiku, the chat template's sonnet). `choices` is the server's own
@@ -769,6 +973,26 @@ export interface Prefs {
   // from `engine` above, however similar the word: that one is /api/run's
   // executor, this one is the inference runner behind fused.ai's local models.
   engines: EnginesPrefs;
+  // How long an idle resident local model stays loaded before the reaper
+  // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
+  ai_idle: AiIdlePrefs;
+  // Whether background file-index scanning may run at all (default ON — an
+  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // delete the on-disk index or stop search from answering it; only new
+  // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
+  indexing: { enabled: boolean };
+}
+
+export interface AiIdlePrefs {
+  // As STORED. 0 = never unload; the reaper is on by default at 10.
+  minutes: number;
+  // What the reaper is ACTUALLY using right now — differs from `minutes`
+  // whenever `forced_by` is not null.
+  effective_minutes: number;
+  // The raw FUSED_RENDER_AI_IDLE_MINUTES value when it is genuinely in force
+  // (never merely set — an unparsable value leaves the stored pref deciding
+  // and reports null here, same rule as the call log's retention window).
+  forced_by: string | null;
 }
 
 export interface EnginesPrefs {
@@ -808,6 +1032,18 @@ export interface CapabilityEngine {
   // it is (including "auto", which is honoured by definition). A control whose
   // value does nothing, with nothing saying why, is what this field prevents.
   ignoredReason: string | null;
+  /** The display name for `selected` when it matches none of `choices` — the
+   *  STRANDED case (`lib/engines.ts`'s `strandedSelection`) — else null.
+   *
+   *  Computed server-side (`registry.py`'s `_stranded_label`) because only the
+   *  registry can tell a WITHDRAWN code (no runner left to name — null) from
+   *  one that is merely registered for a different capability (a real label).
+   *  It is the runner's SHORT label, the exact string `resolve()` already
+   *  wrote into `ignoredReason` for that shape ("MLX Whisper does not do
+   *  text-generation") — so `ignoredWarning`'s substring de-duplication can
+   *  find its own name inside the reason instead of comparing it against the
+   *  raw stored code, which never matches. */
+  strandedLabel: string | null;
   choices: EngineChoice[];
 }
 
@@ -817,10 +1053,10 @@ export interface EngineChoice {
   /** What using this backend is LIKE, when there is something worth saying. */
   note: string | null;
   available: boolean;
-  /** Why not — "needs Apple Silicon — MLX runs on Metal only (this is
-   *  windows/amd64)". The page renders this beside a disabled control rather
-   *  than writing its own copy, which it could not: this is a fact about the
-   *  machine and the backend, and only the server knows it. */
+  /** Why not — "needs Apple Silicon (this is windows/amd64)". The page
+   *  renders this beside a disabled control rather than writing its own copy,
+   *  which it could not: this is a fact about the machine and the backend,
+   *  and only the server knows it. */
   reason: string | null;
 }
 
@@ -854,6 +1090,52 @@ export interface CallsPrefs {
   retention_forced_by: string | null;
 }
 
+// -- Hugging Face sign-in (server/routers/hf_auth.py; D402) -------------------
+
+// No token ever crosses this boundary in either direction. The button starts
+// huggingface_hub's own device-code login, hf stores what comes back, and this
+// payload reports who the machine is signed in as — never the credential, and
+// not even the value of an environment variable that may be overriding it.
+export interface HfAuth {
+  signedIn: boolean;
+  /** The account, when it can be named without a network call: the username
+   *  from a login this process performed, else hf's stored token name. Null
+   *  while `signedIn` is true means "signed in, and nothing here can name it". */
+  account: string | null;
+  /** What is actually answering — an environment variable (which beats hf's
+   *  store, in hf's own resolution) or hf's stored login. */
+  source: "environment" | "login" | null;
+  /** Which variable is overriding, by NAME. Never its value: that is a
+   *  credential, and the name is all the page needs to say what to unset. */
+  forcedByVar: string | null;
+  /** The login in flight: where to authorize, the short code to confirm there,
+   *  and how long the code has left. */
+  pending: { userCode: string; url: string; secondsLeft: number } | null;
+  /** Why the last attempt failed — denied, expired, or the network. */
+  error: string | null;
+}
+
+export function getHfAuth(): Promise<HfAuth> {
+  return getJson<HfAuth>("/api/hf/auth");
+}
+
+// Starts the flow, or JOINS one already running (`joined: true`) — a second
+// device code would be a second code on the Hub's page with only one of them
+// being polled.
+export function startHfLogin(): Promise<HfAuth & { joined: boolean }> {
+  return postJson<HfAuth & { joined: boolean }>("/api/hf/login", {});
+}
+
+export function cancelHfLogin(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/login/cancel", {});
+}
+
+// Signs the machine out by removing the ACTIVE token's entry from hf's store —
+// not every token on the machine, which is what hf's own `logout()` would do.
+export function hfLogout(): Promise<HfAuth> {
+  return postJson<HfAuth>("/api/hf/logout", {});
+}
+
 export function getPrefs(): Promise<Prefs> {
   return getJson<Prefs>("/api/prefs");
 }
@@ -864,6 +1146,14 @@ export function putEnginePref(engine: "builtin" | "fused"): Promise<Prefs> {
 
 export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { reader_enabled: enabled });
+}
+
+export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putIndexingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { indexing_enabled: enabled });
 }
 
 export function putDefaultModel(model: DefaultModel): Promise<Prefs> {
@@ -888,6 +1178,10 @@ export function putCallsParamsMode(mode: CallsParamsMode): Promise<Prefs> {
 
 export function putCallsRetentionDays(days: number): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { calls_retention_days: days });
+}
+
+export function putAiIdleUnloadMinutes(minutes: number): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { ai_idle_unload_minutes: minutes });
 }
 
 // Reveal a path in the OS file manager (same POST the breadcrumb button uses).
@@ -951,6 +1245,28 @@ export function writeFile(path: string, content = "", create = false): Promise<S
 }
 
 // Create a single directory (no mkdir -p — a missing parent is a 400).
+/** Raise the user's OWN file dialog, in the server process, and get back the
+ *  absolute path they chose — `null` on a cancel, which is an answer and must
+ *  not be re-asked.
+ *
+ *  The one way for shell code to learn a path: a browser's `<input type=file>`
+ *  hands over BYTES and strips the path on purpose, so an endpoint that takes a
+ *  path (`/api/ai/image`'s `image`) is otherwise only reachable by uploading a
+ *  copy of a file this machine already has. Throws on 409 (a dialog is already
+ *  up), 501 (this machine has no dialog — `Config.native_dir_picker` says so up
+ *  front) and 500.
+ *
+ *  `types` narrows the dialog to those extensions (bare, no dot) — a caller that
+ *  can read three formats should not be offered a fourth. It is the dialog's
+ *  half of the job and NOT the check: a drag-drop never sees the dialog, and the
+ *  Linux backends can only suggest, so a caller still refuses what it cannot
+ *  read in its own words. */
+export function pickFile(
+  opts: { start?: string; title?: string; types?: string[] } = {},
+): Promise<string | null> {
+  return postJson<{ path: string | null }>("/api/fs/pick-file", opts).then((r) => r.path);
+}
+
 export function mkdir(path: string): Promise<StatResult> {
   return noteAfter(path, postJson<StatResult>("/api/fs/mkdir", { path }));
 }
@@ -1077,7 +1393,7 @@ export interface Mount {
   // attach time. Files under the mountpoint stat as writable:false, so
   // templates open them read-only.
   read_only: boolean;
-  // True for a bundled default mount (currently only Learn, D123) that the
+  // True for a bundled default mount (currently only Sessions, D123/D227) that the
   // server re-creates on every startup — the API rejects deleting it, so the
   // Mounts view hides Delete for it too (unmount still works).
   builtin: boolean;
@@ -1499,6 +1815,87 @@ export async function downloadTemplatesExport(names: string[]): Promise<void> {
   }
 }
 
+// Download an app folder as a single `.fused` app file (SPEC §48, D385).
+// fetch + blob rather than a bare <a download>, same reason as the templates
+// export above: a non-2xx JSON error (not an app, over
+// budget) surfaces to the caller instead of saving as a corrupt file.
+// The exported card's thumbnail: the preview.png INSIDE the .fused at `path`,
+// served as bytes by a single-member zip read (never an extraction). 404s when
+// the file ships without one — the card's onError fallback owns that case.
+export function appfilePreviewUrl(path: string): string {
+  return "/api/appfile/preview?path=" + encodeURIComponent(path);
+}
+
+export async function downloadAppFile(
+  path: string,
+  name: string,
+  // Optional capture of the app to bake into the .fused as its preview.png
+  // (D396). The server only uses it when the folder has no authored one.
+  preview?: Blob,
+): Promise<void> {
+  let res: Response;
+  if (preview) {
+    const form = new FormData();
+    form.set("path", path);
+    form.set("preview", preview, "preview.png");
+    res = await fetch("/api/appfile/export", {
+      method: "POST",
+      headers: { "X-Fused": "1" },
+      body: form,
+    });
+  } else {
+    res = await fetch("/api/appfile/export?path=" + encodeURIComponent(path));
+  }
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name + ".fused";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
+// Where a `.fused` would clone to in the workspace, and whether it already has
+// (D397). `cloned` is decided by the destination folder EXISTING — there is no
+// records file — so it survives a restart, a moved .fused and a re-export, at
+// the named cost that an unrelated `local/<slug>` folder reads as this app's
+// clone. The GET touches nothing; the POST does the copy and answers the same
+// shape, with `cloned: true` meaning "was already there, nothing copied".
+export interface AppFileCloneTarget {
+  /** The app's manifest name, or the file's stem when it has none. */
+  name: string;
+  /** That name reduced to one path-safe segment — the folder under local/. */
+  slug: string;
+  /** Absolute destination, forward-slashed. */
+  path: string;
+  cloned: boolean;
+}
+
+export function getAppFileCloneTarget(path: string): Promise<AppFileCloneTarget> {
+  return getJson<AppFileCloneTarget>(
+    "/api/appfile/clone?path=" + encodeURIComponent(path),
+  );
+}
+
+export function cloneAppFile(file: string): Promise<AppFileCloneTarget> {
+  return postJson<AppFileCloneTarget>("/api/appfile/clone", { file });
+}
+
 // Delete one USER template folder (core templates are read-only, 404 here).
 // With cleanRegistry the USER registry is also swept of bindings referencing
 // the name (a user key whose value is emptied by the sweep is removed — revert
@@ -1650,6 +2047,12 @@ export interface AppInfo {
   // (~/.fused-render/app_recents.json). Null for an app never opened, and
   // undefined on older backends — both fall back to updated_at in sortApps.
   opened_at?: number | null;
+  // "appfile" for an exported `.fused` FILE discovered via the file index
+  // (tag "Fused-App", D396) — `path`/`entry` are the file itself, so surfaces
+  // must not offer folder actions (open-folder, export) on it, and it
+  // contributes no Folders chip (repoChips). Undefined for every folder-shaped
+  // app and on older backends.
+  kind?: "appfile";
 }
 
 export function getApps(): Promise<{ apps: AppInfo[] }> {
@@ -1669,34 +2072,164 @@ export function getHomeApps(limit: number): Promise<{ apps: AppInfo[] }> {
 // serves a page carrying the fused-app marker; no client post feeds opened_at
 // any more. The endpoint survives server-side for older clients only.)
 
+// Which enabled background apps (server/background_apps.py) currently have a
+// live daemon, keyed by folder path — feeds the /apps grid's "running" badge
+// (Apps.tsx). Cheap by design: the endpoint reads only engine_host.current,
+// no folder walk, no toml reads.
+export function getBackgroundAppsRunning(): Promise<{ running: Record<string, boolean> }> {
+  return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
+}
+
+/** One live engine child (server/engine_host.py `Child`), as
+ *  `GET /api/engines/running` reports it (D591). */
+export interface RunningEngine {
+  engine_id: string;
+  /** "template" | "app" | "background" — which bring-up path owns it. Carried
+   *  so three similarly-named rows stay distinguishable in the panel. */
+  kind: string;
+  pid: number;
+  version: string;
+  /** The declaring folder — `kind: "background"` only, "" otherwise. */
+  folder: string;
+  /** The module a warm app worker serves — "" for the other kinds. */
+  module: string;
+}
+
+/** Every engine daemon running right now — the status bar's Engines section.
+ *  Read-only and unguarded, like `getBackgroundAppsRunning` above: the server
+ *  snapshots a dict it already holds and polls one `Popen` per child, so there
+ *  is no walk and no spawn behind this. */
+export function getRunningEngines(): Promise<{ engines: RunningEngine[] }> {
+  return getJson<{ engines: RunningEngine[] }>("/api/engines/running");
+}
+
+/** Stop one engine child. Recoverable for all three kinds — a template engine
+ *  respawns on the next `ensure`, a warm app worker on its next call, and a
+ *  background daemon going down is the documented "quit this app" action —
+ *  which is why the panel offers it as a plain button (D591). */
+export function stopEngine(engineId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/api/engines/${encodeURIComponent(engineId)}/stop`, {});
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
+// Write (or replace) an app folder's authored still, `preview.png`, from a
+// capture of what the preview frame is showing (appShot.captureAppPreview).
+// The path-bar's "Set Current View as Preview". `replaced` says which verb it
+// was; the caller asks before the overwrite, not after.
+export async function setAppPreview(
+  dir: string,
+  preview: Blob,
+): Promise<{ path: string; replaced: boolean }> {
+  const form = new FormData();
+  form.set("path", dir);
+  form.set("preview", preview, "preview.png");
+  const res = await fetch("/api/apps/preview", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; path?: string; replaced?: boolean };
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return { path: body.path ?? dir + "/preview.png", replaced: !!body.replaced };
+}
+
 export function getAppEntry(path: string): Promise<{ entry: string | null }> {
   return getJson<{ entry: string | null }>(
     `/api/apps/entry?path=${encodeURIComponent(path)}`,
   );
 }
 
-// Scaffold a new app folder and (optionally) kick off a Claude session seeded
-// with `prompt`. 409 = name collision, 400 = bad name — both surface via the
-// thrown HttpError's message for inline display.
+// ---- Current apps (the sidebar's desk, fused_render/current_apps.py) --------
+//
+// A store of its own since 2026-08-26: a new task adds its app, nothing removes
+// one automatically, and removing one archives every task under it. Rows arrive
+// in ADDED order; `exists` is false for a folder that has gone (the row stays
+// until the user removes it).
+export interface CurrentAppEntry {
+  /** Canonical (forward-slash) absolute app folder. */
+  path: string;
+  name: string;
+  kind: "workspace" | "linked";
+  entry: string | null;
+  exists: boolean;
+  /** The app's optional `icon.svg` (canonical path) and its mtime — the
+   *  Projects row glyph and the tab favicon. Null when the file is absent. */
+  icon?: string | null;
+  icon_mtime?: number | null;
+  added_at: number | null;
+}
+
+export function getCurrentApps(): Promise<{ apps: CurrentAppEntry[] }> {
+  return getJson<{ apps: CurrentAppEntry[] }>("/api/current-apps");
+}
+
+/** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
+ *  or any file inside it — the server's ownership rule), or `icon: null`. */
+export interface AppIconResult {
+  icon: string | null;
+  mtime?: number | null;
+}
+
+export function getAppIcon(fsPath: string): Promise<AppIconResult> {
+  return getJson<AppIconResult>("/api/apps/icon?path=" + encodeURIComponent(fsPath));
+}
+
+/** The URL to draw an app icon from: the raw file, with its mtime as a cache
+ *  key so an edited icon.svg shows up without a hard reload. */
+export function appIconUrl(icon: string, mtime?: number | null): string {
+  return rawUrl(icon) + (mtime ? "&v=" + Math.floor(mtime) : "");
+}
+
+/** Take an app off the desk. SIDE EFFECT, by design: every task whose project
+ *  is the folder or inside it is archived (the same gesture as
+ *  `archiveTask`, per task — cancelled work, filed session, nothing destroyed). */
+export async function removeCurrentApp(
+  path: string,
+): Promise<{ ok: boolean; removed: boolean; archived: number; cancelled: number }> {
+  const r = await fetch(`/api/current-apps?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+    headers: { "X-Fused": "1" },
+  });
+  if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
+  return r.json();
+}
+
+// Scaffold a new app folder and (optionally) create ONE task on its index.html
+// carrying `prompt`, due now — the New task form's own path, so the app's
+// Tasks tab lists it and the scheduler spawns the session. 409 = name
+// collision, 400 = bad name — both surface via the thrown HttpError's message
+// for inline display.
 export interface NewAppResult {
   path: string;
   entry_html: string;
-  // Whether a Claude session was actually kicked off for the prompt.
-  session_started: boolean;
-  // The live run, for attaching to the session that was just started; null
-  // when no prompt was given or the spawn failed.
-  run_id: string | null;
-  // Why the session did not start (claude CLI missing, spawn failure). The
-  // app itself was created either way — surface this so a prompt that went
-  // nowhere isn't silent. Null when it started, or when there was no prompt.
-  session_error: string | null;
+  // The scheduled entry carrying the prompt (the shape GET /api/schedule
+  // lists); null when no prompt was given or the task could not be stored.
+  // Whether the session then started is the entry's own story, read where
+  // every task's is — this call does not wait for the spawn.
+  task: ScheduledMessage | null;
+  // Why the task was not created. The app itself was created either way —
+  // surface this so a prompt that went nowhere isn't silent. Null when it was
+  // created, or when there was no prompt.
+  task_error: string | null;
 }
 
-export function createApp(name: string, prompt: string): Promise<NewAppResult> {
-  return postJson<NewAppResult>("/api/apps/new", { name, prompt });
+// `model`/`effort` are the hero composer's pickers — short model names
+// from the same set as DefaultModel, effort from the claude template's own
+// EFFORTS list. "" means "don't pass the flag": the scaffolding session keeps
+// whatever a chat opened by hand would detect for this project. Anything else
+// is a 400 rather than a silent substitution, so a typo can't quietly buy a
+// different model than the one asked for.
+export type SessionEffort = "" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export function createApp(
+  name: string,
+  prompt: string,
+  model: DefaultModel = "",
+  effort: SessionEffort = "",
+): Promise<NewAppResult> {
+  return postJson<NewAppResult>("/api/apps/new", { name, prompt, model, effort });
 }
 
 // -- Claude sessions (GET /api/claude-sessions) -------------------------------
@@ -1810,8 +2343,21 @@ export interface TaskMessage {
   unread: boolean;
   entry_id: string; // schedule entry; "" for a chat message
   template_id: string; // the recurring message this is an occurrence of
-  turn: "done" | "idle" | "unknown" | "";
+  // How the turn behind this message went, written once when it ends. "" is a
+  // turn STILL RUNNING — for a scheduled message that is the store's own answer
+  // (`sent` with no verdict, the same rule /api/schedule/queue calls `live`),
+  // for a chat message it is the transcript's liveness. `idle` is only ever a
+  // chat turn whose transcript has gone quiet. `cancelled` is a run the user
+  // stopped from the queue card: an ended turn, labelled "Stopped" rather than
+  // "Ran" so this page and that card describe one outcome with one word.
+  turn: "done" | "idle" | "unknown" | "cancelled" | "";
   anchor: string; // transcript record uuid, for scroll-to; "" if unknown
+  // "Run this now", not "run this at a time I picked": set by the New task form
+  // when the card was opened from the List or the Board and nobody touched the
+  // when-row. It is what keeps the calendar a PLAN — see schedule-lib.taskChips,
+  // which skips these — and it says nothing about when the message ran. Absent on
+  // a chat message and on anything an older server sent.
+  immediate?: boolean;
 }
 
 export interface Task {
@@ -1884,10 +2430,36 @@ export interface Task {
 // descriptions, and message previews. Keep this structural subset compatible
 // with Task so the Tasks page can still publish its full rows into the shared
 // pulse store while every other route polls the compact endpoint.
-export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active">;
+// `project` is here for the sidebar's Current apps section (D487), which groups
+// live tasks by the workspace app they belong to off this same poll.
+export type TaskPulseTask = Pick<Task, "key" | "status" | "unread" | "last_active" | "project">;
 
-export function getTasks(): Promise<{ tasks: Task[] }> {
-  return getJson<{ tasks: Task[] }>("/api/tasks");
+export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
+  return getJson<{ tasks: Task[]; generation?: number }>("/api/tasks");
+}
+
+/** What `/api/tasks/changes` answers: the rows that moved since a generation,
+ *  the keys that moved and are no longer listed, or `full` when the server no
+ *  longer remembers that far back and the page should reload the listing. */
+export interface TaskChanges {
+  generation: number;
+  rows?: Task[];
+  gone?: string[];
+  full?: boolean;
+}
+
+/** Long-poll for task changes since `since`. Resolves the moment the server's
+ *  watcher sees a session start, resume, take a prompt or grow — or after
+ *  `wait` seconds with `rows: []`. */
+export function getTaskChanges(
+  since: number,
+  wait = 25,
+  signal?: AbortSignal,
+): Promise<TaskChanges> {
+  return getJson<TaskChanges>(
+    `/api/tasks/changes?since=${encodeURIComponent(since)}&wait=${encodeURIComponent(wait)}`,
+    { signal },
+  );
 }
 
 export function getTasksPulse(): Promise<{ tasks: TaskPulseTask[] }> {
@@ -2085,11 +2657,31 @@ export interface AiModelRepo {
    * the network.
    */
   added: number | null;
-  /** What the model is for ("text generation", "image generation"), or null. */
+  /** What the model is for ("text generation", "text to image"), or null. */
   task: string | null;
+  /** The Hugging Face `pipeline_tag` behind that label — the key a glossary
+   *  lookup, a search filter and a link to the Hub all join on. Null when
+   *  nothing said what the model is. */
+  taskTag: string | null;
   /** Where `task` was read from — a pipeline_tag is the Hub's own answer, an
    *  architecture is our reading of one, and the UI distinguishes them. */
   taskSource: string | null;
+  /** Whether this KIND of model runs here, in three states (server-side
+   *  `ai/tasks.py`):
+   *
+   *  - `supported` — a runner serves it, and `capability` says which.
+   *  - `no-runner` — a task we recognise and do not serve (video generation,
+   *    speech synthesis, a robot policy). `supportReason` is the sentence.
+   *  - `unknown` — a tag this build has never heard of, or no evidence at all.
+   *
+   *  `capability` is non-null exactly when this is `supported`; the other two
+   *  states exist so a card can EXPLAIN the null rather than showing a gap
+   *  where a Load button would be. Optional: an older server omits it. */
+  support?: "supported" | "no-runner" | "unknown";
+  /** Why this app does not run this kind of model, when it does not. Empty
+   *  string for a supported task and for one we cannot identify — an excuse we
+   *  have not earned is worse than none. */
+  supportReason?: string;
   /** One sentence on what the task MEANS (what goes in, what comes out), for
    *  the hover — the labels are the Hub's vocabulary, which is jargon until
    *  someone explains it. Null for a tag we have no sentence for. */
@@ -2118,10 +2710,33 @@ export interface AiModelRepo {
     code: string;
     /** The FULL name, for anything that must match the Preferences picker. */
     label: string;
-    /** Without the platform qualifier — what the card's tag shows. */
+    /** Which BUILD would load this, so it is what the tag's hover and
+     *  aria-label say. Two rules, not one: a PLATFORM qualifier is dropped
+     *  ("MLX LM (Apple Silicon)" becomes "MLX LM" — it tells someone sitting
+     *  at the machine nothing), while a HARDWARE one is KEPT ("Diffusers
+     *  (CPU)" stays whole — it is the only thing telling three builds of one
+     *  library apart). */
     shortLabel: string;
+    /** The engine FAMILY, hardware qualifier and all removed — "Diffusers".
+     *  What the card's TAG shows: the tag is a format claim ("these weights
+     *  are safetensors a Diffusers pipeline opens"), all three Diffusers rows
+     *  read the identical file, so the accelerator says nothing about the file
+     *  and leaks this machine's configuration into a sentence about the model.
+     *  The hover keeps `shortLabel`, so the build is one hover away. */
+    familyLabel: string;
     available: boolean;
     reason: string | null;
+    /** **No engine available on this machine can read this repo's files at
+     *  all** — absent on every row where that is not the case, so "not
+     *  present" cannot be misread as "checked and fine".
+     *
+     *  Stronger than `available: false`, which is ALSO what a merely-unselected
+     *  engine reports ("switch it on the Engines tab"). That one still has a
+     *  working remedy here and its download is still worth resuming; this one
+     *  has neither, so the Local tab withholds the resume rather than offering
+     *  an action that ends in a refusal. `reason` carries the sentence,
+     *  including the counterpart id to fetch instead where one is curated. */
+    unservable?: boolean;
   } | null;
   /**
    * Set when this repo is not a model at all but a PART of one — the quantized
@@ -2150,6 +2765,30 @@ export interface AiModelRepo {
   } | null;
   revisions: number;
   refs: string[];
+  /**
+   * A download that never finished — cancelled, crashed, or still in flight
+   * (D424). Read from the residue of the stopped fetch (a part file in
+   * `blobs/`, or no snapshot at all), never from the format: a repo nothing
+   * here can load is a different fact, and a fully downloaded SigLIP tower
+   * must not offer to resume anything.
+   *
+   * It outranks every other state on the card. `engine` is null and
+   * `capability` a guess read off half a snapshot, so the card drops both and
+   * offers the two things that are true: Download, which RESUMES from the bytes
+   * already on disk, and the trash, which discards them and puts the model back
+   * among the recommendations.
+   */
+  partial: boolean;
+  /** Bytes of this repo that actually ARRIVED — `size` for anything finished, and
+   *  much less than it mid-fetch (D440).
+   *
+   *  The distinction exists because our fetcher PREALLOCATES a part file to the
+   *  full length of the file it is fetching: a repo 15% into a 1.6GB download
+   *  measures 1.6GB on disk, so a card drawing "how much of this is here" from
+   *  `size` read as nearly finished while the job row beside it said 243 MB.
+   *  `size` is still the number the page PRINTS — allocated bytes are what the
+   *  folder costs — and this is the one the fraction is drawn from. */
+  fetchedBytes: number;
 }
 
 export interface AiModelsResult {
@@ -2271,6 +2910,14 @@ export interface HubSearchResult {
   authenticated?: boolean;
 }
 
+/** The orderings the Hub's LIST endpoint can perform — the server's own
+ *  allowlist, mirrored (`_SORTS` in routers/hub_models.py), so a value it would
+ *  reject cannot be typed at a call site.
+ *
+ *  Deliberately not the set of orderings the AI models page OFFERS: "Size" is
+ *  ranked on the page because the Hub refuses to expand `usedStorage` on a list
+ *  at all. That union is `ResultSort` in `apps/ai_models/lib/hubSearchView`, and
+ *  it reaches this function only through `wireSort`. */
 export type HubSort = "downloads" | "likes" | "updated" | "created";
 
 export function searchHubModels(opts: {
@@ -2289,6 +2936,25 @@ export function searchHubModels(opts: {
     sort: opts.sort,
     limit: opts.limit,
   });
+}
+
+/** One repo's TOTAL size on the Hub — everything in it, not just the weights.
+ *
+ *  The fallback for a row whose `estimatedSize` is null (GGUF, mflux, a
+ *  LoRA): no dtype map means nothing for the search to measure, and the Hub
+ *  will only expand this field one repo at a time. `usedStorage` is null when
+ *  the Hub does not measure the repo either. */
+export interface HubModelSizeResult {
+  id: string;
+  usedStorage: number | null;
+  error?: string;
+}
+
+/** One repo's total size. ONE round trip per call — the Hub's list endpoint
+ *  refuses this field, so callers ask lazily (a card that has scrolled into
+ *  view) and never for a whole page of results at once. */
+export function getHubModelSize(id: string): Promise<HubModelSizeResult> {
+  return postJson<HubModelSizeResult>("/api/ai-models/hub/size", { id });
 }
 
 export interface HubTask {
@@ -2342,8 +3008,37 @@ export interface AiLoadedModel {
   state: string;
   detail: string | null;
   error: string | null;
-  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  /** RSS of the worker process (`worker_base.resident_bytes`, so a runner's own
+   *  framework probe can raise it above the kernel's RSS). Not the model's size
+   *  — see SPEC AI-8. It LEADS a status-bar model row since D600: `1.7 GB now
+   *  (24 GB held)`. */
   residentBytes: number | null;
+  /** A LOWER BOUND on what the worker process is holding RIGHT NOW —
+   *  `max(phys_footprint, resident_size)` on macOS, RSS elsewhere (D597, and
+   *  `worker_base.os_footprint_bytes`, whose docstring owns the argument).
+   *  Neither counter is a superset of the other: the Metal pool is charged to
+   *  `phys_footprint` and never appears in RSS (a live FLUX worker read 172 MB
+   *  of RSS against 23 GB of dirty IOAccelerator regions), while
+   *  `phys_footprint` excludes clean file-backed pages that RSS counts, so an
+   *  mmap-heavy runner has the SMALLER footprint of the two. The status-bar row
+   *  applies the same max again against `residentBytes` above, and omits the
+   *  parenthetical when the two coincide. Null where no counter could be read at
+   *  all — which must stay null, since a row cannot invent a held figure. */
+  osFootprintBytes: number | null;
+  /** What this model actually COSTS on this machine, in bytes — the primary
+   *  figure on a status-bar row, colour-coded against
+   *  `AiRuntime.memoryCeilingBytes` (D594). Straight from
+   *  `fused_render/ai/fit.footprint_bytes`, so it is the SAME ladder and the
+   *  same number the AI Models page's fit badge shows, never a second
+   *  estimate. NULL when nothing is measured and nothing is declared — in
+   *  which case the row falls back to `residentBytes` alone, uncoloured,
+   *  rather than colouring a guess or printing 0. */
+  footprintBytes: number | null;
+  /** Which rung of the ladder answered — the SAME vocabulary `AiFitVerdict`
+   *  established (SPEC AI-16, AI-16c, D497), deliberately reused rather than
+   *  reinvented: "measured" is stated as fact, "declared" and "download" are
+   *  hedges. Null exactly when `footprintBytes` is. */
+  footprintBasis: "measured" | "declared" | "download" | null;
   /** "cuda" | "mps" | "cpu" — where the weights actually landed, as the worker
    *  reported it. Null from a runner that does not say. The page shows it
    *  because a model answering at a few words a second on a CPU is working
@@ -2353,6 +3048,12 @@ export interface AiLoadedModel {
   startedAt: number;
   /** The download-manager row for this model's bring-up. */
   jobId: string;
+  /** Seconds since anything last used this worker (AI-13). */
+  idleSeconds: number;
+  /** Seconds until the reaper unloads it, or null when the idle window is
+   *  disabled — never a number that would draw a countdown that never
+   *  reaches zero. */
+  unloadsInSeconds: number | null;
 }
 
 /** A weights-only fetch in flight: on disk, not in memory. The BYTES live in the
@@ -2370,10 +3071,82 @@ export interface AiRuntime {
   loaded: AiLoadedModel[];
   downloading: AiDownload[];
   totalResidentBytes: number | null;
+  /** What a model has to fit under on THIS machine, in bytes — the Apple
+   *  Silicon wired limit where it applies, total physical RAM otherwise, and
+   *  NULL when neither can be read (D594). Carried once, not per row, because
+   *  it is a per-machine constant. Null is not zero: with no ceiling there is
+   *  nothing to colour a footprint against, and the row shows its figure
+   *  uncoloured rather than assuming a denominator. */
+  memoryCeilingBytes: number | null;
 }
 
 export function getAiRuntime(): Promise<AiRuntime> {
   return getJson<AiRuntime>("/api/ai/runtime");
+}
+
+/** Will this model sit comfortably on THIS machine — the server's judgement,
+ *  widened from a bare verdict string to an object (SPEC AI-16, AI-16c, D497)
+ *  so the page can tell a MEASURED answer apart from a guess. `basis`:
+ *
+ *  - "measured" — this model actually RAN here, and `footprintBytes` is what
+ *    it cost at its peak (`fused_render/ai/footprints.py`). Worded on the
+ *    page as a FACT ("Ran here, tight (28 GB)"), never as a hedge.
+ *  - "declared" — a curator's optional `resident_gb` estimate.
+ *  - "download" — nothing better is known; `footprintBytes` is the download's
+ *    own `size_gb`, exactly what `fit` meant before this shape existed.
+ *
+ *  `footprintBytes` is the figure the verdict was judged against, in bytes —
+ *  not necessarily `size_gb` scaled, since a "measured" or "declared" figure
+ *  can differ from the download entirely (LTX-2.3's `low_memory=True` peak is
+ *  one stage of a two-repo download). */
+export interface AiFitVerdict {
+  verdict: "easy" | "tight" | "no";
+  basis: "measured" | "declared" | "download";
+  footprintBytes: number;
+  /** 0-100, SPEC AI-19: the continuous Gaussian fit score `verdict` is now
+   *  DERIVED from — 100 at or under a comfortable utilization, easing down
+   *  smoothly past it, 0 once the footprint exceeds the selected pool
+   *  outright. Optional so an object built by hand (a test literal, an
+   *  older cached response shape) does not have to carry it. */
+  score?: number;
+  /** How the footprint would run, over whichever pool (VRAM, a combined
+   *  VRAM+RAM offload budget, or system RAM) it was judged against — SPEC
+   *  AI-19 item 6. `"gpu"` also covers Apple Silicon's unified memory and a
+   *  non-Apple unified-memory APU, both of which draw from system RAM
+   *  rather than a separate VRAM carveout. Optional for the same reason
+   *  `score` is. */
+  runMode?: "gpu" | "cpu-offload" | "cpu-only";
+}
+
+/** A tok/s speed estimate for a TEXT GENERATION catalog entry, with its own
+ *  basis — SPEC AI-21. `null` when even the weight size is unknown (no
+ *  `size_gb`, no `params`), mirroring `AiFitVerdict`'s own "unknown is a
+ *  dash, never a guess" contract. Server-side only for `text-generation`
+ *  entries (`ai_runtime.describe_catalog`) — the formula is a tok/s figure,
+ *  and every OTHER capability reports a differently-shaped throughput metric
+ *  (`secondsPerStep`, `realtimeFactor`, `textsPerSecond`), so this field is
+ *  always `null` there rather than a number under a misleading unit. */
+export interface AiSpeedEstimate {
+  tokensPerSecond: number;
+  /** `"bandwidth"` when this machine's cached hardware reported a real
+   *  memory-bandwidth figure for its device; `"backend-constant"` when it
+   *  fell back to a flat per-backend guess (`bandwidthGbS` is then `null`). */
+  method: "bandwidth" | "backend-constant";
+  /** Which backend bucket this machine was judged as — inferred from cached
+   *  hardware/platform, not from the runner that will actually load this
+   *  specific model (no caller threads one through yet). */
+  backend: "cuda" | "metal-mlx" | "metal-other" | "rocm" | "sycl" | "cpu-arm" | "cpu-x86";
+  /** The bandwidth figure actually used, or `null` on the `backend-constant`
+   *  path. */
+  bandwidthGbS: number | null;
+  /** The context length this whole family of estimates assumes — the SAME
+   *  constant `fit.py`'s own KV-cache term uses (8192), stated here because
+   *  this formula does not otherwise model context-length pressure at all. */
+  contextTokens: number;
+  /** Whether this machine's own measured benchmark history adjusted the raw
+   *  formula. */
+  calibrated: boolean;
+  calibrationFactor: number | null;
 }
 
 /** One curated suggestion. Deliberately says nothing about whether you HAVE it:
@@ -2381,10 +3154,63 @@ export function getAiRuntime(): Promise<AiRuntime> {
  *  listing's answer — joined by the page so both tabs mean one thing by it. */
 export interface AiCatalogModel {
   id: string;
+  /** The repo id whose cache folder holds this model — equal to `id` for every
+   *  entry but a llama.cpp one, whose curated id is the GGUF's bare FILENAME so
+   *  that one repo's several quantizations can be curated separately
+   *  (`formats.GGUF_RECIPES`, server side).
+   *
+   *  **Read this, not `id`, against anything keyed by repo id** — above all the
+   *  Local tab's `diskCards` map, built from `/api/ai-models`. Matching on `id`
+   *  there could never hit for a filename-keyed entry, so a finished
+   *  `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` stayed "recommended" and kept its
+   *  Download button beside the very disk card its own bytes had produced.
+   *  `downloaded` is NOT the substitute: it is the server's verdict at scan
+   *  time, and `mergeSections` deliberately answers on-disk from the page's own
+   *  walk instead so one page cannot hold two definitions of it. This field is
+   *  the missing IDENTITY, which is a different question from the verdict.
+   *
+   *  Optional only because an older server does not send it; fall back to `id`,
+   *  which is correct for every entry that is not filename-keyed. */
+  repo?: string;
   label: string;
+  /** The short human name the Playground sidebar shows — the model without its
+   *  quantization/engine qualifier. A curated field beside `label`, never a
+   *  stripped copy of it (catalog.py states why); absent on a cached entry,
+   *  where the fallback is `label`. */
+  nickname?: string | null;
+  /** Parameter count as the publisher states it ("4B", "8B (~1B active)") —
+   *  a curated string, never parsed out of the repo id (catalog.py's AI-2c
+   *  rule). Absent on cached entries and anywhere nobody wrote one. */
+  params?: string | null;
+  /** The quantization scheme by its own name ("OptiQ 4-bit", "GGUF Q4_K_M").
+   *  Absent where no honest short name exists — the header omits the line
+   *  rather than inventing one. */
+  quantization?: string | null;
+  /** Curated per-model generation hints (catalog.py) — today only `steps`, the
+   *  denoise count a distilled image model was benchmarked at. Absent on
+   *  cached entries and on models nobody has measured; the consumer keeps the
+   *  server's default then. */
+  defaults?: { steps?: number } | null;
+  /** Will this model sit comfortably on THIS machine — see `AiFitVerdict`.
+   *  Null when nothing is known at all (no size, no measurement, no curator
+   *  estimate) — the same "unknown is a dash, never a guess" rule `size_gb`
+   *  follows. */
+  fit?: AiFitVerdict | null;
+  /** A tok/s speed estimate — see `AiSpeedEstimate`. Only ever non-null on a
+   *  `text-generation` entry; `null` on every other capability and wherever
+   *  the weight size itself is unknown. Optional so an older cached response
+   *  shape (a test literal, a stale client) does not have to carry it. */
+  speedEstimate?: AiSpeedEstimate | null;
   /** The download in GB, or null when nobody has measured it — shown as "—"
    *  rather than as a number someone would plan a multi-GB fetch around. */
   size_gb: number | null;
+  /** A curator's optional estimate of this model's RESIDENT footprint in GB —
+   *  additive, in the shape `recommended`/`acceptsImage` already established
+   *  (SPEC AI-11i/AI-11j): a curator MAY answer, and absence falls through
+   *  `fit`'s ladder to `size_gb` rather than meaning anything. Never present
+   *  on a cached entry — nobody has curated a repo the user found themselves,
+   *  same reason `note` is null there. */
+  resident_gb?: number | null;
   /** Why you would or would not pick this one. Null on a CACHED entry: nobody
    *  wrote a note for a repo the user found themselves, and null says so where
    *  prose generated from a repo id would claim otherwise. */
@@ -2404,21 +3230,78 @@ export interface AiCatalogModel {
   /** Whether a worker is holding it RIGHT NOW — read live from the supervisor,
    *  unlike `downloaded`, which comes from a memoised disk scan. */
   loaded: boolean;
+  /** Whether the curation marks this as a first thing to TRY (D425) — a
+   *  per-model flag on the wire, unrelated to the Local tab's
+   *  `MergedSection.recommended`, which is that page's own name for "curated
+   *  and not on this disk".
+   *
+   *  The Playground sidebar is the only surface that filters on it (models
+   *  recommended OR already on the disk); every other picker reads the whole
+   *  list, because "what could I have" and "what should I try first" are
+   *  different questions asked by different people. Always false on a cached
+   *  entry — a recommendation is a person's mark, and nobody made one about a
+   *  repo the user found themselves. NOT the default: `default` is still the
+   *  smallest entry and owes nothing to this flag. */
+  recommended: boolean;
+  /** Can this model be handed a BASE IMAGE to edit rather than only a prompt
+   *  (AI-9f)? The server's own answer, computed per entry from the resolved
+   *  ENGINE (only mflux honours `image`) and then from the model's own edit
+   *  variant — the same two gates `/api/ai/image` refuses with, so a picker
+   *  that draws an attach affordance off this cannot offer a request the
+   *  route would 400. False on every non-image capability, and optional on
+   *  the wire only because an older server does not send it. */
+  acceptsImage?: boolean;
+  /** Can this model be handed image PATHS to embed (SPEC §40)? The embeddings
+   *  half of `acceptsImage`: a dual encoder (SigLIP, CLIP) has a vision tower
+   *  and a joint space, so a photo and a sentence are comparable; a prose
+   *  encoder has one tower and handing it pixels embeds nothing. The server's
+   *  own answer, computed from the cached checkpoint's `model_type` — false on
+   *  every non-embeddings capability, and false for a model not on this disk
+   *  yet, because an affordance whose request then 400s is worse than a missing
+   *  one. Optional on the wire only because an older server does not send it. */
+  acceptsPaths?: boolean;
+  /** Which retrieval prompt scheme this model wants — `"bge"`, `"e5"`,
+   *  `"nomic"`, … — or **null when it has none**, which is the case for every
+   *  dual encoder and for any repo whose convention the server does not
+   *  recognise.
+   *
+   *  Null is the signal, not a missing field: a retrieval encoder instructs a
+   *  question and a passage differently (`kind: "query" | "document"`), and a
+   *  model with no convention refuses `kind` at the route because it would
+   *  change nothing about the vectors. So a control drawn off the truthiness of
+   *  this field and the route's own refusal are keyed on the same fact. */
+  promptScheme?: string | null;
+  /** Orthogonal capability tags — `"tool-use"` / `"vision"` (SPEC AI-28) — ON
+   *  TOP OF `capability`, never a replacement for it: a model can be
+   *  `text-generation` AND carry either or both tags. `"tool-use"` comes off a
+   *  known-family allowlist (`registry.TOOL_USE_FAMILIES` — Qwen3, Qwen2.5,
+   *  Command R, Hermes, Llama 3/Mistral instruct, Gemma 3/4 `-it`), never a
+   *  regex over the repo id. `"vision"` restates the same fact `acceptsImage`
+   *  already gates on for a `text-generation` row (a cached checkpoint's own
+   *  `has_vision_tower`, or `hub_metadata`'s pre-download reading when nothing
+   *  is cached yet) as a tag rather than a permission. Always an array — empty
+   *  rather than absent when neither applies, and always `[]` on every
+   *  non-`text-generation` capability, so a consumer can test membership
+   *  (`tags?.includes("tool-use")`). Optional, matching every other field
+   *  added to this interface (`score`/`runMode`/`speedEstimate`): a stale
+   *  client, a test literal, or an older cached response shape does not have
+   *  to carry it. */
+  tags?: string[];
 }
 
 export interface AiCatalogCapability {
   capability: string;
   runner: string | null;
-  /** The backend in words — "MLX LM (Apple Silicon)", "Transformers (PyTorch)".
-   *  One capability can have more than one runner (text generation has two
-   *  since D293), so which one this machine resolved is worth naming. */
+  /** The backend in words — "MLX LM (Apple Silicon)", "Diffusers (CUDA)".
+   *  One capability can have more than one runner (text generation has three
+   *  since D416), so which one this machine resolved is worth naming. */
   runnerLabel: string | null;
   /** The same, without the platform qualifier — what the Discover heading
    *  shows ("via MLX Whisper"). That caption says which backend these
    *  suggestions belong to, not which backend to pick. */
   runnerShortLabel: string | null;
   /** What using that backend is LIKE, when there is something worth saying —
-   *  the CPU-speed warning for PyTorch. A standing fact about the runner, not a
+   *  the CPU-speed warning on the CPU torch rows. A standing fact about the runner, not a
    *  claim about this machine: the device a model actually got is on the loaded
    *  card, and is not knowable until one has run. */
   runnerNote: string | null;
@@ -2426,10 +3309,62 @@ export interface AiCatalogCapability {
   reason: string | null;
   default: string | null;
   models: AiCatalogModel[];
+  /** The resolved video engine's own request shape — the frame grid, the
+   *  canvas default and the step default (`registry.VideoTraits`, server
+   *  side). `null` for every capability but video generation: it is the
+   *  first (only) one whose request shape varies by which runner resolved
+   *  (`ltx-video`'s `1 + 8n` frames at 704×480/8 steps; the dropped
+   *  `h3-video` used `5 + 17n` at 864×480/20), so the Playground's
+   *  frame/canvas/step sliders read this rather than a hardcoded grid — a
+   *  slider that
+   *  disagreed with the server would snap on every render and land off by
+   *  up to half its own travel. */
+  videoTraits: {
+    framesBase: number;
+    framesStep: number;
+    minFrames: number;
+    maxFrames: number;
+    defaultFrames: number;
+    defaultWidth: number;
+    defaultHeight: number;
+    defaultSteps: number;
+  } | null;
 }
 
-export function getAiCatalog(): Promise<{ capabilities: AiCatalogCapability[] }> {
-  return getJson<{ capabilities: AiCatalogCapability[] }>("/api/ai/catalog");
+/** A model on this disk that NO capability can load, and why.
+ *
+ *  Deliberately NOT a row in `capabilities[].models` — every app reading that
+ *  payload maps it and offers what it finds, so a row in there is a row
+ *  something will try to load. This is a separate list a picker opts into
+ *  showing, and the Playground shows it because "you downloaded this and it
+ *  cannot run here" is a better answer than the model quietly not being in the
+ *  sidebar at all. */
+export interface AiUnsupportedModel {
+  id: string;
+  /** The repo's own name, without the owner. */
+  label: string;
+  size_gb: number | null;
+  /** What the model does, in the Hub's vocabulary ("text to speech", "depth
+   *  estimation"), or null when nothing on the repo said. */
+  task: string | null;
+  /** `no-runner` (a task we recognise and do not serve) or `unknown` (a
+   *  pipeline tag this build has never heard of, or no evidence at all). Never
+   *  `supported`: that has a capability and is in `capabilities[]`. */
+  support: "no-runner" | "unknown";
+  /** The sentence to print. Empty for `unknown` — an explanation we have not
+   *  earned is worse than none. */
+  reason: string;
+}
+
+export function getAiCatalog(): Promise<{
+  capabilities: AiCatalogCapability[];
+  /** Optional: an older server does not send it. */
+  unsupported?: AiUnsupportedModel[];
+}> {
+  return getJson<{
+    capabilities: AiCatalogCapability[];
+    unsupported?: AiUnsupportedModel[];
+  }>("/api/ai/catalog");
 }
 
 export interface AiLoadStarted {
@@ -2448,6 +3383,186 @@ export function downloadAiModel(model: string, capability?: string): Promise<AiL
 
 export function unloadAiModel(model: string): Promise<AiRuntime & { stopped: boolean }> {
   return postJson<AiRuntime & { stopped: boolean }>("/api/ai/runtime/unload", { model });
+}
+
+/** Stop the generation in flight on `capability`'s resident worker, WITHOUT
+ *  unloading it — the weights stay, so whatever asked for this can start
+ *  answering again immediately. Distinct from `unloadAiModel`, which
+ *  terminates the worker process instead: that is right for "get this out of
+ *  memory" but wrong for "stop what it's doing", because killing the process
+ *  mid-stream does not resolve the in-flight request with a clean, readable
+ *  outcome — it drops the connection, and whatever was waiting on it sees a
+ *  socket error rather than a cooperative `cancelled: true`. False from the
+ *  server means there was nothing to stop, which is not an error: a Stop
+ *  pressed just as the last token (or the last step, or the one embed call)
+ *  settled should be a no-op.
+ *
+ *  `playground/client.ts` wraps the same route for its own Stop button
+ *  (`cancelGeneration`) — kept here too, rather than importing that module
+ *  from a sibling feature, because this is the platform-level HTTP surface
+ *  every other AI wrapper on this page (`unloadAiModel`, `runAiBenchmark`, …)
+ *  already lives beside. */
+export function cancelAiGeneration(capability?: string): Promise<{ cancelled: boolean }> {
+  return postJson<{ cancelled: boolean }>("/api/ai/cancel", capability ? { capability } : {});
+}
+
+// -- AI benchmarks (/api/ai/benchmark, SPEC AI-14) ----------------------------
+// One recorded benchmark run per entry, kept forever on disk — the deliberate
+// opposite of the in-memory usage counters below. Where those summarise the real
+// calls that happened to pass through, these are a FIXED workload somebody ran
+// on purpose so that two models, or one model across two app versions, are
+// legitimately comparable.
+//
+// **Every metric here can be null, and null means NOT MEASURED.** A runner that
+// does not count its own tokens leaves `tokensPerSecond` null rather than a
+// number derived from the text; a platform whose RAM the stdlib will not report
+// leaves `totalMemoryBytes` null. Nothing in this payload is ever a zero
+// standing in for an absence, so nothing that renders it may treat one as such.
+
+/** The machine a run was taken on — why a number is not portable. */
+export interface AiBenchmarkMachine {
+  platform: string;
+  arch: string;
+  cpuCount: number | null;
+  totalMemoryBytes: number | null;
+}
+
+/** Which fixed workload produced a run, and which VERSION of it.
+ *
+ *  `revision` is a comparability seam: if the prompt, token budget or canvas
+ *  ever changes the server bumps it, and runs either side of the bump are not
+ *  comparable. A consumer must not draw a delta across two different revisions
+ *  — see `latestWithDelta` in apps/ai_models/lib/benchmark.ts.
+ */
+export interface AiBenchmarkWorkload {
+  name: string;
+  revision: number;
+  /** The frozen parameters, verbatim from the server. Shape varies by
+   *  capability, so it is opaque here — the run's `metrics` is what a page
+   *  renders, and this is provenance to show on demand. */
+  params: Record<string, unknown>;
+}
+
+/** The measured numbers. Which keys are present depends on the capability, and
+ *  a present key can still be null (not measured). The PRIMARY metric per
+ *  capability is decided in one place — `primaryMetric` in
+ *  apps/ai_models/lib/benchmark.ts — never inferred from which keys exist. */
+export interface AiBenchmarkMetrics {
+  // text-generation
+  tokensPerSecond?: number | null;
+  ttftMs?: number | null;
+  promptTokensPerSecond?: number | null;
+  outputTokens?: number | null;
+  // text-to-image
+  secondsPerStep?: number | null;
+  totalSeconds?: number | null;
+  steps?: number | null;
+  width?: number | null;
+  height?: number | null;
+  // automatic-speech-recognition
+  realtimeFactor?: number | null;
+  audioSeconds?: number | null;
+  // embeddings
+  textsPerSecond?: number | null;
+  dim?: number | null;
+  batch?: number | null;
+}
+
+export interface AiBenchmarkRun {
+  /** uuid4 hex — what `deleteAiBenchmarks` names. */
+  id: string;
+  /** Epoch SECONDS (the server's clock), not ms. */
+  startedAt: number;
+  capability: string;
+  model: string;
+  /** Which backend measured it, e.g. "mlx-text" — null when resolution failed,
+   *  which is one of the ways a run can be `ok: false`. */
+  runner: string | null;
+  /** What the weights landed on ("mps" | "cuda" | "cpu" | …), or null from a
+   *  runner that does not report one. Never guessed from the platform. */
+  device: string | null;
+  /** The app version this was measured under. The app is part of what is being
+   *  measured, so a runner upgrade that halves throughput is visible here. */
+  appVersion: string;
+  /** False for a run that FAILED — an OOM, a dead worker, a machine with no
+   *  runner. Those are kept and shown: "this model OOMs on this laptop" is a
+   *  result. `metrics` is then empty rather than a dict of nulls. */
+  ok: boolean;
+  error: string | null;
+  /** Seconds to make the model resident, or null when it already was. Null is
+   *  not zero: a warm run did not load anything. */
+  loadSeconds: number | null;
+  /** Resident bytes sampled from the worker AFTER the run — a resident figure,
+   *  not a continuously-sampled peak (see ai/benchmark.py). Null from a runner
+   *  that does not report memory. */
+  peakResidentBytes: number | null;
+  machine: AiBenchmarkMachine;
+  workload: AiBenchmarkWorkload;
+  metrics: AiBenchmarkMetrics;
+}
+
+export interface AiBenchmarkHistory {
+  /** Oldest first — append order IS the chart's x axis. */
+  runs: AiBenchmarkRun[];
+  /** THIS machine, as it is now. Travels with the history rather than only on
+   *  each run, because the page has to caption the comparison before it has
+   *  drawn a single run. */
+  machine: AiBenchmarkMachine;
+  /** Exactly `benchmark.WORKLOADS`' keys (server side) — the capabilities a
+   *  Run press can actually measure, narrower than the registry's full
+   *  capability list. Video generation is the first capability this omits
+   *  (`benchmark.NO_WORKLOAD_YET`): a real workload would be a multi-GB,
+   *  minutes-long render behind every press. The Benchmark tab filters its
+   *  capability selector to this set rather than hardcoding the gap, so a
+   *  future workload lights the section up with no frontend change. */
+  workloadCapabilities: string[];
+  /** The FIXED workload each of `workloadCapabilities` actually runs, keyed
+   *  by capability — same shape as a RUN's own `workload` block
+   *  (`AiBenchmarkWorkload`, above), because the server builds both from the
+   *  identical `Workload.as_dict()` (D483). This is what lets the Benchmark
+   *  tab say WHAT a run measures (128 greedy-decoded tokens, a 30-second
+   *  tone, …) as server fact rather than a frontend copy of
+   *  `ai/benchmark.py`'s `WORKLOADS` table that could silently drift from
+   *  it. */
+  workloads: Record<string, AiBenchmarkWorkload>;
+}
+
+export function getAiBenchmarks(opts?: { signal?: AbortSignal }): Promise<AiBenchmarkHistory> {
+  return getJson<AiBenchmarkHistory>("/api/ai/benchmark", opts);
+}
+
+/** Run one benchmark. **Resolves in MINUTES** — the request is held open for
+ *  the whole run, exactly as `/api/ai/image` is.
+ *
+ *  **There is no job id and no download-manager row**, deliberately: a
+ *  benchmark's row would share the title-keyed job namespace with the load row
+ *  `supervisor.load` already opens for the same model and shadow it. Show your
+ *  own in-progress state for the duration; through a COLD run the load's own row
+ *  appears in the manager with real byte counts, which is the progress that was
+ *  always worth watching.
+ *
+ *  A run that failed still resolves, with `run.ok === false` — that is a result
+ *  and belongs in the history. A run STOPPED from outside resolves with **no
+ *  `run`** and `cancelled: true`: nothing was measured, so there is nothing to
+ *  add. Read `run` for presence; never pattern-match on
+ *  `run.error === "cancelled"`, which is what drew a phantom "Failed — cancelled"
+ *  entry that outlived the click. Only a rejected REQUEST rejects. */
+export function runAiBenchmark(
+  model: string,
+  capability: string,
+): Promise<{ run?: AiBenchmarkRun; cancelled?: boolean }> {
+  return postJson<{ run?: AiBenchmarkRun; cancelled?: boolean }>(
+    "/api/ai/benchmark",
+    { model, capability },
+  );
+}
+
+/** Forget runs by id, answering with the fresh history so the caller swaps in
+ *  state it just re-read rather than patching rows it hopes are still true. */
+export function deleteAiBenchmarks(
+  ids: string[],
+): Promise<AiBenchmarkHistory & { removed: number }> {
+  return postJson<AiBenchmarkHistory & { removed: number }>("/api/ai/benchmark/delete", { ids });
 }
 
 // -- AI usage (GET /api/ai/metrics, SPEC AI-12) -------------------------------
@@ -2618,11 +3733,31 @@ export interface RecurrenceRule {
   count?: number; // total occurrences; exclusive with until
 }
 
+// One attachment on a scheduled task, as the store holds it. `path` is a
+// task-shots resident (the server refuses anything else); `name` is the user's
+// own filename; `kind` is the chat's own two-way split — a thumbnail or a 📄,
+// a picture viewer or a template preview — and never the browser-only "pane"
+// and "overview" kinds, which need a screen somebody was looking at.
+export interface TaskAttachment {
+  path: string;
+  name: string;
+  kind: "image" | "file";
+}
+
 export interface ScheduledMessage {
   id: string;
   target: string;
   message: string;
   due: string;
+  // Task-shot paths attached in the New task form (server: schedule.shots_dir()).
+  // Read back so an edit — which is cancel + re-create — can re-state them.
+  images?: string[];
+  // The same attachments carrying the two things a path does not: the filename
+  // the user recognises (a stored path is a minted timestamp) and the kind the
+  // browser settled at attach time (a `.tif` was transcoded, so its extension
+  // lies). The server derives this for an entry stored before the field existed,
+  // so it is only ever absent on a response from an older build.
+  attachments?: TaskAttachment[];
   session_id: string;
   // WHERE `session_id` came from: true only when the server LEARNED it (a
   // repeating template's first run reported the session it opened, and that id
@@ -2685,6 +3820,12 @@ export interface ScheduledMessage {
   // copies to each occurrence, so every run resumes the same conversation.
   // Ticking this copies "" instead, so each run starts its own.
   new_task_each_run?: boolean;
+  // Created to RUN, not to be planned: the New task form sets this when the card
+  // was opened from the List or the Board and the when-row was never touched, so
+  // `due` is only the form's own default of "now". The scheduler ignores it
+  // entirely; the calendar reads it, and draws nothing for a task nobody
+  // scheduled. Never true on a repeating entry.
+  immediate?: boolean;
 }
 
 export interface ScheduleResult {
@@ -2730,6 +3871,11 @@ export function scheduleMessage(body: {
   // Only meaningful alongside `rule` or `repeats`; a one-off has no runs to
   // split apart.
   new_task_each_run?: boolean;
+  // "The user never picked a time" — sent only by the New task form, and only
+  // for a one-off opened from the List or the Board with the when-row untouched.
+  // `due` is still sent (it is "now"); this is what tells the calendar the time
+  // was a default rather than a plan. See ScheduledMessage.immediate.
+  immediate?: boolean;
   // The id of the entry this one REPLACES — set only by an edit, which is
   // cancel + re-create and therefore mints a brand new entry id. A task that has
   // not run yet is NUMBERED on that entry id (`pending:<entry-id>`), so without
@@ -2740,6 +3886,17 @@ export function scheduleMessage(body: {
   // A no-op where there is nothing to move — a task whose session exists is
   // numbered on the session id, and that key is untouched by an edit.
   replaces?: string;
+  // Paths returned by uploadTaskShot — any file type, any count (D618). The
+  // server refuses anything not living under its own task-shots dir, so this
+  // can only name files this form itself uploaded. Still spelled `images`
+  // because every stored entry spells it that way.
+  images?: string[];
+  // The same uploads with `name` and `kind` (D619). What the FIRED RUN needs:
+  // its message carries the claude page's own `<pane-shot>` block, and that
+  // block's receipt rows show a thumbnail or 📄 plus the file's name — neither
+  // of which a minted path can supply. Sent alongside `images`, never instead
+  // of it, so an entry keeps the shape every existing reader expects.
+  attachments?: TaskAttachment[];
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }
@@ -2821,6 +3978,10 @@ export interface ScheduleEvent {
   // the user hunting, and the first words of what they asked for identify it.
   message: string;
   detail: string;
+  // The entry was RUN, not scheduled — a New task with its when-row untouched,
+  // or a new app's scaffolding task. Absent on an older server: read as false,
+  // which is the "scheduled" wording that was the only one before.
+  immediate?: boolean;
   ts: number;
 }
 

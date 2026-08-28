@@ -22,12 +22,19 @@ from pathlib import Path
 import pytest
 
 import fused_render
-from fused_render import server
+from fused_render import jobs, server
 from fused_render.server import ai as _server_ai
 from fused_render.export import plan_export
 
 _STATIC = Path(fused_render.__file__).parent / "static"
 RUNTIME = (_STATIC / "runtime.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _clean_jobs():
+    jobs.reset()
+    yield
+    jobs.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -286,6 +293,191 @@ def _stream(body):
             frames.extend(json.loads(l) for l in chunk.splitlines() if l)
         return resp, frames
     return asyncio.run(go())
+
+
+# -- the local/Claude seam -------------------------------------------------
+
+
+@pytest.mark.parametrize("model,expected", [
+    ("mlx-community/Qwen3-8B-4bit", True),   # a Hugging Face repo id
+    ("unsloth/Qwen3.5-4B-GGUF", True),       # ditto, an uncurated GGUF repo (D412)
+    ("Qwen3.5-4B-Q4_K_M.gguf", True),        # a curated llamacpp-text FILENAME id
+    ("LFM2.5-1.2B-Instruct-Q4_K_M.gguf", True),
+    ("QWEN3.5-4B-Q4_K_M.GGUF", True),        # case-insensitive, like the extension check it mirrors
+    ("opus", False),
+    ("sonnet", False),
+    ("claude-haiku-4-5-20251001", False),
+])
+def test_is_local_model_recognises_both_id_shapes(model, expected):
+    """A repo id (has a `/`) and a curated llamacpp-text id (a bare GGUF
+    FILENAME, no `/` at all — `formats.GGUF_RECIPES`'s keys) both mean local
+    inference; a Claude alias is neither shape. Regression pin for the bug
+    found auditing the fused-render-ai skill: `"/" in model` alone routed
+    every curated llamacpp id to the Claude CLI path as an unrecognised
+    alias (D411/D412)."""
+    assert _server_ai._is_local_model(model) is expected
+
+
+# -- remote-Claude job-row notification -------------------------------------
+#
+# The status bar's activity card (DownloadManager.tsx, D563) is driven purely by
+# `GET /api/jobs`, which reads `fused_render/jobs.py`'s in-memory registry.
+# Before this, only the local-model path (`supervisor._report`) ever wrote a
+# row — a page calling fused.ai() against remote Claude produced NOTHING
+# there, so a user watching the corner could not tell they were talking to
+# Claude instead of a model on their own machine. These pin: a remote call
+# opens a row whose text says "remote"/"Claude" (not a local model id), and
+# the row reaches a terminal state once the call ends — never left running.
+
+
+def test_relay_dismisses_its_job_row_immediately_on_success(monkeypatch):
+    # A successful call must clear its row right away — no "done" dwell for
+    # the 3s sweep to clear later (jobs.dismiss, not a terminal "done" report
+    # left sitting). See the title/detail test below for what the row said
+    # while it was open.
+    _cli_ok(monkeypatch, _CLI_RESULT)
+    assert jobs.list_jobs() == []  # nothing before the call
+    _relay({"prompt": "hello"})
+    assert jobs.list_jobs() == []  # nothing left after it either
+
+
+def test_relay_remote_job_row_title_is_the_prompt_like_local_rows(monkeypatch):
+    # Change 1: local generation rows title on the PROMPT
+    # (supervisor._start_render) — a hardcoded "Claude (remote)" title was the
+    # odd one out. Checked on an ERRORED call — a successful one dismisses
+    # its row entirely (see the test above) — but the title and detail are
+    # set when the row OPENS, before the outcome is known, so an error shows
+    # exactly what a success would have too.
+    #
+    # Change 2 (this follow-up): the model used to live IN the detail line
+    # ("Claude (sonnet) — remote"), which was the only place any row named
+    # its model — a LOCAL row's title never did, so a user could tell a
+    # remote call apart from a local one but not the other way round. The
+    # model now rides its own field (`row["model"]`, jobs.py `Job.model`),
+    # rendered as a dimmed suffix on the title row same as a local row's, and
+    # the detail line is freed to say only that this is remote.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "summarize this doc for me"})
+    row = jobs.list_jobs()[0]
+    assert row["title"] == "summarize this doc for me"
+    assert row["model"] == _server_ai._AI_DEFAULT_MODEL
+    assert row["detail"] == "Claude — remote"
+
+
+def test_relay_remote_job_row_title_is_truncated_to_80_chars(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "x" * 200})
+    row = jobs.list_jobs()[0]
+    assert row["title"] == "x" * 80
+
+
+def test_relay_remote_job_row_does_not_advertise_a_dead_cancel(monkeypatch):
+    # JobRow renders a ✕ Cancel affordance whenever cancellable=True on a
+    # running row. Nothing in the remote-Claude path polls cancel_requested,
+    # so a row claiming to be cancellable would ship a button that does
+    # nothing — the thing the brief explicitly forbids. Checked on the
+    # errored path for the same reason as the title test above: a success
+    # dismisses the row before anything could inspect it.
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"boom")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["cancellable"] is False
+
+
+def test_relay_remote_job_row_closes_on_cli_error(monkeypatch):
+    _cli_ok(monkeypatch, lines=[], exit_code=1, stderr=b"Invalid model name")
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_remote_job_row_closes_on_timeout(monkeypatch):
+    _cli_ok(monkeypatch, hang=True)
+    monkeypatch.setattr(_server_ai, "_AI_TIMEOUT_S", 0.05)
+    _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_remote_job_row_closes_on_missing_binary(monkeypatch):
+    fake = _FakeSpawn()
+    monkeypatch.setattr(_server_ai, "_spawn_claude_stream", fake)
+    monkeypatch.setattr(_server_ai, "_AI_SESSION", _server_ai._AiSession())
+    monkeypatch.setattr(_server_ai.shutil, "which", lambda name: None)
+    monkeypatch.delenv("FUSED_RENDER_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(_server_ai.os.path, "isfile", lambda p: False)
+    _relay({"prompt": "hello"})
+    # No row at all: the call never reached the CLI, so there is nothing
+    # remote happening to report — matches the local path's own behavior of
+    # opening a row only once the work can actually start.
+    assert jobs.list_jobs() == []
+
+
+def test_relay_stream_dismisses_its_job_row_immediately_on_success(monkeypatch):
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
+    resp, frames = _stream({"prompt": "hello", "stream": True})
+    assert frames[-1]["ok"] is True
+    # Same "no done dwell" rule as the non-streaming path.
+    assert jobs.list_jobs() == []
+
+
+def test_relay_stream_remote_job_row_closes_on_error(monkeypatch):
+    _cli_ok(monkeypatch, lines=[_delta_line("hi")], exit_code=1,
+            stderr=b"something broke")
+    resp, frames = _stream({"prompt": "x", "stream": True})
+    assert frames[-1]["ok"] is False
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_remote_job_row_reports_error_not_cancelled_on_unexpected_bug(
+        monkeypatch):
+    # Code review finding: an exception OUTSIDE the three types the
+    # non-streaming branch explicitly catches (asyncio.TimeoutError,
+    # OSError, _AiProcFailure) — e.g. a bug inside _ai_result_payload —
+    # used to be reported to the corner as "cancelled", as if the USER had
+    # stopped the call, when really the server broke. It must show "error"
+    # instead, and the exception must still propagate (still a real 500).
+    _cli_ok(monkeypatch, _CLI_RESULT)
+
+    def _boom(data, model):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_server_ai, "_ai_result_payload", _boom)
+    with pytest.raises(RuntimeError):
+        _relay({"prompt": "hello"})
+    row = jobs.list_jobs()[0]
+    assert row["state"] == "error"
+
+
+def test_relay_stream_never_iterated_leaves_no_running_row(monkeypatch):
+    # Code review finding (the more serious one): the row used to be opened
+    # BEFORE `StreamingResponse(ndjson(), ...)` was even returned. `ndjson()`
+    # is an async generator that Starlette only starts running once it
+    # actually sends the response body — a client that disconnects before
+    # that first iteration never runs the generator's body, so its `finally`
+    # (where the row used to get closed) never runs either, and the row was
+    # left "running" in the corner forever. Constructing the response and
+    # never iterating it must leave no row behind at all.
+    _cli_ok(monkeypatch, lines=_result_lines(deltas=["hi ", "there"]))
+    resp = asyncio.run(_server_ai._ai_relay({"prompt": "hello", "stream": True}))
+    assert isinstance(resp, _server_ai.StreamingResponse)
+    assert jobs.list_jobs() == []
+
+
+def test_relay_local_model_does_not_touch_the_claude_job_row_shape(monkeypatch):
+    # Sanity anchor for the seam this whole feature adds: the LOCAL branch of
+    # `_ai_relay` never runs the remote job-row code at all — it is a
+    # distinct `if _is_local_model(model): ...` branch that this feature does
+    # not touch (local rows keep coming from supervisor._report, elsewhere).
+    monkeypatch.setattr(_server_ai, "_is_local_model", lambda m: True)
+    monkeypatch.setattr(
+        _server_ai, "_local_relay",
+        lambda model, prompt, system_prompt, stream, body:
+            _server_ai.JSONResponse({"ok": True, "result": {
+                "text": "hi", "model": model, "usage": None}}))
+    _relay({"prompt": "hello", "model": "mlx-community/Qwen3-8B-4bit"})
+    assert jobs.list_jobs() == []  # this path never touches jobs.py itself
 
 
 # -- happy path -----------------------------------------------------------------
@@ -996,9 +1188,28 @@ def test_claude_bin_falls_back_to_install_dirs(monkeypatch, tmp_path):
     assert _server_ai._claude_bin() is None  # nothing installed anywhere
     bin_path.write_text("#!/bin/sh\n")
     bin_path.chmod(0o755)
-    assert _server_ai._claude_bin() == str(bin_path)
+    # normpath: the fake expanduser above naively string-replaces "~" with
+    # str(home) and leaves the candidate's own "/" suffix untouched, so on a
+    # real Windows filesystem (str(home) backslashed, "/.local/bin/claude"
+    # forward-slashed) the resolved path is a mixed-separator string — the
+    # same file bin_path names, but not the same bytes as str(bin_path).
+    assert os.path.normpath(_server_ai._claude_bin()) == os.path.normpath(str(bin_path))
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the skip this pins is unobservable here: claude_health.executable's "
+        "own docstring says the exec bit 'is only consulted off Windows... "
+        "os.access(X_OK) is true for any existing file' there, so os.name is "
+        "forced to 'posix' below to reach that branch — but the underlying "
+        "os.access() call still runs against a REAL Windows filesystem, where "
+        "it is X_OK-true for any existing file regardless of chmod. A dud "
+        "made non-executable by chmod(0o644) is indistinguishable from a real "
+        "one to that syscall on this platform, so the dud wins here for a "
+        "reason that has nothing to do with the skip logic under test."
+    ),
+)
 def test_claude_bin_skips_a_non_executable_dud(monkeypatch, tmp_path):
     """A dud early in the list must not shadow a real install further down.
 
@@ -1037,8 +1248,8 @@ def test_posix_candidates_are_the_documented_install_locations():
     """The three canonical locations, canonical-first — and nothing hand-written.
 
     This used to pin the tuple exactly, which is what let the list here drift
-    from the three OTHER lists the app kept (claude_config/lib.py,
-    core_apps/learn/check_env.py, core_apps/sessions/analyze.py): each was
+    from the three OTHER lists the app kept (claude_config/lib.py, the learn
+    content's check_env.py, core_apps/sessions/analyze.py): each was
     correct against its own test and none agreed with the others, so a CLI in
     `~/.bun/bin` was found by the Claude-config tab and not by fused.ai. The
     union lives in claude_health now; the identity assertion is what keeps this
@@ -1121,7 +1332,12 @@ def test_windows_candidates_expand_environment_variables(monkeypatch, tmp_path):
     # only the %VAR% expansion is under test
     monkeypatch.setattr(_server_ai, "_CLAUDE_WINDOWS_CANDIDATES",
                         ("%APPDATA%/npm/claude.exe",))
-    assert _server_ai._claude_bin() == str(tmp_path / "npm" / "claude.exe")
+    # normpath: expandvars substitutes %APPDATA% (native-separator on real
+    # Windows) into a forward-slash template and, like expanduser, leaves the
+    # rest of the string untouched — a mixed-separator result naming the same
+    # file as the cleanly-joined RHS, but not the same string.
+    assert os.path.normpath(_server_ai._claude_bin()) == \
+        os.path.normpath(str(tmp_path / "npm" / "claude.exe"))
 
 
 def test_the_resolver_never_imports_the_chat_template():

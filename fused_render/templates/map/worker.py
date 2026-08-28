@@ -3,8 +3,9 @@
 The warm loopback service calls :func:`main` directly from this folder's geo
 runtime (declared in `pyproject.toml`, SPEC PY-16 — see `geo_classify.py`'s
 header). A one-shot CLI invocation remains as a degraded fallback
-if that service cannot start. Raster paths are offered to ``RasterEngine``
-first; vector and in-memory results then fall through to ``geo_classify``.
+if that service cannot start. Multidim stores are offered to ``MultidimEngine``
+first, remaining raster paths to ``RasterEngine``; vector and in-memory results
+then fall through to ``geo_classify``.
 """
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ import sys
 import time
 import traceback
 from typing import Any
+
+from geo_paths import multidim_suffix
 
 
 ENTRYPOINTS = ("main", "run", "udf", "fn")
@@ -103,7 +106,7 @@ def _declared_packages() -> list[str]:
         return []
     try:
         import tomllib
-    except ImportError:  # Python 3.10 and older have no tomllib.
+    except ImportError:  # unreachable on the >=3.11 floor; fails closed anyway.
         declared = _dependencies_without_tomllib(text)
     else:
         try:
@@ -167,6 +170,7 @@ def build(
     request: dict[str, Any],
     raster_engine=None,
     vector_engine=None,
+    multidim_engine=None,
 ) -> dict[str, Any]:
     import geo_classify
 
@@ -190,10 +194,31 @@ def build(
             obj = target
 
         descriptor = (
-            raster_engine.try_describe(request, obj=obj)
-            if raster_engine is not None
+            multidim_engine.try_describe(request, obj=obj)
+            if multidim_engine is not None
             else None
         )
+        described = obj if isinstance(obj, (str, os.PathLike)) else target
+        if (
+            descriptor is not None
+            and descriptor.get("status") == "error"
+            and raster_engine is not None
+            and multidim_suffix(str(described)) != ".zarr"
+        ):
+            # GDAL reads georeferencing xarray cannot, so a failure here is
+            # worth a second opinion. Its amber `not_georeferenced` card only
+            # wins when the engine agrees the problem WAS georeferencing —
+            # GDAL says that of any HDF5 it opens, which would bury "this grid
+            # is curvilinear". Zarr stays out: GDAL wants a ZARR: locator, so
+            # its attempt only doubles an already-failed remote open.
+            fallback = raster_engine.try_describe(request, obj=obj)
+            accepted = {"ok"}
+            if descriptor.get("gdal_may_georeference"):
+                accepted.add("not_georeferenced")
+            if fallback is not None and fallback.get("status") in accepted:
+                descriptor = fallback
+        if descriptor is None and raster_engine is not None:
+            descriptor = raster_engine.try_describe(request, obj=obj)
         if descriptor is None and vector_engine is not None:
             descriptor = vector_engine.try_describe(request, obj=obj)
         if descriptor is None:
@@ -210,6 +235,7 @@ def main(
     request: dict[str, Any],
     raster_engine=None,
     vector_engine=None,
+    multidim_engine=None,
 ) -> dict[str, Any]:
     started = time.time()
     try:
@@ -217,6 +243,7 @@ def main(
             request,
             raster_engine=raster_engine,
             vector_engine=vector_engine,
+            multidim_engine=multidim_engine,
         )
     except Exception as error:
         descriptor = {

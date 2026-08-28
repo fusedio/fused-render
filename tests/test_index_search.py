@@ -4,6 +4,8 @@
 mtime), so the client's fuzzy scoring is untouched by where the corpus came
 from — the only difference is that this one is instant and cross-session.
 """
+import asyncio
+import logging
 import os
 
 import pyarrow as pa
@@ -11,20 +13,39 @@ import pyarrow.parquet as pq
 import pytest
 from fastapi.testclient import TestClient
 
+from fused_render.index.cancel import CancelToken, Cancelled
 from fused_render.index.config import IndexConfig, load_config
 from fused_render.index.query import search_ranked, search_under
+from fused_render.index.runner import canonical_root
 from fused_render.index.store import Sink, compact, partition_files
 from fused_render.server import create_app
 
 
 def _index(tmp_path, root, files, dirs=()):
+    """Build a real index over `paths` (absolute, already canonical).
+
+    `root`, `dirs` and every file path are hardcoded POSIX-looking literals in
+    most callers ("/r", "/r/sub", ...) — never real directories on disk. That
+    is a no-op of `canonical_root` on POSIX (`os.path.abspath("/r") == "/r"`),
+    but on Windows a leading-slash-no-drive path is only drive-RELATIVE, so
+    `abspath` resolves it against the runner's current drive (e.g. "D:/r").
+    `search_under`/`search_ranked` canonicalize their OWN `root` argument
+    before querying, so storing rows under the raw literal while the query
+    resolves to the drive-qualified form makes every lookup miss on Windows —
+    the corpus comes back empty even though the row is right there. Routing
+    every stored key through the same `canonical_root` the query side uses
+    keeps storage and lookup agreeing regardless of platform; it is a no-op
+    everywhere this already passed."""
     cfg = IndexConfig(dir=str(tmp_path / "ix"))
     shards = str(tmp_path / "run" / "shards")
     os.makedirs(shards, exist_ok=True)
     sink = Sink(shards, "t", pa, pq, cfg.shard_rows)
+    root = canonical_root(root)
+    dirs = [canonical_root(d) for d in dirs]
     by_dir = {d: [] for d in dirs}
     by_dir.setdefault(root, [])
-    for i, p in enumerate(files):
+    for i, raw in enumerate(files):
+        p = canonical_root(raw)
         d, name = p.rsplit("/", 1)
         ext = name.rsplit(".", 1)[1].lower() if "." in name else ""
         by_dir.setdefault(d, []).append((p, d, name, ext, 10 + i, 100.0 + i))
@@ -237,6 +258,22 @@ def test_rank_route_answers_ranked_hits(home, tmp_path):
     assert body["total"] == len(body["hits"])
 
 
+def test_rank_route_logs_the_request_total_at_debug(home, tmp_path, caplog):
+    """The next slow report should be attributable server-side instead of
+    inferred: this is the total the per-phase DEBUG lines add up against."""
+    import logging as _logging
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md"])
+    with caplog.at_level(_logging.DEBUG,
+                        logger="fused_render.server.routers.index"):
+        body = client.get("/api/index/rank",
+                          params={"root": root, "q": "readme"}).json()
+    assert body["ok"] is True
+    totals = [r for r in caplog.records if "answered in" in r.message]
+    assert len(totals) == 1
+    assert totals[0].levelno == _logging.DEBUG
+
+
 def test_rank_route_does_not_return_positions(home, tmp_path):
     """The client re-runs fuzzyMatch over the ~200 rows it got back, so
     fuzzy.ts stays the single source of truth for what highlights — and the
@@ -258,6 +295,65 @@ def test_rank_route_on_a_missing_index_is_a_quiet_miss(home, tmp_path):
 def test_rank_route_requires_a_root(home, tmp_path):
     resp = TestClient(create_app(start_dir=str(tmp_path))).get("/api/index/rank")
     assert resp.status_code == 400
+
+
+def test_rank_route_answers_a_disconnected_client_with_a_quiet_499(
+    home, tmp_path, monkeypatch, caplog,
+):
+    """The end-to-end shape of section 1: an abandoned request is cancelled,
+    answered with a body nobody reads, and does NOT log as an error — a
+    cancelled rank is normal operation for a per-keystroke request, the same
+    reasoning the candidate-cap DEBUG line already applies.
+
+    `_rank_body` is monkeypatched to a controllable stand-in rather than a
+    real (tiny, near-instant) index: the real query would very likely finish
+    before `_watch_disconnect` — polling an ALWAYS-disconnected fake request —
+    gets scheduled at all, making the outcome a coin flip on scheduling order
+    instead of a pinned behaviour. The stand-in sleeps briefly (blocking only
+    its OWN worker thread — asyncio.to_thread — never the event loop the
+    watcher runs on) and then consults the very token `api_index_rank` handed
+    it, exactly as the real `search_ranked` does."""
+    from fused_render.index.cancel import Cancelled
+    from fused_render.server.routers import index as index_router
+
+    def slow_cancellable_rank(cfg, root, q, limit, token=None):
+        import time as _time
+
+        _time.sleep(0.05)
+        if token is not None and token.cancelled:
+            raise Cancelled()
+        return {"covered": True, "hits": [], "truncated": False, "total": 0,
+                "escalated": False, "reason": ""}
+
+    monkeypatch.setattr(index_router, "_rank_body", slow_cancellable_rank)
+
+    class _DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    with caplog.at_level(logging.DEBUG):
+        resp = asyncio.run(
+            index_router.api_index_rank(
+                request=_DisconnectedRequest(), root=str(tmp_path), q="x", limit=10))
+    assert resp.status_code == 499
+    # Debug is fine (and expected — the "abandoned by the client" line); an
+    # ERROR-or-louder record would mean this is being treated as a failure.
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records)
+    assert any("abandoned by the client" in r.message for r in caplog.records)
+
+
+def test_rank_route_is_unaffected_by_cancellation_machinery_when_nothing_disconnects(
+    home, tmp_path,
+):
+    """Regression: a normal (non-abandoned) request must answer exactly as it
+    did before section 1 — the async rewrite and the CancelToken plumbing
+    must be invisible to the common case."""
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/readme.md", root + "/other.bin"])
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "readme.md"}).json()
+    assert body["ok"] is True and body["covered"] is True
+    assert body["hits"][0]["rel"] == "readme.md"
 
 
 def test_rank_route_filters_a_gitignored_dir_under_a_NON_repo_root(home, tmp_path):
@@ -349,14 +445,18 @@ def test_the_corpus_is_ordered_by_the_stored_depth_column(tmp_path):
     to hold a generated column (see store.schemas)."""
     cfg = _index(tmp_path, "/r", ["/r/a/b/deep.txt", "/r/top.txt"],
                  dirs=["/r/a", "/r/a/b"])
+    # `_index` stores every path through `canonical_root` (same reasoning as
+    # its docstring), so the keys read back here are that canonical spelling
+    # too — "/r/..." on POSIX, "D:/r/..." on Windows — not the bare literal.
     t = pq.read_table(partition_files(cfg)[0])
     assert dict(zip(t.column("path").to_pylist(),
                     t.column("depth").to_pylist())) == {
-        "/r/a/b/deep.txt": 4, "/r/top.txt": 2}
+        canonical_root("/r/a/b/deep.txt"): 4, canonical_root("/r/top.txt"): 2}
     d = pq.read_table(cfg.dirs_parquet)
     assert dict(zip(d.column("dir").to_pylist(),
                     d.column("depth").to_pylist())) == {
-        "/r": 1, "/r/a": 2, "/r/a/b": 3}
+        canonical_root("/r"): 1, canonical_root("/r/a"): 2,
+        canonical_root("/r/a/b"): 3}
 
 
 def _drop_depth(cfg):
@@ -435,6 +535,252 @@ def test_search_ranked_is_a_quiet_miss_on_an_uncovered_root(tmp_path):
     assert out["covered"] is False and out["hits"] == []
 
 
+# -- cancellation: a `token` handed to search_ranked -------------------------
+#
+# `asyncio.to_thread` (server/routers/index.py) cannot kill the thread it
+# dispatches search_ranked onto, so cancelling has to make the QUERY itself
+# return — CancelToken.check() at the phase boundaries in `pass_over`.
+# CancelToken's own bind/cancel/check mechanics (the interrupt() plumbing) are
+# unit-tested in isolation in tests/test_index_cancel.py; these are about
+# search_ranked actually consulting the token it is handed.
+
+def test_an_uncancelled_token_changes_nothing(tmp_path):
+    """Regression: passing a token that is never cancelled must be byte-
+    identical to not passing one at all."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md", "/r/unrelated.bin"])
+    token = CancelToken()
+    with_token = search_ranked(cfg, "/r", "readme.md", token=token)
+    without_token = search_ranked(cfg, "/r", "readme.md")
+    # `age_s` is a wall-clock measurement taken independently by each call, so
+    # it is the one field expected to differ between two otherwise-identical
+    # calls made microseconds apart.
+    with_token.pop("age_s")
+    without_token.pop("age_s")
+    assert with_token == without_token
+
+
+def test_a_token_cancelled_before_the_call_raises_promptly(tmp_path):
+    """The between-passes check is the highest-value one (the plan's own
+    words) — cancelled BEFORE the call is the simplest case that exercises it:
+    `pass_over`'s very first `check()`, ahead of any SQL at all."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_a_cancelled_token_still_closes_the_connection(tmp_path, monkeypatch):
+    """The `finally: con.close()` this section adds must run on the
+    `Cancelled` path too, not only on a normal return.
+
+    A real `duckdb.DuckDBPyConnection`'s methods are read-only C-extension
+    attributes (assigning `con.close = ...` raises AttributeError), so this
+    wraps the connection in a thin delegating proxy rather than patching the
+    method in place — `search_ranked` only ever calls a handful of methods on
+    `con`, and `__getattr__` forwards everything else untouched."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    closed = []
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def close(self):
+            closed.append(True)
+            self._real.close()
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    token = CancelToken()
+    token.cancel()
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+    assert closed == [True]
+
+
+def test_an_interrupt_attributed_to_the_token_becomes_cancelled(tmp_path, monkeypatch):
+    """The other path into `Cancelled`, alongside the between-phase `check()`
+    calls: an `execute()` that raises `duckdb.InterruptException` while THIS
+    token is the one that called `interrupt()` (the case a real cross-thread
+    cancel lands mid-statement, which `check()` between phases cannot reach)
+    must still come out as `Cancelled`, not a raw duckdb exception.
+
+    Forcing a REAL mid-statement interrupt deterministically needs a query
+    slow enough to race a background thread against — exactly
+    test_index_guarded_query.py's `test_a_runaway_statement_is_interrupted`,
+    which already pins that duckdb's own interrupt() does what this relies
+    on. This test is about search_ranked's OWN logic: given that exception,
+    with a token that says it caused it, the result is `Cancelled`."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            # Only pass_over's own SELECT. search_ranked runs several OTHER
+            # execute() calls first (_coverage_reason, _ignore_roots) — those
+            # are covered by their own tests below
+            # (test_a_coverage_check_interrupt_*, test_an_ignore_roots_*); this
+            # one is scoped to pass_over's SELECT specifically so a change to
+            # either of the earlier queries cannot accidentally satisfy it.
+            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+                # The real cross-thread sequence: `cancel()` flips the flag
+                # AND calls interrupt(), which is what makes THIS raise.
+                token.cancel()
+                raise duckdb_module.InterruptException("simulated cross-thread interrupt")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_an_interrupt_with_no_token_is_not_swallowed_as_cancellation(tmp_path, monkeypatch):
+    """An interrupted connection that ISN'T this function's doing (no token at
+    all — someone else's timeout, or a genuine duckdb abort) must keep
+    surfacing as a real error rather than being read as `Cancelled`.
+
+    duckdb only actually raises `InterruptException` while a query is
+    genuinely running (a plain `interrupt()` before any query starts is a
+    no-op — verified directly against real duckdb, not asserted from memory),
+    which is awkward to force deterministically in a unit test. The exception
+    handling this section adds is tested directly instead: `con.execute`
+    raising `InterruptException` with no token bound must propagate, not
+    become `Cancelled`. The Timer-forced REAL interrupt is already covered
+    for this exact exception class by
+    test_index_guarded_query.py::test_a_runaway_statement_is_interrupted."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "SELECT rel, size, mtime, is_dir FROM" in sql:
+                raise duckdb_module.InterruptException("simulated, not this token's doing")
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(duckdb_module.InterruptException):
+        search_ranked(cfg, "/r", "readme.md")
+
+
+def test_a_coverage_check_interrupt_attributed_to_the_token_becomes_cancelled(
+    tmp_path, monkeypatch
+):
+    """`_coverage_reason` runs its own `execute()` on the SAME bound
+    connection, before `pass_over` ever runs — `token.bind(con)` binds the
+    whole connection, not just pass_over's statement, so `con.interrupt()` can
+    land here too. A normal superseded keystroke landing exactly here must not
+    surface as a raw `duckdb.InterruptException` (a 500, and log noise) any
+    more than one landing in pass_over does."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "FROM " in sql and "WHERE dir = " in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException(
+                    "simulated cross-thread interrupt during coverage check"
+                )
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token)
+
+
+def test_an_ignore_roots_interrupt_attributed_to_the_token_becomes_cancelled(
+    tmp_path, monkeypatch
+):
+    """`_ignore_roots` runs on the same bound connection too, and only when a
+    `gitignore_filter` is supplied (search_ranked's caller, server/routers/
+    index.py, always supplies one) — so a client abort landing in the
+    gitignore-root discovery query must also come out as `Cancelled`, not an
+    unhandled `duckdb.InterruptException`."""
+    import duckdb as duckdb_module
+
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+
+    class _SpyConnection:
+        def __init__(self, real):
+            self._real = real
+
+        def execute(self, sql, *a, **kw):
+            if "/.gitignore" in sql:
+                token.cancel()
+                raise duckdb_module.InterruptException(
+                    "simulated cross-thread interrupt during ignore-roots discovery"
+                )
+            return self._real.execute(sql, *a, **kw)
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+    real_connect = duckdb_module.connect
+    monkeypatch.setattr(duckdb_module, "connect",
+                        lambda *a, **kw: _SpyConnection(real_connect(*a, **kw)))
+    with pytest.raises(Cancelled):
+        search_ranked(cfg, "/r", "readme.md", token=token,
+                      gitignore_filter=lambda root, es, oracles: es)
+
+
+def test_a_cancel_after_search_ranked_returns_does_not_touch_the_closed_connection(
+    tmp_path,
+):
+    """The real disconnect-lands-after-close race (server/routers/index.py):
+    `_watch_disconnect` can call `token.cancel()` after `search_ranked` has
+    already returned NORMALLY and closed its connection — a fast typist's
+    keystroke landing a beat too late to matter, not a mid-query interrupt at
+    all. `search_ranked`'s `finally` must `token.unbind()` before
+    `con.close()`, or this `cancel()` calls `interrupt()` on an already-closed
+    real `duckdb.DuckDBPyConnection`, which raises `duckdb.ConnectionException`
+    — on a task nothing ever retrieves the result of once the route only
+    `.cancel()`s it, so a perfectly normal disconnect would surface as nothing
+    but an unhandled "Task exception was never retrieved" warning."""
+    cfg = _index(tmp_path, "/r", ["/r/readme.md"])
+    token = CancelToken()
+    search_ranked(cfg, "/r", "readme.md", token=token)
+    # Must not raise.
+    token.cancel()
+    assert token.cancelled is True
+
+
 def test_search_ranked_filters_gitignored_entries_BEFORE_cutting_to_limit(tmp_path):
     """Filtering after the cut is what makes today's corpus report `truncated`
     while holding fewer rows than it says: the cap was spent on entries that
@@ -473,6 +819,20 @@ def test_it_escalates_to_the_subsequence_pass_when_substring_hits_run_short(tmp_
     out = search_ranked(cfg, "/r", "alpha", limit=5)
     assert [h["rel"] for h in out["hits"]] == ["alpha.txt", "a-l-p-h-a.txt"]
     assert out["escalated"] is True
+
+
+def test_stage_a_logs_a_debug_line_per_pass(tmp_path, caplog):
+    """No server-side timing on the rank path used to mean a slow report could
+    only be diagnosed by inference. Both passes get their own DEBUG line
+    (never louder — this fires on every keystroke)."""
+    import logging as _logging
+    cfg = _index(tmp_path, "/r", ["/r/alpha.txt", "/r/a-l-p-h-a.txt"])
+    with caplog.at_level(_logging.DEBUG, logger="fused_render.index.query"):
+        search_ranked(cfg, "/r", "alpha", limit=5)
+    stage_a = [r for r in caplog.records if "stage A" in r.message]
+    assert all(r.levelno == _logging.DEBUG for r in stage_a)
+    kinds = {r.message.split("(")[1].split(")")[0] for r in stage_a}
+    assert kinds == {"substring", "subsequence"}
 
 
 def test_the_escalation_ladder_is_lossless(tmp_path):
@@ -695,3 +1055,68 @@ def test_a_package_is_never_reported_as_scanning(home, tmp_path, monkeypatch):
         "runs": [{"run_id": "r1", "root": str(tmp_path), "running": True}]})
     body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
     assert body["reason"] == "package"
+
+
+# -------------------------------------------------------- indexing disabled
+
+def test_an_uncovered_folder_reports_disabled_while_indexing_is_off(
+        home, tmp_path, monkeypatch):
+    """Highest precedence after mount/package: while the pref is off, no
+    scan will ever cover an uncovered folder — the client must not ask for
+    one, same treatment as a mount or a package."""
+    from fused_render.server.routers import index as index_routes
+
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": str(tmp_path), "q": "x"}).json()
+    assert body["covered"] is False and body["reason"] == "disabled"
+
+
+def test_ignored_still_wins_over_disabled_ordering_is_not_swapped(
+        home, tmp_path, monkeypatch):
+    """"disabled" is inserted between package and ignored — a folder the
+    ignore rules exclude is unrelated to the toggle, so this only pins that
+    the new branch did not silently become an earlier, wrong-precedence one."""
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj" / "node_modules")
+    client = _ranked_client(tmp_path, str(tmp_path / "proj"),
+                            [str(tmp_path / "proj") + "/a.txt"])
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank", params={"root": root, "q": "a"}).json()
+    assert body["reason"] == "disabled"
+
+
+def test_a_covered_answer_is_untouched_while_indexing_is_off(home, tmp_path,
+                                                              monkeypatch):
+    """The behavior contract: a pre-existing, covered index keeps serving
+    exactly as before — the toggle only changes what happens when it is NOT
+    covered."""
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["covered"] is True and body["reason"] == ""
+    assert [h["rel"] for h in body["hits"]] == ["alpha.txt"]
+
+
+def test_scanning_is_never_reported_while_indexing_is_off(home, tmp_path,
+                                                           monkeypatch):
+    """Even if a run happens to still be listed as live (a race with the
+    toggle-off cancellation), the client must never be told to poll a scan
+    that the pref says can't be running."""
+    from fused_render.index import runner
+    from fused_render.server.routers import index as index_routes
+
+    root = str(tmp_path / "proj")
+    client = _ranked_client(tmp_path, root, [root + "/alpha.txt"])
+    monkeypatch.setattr(runner, "list_runs", lambda cfg, limit=20: {
+        "runs": [{"run_id": "r1", "root": root, "running": True}]})
+    monkeypatch.setattr(index_routes, "indexing_enabled", lambda: False)
+    body = client.get("/api/index/rank",
+                      params={"root": root, "q": "alpha"}).json()
+    assert body["reason"] != "scanning"

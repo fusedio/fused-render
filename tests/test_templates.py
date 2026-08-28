@@ -82,8 +82,11 @@ def test_builtin_html_default_is_render_sentinel():
     assert [e["mode"] for e in entries] == [
         "_render", "code", "claude", "reader"]
     assert entries[0]["path"] is None and entries[0]["icon"] is None
-    assert entries[1]["path"].endswith("code/template.html")
-    assert entries[2]["path"].endswith("claude/template.html")
+    # entries[i]["path"] is a plain os.path.join of TEMPLATES_DIR (native
+    # separators — this internal field is never run through the app's
+    # canonical_fs_path), so normalize before a forward-slash suffix check.
+    assert entries[1]["path"].replace(os.sep, "/").endswith("code/template.html")
+    assert entries[2]["path"].replace(os.sep, "/").endswith("claude/template.html")
 
 
 def test_builtin_parquet_default_is_duckdb():
@@ -91,7 +94,7 @@ def test_builtin_parquet_default_is_duckdb():
     assert error is None
     assert [e["mode"] for e in entries] == ["duckdb", "structure", "h3", "claude",
             "geometry_editor"]
-    assert entries[0]["path"].endswith("duckdb/template.html")
+    assert entries[0]["path"].replace(os.sep, "/").endswith("duckdb/template.html")
 
 
 # ------------------------------------------------------------ reader mode (RD)
@@ -106,11 +109,13 @@ def test_builtin_parquet_default_is_duckdb():
 
 def test_reader_is_the_last_mode_on_text_keys():
     # Reader trails every real view on representative text formats, and is never
-    # the default (first entry stays the content view).
+    # the default (first entry stays the content view). `claude` now rides along
+    # on every key, and it takes the slot AHEAD of reader rather than after it —
+    # reader keeps the last seat wherever it is offered.
     cases = {
         "/x/notes.md": ["markdown", "code", "claude", "reader"],
         "/x/data.csv": ["duckdb", "excel", "code", "claude", "reader"],
-        "/x/paper.pdf": ["pdf", "pdf_studio", "reader"],
+        "/x/paper.pdf": ["pdf", "pdf_studio", "claude", "reader"],
         "/x/log.txt": ["code", "claude", "reader"],
     }
     for path, expected in cases.items():
@@ -119,6 +124,20 @@ def test_reader_is_the_last_mode_on_text_keys():
         assert got == expected, path
         assert got[0] != "reader", path       # never the default
         assert got[-1] == "reader", path      # and last
+
+
+def test_reader_keeps_the_last_seat_on_every_key_that_offers_it():
+    # The rule above, derived from the registry rather than sampled, so a key
+    # added later — or a `claude` appended to one by hand — cannot quietly push
+    # reader out of the trailing seat.
+    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        registry = json.load(f)
+    offenders = [
+        key for key, value in registry.items()
+        if isinstance(value, list) and "reader" in value and value[-1] != "reader"
+    ]
+    assert offenders == []
 
 
 def test_no_builtin_key_binds_text():
@@ -183,8 +202,11 @@ def test_git_is_offered_on_directories_and_on_no_file_key():
 
 def test_the_chat_is_offered_on_every_authored_file_key():
     # The other half of the same split: `git` stopped offering itself on a file,
-    # and the chat did not — it is bound on every key where a human authors or
-    # analyses the bytes, and is never the default.
+    # and the chat did not. These authored formats were the chat's ORIGINAL
+    # constituency, back when the binding was hand-picked; it now rides along on
+    # every registered key (see below), so they are a sample of a wider rule
+    # rather than the whole of it. What is still specific to them is the order:
+    # the chat is never the default here either.
     for path in ["/x/mod.py", "/x/app.tsx", "/x/deploy.sh", "/x/site.css",
                  "/x/config.yaml", "/x/pyproject.toml", "/x/tsconfig.json",
                  "/x/main.tf", "/x/notes.md", "/x/paper.tex",
@@ -240,17 +262,46 @@ def test_the_file_side_pair_sits_before_the_trailing_meta_mode():
         assert got[-1] == "reader", path
 
 
-def test_the_file_side_pair_is_absent_from_media_and_binary_keys():
-    # The chat is offered where a human authors or analyses the bytes.
-    # A spreadsheet, a 3D model, a video, an archive or a PDF is none of those,
-    # so those lists are left alone rather than churned.
+def test_the_chat_rides_along_on_media_and_binary_keys_too():
+    # This used to pin the opposite. The chat was hand-picked onto the keys where
+    # a human authors or analyses the bytes, and a spreadsheet, a 3D model, a
+    # video, an archive or a PDF was ruled none of those — so those lists were
+    # left alone. The rule is reversed (owner, 2026-08-20): the chat rides along
+    # on EVERY registered key, because "is there something to say about this
+    # file" is not a question an extension can answer, and asking Claude about a
+    # video or a warehouse is as ordinary as asking about a .py. Availability is
+    # still decided per FILE, one layer down, by claude's own condition.py: a
+    # path that does not exist, or one under a remote mount, is refused there.
+    # Which is the better filter anyway — it asks about the target in front of it
+    # rather than guessing from a curated extension list.
+    #
+    # `git` did NOT come along for the reversal: it stays folder-only, sourced
+    # from the "/" directory key alone (see above), so its absence here is the
+    # half of the old split that still holds.
     for path in ["/x/book.xlsx", "/x/scene.glb", "/x/clip.mp4",
                  "/x/bundle.tar.gz", "/x/paper.pdf", "/x/tiles.pmtiles",
                  "/x/warehouse.duckdb"]:
         got, error = modes(path)
         assert error is None, path
         assert "git" not in got, path
-        assert "claude" not in got, path
+        assert "claude" in got, path
+        assert got[0] != "claude", path  # still never the default
+
+
+def test_every_registered_key_offers_the_chat():
+    # The reversal above, stated over the registry itself rather than sampled, so
+    # a key added later inherits the rule instead of quietly opting out of it.
+    # The universal "/" directory key is in scope too — it LEADS with the chat
+    # (D280). Keys bound to null or [] (previews disabled outright) have no list
+    # to carry a mode at all, so they are not offenders.
+    with open(os.path.join(server.TEMPLATES_DIR, "registry.json"),
+              encoding="utf-8") as f:
+        registry = json.load(f)
+    offenders = [
+        key for key, value in registry.items()
+        if isinstance(value, list) and value and "claude" not in value
+    ]
+    assert offenders == []
 
 
 def test_claude_leads_the_universal_directory_key():
@@ -269,7 +320,7 @@ def test_claude_leads_the_universal_directory_key():
     # every folder unbrowsable.
     got, error = modes("/x/somedir", is_dir=True)
     assert error is None
-    assert got == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
+    assert got == ["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"]
     assert got[0] == "claude" and "_listing" in got
 
 
@@ -290,23 +341,34 @@ def test_compressed_tabular_routes_to_duckdb():
     assert modes("/x/data.tsv.zst")[0][0] == "duckdb"
     assert modes("/x/data.json.gz")[0][0] == "duckdb"
     assert modes("/x/data.ndjson.gz")[0][0] == "duckdb"
-    # A real archive (or a bare .gz) still opens in the tar viewer, untouched.
-    assert modes("/x/bundle.tar.gz") == (["tar"], None)
-    assert modes("/x/blob.gz") == (["tar"], None)
+    # A real archive (or a bare .gz) still opens in the tar viewer, untouched
+    # apart from the chat every key now trails (see the chat tests above).
+    assert modes("/x/bundle.tar.gz") == (["tar", "claude"], None)
+    assert modes("/x/blob.gz") == (["tar", "claude"], None)
 
 
 def test_duckdb_database_files_route_to_duckdb():
     # .duckdb/.ddb open in the tabular grid; .db stays with the sqlite viewer.
-    assert modes("/x/warehouse.duckdb") == (["duckdb"], None)
-    assert modes("/x/warehouse.ddb") == (["duckdb"], None)
-    assert modes("/x/legacy.db") == (["sqlite"], None)
+    # Each trails the chat, as every key does.
+    assert modes("/x/warehouse.duckdb") == (["duckdb", "claude"], None)
+    assert modes("/x/warehouse.ddb") == (["duckdb", "claude"], None)
+    assert modes("/x/legacy.db") == (["sqlite", "claude"], None)
 
 
 def test_builtin_zarr_directory_key():
     # a `.zarr`-named dir carries the AOI streamer and the raw member listing as
     # peer modes (the legacy `zarr` template is gone; folder-level detection for
-    # non-`.zarr` dirs is handled by the gate on the "/" key instead).
-    assert modes("/x/store.zarr", is_dir=True) == (["zarr_aoi", "_listing"], None)
+    # non-`.zarr` dirs is handled by the gate on the "/" key instead), then the
+    # multidim map and the chat like every other key.
+    #
+    # The chat has to be spelled out in THIS key rather than inherited: matching
+    # picks exactly one winning key and uses its list whole (`_match_registry`
+    # returns a single best entry — lists are never merged), and `.zarr/` has a
+    # segment where "/" has none, so it outranks the universal directory key and
+    # REPLACES it. Leave `claude` out of `.zarr/` and a Zarr store becomes the one
+    # directory on the machine with no chat.
+    assert modes("/x/store.zarr", is_dir=True) == (
+        ["zarr_aoi", "_listing", "map", "claude"], None)
     # a *file* named .zarr does not match the directory key
     assert modes("/x/store.zarr", is_dir=False) == ([], None)
 
@@ -317,12 +379,12 @@ def test_unmapped_file_empty_and_plain_dir_lists():
     assert modes("/x/a.xyz") == ([], None)
     # every directory resolves the universal `/` key (D81): `claude` (the pane's
     # default for a folder, D280), the built-in listing, and the offered-but-gated
-    # candidates — `git`, `graph` (the link graph, SPEC §32), `zarr_aoi` and the
-    # two model views (SPEC §38) — for a plain folder, a dotted folder and the
+    # candidates — `git`, `mcp` (the app tool manifest, SPEC §44), `graph` (the
+    # link graph, SPEC §32), `zarr_aoi` and the two model views (SPEC §38) — for a plain folder, a dotted folder and the
     # filesystem root alike. Each gated mode is dropped unless its condition.py
     # says otherwise; see tests/test_graph_condition.py,
     # tests/test_model_templates.py and the zarr_aoi tests below.
-    UNIVERSAL_DIR = ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
+    UNIVERSAL_DIR = ["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"]
     assert modes("/x/somedir", is_dir=True) == (UNIVERSAL_DIR, None)
     assert modes("/x/my.data", is_dir=True) == (UNIVERSAL_DIR, None)
     assert modes("/", is_dir=True) == (UNIVERSAL_DIR, None)
@@ -774,8 +836,8 @@ def test_registry_drops_zarr_template_and_sentinel_keys():
     # ...and its folder is deleted, so the name no longer resolves at all
     assert server._resolve_name("zarr")[0] is None
     # zarr_aoi is the .zarr/ default and a gated candidate on every directory
-    assert registry[".zarr/"] == ["zarr_aoi", "_listing"]
-    assert registry["/"] == ["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"]
+    assert registry[".zarr/"] == ["zarr_aoi", "_listing", "map", "claude"]
+    assert registry["/"] == ["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"]
 
 
 def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
@@ -783,12 +845,14 @@ def test_zarr_named_dir_gate_true_with_no_markers(tmp_path):
     # returns True with ZERO marker files present (and zero filesystem calls).
     store = tmp_path / "store.zarr"
     store.mkdir()
-    assert modes(str(store), is_dir=True) == (["zarr_aoi", "_listing"], None)
+    assert modes(str(store), is_dir=True) == (
+        ["zarr_aoi", "_listing", "map", "claude"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    # The `.zarr/` key is its own mode list and never offers `graph`, so
-    # zarr_aoi is the only gate to evaluate here.
-    assert cond == {"zarr_aoi": True} and err is None
+    # The `.zarr/` key is its own mode list and never offers `graph`, so the only
+    # gates to evaluate here are zarr_aoi and the chat that every key now carries
+    # — and the chat says yes for any existing directory (see the note below).
+    assert cond == {"zarr_aoi": True, "claude": True} and err is None
 
 
 # `claude: True` in the condition dicts below is not incidental to Zarr: it
@@ -806,10 +870,10 @@ def test_plain_dir_with_store_marker_gates_true(tmp_path, marker):
     store = tmp_path / "data"
     store.mkdir()
     (store / marker).write_text("{}")
-    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "mcp": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_v3_group_dir_offered(tmp_path):
@@ -818,10 +882,10 @@ def test_v3_group_dir_offered(tmp_path):
     store = tmp_path / "grp"
     store.mkdir()
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "group"}')
-    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is True
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "mcp": False, "graph": False, "zarr_aoi": True, "model_card": False} and err is None
 
 
 def test_bare_array_dir_not_offered(tmp_path):
@@ -834,7 +898,7 @@ def test_bare_array_dir_not_offered(tmp_path):
     (store / ".zarray").write_text("{}")
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "mcp": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_bare_array_dir_not_offered(tmp_path):
@@ -846,7 +910,7 @@ def test_v3_bare_array_dir_not_offered(tmp_path):
     (store / "zarr.json").write_text('{"zarr_format": 3, "node_type": "array"}')
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "mcp": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
 
 def test_v3_zarr_json_without_node_type_not_offered(tmp_path):
@@ -869,19 +933,20 @@ def test_plain_dir_without_markers_gates_false(tmp_path):
     store = tmp_path / "plain"
     store.mkdir()
     (store / "readme.txt").write_text("hi")
-    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "graph", "zarr_aoi", "model_card"], None)
+    assert modes(str(store), is_dir=True) == (["claude", "_listing", "git", "mcp", "graph", "zarr_aoi", "model_card"], None)
     assert _zarr_condition_main()(str(store)) is False
     cond, err = conditions(str(store))
-    assert cond == {"claude": True, "git": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
+    assert cond == {"claude": True, "git": False, "mcp": False, "graph": False, "zarr_aoi": False, "model_card": False} and err is None
 
     entries, _ = server._templates_for(str(store), True)
     assert entries[0]["mode"] == "claude" and entries[0].get("conditional") is True
     assert entries[1]["mode"] == "_listing" and "conditional" not in entries[1]
     assert entries[2]["mode"] == "git" and entries[2].get("conditional") is True
-    assert entries[3]["mode"] == "graph" and entries[3].get("conditional") is True
-    assert entries[4]["mode"] == "zarr_aoi" and entries[4].get("conditional") is True
-    assert entries[5]["mode"] == "model_card" and entries[5].get("conditional") is True
-    assert len(entries) == 6
+    assert entries[3]["mode"] == "mcp" and entries[3].get("conditional") is True
+    assert entries[4]["mode"] == "graph" and entries[4].get("conditional") is True
+    assert entries[5]["mode"] == "zarr_aoi" and entries[5].get("conditional") is True
+    assert entries[6]["mode"] == "model_card" and entries[6].get("conditional") is True
+    assert len(entries) == 7
     # `_listing` moved to index 1 behind the gated `claude` (D280) and is STILL the
     # only entry here carrying no `conditional` flag. That is load-bearing twice
     # over: the full-screen folder route resolves "first unconditional", so the

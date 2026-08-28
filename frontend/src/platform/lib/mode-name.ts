@@ -22,6 +22,7 @@ const NICE_NAMES: Record<string, string> = {
   html: "HTML",
   sql: "SQL",
   pdf: "PDF",
+  mcp: "MCP",
 };
 
 export function modeTitle(mode: string): string {

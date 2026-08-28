@@ -349,7 +349,15 @@ def _retry_verb(source, retry):
     start = source.index("function retryVerb(")
     fn = source[start:source.index("\nfunction addWorking(", start)]
     script = fn + "\nconsole.log(retryVerb(%s));" % json.dumps(retry)
-    out = subprocess.run(["node", "-e", script], capture_output=True, text=True)
+    # `encoding="utf-8"` is not decorative: `text=True` alone decodes the
+    # child's stdout with locale.getpreferredencoding(False), and node always
+    # writes its UTF-8 source glyphs (the em dash in "Overloaded — retrying")
+    # as UTF-8 bytes regardless of platform. On Windows that locale default is
+    # commonly cp1252, which decodes those bytes into mojibake without ever
+    # raising — a silent corruption, not a crash, so it slipped past every
+    # POSIX run where the locale default already happens to be UTF-8.
+    out = subprocess.run(["node", "-e", script], capture_output=True,
+                          text=True, encoding="utf-8")
     assert out.returncode == 0, out.stderr
     return out.stdout.strip()
 
@@ -400,7 +408,7 @@ def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp
 def test_the_page_hands_the_live_retry_to_the_status_line(html):
     """Without the third argument the status line can only say "Thinking…",
     which is the bug this feature exists to fix."""
-    assert "w.setStats(tokens, data.phase || \"thinking\", data.retry)" in html
+    assert "w.setStats(tokens, data.phase || \"thinking\", data.retry, data.activity)" in html
 
 
 def test_the_page_announces_the_skills_the_poll_reports(html):
@@ -482,3 +490,68 @@ def test_a_run_that_died_mid_retry_keeps_the_overload_story(agent, run_dir):
     data = _poll(agent, run_dir, rows, alive=False)
     assert "rate limited" in data["error"]
     assert "Your Claude plan" not in data["error"]
+
+
+# --------------------------------- when a turn ends but the run does not (D415)
+#
+# One claude process can run several turns: a turn that started a background
+# shell is woken by the harness when the command finishes, and the reply to that
+# wake is written after the `result` that closed the first turn. `done` used to
+# latch on that first `result`, so the woken turn was reported as a finished one
+# and the page showed nothing at all until the next reload.
+
+_DONE = {"type": "result", "session_id": "s", "result": "there"}
+
+
+def test_a_result_with_nothing_after_it_ends_the_turn(agent, run_dir):
+    assert _poll(agent, run_dir, [_text("there"), _DONE])["done"] is True
+
+
+def test_a_result_the_run_has_spoken_past_is_not_the_end(agent, run_dir):
+    """The wake's own rows — hooks, `init`, the reply — all reopen the turn."""
+    woken = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "task_notification", "status": "completed",
+         "summary": "Background command \"pytest -q\" completed"},
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _text("the tests passed"),
+    ])
+    assert woken["done"] is False
+    assert woken["error"] == ""
+    assert woken["text"].endswith("the tests passed")
+
+
+def test_the_second_turns_own_result_ends_the_run_again(agent, run_dir):
+    data = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        _text("the tests passed"),
+        {"type": "result", "session_id": "s", "result": "the tests passed"},
+    ])
+    assert data["done"] is True
+
+
+def test_a_dead_process_ends_the_run_whatever_the_rows_say(agent, run_dir):
+    """The wake that never came: the process is gone, so nothing more can be
+    written and the page must not sit on a working line for ever."""
+    data = _poll(agent, run_dir, [
+        _text("there"), _DONE,
+        {"type": "system", "subtype": "init", "session_id": "s"},
+    ], alive=False)
+    assert data["done"] is True
+    # ...and a run that DID finish a turn is not reported as a crash, however
+    # abruptly its process went away afterwards.
+    assert data["error"] == ""
+
+
+def test_a_live_run_with_no_result_yet_is_still_running(agent, run_dir):
+    assert _poll(agent, run_dir, [_text("thinking about it")])["done"] is False
+
+
+def test_a_delta_less_turn_shows_its_text_before_the_process_exits(agent, run_dir):
+    """The `result` fallback is about the row that carries the text, not about
+    the process: an older CLI's reply must not stay blank while the run is
+    awake between turns."""
+    data = _poll(agent, run_dir, [{"type": "result", "session_id": "s",
+                                   "result": "hello"}])
+    assert data["text"] == "hello"

@@ -37,11 +37,16 @@ stub callables standing in for the model.
 import argparse
 import concurrent.futures
 import contextlib
+import datetime
+import email.utils
 import fnmatch
+import hashlib
 import http.client
 import http.server
+import importlib.util
 import json
 import os
+import queue
 import re
 import shutil
 import socket
@@ -68,12 +73,15 @@ STATE = {
     "detail": "",
     "error": "",
     "resident_bytes": None,
+    "os_footprint_bytes": None,
     "loaded_at": None,
     #: "cuda" | "mps" | "cpu" — what the weights actually landed on, set by the
     #: runner's `load()`. Only the process holding them knows: the supervisor
-    #: can see that this machine HAS a GPU and not that torch was built to use
-    #: it, which on Windows is the common case rather than the exotic one (the
-    #: PyPI torch wheel there is CPU-only). Reported because a model answering
+    #: can see that this machine HAS a GPU and not that the runner's torch was
+    #: built to use it, and since D381 that is the COMMON case rather than the
+    #: exotic one on every platform — the default torch rows pin the `whl/cpu`
+    #: build, so a machine with a card runs on the CPU until its user opts into
+    #: the CUDA or ROCm row. Reported because a model answering
     #: at three tokens a second is working perfectly and looks broken, and the
     #: device is the whole of the explanation.
     #:
@@ -96,7 +104,224 @@ CANCEL = threading.Event()
 #: second request waits rather than interleaves.
 GENERATE_LOCK = threading.Lock()
 
+
+def _generate_thread_loop(tasks: "queue.SimpleQueue") -> None:
+    """Body of the ONE thread every `generate()`/`_single`-style call runs on.
+
+    See `run_on_generate_thread`'s own docstring for why this thread must never
+    exit for the life of the process."""
+    while True:
+        tasks.get()()
+
+
+def _start_generate_thread() -> "queue.SimpleQueue":
+    tasks: "queue.SimpleQueue" = queue.SimpleQueue()
+    threading.Thread(target=_generate_thread_loop, args=(tasks,),
+                     name="generate", daemon=True).start()
+    return tasks
+
+
+#: The queue behind `run_on_generate_thread` — created once, at import time,
+#: alongside the thread that drains it. See that function's docstring.
+_GENERATE_TASKS = _start_generate_thread()
+
+
+def run_on_generate_thread(fn, *args, **kwargs):
+    """Call `fn(*args, **kwargs)` on this process's ONE persistent MLX thread,
+    and return what it returns (or raise what it raised).
+
+    **Never on the caller's own thread**, because the caller here is always an
+    HTTP connection thread — `_Server` is a `ThreadingTCPServer`, which hands
+    every request a BRAND NEW thread that exits the moment the response
+    finishes. MLX keeps compiled-graph state in a C++ `thread_local` (an
+    `mlx::core::detail::CompileCache`); tearing one down runs its destructor
+    from `pthread`'s own thread-exit cleanup, well outside anything Python's
+    `try`/`except` can reach, and a checkpoint whose generation step is
+    `mx.compile`d (mlx-vlm's is) populates that cache on its very first call.
+    Reproduced directly, no HTTP involved: two back-to-back `stream_generate`
+    calls on the SAME thread never fail, but the same two calls issued from
+    TWO DIFFERENT threads in a row crash the process on the second one, deep in
+    `CompileCache::CacheEntry::~CacheEntry()` — a `SIGSEGV` with no Python
+    traceback at all, which on this worker's actual TCP transport surfaces to
+    the caller as nothing more specific than a bare "connection reset by
+    peer". A `ThreadingTCPServer` request thread is exactly that "two
+    different threads" shape: request 1 built the cache on thread A, thread A
+    exits when the response ends, and request 2's thread B is the crash.
+
+    So every `generate()`/`_single`/`_stream` call is routed through the SAME
+    thread for the whole process, started once at import time and never
+    joined — the identical fix `worker.py::_pin_stream` already applies to
+    MLX's per-thread default-stream state, applied here to its per-thread
+    compiled-graph state instead. `GENERATE_LOCK` already serializes every
+    caller to one at a time, so there is never more than one task in flight on
+    this thread regardless.
+
+    A plain function call, not a generator: streaming (`_stream`) already
+    passes its own `write` callback in as an argument, so the callable handed
+    here does its own line-by-line writing from ON the generate thread — the
+    connection thread only blocks on the result, it never touches MLX itself.
+    """
+    result: "queue.SimpleQueue" = queue.SimpleQueue()
+
+    def task():
+        try:
+            result.put((True, fn(*args, **kwargs)))
+        except BaseException as e:  # noqa: BLE001 - re-raised on the caller's thread
+            result.put((False, e))
+
+    _GENERATE_TASKS.put(task)
+    ok, payload = result.get()
+    if ok:
+        return payload
+    raise payload
+
+
+#: How long a worker sits with NO new execution before it hands its allocator
+#: pool back to the OS (`_release`, `_arm_release_timer`, `_fire_release`
+#: below). A deliberate, named constant rather than a literal 30 scattered
+#: across the file — see those functions' docstrings for the mechanism.
+#:
+#: Chosen to match `supervisor._REAPER_TICK_S` (also 30.0) in spirit, not by
+#: coincidence: both exist because 30s is short enough that "idle" means
+#: something a user would recognise, and this timer is that reaper's much
+#: cheaper, purely in-process cousin. The reaper polls every 30s whether a
+#: worker has been unused for `prefs.effective_ai_idle_unload_minutes()` (10
+#: minutes by default) and, past that, KILLS THE PROCESS — losing the loaded
+#: weights entirely, the next request pays a full reload. This timer fires
+#: once, 30 SECONDS after the worker's own last execution, and only hands
+#: back the allocator's idle pool — the model stays resident and the next
+#: request is exactly as fast as this one, it just re-faults the working set
+#: from the pool it now has to grow again. Two different costs at two very
+#: different timescales, not one mechanism with two names.
+_RELEASE_IDLE_S = 30.0
+
+#: Guards `_release_timer`/`_release_generation` together, so arming a new
+#: timer and a just-fired old one checking whether it is still current can
+#: never interleave into a wrong answer.
+_release_lock = threading.Lock()
+
+#: The pending idle-release timer, or `None` between executions. Always
+#: `threading.Timer` in production; tests substitute a manually-fired stand-in
+#: (see `tests/test_ai_worker_base.py`) rather than sleeping 30 real seconds.
+_release_timer = None
+
+#: Bumped every time a timer is (re)armed. A fired timer compares the token it
+#: was armed with against this before calling `_release` — belt-and-braces
+#: alongside `Timer.cancel()` itself, for the window between a timer's wait
+#: elapsing and its callback actually running, during which a new execution
+#: could already have rearmed (see `_fire_release`).
+_release_generation = 0
+
+#: The constructor `_arm_release_timer` calls to make its timer — a LOCAL
+#: seam, not `threading.Timer` used directly. A test that wants a manually-
+#: fired stand-in only has to monkeypatch THIS name, rather than
+#: `threading.Timer` itself — patching the real stdlib class would affect
+#: every `threading.Timer` created anywhere in the process for the duration
+#: of the test, including by daemon threads left running from an earlier
+#: test in the same worker, which is exactly the kind of cross-test flake
+#: this module's own generate-thread singleton (`_GENERATE_TASKS`) already
+#: has to be careful never to become an instance of.
+_new_timer = threading.Timer
+
+
+def _arm_release_timer():
+    """(Re)start the `_RELEASE_IDLE_S` idle timer — called once after every
+    completed execution, success, `Cancelled`, or any other exception alike,
+    since a render that already allocated its peak can still be the one the
+    user pressed Stop on.
+
+    Cancels whatever timer a PRIOR execution left pending first: a burst of
+    renders must not pay the re-fault cost of clearing and re-growing the
+    allocator pool between each one — only the LAST execution in a burst gets
+    to start the clock, which is the whole reason this is a timer and not an
+    unconditional `finally`-call (the first cut of this change, before an
+    idle timer replaced it). Correctness in the race between "the old
+    timer's wait already elapsed" and "cancel just ran" is `_fire_release`'s
+    job, via the generation token.
+
+    A no-op when no `release` hook was supplied (`serve(release=...)` never
+    called) — see `_release`'s own docstring for exactly which runners that
+    is and why (six wired, several deliberately not); this docstring used to
+    keep its own, shorter list and it drifted out of date the moment
+    `mlx_text` was wired in, which is why it no longer tries to repeat it.
+    """
+    global _release_timer, _release_generation
+    if _release is None:
+        return
+    with _release_lock:
+        if _release_timer is not None:
+            # A `Timer` whose wait already elapsed and is mid-callback cannot
+            # be stopped by `cancel()` — that race is exactly why
+            # `_fire_release` re-checks its token under this same lock rather
+            # than trusting cancellation alone.
+            _release_timer.cancel()
+        _release_generation += 1
+        token = _release_generation
+        timer = _new_timer(_RELEASE_IDLE_S, _fire_release, args=(token,))
+        # Daemon: a pending release must never be what keeps the worker
+        # process alive. `serve_forever()`'s own thread and `os._exit(0)` in
+        # `/quit` are both how this process actually ends, and neither should
+        # have to know this timer exists in order to exit cleanly.
+        timer.daemon = True
+        _release_timer = timer
+    timer.start()
+
+
+def _fire_release(token):
+    """The idle timer's callback: reclaim the allocator pool, but only if
+    nothing has run since `token` was handed out.
+
+    `GENERATE_LOCK` FIRST, generation check second: acquiring the same lock
+    `_single`/`_stream` hold for the whole request guarantees this can never
+    run WHILE a generation is in flight (mid-render is the one moment this
+    must never fire — see `_arm_release_timer`), and once acquired, a
+    generation that started and finished entirely inside this timer's 30s
+    wait has already rearmed with a NEWER token by the time that lock frees
+    up — so the check below catches it even though `cancel()` came too late
+    to stop this callback from being scheduled at all.
+
+    Routed through `run_on_generate_thread`, same as `generate` itself: the
+    hook this exists for is `mx.clear_cache()`, an MLX allocator call, and
+    that function's docstring is the whole reason no MLX call is ever made
+    from a thread other than the one dedicated to them — a `Timer` callback
+    runs on yet another thread of its own, no different in kind from a
+    `ThreadingTCPServer` connection thread in that respect.
+
+    Never raises past this function. A `release` that throws must be a
+    no-op — there is no request waiting on this timer to fail loudly at, and
+    a broken reclaim must not take the timer thread down with it. Still
+    LOGGED, though (`traceback.print_exc`, `_single`'s own pattern for an
+    error nobody is waiting on): a release that fails on every idle window
+    forever is otherwise invisible except as the footprint number this whole
+    feature exists to move never actually moving, and that is exactly the
+    silent-regression shape code review caught once already (a torch build
+    where the MPS branch always raised and quietly took the CUDA branch down
+    with it — see `torch_image.release`). The worker's own stderr lands in
+    `$TMPDIR/fused-render-<pid>.log`, where a broken reclaim is now visible.
+    """
+    global _release_timer
+    with GENERATE_LOCK:
+        with _release_lock:
+            if token != _release_generation:
+                # Superseded: a later execution already rearmed a fresher
+                # timer, which owns clearing the cache from here.
+                return
+            _release_timer = None
+        try:
+            run_on_generate_thread(_release)
+        except Exception:  # noqa: BLE001 - logged below, then swallowed: see docstring
+            traceback.print_exc(file=sys.stderr)
+
 TOKEN = os.environ.get("FUSED_AI_WORKER_TOKEN", "")
+
+#: Bounds on the PRE-AUTH body drain (Handler._drain). 64 KiB is far above any
+#: real request this worker takes — they are small JSON objects — and the point
+#: is only to stop an unauthenticated caller from naming a size that makes us
+#: wait on it. 2s is generous for a body already in flight on loopback, and it
+#: is the only read timeout on this connection at all (`_Server` sets none).
+DRAIN_MAX_BYTES = 64 * 1024
+DRAIN_TIMEOUT_S = 2.0
+
 JOB_ID = ""
 JOB_URL = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
 
@@ -200,6 +425,109 @@ class Cancelled(Exception):
     the only place a stop can be honoured is the callback the library hands us —
     which is where this comes from.
     """
+
+
+class InsufficientDiskSpace(Exception):
+    """Raised BEFORE a download starts, by `_ensure_disk_space`, when the
+    target volume's free space is already known to be less than the total
+    this fetch is about to write.
+
+    Distinct from a bare `OSError` so `describe_failure`'s chain-walk prints
+    THIS message at the top rather than whatever library call happened to be
+    running when a mid-download `ENOSPC` finally surfaced — the whole point
+    of checking early is a sentence that names the actual shortfall, not a
+    syscall a user cannot act on.
+    """
+
+
+# ---------------------------------------------------------- SPEC AI-26 (D530)
+def _ensure_disk_space(total_bytes, folder):
+    """Raise `InsufficientDiskSpace` when `folder`'s volume is already known
+    to have less free space than the bytes THIS DOWNLOAD STILL HAS TO WRITE
+    — the fix for "no disk-space precheck anywhere" (SPEC AI-26): a download
+    that will not fit used to fail as a mid-transfer `OSError: [Errno 28] No
+    space left on device`, after however many gigabytes it managed to write
+    and with an error that names a syscall rather than the gap.
+
+    **`total_bytes` is the repo/file's FULL size in scope — a RESUME must be
+    judged against what remains, not the whole thing again** (code review
+    finding 2). Without this, a 30GB model interrupted at 28GB and retried
+    with 5GB free was refused ("needs 30.0 GB, only 5.0 GB is free") even
+    though only 2GB remained to fetch — defeating the entire `.part`/sidecar
+    resume machinery this module otherwise goes to considerable lengths to
+    provide. `bytes_on_disk(folder)` is the SAME figure the progress bar
+    already trusts for "how much of this repo is durably on disk right
+    now" — complete blobs plus a `.fusedpart`'s ALLOCATED-BLOCKS progress,
+    not its sparse `ftruncate`d length — so subtracting it here reuses one
+    notion of "already have" rather than inventing a second that could
+    drift from what the bar reports. `folder` may legitimately hold MORE
+    than what is in this fetch's own `allow_patterns` scope (an older
+    revision's blobs, a differently-scoped prior fetch); that makes the
+    subtraction a slight OVERESTIMATE of what has been durably written for
+    THIS scope, which is the safe direction for a precheck to be
+    imprecise in — the same "the bar can proceed on a guess" tolerance this
+    module's listing-failure fallback already accepts, and refusing a
+    resume that would actually have fit is a real regression while letting
+    one through that comes up a little short during the fetch is not: the
+    fetch itself still fails loudly if it genuinely runs out.
+
+    `total_bytes=None` (a listing failure already degraded the progress bar
+    to a guess, or a caller that never learned a total at all) is silently
+    skipped — checking against an unknown total would mean either refusing
+    every such download outright or checking against a size that IS a guess,
+    and the existing `_fallback` degradation for a failed listing already
+    treats "no total" as "proceed anyway, the bar just cannot be precise".
+    This function makes the identical call for the SAME reason: an unknown
+    figure is not evidence of a shortfall. A `remaining` of zero or less (a
+    complete or over-complete repo, the fast path above should normally have
+    already returned before this is ever called) is likewise skipped —
+    nothing left to check space for.
+
+    Checked against the NEAREST EXISTING ancestor of `folder`, because the
+    folder itself is usually the thing this download is ABOUT to create —
+    `os.statvfs` (what `shutil.disk_usage` calls) needs a path that already
+    exists, and a repo's cache folder is created lazily by the first byte
+    written into it.
+
+    `shutil.disk_usage` itself failing (an unmounted volume, a path
+    `statvfs` cannot reach) degrades to "proceed" rather than blocking a
+    download over a filesystem question this function cannot actually
+    answer — the same "cannot verify, so do not refuse" rule `_fallback`'s
+    own callers already apply to a failed Hub listing.
+    """
+    if not total_bytes:
+        return
+    already = bytes_on_disk(folder) or 0
+    remaining = total_bytes - already
+    if remaining <= 0:
+        return
+    path = folder
+    while path and not os.path.exists(path):
+        parent = os.path.dirname(path)
+        if parent == path:
+            return
+        path = parent
+    if not path:
+        return
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return
+    if usage.free >= remaining:
+        return
+    need_gb = remaining / GB_BYTES
+    free_gb = usage.free / GB_BYTES
+    short_gb = need_gb - free_gb
+    raise InsufficientDiskSpace(
+        f"Not enough disk space: this download needs {need_gb:.1f} GB, "
+        f"only {free_gb:.1f} GB is free — {short_gb:.1f} GB short.")
+
+
+#: `shutil.disk_usage`/`_ensure_disk_space`'s own unit — a decimal gigabyte,
+#: matching every other byte->GB reading in this app (`fit.py`'s own
+#: `GB_BYTES`, restated here rather than imported: this module is
+#: stdlib-only and `fit.py` is not, see the module docstring).
+GB_BYTES = 1e9
 
 
 # ------------------------------------------------------- reporting to the app
@@ -339,13 +667,102 @@ def report_or_cancel(job=None, **fields):
 #: the model — 379 MB for a 6GB model, which is what sent us looking.
 _measure = None
 
+#: A runner's own PEAK-memory probe, when it has one — SPEC AI-8c, D497. A
+#: second, OPTIONAL hook beside `_measure`, for a different question:
+#: `_measure`/`resident_bytes()` answer "what is this costing RIGHT NOW",
+#: which `supervisor.refresh_memory` only samples when `/health` happens to be
+#: read. `fit` (AI-16) needs the HIGH-WATER MARK of a whole load-and-generate
+#: pass instead — a staged pipeline like `ltx-video` frees stages between
+#: renders (`low_memory=True`), so its peak is whichever stage happened to be
+#: resident at the moment someone looked, which bounds nothing. Set by
+#: `serve(peak_memory=...)`.
+_measure_peak = None
+
+#: The RSS high-water mark this worker has observed, kept HERE rather than by
+#: the supervisor — SPEC AI-8c. `resident_bytes()` already runs on every
+#: `/health` and at load; remembering the running `max()` of what it measured
+#: turns a sparse sample into a monotone bound at the cost of one module-level
+#: integer. Still weaker than a runner's own allocator peak (it only sees the
+#: moments `/health` was actually polled), which is exactly why a runner that
+#: HAS a true peak probe is asked to supply one instead — see `peak_resident_
+#: bytes` for the precedence between the two, and AI-16's `basis` for how that
+#: difference is carried outward to a reader.
+_rss_peak = None
+
+#: A runner's own "give it back to the OS" hook, when it has one. Set by
+#: `serve(release=...)` — the third optional hook beside `_measure`/`_measure_
+#: peak` above. Never called directly from a request: `_arm_release_timer`
+#: starts a `_RELEASE_IDLE_S` clock after every execution, and `_fire_release`
+#: is what actually calls this, once that clock runs out with nothing new
+#: having started.
+#:
+#: Why this exists: a live FLUX.2-Klein-4B-4bit render through `mflux-image`
+#: needed ~24.12 GB at its peak (`mx.get_peak_memory()`, the `_measure_peak`
+#: probe) but settles at 1.7 GB RSS once it is done — and yet the status bar
+#: kept showing "1.7 GB now (21 GB held)" (`os_footprint_bytes()`, D597) long
+#: after the render finished. MLX frees those buffers back to its OWN pool,
+#: never to the OS, and only reclaims the pool once it exceeds `mx.set_cache_
+#: limit`'s default — 1.5x the recommended working set, ~38.7 GB on the 34.4
+#: GB machine this was measured on, i.e. ABOVE physical RAM, so that condition
+#: can never fire on its own. `mx.clear_cache()` is the other side of that:
+#: hand the idle pool back once nothing has asked for it in a while.
+#:
+#: Why an IDLE TIMER rather than an unconditional call in `_single`/`_stream`'s
+#: `finally` (the first cut of this feature): a 24 GB working set is not free
+#: to re-fault, and clearing right after every execution makes a burst of five
+#: renders pay that cost five times over. Waiting `_RELEASE_IDLE_S` after the
+#: LAST execution keeps a burst at full allocator speed and still releases the
+#: moment the user actually walks away — see `_arm_release_timer` and
+#: `_fire_release` for the mechanism, which lives entirely in this process
+#: (no supervisor RPC, no new route: the worker already knows when its own
+#: last execution ended).
+#:
+#: Wired into all five MLX runners (`mflux_image`, `ltx_video`, `mlx_text`,
+#: `mlx_embed`, `mlx_whisper`) and the shared `torch_image` runner (MPS/CUDA).
+#: An idle timer changes the earlier per-call exclusion's arithmetic: it does
+#: not fire mid-loop, so a bulk run of embeds or a token stream is never
+#: interrupted by it, and the machine this was measured on can hold a speech
+#: model (whisper-large-v3, 3.66 GB measured) and a text model resident in
+#: SEPARATE PROCESSES at once — the supervisor keeps one worker per
+#: capability — each with its own idle pool, so the small-model case stacks
+#: rather than disappearing into rounding.
+#:
+#: Still nothing to wire for `llamacpp_text`/`llamacpp_text*` (a fixed KV
+#: context allocated up front, weights mmap'd — there is no reclaimable
+#: cache), `faster_whisper` (its CTranslate2 backend exposes no cache-release
+#: API), or `onnx_embed`/its cuda/directml/rocm shells (the arena is
+#: session-scoped `SessionOptions` config decided at session creation, not
+#: something a per-idle clear can touch).
+#:
+#: This only RECLAIMS memory after a run finishes — it must never be reached
+#: for by anything trying to lower the PEAK a render needs (tiled decode,
+#: `mx.eval()` boundaries, `set_cache_limit`/`set_memory_limit`): those are
+#: separate, unapproved changes to what an execution costs, not to what it
+#: leaves behind.
+_release = None
+
 
 def resident_bytes():
     """What this model is costing in memory, or None.
 
-    RSS by default: on Apple Silicon the GPU pool IS system memory, so it is the
-    honest single number and there is no separate VRAM figure to reconcile it
-    with. A runner that can do better supplies `memory=` to `serve()`, and the
+    RSS by default. **THE OLD JUSTIFICATION HERE WAS WRONG AND IS WORTH STATING
+    PLAINLY** (D597): it said "on Apple Silicon the GPU pool IS system memory,
+    so it is the honest single number and there is no separate VRAM figure to
+    reconcile it with". The premise is true — unified memory — but the
+    conclusion does not follow, because the pool is not in RSS. Measured on a
+    live MLX FLUX worker: 172 MB of RSS against 23 GB of dirty
+    `IOAccelerator (graphics)` regions, which are charged to the task's
+    `phys_footprint` and never appear in `resident_size`. So RSS is a FLOOR
+    here, not an honest total, and `os_footprint_bytes()` below is what answers
+    "what is this process actually holding" — as a LOWER BOUND, since neither
+    counter it can read is a superset of the other (see its own docstring).
+    This function's RETURN VALUE is deliberately unchanged all the same: it
+    feeds `peak_resident_bytes` -> `footprints.py` -> `fit.py`'s "measured"
+    rung, so redefining it would silently re-verdict every model the user has
+    ever run (easy -> tight, tight -> no). Whether a "measured" footprint
+    should include the allocator pool is a real question and not this change's
+    to answer.
+    A runner that can do better supplies `memory=` to `serve()`, and the
     LARGER of the two wins — both are real measurements and neither is a
     superset (RSS includes the interpreter and framework; a framework allocator
     includes buffers that may not be faulted into RSS yet), so the cost is at
@@ -353,7 +770,14 @@ def resident_bytes():
 
     psutil comes with every runner's environment; if it is somehow absent the
     answer is whatever the runner could measure, or None rather than a guess.
+
+    **Also updates `_rss_peak`**, as a side effect of the one RSS reading this
+    function already takes — see `peak_resident_bytes`. Every call site here
+    already runs on every `/health` and at load, so no new sampling point is
+    needed to turn this into a high-water mark; it would just be a second read
+    of the same number.
     """
+    global _rss_peak
     own = None
     if _measure is not None:
         try:
@@ -367,7 +791,156 @@ def resident_bytes():
         rss = int(psutil.Process(os.getpid()).memory_info().rss)
     except Exception:  # noqa: BLE001 - psutil raises its own family; none is fatal here
         rss = None
+    if isinstance(rss, int) and rss > 0:
+        _rss_peak = rss if _rss_peak is None else max(_rss_peak, rss)
     candidates = [n for n in (own, rss) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
+
+
+#: macOS `TASK_VM_INFO`, and the byte offset of `phys_footprint` inside
+#: `task_vm_info_data_t`. VERIFIED EMPIRICALLY rather than counted off a header:
+#: `resident_size` at offset 16 matches `ps -o rss` exactly, and dirtying 500 MiB
+#: of anonymous memory moved offset 144 by 524.6 MB and offset 152 by nothing.
+#: The kernel reports how many `natural_t`s it filled, so a generous buffer is
+#: safe across OS revisions (this field arrived in "rev1" and every supported
+#: macOS fills well past it).
+_TASK_VM_INFO = 22
+_RESIDENT_SIZE_OFFSET = 16
+_PHYS_FOOTPRINT_OFFSET = 144
+
+
+def os_footprint_bytes():
+    """A LOWER BOUND on what this process is holding RIGHT NOW, or None (D597).
+
+    **`max(phys_footprint, resident_size)`, NOT `phys_footprint` alone** — code
+    review 2026-08-28, finding 3, which corrected a claim this docstring and
+    `ModelsDock.tsx`'s `MemoryCell` both used to make: that RSS is a strict
+    subset of the footprint. It is not. `phys_footprint` deliberately EXCLUDES
+    clean file-backed pages, and those are counted in `resident_size`. Measured
+    here, in a plain interpreter with no framework loaded: `resident_size`
+    19.2 MB against `phys_footprint` 9.3 MB. So for any runner that maps its
+    weights read-only — GGUF/llama.cpp, torch with `mmap=True` — the footprint
+    is the SMALLER of the two by roughly the size of the model file, and
+    reporting it alone rendered a row as `8.2 GB now (1.1 GB held)`: a visible
+    contradiction, with the status bar's colour band painted off the smaller
+    number while the machine held the larger.
+
+    NEITHER COUNTER IS THE TOTAL, which is why `max` rather than a choice
+    between them: RSS misses the Metal pool (measured on a live MLX FLUX
+    worker: 172 MB of RSS against 24 GB of `phys_footprint`, 23 GB of it dirty
+    `IOAccelerator` regions), and the footprint misses clean file pages. Their
+    max is a strictly better lower bound than either, and it restores the one
+    invariant the UI pair depends on — "held" can never read as less than
+    "now". A true total would need to add the disjoint parts, which needs a
+    region-by-region walk this probe deliberately does not do; hence "lower
+    bound" in the first line rather than "what it holds".
+
+    STILL THE NUMBER ACTIVITY MONITOR SHOWS in the case that motivated it: on
+    an MLX worker `phys_footprint` dominates by three orders of magnitude, so
+    the max IS the footprint and a user watching their system monitor sees the
+    figure this reports. The correction only ever raises the answer, and only
+    where RSS is the bigger of the two.
+
+    NOT `resident_bytes()`, and not a redefinition of it — see that function's
+    own docstring for why its value is frozen. This is additive, and it does
+    not feed `peak_resident_bytes` -> `footprints.py` -> `fit.py`, so no
+    model's "measured" verdict moves because of it.
+
+    NOT `get_active_memory()` either, which is what the framework has handed
+    out of its pool. After a render finishes MLX returns buffers to its own
+    pool but NOT to the OS, so active collapses while the process still holds
+    the memory. That exclusion is deliberate and correct for a COST figure
+    (`mflux_image/worker.py`'s own comment, and D310 measured a ~23.6 GB pool
+    against ~14.1 GB active) because it keeps runners comparable — torch
+    reports what it allocated, not the driver's reservation. It simply does not
+    apply to a live reading.
+
+    STDLIB ONLY on darwin, via `ctypes` — no psutil, whose `memory_full_info()`
+    does not expose `phys_footprint`. Both figures come out of the SAME
+    `task_vm_info` read (offsets 16 and 144), so they describe the same instant
+    and the max cannot be taken across two moments. Falls back to psutil's RSS
+    wherever no such counter exists (every non-macOS platform, and any darwin
+    failure above), and to None if even that is unavailable: never a guess, the
+    same rule the other two probes follow.
+    """
+    footprint = None
+    resident = None
+    if sys.platform == "darwin":
+        try:
+            import ctypes
+            import ctypes.util
+            import struct
+
+            libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+            libc.mach_task_self.restype = ctypes.c_uint32
+            size = 1024
+            buf = (ctypes.c_uint8 * size)()
+            count = ctypes.c_uint32(size // 4)
+            rc = libc.task_info(
+                ctypes.c_uint32(libc.mach_task_self()),
+                ctypes.c_int(_TASK_VM_INFO),
+                ctypes.byref(buf),
+                ctypes.byref(count),
+            )
+            filled = count.value * 4
+            raw = bytes(buf)
+            if rc == 0 and filled >= _PHYS_FOOTPRINT_OFFSET + 8:
+                footprint = struct.unpack_from("<Q", raw, _PHYS_FOOTPRINT_OFFSET)[0]
+            if rc == 0 and filled >= _RESIDENT_SIZE_OFFSET + 8:
+                resident = struct.unpack_from("<Q", raw, _RESIDENT_SIZE_OFFSET)[0]
+        except Exception:  # noqa: BLE001 - a memory probe must never break /health
+            footprint = resident = None
+    if resident is None:
+        # Every other platform, and any darwin failure above. On a machine with
+        # no separate GPU pool hiding outside RSS this is exactly what this
+        # function would have reported anyway.
+        try:
+            import psutil
+
+            resident = int(psutil.Process(os.getpid()).memory_info().rss)
+        except Exception:  # noqa: BLE001 - psutil raises its own family
+            resident = None
+    candidates = [n for n in (footprint, resident) if isinstance(n, int) and n > 0]
+    return max(candidates) if candidates else None
+
+
+def peak_resident_bytes():
+    """The high-water mark of what this model has cost, or None — SPEC AI-8c.
+
+    **`max(probe, _rss_peak)`, not the probe alone** — the same correction
+    `resident_bytes()` makes between its own two readings, for the identical
+    reason. MLX's `mx.get_peak_memory()` is a true peak of the ALLOCATOR only:
+    it does not count the interpreter and framework baseline `resident_bytes`'s
+    own docstring measures at 379 MB for a 6GB model. Returning the probe
+    outright would let a `measured` footprint (AI-16a) UNDERSTATE what the
+    process actually occupied — the exact dishonesty AI-16c exists to remove,
+    now on the write side instead of the read side: a badge reading "Ran
+    comfortably here (20 GB)" for a load whose real high-water was larger is
+    the same wrong claim a `_fit_verdict` computed over the wrong footprint
+    used to make. Neither reading is a superset of the other (a probe can
+    catch a stage that came and went between two `/health` polls that
+    `_rss_peak`'s sparser sampling missed, and `_rss_peak` catches whatever a
+    probe's own accounting does not cover), so the larger of the two is what
+    is least wrong, exactly as `resident_bytes` already argues for `own`/`rss`.
+
+    A probe that raises or answers nothing (a wheel shipping neither
+    `get_peak_memory` name) is simply absent from the `max` — `_rss_peak`
+    alone answers, which is `resident_bytes`'s pre-AI-8c behaviour restated as
+    a high-water mark rather than a sample.
+
+    `None` when NEITHER has an answer yet — a worker `/health`ed before its
+    first `resident_bytes()` call, or one whose environment has no psutil and
+    no probe. Never a guess, the same rule `resident_bytes` follows.
+    """
+    peak = None
+    if _measure_peak is not None:
+        try:
+            probed = _measure_peak()
+        except Exception:  # noqa: BLE001 - a runner's own probe must never break /health
+            probed = None
+        if isinstance(probed, int) and probed > 0:
+            peak = probed
+    candidates = [n for n in (peak, _rss_peak) if isinstance(n, int) and n > 0]
     return max(candidates) if candidates else None
 
 
@@ -394,30 +967,220 @@ def resident_bytes():
 #: Below this a file is fetched whole: splitting a 200KB config across four
 #: sockets costs four round trips to save nothing.
 SEGMENT_MIN_BYTES = 32 * 1024 * 1024
-#: Per file. Past a handful the Hub's per-connection throughput is the limit
-#: rather than the connection count, and each one is another socket to retry.
-MAX_SEGMENTS_PER_FILE = 4
+#: The size of one unit of work once a file IS being split. A separate
+#: constant from `SEGMENT_MIN_BYTES` on purpose, even though the two start out
+#: equal: one decides whether to split a file at all, the other decides how
+#: big each piece is once splitting happens, and nothing says a future tuning
+#: pass changes them together.
+#:
+#: **A FLOOR, not the size — see `MAX_CHUNKS_PER_FILE`.** Every piece is exactly
+#: this big up to a file of `500 × CHUNK_BYTES` (16,777,216,000 bytes, ~16.8GB);
+#: above that the piece grows so that the COUNT stops. Everything below is about
+#: why a fixed size rather than `size / N`, and it holds unchanged: the point was
+#: never 32MB specifically, it was many more units of work than connections.
+#:
+#: **Fixed size, not `size / N` — this is the fix for the download's tail.**
+#: A big shard used to become a handful of EQUAL shares (see the retired
+#: `MAX_SEGMENTS_PER_FILE` below): four connections at four different real
+#: speeds finish at four different times, and once the fast three are done
+#: there is nothing left to hand them — the slowest share runs out the clock
+#: alone, which measured as a 4.6GB model crawling from ~90% to 100% for over
+#: a minute. Fixed-size chunks make a big file into MANY units of work in one
+#: shared queue: a worker that finishes early pulls the next chunk rather than
+#: finding nothing assigned to it, so a slow connection only ever delays its
+#: own current 32MB, never the tail of the whole download.
+#:
+#: **Two costs this accepts, deliberately, both raised in review and both
+#: judged worth it rather than left unexamined.**
+#:
+#: (1) A 4.6GB shard is now ~144 requests instead of 4 — 144 TCP/TLS
+#: handshakes rather than 4, since `urllib` opens a fresh connection per
+#: `_open` call. Against a 32MB transfer per chunk that overhead is a small
+#: percentage, and it buys the one property size/N could not have at any
+#: chunk count: MORE units of work than `MAX_CONNECTIONS`, which is what
+#: makes stealing possible at all. A pool with only as many items as workers
+#: — four shares on eight connections — can never exhibit the failure this
+#: fixes, no matter how the four are sized.
+#:
+#: (2) `work` is built file-by-file (`_segmented_fetch`), so with one file's
+#: chunk count at or above `MAX_CONNECTIONS`, all 8 connections work that ONE
+#: file before the next file's chunks start — files finish roughly in
+#: submission order rather than interleaved. That is a scheduling preference,
+#: not a correctness gap: the cap still holds, nothing waits on a connection
+#: sitting idle, and a multi-file repo still finishes strictly faster than
+#: before this change. Round-robining chunks ACROSS files instead would
+#: trade "finishes files one at a time" for "every file creeps up together",
+#: which is not obviously better and was not what the tail bug asked for —
+#: left as a real option for whoever next has a reason to prefer it, not
+#: implemented speculatively here.
+CHUNK_BYTES = 32 * 1024 * 1024
+#: The most pieces ONE file may be split into, whatever its size. Together with
+#: the floor above:
+#:
+#:     chunk = max(CHUNK_BYTES, ceil(size / MAX_CHUNKS_PER_FILE))
+#:
+#: so a file grows its piece SIZE once it would otherwise grow its piece COUNT
+#: past this. The floor and the ceiling meet at exactly `500 × CHUNK_BYTES` —
+#: 16,777,216,000 bytes, ~16.8GB — and every file below that is chunked exactly
+#: as it was before this cap existed, which is every model in today's catalog
+#: and every file of the 280-file `MiniMaxAI/MiniMax-H3` (its largest plans 311
+#: pieces, so the cap never engages there at all).
+#:
+#: **The cost this removes is SIDECAR BOOKKEEPING, and nothing else.** Every
+#: segment's cursor lives in the sidecar, which is rewritten whole every
+#: `FLUSH_EVERY_S` (one second) for the life of the download. `Comfy-Org/MiniMax-H3`
+#: — 30 files, 471GB, with single files up to 66.3GB — planned 1,976 segments in
+#: one file and 14,057 across the repo: serialising ~2,000 dicts on a 1Hz timer
+#: for the several hours such a download runs, per file in flight. Capped, that
+#: same 66.3GB file is 500 × 133MB.
+#:
+#: **It is NOT a rate-limit measure and must not be read as one.** The Hub meters
+#: URLs carrying a `/resolve/` segment; our ranged GETs go to the presigned CDN
+#: location, which carries none, so chunk count consumes no quota at all. The
+#: metered cost of a download is about one metadata resolve per FILE (280 for the
+#: largest MiniMax repo, against 3,000 per five minutes anonymously), which no
+#: chunking decision changes. What protects against rate limits is the Hub token,
+#: the `RateLimit` parse in `_throttle_wait_s`, and `_resolved_meta`.
+#:
+#: **Why this does not reintroduce `_RETIRED_MAX_SEGMENTS_PER_FILE`'s tail
+#: problem.** That cap was 4 — at or below `MAX_CONNECTIONS = 8`, so a big file
+#: became a handful of static shares and a worker that finished early had nothing
+#: to steal. 500 units against 8 connections is still sixty times more work than
+#: workers, which is the property the tail fix actually needed; a queue that deep
+#: hands off exactly as well as an uncapped one.
+#:
+#: **The accepted cost:** a failed chunk re-fetches a whole chunk, so at the
+#: 66.3GB extreme that is up to 133MB rather than 32MB. It only applies above
+#: ~16.8GB, where 133MB is two tenths of a percent of the file, and the retry
+#: loop's own budget (`SEGMENT_ATTEMPTS`) already makes exactly this trade one
+#: size down.
+MAX_CHUNKS_PER_FILE = 500
 #: Across everything — the ONE number that bounds how many sockets a download
 #: opens. A pool per file would multiply the caps together.
 MAX_CONNECTIONS = 8
+#: RETIRED, deliberately left named rather than silently deleted: this used to
+#: cap a single file at 4 equal shares, back when segments were `size / N`.
+#: With fixed-size `CHUNK_BYTES` chunks pulled from one GLOBAL queue, a big
+#: file simply produces more chunks — that is the whole fix above — and
+#: `MAX_CONNECTIONS` is what already bounds how many run at once, so a second,
+#: per-file cap would only recreate the tail this redesign removes: capping a
+#: 4.6GB shard at 4 chunks again puts it back on 4 static shares. Nothing
+#: reads this constant; it stays as a marker for why the number is gone.
+_RETIRED_MAX_SEGMENTS_PER_FILE = 4
 #: Deliberately NOT hf's `.incomplete`. hf resumes one of those by seeking to
 #: its current length; our segments write out of order, so a partial file of
 #: length N does not mean the first N bytes are there, and handing hf one of
 #: ours would produce a silently corrupt blob. A suffix of our own also keeps
-#: the fallback clean — hf never sees our state at all.
+#: the fallback clean — hf never sees our state at all. On the append-only path
+#: (`_appends_only`) length N *does* mean the first N bytes, but the suffix
+#: stays ours on both: which of the two wrote a given part file is not something
+#: hf could tell, and `_clear_parts` deletes them before the fallback runs
+#: rather than offering hf a file whose meaning depends on the platform.
 PART_SUFFIX = ".fusedpart"
+#: `os.O_BINARY` where the platform has one, and 0 where the question does not
+#: arise. **Windows only, and load-bearing exactly there.** A bare `os.open`
+#: there gets the CRT's default translation mode, which is TEXT, so every `\n`
+#: in a write becomes `\r\n` on the way to the disk. A weights blob is not text
+#: — 0x0a is about one byte in 256 of one — so a part file written without this
+#: flag is both LONGER than the file it describes and wrong in content, while
+#: the cursors go on saying the download is complete: they count what was handed
+#: to `os.write`, and the translation happens below that. The mirror path's
+#: sha256 then declines a repo the Hub could serve, and the Hub path, which has
+#: no digest, would publish a corrupt blob under a real etag — permanent, since
+#: hf serves it from cache forever (`finish`). The stdlib does exactly this for
+#: exactly this reason: `tempfile` ORs it into every one of its own flag sets.
+#:
+#: **Latent until the append-only route existed, and exposed rather than
+#: introduced by it.** `os.pwrite` does not exist on the one platform where the
+#: flag matters, so before `_appends_only` no `os.open` in this file had ever
+#: written a byte there. Windows CI found it the first time one did.
+_BINARY = getattr(os, "O_BINARY", 0)
+#: SPEC AI-29 (D533) — refuses to open a `.part` path that is a SYMLINK,
+#: rather than a regular file, without rejecting a legitimate RESUME (the
+#: whole reason `O_EXCL`/`create_new` cannot be used here, unlike a one-shot
+#: temp file: a `.part` file is deliberately reopened across process
+#: restarts, sidecar-tracked, so "already exists" cannot mean "reject" the
+#: way it would for a throwaway file). `O_NOFOLLOW` blocks exactly the attack
+#: this item's checklist names — a symlink pre-planted at the `.part` path
+#: to redirect writes elsewhere — while a real, previously-created `.part`
+#: file (never a symlink; nothing in this module ever creates one there)
+#: keeps opening normally. Absent on Windows (`getattr` default 0, the same
+#: pattern `_BINARY` above already uses), where `os.open` has no symlink to
+#: follow in the same sense and the flag does not exist.
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 READ_BYTES = 1024 * 1024
 #: Big enough that a filesystem which really allocates cannot hide it in a
 #: block, small enough that paying for it on one is nothing.
 SPARSE_PROBE_BYTES = 4 * 1024 * 1024
+#: How much of a blob is hashed at a time on the MIRROR path (see
+#: `_FileFetch.finish`). The same size as `READ_BYTES`, and for the same reason:
+#: nothing in this file may hold a multi-gigabyte shard in memory.
+HASH_BLOCK_BYTES = 1024 * 1024
 HTTP_TIMEOUT_S = 30.0
 SEGMENT_ATTEMPTS = 5
 RETRY_BACKOFF_S = 0.5
+#: A rate limit is not a fault, and `SEGMENT_ATTEMPTS` is a claim about faults:
+#: it exists to decide "this file is unreachable, hand the repo to hf". A 429
+#: says the opposite — the server is reachable and is asking us to wait — so it
+#: gets an allowance of its own, counted separately. With the shared budget, a
+#: throttled download gave up after five attempts and about seven seconds of
+#: backoff and fell into `snapshot_download`, which is SLOWER: the user saw a
+#: download crawl for no stated reason, having been throttled and never told.
+#:
+#: **THE REAL GUARANTEE IS THE TIME, NOT THE COUNT.** `THROTTLE_TOTAL_MAX_S` is
+#: the bound worth reasoning about — the most wall clock one stretch of being
+#: rate-limited may cost before this gives up and lets the ordinary failure path
+#: hand the repo to hf. The attempt count bounds the REQUESTS instead, for the
+#: pathological case the time budget cannot see: a server naming a wait of a
+#: millisecond, over and over. The pair of them without the total was the review
+#: finding — 60 attempts × a 60s ceiling is an hour, which is exactly what the
+#: ceiling below says it exists to prevent.
+#:
+#: Ten minutes spans two of the Hub's five-minute fixed windows, so a genuinely
+#: exhausted quota is waited out twice over before this concludes the wait is
+#: not the answer.
+THROTTLE_ATTEMPTS = 60
+THROTTLE_TOTAL_MAX_S = 600.0
+#: The longest SINGLE wait a throttle may impose, however long the server asked
+#: for. A `Retry-After` of an hour is a legal answer, and the whole download
+#: sitting still for it is not: coming back early costs a handful of extra
+#: requests (a fixed window resets when it resets, whatever we do in the
+#: meantime) and buys a row that keeps saying something true and a total budget
+#: that stays accountable in minute-sized pieces. The wait is slept in
+#: `THROTTLE_SLICE_S` slices on top of that, because `time.sleep(60)` cannot be
+#: interrupted and `self.stop` is how a ✕ reaches a parked segment.
+THROTTLE_WAIT_MAX_S = 60.0
+THROTTLE_SLICE_S = 0.5
 FLUSH_EVERY_S = 1.0
 #: The revision both paths use, named rather than implied. It is hf's own
 #: `snapshot_download` default, which is what keeps the fast path and the
 #: fallback on one revision of a model.
 DEFAULT_REVISION = "main"
+
+#: The sidecar's own format number. Bumped whenever what a sidecar MEANS
+#: changes shape — twice so far, and both times for the same reason.
+#:
+#: **3: `MAX_CHUNKS_PER_FILE`.** A file above `500 × CHUNK_BYTES` (~16.8GB) is
+#: now split into 500 larger pieces rather than into `CHUNK_BYTES` ones, so a
+#: version-2 sidecar for such a file lists boundaries this build would never
+#: derive — and lists MORE of them, at every 32MB rather than every
+#: `ceil(size/500)`. Every SMALLER file is planned identically, so nothing but
+#: the version number distinguishes a stale sidecar from a current one, which is
+#: exactly the dangerous shape described below.
+#:
+#: **2: the chunk queue.** A segment used to be one of `size / N` equal shares,
+#: and became one of many fixed-size `CHUNK_BYTES` pieces, so a sidecar an older
+#: build left behind describes boundaries this build would derive differently for
+#: the same file. Identity
+#: (etag, size) still matches such a sidecar, and the layout even often looks
+#: internally consistent — which is exactly the shape of input that turns a
+#: resume into a silently wrong blob rather than an obviously failed one, so
+#: it cannot be left to the layout check to notice. Anything read back with a
+#: different number, MISSING included — every sidecar written before this
+#: field existed reads as missing — is treated exactly like no sidecar at all:
+#: the safe reading, since a fresh download from a clean chunk plan is always
+#: correct, merely slower than a resume would have been.
+SIDECAR_VERSION = 3
 
 _CONTENT_RANGE = re.compile(r"/(\d+)\s*$")
 _RANGE_START = re.compile(r"^bytes\s+(\d+)-")
@@ -433,10 +1196,60 @@ _TRANSIENT = (OSError, urllib.error.URLError, http.client.HTTPException, ValueEr
 class _Unsegmentable(Exception):
     """This repo cannot be fetched our way, so hf's downloader gets it back.
 
-    Not an error in itself — no range support, a platform without `os.pwrite`,
-    a Hub that reported no size — which is why it reads as a fallback rather
-    than as a failed download.
+    Not an error in itself — no range support, a Hub that reported no size, a
+    cache filesystem that cannot hold a sparse file — which is why it reads as a
+    fallback rather than as a failed download.
+
+    A platform without `os.pwrite` was one of these and is NOT one any more: it
+    fetches on a single append-only stream instead (`_appends_only`), which is
+    the same guarantee by a different route rather than a weakened one.
     """
+
+
+# ---------------------------------------------------------- SPEC AI-29 (D533)
+#: `mirror.py`'s manifest reader already refuses `..`, an absolute path and a
+#: Windows separator in a repo-relative NAME (`_safe_name`, that module's own
+#: docstring gives the identical reasoning) — because a CDN manifest is
+#: untrusted-origin by construction. The Hub metadata path
+#: (`_hub_file_meta`/`HfApi.model_info`) had NO equivalent check before this:
+#: `_FileFetch.link` joins `name` straight into `os.path.join(self.snapshot,
+#: name)` and `os.symlink`s (or copies) a blob there, so a repo publishing a
+#: sibling `rfilename` of `../../../../some/path` — the Hub is not proven to
+#: reject that server-side, and this code should not rely on it doing so even
+#: if it currently does — would write outside the snapshot directory
+#: entirely. Restated here, verbatim in spirit, rather than imported: `mirror.
+#: py` is loaded as a bare module by a runner's OWN interpreter with no
+#: `fused_render` package on `sys.path` (see its own top-of-file note), so a
+#: cross-import in either direction is not available.
+def _safe_repo_relative_name(name) -> bool:
+    """Whether `name` is a repo-relative path safe to join under a snapshot
+    directory and write to — the identical rule `mirror._safe_name` states
+    for the identical reason, applied to Hub-reported filenames too."""
+    if not isinstance(name, str) or not name or len(name) > 512:
+        return False
+    if name.startswith("/") or "\\" in name or ":" in name:
+        return False
+    parts = name.split("/")
+    return all(part and part not in (".", "..") for part in parts)
+
+
+#: A blob is named by its etag and joined as ONE path segment
+#: (`os.path.join(folder, "blobs", etag)`) — never repo-relative, so this is
+#: stricter than `_safe_repo_relative_name` the same way `mirror._safe_
+#: filename` is stricter than `mirror._safe_name` (a `/` here addresses a
+#: different location inside the cache dir entirely, not a deeper file within
+#: one). Not restricted to hex (a caller-supplied `meta` — the model mirror —
+#: already validates its own etag as hex via `mirror._safe_etag` before this
+#: function ever sees it; requiring hex again here would refuse a legitimate
+#: git blob sha1/sha256 the Hub itself reports in some non-lowercase or
+#: differently-shaped form this code has not audited every corner of), only
+#: that it cannot be a path.
+def _safe_blob_name(etag) -> bool:
+    if not isinstance(etag, str) or not etag or len(etag) > 256:
+        return False
+    if "/" in etag or "\\" in etag or etag in (".", ".."):
+        return False
+    return True
 
 
 def repo_folder(model_id, repo_type="model"):
@@ -471,7 +1284,12 @@ def bytes_on_disk(folder):
     the first second, and reporting that would put the bar at 100% before a
     byte had arrived. `st_blocks` is what the download has actually put on the
     disk. Where the platform has no such notion (Windows), `st_blocks` is
-    absent and the length is the honest answer anyway — nothing is sparse there.
+    absent and the length is the honest answer anyway — nothing is sparse
+    there, and doubly so since `_appends_only`: a part file written by a single
+    append-only stream is never pre-sized, so its length is exactly what has
+    landed. That is also why the POSIX branch takes the MIN of the two rather
+    than the blocks alone — an appended part file on a platform that HAS
+    `st_blocks` can report more allocated blocks than it holds bytes.
     """
     if not folder:
         return None
@@ -562,16 +1380,23 @@ def _repo_files(model_id, include=None, allow=None, ignore=None,
     return getattr(info, "sha", None), files
 
 
-def repo_total_bytes(model_id, include=None, ignore=None):
+def repo_total_bytes(model_id, include=None, allow=None, ignore=None):
     """The size of what will ACTUALLY be fetched, from the Hub, or None.
 
     Without it the bar has no total and shows as indeterminate — which is
     honest, and much better than a wrong total. Summing the whole repo when only
     part of it is being fetched is how a 2.6GB pull came to read as a fraction
     of 30GB and then jump to "complete" against a figure it never downloaded.
+
+    `allow` gained a name here (it was `include`/`ignore` only) for
+    `download_plan` (SPEC AI-5n): a phase scoped with `allow_patterns` has to
+    be priced against the same scope its `download_snapshot` call fetches, the
+    same reason `download_snapshot` itself threads `allow_patterns` into
+    `_repo_files` rather than pricing the whole repo.
     """
     try:
-        return _total_bytes(_repo_files(model_id, include=include, ignore=ignore)[1])
+        return _total_bytes(
+            _repo_files(model_id, include=include, allow=allow, ignore=ignore)[1])
     except Exception:  # noqa: BLE001 - a missing total is a cosmetic loss, never fatal
         return None
 
@@ -716,7 +1541,8 @@ def _sparse_ok(folder):
     blocks = None
     try:
         os.makedirs(folder, exist_ok=True)
-        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+        fd = os.open(probe, os.O_RDWR | os.O_CREAT | os.O_TRUNC | _BINARY,
+                     0o644)
         try:
             os.ftruncate(fd, SPARSE_PROBE_BYTES)
             blocks = getattr(os.fstat(fd), "st_blocks", None)
@@ -729,23 +1555,430 @@ def _sparse_ok(folder):
     return blocks is not None and blocks * 512 < SPARSE_PROBE_BYTES // 2
 
 
-def _segment_count(size):
+def _appends_only():
+    """Whether this platform must fetch each file on ONE sequential stream.
+
+    True where there is no `os.pwrite`, which means Windows and nothing else.
+
+    Segments write OUT OF ORDER into a file that was pre-sized before a byte
+    arrived, and only an unbuffered positional write makes AI-5i's guarantee
+    hold there — that a counted byte is a written byte. `seek` + `write` on a
+    buffered handle does not: the count runs ahead of the disk, and a resume
+    then skips bytes that were never durable.
+
+    So this used to be a flat refusal, and the refusal cost the model mirror its
+    entire purpose on that platform: the mirror's only transport is
+    `_segmented_fetch`, so a Windows client declined every time, every
+    acquisition went to the Hub, and none of them appeared in the access logs
+    the feature exists to produce (AI-5l).
+
+    **A single append-only stream keeps the same guarantee by a different route
+    rather than giving it up.** With one segment and an `O_APPEND` fd there is
+    no out-of-order write left to make: every `os.write` is a syscall landing at
+    the END of the file, so the file's LENGTH is the progress and a resume is a
+    `Range` from that length. Nothing is buffered and nothing is seeked — the
+    two things the pre-sized layout needed `pwrite` to avoid. What that also
+    removes is the pre-sized file itself, and with it the sparse-filesystem
+    requirement (`_segmented_fetch`) and the reason the bar counts blocks rather
+    than length (`bytes_on_disk`).
+
+    What is given up is parallelism WITHIN one file, and only that: chunks of
+    DIFFERENT files still run on `MAX_CONNECTIONS` streams, because two files
+    are two fds and nothing between them is out of order. A repo of thirty
+    shards is as parallel here as anywhere; a single 4.6GB shard is not.
+
+    Asked at call time rather than cached at import: it is one `hasattr`, and
+    the tests answer it by taking the attribute away from a module they have
+    already imported (`test_ai_hub_fetch_no_pwrite.py`), which is what lets the
+    win32 path be exercised on POSIX at all.
+    """
+    return not hasattr(os, "pwrite")
+
+
+def _file_size(path):
+    """The file's length, or 0 where there is no file. Never raises."""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def _chunks(size):
+    """Split [0, size) into `CHUNK_BYTES`-or-larger pieces. `done` is the cursor.
+
+    Below `SEGMENT_MIN_BYTES` the file is one piece covering the whole thing —
+    unchanged from before the chunk queue, and still the right answer: there
+    is nothing to gain from splitting a file too small to matter.
+
+    At or above it, every piece but the last is exactly one chunk — fixed
+    size, not `size / N`. A fixed size is what turns a big file into MANY
+    units of work rather than a HANDFUL: the whole point, since a queue with
+    only as many items as connections gives a slow one nothing to hand off
+    once its faster siblings finish (see `CHUNK_BYTES`'s own comment). A
+    30-shard repo and a single 4.6GB shard both resolve to plans a worker can
+    keep pulling from until the file is actually done.
+
+    The chunk is `CHUNK_BYTES` up to the point where that would mean more than
+    `MAX_CHUNKS_PER_FILE` pieces, and grows from there — a floor on the size and
+    a ceiling on the count, which is what keeps a 66GB file's sidecar from
+    carrying two thousand cursors rewritten every second.
+
+    **PER FILE, and not per repo, deliberately.** A repo-wide budget would make
+    one file's chunk size depend on the rest of the FILE SET, and this function
+    is deterministic in `size` alone — no `count` argument, unlike the
+    equal-share split it replaced. That is what lets a resume regenerate the
+    exact boundaries a previous run planned without persisting the piece count
+    anywhere but the sidecar's own `segments` list; under a per-repo cap, a
+    resume after any change to the file list (a scoped download, an
+    `allow_patterns` fetch, a repo that gained a file) would re-plan a file whose
+    own bytes never moved, and throw away recorded progress to do it. The tighter
+    bound is not worth that.
+    """
     if size < SEGMENT_MIN_BYTES:
-        return 1
-    return min(MAX_SEGMENTS_PER_FILE, -(-size // SEGMENT_MIN_BYTES))
-
-
-def _segments(size, count):
-    """Split [0, size) into `count` contiguous ranges. `done` is the cursor."""
-    span = size // count
-    return [{"start": i * span,
-             "end": size - 1 if i == count - 1 else (i + 1) * span - 1,
-             "done": 0}
-            for i in range(count)]
+        return [{"start": 0, "end": size - 1, "done": 0}]
+    chunk = max(CHUNK_BYTES,
+                (size + MAX_CHUNKS_PER_FILE - 1) // MAX_CHUNKS_PER_FILE)
+    pieces = []
+    start = 0
+    while start < size:
+        end = min(start + chunk, size) - 1
+        pieces.append({"start": start, "end": end, "done": 0})
+        start = end + 1
+    return pieces
 
 
 def _seg_complete(seg):
     return seg["start"] + seg["done"] > seg["end"]
+
+
+def _blob_sha256(path):
+    """The file's sha256, read in fixed blocks.
+
+    In BLOCKS rather than `read()`: this runs on multi-gigabyte shards, and the
+    whole reason a part file is pre-sized and written through `pwrite` is that
+    nothing here holds a file in memory.
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(HASH_BLOCK_BYTES), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+# -------------------------------------------------------------- being throttled
+#
+# A 429 used to be indistinguishable from a broken link: it landed in the
+# generic `HTTP <code>` branch of the retry loop, spent the segment's whole
+# budget on backoff in about seven seconds, and took the repo into hf's own
+# `snapshot_download` — a slower download, with nothing anywhere saying why it
+# had become slow. Two things are wrong with that and both are fixed here: a
+# throttle is WAITED OUT rather than counted as a fault (see
+# `THROTTLE_ATTEMPTS`), and it is SAID on the job row.
+#
+# The notice is a process global, which is right rather than merely convenient:
+# a download-only worker process serves exactly one download, so there is no
+# second job the notice could be attributed to, and the segment threads have no
+# other way to reach the row. `fetch_with_progress`'s tick is the only channel
+# to it, it runs on a different thread from every segment, and several segments
+# can be throttled at once — hence the lock rather than a bare assignment.
+
+_THROTTLE_LOCK = threading.Lock()
+_THROTTLE_DETAIL = None
+
+
+def _note_throttle(seconds, hub):
+    """Publish "we are being rate-limited" for the next tick to say.
+
+    `hub` is whether the throttling host is Hugging Face — `_FileFetch`'s
+    `re_resolvable`, which is True on the Hub path only. A 429 from whatever
+    `FUSED_MODEL_MIRROR` names is a real throttle and worth saying, but naming
+    the Hub for it, or offering a Hub sign-in as the cure, would be advice about
+    a host that is not involved.
+
+    The sign-in half is added only when there is no token: it is the one action
+    that raises the limit, and telling a signed-in user to sign in reads as the
+    app not knowing what it is doing. `_hf_token()` answers that question for
+    the whole file — nothing here reads the environment itself, and no part of
+    the token goes anywhere near the message.
+    """
+    global _THROTTLE_DETAIL
+    waiting = f"waiting {max(1, int(round(seconds)))}s"
+    if not hub:
+        detail = f"This download is being rate-limited — {waiting}"
+    elif _hf_token():
+        detail = f"Hugging Face is limiting this download — {waiting}"
+    else:
+        detail = ("Hugging Face is limiting this download — sign in to Hugging "
+                  "Face in Preferences → AI for a higher limit")
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = detail
+
+
+def _clear_throttle():
+    """Retire the notice, because bytes are moving again."""
+    global _THROTTLE_DETAIL
+    with _THROTTLE_LOCK:
+        _THROTTLE_DETAIL = None
+
+
+def _throttle_detail():
+    """The throttle notice a tick should show instead of its own detail, or None."""
+    with _THROTTLE_LOCK:
+        return _THROTTLE_DETAIL
+
+
+def _http_status(error):
+    """The HTTP status an exception carries, or None if it carries none.
+
+    Two client libraries reach this file and they raise different shapes. Our own
+    requests go through `urllib`, whose `HTTPError` IS a response (`.code`,
+    `.headers`); the Hub calls go through `huggingface_hub`, which raises
+    `requests`-shaped errors carrying the response beside them (`.response`).
+    Both are throttled by the same server for the same reason, so the throttle
+    logic reads them through one pair of accessors rather than existing twice.
+
+    Duck-typed rather than imported: this module is stdlib-only by contract (see
+    the module docstring), so it cannot name `requests.HTTPError` to check it.
+    """
+    code = getattr(error, "code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(getattr(error, "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _http_headers(error):
+    """The response headers an exception carries, or None. See `_http_status`."""
+    headers = getattr(error, "headers", None)
+    if headers is None:
+        headers = getattr(getattr(error, "response", None), "headers", None)
+    return headers
+
+
+#: One `r=`/`t=` parameter of a `RateLimit` entry. Deliberately loose: this is a
+#: structured-field list whose parameter ORDER is not guaranteed, whose names are
+#: quoted, and which may carry several buckets in one header — so the parse looks
+#: for the two parameters it understands and ignores everything else, rather than
+#: implementing the grammar and failing on the parts it does not need.
+_RATELIMIT_PARAM = re.compile(r'\b([rt])\s*=\s*"?(-?\d+)"?')
+
+
+def _ratelimit_reset_s(headers):
+    """Seconds until the rate limit resets, from the IETF `RateLimit` header.
+
+    **This, not `Retry-After`, is what the Hub actually sends.** It rate-limits
+    by REQUEST COUNT over five-minute fixed windows in three buckets (api, pages,
+    resolvers) and answers a 429 with
+    `RateLimit: "resolvers";r=0;t=42` — `t` being the seconds left in the window
+    (`draft-ietf-httpapi-ratelimit-headers`). There is no `Retry-After` on it, so
+    parsing only that one meant our own fetch fell back to a guessed backoff
+    while the exact answer sat unread in the response — and `snapshot_download`,
+    the FALLBACK, has parsed this header since hf 1.2.0, so hf's own client was
+    better informed about the wait than our fast path was.
+
+    Several buckets can arrive in one header, and the interesting one is the
+    bucket that is actually exhausted: `r=0`. With none of them at zero (or no
+    `r` at all) the longest named reset wins — coming back too late costs a
+    little throughput, coming back too early costs another 429.
+
+    Anything unparseable is None, never a bogus zero: the caller's next source is
+    strictly better than a wait this function invented.
+    """
+    if headers is None:
+        return None
+    raw = headers.get("RateLimit")
+    if not raw:
+        return None
+    exhausted, named = [], []
+    for entry in str(raw).split(","):
+        params = {key.lower(): int(value)
+                  for key, value in _RATELIMIT_PARAM.findall(entry)}
+        reset = params.get("t")
+        if reset is None or reset < 0:
+            continue
+        named.append(reset)
+        if params.get("r") == 0:
+            exhausted.append(reset)
+    pool = exhausted or named
+    return float(max(pool)) if pool else None
+
+
+def _retry_after_s(headers):
+    """`Retry-After` off a response, in seconds, or None if there is none to read.
+
+    Kept beside `_ratelimit_reset_s` although the Hub does not send it: it costs
+    nothing, our own mirror or whatever CDN fronts it may well send it, and the
+    503 case in `_is_throttled` is defined in terms of it.
+
+    Both forms the RFC permits, because both are served in the wild: delta
+    seconds, and an HTTP-date. A date in the past (a clock skewed either way, a
+    response that sat in a queue) is a wait of zero rather than a negative one.
+    """
+    header = ((headers.get("Retry-After") if headers is not None else None) or "").strip()
+    if not header:
+        return None
+    try:
+        return max(0.0, float(int(header)))
+    except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(header)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        # A `Retry-After` date is GMT by definition; a naive one is that,
+        # not local time.
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return max(0.0, (when - now).total_seconds())
+
+
+def _is_throttled(error):
+    """Is this exception the server asking us to wait?
+
+    429 always — it is the ONLY thing the Hub answers a rate limit with, and it
+    shapes no bandwidth, so there is nothing else to detect. 503 only WITH a
+    `Retry-After`: a bare 503 is an overloaded or broken host, which is exactly
+    what the ordinary retry budget is for, and treating every one of them as a
+    throttle would turn a genuinely dead endpoint into a download that waited
+    minutes before falling back.
+
+    Anything with no status at all — a socket error, a bad manifest — is not a
+    throttle, which is what lets this be asked of an arbitrary exception.
+    """
+    status = _http_status(error)
+    if status == 429:
+        return True
+    return status == 503 and _retry_after_s(_http_headers(error)) is not None
+
+
+def _throttle_wait_s(error, attempt):
+    """How long to wait for this throttle: what the server asked, or a backoff.
+
+    Precedence: the `RateLimit` reset (the Hub's own exact answer), then
+    `Retry-After` (anyone else's), then a backoff of our own that doubles per
+    attempt. Capped by `THROTTLE_WAIT_MAX_S` whichever it is.
+
+    A named wait of ZERO falls through to the backoff rather than being honoured
+    — `t=0` means "the window is resetting about now", and taken literally it
+    turned the retry budget into an immediate re-request loop against a host that
+    had just said it was over its limit.
+    """
+    headers = _http_headers(error)
+    for named in (_ratelimit_reset_s(headers), _retry_after_s(headers)):
+        if named:
+            return min(named, THROTTLE_WAIT_MAX_S)
+    return min(THROTTLE_WAIT_MAX_S, RETRY_BACKOFF_S * 2 ** (attempt - 1))
+
+
+def _throttle_sleep(stop, seconds):
+    """Wait `seconds`, in slices, giving up early once `stop` is set.
+
+    In slices because a single `time.sleep` of a minute cannot be interrupted,
+    and the ✕ a user presses reaches a segment only through `stop` (see
+    `THROTTLE_WAIT_MAX_S`). Counted DOWN rather than measured against a
+    deadline, so the loop terminates on the number of naps taken: a test that
+    replaces the clock does not turn this into a spin.
+    """
+    while seconds > 0 and not stop.is_set():
+        nap = min(THROTTLE_SLICE_S, seconds)
+        time.sleep(nap)
+        seconds -= nap
+
+
+class _Throttle:
+    """One stretch of being rate-limited: its waits, its bounds, its notice.
+
+    A stretch, not a request. Both places that can be throttled — the segment
+    loop and the Hub metadata call — need the same three things (honour the
+    named wait, stay inside a budget, say so on the row), and the budget has to
+    be shared across the CONSECUTIVE 429s that make up one stretch rather than
+    reset per request. Two copies of that bookkeeping is how the count and the
+    clock come to disagree.
+
+    **`progressed()` is half the point.** A long download over a busy link is
+    throttled in bursts, and the allowance is a claim about ONE burst: without
+    the reset, the 61st 429 of a healthy multi-hour download — reached an hour
+    apart, with gigabytes moved in between — was treated as an ordinary fault and
+    spent the segment's retry budget on falling back to hf. Exactly the mistake
+    `tries` avoids by resetting on the cursor moving, made one level up.
+    """
+
+    def __init__(self, hub, stop=None):
+        self.hub = hub
+        #: Never set for a caller that has nothing to cancel (the metadata call
+        #: is a single request, not a multi-hour park), so the slicing loop reads
+        #: it uniformly rather than branching on None.
+        self.stop = stop if stop is not None else threading.Event()
+        self.attempts = 0
+        self.waited = 0.0
+
+    def wait(self, error):
+        """Wait out one throttle; False once the budget is spent.
+
+        False is what turns a rate limit back into an ordinary failure, which is
+        the right end state: a host that has been asking us to wait for ten
+        minutes is not going to be waited out, and the fallback — hf's own
+        downloader, which parses the same header — is a better answer than a
+        parked segment holding a connection nobody else can use.
+        """
+        if self.attempts >= THROTTLE_ATTEMPTS or self.waited >= THROTTLE_TOTAL_MAX_S:
+            return False
+        self.attempts += 1
+        seconds = min(_throttle_wait_s(error, self.attempts),
+                      THROTTLE_TOTAL_MAX_S - self.waited)
+        self.waited += seconds
+        # Announced BEFORE the sleep: the announcement is the point — a download
+        # that has gone quiet for a minute has to say why, and only the thread
+        # being throttled knows.
+        _note_throttle(seconds, hub=self.hub)
+        _throttle_sleep(self.stop, seconds)
+        return True
+
+    def progressed(self):
+        """The stretch is over — bytes moved, or the call went through."""
+        self.attempts = 0
+        self.waited = 0.0
+        _clear_throttle()
+
+
+def _throttled_retry(call, hub, stop=None):
+    """`call()`, waiting out a rate limit instead of failing on one.
+
+    For the requests that are NOT the chunk loop, and on the Hub they are the
+    ones that get throttled. The Hub meters URLs with a `/resolve/` segment in
+    them; our ranged GETs go to the presigned CDN location, which has none, so
+    the metadata call is where a 429 realistically lands — and there it used to
+    escape the segmented fetch entirely and take the whole repo into the
+    fallback, with none of the waiting or disclosure below it.
+
+    Anything that is not a throttle re-raises untouched, which is what lets this
+    wrap a call whose other failures (`_Unsegmentable`, a socket error, a repo
+    that moved) must reach their own handlers unchanged.
+    """
+    throttle = _Throttle(hub, stop)
+    while True:
+        try:
+            value = call()
+        except Exception as error:  # noqa: BLE001 - re-raised below unless it is a throttle
+            if not _is_throttled(error) or not throttle.wait(error):
+                raise
+            continue
+        throttle.progressed()
+        return value
+
+
+def _resolved_meta(repo_id, filename, revision, stop=None):
+    """`_hub_file_meta`, waiting out a rate limit rather than failing on one.
+
+    The single funnel for every Hub metadata call in this file — the pre-flight
+    resolve and the mid-download re-resolve — so both get the same treatment from
+    one place. `hub=True` unconditionally: this function IS the Hub path.
+    """
+    return _throttled_retry(
+        lambda: _hub_file_meta(repo_id, filename, revision), hub=True, stop=stop)
 
 
 class _FileFetch:
@@ -757,7 +1990,7 @@ class _FileFetch:
     """
 
     def __init__(self, folder, repo_id, filename, revision, meta, token, stop,
-                 probes=None):
+                 probes=None, re_resolvable=True):
         self.folder = folder
         self.repo_id = repo_id
         self.filename = filename
@@ -770,11 +2003,28 @@ class _FileFetch:
         self.token = token
         self.stop = stop
         self.probes = {} if probes is None else probes
+        #: Whether a fresh `location` can be obtained for this file at all. True
+        #: on the Hub path, where `location` is a presigned CDN URL that expires;
+        #: False for caller-supplied metadata, where there is nothing to refresh
+        #: — see `_re_resolve`.
+        self.re_resolvable = re_resolvable
+        #: The digest to verify the finished blob against, or None. **Captured
+        #: here, from the metadata this fetch was PLANNED with, and never re-read
+        #: out of `self.meta` at publish time.** `self.meta` is reassignable
+        #: (`_re_resolve` replaces it wholesale), and reading the digest late is
+        #: exactly how the mirror path's hash check came to switch itself off
+        #: silently in the one situation it exists for.
+        self.verify = meta.get("sha256")
         self.size = meta["size"]
         self.blob = os.path.join(folder, "blobs", meta["etag"])
         self.part = self.blob + PART_SUFFIX
         self.sidecar = self.part + ".json"
         self.snapshot = os.path.join(folder, "snapshots", meta["commit"])
+        #: One append-only stream instead of segments — see `_appends_only`.
+        #: Snapshotted per fetch rather than asked again at every write: the
+        #: answer cannot change under a running download, and a plan made one
+        #: way must not be written the other.
+        self.append = _appends_only()
         self.lock = threading.Lock()      # guards the segment cursors
         self.flush_lock = threading.Lock()  # one writer of the sidecar at a time
         self.fd = None
@@ -801,6 +2051,8 @@ class _FileFetch:
             _remove(self.sidecar)
             return []
         os.makedirs(os.path.dirname(self.blob), exist_ok=True)
+        if self.append:
+            return self._plan_append()
         saved = self._saved()
         if saved is not None:
             # The layout to resume with is the layout the bytes were fetched
@@ -816,7 +2068,12 @@ class _FileFetch:
             # refuses, and the refusal takes down the whole repo — the fallback
             # then deleting this file's sidecar along with every OTHER file's
             # progress. Restarting this one file whole is strictly cheaper.
-            self.segments = _segments(self.size, len(saved))
+            #
+            # `_chunks` is deterministic in `size` alone, so the layout it
+            # derives here is the SAME plan a fresh download would make —
+            # `_restore` below is what checks that the saved offsets actually
+            # fit onto it.
+            self.segments = _chunks(self.size)
             if not self._restore(saved):
                 saved = None
             elif len(saved) > 1 and _probe_host(self.meta["location"],
@@ -825,19 +2082,77 @@ class _FileFetch:
                 saved = None
         if saved is None:
             # …and once the sidecar is out, its layout goes with it. Kept, it
-            # would split a download that starts from zero by a number that
+            # would split a download that starts from zero by a plan that
             # described a file we just deleted: one connection for a 4.6GB
             # shard, or dozens for a small one.
-            count = _segment_count(self.size)
-            if count > 1 and _probe_host(self.meta["location"],
-                                         self._cdn_token(),
-                                         self.probes) is not True:
-                count = 1
-            self.segments = _segments(self.size, count)
+            self.segments = _chunks(self.size)
+            if len(self.segments) > 1 and _probe_host(self.meta["location"],
+                                                       self._cdn_token(),
+                                                       self.probes) is not True:
+                # No confirmed range support: one connection for the whole
+                # file rather than the chunk plan `_chunks` would otherwise
+                # hand out, for the same reason `_whole_body` refuses a 200 at
+                # a non-zero offset — every chunk past the first would be
+                # handed byte 0.
+                self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
             _remove(self.part)
             _remove(self.sidecar)
-        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT, 0o644)
+        self.fd = os.open(self.part, os.O_RDWR | os.O_CREAT | _NOFOLLOW | _BINARY, 0o644)
         os.ftruncate(self.fd, self.size)
+        self.flush(force=True)
+        pending = [seg for seg in self.segments if not _seg_complete(seg)]
+        self.pending = len(pending)
+        return pending
+
+    def _plan_append(self):
+        """The same plan on a platform with no `os.pwrite`: one stream, appended.
+
+        ONE segment covering the whole file, an fd opened `O_APPEND`, and no
+        `ftruncate` to the final size. Those are the only three differences from
+        `plan()` above and they are all one difference: **here the part file's
+        LENGTH is the progress**, where on the segmented path the length is
+        final from the first second and the cursors are the progress.
+
+        That is how AI-5i's invariant is kept rather than traded away. A counted
+        byte must be a byte the kernel already has, which is why out-of-order
+        segments need an unbuffered positional write; a single sequential stream
+        gets the same promise from `O_APPEND` itself, since every `os.write`
+        lands at the end of the file and the end of the file is the only cursor
+        there is. A `SIGKILL` therefore leaves a PREFIX — never a file with a
+        hole in the middle that a length would misdescribe.
+
+        The sidecar still licenses the resume, exactly as above: without one this
+        part file is bytes of unknown provenance. And the one segment derived
+        here is also what refuses a sidecar the SEGMENTED path wrote — four
+        recorded segments against one derived, so `_restore` says no and the file
+        restarts whole. It has to: that part file is pre-sized and full of holes,
+        and appending onto it would publish a blob of exactly the right length
+        and partly wrong content. The refusal holds in the other direction too,
+        in `_saved`.
+
+        Then the recorded cursor and the file are made to AGREE before a byte
+        moves, by truncating the file back to the cursor. `flush` fsyncs the data
+        before it writes the sidecar, so a recorded offset is always durable
+        while the last second of writes may not be — a distinction the segmented
+        path keeps by resuming from the recorded offset and overwriting anything
+        past it positionally. Appending cannot overwrite, so the un-vouched-for
+        tail goes instead: at most one flush interval of bytes re-fetched,
+        against a resume that would otherwise append at a length no sidecar ever
+        recorded.
+        """
+        self.segments = [{"start": 0, "end": self.size - 1, "done": 0}]
+        saved = self._saved()
+        if saved is not None and self._restore(saved):
+            self.segments[0]["done"] = min(self.segments[0]["done"],
+                                           _file_size(self.part))
+        else:
+            self.segments[0]["done"] = 0
+            _remove(self.part)
+            _remove(self.sidecar)
+        self.fd = os.open(self.part,
+                          os.O_WRONLY | os.O_CREAT | os.O_APPEND | _NOFOLLOW | _BINARY,
+                          0o644)
+        os.ftruncate(self.fd, self.segments[0]["done"])
         self.flush(force=True)
         pending = [seg for seg in self.segments if not _seg_complete(seg)]
         self.pending = len(pending)
@@ -863,19 +2178,62 @@ class _FileFetch:
     def _saved(self):
         """The segments a previous run recorded for THIS file, or None.
 
-        Identity first — etag, size, and a part file still as long as it was —
+        **Version first, before identity even gets a look-in.** The chunk
+        queue changed what a segment list MEANS — fixed `CHUNK_BYTES` pieces
+        rather than `size / N` equal shares — so a sidecar an older build
+        wrote can have the right etag, the right size, and a layout that still
+        passes the shape check in `_restore`, while every offset in it means a
+        different byte than this build would derive for the same file. Etag
+        and size agreeing says nothing about that; only the version does. A
+        missing `version` — every sidecar written before this field existed —
+        reads as a mismatch by construction, since `state.get` returns `None`
+        and `None != SIDECAR_VERSION`.
+
+        Identity next — etag, size, and a part file still as long as it was —
         because a sidecar belonging to a different revision of the file would
         have us skip bytes that were never fetched, and the result is a blob of
         exactly the right length that is silently wrong. The layout itself is
         checked in `_restore`, against the segments derived from this answer.
+
+        **The part-file LENGTH check belongs to the pre-sized layout, so it is
+        skipped on the append-only path** (`_appends_only`), where a part file
+        shorter than the file it describes is the ordinary case — its length is
+        the progress. Skipping it is not a hole: the two layouts still refuse to
+        resume each other's part files, in both directions. A segmented run
+        handed an APPENDED part file sees a short file where a pre-sized one is
+        required and starts clean; an appending run handed a SEGMENTED one gets
+        past this check and is refused by `_restore`, which derives one segment
+        against the sidecar's many. Either way the answer is "no sidecar", which
+        is only ever slower.
+
+        **`isinstance(state, dict)` is checked explicitly, not left to fall out
+        of a `KeyError`.** A sidecar whose JSON parses but is not an object — a
+        truncated write that still happens to be valid JSON on its own, like a
+        bare `2` or a list — has no `.get`, and `state["etag"]` on such a value
+        raises `TypeError`, not `KeyError`; both were already caught here, so
+        this was harmless before the version check was added. `state.get(...)`
+        on a non-dict raises `AttributeError`, which was NOT in the tuple below
+        — so a malformed sidecar stopped reading as "no sidecar" for this one
+        file and instead escaped `plan()` entirely, taking the whole repo into
+        the fallback and `_clear_parts` deleting every OTHER file's progress
+        along with it. Checking the shape up front says directly what every
+        line below it assumes, rather than relying on whichever accessor
+        happens to be first to notice.
         """
         try:
             with open(self.sidecar) as handle:
                 state = json.load(handle)
+            if not isinstance(state, dict):
+                return None
+            if state.get("version") != SIDECAR_VERSION:
+                return None
             if state["etag"] != self.meta["etag"] or state["size"] != self.size:
                 return None
             saved = state["segments"]
-            if not saved or os.path.getsize(self.part) < self.size:
+            if not saved:
+                return None
+            landed = os.path.getsize(self.part)  # raises: no part file, no resume
+            if not self.append and landed < self.size:
                 return None
             return saved
         except (OSError, ValueError, KeyError, TypeError):
@@ -920,13 +2278,23 @@ class _FileFetch:
             if not force and now - self.flushed < FLUSH_EVERY_S:
                 return
             self.flushed = now
-            state = {"etag": self.meta["etag"], "size": self.size,
+            state = {"version": SIDECAR_VERSION, "etag": self.meta["etag"],
+                     "size": self.size,
                      "segments": [dict(seg) for seg in self.segments]}
         with self.flush_lock:
             if self.fd is not None:
                 os.fsync(self.fd)
             tmp = self.sidecar + ".tmp"
-            with open(tmp, "w") as handle:
+            # SPEC AI-29 (D533): `os.open` with `_NOFOLLOW` rather than a
+            # plain `open(tmp, "w")` — the same symlink-planting defence the
+            # `.part` file opens above already apply, extended to the
+            # sidecar's own write-then-`os.replace` (an atomic rename does
+            # not follow a symlink AT the destination, but writing the `.tmp`
+            # source through a pre-planted symlink first would still hand an
+            # attacker the CONTENT, and a subsequent `os.replace` would then
+            # make `self.sidecar` itself become that symlink).
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | _NOFOLLOW | _BINARY, 0o644)
+            with os.fdopen(fd, "w") as handle:
                 json.dump(state, handle)
             os.replace(tmp, self.sidecar)
 
@@ -954,6 +2322,10 @@ class _FileFetch:
         ranged = len(self.segments) > 1
         refreshed = False
         tries = 0
+        # Throttles are bounded apart from `tries`, in time rather than in
+        # attempts, and reset by progress exactly as `tries` is — see
+        # `_Throttle`.
+        throttle = _Throttle(self.re_resolvable, self.stop)
         reason = "nothing was attempted"
         while tries < SEGMENT_ATTEMPTS and not self.stop.is_set():
             if _seg_complete(seg):
@@ -971,17 +2343,37 @@ class _FileFetch:
                         else:
                             self._check_range(response, start)
                     self._drain(response, seg, start)
+                if seg["done"] > before:
+                    # Bytes are moving, so this stretch of being throttled is
+                    # over: the allowance comes back and the row stops saying
+                    # "waiting". Here rather than in the cursor-moved branch
+                    # below, which a completed segment returns past.
+                    throttle.progressed()
                 if _seg_complete(seg):
                     return
                 reason = f"the stream ended at byte {seg['start'] + seg['done']}"
             except urllib.error.HTTPError as error:
-                if error.code in (401, 403) and not refreshed:
+                if _is_throttled(error) and throttle.wait(error):
+                    # A wait the server ASKED for, so it costs no attempt: the
+                    # `continue` skips the retry budget below entirely. Once the
+                    # throttle budget itself is spent, `wait` says False and this
+                    # becomes the ordinary failure it now really is.
+                    continue
+                if error.code in (401, 403) and not refreshed and self.re_resolvable:
                     # `location` is a presigned CDN URL and a multi-hour
                     # download outlives it. Re-resolving does NOT count against
                     # the budget: an expired signature is not evidence that the
                     # file is unreachable. Its own failure is an ordinary
                     # network fault and must be COUNTED rather than escape —
                     # otherwise one unlucky moment aborts the whole download.
+                    #
+                    # **`self.re_resolvable` is what keeps this off the mirror
+                    # path**, where the URL is commit-pinned and immutable: there
+                    # is no signature to refresh, so a 401 or 403 there means the
+                    # object is missing or misconfigured, and the ORDINARY retry
+                    # below is the whole answer. Asking anyway made a request to
+                    # huggingface.co in the middle of a download whose entire
+                    # point is that huggingface.co is never contacted.
                     refreshed = True
                     try:
                         self._re_resolve()
@@ -1001,7 +2393,14 @@ class _FileFetch:
                 # multi-gigabyte download is not, so a second expiry is ordinary
                 # — and unhandled it spends the whole retry budget on 401s and
                 # aborts into a fallback that then deletes the resumable state.
+                #
+                # The throttle allowance comes back with them, and for the same
+                # reason: bytes arrived, so whatever the server was limiting a
+                # moment ago it is serving now. (Reached when `_drain` raised on
+                # top of real progress; the ordinary path resets inside the
+                # `try` above.)
                 tries, refreshed = 0, False
+                throttle.progressed()
             else:
                 tries += 1
                 time.sleep(min(5.0, RETRY_BACKOFF_S * tries))
@@ -1013,6 +2412,13 @@ class _FileFetch:
     def _re_resolve(self):
         """A fresh presigned URL for this file. Only the LOCATION may change.
 
+        Refuses outright when this fetch's metadata did not come from the Hub.
+        The caller above already checks that, so this is the invariant stated
+        where it is enforced rather than a second condition to keep in step: the
+        one thing that must never happen is a Hub call, or a `self.meta`
+        replacement, on a path that has neither a URL to refresh nor a Hub to
+        ask.
+
         `etag`, `size` and `commit` are what the blob path, every segment offset
         and the snapshot folder were derived from before any thread started. A
         repo updated mid-download therefore has to abort, never continue: the
@@ -1020,7 +2426,11 @@ class _FileFetch:
         as `blobs/<old-etag>` are a mix of two revisions at exactly the right
         length, under a name hf will then serve from cache forever.
         """
-        fresh = _hub_file_meta(self.repo_id, self.filename, self.revision)
+        if not self.re_resolvable:
+            raise _Unsegmentable(
+                f"{self.filename}: this download has no re-resolvable location")
+        fresh = _resolved_meta(self.repo_id, self.filename, self.revision,
+                               stop=self.stop)
         for field in ("etag", "size", "commit"):
             if fresh.get(field) != self.meta[field]:
                 raise _Unsegmentable(
@@ -1060,6 +2470,17 @@ class _FileFetch:
                 f"starting at byte {seg['start']}")
         with self.lock:
             seg["done"] = 0
+            if self.append and self.fd is not None:
+                # Rewinding the CURSOR is not enough where the cursor is the
+                # file's length. An `O_APPEND` fd would write this body after
+                # the bytes already there; the cursor would then reach `size`
+                # over a file half again too long, `finish` would believe it,
+                # and the blob published under a real etag would be exactly the
+                # permanent failure this function exists to prevent. The
+                # segmented path needs nothing here — its writes are
+                # positional, so byte 0 of this body goes to offset 0 whatever
+                # the part file already holds.
+                os.ftruncate(self.fd, 0)
         return 0
 
     def _drain(self, response, seg, start):
@@ -1092,7 +2513,27 @@ class _FileFetch:
             chunk = chunk[:room]
             written = 0
             while written < len(chunk):
-                written += os.pwrite(self.fd, chunk[written:], offset + written)
+                if self.append:
+                    # `O_APPEND`, so the write lands at the end of the file —
+                    # which is this segment's cursor by construction, there
+                    # being exactly one segment and nothing that seeks.
+                    # `offset` is deliberately not consulted: see
+                    # `_plan_append`. Still one syscall per write and no
+                    # userspace buffer, which is the property that matters.
+                    moved = os.write(self.fd, chunk[written:])
+                    if not moved:
+                        # A loop that trusts a syscall to make progress is a
+                        # HANG rather than an error, and this one would spin on
+                        # a non-empty buffer forever, burning a core with the
+                        # download frozen and nothing in any log. Raising hands
+                        # it to `_TRANSIENT` like any other write failure, which
+                        # retries and then falls back.
+                        raise OSError(f"{self.filename}: a write of "
+                                      f"{len(chunk) - written} bytes moved none")
+                    written += moved
+                else:
+                    written += os.pwrite(self.fd, chunk[written:],
+                                         offset + written)
             offset += len(chunk)
             with self.lock:
                 seg["done"] += len(chunk)
@@ -1111,9 +2552,31 @@ class _FileFetch:
         cursors are the same durable-byte accounting the sidecar records, and
         they are the only evidence there is that the file is whole.
 
-        No hash, like huggingface_hub itself, which relies on TLS and
-        `Content-Length`: re-reading every gigabyte off the disk would give back
-        a good part of what this feature is for.
+        On the append-only path (`_appends_only`) the length happens to agree
+        with the cursors, and the gate is still the cursors: ONE rule rather
+        than a per-platform one, and the cursors are the stricter of the two
+        anyway — `_whole_body` can rewind them, and a length that had not been
+        rewound with them is exactly the state this must not publish.
+
+        No hash on the HUB path, like huggingface_hub itself, which relies on TLS
+        and `Content-Length`: re-reading every gigabyte off the disk would give
+        back a good part of what this feature is for.
+
+        **The MIRROR path is hashed, and the trade is genuinely different there.**
+        A `sha256` in the metadata is what marks it (the Hub cannot give us one;
+        see `mirror.file_meta`). On that path we are the origin, so nobody else
+        would ever notice a bad byte we shipped — a corrupt upload, a truncated
+        object, a cache poisoned somewhere between us and the user — and a wrong
+        blob filed under a real etag is not a failed download but a PERMANENT
+        one: hf's own loaders then serve those bytes out of the cache forever,
+        and no later download would refetch them. One re-read of the file we just
+        wrote, once, against a digest we generated from the same blob hf produced,
+        is what makes that impossible.
+
+        Verified BEFORE `os.replace`, not after. A blob is published the instant
+        it is renamed, and a concurrent load can pick it up between the rename
+        and any check that follows — so the check that has to hold is the one on
+        the part file, where a failure leaves nothing in the cache to clean up.
         """
         if self.fd is not None:
             os.fsync(self.fd)
@@ -1123,8 +2586,45 @@ class _FileFetch:
                 raise RuntimeError(
                     f"{self.filename}: {landed} of {self.size} bytes landed, "
                     f"{len(missing)} segment(s) short")
+            if self.append and _file_size(self.part) != self.size:
+                # **On this route the length is an INDEPENDENT witness, so it is
+                # worth one syscall.** The cursors count what was handed to
+                # `os.write`; the length is what the kernel actually kept, and
+                # the two can only disagree if something between them rewrote
+                # the bytes — which is precisely what a text-mode fd does
+                # (`_BINARY`), and what no cursor and no `Content-Length` can
+                # notice. It is not a duplicate of the check above: there the
+                # question is whether every segment finished, here whether the
+                # file those segments claim to have written is the size they
+                # claim. On the SEGMENTED route the same check would be
+                # theatre, since the file is `ftruncate`d to its final size
+                # before a byte arrives — which is exactly why AI-5i gates
+                # publishing on the cursors and says a length proves nothing
+                # there. The Hub path carries no digest, so without this a
+                # translated blob would be published under a real etag and hf
+                # would serve it forever; with it, that download falls back.
+                raise RuntimeError(
+                    f"{self.filename}: {self.size} bytes were counted into a "
+                    f"part file of {_file_size(self.part)} — something between "
+                    f"this process and the disk rewrote them")
             os.close(self.fd)
             self.fd = None
+            digest = self.verify
+            if digest:
+                # ONE read of the whole file, here — not per segment and not per
+                # chunk. The segments write out of order, so there is no
+                # streaming hash to keep: `_drain` sees the file's bytes in
+                # whatever order the connections deliver them.
+                actual = _blob_sha256(self.part)
+                if actual != digest:
+                    # The part file and its sidecar go with it. Kept, the next
+                    # run would resume INTO bytes already known to be wrong and
+                    # arrive at the same mismatch, forever.
+                    _remove(self.part)
+                    _remove(self.sidecar)
+                    raise RuntimeError(
+                        f"{self.filename}: the mirror served {actual[:12]} where "
+                        f"the manifest says {digest[:12]}")
             os.replace(self.part, self.blob)
             _remove(self.sidecar)
         return self.link()
@@ -1155,23 +2655,54 @@ class _FileFetch:
             self.fd = None
 
 
-def _resolve(repo_id, filenames, revision):
+def _resolve(repo_id, filenames, revision, meta=None):
     """One metadata call per file, concurrently.
 
     Serially this is a round trip per file before a single byte moves, which on
     a repo of thirty shards is several seconds of nothing happening — the exact
     thing this feature exists to remove.
+
+    `meta` is where that metadata comes FROM, defaulting to the Hub. A caller
+    that already knows every file's url, etag, commit and size — the model
+    mirror reads them out of one manifest — supplies its own and the Hub is not
+    consulted at all. Same signature either way, so the pool below cannot tell
+    the difference and neither can anything downstream of it.
     """
+    # The Hub path goes through `_resolved_meta`, which waits out a 429 rather
+    # than letting it abort the whole fetch: these are `/resolve/` URLs, which is
+    # the bucket the Hub actually meters (the ranged GETs below go to a presigned
+    # CDN location it does not). A supplied provider is somebody else's host and
+    # is left exactly as it was handed to us.
+    provider = meta or _resolved_meta
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(MAX_CONNECTIONS, len(filenames)),
             thread_name_prefix="meta") as pool:
         return list(pool.map(
-            lambda name: _hub_file_meta(repo_id, name, revision), filenames))
+            lambda name: provider(repo_id, name, revision), filenames))
 
 
 def _run_segment(fetch, seg):
     """One unit of work in the pool: fill a segment, and finalise if it was the
-    last one its file was waiting on."""
+    last one its file was waiting on.
+
+    **`force=True` on every completion, so a 4.6GB shard now forces ~144
+    sidecar fsyncs instead of 4 — raised in review and judged not worth
+    changing yet.** The data most of that fsync flushes is already clean:
+    `_drain`'s own periodic `flush()` (no `force`) runs throughout the
+    segment on the same 1-second cadence regardless of chunk size, so a
+    completed 32MB chunk typically has little UNFLUSHED data behind it and
+    this call's real job is durably recording the LAST partial tick — the
+    bytes written since that periodic flush last fired, which on a fast link
+    can be most of the chunk. If this ever shows up in profiling on real
+    storage, the change to make is dropping `force` here entirely and
+    letting the periodic flush alone catch a finished segment: correctness
+    would not regress (a segment whose completion lands between two
+    periodic ticks just resumes as its last-recorded, slightly earlier
+    offset — a bigger but still bounded re-fetch, not a corrupt one), only
+    resume-efficiency would give up a little in exchange for far fewer
+    forced fsyncs. Not made speculatively because nothing here has measured
+    it as a real cost.
+    """
     try:
         try:
             fetch.run(seg)
@@ -1201,8 +2732,28 @@ def _run_segment(fetch, seg):
         raise
 
 
-def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
+#: "no `token` argument was passed", as distinct from "the token is None".
+#: `None` is a real and meaningful value here — it is what the mirror path
+#: passes to mean ANONYMOUS — so it cannot also stand for "ask hf's own store".
+_ASK_HF = object()
+
+
+def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION,
+                     meta=None, token=_ASK_HF):
     """Fetch `filenames` into the hub cache ourselves. Returns the snapshot dir.
+
+    `meta` and `token` are the two seams a non-Hub source needs, and both
+    default to today's behaviour exactly. `meta` supplies the per-file metadata
+    (see `_resolve`); `token` is the credential the requests carry, and the
+    mirror path passes `None` for it — `_cdn_token` sends the Hub token whenever
+    the blob URL IS the metadata URL, which is true of our own mirror by
+    construction, and a user's Hub token has no business being offered to
+    whatever host `FUSED_MODEL_MIRROR` names.
+
+    Everything else is deliberately NOT a seam. The one-commit check, the
+    asked-for-commit pin, the sparse-file requirement and the ref write are what
+    make a fetch a SNAPSHOT rather than a pile of files, and they hold whoever
+    supplied the metadata — all the more so for a manifest we read off a CDN.
 
     `revision` is REQUIRED and has no default on purpose: it must be the commit
     the caller's file list resolved to, and a default here is exactly how a list
@@ -1216,6 +2767,14 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     would multiply the two caps together and open thirty sockets on a repo of
     thirty shards.
 
+    **A platform with no `os.pwrite` fetches each file on one append-only
+    stream instead of splitting it** (`_appends_only`), and that is the only
+    thing it changes: the queue, the cap and this pool are untouched, so the
+    serialization is per FILE and a repo of shards still moves on
+    `MAX_CONNECTIONS` connections. It used to be an `_Unsegmentable` refusal
+    here, which quietly meant the model mirror never fetched on Windows and no
+    Windows acquisition ever reached our access logs (AI-5l).
+
     **No cache lock, unlike `snapshot_download`, and deliberately.** Two app
     instances fetching one repo would write the SAME bytes at the SAME offsets:
     the etag names the content, so there is no version of this race that puts
@@ -1226,27 +2785,42 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
     the supervisor's deterministic job id joins a second Download of a model
     onto the first (AI-5a).
     """
-    if not hasattr(os, "pwrite"):
-        # Windows. Buffered seek-and-write would break the guarantee the whole
-        # design rests on — that a counted byte is a written byte.
-        raise _Unsegmentable("os.pwrite is unavailable on this platform")
     folder = repo_folder(model_id)
     if not folder:
         raise _Unsegmentable("the hub cache layout is unavailable")
     if not filenames:
         raise _Unsegmentable("the Hub listed no files for this repo")
-    if not _sparse_ok(folder):
+    if not _appends_only() and not _sparse_ok(folder):
+        # The sparse requirement belongs to the PRE-SIZED part file, which the
+        # append-only path never creates. Refusing here anyway would take this
+        # whole fetch — and with it the model mirror — off the one platform
+        # `_appends_only` exists to keep it on.
         raise _Unsegmentable(f"{folder} cannot hold a sparse file")
 
-    token = _hf_token()
+    if token is _ASK_HF:
+        token = _hf_token()
     stop = threading.Event()
     probes = {}  # host -> range support, so a repo of shards probes once
     fetches, by_etag = [], {}
-    for name, meta in zip(filenames, _resolve(model_id, filenames, revision)):
-        if not (isinstance(meta.get("size"), int) and meta.get("etag")
-                and meta.get("commit")):
-            raise _Unsegmentable(f"{name}: the Hub reported no size, etag or commit")
-        already = by_etag.get(meta["etag"])
+    resolved = _resolve(model_id, filenames, revision, meta)
+    for name, info in zip(filenames, resolved):
+        if not (isinstance(info.get("size"), int) and info.get("etag")
+                and info.get("commit")):
+            # "reported", not "the Hub reported": the metadata may have come
+            # from a caller's own manifest (see `meta` above), and a message
+            # naming the Hub for a mirror manifest sends a reader to the wrong
+            # place.
+            raise _Unsegmentable(f"{name}: no size, etag or commit was reported")
+        # SPEC AI-29 (D533): a `name`/`etag` that would escape the snapshot
+        # or blobs directory is refused here, before a `_FileFetch` is ever
+        # constructed — falling back to hf's own downloader (which does its
+        # own, independently-maintained path handling) rather than joining
+        # either into a cache path this module controls.
+        if not _safe_repo_relative_name(name):
+            raise _Unsegmentable(f"{name}: not a safe repo-relative path")
+        if not _safe_blob_name(info["etag"]):
+            raise _Unsegmentable(f"{name}: etag is not a safe blob name")
+        already = by_etag.get(info["etag"])
         if already is not None:
             # One etag is one blob, and a repo really does publish the same
             # bytes under two names. A second fetch of it would share the part
@@ -1255,9 +2829,9 @@ def _segmented_fetch(model_id, filenames, revision, ref=DEFAULT_REVISION):
             # nothing there and taking the whole download into the fallback.
             already.filenames.append(name)
             continue
-        fetch = _FileFetch(folder, model_id, name, revision, meta, token, stop,
-                           probes)
-        by_etag[meta["etag"]] = fetch
+        fetch = _FileFetch(folder, model_id, name, revision, info, token, stop,
+                           probes, re_resolvable=meta is None)
+        by_etag[info["etag"]] = fetch
         fetches.append(fetch)
 
     commits = {fetch.meta["commit"] for fetch in fetches}
@@ -1327,25 +2901,355 @@ def _clear_parts(folder):
                 _remove(os.path.join(dirpath, name))
 
 
-def _fallback(model_id, error):
+def _fallback(model_id, error, source="segmented fetch"):
     """Say why we are back on hf's downloader. The supervisor captures stderr,
     so a fallback that happens in the field is diagnosable rather than merely
-    slow."""
+    slow.
+
+    `source` names WHICH path gave up — the segmented Hub fetch or the model
+    mirror. One line saying "segmented fetch" for a mirror that 404s sends a
+    reader to the wrong half of the feature, and the two fail for entirely
+    different reasons.
+    """
     sys.stderr.write(
-        f"[fused] segmented fetch of {model_id} unavailable, falling back to "
+        f"[fused] {source} of {model_id} unavailable, falling back to "
         f"huggingface_hub: {error.__class__.__name__}: {error}\n")
     _clear_parts(repo_folder(model_id))
 
 
+# --------------------------------------------------------------- the mirror path
+#
+# A suggested model can come off a distribution WE run instead of off
+# huggingface.co — see `mirror.py` for the protocol, the two environment
+# variables and why the permission is per-model. Everything below is the hook:
+# one branch inside `download_snapshot` for a repo and one inside `download_file`
+# for a single file (AI-5m — a different object with a weaker claim, not the same
+# manifest read loosely), so every runner call site is untouched and any failure
+# lands on the Hub path unchanged.
+
+#: The loaded `mirror` module, or False for "there is no usable one here".
+#: Cached because the answer cannot change within a process, and False rather
+#: than None so a failed load is not retried on every call.
+_MIRROR = None
+
+
+def _mirror_module():
+    """`mirror.py` from beside this file, or None.
+
+    Loaded LAZILY and BY PATH, both deliberately. `worker_base` is imported two
+    ways — as a bare module by a worker, which puts `runners/` on `sys.path`, and
+    by absolute path from the tests, which does not — so a plain `import mirror`
+    resolves in one and not the other. And loading it here rather than at module
+    scope keeps this file's module-scope imports stdlib-only, the rule
+    `test_ai_worker_base` enforces by reading this source.
+
+    None for a missing or broken file, because a runner venv that somehow lacks
+    it should download from the Hub, not fail.
+    """
+    global _MIRROR
+    if _MIRROR is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mirror.py")
+        try:
+            spec = importlib.util.spec_from_file_location("fused_model_mirror", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            _MIRROR = module
+        except Exception as error:  # noqa: BLE001 - no mirror is a slower download
+            sys.stderr.write(f"[fused] the model mirror client is unavailable: "
+                             f"{error.__class__.__name__}: {error}\n")
+            _MIRROR = False
+    return _MIRROR or None
+
+
+def _mirror_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+    """The repo off our own mirror, or None to say "take the Hub path".
+
+    None for every way of not having a mirror — not configured, not permitted
+    for this model, no manifest, a manifest that does not hold up, a 404, a 5xx,
+    a mid-download drop, a hash that does not match. A mirror that is down must
+    cost a slower download and never a failed one, so the ONLY thing that
+    escapes here is `Cancelled`: a ✕ must not be answered by starting the
+    download again somewhere else.
+
+    **The whole branch is inside one guard, the manifest call included.** It was
+    outside it, on the reasoning that `mirror.manifest` returns None rather than
+    raising — which is what that function intends and not what it guaranteed: a
+    truncated chunked body raises `http.client.IncompleteRead`, which is neither
+    an `OSError` nor a `ValueError`, so it escaped the client AND this function
+    and FAILED a download the Hub could have served. Both halves are fixed, and
+    the promise this feature is allowed to exist on should not rest on having
+    enumerated every exception a URL library can raise.
+
+    The manifest is filtered by the SAME `selects` the Hub listing goes through,
+    so a scoped download (`torch_image` passes an allow-list) measures and
+    fetches the same subset on both paths — and the fetch record is written with
+    that scope, which is what makes the second download of a mirrored model come
+    back off the fast path.
+    """
+    mirror = _mirror_module()
+    if mirror is None:
+        return None
+    try:
+        if not mirror.allowed(model_id):
+            return None
+        manifest = mirror.manifest(model_id)
+        if manifest is None:
+            return None
+        files = [(entry["name"], entry["size"]) for entry in manifest["files"]
+                 if selects(entry["name"], allow=allow_patterns,
+                            ignore=ignore_patterns)]
+        if not files:
+            # A manifest that selects nothing at this scope is not a mirror hit;
+            # the Hub listing is the authority on what the scope was supposed to
+            # match.
+            return None
+        names = [name for name, _size in files]
+        fetched = fetch_with_progress(
+            model_id,
+            lambda: _segmented_fetch(
+                model_id, names, manifest["commit"],
+                meta=mirror.file_meta(model_id, manifest),
+                # Anonymous, always. The blob URL is the metadata URL here, so
+                # `_cdn_token` would otherwise hand a user's Hub token to
+                # whatever host `FUSED_MODEL_MIRROR` names.
+                token=None),
+            total=_total_bytes(files))
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(model_id, error, source="the model mirror")
+        return None
+    # Recorded exactly as the Hub path records it, and for the same reason: what
+    # landed is a normal hf cache entry, so the cached-model fast path, the Local
+    # tab's inventory and deletion all read it without knowing where it came
+    # from. `_record_fetch` verifies the names are really there and writes
+    # nothing if they are not.
+    #
+    # **`names` comes from the manifest here, where the Hub path takes it from
+    # the Hub listing — and `_record_fetch`'s shortfall check is only as good as
+    # that list's independence.** Against the manifest alone the check would be
+    # self-certifying: a manifest missing `config.json` would download a subset,
+    # record the subset as complete at this scope, and every later bring-up would
+    # then be served a snapshot that cannot load, with nothing left to refetch
+    # it. What makes the list trustworthy is that `mirror.manifest` refuses any
+    # manifest that does not ASSERT it lists the whole repo at this commit, and
+    # `scripts/build_model_mirror.py` sets that assertion only after checking the
+    # snapshot against the Hub's own listing — on a build machine, where asking
+    # the Hub costs nothing. The independence is real; it just lives at build
+    # time, because asking the Hub here is the one thing this feature exists to
+    # avoid.
+    _record_fetch(repo_folder(model_id), _commit_of(fetched), names, fetched,
+                  allow=allow_patterns, ignore=ignore_patterns)
+    return fetched
+
+
+def _mirror_file(repo_id, filename, detail=None, job=None, row=None):
+    """ONE file off our own mirror, or None to say "take the Hub path" (AI-5m).
+
+    The `_mirror_snapshot` above cannot serve this. A GGUF repo publishes dozens
+    of quantizations of the same model — `unsloth/Qwen3.5-9B-GGUF` is 147.81GB
+    whole — and `llama_text.download` wants one 2.6GB file out of it, while a
+    per-repo manifest is only accepted when it ASSERTS it lists the whole repo at
+    that commit. Earning that assertion would mean mirroring all 147.81GB to
+    serve the one file, and weakening it would break AI-5k. So this reads a
+    different object: `mirror.file_manifest`, one named file, no completeness
+    claim (see that function for why the claim is unnecessary here rather than
+    merely inconvenient).
+
+    **No `_record_fetch`, and that is load-bearing rather than an omission.**
+    `download_file` has never written one — one file is not a scope a later
+    bring-up can be told is complete — so there is no record for a wrong manifest
+    to make self-certifying, which is precisely what lets the manifest be
+    claim-free. Adding a record here would take that argument away.
+
+    Same degradation rules as the snapshot branch, for the same reason: the whole
+    body including the manifest call sits inside one guard, every failure returns
+    None after saying which path gave up, and only `Cancelled` escapes (AI-5e).
+    """
+    mirror = _mirror_module()
+    if mirror is None:
+        return None
+    try:
+        if not mirror.allowed(repo_id):
+            return None
+        manifest = mirror.file_manifest(repo_id, filename)
+        if manifest is None:
+            return None
+        entry = manifest["files"][0]
+        return fetch_with_progress(
+            repo_id,
+            lambda: os.path.join(
+                _segmented_fetch(repo_id, [filename], manifest["commit"],
+                                 meta=mirror.file_meta(repo_id, manifest),
+                                 # Anonymous, always, for `_mirror_snapshot`'s
+                                 # reason: the blob URL is the metadata URL
+                                 # here, so `_cdn_token` would otherwise hand a
+                                 # user's Hub token to whatever host
+                                 # `FUSED_MODEL_MIRROR` names.
+                                 token=None),
+                filename),
+            total=entry["size"], detail=detail, job=job, row=row)
+    except Cancelled:
+        raise
+    except Exception as error:  # noqa: BLE001 - every failure degrades to the Hub
+        _fallback(repo_id, error, source="the model mirror")
+        return None
+
+
+class _HubByteTicker:
+    """A `tqdm_class` for hf's OWN downloaders, and the counter it writes into.
+
+    The fallback path's bar used to be driven only by the disk walk, and
+    `hf_xet` (installed in every runner venv; every mlx-community repo is
+    Xet-backed) delivers bytes in BURSTS rather than a steady trickle:
+    measured on a 481MB repo, `bytes_on_disk` sat on one number for 6 seconds,
+    then jumped ~90MB, then landed the final ~45% all at once on completion.
+    Scaled to a 4.6GB model that is a bar parked on one number for a MINUTE
+    while the download is perfectly healthy — the "stuck at 98%" report. hf
+    knows the true count the whole time; this reads it through the one seam
+    hf exposes for exactly that, and the disk walk stays as the heartbeat and
+    the fallback for whatever this cannot read.
+
+    **The outer bar is a file counter, and reporting it as bytes is the
+    original AI-5b trap one level further in.** `snapshot_download` hands its
+    `tqdm_class` to THREE distinct bars: one wrapping `hf_thread_map` over the
+    file list — `desc="Fetching N files"`, no `unit` at all, one `.update(1)`
+    per file — and two created directly for BYTES, `unit="B"`, one per
+    conceptual stream (`_create_progress_bar` in hf's own `_snapshot_download`
+    and `_xet_progress_reporting`). `unit == "B"` is what tells them apart:
+    when `unit` is absent it is the file counter, which is exactly how "10 /
+    11 B" happened before — the same bug this feature exists to fix,
+    reappearing one seam further in.
+
+    **Two byte streams, not one, and they must not be SUMMED.** hf's Xet path
+    reports network TRANSFER (`desc` containing "downloading bytes") and disk
+    RECONSTRUCTION (`desc` containing "reconstruct") separately — both cover
+    close to the same total under dedup/compression, so adding them can read
+    past 100% of a file that is not yet done. `bytes_on_disk` means "landed on
+    disk", which is what the reconstruction stream already means, so ticks
+    into the "reconstruct" bucket and the "transfer" bucket are kept apart and
+    the counter reports whichever is FURTHER ALONG — never their sum. A plain
+    `http_get` download (no Xet) hands back exactly one bar, whose `desc` is a
+    filename and matches neither keyword; it lands in the transfer bucket,
+    which is exactly the bytes it wrote, so the two-bucket split costs nothing
+    on that path.
+
+    `seen` is False until some byte bar reports ANYTHING, which is what lets
+    the caller tell "no usable counter" (an hf version that reports
+    differently, or ignores `tqdm_class` altogether, or a fetch that never
+    goes near hf's downloaders at all) from "the counter says zero because
+    nothing has landed yet" — the two must not be confused, or a slow start
+    would look like this feature having failed rather than a download that is
+    merely early.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._transfer = 0
+        self._reconstruct = 0
+        self.seen = False
+
+    @property
+    def value(self):
+        with self._lock:
+            return max(self._transfer, self._reconstruct)
+
+    def bar(self):
+        """A tqdm-COMPATIBLE class bound to this ticker — not a `tqdm`
+        subclass, deliberately: hf's own `_create_progress_bar` hands a
+        non-tqdm `cls` straight through as `cls(**kwargs)`, with none of
+        tqdm's `disable`/`name` machinery grafted on, which this needs
+        exactly as little of. Read back off an instance: `.n`, `.total` (hf's
+        own aggregation helpers check both with `getattr`/`hasattr`) and
+        `.format_dict` — verified against the real huggingface_hub installed
+        in the runner venvs (1.27.0, 1.28.0): `_AggregatedTqdm.set_postfix_str`
+        forwards to `_set_aggregate_rate_postfix`, which does
+        `bar.format_dict.get("rate")` on OUR bar, called by
+        `XetDownloadProgressReporter.update_progress` on the first non-zero
+        byte increment. Missing it is not a cosmetic gap: it is an
+        `AttributeError` raised from inside the download, on every
+        Xet-backed repo — which is every mlx-community one — the moment the
+        first byte lands. Called: `.update`, `.set_postfix_str`.
+        """
+        ticker = self
+
+        class _Bar:
+            def __init__(self, *_args, **kwargs):
+                self.n = kwargs.get("initial") or 0
+                self.total = kwargs.get("total")
+                self._is_bytes = kwargs.get("unit") == "B"
+                self._reconstruct = "reconstruct" in (kwargs.get("desc") or "").lower()
+
+            @property
+            def format_dict(self):
+                # hf reads only `rate` off this (see the docstring above); `n`
+                # and `total` are included too since real tqdm's own
+                # `format_dict` carries them and a future caller reading
+                # either would otherwise hit the same missing-attribute crash
+                # this property exists to stop. `rate` is genuinely unknown —
+                # this class does no timing of its own — and `None` is what
+                # `_format_speed_postfix` already renders as "???B/s".
+                return {"rate": None, "n": self.n, "total": self.total}
+
+            def update(self, n=1):
+                if not self._is_bytes or not n:
+                    return
+                with ticker._lock:
+                    # `self.n` too, not just the ticker's own counters: it is
+                    # what `format_dict` above reports back to hf, and a
+                    # bar's own count has to agree with what it told the
+                    # ticker it saw.
+                    self.n += n
+                    if self._reconstruct:
+                        ticker._reconstruct += int(n)
+                    else:
+                        ticker._transfer += int(n)
+                    ticker.seen = True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def close(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def set_postfix_str(self, *_args, **_kwargs):
+                pass
+
+            def set_description(self, *_args, **_kwargs):
+                pass
+
+        return _Bar
+
+
 def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…",
-                        job=None, row=None):
-    """Run `call()` on a thread, reporting bytes-on-disk once a second.
+                        job=None, row=None, counter=None):
+    """Run `call()` on a thread, reporting progress once a second.
 
     `call` is whatever huggingface_hub function actually fetches — a whole
     snapshot for one runner, a single GGUF file for another — and this is the
     part neither of them should write twice: the poll is the progress AND the
     heartbeat, without which a long single-file download reports nothing for
-    minutes and the manager calls the row abandoned.
+    minutes and the manager calls the row abandoned. The ONE-SECOND TICK is
+    unconditional regardless of what drives `done` below it — the tick itself
+    is the heartbeat (AI-5h), and a fetch that happens to have a live byte
+    counter must keep beating exactly as often as one that does not.
+
+    `counter`, when given, is a `_HubByteTicker` whose `tqdm_class` `call` was
+    built to pass to hf's own downloader. Once it has `seen` anything, `done`
+    is `max(counter.value, bytes_on_disk(folder))` rather than the disk walk
+    alone — never less than either, so a counter that stalls while the disk
+    still advances (or the reverse) cannot make the bar go backwards. Before
+    it has seen anything — no counter at all, an hf version that reports
+    differently, a `tqdm_class` silently ignored — this degrades to exactly
+    the disk-walk-only behaviour from before it existed. See `_HubByteTicker`
+    for why a byte counter existing at all used to be exactly the AI-5b trap
+    ("10 / 11 B") one level further in.
 
     **`job`/`row` exist because not every fetch belongs to a download job.** A
     runner that pulls a component model DURING a request — the speech detector,
@@ -1388,15 +3292,59 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
     folder = repo_folder(model_id)
     if total is None:
         total = repo_total_bytes(model_id)
-    identity = {**(row or {}), "kind": "download", "unit": "bytes"}
+    # `total_scope` explicit on EVERY tick, not left for the row's default or
+    # a caller a level up to have set (code review, SPEC AI-5n/D498):
+    # `total_scope` is STICKY on the job row (`jobs.py` only overwrites it
+    # when a tick's body names it), and `download_plan` wraps a multi-phase
+    # download with its own ticker beating `total_scope="download"` on a
+    # tighter cadence than this function's own one-second ticks. Without this,
+    # a tick from THIS phase landing right after one of `download_plan`'s
+    # beats would leave the row saying `total_scope="download"` under a total
+    # that is only this phase's own (smaller) figure — `modelSize.ts` would
+    # then let a partial phase total win outright over the catalog's constant,
+    # showing e.g. 19.1GB for a 28.5GB download at the phase boundary. `total`
+    # here is always THIS call's own phase total (`download_plan` prices the
+    # WHOLE download separately, through its own `_tick`), so `"phase"` is
+    # unconditionally correct for every tick this function sends.
+    identity = {**(row or {}), "kind": "download", "unit": "bytes", "total_scope": "phase"}
+    # A notice left over from a PREVIOUS fetch is not about this one. It cannot
+    # happen in a download-only worker (one process, one download), but a
+    # resident worker fetches component models during requests, and a fetch that
+    # ended while a segment was still parked on a 429 would otherwise open the
+    # next row already claiming to be rate-limited.
+    _clear_throttle()
+
+    def measured():
+        """Bytes done right now, from whichever source is actually moving.
+
+        `bytes_on_disk` always runs — it is the heartbeat's OWN measurement
+        too, and the fallback the moment `counter` cannot answer. `counter`,
+        once it has `seen` anything, can only raise the reported number: a
+        burst that lands on disk between two of hf's own ticks is still real
+        progress, and `max` is what keeps either source's silence from
+        hiding the other's advance.
+        """
+        disk = bytes_on_disk(folder)
+        if counter is not None and counter.seen:
+            return counter.value if disk is None else max(disk, counter.value)
+        return disk
 
     def tick(**fields):
-        """One progress report that can carry a ✕ back. See the docstring."""
+        """One progress report that can carry a ✕ back. See the docstring.
+
+        A throttle notice WINS over the caller's `detail`. It is the one thing
+        the row can say that the caller does not know: "Fetching weights…" over
+        a download the Hub has parked is a true sentence that reads as a lie,
+        and the segment threads have no other way to reach this row.
+        """
+        notice = _throttle_detail()
+        if notice:
+            fields["detail"] = notice
         report_or_cancel(job=job, **identity, state="running", **fields)
         if job is not None and CANCEL.is_set():
             raise Cancelled()
 
-    tick(detail=detail, done=_capped(bytes_on_disk(folder), total), total=total)
+    tick(detail=detail, done=_capped(measured(), total), total=total)
 
     result = {}
 
@@ -1414,15 +3362,14 @@ def fetch_with_progress(model_id, call, total=None, detail="Fetching weights…"
             # Finished during the join. Ticking now would be the late-cancel
             # the docstring refuses — the bytes are already on the disk.
             break
-        tick(done=_capped(bytes_on_disk(folder), total), total=total,
-             detail=detail)
+        tick(done=_capped(measured(), total), total=total, detail=detail)
     if "error" in result:
         raise result["error"]
-    # Land on the total rather than on the last walk: the snapshot symlinks are
-    # not counted, so a finished repo measures slightly under its own size and a
-    # bar that stopped at 98% reads as a download that gave up.
+    # Land on the total rather than on the last measurement: the snapshot
+    # symlinks are not counted, so a finished repo measures slightly under its
+    # own size and a bar that stopped at 98% reads as a download that gave up.
     report(job=job, **identity, state="running",
-           done=total or bytes_on_disk(folder), total=total)
+           done=total or measured(), total=total)
     return result["value"]
 
 
@@ -1927,6 +3874,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         if cached:
             return cached
 
+        # Our own mirror, for a suggested model, BEFORE the Hub is consulted at
+        # all — the point of the feature is a download that involves
+        # huggingface.co nowhere, so a listing call here would defeat it. Excluded
+        # under `kwargs` for the same reason the fast path above is: an argument
+        # this function does not know about changes what a download IS, and a
+        # manifest describes the whole repo at one commit and nothing else.
+        mirrored = _mirror_snapshot(model_id, allow_patterns, ignore_patterns)
+        if mirrored:
+            return mirrored
+
     # ONE listing, serving the bar's total, the list to fetch AND the revision
     # to fetch it at. Asking twice is a second round trip before any byte moves;
     # deciding the revision separately is how a list from one revision comes to
@@ -1938,6 +3895,12 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(model_id, error)
+
+    # Fail BEFORE a byte moves, when the listing gave us a real total (SPEC
+    # AI-26) — deliberately after the listing (so this never runs for a
+    # cached/mirrored fast-path return above) and before either fetch path
+    # below opens a connection.
+    _ensure_disk_space(total, repo_folder(model_id))
 
     def hub(revision=None):
         from huggingface_hub import snapshot_download
@@ -1957,9 +3920,16 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
                    "ignore_patterns": ignore_patterns}
         if revision:
             options["revision"] = revision
+        # Ours unless `kwargs` already names one — a caller that passed its
+        # own `tqdm_class` gets it back unmolested, and `counter` simply never
+        # sees anything (`measured` in `fetch_with_progress` degrades to the
+        # disk walk on its own; see `_HubByteTicker`).
+        ticker = _HubByteTicker()
+        options.setdefault("tqdm_class", ticker.bar())
         options.update(kwargs)
         return fetch_with_progress(
-            model_id, lambda: snapshot_download(model_id, **options), total=total)
+            model_id, lambda: snapshot_download(model_id, **options), total=total,
+            counter=ticker)
 
     if kwargs or files is None or not sha:
         # An extra argument changes WHAT is fetched — `allow_patterns`, a
@@ -1999,6 +3969,171 @@ def download_snapshot(model_id, allow_patterns=None, ignore_patterns=None, **kwa
     return fell_back
 
 
+#: How often `download_plan`'s own ticker corrects the row back to the GRAND
+#: total. Deliberately shorter than `fetch_with_progress`'s own one-second
+#: cadence (see `download_plan`'s docstring for why two tickers exist at all):
+#: a tighter interval here means the window where a viewer can catch a phase's
+#: OWN, smaller total on screen is well under a second rather than up to one.
+_PLAN_TICK_S = 0.3
+
+
+def _phase_total(model_id, allow, ignore, folder):
+    """One phase's own total, in bytes, or None — WITHOUT a Hub metadata call
+    when the phase is already complete on disk per this app's own
+    completeness record (SPEC AI-5l's fast path in `download_snapshot`,
+    reused rather than reimplemented).
+
+    This is `download_plan`'s fix for the bug review caught: pricing every
+    phase up front via a bare `repo_total_bytes()` call means an LTX bring-up
+    with `mlx-community/gemma-3-12b-it-4bit` already cached contacted the Hub
+    anyway, purely to price a phase that needed no network to answer at all
+    — the exact "no metadata call, no etag revalidation" fast path
+    `download_snapshot` documents for itself, silently defeated one level up
+    by a pricing step that never checked. `_cached_path` is the SAME check
+    (`local_files_only=True`, verified against our own fetch record) that
+    function runs first, so a fully-offline bring-up with every phase already
+    on disk now prices the whole plan without touching the network once.
+
+    **Still not perfectly mirror-transparent.** A phase NOT in our own
+    completeness record but servable entirely by `_mirror_snapshot` (AI-5l)
+    still pays one Hub metadata call here before `download_snapshot`'s own
+    mirror check gets a chance to run — `_mirror_snapshot` does not offer a
+    cheap, network-free "would you serve this" probe separate from actually
+    fetching, so there is no way to skip pricing for that case without either
+    duplicating its logic or triggering the fetch itself twice. Narrower than
+    the reported defect, which is specifically about an ALREADY-CACHED phase,
+    and accepted rather than solved here.
+    """
+    def local():
+        from huggingface_hub import snapshot_download
+
+        return snapshot_download(model_id, local_files_only=True)
+
+    if _cached_path(model_id, local, allow=allow, ignore=ignore):
+        return bytes_on_disk(folder)
+    return repo_total_bytes(model_id, allow=allow, ignore=ignore)
+
+
+def download_plan(phases):
+    """Fetch several repos as ONE download, priced at their SUM (SPEC AI-5n,
+    D498). Returns each phase's own `download_snapshot` result, in order.
+
+    `phases` is an ordered list of `(model_id, allow_patterns, ignore_patterns)`
+    — every repo one logical "Download" button touches. `ltx-video` fetches
+    the LTX weights and then `mlx-community/gemma-3-12b-it-4bit` as two
+    sequential `download_snapshot` calls; reporting only the first repo's
+    total is AI-5b's original defect rebuilt one level up — true of a phase,
+    silent about the download the button actually started.
+
+    **The grand total is summed ONCE, before a byte moves**, from
+    `_phase_total` per phase — the SAME call `download_snapshot` makes for
+    its own scoped total when a phase is not already on disk, so a phase that
+    only fetches part of a repo is priced against exactly what it fetches, in
+    the sum as much as on its own. See `_phase_total`'s own docstring for how
+    an already-complete phase is priced with no network at all.
+    **A phase whose size cannot be answered costs the WHOLE total**, not
+    just its own: `total` is `None` the moment any phase's is, rather than
+    summing the KNOWN phases and pretending the rest cost nothing — that is
+    AI-5b's defect rebuilt a second way, a bar priced at a fraction that jumps
+    the instant the indeterminate phase's bytes start landing. Indeterminate is
+    honest; partial is not.
+
+    **Each phase still runs through `download_snapshot`, unmodified.** AI-5l's
+    mirror branch, AI-5i's segmented fetch and the already-complete fast path
+    all still apply per phase exactly as they do for a bare call — this
+    function COMPOSES them, it does not reimplement any of them.
+
+    **A second reporting layer rides alongside each phase's own, and the two
+    are not coordinated.** `download_snapshot` has no way to know it is one of
+    several phases, so it goes on reporting its OWN phase-scoped total on its
+    OWN cadence (`fetch_with_progress`'s one-second tick) — reused code, not
+    duplicated here. A background ticker corrects the row back to the GRAND
+    total on a TIGHTER cadence (`_PLAN_TICK_S`) for the life of the whole
+    plan, naming the phase in `detail` ("Fetching weights… (2 of 2)") and
+    marking `total_scope="download"` so `modelSize.ts` knows this total may
+    win outright rather than only ever raise the catalog's constant. Because
+    the two tickers are independent, a viewer CAN catch a tick that briefly
+    shows one phase's own smaller total before the next correction lands —
+    reporting has always been best-effort here (see `report`'s own
+    docstring), and the alternative is threading a "stay quiet" flag through
+    `download_snapshot`'s three fetch paths (mirror, segmented, hub fallback)
+    to suppress its own ticks, which is exactly the duplication this function
+    exists to avoid. `_PLAN_TICK_S` keeps that window well under a second.
+
+    **The closing tick only lands on SUCCESS.** A phase that raises — a
+    network failure, or `Cancelled` from the ✕ — must not be followed by a
+    tick claiming `done=<the grand total>`: that is a finished-download shape
+    for a download that did not finish, the same lie a `state="running"`
+    revival elsewhere in this file is written not to tell. `fetch_with_progress`
+    itself never sends a closing tick on failure either — the exception is the
+    report — and this function now matches it.
+    """
+    resolved = list(phases)
+    if not resolved:
+        return []
+
+    folders = [repo_folder(model_id) for model_id, _allow, _ignore in resolved]
+    per_phase_totals = [
+        _phase_total(model_id, allow, ignore, folder)
+        for (model_id, allow, ignore), folder in zip(resolved, folders)
+    ]
+    total = None if any(t is None for t in per_phase_totals) else sum(per_phase_totals)
+    count = len(resolved)
+
+    def grand_done():
+        """`bytes_on_disk` summed across every phase's folder, or None the
+        moment any one of them cannot answer — the same all-or-nothing rule
+        `total` follows above, so `done` and `total` never disagree about
+        which phases they cover."""
+        parts = [bytes_on_disk(folder) for folder in folders]
+        return None if any(part is None for part in parts) else sum(parts)
+
+    current_phase = [1]
+
+    def _tick(**fields):
+        report(state="running", kind="download", unit="bytes",
+              total_scope="download", total=total, **fields)
+
+    _plan_stop = threading.Event()
+
+    def beat():
+        while not _plan_stop.wait(_PLAN_TICK_S):
+            n = current_phase[0]
+            detail = (f"Fetching weights… ({n} of {count})" if count > 1
+                      else "Fetching weights…")
+            _tick(detail=detail, done=_capped(grand_done(), total))
+
+    ticker = threading.Thread(target=beat, name="download-plan", daemon=True)
+    ticker.start()
+    try:
+        results = []
+        for index, (model_id, allow, ignore) in enumerate(resolved, start=1):
+            current_phase[0] = index
+            results.append(download_snapshot(model_id, allow_patterns=allow,
+                                             ignore_patterns=ignore))
+    except BaseException:
+        _plan_stop.set()
+        # JOINED on the SAME bound `heartbeat()` uses (`JOB_TIMEOUT_S + 1.0`),
+        # not a shorter one: `_tick` is a plain `report`, which POSTs with a
+        # `JOB_TIMEOUT_S` socket timeout, and a `ticker.join` shorter than
+        # that can return while a beat is still inside its POST. That beat
+        # then lands AFTER this function returns — reviving a row a moment
+        # later flipped `state` back to "running" and cleared `finished_at`,
+        # exactly the "tick in flight outlives the work" bug `heartbeat`
+        # already had to fix once.
+        ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+        raise
+    _plan_stop.set()
+    ticker.join(timeout=JOB_TIMEOUT_S + 1.0)
+    # Land on the grand total, `fetch_with_progress`'s own closing tick's
+    # reasoning applied one level up: every phase folder's snapshot
+    # symlinks are not counted, so a finished plan measures slightly under
+    # its own total and a bar stuck short of 100% reads as a download that
+    # gave up. Only reached on success — see the docstring's closing note.
+    _tick(detail="Fetching weights…", done=total if total is not None else grand_done())
+    return results
+
+
 def download_file(repo_id, filename, detail=None, job=None, row=None):
     """One file out of a repo — a GGUF checkpoint, say — with progress.
 
@@ -2025,6 +4160,18 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
     if cached:
         return cached
 
+    detail = detail or f"Fetching {filename}…"
+
+    # Our own mirror, for a suggested model, BEFORE the Hub is consulted at all —
+    # the point of the feature is a download that involves huggingface.co
+    # nowhere, so the listing below would defeat it. This is the branch that
+    # keeps llama.cpp's GGUFs on the mirror: since D416 it is the only local text
+    # engine on Windows and Linux, and it fetches one file rather than a snapshot,
+    # so `_mirror_snapshot` never sees a suggested text model on those platforms.
+    mirrored = _mirror_file(repo_id, filename, detail=detail, job=job, row=row)
+    if mirrored:
+        return mirrored
+
     # One listing here too, for the revision as much as for the total: a GGUF
     # fetched at a revision its listing never described is the same bug as a
     # whole snapshot fetched that way, one file wide.
@@ -2034,15 +4181,20 @@ def download_file(repo_id, filename, detail=None, job=None, row=None):
         total = _total_bytes(files)
     except Exception as error:  # noqa: BLE001 - the bar can proceed on a guess; the fetch cannot
         _fallback(repo_id, error)
-    detail = detail or f"Fetching {filename}…"
+
+    # See `download_snapshot`'s identical call (SPEC AI-26) — after the
+    # listing, before either fetch path below.
+    _ensure_disk_space(total, repo_folder(repo_id))
 
     def hub():
         from huggingface_hub import hf_hub_download
 
+        ticker = _HubByteTicker()
         return fetch_with_progress(
             repo_id,
-            lambda: hf_hub_download(repo_id=repo_id, filename=filename),
-            total=total, detail=detail, job=job, row=row)
+            lambda: hf_hub_download(repo_id=repo_id, filename=filename,
+                                    tqdm_class=ticker.bar()),
+            total=total, detail=detail, job=job, row=row, counter=ticker)
 
     if not sha:
         return hub()
@@ -2123,6 +4275,71 @@ def _handler(generate, streaming):
         def log_message(self, *args):
             pass  # the supervisor captures stderr; per-request noise is not useful
 
+        def _drain(self):
+            """Read and discard the request body. True if it was fully drained.
+
+            Draining at all is mandatory before answering a request WITHOUT
+            reading its body. This handler is HTTP/1.1, so the connection is
+            kept alive and the next request is parsed off the same socket — an
+            undrained body is still queued there and its bytes get read as that
+            request's request-line. And closing a socket that still holds
+            unread data makes Windows send an RST instead of a FIN, which
+            reaches the client as [WinError 10053] ConnectionAbortedError
+            rather than the clean 403 this path exists to deliver. (Both halves
+            are real: the desync bites on every platform, the RST is
+            Windows-specific.)
+
+            BOUNDED on both axes, because the only caller runs BEFORE
+            authentication and Content-Length is the caller's to claim.
+            Unbounded, a client with a wrong token could announce a huge body
+            and then send nothing, holding one of this ThreadingTCPServer's
+            threads for as long as it pleased — and `_Server` sets no socket
+            timeout, so "as long as it pleased" is forever. Enough of those and
+            the worker stops answering /health, which is how the supervisor
+            decides it is alive. So: a length over DRAIN_MAX_BYTES is not read
+            at all, and what is read gets DRAIN_TIMEOUT_S to arrive.
+
+            Returning False means the connection is NOT safe to keep alive —
+            an over-long, half-sent, chunked or unparseable body is still in
+            the socket, and the next request read off it would consume that as
+            its request-line. The caller closes instead.
+            """
+            # Content-Length is the only framing this can drain. A chunked body
+            # is length-prefixed per chunk, and BaseHTTPRequestHandler does not
+            # decode it — self.rfile is the raw socket, so following it means
+            # parsing the chunk framing here. Transfer-Encoding also OVERRIDES
+            # Content-Length when both are sent (RFC 9112 s6.1), so a
+            # Content-Length read alongside one would stop in the wrong place.
+            # Nothing legitimate POSTs chunked to this worker (small JSON, sent
+            # with a length), so treat any Transfer-Encoding as undrainable and
+            # end the connection rather than guess where the body stops.
+            # Presence, not truth: an empty `Transfer-Encoding:` is malformed
+            # framing either way, and `.get()` would read it as absent.
+            if "Transfer-Encoding" in self.headers:
+                return False
+            raw = self.headers.get("Content-Length")
+            try:
+                remaining = int(raw) if raw else 0
+            except ValueError:
+                return False          # unparseable: cannot know where it ends
+            if remaining < 0 or remaining > DRAIN_MAX_BYTES:
+                return False
+            if remaining == 0:
+                return True
+            previous = self.connection.gettimeout()
+            self.connection.settimeout(DRAIN_TIMEOUT_S)
+            try:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, 16 * 1024))
+                    if not chunk:
+                        return False  # client stopped short of what it claimed
+                    remaining -= len(chunk)
+                return True
+            except OSError:           # includes the socket timeout
+                return False
+            finally:
+                self.connection.settimeout(previous)
+
         def _authorized(self):
             # The token is a header the supervisor generated and passed in this
             # process's environment. A foreign page that guessed the ephemeral
@@ -2130,8 +4347,20 @@ def _handler(generate, streaming):
             # log line or a Referer.
             if TOKEN and self.headers.get("X-Fused-Worker") == TOKEN:
                 return True
+            # Drain BEFORE the refusal, not after: see _drain. A rejected POST
+            # still arrived with a body, and leaving it unread turns a 403 into
+            # a dropped connection. When it cannot be drained safely, the
+            # refusal still goes out — but this connection ends with it, rather
+            # than being reused with someone else's bytes queued on it.
+            drained = self._drain()
             self.send_response(403)
             self.send_header("Content-Length", "0")
+            if not drained:
+                # Announced, not just done: the client is owed the reason its
+                # connection is about to end. send_header's own side effect
+                # sets close_connection, which is what actually stops this
+                # socket being reused with those undrained bytes still on it.
+                self.send_header("Connection", "close")
             self.end_headers()
             return False
 
@@ -2155,7 +4384,14 @@ def _handler(generate, streaming):
                 # whatever it happened to cost before it had done anything.
                 health = snapshot()
                 if health.get("state") == "ready":
+                    # `resident_bytes()` FIRST: it is what feeds `_rss_peak`
+                    # (SPEC AI-8c), and `peak_resident_bytes()`'s RSS fallback
+                    # must see THIS poll's reading before it answers.
                     health["resident_bytes"] = resident_bytes()
+                    health["peak_resident_bytes"] = peak_resident_bytes()
+                    # The OS's own "right now" figure (D597), additive beside
+                    # the two above — see `os_footprint_bytes`.
+                    health["os_footprint_bytes"] = os_footprint_bytes()
                 self._json(health)
                 return
             self._json({"error": "not found"}, status=404)
@@ -2208,12 +4444,24 @@ def _handler(generate, streaming):
             with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
-                    self._json({"ok": True, "result": generate(body)})
+                    # `run_on_generate_thread`, never a bare `generate(body)`:
+                    # this method runs on a `ThreadingTCPServer` connection
+                    # thread, which is exactly the thread MLX's compiled-graph
+                    # cache must never touch — see that function's docstring.
+                    result = run_on_generate_thread(generate, body)
+                    self._json({"ok": True, "result": result})
                 except Cancelled:
                     self._json({"ok": True, "cancelled": True})
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     traceback.print_exc(file=sys.stderr)
                     self._json({"ok": False, "error": describe_failure(e)})
+                finally:
+                    # Arms the idle-release timer on every outcome, not just
+                    # success: a cancelled or failed generation can still have
+                    # allocated its peak before it stopped, and this only
+                    # STARTS the clock — it does not clear anything itself.
+                    # See `_arm_release_timer`.
+                    _arm_release_timer()
 
         def _stream(self, body):
             """NDJSON, chunked. `{"type":"chunk"}` lines closed by
@@ -2231,11 +4479,26 @@ def _handler(generate, streaming):
             with GENERATE_LOCK, heartbeat():
                 CANCEL.clear()
                 try:
-                    generate(body, write)
+                    # `run_on_generate_thread`, never a bare `generate(body,
+                    # write)`: this method runs on a `ThreadingTCPServer`
+                    # connection thread — see that function's docstring for
+                    # why MLX's generation must never run there. `write`
+                    # itself still runs on the generate thread it is called
+                    # from (it is passed in, not called back across threads),
+                    # so every chunk is written to `self.wfile` from ONE
+                    # thread at a time, exactly as before.
+                    run_on_generate_thread(generate, body, write)
                 except BaseException as e:  # noqa: BLE001 - must reach the client
                     write({"type": "done", "ok": False,
                            "error": describe_failure(e)})
                     traceback.print_exc(file=sys.stderr)
+                finally:
+                    # Same reasoning as `_single`'s finally — and note WHERE
+                    # this sits: after `run_on_generate_thread` has RETURNED,
+                    # i.e. after the whole token stream or transcription has
+                    # finished, not after its first chunk. The idle clock only
+                    # starts once the worker is actually idle again.
+                    _arm_release_timer()
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
 
@@ -2254,16 +4517,29 @@ def build_server(generate, streaming=False, host="127.0.0.1"):
     return _Server((host, 0), _handler(generate, streaming))
 
 
-def serve(download, load, generate, streaming=False, memory=None, argv=None):
+def serve(download, load, generate, streaming=False, memory=None, peak_memory=None,
+         release=None, argv=None):
     """Parse the supervisor's argv and run this worker. Does not return.
 
     `--download-only` fills the cache and exits; the exit CODE is the answer
     there, because the supervisor waits on the process rather than on a health
     route, so a failure must not be swallowed into a status nobody reads.
+
+    `peak_memory` is `memory`'s sibling (SPEC AI-8c, D497) — a runner that can
+    answer "what did this cost at its WORST", not just "right now". See
+    `peak_resident_bytes` for what a runner without one gets instead.
+
+    `release` is a third, independent optional hook: not a measurement but an
+    action, armed to run `_RELEASE_IDLE_S` after the worker's last execution
+    (win, loss, or cancel alike) if nothing new has started by then — see
+    `_release`, `_arm_release_timer` and `_fire_release` for the mechanism and
+    why only some runners pass one.
     """
-    global JOB_ID, _measure
+    global JOB_ID, _measure, _measure_peak, _release
 
     _measure = memory
+    _measure_peak = peak_memory
+    _release = release
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
     # Not required: a download-only run serves nothing, so it has no port to

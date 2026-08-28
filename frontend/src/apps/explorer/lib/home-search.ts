@@ -36,19 +36,34 @@
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
-import type { IndexRankResult } from "@platform/lib/api";
+import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import { fuzzyMatch } from "@platform/lib/fuzzy";
 
 // Rows rendered at most. Far smaller than the listing's SEARCH_RESULT_CAP, and
 // the number is set by what has to stay VISIBLE rather than by how many hits are
-// interesting: "Search with AI" is the LAST row of this list, so any cap that
-// overflows the viewport hides the one action a user who isn't finding their file
-// needs — at 40 it sat two screens down, reachable only by scrolling past the
-// results that had already failed them. Ten rows plus the AI row fit a laptop
-// screen. Ranking still runs over the whole corpus (the note below owns up to
-// what is not shown); past ten rows the useful move is a better query or the AI
-// row, not more scrolling.
-export const HOME_RESULT_CAP = 10;
+// interesting: at 40 "Search with AI" — the LAST row of this list, and the one
+// action a user who isn't finding their file needs — sat two screens down,
+// reachable only by scrolling past results that had already failed them.
+// Twenty rows go below the fold on their own, which is why the AI row is now a
+// STICKY footer (`.fh-ai-row`, preferences.css — `position: sticky; bottom: 0`
+// over a scrolling `.fh-results`) instead of a row that scrolls away with the
+// rest of the list: the row is always reachable without scrolling, which is
+// the guarantee this constant originally existed to protect, at four times the
+// cap it was first sized for. Ranking still runs over the whole corpus (the
+// note below owns up to what is not shown); past twenty rows the useful move
+// is a better query or the AI row, not more scrolling.
+export const HOME_RESULT_CAP = 20;
+
+// Below this many characters, a query is not sent at all. One or two letters
+// match almost every file in a home tree — a substring-pass candidate cap gets
+// hit on "a" or "e" alone — so the round trip is pure cost: it burns the
+// escalation ladder's expensive half on a query that could never narrow
+// anything, and it pre-arms "Search with AI" (a paid model call) on a query
+// nobody meant to submit yet. Gated on the REQUEST, not on `active`
+// (`FilesHome.tsx`'s `q !== ""`): `active` is what gives the search panel the
+// page body, and flipping it on the first character would bounce the whole
+// page as the user types their second one.
+export const MIN_QUERY_CHARS = 2;
 
 // Hits asked of the server per query. The list renders HOME_RESULT_CAP of
 // them; the rest are what makes the count note ("Showing top 10 of 137") true
@@ -93,6 +108,14 @@ export interface HomeAnswer {
    * is a statement about the app, not about the user's files.
    */
   covered: boolean;
+  /**
+   * WHY, when `covered` is false — carried through verbatim from the
+   * server's `reason` (platform/lib/api.ts's `RankReason`). FilesHome reads
+   * this only to say "indexing is off" instead of the generic "still
+   * building" when `reason === "disabled"`; every other value renders the
+   * same not-covered message it always has.
+   */
+  reason: RankReason;
 }
 
 /** A ranked response as an answer: absolutized, capped, and highlighted. */
@@ -113,7 +136,40 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
     truncated: res.truncated,
     total: res.total,
     covered: res.covered,
+    reason: res.reason,
   };
+}
+
+/**
+ * The held answer's hits, re-filtered against a NEWER query with no round
+ * trip.
+ *
+ * The common case while a request is in flight is the new query EXTENDING the
+ * old one ("read" -> "readm"): re-running `fuzzyMatch` (the same matcher
+ * rank.py mirrors) over the hits already in hand and keeping only the ones
+ * that still match — with `positions` recomputed for the new query — narrows
+ * the list on screen with no round trip and no blank frame, which is strictly
+ * better than dimming rows that cannot possibly be answers to what is now
+ * typed.
+ *
+ * Deliberately does NOT re-rank or add rows: it can only ever REMOVE hits from
+ * the held answer, which is what makes the result a provable SUBSET of the
+ * true answer for `q` — it can never show something the fresh answer
+ * wouldn't. A query that is not an extension of the old one (a paste, a
+ * select-all retype) narrows to whichever held hits happen to still
+ * fuzzy-match `q` directly, which is usually few or none; that emptiness is
+ * exactly the signal the staleness deadline (`STALE_CLEAR_MS`,
+ * platform/lib/instant-search) uses to decide there is nothing worth holding
+ * onto.
+ */
+export function narrowAnswer(answer: HomeAnswer, q: string): HomeHit[] {
+  const out: HomeHit[] = [];
+  for (const hit of answer.hits) {
+    const m = fuzzyMatch(q, hit.rel);
+    if (!m) continue;
+    out.push({ ...hit, positions: m.positions });
+  }
+  return out;
 }
 
 /**
@@ -122,9 +178,34 @@ export function answerFrom(res: IndexRankResult, query: string, home: string): H
  * A pasted or typed `/…`, `~/…` or `C:\…` is an exact address, and searching
  * for it would be answering a question nobody asked. The caller still has to
  * `statPath` it: a path that does not exist falls back to being a search.
+ *
+ * Real pastes are not as clean as a typed shortcut, so the shape test runs
+ * only after stripping, in order: surrounding whitespace/newlines (a paste
+ * from a terminal or a chat window often carries one), matching wrapping
+ * quotes (`"~/Downloads"`), a `file://` scheme, and a shell backslash-escape
+ * before a space (`My\ File` -> `My File`) — that last one applies regardless
+ * of platform, unlike the drive-letter de-backslashing below: a `\` followed
+ * by a space is overwhelmingly a shell escape, never a real two-character
+ * POSIX filename fragment, so unescaping it does not touch the POSIX
+ * backslash-is-a-legal-char rule the drive-letter branch exists for.
  */
 export function pathShortcut(query: string, home: string): string | null {
-  const q = query.trim();
+  let q = query.trim().replace(/[\r\n]+/g, " ").trim();
+  const quoted = q.match(/^(['"])([\s\S]*)\1$/);
+  if (quoted) q = quoted[2].trim();
+  if (/^file:\/\//i.test(q)) {
+    q = q.slice("file://".length);
+    // A Windows file:// URI's third slash is the URI's (empty) authority
+    // separator, not part of the path — file:///C:/Users/x is "C:/Users/x".
+    // Left in, it makes the string start with "/C:/…", which then PASSES the
+    // shape guard below via its leading-slash (POSIX) alternative instead of
+    // failing the drive-letter one, so a bogus absolute path is returned with
+    // full confidence instead of falling back to search. A bare POSIX
+    // file:// URL has no such extra slash: file:///home/x really is
+    // "/home/x", and is left untouched.
+    if (/^\/[A-Za-z]:[\\/]/.test(q)) q = q.slice(1);
+  }
+  q = q.replace(/\\ /g, " ");
   if (!/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) return null;
   let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
   // Backslashes are only separators in drive-letter paths (same rule as the
@@ -222,23 +303,53 @@ export function redirectsToSearch(e: KeyIntent): boolean {
 
 // -- the row model the keyboard walks ----------------------------------------
 //
-// The rendered list is `fileCount` file rows followed by exactly ONE action row
-// (Search with AI), so the AI row's index is always `fileCount`. Keeping that
-// as arithmetic rather than a flag is what makes ↑/↓ a single wrap-around step
-// over a heterogeneous list.
+// The list used to be a fixed shape — `fileCount` file rows followed by
+// exactly ONE action row — which let the AI row's index be plain arithmetic
+// (`fileCount`). Section 7 adds a second, EARLIER action row (an "Open" row
+// for a resolving path address), which arithmetic cannot express: `fileCount`
+// alone no longer says where anything is once a row can also come BEFORE the
+// files. `RowModel` replaces the arithmetic with a small descriptor every
+// other row-model function derives from, so ↑/↓ is still a single wrap-around
+// step over a heterogeneous list, however many of its three parts are present.
 
-/** Whether row `index` is the AI action row rather than a file. */
-export function isAiRow(index: number, fileCount: number): boolean {
-  return index >= fileCount;
+/** The shape of the rendered list: at most one open row, then files, then at
+ * most one AI row — any of the three may be absent. */
+export interface RowModel {
+  /** A resolving path address is offered as row 0, ahead of any file rows. */
+  openRow: boolean;
+  /** File hits, in rendered order — between the open row (if any) and the AI
+   * row (if any). */
+  fileCount: number;
+  /** "Search with AI" as the LAST row. */
+  aiRow: boolean;
 }
 
-/** Move the highlight by one row, wrapping, entering the list from either end. */
-export function stepHighlight(
-  current: number | null,
-  fileCount: number,
-  delta: 1 | -1,
-): number {
-  const n = fileCount + 1;
+function totalRows(m: RowModel): number {
+  return (m.openRow ? 1 : 0) + m.fileCount + (m.aiRow ? 1 : 0);
+}
+
+/** Whether row `index` is the leading "Open" row. */
+export function isOpenRow(index: number, m: RowModel): boolean {
+  return m.openRow && index === 0;
+}
+
+/** Whether row `index` is the AI action row rather than a file. */
+export function isAiRow(index: number, m: RowModel): boolean {
+  return m.aiRow && index === totalRows(m) - 1;
+}
+
+/**
+ * Move the highlight by one row, wrapping, entering the list from either end.
+ *
+ * Null on a genuinely empty model (no open row, no files, no AI row — reachable
+ * when a path-shaped query does not resolve: ranking runs and comes back with
+ * zero hits, but the AI row stays suppressed because the query is still
+ * shaped like a path). There is no row 0 to land the arrow key on; returning
+ * 0 here used to hand `activeRow` a position to clamp into -1 instead.
+ */
+export function stepHighlight(current: number | null, m: RowModel, delta: 1 | -1): number | null {
+  const n = totalRows(m);
+  if (n === 0) return null;
   if (current === null) return delta === 1 ? 0 : n - 1;
   return (current + delta + n) % n;
 }
@@ -281,47 +392,67 @@ export function rankingSettled(
 }
 
 /**
- * The row the highlight is ON: the explicit choice, clamped into the list.
+ * The row the highlight is ON — the explicit choice, clamped into the list —
+ * and, with no explicit choice, the row Enter would commit. Those used to be
+ * two different answers: this function pre-selected nothing over file hits,
+ * while `submitRow` (below) still opened the top one on a bare Enter. The
+ * user saw an unhighlighted list and pressed Enter anyway, because Enter is
+ * the obvious gesture in a search box — and got a row they were never shown
+ * as selected. One rule now: the row that visually pre-selects IS the row
+ * Enter commits, always.
  *
- * With no highlight there is one default, and it is the settled zero-hit case:
- * the AI row is then the only content on screen, so it is pre-selected. That
- * pre-selection is gated on `settled` because it ARMS Enter — offering it while
- * the scan is still running spends a model call on a query that was about to
- * answer itself. With file hits showing there is no highlight until the user
- * picks one; `submitRow` is what Enter consults.
+ * With no highlight there are three defaults, checked in this order:
+ *
+ *  * an open row pre-selects UNCONDITIONALLY — unlike the AI row, resolving an
+ *    address costs nothing to arm (it navigates, it does not call a model),
+ *    and by the time `RowModel.openRow` is true the stat has already settled
+ *    on "this address exists", so there is no in-flight ambiguity to gate on.
+ *    It is also, by construction, the only content on screen: an open row
+ *    implies zero file rows (the request is skipped entirely once an address
+ *    resolves — see FilesHome).
+ *  * failing that, with file hits on screen, the TOP hit pre-selects — gated
+ *    on `settled` for the reason that gate exists everywhere else in this
+ *    file: the list is deliberately never blanked, so rows for the PREVIOUS
+ *    query are on screen while this one is in flight (or its answer failed),
+ *    and "the top hit" then means the top hit for something the user has
+ *    already finished typing over. Type "read", get ten rows, type "readme",
+ *    have that request fail before Enter — `settled` is false, so there is no
+ *    highlight AND Enter does nothing, rather than opening "read"'s best
+ *    match. An explicit highlight still commits regardless — the user
+ *    pointed at a row they can actually see.
+ *  * failing THAT, the settled zero-hit case: the AI row is then the only
+ *    content, so IT pre-selects. Gated on `settled` for the same reason —
+ *    offering it while the scan is still running spends a model call on a
+ *    query that was about to answer itself.
  */
 export function activeRow(
   highlight: number | null,
-  fileCount: number,
+  m: RowModel,
   settled: boolean,
 ): number | null {
-  if (highlight === null) return fileCount === 0 && settled ? 0 : null;
-  return Math.min(highlight, fileCount);
+  // A genuinely empty model — no open row, no files, no AI row — has no row
+  // to pre-select AND no row an explicit `highlight` could have meant, so
+  // this returns null unconditionally before consulting `highlight` at all.
+  // Falling through to `Math.min(highlight, totalRows(m) - 1)` below used to
+  // clamp any non-null highlight to -1 here (`totalRows(m) - 1` === -1),
+  // which `activateRow` (FilesHome.tsx) then dereferenced as `hits[-1]`.
+  if (totalRows(m) === 0) return null;
+  if (highlight === null) {
+    if (m.openRow) return 0;
+    if (!settled) return null;
+    if (m.fileCount > 0) return 0;
+    return m.aiRow ? totalRows(m) - 1 : null;
+  }
+  return Math.min(highlight, totalRows(m) - 1);
 }
 
-/**
- * The row Enter commits, which is not always the highlighted one.
- *
- * With hits on screen and no arrow-key choice, Enter opens the TOP hit. It used
- * to resolve to null and do nothing at all — a silent no-op, in the one box in
- * this app where Enter is the obvious gesture. It still never falls through to
- * the AI row that way: reaching a paid action takes either zero settled hits or
- * an explicit highlight.
- *
- * That fallthrough is gated on `settled` for the same reason the AI row is, and
- * the reason arrived with server-side ranking: the list is deliberately never
- * blanked, so rows for the PREVIOUS query are on screen while this one is in
- * flight, and "the top hit" then means the top hit for something the user has
- * already finished typing over. Typing "read", then "readme", then Enter
- * navigated to "read"'s best match. An explicit highlight still commits —
- * the user pointed at a row they can actually see.
- */
+/** The row Enter commits. Now just `activeRow` — see its doc comment — kept
+ * as its own name because "what Enter commits" and "what is highlighted" are
+ * different QUESTIONS even though they now always share one answer. */
 export function submitRow(
   highlight: number | null,
-  fileCount: number,
+  m: RowModel,
   settled: boolean,
 ): number | null {
-  const row = activeRow(highlight, fileCount, settled);
-  if (row !== null) return row;
-  return settled && fileCount > 0 ? 0 : null;
+  return activeRow(highlight, m, settled);
 }

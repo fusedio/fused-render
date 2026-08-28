@@ -1,6 +1,6 @@
 // Whether this machine is signed in to Fused, for readers OUTSIDE the Canvases
-// page — today the shell sidebar, which shows its Workbench canvases row only
-// once there is an account behind it.
+// page — today the shell sidebar, which shows its Canvases row only once there
+// is an account behind it.
 //
 // A SEPARATE MODULE FROM index.ts, for the reason available.ts spells out for
 // Claude Config: the barrel re-exports Canvases/CanvasWorkspace, so a sidebar

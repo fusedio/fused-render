@@ -6,6 +6,7 @@ import {
   resolveSide,
   sideParam,
   sideToggleTarget,
+  sideReopenedByUrl,
   reconcileSideSearch,
   writeQueryParam,
   SIDE_OFF,
@@ -24,6 +25,7 @@ const openedAt = (search: string, split: Parameters<typeof resolveSide>[1]) =>
 // with any rewording, silently, including a bad one.
 const NO_REPO = "Not inside a git repository";
 const NO_CLAUDE = "Claude is not available for this file";
+const NO_APP = "Not a fused app folder (needs index.html and a main())";
 
 // A registered template, icon and all — the icon matters here because a disabled
 // switcher row has to be able to find it.
@@ -38,6 +40,8 @@ const iconOf = (mode: string) => `/tpl/${mode}/icon.svg`;
 // flight: the mode name and nothing else.
 const GIT_PLACEHOLDER: TemplateEntry = { mode: "git", path: null, icon: null };
 const GIT: TemplateEntry = t("git");
+// The second folder-bound companion, borrowed exactly the same way.
+const MCP: TemplateEntry = t("mcp");
 
 const image = t("image");
 const claude = t("claude");
@@ -63,8 +67,12 @@ const file = (own: TemplateEntry[], git: "pending" | "yes" | "no"): SideSplitInp
   splitCapable: true,
   content: [image],
   own,
-  borrowed: git === "no" ? null : git === "yes" ? GIT : GIT_PLACEHOLDER,
-  borrowedPending: git === "pending",
+  // A LIST since `mcp` joined `git` as a folder-bound companion (both are
+  // borrowed from the parent, each on its own probe). These cases are about the
+  // borrow MECHANISM, so one borrowed mode exercises it; `mcp`'s own row is
+  // covered where the menu is.
+  borrowed: git === "no" ? [] : [git === "yes" ? GIT : GIT_PLACEHOLDER],
+  borrowedPending: git === "pending" ? ["git"] : [],
 });
 
 describe("sideSplit", () => {
@@ -152,6 +160,7 @@ describe("sideSplit's menu", () => {
     expect(rows(sideSplit(file([], "no")).menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
   });
 
@@ -159,7 +168,37 @@ describe("sideSplit's menu", () => {
     expect(rows(sideSplit(file([], "yes")).menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", null],
+      ["mcp", NO_APP],
     ]);
+  });
+
+  // BOTH folder-bound companions are borrowed, independently: a file inside an app
+  // that is not a repository gets a real MCP row beside a disabled Git one, which
+  // is the case a single borrowed slot could not represent at all.
+  it("borrows each folder-bound companion on its own verdict", () => {
+    const s = sideSplit({ ...file([claude], "no"), borrowed: [MCP] });
+    expect(rows(s.menu)).toEqual([
+      ["claude", null],
+      ["git", NO_REPO],
+      ["mcp", null],
+    ]);
+    expect(names(s.settled)).toEqual(["claude", "mcp"]);
+    expect(s.on).toBe(true);
+  });
+
+  it("holds a pending MCP borrow the same way it holds a pending git one", () => {
+    const placeholder: TemplateEntry = { mode: "mcp", path: null, icon: null };
+    const s = sideSplit({
+      ...file([], "no"),
+      borrowed: [placeholder],
+      borrowedPending: ["mcp"],
+    });
+    // Listed (so `?_side=mcp` survives the wait) but settling nothing, exactly as
+    // the git case above: one probe out is one mode undecided.
+    expect(names(s.all)).toEqual(["mcp"]);
+    expect(names(s.settled)).toEqual([]);
+    expect(s.on).toBe(false);
+    expect(s.defaultSide).toBe(null);
   });
 
   // A denied borrowed git is a listed, disabled Git row — the finding this
@@ -170,6 +209,7 @@ describe("sideSplit's menu", () => {
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
     // A placeholder is a row, not a template: nothing to frame.
     expect(menu.find((e) => e.mode === "git")!.path).toBe(null);
@@ -182,6 +222,7 @@ describe("sideSplit's menu", () => {
     expect(rows(menu)).toEqual([
       ["claude", null],
       ["git", null],
+      ["mcp", NO_APP],
     ]);
     expect(menu.find((e) => e.mode === "git")).toBe(GIT_PLACEHOLDER);
   });
@@ -190,7 +231,7 @@ describe("sideSplit's menu", () => {
   // is the whole reason `menu` is a third list rather than a flag on `all`.
   it("decides nothing", () => {
     const s = sideSplit(file([], "no"));
-    expect(s.menu.length).toBe(2);
+    expect(s.menu.length).toBe(3);
     expect(s.on).toBe(false);
     expect(s.offered).toBe(false);
     expect(names(s.settled)).toEqual([]);
@@ -212,16 +253,18 @@ describe("sideSplit's menu", () => {
     // The file BINDS claude — the gate is what denied it, and the
     // filter that dropped it took the icon with it (Preview re-supplies them
     // from the raw stat).
-    const s = sideSplit({ ...file([], "no"), bound: [claude, GIT] });
+    const s = sideSplit({ ...file([], "no"), bound: [claude, GIT, MCP] });
     expect(s.menu.map((e) => [e.mode, e.icon])).toEqual([
       ["claude", iconOf("claude")],
       ["git", iconOf("git")],
+      ["mcp", iconOf("mcp")],
     ]);
     // ...and they are still disabled rows, not entries: no path, and the reason
     // is what makes them unselectable.
     expect(rows(s.menu)).toEqual([
       ["claude", NO_CLAUDE],
       ["git", NO_REPO],
+      ["mcp", NO_APP],
     ]);
     expect(s.menu.every((e) => e.path === null)).toBe(true);
   });
@@ -251,6 +294,7 @@ describe("sideSplit's menu", () => {
     expect(rows(s.menu)).toEqual([
       ["claude", null],
       ["git", null],
+      ["mcp", NO_APP],
       ["notes", null],
     ]);
   });
@@ -296,6 +340,62 @@ describe("parseSide", () => {
 
   it("lets an explicit shut beat the legacy param", () => {
     expect(parseSide("?_side=off&_mode=claude")).toEqual({ open: false, mode: null });
+  });
+});
+
+// THE SESSION'S HIDDEN FLAG (`lib/side-hidden-store.ts`), consulted only where
+// the URL itself is silent. `hidden` is a plain parameter here rather than an
+// import of the store, so the resolution rule stays pinnable with no store to
+// reset between cases — Preview.tsx is what reads the store and passes the
+// value in.
+describe("parseSide with the session's hidden flag", () => {
+  it("defaults to false, so every call above still opens", () => {
+    expect(parseSide("")).toEqual({ open: true, mode: null });
+  });
+
+  it("keeps a silent `_side` shut when the flag is set", () => {
+    expect(parseSide("", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?zoom=2", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?_side=", true)).toEqual({ open: false, mode: null });
+  });
+
+  it("lets an explicit `_side` win over the flag, either direction", () => {
+    // A deep link that says open beats a stale "I closed it earlier" flag...
+    expect(parseSide("?_side=git", true)).toEqual({ open: true, mode: "git" });
+    // ...and an explicit `off` is just as explicit whether or not the flag
+    // already agreed.
+    expect(parseSide("?_side=off", true)).toEqual({ open: false, mode: null });
+    expect(parseSide("?_side=off", false)).toEqual({ open: false, mode: null });
+  });
+
+  it("lets a legacy `?_mode=claude` deep link win over the flag too", () => {
+    expect(parseSide("?_mode=claude", true)).toEqual({ open: true, mode: "claude" });
+  });
+});
+
+// THE D495 CORRECTION: a deep link that OPENS the sidebar over a stale hidden
+// flag is the same observable outcome as the user clicking reopen, so it must
+// clear the flag too — otherwise the very next silent-URL hop shuts the
+// sidebar again despite the user having just seen it open. `parseSide`'s own
+// tests above prove the deep link WINS for this one paint; these prove the
+// flag itself gets cleared for every paint after it.
+describe("sideReopenedByUrl", () => {
+  it("says yes only when the flag was set but the resolved request opened", () => {
+    // The exact shape an explicit `_side`/`_mode` deep link produces while the
+    // flag is still set (parseSide("?_side=git", true) above).
+    expect(sideReopenedByUrl(true, { open: true, mode: "git" })).toBe(true);
+    expect(sideReopenedByUrl(true, { open: true, mode: null })).toBe(true);
+  });
+
+  it("says no when the flag was never set", () => {
+    // Nothing to reconcile — the ordinary open case with no flag involved.
+    expect(sideReopenedByUrl(false, { open: true, mode: null })).toBe(false);
+  });
+
+  it("says no when the flag closed the request too", () => {
+    // The silent-URL-plus-flag case parseSide("", true) resolves to — the
+    // panel really is shut, and there is nothing to clear.
+    expect(sideReopenedByUrl(true, { open: false, mode: null })).toBe(false);
   });
 });
 
@@ -618,6 +718,20 @@ describe("reconcileSideSearch", () => {
       null
     );
     expect(reconcileSideSearch("", o({ open: false, defaultSide: "claude" }))).toBe("_side=off");
+  });
+
+  it("leaves a silent URL silent when only the session's hidden flag closed it", () => {
+    // Preview.tsx's composition for this case (`sideFromHiddenFlag`): the URL
+    // itself was silent about `_side`, so `open` is passed as `true` even
+    // though `activeSide` is genuinely null because the panel IS shut for
+    // rendering (lib/side-hidden-store.ts closed it). That is indistinguishable
+    // from "nothing settled yet" to this function, and lands in the exact same
+    // "leave `_side` alone" branch the pending-placeholder case above does —
+    // which is the point: a memory-only flag must never get written into the
+    // URL. Writing `_side=off` here would break the flag's own refresh escape
+    // hatch (the URL, not just the module variable, would then say shut) and
+    // leak into any link copied from the address bar for this file.
+    expect(reconcileSideSearch("", o({ open: true, activeSide: null }))).toBe(null);
   });
 
   it("leaves `_side` ALONE while nothing is settled yet", () => {

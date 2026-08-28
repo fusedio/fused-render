@@ -53,7 +53,7 @@ def spawned(monkeypatch):
     the entry lands in `sent`; a test wanting failure re-stubs this."""
     calls = []
 
-    def fake_spawn(target, prompt, permission_mode, session_id=""):
+    def fake_spawn(target, prompt, permission_mode, session_id="", **kw):
         calls.append({"target": target, "message": prompt,
                       "permission_mode": permission_mode,
                       "session_id": session_id})
@@ -118,6 +118,59 @@ def test_create_rejects_what_a_caller_can_get_wrong(target):
     with pytest.raises(ValueError, match="permission_mode"):
         schedule.create(str(target), "hi", _in(600),
                         permission_mode="bypassPermissions")
+
+
+def test_create_target_makes_one_folder_and_only_one(target):
+    """`create_target` is opt-in, and one level deep. Off, a missing target is
+    the same refusal it always was — which is what the re-send path relies on:
+    a target that has since been deleted is a fact its user needs told, not one
+    to paper over with an empty directory (and re-making a deleted FILE's name
+    as a folder would be the worst answer available)."""
+    schedule.create(str(target / "ABC1"), "hi", _in(600), create_target=True)
+    assert (target / "ABC1").is_dir()
+
+    # Two levels is a tree, not a folder — and nothing is left behind.
+    with pytest.raises(ValueError, match="only one new folder"):
+        schedule.create(str(target / "new1" / "new2"), "hi", _in(600),
+                        create_target=True)
+    assert not (target / "new1").exists()
+
+    # Off by default, so every other caller is unchanged.
+    with pytest.raises(ValueError, match="no such file or directory"):
+        schedule.create(str(target / "ABC2"), "hi", _in(600))
+    assert not (target / "ABC2").exists()
+
+
+def test_a_refused_create_leaves_no_new_folder_behind(target):
+    """The folder is made LAST, after every other validation has had its chance
+    to refuse. A request that 400s on its cron line, its due date or its
+    permission mode used to leave the leaf directory on disk anyway — an empty
+    folder the user never got a task for, and never asked for."""
+    for kwargs, match in (
+        ({"repeats": "not a cron line"}, "cron|field|repeats"),
+        ({"due": "next tuesday"}, "ISO 8601"),
+        ({"permission_mode": "bypassPermissions"}, "permission_mode"),
+        ({"rule": {"freq": "day"}, "due": None}, "due"),
+    ):
+        due = kwargs.pop("due", _in(600))
+        leaf = target / "leaf"
+        with pytest.raises(ValueError, match=match):
+            schedule.create(str(leaf), "hi", due, create_target=True, **kwargs)
+        assert not leaf.exists(), f"{kwargs} left {leaf} behind"
+
+    # And the happy path still makes it, so the reorder did not just drop it.
+    schedule.create(str(target / "leaf"), "hi", _in(600), create_target=True)
+    assert (target / "leaf").is_dir()
+
+
+def test_create_target_leaves_an_existing_target_alone(target):
+    """The flag is permission to create, not an instruction to. Something that is
+    already there is used as-is — including a FILE target, which stays legal
+    (a task can run against one; the agent works in its parent)."""
+    entry = schedule.create(str(target / "index.html"), "hi", _in(600),
+                            create_target=True)
+    assert entry["target"] == str(target / "index.html")
+    assert (target / "index.html").is_file()
 
 
 def test_a_due_time_days_in_the_past_is_accepted_and_recorded_as_given(target):
@@ -292,7 +345,7 @@ def test_the_claim_is_written_before_the_spawn(target, monkeypatch):
     must already be out of `pending` so the next boot does not send it again."""
     seen = {}
 
-    def spawn_and_look(target_, prompt, mode, session_id=""):
+    def spawn_and_look(target_, prompt, mode, session_id="", **kw):
         # what the store says WHILE the helper is away
         seen["state"] = schedule.list_entries()[0]["state"]
         return {"run_id": "r-1"}
@@ -316,7 +369,7 @@ def test_only_the_message_in_flight_is_claimed(target, monkeypatch):
     are still sendable on the next tick or the next launch."""
     seen = []
 
-    def spawn_and_look(target_, prompt, mode, session_id=""):
+    def spawn_and_look(target_, prompt, mode, session_id="", **kw):
         # what the store says about EVERY entry while this one is away
         seen.append({e["message"]: e["state"] for e in schedule.list_entries()})
         return {"run_id": f"r-{len(seen)}"}
@@ -387,7 +440,7 @@ def test_one_bad_entry_does_not_stop_the_rest_of_the_tick(target, monkeypatch):
     other messages their send."""
     calls = []
 
-    def flaky(target_, prompt, mode, session_id=""):
+    def flaky(target_, prompt, mode, session_id="", **kw):
         calls.append(prompt)
         if prompt == "boom":
             raise RuntimeError("helper exploded")

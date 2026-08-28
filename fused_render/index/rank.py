@@ -22,8 +22,10 @@ where the reason is not visible in the code:
 - +1 per char, +3 for a consecutive run, +5 for a segment start (tested on the
   ORIGINAL-case text so the camelCase hump survives lowercasing),
 - the `max_span(n) = n * 3 + 8` refusal,
-- name bonuses (+100 exact, +25 prefix), the 1/2/3 name tier, and the
-  `longest_run desc, tier asc, score desc, depth asc, path` ordering.
+- name bonuses (+100 exact, +25 prefix), the depth penalty
+  (`DEPTH_PENALTY * max(0, depth - SHALLOW_FREE)`, applied after the name
+  bonuses), the 1/2/3 name tier, and the `longest_run desc, tier asc, score
+  desc, depth asc, path` ordering.
 
 ONE known divergence, deliberate: the JS final tie-break is
 `Intl.Collator(sensitivity: "base")`, and this uses `str.lower()`. They agree
@@ -37,6 +39,20 @@ this note is what gets updated.
 # Chars that open a new "segment" in a path/name; a match right after one of
 # these reads as the start of a word and scores higher.
 SEPARATORS = frozenset("/.-_ ")
+
+# A deep, vague match used to out-score a shallow one on raw `score` alone —
+# score accumulates over the WHOLE rel, so a long ancestor chain simply offers
+# more +5 segment-start bonuses than a short one, independent of relevance.
+# The correction is PER-SEGMENT because the bonus it offsets is per-segment
+# (a flat penalty or a divide-by-length both mis-shape it); DEPTH_PENALTY
+# stays just under +5 so a segment that genuinely matched still pays for
+# itself, and SHALLOW_FREE exempts ordinary project nesting from any penalty
+# at all. Mirrors search.ts exactly — change one, change both, then regenerate
+# the fixture (see this module's docstring). Do NOT promote `depth` above
+# `score` in `_sort_key` instead; see search.ts's rankCompare for why that is
+# a trap, not a fix.
+DEPTH_PENALTY = 4
+SHALLOW_FREE = 3
 
 
 def max_span(query_length: int) -> int:
@@ -167,8 +183,12 @@ def _sort_key(hit: dict):
     asc, then a case-insensitive path compare.
 
     `tier` sits above `score` because scoring runs over the whole rel path, so
-    a matching ancestor directory donates its score to every descendant. It
-    sits BELOW `longest_run`, which is what already guarantees
+    a matching ancestor directory donates its score to every descendant — a
+    tier-3 (ancestor-only) hit under a long path can still out-score a tier-1
+    (name) hit under a short one even after DEPTH_PENALTY, which only damps
+    that effect rather than eliminating it; `depth` alone (reachable only on
+    an exact score tie) was never enough to fix it, which is why the penalty
+    exists. It sits BELOW `longest_run`, which is what already guarantees
     substring-over-fuzzy — that invariant must survive any change here."""
     return (-hit["longest_run"], hit["tier"], -hit["score"], hit["depth"],
             hit["rel"].lower())
@@ -201,9 +221,11 @@ def rank_entries(query: str, entries) -> list:
             score += 100
         elif name.startswith(q):
             score += 25
+        depth = _depth_of(rel)
+        score -= DEPTH_PENALTY * max(0, depth - SHALLOW_FREE)
         hits.append({**entry, "positions": m["positions"], "score": score,
                      "longest_run": m["longest_run"],
                      "tier": _name_tier(name, name_start, q, m["positions"]),
-                     "depth": _depth_of(rel)})
+                     "depth": depth})
     hits.sort(key=_sort_key)
     return hits

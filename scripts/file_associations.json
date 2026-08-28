@@ -116,6 +116,11 @@
       "standard_mime": "audio/flac"
     },
     {
+      "extension": ".fused",
+      "icon": "file",
+      "standard_mime": null
+    },
+    {
       "extension": ".geojson",
       "icon": "geo",
       "standard_mime": "application/geo+json"
@@ -151,8 +156,28 @@
       "standard_mime": "application/gzip"
     },
     {
+      "extension": ".h5",
+      "icon": "data",
+      "standard_mime": null
+    },
+    {
       "extension": ".hcl",
       "icon": "code",
+      "standard_mime": null
+    },
+    {
+      "extension": ".hdf",
+      "icon": "data",
+      "standard_mime": null
+    },
+    {
+      "extension": ".hdf5",
+      "icon": "data",
+      "standard_mime": null
+    },
+    {
+      "extension": ".he5",
+      "icon": "data",
       "standard_mime": null
     },
     {

@@ -57,6 +57,12 @@ let loaded = false;
  *  While there is one, this module does not poll at all — see schedule. */
 let feeders = 0;
 const listeners = new Set<(p: TasksPulse) => void>();
+/** Readers of the ROWS rather than the summary (the sidebar's Current apps
+ *  section). Fired on every publish, not only on a changed summary: two
+ *  answers with the same running/unseen counts can still name different
+ *  projects. Counted with `listeners` for the poll's start/stop, so a rows
+ *  reader alone keeps the poll alive too. */
+const rowListeners = new Set<(rows: TaskPulseTask[]) => void>();
 
 function readSeen(): TasksSeen {
   try {
@@ -122,7 +128,7 @@ async function poll() {
 function schedule() {
   if (timer !== null) window.clearTimeout(timer);
   timer = null;
-  if (listeners.size === 0 || feeders > 0) return;
+  if (listeners.size + rowListeners.size === 0 || feeders > 0) return;
   timer = window.setTimeout(poll, pulse.running > 0 ? ACTIVE_MS : IDLE_MS);
 }
 
@@ -139,7 +145,7 @@ export const TASKS_POKE_EVENT = "fused-render:tasks-poke";
  * here would: the queue card's job snapshot (about a second behind the turn —
  * QueueDock) and the schedule's own done/failed events (App wiring
  * useScheduleEvents). Without this the sidebar and the Tasks page sat out
- * their 10–30s cadences while the bottom-right corner already said finished —
+ * their 10–30s cadences while the status bar already said finished —
  * the same run, two answers, for most of a minute (Akshil, 2026-08-19: "if
  * finished in one, finished in the other").
  *
@@ -157,8 +163,26 @@ export function pokeTasks() {
   }
   // Nobody reading and nobody feeding: nothing on screen to update, and a
   // fetch for an unmounted sidebar is the waste schedule() already refuses.
-  if (listeners.size === 0) return;
+  if (listeners.size + rowListeners.size === 0) return;
   void poll();
+}
+
+/** The localStorage key the chat template (templates/claude/template.html)
+ *  stamps when an interactive turn starts or ends. Interactive turns create no
+ *  sys:schedule job and no schedule event — neither producer above fires for
+ *  them — so a follow-up typed into a chat left every tasks surface stale until
+ *  its next slow poll (Akshil, 2026-08-19: "the task's unread status does not
+ *  update"). Every same-origin document EXCEPT the writer receives a `storage`
+ *  event for the stamp, and the chat runs in its own iframe document, so the
+ *  shell around it — and a Tasks page open in another window entirely — hears
+ *  the turn for free, with no postMessage and no new endpoint. */
+export const CHAT_ACTIVITY_KEY = "fused-render:chat-activity";
+
+/** The storage half of that poke: App forwards every storage event's key here,
+ *  and only the chat's stamp is news about /api/tasks — the other rows this
+ *  origin writes (seen stamps, list memory) are the readers' own state. */
+export function pokeOnChatActivity(key: string | null) {
+  if (key === CHAT_ACTIVITY_KEY) pokeTasks();
 }
 
 /** Hand over a known-fresh answer — what the Tasks page's own poll returned. */
@@ -167,6 +191,7 @@ export function publishTasks(next: TaskPulseTask[]) {
   tasks = next;
   loaded = true;
   recompute();
+  for (const listener of rowListeners) listener(next);
   schedule();
 }
 
@@ -233,4 +258,23 @@ export function useTasksPulse(): TasksPulse {
     };
   }, []);
   return current;
+}
+
+/** Subscribe to the compact rows themselves — `key`, `status`, `project`,
+ *  `last_active` — for a reader that groups tasks rather than counts them (the
+ *  sidebar's Current apps section, D487). Same store, same poll, same feeder
+ *  contract as useTasksPulse: this is NOT a second /api/tasks poller. */
+export function useTasksPulseRows(): TaskPulseTask[] {
+  const [rows, setRows] = useState<TaskPulseTask[]>(tasks);
+  useEffect(() => {
+    rowListeners.add(setRows);
+    setRows(tasks);
+    if (feeders === 0) void poll();
+    else schedule();
+    return () => {
+      rowListeners.delete(setRows);
+      schedule();
+    };
+  }, []);
+  return rows;
 }

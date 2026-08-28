@@ -20,7 +20,7 @@ export interface ClaudeIssue {
   /** Stable id — the dismissal signature is built from these, so renaming one
       un-dismisses it for everybody. Worth it when the MEANING changed; never
       do it for wording. */
-  id: "missing" | "unusable-override" | "outdated" | "signed-out";
+  id: "missing" | "unusable-override" | "outdated" | "signed-out" | "broken";
   /** The one-line statement. Says what is true, not what is polite. */
   title: string;
   /** What to do about it, in a sentence. */
@@ -29,6 +29,14 @@ export interface ClaudeIssue {
   helpKind: TroubleKind;
   /** A terminal command that fixes it, when one does. */
   command?: string;
+  /** What the APP can do about it, when it can do anything.
+   *
+   *  This is the field that turns the strip from a notice into a repair. It is
+   *  set only where the server has an endpoint that actually applies the fix,
+   *  and its absence is meaningful: `unusable-override` has no action because
+   *  the value lives in a shell profile we cannot edit, and offering a button
+   *  that silently does nothing is worse than the sentence it replaced. */
+  action?: { kind: "install" | "update" | "doctor"; label: string };
 }
 
 /** `claude update`, the fix for an install that is merely old. Not in
@@ -78,11 +86,45 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
       title: "The app can't find Claude Code",
       detail:
         "Fused Render uses Claude Code on this computer to build and fix " +
-        "things. Install it, then use Check again.",
+        "things. Install it and the app will pick it up — no restart needed.",
       helpKind: "notfound",
-      command: CLAUDE_INSTALL_COMMAND,
+      // THE SERVER'S LINE, not the module constant, and the difference is a
+      // bug this fixes: the constant is the macOS/Linux `curl … | bash`, and it
+      // used to be attached here unconditionally — so a Windows user with no
+      // Claude Code was handed a command their shell cannot run. The server
+      // knows its own platform; the fallback is only for a payload from a
+      // server too old to say.
+      command: health.install_command || CLAUDE_INSTALL_COMMAND,
+      action: { kind: "install", label: "Install Claude Code" },
     });
     return issues; // everything below is about an install that exists
+  }
+
+  // FOUND, RUNNABLE-LOOKING, AND IT WILL NOT SAY WHAT VERSION IT IS. This state
+  // was measured long before it was reported: the module refuses to guess a
+  // cause from one failed probe, correctly, and so said nothing at all — leaving
+  // a user with an app that does not work and no sentence anywhere explaining
+  // why. `claude doctor` is the way out, because the diagnosis is then the CLI's
+  // own rather than ours.
+  //
+  // Ordered before `outdated` and `signed-out` for the same reason `missing`
+  // short-circuits above: neither of those can be trusted about a binary that
+  // would not answer the first question we asked it.
+  if (health.broken) {
+    const named = health.doctor?.warnings?.length
+      ? ` It reports: ${health.doctor.warnings[0].problem}.`
+      : "";
+    issues.push({
+      id: "broken",
+      title: "Claude Code is installed, but it isn't answering",
+      detail:
+        `There is a Claude Code at ${health.path ?? "the resolved path"}, and it ` +
+        `did not report its version when asked.${named} Run the built-in ` +
+        "diagnostics to see what it says about itself.",
+      helpKind: "notfound",
+      action: { kind: "doctor", label: "Run diagnostics" },
+    });
+    return issues;
   }
 
   // NOTHING IS SAID ABOUT source === "shell", deliberately. A binary only the
@@ -98,14 +140,41 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
   // Only ever set for a version we actually read AND that is below the floor —
   // the server never guesses this from an unreadable version string.
   if (health.outdated) {
+    // WHETHER TO OFFER THE BUTTON AT ALL, and the whole subtlety of this issue.
+    //
+    // `claude update` only updates a CLI that updates itself — a native or npm
+    // install. Homebrew, WinGet, apt, dnf and apk own their own binary and
+    // answer `claude update` with "Claude is up to date!" while changing
+    // nothing. An Update button there is a button that cannot work, which is a
+    // worse answer than the plain sentence it replaced.
+    //
+    // So the gate is on an explicit `false` only, exactly like `signed_in`
+    // above: `null` means the server could not tell what kind of install this
+    // is, and not-knowing is not evidence that updating would fail — `claude
+    // update` is the CLI's own generic answer and stays on offer.
+    const selfUpdates = health.updatable !== false;
     issues.push({
       id: "outdated",
       title: `Claude Code ${health.version} is older than this app needs`,
-      detail:
-        `Fused Render starts sessions with options added in ${health.min_version}. ` +
-        "Update it and the app will use the version you already have.",
+      detail: selfUpdates
+        ? `Fused Render starts sessions with options added in ${health.min_version}. ` +
+          "Update it and the app will use the version you already have."
+        : `Fused Render starts sessions with options added in ${health.min_version}. ` +
+          `Running \`claude update\` here would not change anything — ` +
+          `${health.update_blocked_reason ?? "something else owns this install"}` +
+          (health.update_command
+            ? `, so run the command below instead.`
+            : `. Upgrade it the way you installed it.`),
       helpKind: "raw",
-      command: CLAUDE_UPDATE_COMMAND,
+      // Whichever command actually works: `claude update`, or the owning
+      // manager's own upgrade line. Never a command we know to be a no-op.
+      command: health.update_command ?? (selfUpdates ? CLAUDE_UPDATE_COMMAND : undefined),
+      // A button ONLY where running it does something. A managed install gets
+      // the right command to copy and no button — we will not run a `sudo` line
+      // on someone's behalf, and `brew`/`winget` are theirs to drive.
+      action: selfUpdates
+        ? { kind: "update", label: "Update Claude Code" }
+        : undefined,
     });
   }
 

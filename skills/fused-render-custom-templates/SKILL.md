@@ -1,6 +1,6 @@
 ---
 name: fused-render-custom-templates
-description: How to create and register a custom preview template for fused-render — a user-owned template that overrides, reorders, or extends the built-in extension → template mode list, so opening a file of that extension renders the user's template (or offers it as a switchable mode) instead. Use this whenever the user wants a custom/own preview for a file extension (e.g. "my own parquet viewer", "add a mode for .xyz files", "render .xyz files with my template"), wants to override, add, reorder, or disable template modes, mentions ~/.fused-render, registry.json, or _mode, or asks to "register a template". For actually writing the template's html and py files, this skill delegates to the fused-render-authoring skill — read that one too.
+description: Register a custom preview template so files of an extension render with your own template — the ~/.fused-render layout, registry.json mode lists, and _mode. Use when the user wants their own viewer for a file type, or to override/reorder template modes.
 ---
 
 # Custom templates for fused-render
@@ -11,6 +11,7 @@ fused-render resolves an **ordered list of preview templates — modes** — for
 
 - **This skill:** where files go, how the registry binds extensions, how to test registration.
 - **`skills/fused-render-authoring/SKILL.md`:** how to write the `template.html` and reader `.py` themselves — the `fused` API, the `main()` contract, the params-are-state wiring pattern, the `_file` handling, the pitfalls. **Read it before writing any html/py.** In particular its "Preview templates" section is exactly what a custom template is.
+- **`skills/fused-render-background-apps/SKILL.md`:** a different concept entirely — a folder that needs a resident daemon process, not a file preview. Reach for it when the "template" you're building is really a long-running server the page talks to, not a render mode.
 
 ## Guardrail: use fused's internal APIs, never raw OS/shell commands
 
@@ -18,7 +19,7 @@ A custom template runs on every open of its extension, with the local server's p
 
 **In the reader `.py` / `condition.py`:**
 - ❌ Don't shell out — no `subprocess`, `os.system`, `os.popen`, or invoking system binaries (`gdalinfo`, `curl`, `ffmpeg`, …). They may not exist in the packaged app, run with the server's privileges, and pay a process-spawn cost on every preview.
-- ✅ Do the work in-process with the **bundled libraries** (numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests/httpx, … — the authoritative set is in `fused-render-authoring`, and it is smaller than it used to be: geopandas, rasterio, matplotlib, polars, pymupdf and friends now come from a folder `pyproject.toml`, not from the app). Reading local files with `open()` / `os.path` relative to your script is fine and idiomatic; spawning commands is not.
+- ✅ Do the work in-process with the **bundled libraries** (numpy, pandas, pyarrow, duckdb, pillow, openpyxl, requests/httpx, … — the authoritative set is in `fused-render-authoring`; anything else, geopandas and rasterio included, needs a folder `pyproject.toml`). Reading local files with `open()` / `os.path` relative to your script is fine and idiomatic; spawning commands is not.
 - ✅ In `condition.py`, **keep reads bounded** — sniff a footer/header/prefix, never `read()` a whole file, and never shell out. The gate runs for every file of the extension, some on remote mounts.
 
 **In `template.html`:**

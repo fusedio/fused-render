@@ -1,7 +1,7 @@
 /* -- Apps hub (/apps) -------------------------------------------------------
-   Chrome-free page like Home: scrolling column, centered inner. Tiles reuse
-   .home-app / .home-apps; the page adds its own header, search, and tag
-   chips. All colors via tokens so both themes hold. */
+   Chrome-free page like Home: scrolling column, centered inner. The cards are
+   .app-pcard, defined below and shared with Home's grid; the page adds its own
+   header, search, and tag chips. All colors via tokens so both themes hold. */
 .apps-page {
   flex: 1 1 auto;
   min-height: 0;
@@ -14,23 +14,34 @@
   padding: 36px 28px 72px;
 }
 
+/* Facet selector at the left edge (its own `margin-right: auto`), then the
+   chips and the search box together at the right. Previously the search alone
+   sat right (`margin-left: auto` on it) with the chips stranded next to the
+   selector on the left, so the two halves of one filter row read as unrelated
+   clusters. `flex-end` here is what gathers chips + search into a single group
+   and puts every wrapped line against the same edge — an auto margin on one
+   child cannot do that. */
 .apps-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
   margin-bottom: 14px;
 }
 
-/* Search sits at the row's right edge (margin-left: auto), after the filter
-   selector and chips. */
+/* Search is the last item in the toolbar's right-aligned group (see
+   .apps-toolbar). It no longer carries `margin-left: auto`: that pinned the
+   search alone to the far edge and left the facet selector and chips stranded
+   on the left with a gap between. The whole row is justified to the end
+   instead, so `flex-grow: 0` here — the box keeps its own width rather than
+   stretching to swallow the space the auto margin used to hold. */
 .apps-search {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1 1 240px;
+  flex: 0 1 240px;
   max-width: 340px;
-  margin-left: auto;
   padding: 0 12px;
   height: 34px;
   background: var(--bg-alt);
@@ -58,9 +69,13 @@
   color: var(--fg-muted);
 }
 
+/* Chips wrap within their own box, so they need the same end-justification as
+   the toolbar row: without it a second line of chips would start at this box's
+   left edge and break the right margin the row is aligned on. */
 .apps-tags {
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -80,10 +95,26 @@
   border-color: color-mix(in srgb, var(--fg-muted) 35%, var(--border));
 }
 
+/* Selected chip: a GREY plate, not a white one. --fg is the page's ink, so a
+   filled --fg pill is the brightest thing on the toolbar — the filter row was
+   out-shouting the app cards it filters. A step off --fg keeps the "one of
+   these is on" read (still a filled pill against the unfilled ones, still well
+   clear of :hover, which only moves the border) at the weight of chrome.
+
+   The step is a MIX of --fg toward --bg rather than --fg-muted, because the
+   plate carries --bg as its label: --fg-muted is only ~4:1 off --bg, which at
+   this 12px mono size read as a chip with the text sunk into it. Mixing keeps
+   the label's contrast where it needs to be in BOTH themes, which one flat
+   grey cannot — the same "lighter" that fixes dark would push the light plate
+   toward white and swallow its white text, whereas this expression moves each
+   theme's plate away from that theme's own ground.
+
+   Shared with .apps-filter-mode-btn.is-active below so the row's two
+   selections match. */
 .apps-tag-chip.is-active {
   color: var(--bg);
-  background: var(--fg);
-  border-color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 78%, var(--bg));
+  border-color: color-mix(in srgb, var(--fg) 78%, var(--bg));
 }
 
 .apps-count {
@@ -92,11 +123,17 @@
   color: var(--fg-muted);
 }
 
-/* Filter facet selector (Category | Repo): a small segmented control that
+/* Filter facet selector (Category | Folders): a small segmented control that
    decides which chip set shows. Neutral fill on the active segment (accent
-   stays reserved for focus/selection). */
+   stays reserved for focus/selection).
+
+   `margin-right: auto` holds it at the row's LEFT edge while the toolbar's
+   `justify-content: flex-end` keeps the chips and search at the right — the
+   selector picks WHICH filters exist, so it reads as the row's label rather
+   than as the first of the things it governs. */
 .apps-filter-mode {
   display: inline-flex;
+  margin-right: auto;
   padding: 2px;
   background: var(--bg-alt);
   border: 1px solid var(--border);
@@ -117,9 +154,10 @@
   color: var(--fg);
 }
 
+/* Grey fill, matching the selected chip above — see the note there. */
 .apps-filter-mode-btn.is-active {
   color: var(--bg);
-  background: var(--fg);
+  background: color-mix(in srgb, var(--fg) 78%, var(--bg));
 }
 
 /* -- Preview cards ------------------------------------------------------------
@@ -133,8 +171,12 @@
   gap: 18px;
 }
 
-/* An <a>, like .home-recent — see the note there. */
+/* An <a>, not a button: middle-click / Cmd-click / "Open in new tab" have to
+   work on a card, and the open rule itself lives in appEntry. */
 .app-pcard {
+  /* Positioning context for the hover export chip, which lives OUTSIDE the
+     aria-hidden thumb (assistive tech skips that subtree) but paints over it. */
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -169,6 +211,32 @@
   overflow: hidden;
 }
 
+/* Shimmer while the thumb has something coming (an undecoded still, or a live
+   iframe not yet painted) — see the condition in AppPreviewCard.tsx. Same
+   `@keyframes skel-shimmer` as `.skel-bar` (explorer.css) — keyframe names are
+   global, so referencing it by name carries no cross-file dependency. Only
+   the gradient/size PROPERTIES are restated here rather than factored into a
+   shared class, because BOTH selectors below are compounded onto a box class
+   that already declares its own `background` (`.app-pcard-thumb`) — a shared
+   single-class rule would tie that class's specificity and the winner would
+   come down to stylesheet order. `.app-pcard-thumb.home-skel-body` is the
+   OTHER consumer: Home's Fused-Apps skeleton row (Home.tsx SkeletonCard)
+   reuses `.app-pcard-thumb` itself as its thumb well, not a separate overlay
+   like `.app-pcard-skel` — it has nothing layered on top of it, so it only
+   needs the background, not the `position`/`pointer-events` below. */
+.app-pcard-skel,
+.app-pcard-thumb.home-skel-body {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+.app-pcard-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 .app-pcard-thumb iframe {
   position: absolute;
   top: 0;
@@ -201,16 +269,45 @@
   inset: 0;
 }
 
-.app-pcard-monogram {
+/* Hover-revealed export button (SPEC §43 AF-4, D391): hidden until the CARD
+   is hovered so the grid stays quiet, revealed as a small bordered chip in
+   the thumb's bottom-right corner. A sibling of the (aria-hidden) thumb,
+   positioned against the CARD, so assistive tech announces it; z-index lifts
+   it over the thumb and its pointer shield. Keyboard users get it without
+   hover via :focus-visible. */
+.app-pcard-export {
   position: absolute;
-  inset: 0;
+  bottom: 8px;
+  right: 8px;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 44px;
-  font-weight: 700;
-  background: color-mix(in srgb, currentColor 9%, transparent);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.app-pcard:hover .app-pcard-export,
+.app-pcard-export:focus-visible {
+  opacity: 1;
+}
+.app-pcard-export:hover {
+  color: var(--fg);
+  box-shadow: 0 2px 8px var(--shadow-sm);
+}
+/* While appShot photographs the screen, the chip must not be in the pixels:
+   clicking it does not end the hover, so it would sit in the baked
+   preview.png forever. No transition, so it is gone by the next frame. */
+body[data-capture-shooting] .app-pcard-export {
+  opacity: 0 !important;
+  transition: none;
 }
 
 .app-pcard-body {

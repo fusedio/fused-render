@@ -1,8 +1,8 @@
 """Assemble the canonical fused-render skills into a Claude Code **plugin root**
 that fused-render owns outright, under ``home_dir()/skill-plugin/`` (D216).
 
-Why a plugin root and not just the user-level skills dir (``user_skills.py``,
-D185): that sync is a *guess* about the machine, and every way it can miss is
+Why a plugin root and not just skills written into the user's own Claude
+config (D185, since replaced by ``user_plugin.py`` — D492): that sync is a *guess* about the machine, and every way it can miss is
 silent. The dir it writes to may not be the one the CLI reads
 (``CLAUDE_CONFIG_DIR`` set after we resolved it), a same-named user-authored
 skill correctly makes us skip (marker ownership), the user may delete a skill
@@ -26,11 +26,14 @@ which is what makes `claude plugin marketplace add fusedio/fused-render` work)
 — but the end user almost never has the repo, so the same tree has to be
 reassembled from whatever the install actually shipped.
 
-Source resolution keeps D106's single-source rule, same order as
-``user_skills.py``: the repo-level ``skills/`` + ``.claude-plugin/plugin.json``
-win when resolvable (editable/dev installs — always the current truth), else the
-packaged copies under ``fused_render/skills/`` that ``scripts/hatch_build.py``
-writes at build time. The packaged manifest deliberately sits at
+Which skills go in, and where each comes from, is ``skill_sources.py``'s
+answer (D490) — a scan of ``skills/`` rather than a list this module has to keep
+in step with the other deliveries. It keeps D106's single-source rule, and the
+manifest below follows the same order: the repo-level ``skills/`` +
+``.claude-plugin/plugin.json`` win when resolvable (editable/dev installs —
+always the current truth), else the packaged copies under
+``fused_render/skills/`` that ``scripts/hatch_build.py`` writes at build time.
+The packaged manifest deliberately sits at
 ``fused_render/skills/plugin.json`` — NOT in a packaged ``.claude-plugin/``
 dir — so nothing in the wheel lives under a dot-prefixed path; the dotted dir
 exists only in the assembled output, where we mkdir it ourselves. (A dotted
@@ -51,20 +54,9 @@ import tempfile
 import time
 
 from fused_render.shell.storage import home_dir
+from fused_render.skill_sources import PACKAGED_SKILLS_DIR, skill_sources
 
 logger = logging.getLogger(__name__)
-
-# The skills that go in the plugin — all of them, same set as the user-level sync
-# (a session launched by us has as much use for usage guidance as for authoring
-# guidance). `tests/test_skill_plugin.py` pins this against user_skills.SKILLS
-# and against the real repo dirs, so the two lists cannot drift apart.
-SKILLS = (
-    "fused-render-ai",
-    "fused-render-authoring",
-    "fused-render-custom-templates",
-    "fused-render-index",
-    "fused-render-usage",
-)
 
 # The assembled root's name under home_dir(), and the shape the CLI's plugin
 # loader requires inside it. Named constants because both the templates that
@@ -86,11 +78,11 @@ PLUGIN_DIR_ENV = "FUSED_RENDER_SKILL_PLUGIN_DIR"
 # bookkeeping of ours has no business being in a tree something else parses.
 _STAMP_SUFFIX = ".stamp.json"
 
+# The MANIFEST paths only — the skill source roots live in `skill_sources`,
+# which is where both this module and the user-level sync read them from.
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_REPO_SKILLS_DIR = os.path.join(_REPO_ROOT, "skills")
 _REPO_MANIFEST = os.path.join(_REPO_ROOT, MANIFEST_DIR, MANIFEST_NAME)
-_PACKAGED_SKILLS_DIR = os.path.join(os.path.dirname(__file__), "skills")
-_PACKAGED_MANIFEST = os.path.join(_PACKAGED_SKILLS_DIR, MANIFEST_NAME)
+_PACKAGED_MANIFEST = os.path.join(PACKAGED_SKILLS_DIR, MANIFEST_NAME)
 
 # Used only when neither source ships a manifest — see `_manifest_text`. Keeping
 # a plugin loadable matters more than keeping its metadata complete: without a
@@ -112,21 +104,6 @@ def plugin_dir() -> str:
 
 def _stamp_path() -> str:
     return plugin_dir() + _STAMP_SUFFIX
-
-
-def _skill_sources() -> dict:
-    """``{name: source dir}`` for every skill that has a source at all, repo
-    copy winning over packaged copy per skill (D106). A skill with neither is
-    absent from the mapping rather than faked — a plugin holding two of three
-    skills is still worth loading."""
-    out = {}
-    for name in SKILLS:
-        for root in (_REPO_SKILLS_DIR, _PACKAGED_SKILLS_DIR):
-            src = os.path.join(root, name)
-            if os.path.isdir(src):
-                out[name] = src
-                break
-    return out
 
 
 def _manifest_source() -> str | None:
@@ -515,6 +492,105 @@ def export_workbench_plugin_env() -> str | None:
     return root
 
 
+# -- retiring the LEGACY `fused` plugin ---------------------------------------
+#
+# Before the rename (D360) the canvas skills shipped as a `fused` plugin the user
+# was told to install themselves, via a `fused claude plugin add` printed in the
+# seeded CLAUDE.md of the day. That instruction is long gone and the app now hands
+# the skills to a canvas session itself — but an install the user performed then
+# is still installed NOW, globally, and its skills are stale copies of the ones
+# under a live `workbench:` prefix.
+#
+# Stale skills are the worst failure shape available here, because they do not
+# look like one: they load cleanly and teach a canvas.toml format that no longer
+# exists. Worse, the old CLAUDE.md named the `fused:` prefix, so a clone seeded
+# back then points its session straight at them. Disabling is therefore not
+# tidying — it is the removal of a wrong answer that outranks the right one.
+#
+# This DOES mutate the user's global Claude config, which D360 refused to do for
+# the install side and the refusal still stands there: adding skills to every
+# session on the machine is a leak, and `--plugin-dir` exists so we never have
+# to. Retiring a plugin the app itself told the user to install is the opposite
+# transaction — we are taking back our own footprint, not planting a new one —
+# and it is done in the narrowest, most reversible form there is:
+#
+#   * ONLY `fused@fused-marketplace`, matched exactly. Never a prefix or
+#     marketplace-wide sweep: `agent-core@fused-marketplace` and friends are
+#     live plugins from the same marketplace and none of our business.
+#   * Only when the key is ALREADY present and truthy. A machine that never had
+#     it keeps a settings.json we never touched — writing `false` for an absent
+#     plugin would state on disk that something is installed-and-off when
+#     nothing is installed at all.
+#   * Flipped to `false`, never deleted. `false` is exactly what the
+#     Preferences page's own toggle writes, so the plugin stays listed there and
+#     one click puts it back; a delete would make it vanish with no trace of
+#     what happened or how to undo it.
+#
+# Serialized through `claude_config.lib.config_lock()` — the same thread lock +
+# flock pair the Preferences page takes — because that page can be rewriting
+# settings.json from another request (or another process) at this exact moment,
+# and a read-modify-write without it drops whichever change lost the race.
+LEGACY_PLUGIN_ID = "fused@fused-marketplace"
+
+
+def retire_legacy_fused_plugin() -> bool:
+    """Disable the legacy `fused@fused-marketplace` plugin if it is enabled.
+
+    True when this call flipped it, False for every other outcome — already off,
+    never installed, or a config we could not read or write. Never raises: this
+    runs beside the skills fetch on a canvas open, where nothing may fail the
+    open, and a user whose Claude config we cannot parse still deserves a working
+    canvas.
+
+    Idempotent by construction (the second call finds it already `false` and
+    writes nothing), so callers need no bookkeeping of their own.
+    """
+    try:
+        from fused_render.claude_config import lib
+    except Exception:  # noqa: BLE001 — never worth failing a caller over
+        logger.debug("could not import the claude config helpers", exc_info=True)
+        return False
+    try:
+        with lib.config_lock():
+            settings = lib.read_settings()
+            enabled = settings.get("enabledPlugins")
+            if not isinstance(enabled, dict) or not enabled.get(LEGACY_PLUGIN_ID):
+                return False
+            settings["enabledPlugins"] = {**enabled, LEGACY_PLUGIN_ID: False}
+            lib.write_json(lib.SETTINGS_PATH, settings)
+            _commit_legacy_retirement(lib)
+    except Exception:  # noqa: BLE001 — a read-only Claude dir, malformed JSON…
+        logger.warning("could not disable the legacy %s plugin",
+                       LEGACY_PLUGIN_ID, exc_info=True)
+        return False
+    logger.info("disabled the legacy %s plugin: its canvas skills are stale "
+                "copies of the workbench ones this app supplies itself",
+                LEGACY_PLUGIN_ID)
+    return True
+
+
+def _commit_legacy_retirement(lib) -> None:
+    """Record the flip in the Claude-config git history, but ONLY if that history
+    already exists.
+
+    `lib.commit` calls `ensure_repo`, which `git init`s `~/.claude` and writes a
+    .gitignore into it. That is right when the user pressed a button in a config
+    UI built around versioning; it is not something an unattended canvas open may
+    do to their home directory behind their back. So: a repo already there gets
+    the audit trail (the user is using it, and an unexplained settings change is
+    exactly what they'd go looking for), and a machine without one stays without
+    one. A failure here is not a failure of the retirement — the setting is
+    already written and that is the part that matters."""
+    if not os.path.isdir(os.path.join(lib.CLAUDE_DIR, ".git")):
+        return
+    try:
+        lib.commit(f"Disable legacy plugin {LEGACY_PLUGIN_ID} (superseded by "
+                   "the workbench skills fused-render supplies per-session)")
+    except Exception:  # noqa: BLE001
+        logger.debug("could not commit the legacy plugin retirement",
+                     exc_info=True)
+
+
 def sync_workbench_plugin() -> str | None:
     """Fetch/refresh the skills clone and publish the resulting root.
 
@@ -550,7 +626,7 @@ def sync_skill_plugin() -> str | None:
     because a stale-but-complete plugin beats no plugin.
     """
     root = plugin_dir()
-    sources = _skill_sources()
+    sources = skill_sources()
     if not sources:
         # Neither the repo nor the package has any skill to ship. Not a
         # scenario we can repair here; leave any previous build alone.

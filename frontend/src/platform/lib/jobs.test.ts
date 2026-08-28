@@ -4,14 +4,16 @@
 // header counting finished work as running.
 import { expect, test } from "bun:test";
 import {
+  clearableCount,
+  GRACE_MS,
   jobAmount,
   jobFraction,
+  jobsAfterClear,
   jobStatusLine,
-  jobsSummary,
-  overallFraction,
   pollInterval,
   POLL_ACTIVE_MS,
   POLL_IDLE_MS,
+  trackSeenIds,
   type Job,
 } from "@platform/lib/jobs";
 
@@ -20,10 +22,12 @@ function job(over: Partial<Job> = {}): Job {
     id: "j1",
     title: "FLUX.2-klein-4B",
     detail: "",
+    model: "",
     kind: "download",
     state: "running",
     done: null,
     total: null,
+    total_scope: "phase",
     unit: "bytes",
     message: "",
     page: "/tmp/index.html",
@@ -126,52 +130,88 @@ test("stalled outranks a pending cancel, and says both", () => {
   expect(line).toContain("nothing is reporting");
 });
 
-// ------------------------------------------------------------------- summary
+// NO SUMMARY TESTS ANY MORE — `jobsSummary` is deleted (code review finding 8).
+// Nothing has rendered its sentence since D579 moved the idle line into the
+// panel and D588/D590 reduced the chip to a label plus one circle; it stayed on
+// as a fully-tested function with no caller, which reads to the next person like
+// something load-bearing. Its whole test block goes with it rather than pinning
+// a rule the app no longer has.
 
-test("the header counts what is running, not what is on the list", () => {
-  const jobs = [job({ id: "a" }), job({ id: "b", state: "done" }), job({ id: "c", state: "done" })];
-  expect(jobsSummary(jobs)).toBe("1 downloading");
+// --------------------------------------------------------------- auto-expand
+
+test("trackSeenIds flags a genuinely new id and folds it into the returned set", () => {
+  const { seen, hasNew } = trackSeenIds(["a", "b"], new Set(["a"]));
+  expect(hasNew).toBe(true);
+  expect(Array.from(seen).sort()).toEqual(["a", "b"]);
 });
 
-test("mixed kinds fall back to the neutral verb", () => {
-  const jobs = [job({ id: "a" }), job({ id: "b", kind: "task" })];
-  expect(jobsSummary(jobs)).toBe("2 running");
+test("trackSeenIds does not flag an id already in the seen set", () => {
+  const { seen, hasNew } = trackSeenIds(["a"], new Set(["a", "b"]));
+  expect(hasNew).toBe(false);
+  // dropped from seen: "b" is no longer present in currentIds
+  expect(Array.from(seen)).toEqual(["a"]);
 });
 
-test("with nothing running, failures are the news", () => {
-  const jobs = [job({ id: "a", state: "done" }), job({ id: "b", state: "error" })];
-  expect(jobsSummary(jobs)).toBe("1 failed");
+test("an id that changes state but stays present never re-reads as new", () => {
+  const first = trackSeenIds(["job-1"], new Set());
+  expect(first.hasNew).toBe(true);
+  // simulate a progress tick / running -> done: same id, still present
+  const second = trackSeenIds(["job-1"], first.seen);
+  expect(second.hasNew).toBe(false);
 });
 
-test("with nothing running and nothing failed, it counts what finished", () => {
-  expect(jobsSummary([job({ id: "a", state: "done" })])).toBe("1 finished");
+test("an id that disappears and later reappears counts as new again", () => {
+  const arrived = trackSeenIds(["job-1"], new Set());
+  const gone = trackSeenIds([], arrived.seen);
+  expect(gone.hasNew).toBe(false);
+  expect(gone.seen.size).toBe(0);
+  const back = trackSeenIds(["job-1"], gone.seen);
+  expect(back.hasNew).toBe(true);
 });
 
 // ---------------------------------------------------------- overall fraction
 
-test("overall progress averages the jobs so a small one is not swallowed", () => {
-  const jobs = [
-    job({ id: "big", done: 1e9, total: 8e9 }), // 12.5%
-    job({ id: "small", done: 3.5e7, total: 4e7 }), // 87.5%
-  ];
-  // A byte SUM would read ~12.9% and barely move while the small job finished.
-  expect(overallFraction(jobs)).toBeCloseTo(0.5, 5);
-});
-
-test("one job with no numbers makes the overall bar indeterminate, not optimistic", () => {
-  const jobs = [job({ id: "a", done: 5, total: 10 }), job({ id: "b" })];
-  expect(overallFraction(jobs)).toBe(null);
-});
-
-test("finished jobs are not averaged into the running total", () => {
-  const jobs = [job({ id: "a", done: 2, total: 10 }), job({ id: "b", state: "done" })];
-  expect(overallFraction(jobs)).toBeCloseTo(0.2, 5);
-});
-
 // ---------------------------------------------------------------- poll pacing
 
-test("the poll goes fast while anything runs and idles when nothing does", () => {
-  expect(pollInterval([job()])).toBe(POLL_ACTIVE_MS);
-  expect(pollInterval([job({ state: "done" })])).toBe(POLL_IDLE_MS);
-  expect(pollInterval([])).toBe(POLL_IDLE_MS);
+test("the poll goes fast while anything runs, regardless of elapsed time", () => {
+  expect(pollInterval([job()], 0)).toBe(POLL_ACTIVE_MS);
+  expect(pollInterval([job()], GRACE_MS + 1)).toBe(POLL_ACTIVE_MS);
+});
+
+test("the poll stays fast through a grace window after the last running job disappears", () => {
+  expect(pollInterval([job({ state: "done" })], 0)).toBe(POLL_ACTIVE_MS);
+  expect(pollInterval([job({ state: "done" })], GRACE_MS - 1)).toBe(POLL_ACTIVE_MS);
+});
+
+test("the poll idles once the grace window has elapsed", () => {
+  expect(pollInterval([job({ state: "done" })], GRACE_MS)).toBe(POLL_IDLE_MS);
+  expect(pollInterval([job({ state: "done" })], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
+  expect(pollInterval([], GRACE_MS + 1)).toBe(POLL_IDLE_MS);
+});
+
+// --------------------------------------------------------------------- clear
+//
+// Mirrors the server's rule (jobs.py `clear_finished`, D558): Clear takes
+// TERMINAL records only. A stalled-but-RUNNING row used to be swept too —
+// the work does not actually stop when its record does, so that silently
+// orphaned live work behind a Clear press. The per-row ✕ (`dismiss`) still
+// takes a stalled row on purpose; only the bulk sweep changed.
+
+test("clearableCount counts terminal rows but not a stalled running one", () => {
+  const jobs = [
+    job({ id: "run", state: "running", stalled: false }),
+    job({ id: "stalled", state: "running", stalled: true }),
+    job({ id: "done", state: "done" }),
+    job({ id: "err", state: "error" }),
+  ];
+  expect(clearableCount(jobs)).toBe(2);
+});
+
+test("jobsAfterClear keeps every running row, stalled included", () => {
+  const jobs = [
+    job({ id: "run", state: "running", stalled: false }),
+    job({ id: "stalled", state: "running", stalled: true }),
+    job({ id: "done", state: "done" }),
+  ];
+  expect(jobsAfterClear(jobs).map((j) => j.id)).toEqual(["run", "stalled"]);
 });

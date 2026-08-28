@@ -1,6 +1,6 @@
 ---
 name: fused-render-authoring
-description: How to author HTML views and Python data files for fused-render (the local HTML explorer with a fused.runPython() bridge, URL-synced params, and file IO helpers). Use when creating, editing, or debugging an .html view, a .py data file, or a preview template; when a view renders blank, shows a traceback overlay, or params don't sync to the URL; or when the user mentions fused.runPython/params/readFile/writeFile or asks for "a view for <file/data>".
+description: Author .html views and .py data files for fused-render — the fused.runPython() bridge, URL-synced params, file IO, preview mode. Use when creating, editing or debugging a view, a data file or a preview template; when a view renders blank or shows a traceback overlay; or on any mention of fused.runPython/params/readFile/writeFile. Routes to the neighbouring fused-render-* skills for AI, capture, jobs, theming and the app icon.
 ---
 
 # Authoring fused-render views
@@ -26,30 +26,19 @@ fused-render is a local file explorer that renders `.html` files live in the bro
    └─ fused.trackJob({...})         ← report long work to the shell's download manager
 ```
 
-**Mark every app entry page with `<meta name="fused-app" />`**, placed near the
-top of `<head>` (right after `<meta charset>` — detection reads only the first
-4 KiB of the file). The marker is **the only thing that makes a folder a fused
-app**: filenames — `index.html` included — declare nothing, so a page without
-the tag does not appear on the /apps hub, does not resolve as a folder's entry,
-and is never recorded/registered when rendered. The starter template already
-carries it; when authoring an entry page by hand, add it yourself.
-
-**Migrating an existing app** (one that predates the marker, or lives outside
-`~/Fused`): add the tag to the entry page's `<head>`:
+**Mark every app entry page with `<meta name="fused-app" />`**, near the top of `<head>` — detection reads only the first 4 KiB of the file. The marker is **the only thing that makes a folder a fused app**: filenames, `index.html` included, declare nothing. Without it the page never reaches the /apps hub, never resolves as a folder's entry, and is never registered when rendered. The starter template carries it; add it by hand to any entry page you author, and to any app you adopt from outside `~/Fused` (that one line is the whole migration — rendering the page then registers the folder automatically).
 
 ```html
 <head>
 <meta charset="utf-8" />
 <meta name="fused-app" />
-...
 ```
 
-Workspace apps were stamped automatically by a one-time migration at startup;
-apps anywhere else (external folders, cloned repos) are yours to stamp — this
-one line is the whole migration. Once tagged, rendering the page registers an
-external folder on the /apps hub automatically.
+**Optional app icon: `icon.svg`.** An `icon.svg` next to the entry page becomes the app's sidebar glyph and tab favicon, rendered as is. Designing one (own background, both themes, 14–16 px legibility) → **`fused-render-app-icon`**.
 
-Three primitives — `runPython`, `params`, and the file IO helpers — are the core API (plus `fused.ai` for asking an AI model — the claude CLI or a local one — and `fused.trackJob` for reporting long-running work — each gets its own section below — and two auxiliary members, `fused.env` and `fused.autoReload`, covered in the table). Everything else is ordinary HTML/CSS/JS (no framework, no build step, ES2020 fine).
+Three primitives — `runPython`, `params`, and the file IO helpers — are the core API; the table below has the rest. Everything else is ordinary HTML/CSS/JS: no framework, no build step, ES2020 fine.
+
+Five neighbouring skills own the bigger surfaces, and this one keeps only enough to know when you need them: **`fused-render-ai`** (`fused.ai` and every model call), **`fused-render-capture`** (native screen/audio/screenshot), **`fused-render-jobs`** (work longer than one call, and the download manager), **`fused-render-theming`** (light/dark), **`fused-render-app-icon`** (the app's `icon.svg`).
 
 ## The Python side: `main()` contract
 
@@ -81,15 +70,15 @@ Rules that matter (each has a reason):
 
 ### Available Python libraries
 
-Write `main()` against **stdlib plus the supported library set** below — a folder with no `pyproject.toml` runs on the app's own interpreter, which ships exactly these with no download and no first-run wait. Dev installs get the same set via `pip install -e ".[bundled]"` (the authoritative list is the `[bundled]` extra in the repo's `pyproject.toml`, plus core deps):
+Write `main()` against **stdlib plus the bundled set** below — a folder with no `pyproject.toml` runs on the app's own interpreter, which ships exactly these with no download and no first-run wait. (Dev installs get the same via `pip install -e ".[bundled]"`; the authoritative list is that extra plus the core dependencies.)
 
 - **Data:** `numpy` `pandas` `pyarrow` `duckdb` `openpyxl` `msgpack`
 - **Images:** `pillow`
-- **Documents:** `python-pptx`
+- **Documents:** `python-pptx` `fpdf2` (its import name is *fpdf*)
 - **Network & cloud:** `requests` `httpx` `botocore` `google-auth`
 - **Logs:** `drain3`
 
-Anything outside this set is missing by default — including several packages the app used to ship and no longer does: **polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf**. They were 541.9 MB every user carried for a minority of pages, so they moved to per-folder declarations. **`fpdf2` is still bundled and still importable** — it is not in the table above only because that table is curated, and PDF export via `from fpdf import FPDF` needs no declaration and no install. Reaching for any of them (or for torch, sklearn, xarray, plotly) is a deliberate choice with a cost — a one-time install the user waits through — so prefer rewriting with the always-there set; when it genuinely cannot do the job, declare the folder's dependencies (next section).
+Anything else — polars, matplotlib, scipy, geopandas, shapely, rasterio, rio-tiler, zarr, pymupdf, pikepdf, torch, sklearn, xarray, plotly — must be declared in a folder `pyproject.toml`, and costs the user a one-time install they sit and wait through. Prefer rewriting against the bundled set; declare dependencies (next section) only when it genuinely cannot do the job.
 
 ### Declaring extra dependencies: `pyproject.toml`
 
@@ -109,8 +98,8 @@ package = false
 
 Four things to know before you write one:
 
-- **The declaration is the COMPLETE list.** The venv contains exactly what you name and nothing else — the bundled set above is *not* unioned in. Declare numpy if you import numpy, even though the app ships it.
-- **It is all-or-nothing per folder.** Adding a `pyproject.toml` to get one extra package means every import in every `.py` under that folder must be listed. A folder with no manifest runs on the app's own interpreter and gets the whole bundled set for free — which is why the supported set is still the better default.
+- **The declaration is the COMPLETE list.** The venv contains exactly what you name — the bundled set is *not* unioned in. Declare numpy if you import numpy, even though the app ships it.
+- **It is all-or-nothing per folder.** One extra package means every import in every `.py` under that folder must be listed. That is why a folder with no manifest — which gets the whole bundled set free — is still the better default.
 - **Only the project root counts.** That's the app folder, a template folder, or the *topmost* ancestor holding a `pyproject.toml`. One in a subfolder is inert; the inspector flags it.
 - **First render triggers an install.** The user sees a loader while `uv sync` runs, then the run is retried automatically. Commit the `uv.lock` it writes — that's what makes the folder resolve identically elsewhere.
 
@@ -118,24 +107,90 @@ Adding a dependency later is just an edit: save `pyproject.toml`, re-render, and
 
 **Per-file `# /// script` headers are not read.** A leftover block is an ordinary comment — silently ignored, not merged and not warned about. Never write one; if you see one, move its `dependencies` into the project root's `pyproject.toml` and delete it, because the packages it names are not being installed.
 
-Versions are not pinned — each install resolves its own. When a version matters (an API that changed between majors, a feature gated on a release), **probe the live environment** instead of guessing: `/api/run` executes in the exact interpreter that runs page code. Write a throwaway probe and POST it:
+Versions are not pinned — each install resolves its own. When a version matters, **probe the live environment** rather than guessing: `/api/run` executes in the exact interpreter that runs page code, so a throwaway `main()` returning `importlib.metadata.version(...)` for each name answers it. A `null` version means the package is missing from *this* environment — the same result an `import` would hit.
 
 ```bash
-cat > /tmp/probe.py <<'EOF'
-def main(names: str = "pandas,numpy"):
-    from importlib import metadata
-    out = {}
-    for n in names.split(","):
-        try: out[n] = metadata.version(n)
-        except Exception: out[n] = None
-    return out
-EOF
 curl -s -X POST http://127.0.0.1:1777/api/run -H 'X-Fused: 1' \
   -H 'Content-Type: application/json' \
   -d '{"py": "/tmp/probe.py", "params": {"names": "pandas,duckdb,geopandas"}}'
 ```
 
-A `null` version means the package is missing from *this* environment — the same result an `import` in `main()` would hit.
+## Where an app keeps state: the `.fused/` folder
+
+An app folder is authored content — the entry page, its `.py` files, assets. Anything the app *accumulates while running* goes in one hidden folder at the app's root, created for you the first time the app is opened (you never `makedirs` it, and apps written before this convention have one too):
+
+```
+<app>/.fused/
+  data/       state the app owns and cannot rebuild
+  cache/      derived bytes the app can rebuild — deletable at any time
+  meta.json   {"version": 1, "app_dir": "<absolute path>", "created_at": "<iso>"}
+```
+
+There is no `fused.dataDir` and no Python helper: the paths are a **convention**, so you build them yourself.
+
+```python
+import os
+
+APP = os.path.dirname(os.path.abspath(__file__))   # a .py at the app root
+DATA = os.path.join(APP, ".fused", "data")
+CACHE = os.path.join(APP, ".fused", "cache")
+```
+
+(A `.py` in a subfolder walks up to the folder containing `.fused` — or, more simply, doesn't: keep the two or three lines above in one module at the app root and import it.) From the page side there is no direct access; go through a `.py`.
+
+**Persistent state goes in `data/`.** Not a JSON file beside `index.html` — that is authored content and it lands in the app's git history. Not `~/.myapp`, not the system temp dir. A saved list, user settings, an accumulated log, a small SQLite/DuckDB file: `data/`.
+
+**The split is a promise, not a naming preference.** Everything under `cache/` must be reconstructible from `data/` plus the outside world, so that deleting `cache/` outright costs the user nothing but time. If deleting it would lose something, it is data. Nothing sweeps `cache/` automatically — an unbounded cache needs your own cap or TTL.
+
+**`meta.json` records where the app was set up, and nothing ever rewrites it.** So when its `app_dir` disagrees with where the app actually is, the folder was moved or copied since its state was created — the moment to distrust anything keyed by an absolute path. Read it and decide; there is no automatic repair.
+
+```python
+import json, os
+meta = json.load(open(os.path.join(APP, ".fused", "meta.json")))
+if os.path.abspath(meta["app_dir"]) != APP:
+    ...  # moved or copied: repoint stored paths, or drop the cache
+```
+
+`.fused/` is **machine-local**: gitignored, and excluded from a `.fused` app-file export. Never put something there that the app needs in order to work on a fresh machine — that belongs in the folder proper.
+
+### Cache heavy work — more than feels necessary
+
+Every `runPython` call is a fresh subprocess. No globals survive, no import cost is amortised, and the 60 s kill is waiting for anything that recomputes what it already computed. Caching to `.fused/cache/` is the single highest-leverage thing a data-heavy page does, and the bar for "worth caching" is far lower than it looks: a network fetch, a parsed multi-MB file, an aggregation over a large table, a rendered tile, a model response, a geocode.
+
+Key by a hash of everything the result depends on, and treat a corrupt or unreadable entry as a miss:
+
+```python
+import hashlib, json, os
+
+def cached(key: str, compute):
+    """Return compute()'s JSON result, memoised on disk under .fused/cache/."""
+    name = hashlib.sha256(key.encode()).hexdigest()[:32] + ".json"
+    path = os.path.join(CACHE, name)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        pass                       # absent, unreadable or truncated: recompute
+    value = compute()
+    tmp = path + f".{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(value, f)
+    os.replace(tmp, path)          # atomic: a concurrent reader never sees half
+    return value
+
+
+def main(city: str = "Berlin", days: int = 7):
+    return cached(f"forecast/v1/{city}/{days}",
+                  lambda: fetch_forecast(city, days))
+```
+
+Three things that decide whether a cache helps or hurts:
+
+- **Version the key.** `forecast/v1/…` above — bump the `v` when the shape of what you store changes, so an old entry becomes a miss instead of feeding the page a value it can no longer read. Never rely on deleting the folder by hand.
+- **Write atomically** (`os.replace`, as above). Calls overlap: a slider drag can have two subprocesses writing the same key, and a half-written file read by the next call is a `ValueError` at best and wrong data at worst.
+- **Cache the expensive part, not the request.** Memoising `main()` wholesale defeats the URL-param wiring the page depends on; memoise the fetch, the parse, the aggregation.
+
+For bytes rather than JSON — a rendered PNG, a Parquet extract — the same shape applies: hashed filename under `cache/`, `os.replace` into place, and hand the page a `fused.rawUrl()` of the cached file instead of loading it through Python.
 
 ## The HTML side: `window.fused` API
 
@@ -143,27 +198,27 @@ The runtime is injected automatically when the explorer renders the page. Never 
 
 | Call | Behavior |
 |---|---|
-| `await fused.runPython(pyPath, params, opts?)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. **Stale-request cancellation is on by default** (keyed by `pyPath`): a new call for a file aborts the prior in-flight call for that same file — so slider scrubs cancel the runs they move past. A superseded call's promise **never settles** (its `.then`/`await` just stops — nothing stale is drawn). `opts.key` regroups the channel (a string) or `opts.key: null` **opts out** (fully concurrent — use for polling loops, per-tile fetches, or writes that must finish); `opts.signal` is a standard `AbortSignal` that composes (an abort via *your* signal rejects with a benign `AbortError` the runtime swallows). |
-| `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). |
-| `fused.params.getAll()` | All non-reserved params as an object — plus `_file` (read-only) when the page was opened as a preview template, even though `_file` is otherwise a reserved key. |
-| `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam). **Throws unless `v` is a string** — do `String(n)` yourself. Then fires `onChange`. |
+| `await fused.runPython(pyPath, params, opts?)` | Runs `main(**params)` of the file at `pyPath` — relative to **this html file's directory**, or absolute. Resolves with the return value; rejects with an `Error` carrying `.type`, `.message`, `.traceback`, `.stdout`. **Stale-request cancellation is on by default**, keyed by `pyPath`: a new call for a file aborts the prior in-flight call for that same file, and the superseded promise **never settles** (its `.then`/`await` just stops, so nothing stale is drawn) — a slider drag therefore computes only the value it lands on, for free. Calls to *different* files are independent. `opts.key` regroups the channel, `opts.key: null` opts out into full concurrency (polling loops, per-tile fetches, a write that must finish), and `opts.signal` takes your own `AbortSignal` to cancel on something other than the next call. |
+| `fused.params.get(k)` | Current value from the URL, as a **string** (or `undefined`). `_`-prefixed keys return `undefined`; `_file` is the one exception — read-only, the target file a preview template was opened for. |
+| `fused.params.getAll()` | All non-reserved params as an object, plus `_file` when present. |
+| `fused.params.set(k, v)` | Writes to the URL (replaceState — no history spam), then fires `onChange`. **Throws** on a reserved `_` key, and unless `v` is a string — do `String(n)` yourself. |
 | `fused.params.onChange(cb)` | `cb(allParams)` after every applied `set`. Returns an unsubscribe function. |
-| `fused.params.get("_file")` | Read-only: the target file a **preview template** was opened for. Keys starting `_` are reserved — `set()` on them throws. |
 | `await fused.readFile(path)` | File contents as **text** (UTF-8). Rejects with an `Error` on failure. Use when a view just needs the bytes as a string — no reader `.py` required. |
-| `await fused.stat(path)` | Metadata object `{path, name, is_dir, size, mtime, writable, remote, templates}` (`templates` is the ordered mode-list array, usually irrelevant to page code; `writable` is false for read-only files — check it before offering an edit UI; `remote` is true for files on a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). Use for size guards before reading big files, and to capture `mtime` before editing. |
-| `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: if the file changed on disk since that mtime, rejects with an error whose `.type === "conflict"` (and `.mtime` = current on-disk value) instead of clobbering. A read-only file rejects with `.type === "readonly"` (check `stat().writable` first to avoid it). Omit `expectedMtime` to write unconditionally. `opts.create` writes only if the path is absent: an existing path rejects with `.type === "exists"` and nothing is written, which is how you create a file without a stat-then-write race. Resolves with a fresh stat object; keep its `.mtime` to re-arm the lock for the next save. |
-| `fused.rawUrl(path)` | **Sync**, returns a URL string serving the file's raw bytes. This is for embedding — `<img src>`, `<video src>`, `<embed>`, download links — where you need a URL, not text. |
-| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Runs the local `claude` (Claude Code) CLI; local-only. See the **"AI calls"** section below for the options, error types, and the worked pattern. |
-| `await fused.fileIndex.search({root, q, limit})` / `.query({sql, limit})` | Read the machine-wide **file index** — one folder's indexed corpus, or one read-only SQL statement over the `files`/`dirs` views (which is also how you get totals, per-extension breakdowns and path matches). Two methods, deliberately; scanning, roots/ignore config and the repos list are raw `fetch` + `X-Fused: 1`. Both resolve with `ready: {indexed, scanning, stale, reason}`, so an empty result can never be rendered as "no matches" when the truth is "no index yet". Use this instead of walking the filesystem in Python for anything machine-wide. For the readiness rule and the Python direct-parquet reader for bulk reads, read `skills/fused-render-index/SKILL.md`. |
-| `fused.trackJob(spec)` | Report a long-running operation (a model download, a minutes-long generation) to the shell's **download manager**, so it stays visible after the user browses away from your page. Returns a handle; see the **"Long-running work"** section below. Never throws, never rejects. |
-| `fused.env` | String `"local"` (this local server) vs `"hosted"` (the exported/hosted runtime). Branch on it only if a view must behave differently when exported. |
-| `fused.autoReload(enabled)` | Toggle the automatic reload-on-file-change behavior for this page. Pass `false` to opt out (e.g. an in-page editor that manages its own saves and shouldn't reload under the user). |
+| `await fused.stat(path)` | `{path, name, is_dir, size, mtime, writable, remote, templates}`. Use it for a size guard before reading something big, to capture `mtime` before editing, to check `writable` before offering an edit UI, and to notice `remote` (a mounted remote bucket — keep reads bounded there). May also carry `template_error` (a bad registry name). |
+| `await fused.writeFile(path, content, opts?)` | Writes UTF-8 text **atomically** (never a half-written file). `opts.expectedMtime` arms an optimistic lock: a file changed on disk since that mtime rejects with `.type === "conflict"` (and `.mtime` = the current value) instead of clobbering. `opts.create` writes only if the path is absent — an existing path rejects with `.type === "exists"` and nothing is written, which is how you create a file without a stat-then-write race. A read-only file rejects with `.type === "readonly"`. Resolves with a fresh stat; keep its `.mtime` to re-arm the lock. |
+| `fused.rawUrl(path)` | **Sync**, returns a URL serving the file's raw bytes — for `<img src>`, `<video src>`, `<embed>`, download links. |
+| `await fused.ai(prompt, opts?)` | Ask an AI model; resolves with `{text, model, usage}`. Local-only. See **"AI calls"** below. |
+| `await fused.fileIndex.search({root, q, limit})` / `.query({sql, limit})` | Read the machine-wide **file index** — one folder's corpus, or one read-only SQL statement over the `files`/`dirs` views (totals, per-extension breakdowns, path matches). Both resolve with `ready: {indexed, scanning, stale, reason}`, so an empty result is never mistaken for "no matches" when the truth is "no index yet". Use this instead of walking the filesystem in Python. Details, and the Python direct-parquet reader for bulk reads: **`fused-render-index`**. |
+| `await fused.capture.screen(opts)` / `.audio(opts)` / `.screenshot(opts)` / `.sources()` | Record the screen, record the microphone, grab a still — **natively**, so the result is a FILE on this machine, not a `MediaRecorder` blob. See **`fused-render-capture`**. |
+| `fused.trackJob(spec)` | Report a long-running operation to the shell's **download manager**, so it stays visible after the user browses away. Returns a handle; see **`fused-render-jobs`**. Never throws, never rejects. |
+| `fused.env` | `"local"` (this server) vs `"hosted"` (the exported runtime). Branch on it only if a view must behave differently when exported. |
+| `fused.autoReload(enabled)` | Toggle reload-on-file-change for this page. Pass `false` from an in-page editor that manages its own saves and shouldn't reload under the user. |
 
 Notes:
+- **`_`-prefixed param names are the shell's**, and `_preview` is the one a page should read — only ever to do *less* work. See **"Reserved params and preview mode"**.
 - Params are **strings only, always**. Parse numbers yourself (`parseInt(fused.params.get("limit") || "50", 10)`), JSON-encode structure yourself if you need it.
-- Uncaught `runPython` rejections auto-show a red traceback overlay — good default for debugging; catch the rejection yourself when you want custom error UI.
-- **Stale requests to the same `.py` auto-cancel.** For the common slider/scrub case — a fast drag fires a request per intermediate value and only the last matters — you get this for free: a new `runPython("./x.py", …)` aborts any prior in-flight call to `./x.py`, and the superseded call's promise never settles (its continuation just stops, so nothing stale is drawn). Calls to **different** files are independent. When you genuinely need multiple concurrent calls to the **same** file to all finish — a polling loop, per-tile fetches, or a write that must complete — pass `{ key: null }` to opt out. Use a distinct `{ key: "…" }` to split one file into independent channels, or `{ signal }` (your own `AbortController`) to cancel on something other than the next call.
-- **Reach the filesystem only through these helpers**, never by fetching the server's `/api/fs/*` endpoints yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
+- Uncaught `runPython` rejections auto-show a red traceback overlay — a good debugging default; catch the rejection yourself when you want custom error UI.
+- **Reach the filesystem only through these helpers**, never by fetching `/api/fs/*` yourself — the helpers are the stable contract and carry required headers (writes are rejected without them).
 - `readFile`/`rawUrl` split: text you'll process → `readFile`; anything the browser should load itself (images, media, PDFs, download links) → `rawUrl`.
 
 The editing pattern (used by the built-in code editor template):
@@ -185,96 +240,17 @@ try {
 
 ## AI calls (`fused.ai`)
 
-`fused.ai(prompt, opts?)` asks an AI model. It resolves with **exactly** this shape (the server normalizes — no guarding needed):
+`await fused.ai(prompt, opts?)` resolves with **exactly** `{text, model, usage}` — the server normalizes, so no guarding is needed. `model` is the full id that actually ran; `usage` is `null` or `{input_tokens, output_tokens}` (Anthropic-style names — `prompt_tokens` reads `undefined`). The model id picks the destination: an id containing a `/` or ending in `.gguf` runs on **this machine**, anything else goes to the **`claude` (Claude Code) CLI** on the user's own login. Common options are `systemPrompt`, `model`, `effort` and `onChunk`.
 
-```json
-{
-  "text": "the completion text",
-  "model": "claude-haiku-4-5-20251001",
-  "usage": { "input_tokens": 544, "output_tokens": 73 }
-}
-```
+Three things decide whether a page using it behaves:
 
-- `text` — the completion (string).
-- `model` — the **full model id that actually ran**; an alias request (`"sonnet"`) echoes the resolved id.
-- `usage` — either `null` or exactly `{input_tokens, output_tokens}` (both integers). These are **Anthropic-style names** — there is NO `prompt_tokens`/`completion_tokens` (OpenAI names); reading those yields `undefined`.
+- **It is local-only, and the exporter enforces that textually.** Any page containing the string `fused.ai(` is rejected for export (SPEC RH-11) — an `if (fused.env === "local")` guard does not help. Keep AI out of a view that must export.
+- **Feed it aggregates, not the dataset.** Compute in Python, reduce to a compact summary, and hand the model that. A full table blows the token budget and drowns the signal.
+- **There is no stale-cancel channel.** Calls run fully concurrent, so a double-click fires two paid calls — disable the button while one is in flight.
 
-The page never talks to a model directly, and there are **two destinations** — the model id decides which. An id **containing a `/`** is a Hugging Face repo and runs on **this machine** (a resident worker process); anything else goes to the **`claude` (Claude Code) CLI**, where the user's Claude Code login is the credential (binary from `PATH`, overridable with `FUSED_RENDER_CLAUDE_BIN`).
+Rejections carry `.type`: `model_loading` (a local model is loading — `err.jobId` is the download it just started, not a failure), `ai_unavailable` (show a friendly state, not a raw overlay), `bad_request`, `ai_error`, `timeout`.
 
-Both are **local-only**: an exported/hosted page has neither, so the exporter rejects any page containing the string `fused.ai(` (SPEC RH-11) — a textual match, so an `if (fused.env === "local")` guard does not make the page exportable. Keep AI out of a view that must export.
-
-Core options:
-
-| Option | Meaning |
-|---|---|
-| `systemPrompt` | System message (string). Role + ground rules here; data + question in `prompt`. |
-| `model` | Model id. Default `claude-haiku-4-5-20251001` (or the user's configured default). A `/` in it means a local model. |
-| `effort` | `"low"` \| `"medium"` \| `"high"` \| `"xhigh"`. Claude path only; default low = no extended thinking. |
-| `onChunk(text)` | Opts into streaming; the promise still resolves with the same `{text, model, usage}`. |
-
-`history`, `raw`, `temperature`, `topP` and `maxTokens` are **local-model only** and are **refused with a 400 on the Claude path**, not dropped.
-
-Rejections carry an `Error` with `.type`:
-
-| `.type` | Cause | UI response |
-|---|---|---|
-| `model_loading` | A local model isn't resident. The call **started the load**; `err.jobId` is it. | Not a failure — show the download, then retry. |
-| `ai_unavailable` | `claude` binary not found/runnable, or the local worker won't start. | Friendly "AI unavailable" state, not a raw overlay. |
-| `bad_request` | Empty prompt / bad options / a local-only option on the Claude path. | Fix the call; usually a bug in your page. |
-| `ai_error` | Ran but reported an error (bad model id, upstream failure). | Show `err.message`. |
-| `timeout` | No answer within 600 s. | Offer retry; suggest lower `effort`. |
-
-**There is more to the AI API than this call** — `fused.ai.models.*` (list/catalog/load/download/unload), `fused.ai.image()`, `fused.ai.cancel()`, and the rules for driving local models. For any of that → **`fused-render-ai`**.
-
-The canonical shape — compute data in Python, reduce it to **compact aggregates**, and hand the model those, never the raw dataset (a full table blows the token budget and drowns the signal):
-
-```js
-const data = await fused.runPython("./data.py", { days });   // full dataset for the UI
-const context = JSON.stringify({                              // aggregates only, for the model
-  total_revenue: data.total_revenue,
-  revenue_by_region: data.by_region,
-  daily_revenue: data.by_day,
-});
-
-async function ask(question) {
-  const btn = document.getElementById("go"), out = document.getElementById("answer");
-  btn.disabled = true;                    // fused.ai has NO stale-cancel — guard double-submits yourself
-  out.textContent = "Thinking…";
-  try {
-    const res = await fused.ai(
-      "Data (JSON):\n" + context + "\n\nQuestion: " + question,
-      {
-        systemPrompt: "You are a data analyst. Answer ONLY from the provided JSON data. " +
-                      "Cite figures. A few sentences at most.",
-        effort: "low",
-      }
-    );
-    out.textContent = res.text;           // res.model / res.usage available for a meta line
-  } catch (err) {
-    if (err.type === "ai_unavailable")      out.textContent = "AI unavailable — " + err.message;
-    else if (err.type === "bad_request")    out.textContent = "Bad request: " + err.message;
-    else                                    out.textContent = (err.type || "error") + ": " + err.message;
-  } finally {
-    btn.disabled = false;
-  }
-}
-```
-
-Two behaviors that differ from `runPython`, each for a reason:
-
-- **No stale-cancel channel.** An AI call is never a slider scrub — you asked a question and want the answer — so calls run fully concurrent. The flip side: nothing stops a double-click from firing two paid calls. Disable the button while a call is in flight (as above).
-- **The relay times out at 600 s** server-side (vs 60 s for `runPython`) — generation is slower than computation. A `high`-effort call on a big model can legitimately take a while; keep the loading state honest.
-
-When a call fails, check the CLI before blaming the page — same probe style as `/api/run`:
-
-```bash
-which claude && claude --version               # CLI installed? (or check $FUSED_RENDER_CLAUDE_BIN)
-curl -s -X POST http://127.0.0.1:1777/api/ai -H 'X-Fused: 1' \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt": "Reply with exactly the word pong.", "effort": "low"}'
-```
-
-The first failing means the claude CLI isn't installed (that's `ai_unavailable`, not your bug); the second exercises the exact endpoint the page uses.
+Everything else — the full options and rejection tables, `fused.ai.models.*`, `.image()`, `.video()`, `.transcribe()`, `.embed()`, `.cancel()`, calling AI from Python, and diagnosing a failing call → **`fused-render-ai`**.
 
 ## The canonical wiring pattern
 
@@ -318,44 +294,62 @@ Why this shape:
 - The control writes the param and nothing else; `onChange` is the single re-render path — no double-render logic, no drift between URL and UI.
 - Values passed to `runPython` can stay strings; annotations on `main` coerce them.
 
+## Reserved params and preview mode
+
+### The `_` namespace is the shell's
+
+**Every query key starting with `_` belongs to the shell, not to your page.** The runtime enforces it: `set()` throws, `get()` returns `undefined`, `getAll()` filters them out — `_file` being the single readable exception. So:
+
+- **Name page params plainly** (`limit`, `sort`, `offset`, `theme`). The shell's set — `_file`, `_mode`, `_preview`, `_nofocus`, `_layout`, `_side`, `_panel`, `_tab`, `_listing`, `_render`, `_rev` — grows without notice, and squatting on one means the shell overwrites your state or you overwrite the shell's.
+- **Read `_` params only through `fused.params`.** Reaching around it with `new URLSearchParams(location.search)` reads a value whose meaning is the shell's and can change under you. `_preview` is the one exception, below.
+- **Write the URL only through `fused.params.set`.** A `history.replaceState` built from your own params drops the shell's `_` keys and breaks the pane or tab the page is mounted in.
+
+### `_preview=1`: this render is a picture of the page, not a use of it
+
+The shell renders pages nobody asked to *open*: `/apps` cards, listing-pane peeks, hover previews. Those frames are stamped `_preview=1` (usually with `_nofocus=1`), they mount and unmount as the pointer moves, and **many boot at once on a home or listing page** for apps the user has not opened and may never open. A page that boots identically in a preview turns that listing into N simultaneous cold starts — the most common way an app folder makes the home page unusable.
+
+**Read the flag at boot and return early**, rendering something cheap and static — a title, a cached thumbnail, an inert placeholder. Under preview, start none of: `runPython` calls that import something heavy, scan a directory or hit the network; model loads and downloads; daemon starts; `fused.capture.*`, `writeFile`, `trackJob`; polling loops, `setInterval`, websockets, EventSource; anything that records an "open", mutates state, or unpacks on first use.
+
+Read it by climbing, because the flag is **inherited** — your page may be framed by a template that was the one stamped, and only the ancestor's URL carries it (this mirrors the runtime's own `selfOrAncestorHasFlag`):
+
+```js
+function isPreview() {
+  const has = (s) => {
+    try { return new URLSearchParams(String(s).replace(/^\?/, "")).get("_preview") === "1"; }
+    catch (e) { return false; }
+  };
+  if (has(location.search)) return true;
+  try {
+    let w = window;
+    while (w.parent && w.parent !== w) {
+      w = w.parent;
+      if (has(w.location.search)) return true;
+    }
+  } catch (e) { /* cross-origin ancestor: the climb ends here */ }
+  return false;
+}
+
+const PREVIEW = isPreview();
+
+async function boot() {
+  if (PREVIEW) return renderPlaceholder();   // synchronous, no Python, no network
+  await loadEverything();                    // the real thing, only on a real open
+}
+boot();
+```
+
+Two more rules:
+
+- **Forward the stamps to frames you mount yourself**: `frame.src = url + "?_preview=1&_nofocus=1"` when `PREVIEW`. Otherwise the inner page reads a clean URL and does the work you just skipped.
+- **A preview that *can* show real content shows a cached one, never computes one.** Ask for the already-extracted artifact and fall back to the placeholder when it is absent; never let a peek be the thing that populates the cache.
+
+The runtime covers two of these for you — `fused.daemon.*` rejects in a preview frame, and a preview never writes the shell's URL. **Everything else — your Python calls, AI calls, timers, fetches — runs exactly as it would in a real open unless you gate it.** `fused_render/templates/fusedapp/template.html` is the worked example.
+
 ## Style and theming
 
-There is no imposed CSS — the iframe is a blank canvas, and by default **nothing is written into your document**: no class, no attribute, no stylesheet. But the explorer around it is not fixed. It follows the OS light/dark preference, with a Light/Dark override in Preferences → Appearance, so a hardcoded palette will sooner or later sit inside the opposite one.
+There is no imposed CSS — the iframe is a blank canvas, and nothing is written into your document by default. But the explorer around it follows the OS light/dark preference with a Light/Dark override in Preferences, so a hardcoded palette will sooner or later sit inside the opposite one. The quickest correct answer is `data-fused-theme="shell"` on your `<html>`: the runtime then writes `data-theme="light"`/`"dark"` on that element before your stylesheet is parsed and keeps it in step, so you author two `:root` token blocks and nothing else.
 
-Pick one of these and commit to it — the failure mode is picking none and half-following:
-
-**1. Fixed palette.** Fine for a view with its own strong look (a dark map, a photo grid). Just don't pretend to follow.
-
-**2. Follow the app** — one attribute, no JS. Put `data-fused-theme="shell"` on your `<html>` and the injected runtime resolves the app's setting, writes `data-theme="light"`/`"dark"` on that same element before your stylesheet is even parsed, and keeps it in step afterwards — including an in-app pin, an OS flip mid-session, and a change made in another window. Author against the attribute:
-
-```html
-<html data-fused-theme="shell">
-```
-```css
-:root       { color-scheme: dark;  --bg: #101318; --text: #dce2ea; --line: #2a303a; }
-:root[data-theme="light"]
-            { color-scheme: light; --bg: #f7f8fa; --text: #1a1f27; --line: #d8dce3; }
-body        { background: var(--bg); color: var(--text); }
-```
-
-This is what the built-in templates use (`SPEC.md` §30, AP-8/AP-9), and it is the only option that agrees with the app when the user pins Light or Dark.
-
-**3. Follow the desktop** — `@media (prefers-color-scheme: light)` around the second `:root`, same tokens, no attribute. Tracks the OS, which is what the app's default System mode tracks too, so the two agree for the setting almost nobody changes. It does *not* see an in-app pin.
-
-**4. Your own switcher.** Put the choice in a param (`fused.params.set("theme", …)`) so it is bookmarkable like the rest of your view state, and drive the same one `data-theme` attribute from it. **Don't combine this with option 2** — the runtime re-applies on every storage/OS event, so your button would silently lose to the app setting. That is exactly why the built-in log viewer dropped its own button.
-
-Whatever you pick, two rules make the second palette actually work:
-
-- **Every colour comes from a token.** Two blocks defining *the same token set*, and no colour literal anywhere else in the stylesheet. A stray `#1a1f27` in a rule is one the other mode cannot repaint — and it shows up as an unreadable smear, not an obvious bug.
-- **Colours you hand to JS don't follow.** Canvas fills, chart ramps, maplibre paint expressions — `var()` does not resolve inside a JS string. Read them at *draw* time and redraw when the attribute changes:
-
-  ```js
-  const token = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  new MutationObserver(() => redraw())
-    .observe(document.documentElement, { attributeFilter: ["data-theme"] });
-  ```
-
-Do not read the app's own `localStorage` key. It is private, it is not part of `window.fused`, and a view that reads it becomes a second copy of a resolution rule that will drift from the first — options 2 and 3 both get you the answer without one.
+The four strategies, when each is right, and the two rules that make a second palette work (every colour from a token; colours handed to canvas/charts/maplibre must be re-read on change) → **`fused-render-theming`**.
 
 ## Preview templates (views for a file format)
 
@@ -369,7 +363,7 @@ const page = await fused.runPython("./my_reader.py", { file, offset: fused.param
 
 A reader `.py` is only needed when Python adds value (parsing parquet/xlsx, paging, aggregation). Text formats can skip it entirely — `fused.stat` for a size guard, then `fused.readFile(file)` and render in JS (the markdown/JSON/code templates work this way); media formats just point a tag at `fused.rawUrl(file)`.
 
-Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live one folder per template under `fused_render/templates/<name>/` and follow this pattern (see `templates/xlsx/template.html` + `templates/xlsx/reader.py` for a worked example); each extension maps to an **ordered list of mode names** (first = default) in the built-in registry `fused_render/templates/registry.json`. **User-owned** templates that override, reorder, or extend that list live under `~/.fused-render/` and are bound via `registry.json` — layout, the mode-list/registry grammar, and registration are covered by the `fused-render-custom-templates` skill (this skill still owns how the html/py themselves are written).
+Ship the reader `.py` next to the template html and call it with a relative path. Paging/sort/filter state goes in normal params (`offset`, `sort` …) exactly like any view. Built-in templates live one folder per template under `fused_render/templates/<name>/` — see `templates/xlsx/template.html` + `templates/xlsx/reader.py` — and each extension maps to an **ordered list of mode names** (first = default) in `fused_render/templates/registry.json`. **User-owned** templates that override, reorder or extend that list live under `~/.fused-render/`; the registry grammar and registration are covered by **`fused-render-custom-templates`** (this skill still owns how the html/py themselves are written).
 
 ## Testing in the browser: URL paths & modes
 
@@ -379,17 +373,15 @@ Verify a view by opening it in a real browser against the running server — do 
 |---|---|---|
 | `/` | Redirects to `/apps` (the app hub); `/explorer` is the file-explorer homepage. | Browse to a file by clicking. |
 | `/explorer/embed/<abs-path-without-leading-slash>` | **Embed mode**: the page chrome-free (no sidebar/breadcrumb/header). | **The default way to open and test a view** — you see just the view itself. |
-| `/explorer/view/<abs-path-without-leading-slash>` | **Full-shell mode**: the same page inside the explorer shell — sidebar, breadcrumb, preview header — with your page in an iframe. | Check how the view sits inside the explorer chrome, or when browsing. |
+| `/explorer/view/<abs-path-without-leading-slash>` | **Full-shell mode**: the same page inside the explorer shell, your page in an iframe. | Check how the view sits inside the chrome, or when browsing. |
 
-**Default to embed.** When you open a link to test a view or show it to the user, use `/explorer/embed/` — it renders the view alone, which is what you're iterating on. Reach for `/explorer/view/` only to inspect the surrounding chrome or when the user is browsing. (Legacy `/view/` and `/embed/` prefixes still redirect to the `/explorer/...` forms.)
+**Default to embed.** When you open a link to test a view or show it to the user, use `/explorer/embed/` — it renders the view alone, which is what you're iterating on. Reach for `/explorer/view/` only to inspect the surrounding chrome or when the user is browsing.
 
 Path encoding: the fs path rides in the URL after the prefix with its **leading slash dropped** and each segment URL-encoded. `/Users/me/proj/dash.html` → `http://127.0.0.1:1777/explorer/embed/Users/me/proj/dash.html`. A space becomes `%20`, etc.
 
 **View vs embed** is a fixed page-load mode (the prefix picks it; it cannot toggle without a full navigation). Both serve the same shell and route identically — embed just hides chrome. Params sync the same way in both; in nested embeds, param sync stops at each embed shell boundary so a tab's params stay tab-independent.
 
-**Preview templates** open at the target file's path (`/explorer/embed/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file via the read-only `_file` param. To test a template's html directly, open it and pass the target yourself: `/explorer/embed/<abs path to template>.html?_file=<abs target path>`.
-
-**API endpoints** (`/api/config`, `/api/fs/stat|list|raw|events`, `/api/fs/write`, `/api/run`) back the runtime — reach them only through the `fused.*` helpers, never by hand (see the note above). They're listed here only so you recognize them in the network tab while debugging.
+**Preview templates** open at the *target file's* path (`/explorer/embed/<abs path to the data file>`) — the shell resolves the template by extension and hands it the file. To test a template's html directly, open it and pass the target yourself: `/explorer/embed/<abs path to template>.html?_file=<abs target path>`.
 
 Sanity loop: page renders → interact with a control → URL query updates → hard refresh → identical view. Python errors appear as the red overlay (with full traceback) and `print()` output in the browser console (prefixed `[python]`).
 
@@ -431,95 +423,42 @@ The same data is in the **Calls** view mode on any page that has records
 `~/.fused-render/logs/<app>/` (one directory per app; whole-store queries glob `logs/*/*.calls.jsonl`) if you want to `jq` it. Parameters are recorded by
 default, so treat the log as containing whatever your page passes around.
 
+## Native capture (`fused.capture`)
+
+`fused.capture.screen()`, `.audio()` and `.screenshot()` record or grab **natively**, so the result is a file this machine owns — the path is known before a recording ends (it feeds `fused.ai.transcribe({path})` directly) and the recording survives your page being navigated away from. Call `fused.capture.sources()` first and draw your UI off the answer: it never prompts, and what is available differs per platform.
+
+The per-platform matrix, the recording handle, and the rejection types → **`fused-render-capture`**.
+
 ## Long-running work and the 60 s timeout
 
-Every `fused.runPython` call runs `main()` in a fresh subprocess that the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`). On timeout the call rejects with a `TimeoutError` — which, uncaught, becomes the red overlay. The `/api/run` route does not expose a per-call override, so you cannot raise the limit from the page; design around it instead:
+Every `fused.runPython` call runs `main()` in a fresh subprocess the server **kills at 60 s** (`DEFAULT_TIMEOUT` in `fused_render/executor.py`), and there is no per-call override — an uncaught timeout becomes the red overlay. Design around it: precompute and cache to disk (**`.fused/cache/`** — see "Where an app keeps state"), chunk behind an `offset` param, move a genuinely long build out of band into a separate process, and cut per-call import cost.
 
-- **Precompute and cache to disk.** Do the expensive work once, write the result next to the script (`.json`/`.parquet`), and have `main()` return the cached bytes when they're fresh (compare mtimes) — recompute only when the input changed. Reading a cached file is near-instant.
-- **Chunk / paginate.** Slice the work so each call stays well under 60 s, pass an `offset`/`page` param, and accumulate results in JS across several `runPython` calls. This also keeps the UI responsive.
-- **Move the heavy job out of band.** For a genuinely long build, run it as a separate process/script that writes an output file, and have the view just `fused.readFile`/`runPython` the finished result.
-- **Cut per-call cost.** Each call re-pays import cost (pandas ≈ 1 s); import lazily inside `main`, and debounce sliders (~150 ms) so a drag doesn't spawn a subprocess per tick.
+Work that outlives one call needs to be *visible* once the user browses away, because the shell replaces your page's frame: report it to the download manager with `fused.trackJob`, from the detached worker as well as from the page. The strategies, the job API, and the worker-side reporter → **`fused-render-jobs`**.
 
-### Show it in the download manager (`fused.trackJob`)
-
-The out-of-band pattern above leaves a hole: a detached worker pulling an 8GB model keeps running when the user browses to another file, and the shell replaces your page's frame the moment they do — so your in-page progress bar disappears and the download becomes invisible. Report it instead, and the shell shows it in the **download manager** at the bottom right for as long as it runs, whatever page the user is on:
-
-```js
-const job = fused.trackJob({
-  title: "FLUX.2-klein-4B",      // required — what is happening, in a few words
-  kind: "download",              // "download" | "task"
-  unit: "bytes",                 // "bytes" formats done/total as 1.2 / 8.1 GB
-  cancellable: true,             // shows a ✕; omit if you cannot honor it
-});
-
-// on each poll tick, from whatever your worker wrote:
-job.update({ done: s.bytes, total: s.size, detail: "transformer.gguf" });
-if (job.cancelRequested) await stopTheWorker();   // the manager's ✕ was clicked
-
-job.finish("Downloaded");        // or job.fail(err) / job.cancelled()
-```
-
-- **It cannot break your page.** Every method is fire-and-forget and never rejects; a failed report is swallowed. `await job.update(...)` only if you want to read `cancelRequested` at that exact point — the property is also readable synchronously between ticks.
-- **Cancel is a request you honor**, not something the shell can do — it has no idea which process is doing the work. The ✕ sets a flag; your poll loop notices it and stops the worker, then reports `job.cancelled()`. If you cannot stop the work, leave `cancellable` off and no ✕ is offered.
-- **Omit `total` while you don't know it.** A job with no total draws a travelling "indeterminate" bar, which is the honest picture; a total of `0` is treated the same way rather than painted as complete.
-- **Report the finish.** Without a terminal call the row goes "stalled" after 30 s and says the page that started it was closed — accurate if that is what happened, misleading if the work just ended. Report `finish`/`fail`/`cancelled` on every exit path of your poll loop.
-- **Report from the WORKER, not only the page — this is the one that bites.** The shell replaces your page's frame on every navigation, so a page-only reporter freezes the row at its last number and the manager declares it stalled ~30s later while the download carries on. Your detached worker outlives the page, so let it report too. It cannot `import fused_render` (it runs in its own venv), but the endpoint is plain JSON on the origin every spawned child inherits:
-
-  ```python
-  import json, os, urllib.error, urllib.request
-
-  class JobReport:
-      """Best-effort. Never raises: reporting must not break the work."""
-      def __init__(self, job_id, title):
-          self.url = (os.environ.get("FUSED_RENDER_ORIGIN") or "").rstrip("/") + "/api/jobs"
-          self.id, self.enabled, self.cancel_requested = job_id, self.url.startswith("http"), False
-          if self.enabled:
-              self.post(title=title, kind="download", state="running", cancellable=True)
-
-      def post(self, **fields):
-          if not self.enabled:
-              return None
-          fields["id"] = self.id
-          req = urllib.request.Request(self.url, data=json.dumps(fields).encode(),
-                                       headers={"Content-Type": "application/json", "X-Fused": "1"})
-          try:
-              with urllib.request.urlopen(req, timeout=3) as r:
-                  record = json.loads(r.read().decode())
-          except (urllib.error.URLError, OSError, ValueError):
-              return None
-          if isinstance(record, dict) and record.get("cancel_requested"):
-              self.cancel_requested = True   # the manager's ✕ — act on it here
-          return record
-  ```
-
-  Use the **same job id** on both sides (derive it from something both know — the job directory name, the model id) so the two reporters share ONE row instead of opening two for the same work. Keep the page reporting as well: it is the only thing alive during `uv run`'s first-run environment build, before your worker executes a line. Rate-limit the worker's posts to ~1/s — a download callback fires per chunk.
-
-  **The worker is also the only thing that can honor a cancel once the page is gone.** `cancel_requested` comes back in the reply to the tick you were already sending; check it in your progress callback and stop. If your long step is an opaque subprocess (`uv sync`), run a small daemon thread that posts a heartbeat, reads the flag, and kills the child — otherwise the ✕ does nothing for the minutes that matter most.
-
-- **One job per user-meaningful operation**, not per file: aggregate a multi-file download into one row (sum the bytes) and put the current filename in `detail`.
-- Reuse a **stable `id`** (`fused.trackJob({id: "flux:" + jobId, ...})`) when a page can be reloaded mid-work — the reopened page re-attaches to the existing row instead of opening a second one.
-- Exports fine: `fused.trackJob` is a no-op on a hosted page (there is no manager there), so unlike `fused.ai` it does not block export.
-
-Escape hatch: because fused-render runs your own trusted code on your own machine, you *can* raise `DEFAULT_TIMEOUT` in `fused_render/executor.py` — but that's editing the package, applies globally, and lets any view hang a worker that long. Prefer the caching/chunking patterns; reach for the constant only for a deliberate, local one-off.
+Nothing here holds state indefinitely — even `fused.engine(py)`, the warm variant of `runPython`, idle-retires its worker after 15 minutes. A folder that must keep running past that wants a resident daemon: **`fused-render-background-apps`**.
 
 ## Pitfalls checklist
 
 - `fused.params.set("n", 5)` → **throws** (number). Use `String(5)`.
 - Reading `input.value` inside `draw()` instead of `fused.params.get()` → refresh loses state.
+- Naming a page param with a leading underscore → `set()` throws, and routing around it collides with a shell param.
+- Building the URL query yourself (`history.replaceState`) → drops the shell's `_layout`/`_side`/`_file` and breaks the pane. Use `fused.params.set`.
+- Booting the full app under `_preview=1` → every card on a listing cold-starts at once for apps nobody opened. Gate boot on the flag.
+- Reading `_preview` off `location.search` alone → misses the inherited case where an outer frame carries the stamp. Climb the ancestors.
+- Mounting your own iframe in a preview without forwarding `?_preview=1&_nofocus=1` → the inner page does all the work you just skipped.
 - `main` returning a DataFrame / datetime / Decimal / numpy value → serialization error; convert to JSON-native first.
-- Missing annotation on a numeric param → `main` receives `"50"` (string) and comparisons silently misbehave.
-- Expecting module state to persist between `runPython` calls → each call is a fresh process.
-- Importing a library outside the supported set (torch, sklearn, xarray, plotly, ...) → `ModuleNotFoundError` in the packaged app; stick to the "Available Python libraries" list above.
+- Missing annotation on a numeric param → `main` receives `"50"` and comparisons silently misbehave.
+- Expecting module state to persist between `runPython` calls → each call is a fresh process. On-disk memoisation under `.fused/cache/` is the replacement.
+- Writing app state next to `index.html`, into `~/.myapp`, or into the system temp dir → it belongs in `.fused/data/` (git history, portability, and a temp dir that vanishes are three separate bugs).
+- Putting something in `.fused/cache/` that cannot be rebuilt → a cache sweep destroys it. If losing it hurts, it is `data/`.
+- Writing a cache entry with a plain `open(...,"w")` → overlapping calls leave a half-written file the next call reads back. `os.replace` a temp file into place.
+- A cache key with no version segment → a changed result shape is served from stale entries forever.
+- Importing outside the bundled set without a folder `pyproject.toml` → `ModuleNotFoundError` in the packaged app.
 - Adding `<script src=".../runtime.js">` manually → double-injection; the explorer injects it.
-- Heavy import + slider wired without debounce → one full subprocess per tick; debounce inputs ~150 ms when `main` is slow.
-- Fetching `/api/fs/raw` (or POSTing `/api/fs/write`) directly instead of using the helpers → writes get rejected (missing required header) and you're coupled to internals.
-- `writeFile` without `expectedMtime` on an *existing* file → silently clobbers whatever is on disk now. For edits, arm the lock and handle `.type === "conflict"`; for "create this if it isn't there", pass `{create: true}` and handle `.type === "exists"` rather than stat-ing first (a stat that fails for any reason other than absence otherwise reads as "go ahead and write").
-- Using `readFile` for an image/video and stuffing bytes into the DOM → use `fused.rawUrl(path)` as the element's `src` instead.
-- Walking the filesystem (`os.walk`, `glob`, shelling out to `find`) to answer "how many / how big / where are all my X files" → the index already knows, without a single stat; use `fused.fileIndex.query()` or read its parquet directly (`fused-render-index`).
-- `fused.ai` rejecting with `.type === "ai_unavailable"` → the claude CLI isn't installed or found (the message says what to install or set); show that state in the UI instead of a raw overlay.
-- Dumping the full dataset into a `fused.ai` prompt → token blowout and a worse answer; reduce to compact aggregates first (see "AI calls" above).
-- Forgetting `fused.ai` has no stale-cancel → a double-click fires two concurrent calls; disable the button while one is in flight.
-- Calling `fused.ai` on a page meant for export → the exporter rejects it (SPEC RH-11); gate on `fused.env === "local"`.
-- Starting long work with `fused.trackJob` and never calling `finish`/`fail`/`cancelled` → the row sits there and goes "stalled" after 30 s, telling the user the page was closed when really the job just ended. Report a terminal state on every exit path of the poll loop.
-- Reporting progress ONLY from the page → the row freezes and goes "stalled" the moment the user opens another file, because the shell tears your frame down. Anything that outlives the page must report from the worker (see "Long-running work" above).
-- Reporting "I wrote the files, try it" as if it were verification → after the page has been opened, `fused-render calls --page <page>` says whether it actually ran (see "Verifying your work" above). Zero records means the page's JS died before it reached Python — a different bug from a failing `main()`, and they look identical without the log.
+- Heavy import + slider wired without debounce → one full subprocess per tick; debounce ~150 ms when `main` is slow.
+- Fetching `/api/fs/raw` or POSTing `/api/fs/write` directly → writes get rejected (missing header) and you're coupled to internals.
+- `writeFile` without `expectedMtime` on an *existing* file → silently clobbers what is on disk now. For edits arm the lock and handle `.type === "conflict"`; for "create if absent" pass `{create: true}` and handle `.type === "exists"` rather than stat-ing first (a stat that fails for any reason other than absence otherwise reads as "go ahead and write").
+- Using `readFile` for an image/video and stuffing bytes into the DOM → point the element's `src` at `fused.rawUrl(path)`.
+- Walking the filesystem (`os.walk`, `glob`, `find`) to answer "how many / how big / where are all my X files" → the index already knows; use `fused.fileIndex.query()` (`fused-render-index`).
+- Calling `fused.ai` on a page meant for export → the exporter rejects it textually (SPEC RH-11); a `fused.env` guard does not help.
+- Reporting "I wrote the files, try it" as verification → `fused-render calls --page <page>` says whether it actually ran. Zero records means the page's JS died before reaching Python — a different bug from a failing `main()`, and they look identical without the log.

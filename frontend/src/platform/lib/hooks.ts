@@ -147,94 +147,71 @@ export function useDocumentTitle(label: string | null | undefined): void {
   }, [label]);
 }
 
-// Whether the builtin learn mount is attached and browsable. Seeded from the
-// boot-time config snapshot, then re-verified by a bounded /api/config poll —
-// the one-shot fetch (main.tsx) lands well before the server's background
-// automount thread finishes attaching the mount, so the snapshot essentially
-// always says false; and the inverse race exists too (rcd survives server
-// restarts, so boot can catch the PRIOR run's still-live mount reporting true
-// moments before ensure_learn_mount's forced detach rips it out), so the poll
-// always runs and follows whatever the fresh answer says. The bound (2s x 60
-// = 120s) comfortably exceeds attach_mount's ~70s worst case (ensure_rcd
-// spawn + full 60s mount rc timeout, shell/mounts.py) so a slow-but-
-// successful mount isn't missed; the cap keeps a dev checkout with no
-// bundled learn.zip (never becomes ready) from polling forever. Once any
-// mount confirms true, that result is cached at module scope (below) so a
-// later remount of the hook doesn't re-litigate it against a stale seed.
-// Module-level cache of the last CONFIRMED-true readiness, shared by every
-// mount of the hook. Home unmounts/remounts on every visit to "/" (it's a
-// route, not persistent chrome like Sidebar), so without this a return visit
-// re-seeds from the stale boot `initial` (still false) and restarts the
-// bounded poll from scratch — the Learn card would vanish for up to 2s and
-// reflow the grid on every trip back to Home, even though readiness was
-// already confirmed earlier in the session.
-// Per-builtin, and keyed rather than a single flag: a mount confirms only
-// itself, and one flag shared between two would mark the other ready the
-// moment either attached.
-const cachedReady: Record<BuiltinMountKey, boolean> = {
-  learn_mount_ready: false,
-};
+// The shell's own tab icon: READ off the `<link rel="icon">` the document
+// arrived with, not spelled here. frontend/index.html says `/favicon.ico`,
+// but Vite rewrites that to the build's base (`/static/shell-dist/favicon.ico`,
+// vite.config.js) — a hard-coded `/favicon.ico` restore was a 404, which is
+// what the blank placeholder on the tab was (owner, 2026-08-27, second
+// report). Captured lazily on the first swap, so it is whatever the served
+// index.html linked, dev or packaged.
+const DEFAULT_FAVICON = Symbol("default favicon");
+let defaultHref: string | null = null;
 
-// ONE key now. The Claude Config app stopped being a mount when it became
-// native React over its own server bridge (a one-shot
-// GET /api/claude-config/status — availability is a property of the
-// installation and cannot flip mid-session, which is the only thing the poll
-// below exists for), and the Sessions inbox page was deleted outright on
-// 2026-08-18 (Tasks supersedes it). The generic is kept rather than inlined:
-// the next bundled mount is a key, not a rewrite.
-type BuiltinMountKey = "learn_mount_ready";
-
-export function useLearnMountReady(initial: boolean): boolean {
-  return useBuiltinMountReady(initial, "learn_mount_ready");
+// Set the tab icon by REPLACING the `<link rel="icon">` node, never by editing
+// its href: browsers (Chrome at least) do not reliably refetch when an existing
+// link's href flips back to a URL it showed before, which left the previous
+// app's icon stuck on a tab until a hard reload (owner, 2026-08-27). A fresh
+// node is a fresh icon request every time. EVERY href — the default and an
+// app's icon alike — also carries a unique query string: Chrome's per-document
+// favicon cache can answer a URL it already holds without repainting (the
+// app's raw URL is stable across visits, so it hits the same cache). The
+// server ignores the query, so the bytes are the same file under a new key.
+let faviconSeq = 0;
+function bust(url: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}r=${++faviconSeq}`;
+}
+function setFaviconHref(href: string | typeof DEFAULT_FAVICON): void {
+  const old = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (defaultHref === null && old) defaultHref = old.href;
+  const link = document.createElement("link");
+  link.rel = "icon";
+  if (href === DEFAULT_FAVICON) {
+    if (!defaultHref) return;
+    link.href = bust(defaultHref);
+    link.setAttribute("sizes", "any");
+  } else {
+    link.href = bust(href);
+  }
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
 }
 
-function useBuiltinMountReady(initial: boolean, key: BuiltinMountKey): boolean {
-  const [ready, setReady] = useState(cachedReady[key] || initial);
+// Tab icon: while a route inside an app is on screen, its optional icon.svg
+// replaces the shell's own, AS IS — no recolouring, no livery (owner,
+// 2026-08-27: render the author's svg untouched). The default comes back when
+// the route leaves (cleanup) or the href goes null (no icon for this app). One
+// writer at a time by construction — the callers (AppPage, StatView) are
+// mutually exclusive mounts — so there is no arbitration, only the restore.
+export function useFavicon(href: string | null): void {
   useEffect(() => {
-    if (cachedReady[key]) return; // already confirmed — nothing left to poll for
-    let cancelled = false;
-    let attempts = 0;
-    // setInterval fires a new getConfig() every tick without waiting for the
-    // previous one to settle, so responses can arrive out of order. Only the
-    // newest ISSUED request's response is applied — a straggler from an
-    // earlier tick is discarded as stale rather than overwriting a `true` a
-    // later request already reported (which would stick permanently, since
-    // that `true` had already cleared the interval).
-    let latestRequestId = 0;
-    const MAX_ATTEMPTS = 60;
-    const POLL_MS = 2000;
-    const timer = window.setInterval(() => {
-      attempts += 1;
-      const requestId = ++latestRequestId;
-      getConfig().then(
-        (fresh) => {
-          if (cancelled || requestId !== latestRequestId) return;
-          setReady(fresh[key]);
-          if (fresh[key]) {
-            cachedReady[key] = true;
-            window.clearInterval(timer);
-          } else if (attempts >= MAX_ATTEMPTS) {
-            window.clearInterval(timer);
-          }
-        },
-        () => {
-          if (cancelled || requestId !== latestRequestId) return;
-          // Transient fetch failure — just try again next tick.
-          if (attempts >= MAX_ATTEMPTS) window.clearInterval(timer);
-        }
-      );
-    }, POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-    // Deliberately empty deps: run once on mount only. Depending on `ready`
-    // here would restart the whole bounded poll window from zero every time
-    // it changes, and `initial` is only a seed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return ready;
+    if (!href) return;
+    setFaviconHref(href);
+    return () => setFaviconHref(DEFAULT_FAVICON);
+  }, [href]);
 }
+
+// The builtin-mount readiness hook lived here: a bounded /api/config poll that
+// answered "is the bundled zip mount attached and browsable yet", seeded from
+// the boot-time config snapshot because the one-shot fetch (main.tsx) lands
+// well before the server's background automount thread finishes attaching. It
+// gated the sidebar's App Basics entry so it was never a dead link. Both
+// consumers are gone — the Claude Config app stopped being a mount when it
+// became native React over its own server bridge, the Sessions inbox page was
+// deleted on 2026-08-18 (Tasks supersedes it), and the learn content left the
+// app for the community catalog. `sessions_mount_ready` still ships on
+// /api/config for the next surface that links into a bundled mount; git
+// history has the poll if one needs it back.
 
 /** What a surface needs to know BEFORE it offers a self-fix session. */
 export interface SelfFixReadiness {
@@ -251,7 +228,7 @@ export interface SelfFixReadinessState extends SelfFixReadiness {
 }
 
 // The two preconditions a surface can check before it offers a self-fix session
-// (SPEC §43, SF-13f). They come from two places because they are two kinds of
+// (SPEC §48, SF-13f). They come from two places because they are two kinds of
 // fact, and each already has an owner:
 //
 //   readOnly       /api/config — an `os.access` on the install root, cheap

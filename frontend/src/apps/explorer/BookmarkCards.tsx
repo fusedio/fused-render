@@ -15,11 +15,10 @@ import {
   navigateUrl,
   urlForFsPath,
   embedUrlForFsPath,
-  withPreviewFlag,
   EMBED_PREFIX,
   VIEW_PREFIX,
 } from "@platform/lib/router";
-import { withNoFocus } from "@platform/lib/frame-focus";
+import { thumbFrame } from "@platform/lib/thumb-frame";
 import { listDir, rawUrl, statPath } from "@platform/lib/api";
 import type { FsEntry } from "@platform/lib/api";
 import { basename } from "@platform/lib/format";
@@ -61,36 +60,66 @@ function joinPath(dir: string, name: string): string {
 // records the app open (GET /render records by default, D301) — without it,
 // scrolling a folder card into view reshuffles the /apps hub's recency order.
 export function LivePreview({ src }: { src: string }) {
-  // `_nofocus=1` beside the thumbnail stamp: a card peek must not take the
-  // keyboard, because focusing an element inside a frame scrolls that frame
-  // into view and the scroll propagates out to the page's own scroller — a
-  // peeked page that focuses an input on boot yanked the card grid down to
-  // itself mid-scroll (D348, platform/lib/frame-focus.ts).
-  src = withNoFocus(withPreviewFlag(src));
   const [previewRef, nearViewport] = useNearViewport<HTMLSpanElement>();
   const { started, settled } = usePreviewStart(nearViewport);
+  // Separate from `started`/`settled`: those track the SCHEDULER's slot (freed
+  // on load OR error OR timeout, so a stuck preview doesn't starve the other
+  // one), while `loaded` tracks whether the iframe has actually PAINTED
+  // something — the two only coincide on the happy path. Gating the fade on
+  // `loaded` (not `started`) is what keeps the crossfade from handing the
+  // shimmer off to a raw white/blank frame mid-boot.
+  const [loaded, setLoaded] = useState(false);
+  // Reset whenever the CURRENT iframe goes away, not just on mount: `started`
+  // flips back to false when the card scrolls far enough out of view
+  // (usePreviewStart's effect unmounts the iframe), and scrolling back in
+  // mounts a brand-new, unloaded one. Without this, `loaded` from the
+  // previous mount survived the round trip and the new iframe rendered at
+  // full opacity before it had painted anything — a blank/booting frame shown
+  // as if it were done. `src` too, in case the same component is ever handed
+  // a different preview target without a full unmount.
+  useEffect(() => {
+    setLoaded(false);
+  }, [started, src]);
   if (!started) {
-    return <span ref={previewRef} className="fhb-preview" aria-hidden="true" />;
+    return (
+      <span ref={previewRef} className="fhb-preview" aria-hidden="true">
+        <span className="fhb-preview-skel" />
+      </span>
+    );
   }
   return (
     <span ref={previewRef} className="fhb-preview" aria-hidden="true">
       {/* The near-viewport observer is the lazy gate; the shared scheduler is
           the concurrency gate. Keeping them separate means a browser-delayed
           iframe never holds one of the scheduler's two permits. */}
+      {!loaded && <span className="fhb-preview-skel" />}
       <iframe
-        src={src}
+        {...thumbFrame(src)}
         style={{
           width: `${100 / PREVIEW_SCALE}%`,
           height: `${100 / PREVIEW_SCALE}%`,
           transform: `scale(${PREVIEW_SCALE})`,
+          opacity: loaded ? 1 : 0,
+          transition: "opacity 0.15s ease",
         }}
-        tabIndex={-1}
-        scrolling="no"
-        title=""
-        onLoad={settled}
-        onError={settled}
+        onLoad={() => {
+          setLoaded(true);
+          settled();
+        }}
+        // An error is still a PAINTED result — the frame shows the embedded
+        // page's own error state — and before this shimmer existed that error
+        // page was exactly what a card peek showed. `onError={settled}` alone
+        // freed the scheduler slot but left `loaded` false forever, so the
+        // shimmer covered the error page permanently instead of revealing it.
+        onError={() => {
+          setLoaded(true);
+          settled();
+        }}
       />
-      <span className="fhb-shield" />
+      {/* No shield span: `.fhb-preview iframe` is already `pointer-events: none`
+          (preferences.css), so every press retargets onto the card itself. The
+          image peek below keeps its shield — an <img> carries the browser's
+          native drag gesture, which pointer-events does not stop. */}
     </span>
   );
 }
@@ -248,6 +277,30 @@ function FolderStack({ path }: { path: string }) {
           not a bar floating over a separate panel). The whole stack waits
           for settled: painting an alphabetical stack mid-probe would let
           the front sheet reorder under the user once subPeek names it. */}
+      {/* Before settled: three placeholder sheets at the same depths the real
+          stack uses, so the silhouette (how many pages, which one is in
+          front) is on screen from first paint and only the ink — names,
+          the peeked body — arrives once listDir and the subfolder probe both
+          land. Reuses `.skel-bar.icon-skel` (explorer.css) for the row icon
+          rather than a bespoke square, and `.fhb-sheet-skel-body` for the
+          front sheet's body — the same slot `.fhb-sheet-d0 .fhb-preview`
+          fills below, sized to match without the specificity fight that
+          layering onto `.fhb-preview` itself would cause (see
+          preferences.css). */}
+      {!settled &&
+        [2, 1, 0].map((depth) => (
+          <span key={depth} className={`fhb-sheet fhb-sheet-d${depth}`}>
+            <span className="fhb-sheet-row">
+              <span className="skel-bar icon-skel" />
+              <span className="skel-bar" style={{ width: depth === 0 ? "55%" : "70%" }} />
+            </span>
+            {depth === 0 ? (
+              <span className="fhb-sheet-skel-body" />
+            ) : (
+              <span className="fhb-sheet-peek" />
+            )}
+          </span>
+        ))}
       {settled &&
         shown.map((e, i) => {
           const depth = shown.length - 1 - i;

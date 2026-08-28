@@ -94,6 +94,10 @@
   .lc-progress { display: flex; align-items: center; gap: 8px; }
   .lc-progress span { flex: 1; min-width: 0; }
   .lc-progress button { border: 0; background: transparent; color: var(--accent); font: inherit; padding: 0; cursor: pointer; white-space: nowrap; }
+  .lc-confirm { display: flex; flex-direction: column; gap: 6px; }
+  .lc-confirm button { border: 1px solid var(--accent); background: var(--panel-2); color: var(--accent); font: inherit; border-radius: 7px; padding: 5px 8px; cursor: pointer; text-align: left; }
+  .lc-confirm button:hover:not(:disabled) { background: var(--accent); color: #fff; }
+  .lc-confirm button:disabled { opacity: 0.6; cursor: default; }
   .lc .spin { width: 13px; height: 13px; border: 2px solid #00000014; border-top-color: var(--accent); border-radius: 50%; flex: none; animation: spin .7s linear infinite; }
 
   #lmenu {
@@ -307,6 +311,17 @@
   }
   .catrow .catcount { flex: none; font-size: 10px; color: var(--faint); font-family: var(--mono); }
 
+  /* multidim dataset section (variable + dim selectors) */
+  .md-section.busy { opacity: .6; }
+  .md-btn {
+    flex: none; width: 26px; height: 24px; border: 1px solid var(--border-2);
+    border-radius: 6px; background: var(--panel); color: var(--muted); padding: 0;
+    font-size: 10px; display: flex; align-items: center; justify-content: center;
+  }
+  .md-btn:hover { color: var(--text); border-color: var(--accent); }
+  .md-btn.on { color: var(--accent); border-color: #ff3e0055; background: var(--accent-soft); }
+  .md-btn:disabled { opacity: .45; cursor: default; }
+
   /* right-docked style panel */
   #stylepanel {
     flex: none; width: 320px; min-width: 0; background: var(--panel);
@@ -374,9 +389,9 @@
   }
   #toast.warn { border-left-color: var(--warn); }
   #toast.bad { border-left-color: var(--bad); }
-  #toast .tx { flex: 1; }
+  #toast .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
   #toast .tx b { display: block; margin-bottom: 2px; }
-  #toast .tclose { background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; }
+  #toast .tclose { flex: none; background: transparent; border: 0; color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer; }
   .hidden { display: none !important; }
   .mono { font-family: var(--mono); }
   #boot-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; z-index: 30; }
@@ -654,6 +669,25 @@ const sourceArgs = target => ({
     ? target
     : `${location.origin}/api/fs/raw?path=${encodeURIComponent(target)}&pooled=1`,
 });
+// The map_render argument block every describe path shares. A sel step keeps
+// only the user's own contrast window, so an untouched style takes each
+// slice's 2–98% stretch. The test is `_rescaleTouched` and not `_touched`,
+// which any style edit sets: one colormap pick would pin every later timestep.
+function renderArgs(L, { touchedOnlyRescale } = {}) {
+  const s = L.style || {};
+  const sendRescale = s.rescale && (!touchedOnlyRescale || s._rescaleTouched);
+  return {
+    target: L.target,
+    colormap: s.colormap || "viridis",
+    rescale: sendRescale ? s.rescale.join(",") : "",
+    render_mode: s.render_mode || "",
+    stretch: s.stretch || "",
+    category_colors: JSON.stringify(s.category_colors || {}),
+    var: L.mdVar || "",
+    sel: L.mdSel ? JSON.stringify(L.mdSel) : "",
+    ...sourceArgs(L.target),
+  };
+}
 
 /* =======================================================================
    FILE BROWSER
@@ -901,20 +935,14 @@ async function loadTarget(target, name) {
   state.layers.set(target, L);
   renderFileList(); renderLayerCards();
   try {
-    if (isRemoteCog(target) && await openClientCog(L, target)) {
+    if (isRemoteCog(target) && !cogInaccessibleOrigins.has(cogOrigin(target)) && await openClientCog(L, target)) {
       L.loading = false; L.visible = true;
       state.selected = target;
       persistOpen(); renderAll(); refreshCode();
+      fitTo(L.descriptor && L.descriptor.bounds);
       return;
     }
-    const desc = await fused.runPython("./map_render.py", {
-      target, colormap: (L.style && L.style.colormap) || "viridis",
-      rescale: (L.style && L.style.rescale) ? L.style.rescale.join(",") : "",
-      render_mode: (L.style && L.style.render_mode) || "",
-      stretch: (L.style && L.style.stretch) || "",
-      category_colors: JSON.stringify((L.style && L.style.category_colors) || {}),
-      ...sourceArgs(target),
-    });
+    const desc = await fused.runPython("./map_render.py", renderArgs(L));
     L.loading = false; L.descriptor = desc;
     if (desc.status !== "ok") {
       L.visible = false;
@@ -926,6 +954,7 @@ async function loadTarget(target, name) {
     }
     const touched = L.style && L.style._touched;
     L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    syncMultidim(L);
     if (desc.kind === "vector_geojson") {
       L.geojson = await (await fetch(fused.rawUrl(desc.data.geojson_path))).json();
       computeColorByStats(L);
@@ -940,6 +969,7 @@ async function loadTarget(target, name) {
     persistOpen();
     renderAll();
     monitorOptimization(L);
+    monitorVectorSummary(L);
     fitTo(desc.bounds);
     refreshCode();
   } catch (e) {
@@ -1009,12 +1039,57 @@ function monitorOptimization(L) {
   })();
 }
 
+// Poll the server's one-time overview build; when ready, bump the tile
+// revision so MapLibre refetches the exact overview in place.
+function monitorVectorSummary(L) {
+  const d = L && L.descriptor;
+  if (!d || d.kind !== "vector_tiles_mvt" || !d.data.job_url || L._jobMonitor) return;
+  L._jobMonitor = true;
+  (async () => {
+    try {
+      while (state.layers.get(L.target) === L) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const response = await fetch(d.data.job_url, { cache: "no-store" });
+        if (!response.ok) throw new Error("overview status HTTP " + response.status);
+        const job = await response.json();
+        if (job.status === "ready") {
+          L.tileRevision = (L.tileRevision || 0) + 1;
+          rebuildVectorTiles();
+          toast("ok", "Overview ready", "Every feature is now placed; reopening is instant.");
+          return;
+        }
+        if (job.status === "error") {
+          d.warnings = [...(d.warnings || []), "Overview build failed: " + (job.message || "unknown error")];
+          renderStyleDock();
+          return;
+        }
+      }
+    } catch (error) {
+      d.warnings = [...(d.warnings || []), "Couldn't monitor the overview build: " + error.message];
+      renderStyleDock();
+    } finally {
+      L._jobMonitor = false;
+    }
+  })();
+}
+
 function fitTo(bounds) {
   if (!bounds) return;
-  const [w, s, e, n] = bounds;
+  let [w, s, e, n] = bounds;
   if (![w, s, e, n].every(Number.isFinite)) return;
+  // Antimeridian-crossing extent (west > east): carry east past 180 so
+  // fitBounds spans the real data, not the whole world the other way round.
+  if (w > e) e += 360;
   if (w === e && s === n) { map.flyTo({ center: [w, s], zoom: Math.max(map.getZoom(), 13) }); return; }
   map.fitBounds([[w, s], [e, n]], { padding: 60, maxZoom: 16, duration: 800 });
+}
+
+// MapLibre renders nothing for a source whose bounds have west > east, so drop
+// the bounds there (the daemon serves transparent tiles outside the extent).
+// Returns a spec fragment to spread — `bounds: undefined` fails validation.
+function safeBounds(b) {
+  if (!Array.isArray(b) || b.length !== 4 || !b.every(Number.isFinite)) return {};
+  return b[0] <= b[2] ? { bounds: b } : {};
 }
 
 function computeColorByStats(L) {
@@ -1051,6 +1126,18 @@ function computeColorByStats(L) {
 // engine, which renders them properly.
 const COG_SUFFIX = /\.(tif|tiff)(\?|$)/i;
 const isRemoteCog = target => /^https?:\/\//i.test(target) && COG_SUFFIX.test(target);
+// Mirrors the Python gate's MAP_VIEWER_DOWNLOAD_CONFIRM_BYTES default (50 MB):
+// a no-overview raster larger than this is downloaded whole, so it belongs to
+// the engine, which asks first.
+const DOWNLOAD_CONFIRM_BYTES = 50 << 20;
+
+// Origins whose blob host refused the browser reader outright (auth or CORS):
+// re-fetching a doomed range request for every sibling file is wasted latency,
+// so once an origin turns us away, later loads from it go straight to Python.
+const cogInaccessibleOrigins = new Set();
+function cogOrigin(target) {
+  try { return new URL(target).origin; } catch (e) { return null; }
+}
 
 let decoderPool = null;
 function cogPool() {
@@ -1300,6 +1387,16 @@ async function openClientCog(L, target) {
   let geotiff, auto;
   try {
     geotiff = await deck.GeoTIFF.fromUrl(target);
+    // No overview pyramid means reading the file whole. That is fine for a
+    // small COG, but for a large one it would pull the entire file at full
+    // resolution in the browser and bypass the download confirmation. Estimate
+    // the bytes as width*height*bands (this reader only takes 8-bit, so one byte
+    // per sample) — an upper bound on the on-disk size the Python gate keys off,
+    // so a gated file is never let through here — and hand those to the engine.
+    const bytes = (geotiff.width || 0) * (geotiff.height || 0) * (geotiff.count || 1);
+    if (!(geotiff.overviews && geotiff.overviews.length) && bytes > DOWNLOAD_CONFIRM_BYTES) {
+      throw new Error("no overview pyramid on a large raster; not cloud-optimized");
+    }
     epsgResolver(geotiff.crs);
     // A device that never initialises must not strand the layer: time the wait
     // out so the Python engine still gets a chance.
@@ -1313,8 +1410,14 @@ async function openClientCog(L, target) {
     auto = await autoRescale(geotiff);
     if (!auto) throw new Error("not 8-bit imagery");
   } catch (error) {
-    // Falling back silently makes an unsupported file indistinguishable from a
-    // slow one, which cost real debugging time.
+    // A fetch/auth refusal means the whole origin is closed to the browser
+    // reader, so remember it; an unsupported-file decline is per-file and is not
+    // remembered. Falling back silently makes an unsupported file
+    // indistinguishable from a slow one, which cost real debugging time.
+    if (/failed to fetch|response code: 40[39]|public access is not permitted/i.test(error.message || "")) {
+      const origin = cogOrigin(target);
+      if (origin) cogInaccessibleOrigins.add(origin);
+    }
     L.cogFallbackReason = error.message;
     console.warn("browser COG reader declined " + target + ": " + error.message);
     return false;
@@ -1385,6 +1488,12 @@ function rasterIds(L) {
   return rasterIdsFromSafe(safe);
 }
 
+// Descriptor tile URLs are server-relative /api/engines/map/proxy/... paths
+// (stable across tile-daemon restarts); MapLibre wants them absolute.
+function absTiles(url) {
+  return url.startsWith("/") ? location.origin + url : url;
+}
+
 function removeRasterSource(sourceId) {
   const safe = sourceId.slice("mv-r-src-".length);
   const ids = rasterIdsFromSafe(safe);
@@ -1395,7 +1504,9 @@ function removeRasterSource(sourceId) {
 }
 
 function boundsFeature(bounds) {
-  const [west, south, east, north] = bounds;
+  let [west, south, east, north] = bounds;
+  // Crossing extent (west > east): carry east past 180 to draw the real box.
+  if (west > east) east += 360;
   return {
     type: "Feature",
     properties: {},
@@ -1416,7 +1527,7 @@ function rebuildRasterTiles() {
   const wanted = new Map();
   for (const L of state.layers.values()) {
     const d = L.descriptor;
-    if (d && d.status === "ok" && d.kind === "raster_tiles") {
+    if (d && d.status === "ok" && d.kind === "raster_tiles" && !awaitingDownload(d)) {
       const ids = rasterIds(L);
       wanted.set(ids.source, { L, ids });
     }
@@ -1432,7 +1543,8 @@ function rebuildRasterTiles() {
   for (const [sourceId, { L, ids }] of wanted) {
     const d = L.descriptor;
     const revision = L.tileRevision || 0;
-    const tileUrl = d.data.tile_url + (d.data.tile_url.includes("?") ? "&" : "?") + "rev=" + revision;
+    const base = absTiles(d.data.tile_url);
+    const tileUrl = base + (base.includes("?") ? "&" : "?") + "rev=" + revision;
     const visibility = L.visible ? "visible" : "none";
     if (map.getSource(sourceId) && L._tileUrl !== tileUrl) {
       if (map.getLayer(ids.layer)) map.removeLayer(ids.layer);
@@ -1442,7 +1554,7 @@ function rebuildRasterTiles() {
       map.addSource(sourceId, {
         type: "raster", tiles: [tileUrl], tileSize: 256,
         minzoom: 0, maxzoom: d.maxzoom ?? 22,
-        bounds: d.bounds,
+        ...safeBounds(d.bounds),
       });
       L._tileUrl = tileUrl;
     }
@@ -1541,14 +1653,23 @@ function rebuildVectorTiles() {
     const d = L.descriptor, s = L.style || {};
     const sourceLayer = d.data.source_layer || "layer";
     const visibility = L.visible ? "visible" : "none";
+    const base = absTiles(d.data.tile_url);
+    const tileUrl = base + (base.includes("?") ? "&" : "?") + "rev=" + (L.tileRevision || 0);
+    if (map.getSource(sourceId) && L._vtileUrl !== tileUrl) {
+      for (const layerId of [ids.point, ids.line, ids.fill]) {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+      }
+      map.removeSource(sourceId);
+    }
     if (!map.getSource(sourceId)) {
       map.addSource(sourceId, {
         type: "vector",
-        tiles: [d.data.tile_url],
+        tiles: [tileUrl],
         minzoom: d.minzoom ?? 0,
         maxzoom: d.maxzoom ?? 18,
-        bounds: d.bounds,
+        ...safeBounds(d.bounds),
       });
+      L._vtileUrl = tileUrl;
     }
     const fillColor = cssColor(s.fill_color, [56, 135, 255, 90]);
     const lineColor = cssColor(s.line_color, [90, 200, 255, 220]);
@@ -1660,12 +1781,9 @@ map.on("idle", () => {
   }
   if (changed) renderLayerCards();
 });
-// A tile URL carries the tile service's port and token, so it stops resolving
-// the moment that service is replaced — it exits when idle, and respawns on any
-// backend change. Nothing about the layer is actually wrong, so re-describe once
-// to pick up the new address and rebind the source; only a failure that survives
-// that is worth showing. Guarded by a flag so one broken viewport (every visible
-// tile errors at once) triggers a single recovery, not one per tile.
+// Proxy tile URLs are stable, but a source whose replay never re-registered
+// (a transient open failure) 404s here. Re-describe once to rebind it; latched
+// so one broken viewport recovers once, cleared on the next good sourcedata.
 async function recoverTiles(L) {
   if (L._recovering) return;
   L._recovering = true;
@@ -1682,9 +1800,6 @@ map.on("error", event => {
   L.tileLoading = false;
   const message = (event.error && event.error.message) || "unknown tile error";
   const unreachable = event.error && (event.error.status === 0 || event.error.status === 404);
-  // `_recovered` latches so a dead service is re-described once, not once per
-  // failing tile; a tile that then loads clears it, so a service replaced again
-  // later is recovered again rather than being permanently given up on.
   if (unreachable && L.descriptor && L.descriptor.kind === "raster_tiles" && !L._recovered) {
     L._recovered = true;
     recoverTiles(L);
@@ -1781,12 +1896,27 @@ const DOTS = '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor
 
 const RASTER_KINDS = new Set(["raster_image", "raster_tiles", "raster_cog_client"]);
 
+// "0.25° (~27.8 km)". Longitude cells narrow away from the equator, so the
+// metres are the latitude step and are marked approximate.
+function cellSizeLabel(res) {
+  if (!res) return "";
+  const fmt = v => Number(v.toPrecision(4)).toString();
+  if (!res.degrees) return `${fmt(res.x)}×${fmt(res.y)} units/px`;
+  const size = Math.abs(res.x - res.y) < res.y * 1e-6
+    ? `${fmt(res.y)}°` : `${fmt(res.x)}°×${fmt(res.y)}°`;
+  const m = res.metres;
+  if (!m) return size;
+  return `${size} (~${m >= 1000 ? fmt(m / 1000) + " km" : Math.round(m) + " m"})`;
+}
+
 function rasterStatLine(st) {
   // The browser reader reports what the TIFF tags carry, which is less than the
   // Python engine reads; show the parts that are there.
   const parts = [];
   if (st.bands) parts.push(`${st.bands}-band`);
   if (st.width && st.height) parts.push(`${st.width}×${st.height}`);
+  const cell = cellSizeLabel(st.resolution);
+  if (cell) parts.push(cell);
   if (st.dtype) parts.push(st.dtype);
   if (st.overviews) parts.push(`${st.overviews} overviews`);
   return parts.join(" · ");
@@ -1808,6 +1938,12 @@ function swatchStyle(L) {
   if (s.color_by) return `background:${cmapGradient(s.colormap || "viridis")}`;
   const c = s.fill_color || s.line_color || L.defaultColor || [160, 160, 170];
   return `background:rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+// A remote raster with no pyramid is held until the user accepts the download,
+// so nothing paints and no tile is fetched until then.
+function awaitingDownload(d) {
+  return Boolean(d && (d.optimization || {}).status === "confirm_download");
 }
 
 function formatRasterStatus(L) {
@@ -1883,7 +2019,7 @@ function layerCard(L) {
     m.textContent = d.message || (d.error && d.error.message) || "Couldn't render this file.";
     card.appendChild(m);
   }
-  if (d && !L.loading && d.status === "ok" && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
+  if (d && !L.loading && d.status === "ok" && !awaitingDownload(d) && ["raster_tiles", "vector_tiles_mvt"].includes(d.kind)) {
     const message = d.kind === "raster_tiles" ? formatRasterStatus(L) : formatVectorStatus(L);
     const bounds = d.bounds || [];
     if (message || bounds.length === 4) {
@@ -1905,6 +2041,9 @@ function layerCard(L) {
       card.appendChild(status);
     }
   }
+  if (d && !L.loading && d.status === "ok" && awaitingDownload(d)) {
+    card.appendChild(downloadConfirmCard(L, d));
+  }
 
   card.onclick = () => { if (!L.loading) selectLayer(L.target); };
   const eye = h.querySelector(".lc-eye");
@@ -1912,6 +2051,42 @@ function layerCard(L) {
   const dots = h.querySelector(".lc-dots");
   if (dots) dots.onclick = ev => { ev.stopPropagation(); openLayerMenu(dots, L); };
   return card;
+}
+
+// The gate for a non-cloud-optimized remote raster: it names the download size
+// and only fetches once the user accepts. Accepting hands off to the same
+// optimize job that builds the local overview pyramid.
+function downloadConfirmCard(L, d) {
+  const bytes = (d.optimization || {}).download_bytes;
+  const size = bytes ? formatBytes(bytes) : null;
+  const box = document.createElement("div");
+  box.className = "lc-msg lc-confirm";
+  const text = document.createElement("div");
+  text.textContent = size
+    ? `Not cloud-optimized — displaying it downloads the whole file (${size}).`
+    : "Not cloud-optimized — displaying it downloads the whole file.";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = size ? `Download ${size} & display` : "Download & display";
+  button.onclick = async event => {
+    event.stopPropagation();
+    button.disabled = true;
+    button.textContent = "Starting…";
+    try {
+      const response = await fetch(d.data.optimize_url, { method: "POST", headers: { "X-Fused": "1" } });
+      if (!response.ok) throw new Error("HTTP " + response.status);
+      d.optimization = await response.json();
+      L.tileRevision = (L.tileRevision || 0) + 1;
+      renderAll();
+      monitorOptimization(L);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Download failed — retry";
+      toast("bad", "Couldn't start the download", error.message);
+    }
+  };
+  box.append(text, button);
+  return box;
 }
 
 let menuEl = null;
@@ -1955,6 +2130,15 @@ function moveLayer(key, dir) {
 }
 
 function removeLayer(key) {
+  // Tell the server it can stop replaying this source on a restart. The reinit
+  // key is what the describe registered under; a client-side COG has none.
+  const d = (state.layers.get(key) || {}).descriptor;
+  const reinitKey = d && d.data && d.data.reinit_key;
+  if (reinitKey && (d.kind === "raster_tiles" || d.kind === "vector_tiles_mvt")) {
+    fetch("/api/engines/map/forget", { method: "POST",
+      headers: { "Content-Type": "application/json", "X-Fused": "1" },
+      body: JSON.stringify({ key: reinitKey }) }).catch(() => {});
+  }
   state.layers.delete(key);
   if (state.selected === key) state.selected = null;
   persistOpen();
@@ -1983,6 +2167,8 @@ function renderStyleDock() {
     return;
   }
 
+  if (d.kind === "raster_tiles" && d.stats.multidim) multidimControls(body, L);
+
   body.appendChild(sliderCtl("Opacity", Math.round(L.opacity*100)+"%", 0, 100, Math.round(L.opacity*100),
     v => { L.opacity = v/100; rebuildRasterTiles(); rebuildVectorTiles(); rebuildDeck(); updateCtlLabel(body,"Opacity",v+"%"); }));
 
@@ -1997,6 +2183,7 @@ function renderStyleDock() {
   if (RASTER_KINDS.has(d.kind)) statTxt = rasterStatLine(st);
   else if (["vector_geojson", "vector_points_binary", "vector_tiles_mvt"].includes(d.kind)) statTxt = `${(st.feature_count||0).toLocaleString()} features · ${(st.geometry_types||[]).join(", ")}`;
   if (d.crs_original) statTxt += `\nCRS: ${d.crs_original}`;
+  if (st.native_maxzoom != null && st.resolution) statTxt += `\nFull detail to zoom ${st.native_maxzoom}; closer views draw the grid cells`;
   if (d.timing_ms != null) statTxt += ` · ${d.timing_ms} ms`;
   if (statTxt) { const s = document.createElement("div"); s.className = "stat"; s.textContent = statTxt; body.appendChild(s); }
   (d.warnings||[]).forEach(w => { const el = document.createElement("div"); el.className="warnline"; el.textContent="⚠ "+w; body.appendChild(el); });
@@ -2004,6 +2191,9 @@ function renderStyleDock() {
 
 function rasterControls(body, L) {
   const s = L.style, d = L.descriptor;
+  // Nothing is drawn yet for a raster still behind its download prompt, so its
+  // style controls would only trigger no-op re-describes.
+  if (awaitingDownload(d)) return;
   if (d.kind === "raster_cog_client") {
     const single = (d.stats.bands || 1) < 3;
     // Each end is remembered as the user left it, so a blank box stays blank
@@ -2029,7 +2219,9 @@ function rasterControls(body, L) {
       // Emptying one field restores that end of the automatic window; emptying
       // both drops back to fully automatic.
       s.rescale = (min == null && max == null) ? null : [min, max];
-      s._touched = true; restyleCog(L); renderStyleDock();
+      s._touched = true;
+      s._rescaleTouched = s.rescale != null;   // the window, not any edit
+      restyleCog(L); renderStyleDock();
     }));
     const note = document.createElement("div"); note.className = "stat";
     note.textContent = (single ? `${d.stats.bands || 1}-band source` : "RGB composite (bands 1, 2, 3)")
@@ -2082,7 +2274,7 @@ function rasterControls(body, L) {
       button.onclick = async () => {
         button.disabled = true; button.textContent = "Starting…";
         try {
-          const response = await fetch(d.data.optimize_url, { method: "POST" });
+          const response = await fetch(d.data.optimize_url, { method: "POST", headers: { "X-Fused": "1" } });
           if (!response.ok) throw new Error("HTTP " + response.status);
           d.optimization = await response.json();
           monitorOptimization(L);
@@ -2218,20 +2410,241 @@ function binaryPointControls(body, L) {
 async function reloadRaster(L) {
   L.loading = true; renderFileList();
   try {
-    const desc = await fused.runPython("./map_render.py", { target: L.target, colormap: L.style.colormap || "viridis",
-      rescale: L.style.rescale ? L.style.rescale.join(",") : "",
-      render_mode: L.style.render_mode || "",
-      stretch: L.style.stretch || "",
-      category_colors: JSON.stringify(L.style.category_colors || {}),
-      ...sourceArgs(L.target) });
+    // Same per-layer channel applyMultidim uses: a colormap change and a dim
+    // scrub both describe this layer carrying the whole state, so the newer
+    // must abort the older rather than race it.
+    const desc = await fused.runPython("./map_render.py", renderArgs(L),
+      { key: mdChannel(L) });
     L.loading = false;
     if (desc.status === "ok") {
       const keepStyle = L.style; L.descriptor = desc; L.style = Object.assign({}, desc.style, keepStyle);
+      syncMultidim(L);
       L.tileRevision = (L.tileRevision || 0) + 1;
       monitorOptimization(L);
     }
     renderAll();
   } catch (e) { L.loading = false; toast("bad","Re-render failed", e.message); }
+}
+
+/* ---- multidim (NetCDF/Zarr/HDF5) dataset section ----------------------- */
+// Each (variable, dim-selection) is an immutable tile source, so changing
+// either swaps tile_url without moving the camera, and scrubbing back to a
+// slice already seen hits the browser tile cache.
+// Describes of one layer share a channel so they supersede each other; a
+// layer with no multidim state keeps the shared default, which is where every
+// other raster describe has always run.
+const mdChannel = L => (L.mdVar || L.mdSel ? "md:" + L.target : undefined);
+
+const TIME_LABEL = /^\d{4}-\d{2}-\d{2}T/;
+const timeLike = dim => dim.name.toLowerCase() === "time" || TIME_LABEL.test(dim.labels[0] || "");
+
+// A global grid overhangs the poles by half a cell (-90.125), where
+// MapLibre's LngLat throws and mercator y goes NaN, dropping every tile.
+function clampMdBounds(d) {
+  const b = d.bounds;
+  if (!Array.isArray(b)) return;
+  d.bounds = [Math.max(b[0], -180), Math.max(b[1], -85.051129),
+              Math.min(b[2], 180), Math.min(b[3], 85.051129)];
+}
+
+function syncMultidim(L) {
+  const md = L.descriptor && L.descriptor.stats && L.descriptor.stats.multidim;
+  if (!md) return;
+  clampMdBounds(L.descriptor);
+  // A change queued behind the debounce is newer than this descriptor: keep it.
+  if (L._mdTimer) return;
+  L.mdVar = md.variable;
+  L.mdSel = {};
+  for (const dim of md.dims) L.mdSel[dim.name] = dim.index;
+}
+
+function mdStopPlay(L) {
+  if (!L._mdPlay) return;
+  clearInterval(L._mdPlay);
+  L._mdPlay = null;
+  // Ticks skipped the dock repaint (see applyMultidim); settle it now.
+  if (state.selected === L.target) renderStyleDock();
+}
+
+// The slider stays live so a scrub in flight can keep going (the newer call
+// supersedes the older one), and pause must always be reachable.
+function mdSetDisabled(box, busy) {
+  for (const el of box.querySelectorAll("select, input[type=number], .md-btn:not(.md-play)")) el.disabled = busy;
+}
+
+function setMdBusy(L, busy) {
+  L._mdBusy = busy;
+  if (state.selected !== L.target) return;   // the dock is showing another layer
+  const box = qs("sp-body").querySelector(".md-section");
+  if (!box) return;
+  box.classList.toggle("busy", busy);
+  mdSetDisabled(box, busy);
+}
+
+function scheduleMultidim(L) {
+  clearTimeout(L._mdTimer);
+  L._mdTimer = setTimeout(() => { L._mdTimer = null; applyMultidim(L); }, 150);
+}
+
+function setDimIndex(L, dim, value) {
+  const index = Math.min(Math.max(value, 0), dim.size - 1);
+  if ((L.mdSel[dim.name] ?? 0) === index) return;
+  L.mdSel[dim.name] = index;
+  scheduleMultidim(L);
+}
+
+async function applyMultidim(L) {
+  setMdBusy(L, true);
+  try {
+    // Per-layer, so a play tick supersedes only its own layer's describes.
+    // A superseded promise never settles: one call reaches the code below.
+    const desc = await fused.runPython("./map_render.py",
+      renderArgs(L, { touchedOnlyRescale: true }), { key: mdChannel(L) });
+    setMdBusy(L, false);
+    if (desc.status !== "ok") {
+      mdStopPlay(L);
+      toast("bad", "Couldn't render " + L.name, desc.message || (desc.error && desc.error.message) || "unknown error");
+      // Revert to the last good selection so choosing the same value again
+      // is a change setDimIndex acts on, not a no-op.
+      syncMultidim(L);
+      renderStyleDock();
+      return;
+    }
+    const prevMd = L.descriptor && L.descriptor.stats && L.descriptor.stats.multidim;
+    const touched = L.style && L.style._touched;
+    L.descriptor = desc;
+    L.style = touched ? Object.assign({}, desc.style, L.style) : Object.assign({}, desc.style);
+    const md = desc.stats && desc.stats.multidim;
+    // The backend can fall back to the plain raster path mid-flight; the
+    // dock must then drop the Dataset section and play has nothing to step.
+    if (!md) mdStopPlay(L);
+    syncMultidim(L);
+    rebuildRasterTiles();
+    // A sel step changes nothing a card shows, and repainting every play tick
+    // churns the dock: repaint on a shape change or when idle, and mid-drag
+    // never — the pointerup or the next apply does it.
+    const changed = !md !== !prevMd
+      || (md && prevMd && md.variable !== prevMd.variable);
+    if (state.selected === L.target && (changed || !L._mdPlay)
+        && !L._mdScrub && !L._mdTimer) {
+      renderStyleDock();
+    }
+  } catch (e) {
+    setMdBusy(L, false);
+    mdStopPlay(L);
+    toast("bad", "Re-render failed", e.message);
+    syncMultidim(L);
+    renderStyleDock();
+  }
+}
+
+function mdButton(text, on) {
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "md-btn"; b.textContent = text;
+  b.onclick = on;
+  return b;
+}
+
+function multidimControls(body, L) {
+  const md = L.descriptor.stats.multidim;
+  const box = document.createElement("div");
+  box.className = "md-section" + (L._mdBusy ? " busy" : "");
+  const varCtl = ctlShell("Variable", "");
+  const sel = document.createElement("select");
+  for (const v of md.variables) {
+    const op = document.createElement("option");
+    op.value = v.name;
+    op.textContent = v.long_name ? `${v.long_name} (${v.name})` : v.name;
+    op.title = [v.units, v.dims.join(" × "), v.shape.join(" × ")].filter(Boolean).join(" · ");
+    if (v.name === (L.mdVar || md.variable)) op.selected = true;
+    sel.appendChild(op);
+  }
+  // Land the choice on L before mdStopPlay repaints, so the dock shows it.
+  sel.onchange = e => { L.mdVar = e.target.value; mdStopPlay(L); scheduleMultidim(L); };
+  varCtl.appendChild(sel);
+  box.appendChild(varCtl);
+  for (const dim of md.dims) box.appendChild(dimCtl(L, dim));
+  if (L._mdBusy) mdSetDisabled(box, true);
+  body.appendChild(box);
+}
+
+function dimCtl(L, dim) {
+  const index = L.mdSel[dim.name] ?? dim.index;
+  const labels = dim.labels || [];
+  if (!dim.sparse && labels.length && timeLike(dim)) return timeDimCtl(L, dim, index);
+  if (!dim.sparse && labels.length && dim.size <= 2000) {
+    const c = ctlShell(dim.name, "");
+    const sel = document.createElement("select");
+    for (let i = 0; i < labels.length; i++) {
+      const op = document.createElement("option");
+      op.value = String(i);
+      op.textContent = `${labels[i]} (${i})`;
+      if (i === index) op.selected = true;
+      sel.appendChild(op);
+    }
+    sel.onchange = e => setDimIndex(L, dim, Number(e.target.value));
+    c.appendChild(sel);
+    return c;
+  }
+  // Too many labels for a select, or none: a plain index input.
+  const c = ctlShell(dim.name, (!dim.sparse && labels[index]) || `0–${dim.size - 1}`);
+  const input = document.createElement("input");
+  input.type = "number"; input.className = "num";
+  input.min = 0; input.max = dim.size - 1; input.value = index;
+  input.onchange = e => setDimIndex(L, dim, Number(e.target.value) || 0);
+  c.appendChild(input);
+  return c;
+}
+
+function timeDimCtl(L, dim, index) {
+  const c = ctlShell(dim.name, dim.labels[index] || String(index));
+  const setLabel = i => { c.querySelector(".ctl-lbl b").textContent = dim.labels[i] || String(i); };
+  const row = document.createElement("div"); row.className = "row";
+  const slider = document.createElement("input");
+  slider.type = "range"; slider.min = 0; slider.max = dim.size - 1; slider.value = index;
+  slider.style.flex = "1"; slider.style.minWidth = "0";
+  slider.oninput = e => {
+    const i = Number(e.target.value);
+    L.mdSel[dim.name] = i;
+    setLabel(i);
+    scheduleMultidim(L);
+  };
+  slider.onpointerdown = () => { L._mdScrub = true; };
+  slider.onpointerup = () => {
+    L._mdScrub = false;
+    if (!L._mdBusy && !L._mdTimer) renderStyleDock();
+  };
+  slider.onpointercancel = slider.onpointerup;
+  const step = delta => {
+    setDimIndex(L, dim, (L.mdSel[dim.name] ?? 0) + delta);
+    const i = L.mdSel[dim.name] ?? 0;
+    slider.value = i;
+    setLabel(i);
+  };
+  const play = mdButton(L._mdPlay ? "❚❚" : "▶", () => {
+    if (L._mdPlay) { mdStopPlay(L); return; }
+    if ((L.mdSel[dim.name] ?? 0) >= dim.size - 1) { L.mdSel[dim.name] = 0; scheduleMultidim(L); }
+    L._mdPlay = setInterval(() => {
+      if (L._mdBusy || L._mdTimer) return;
+      if (state.layers.get(L.target) !== L) { mdStopPlay(L); return; }
+      const i = (L.mdSel[dim.name] ?? 0) + 1;
+      if (i >= dim.size) { mdStopPlay(L); return; }
+      L.mdSel[dim.name] = i;
+      // applyMultidim skips the dock repaint during play, so the tick moves
+      // the slider and label itself.
+      slider.value = i;
+      setLabel(i);
+      applyMultidim(L);
+    }, 700);
+    // In place, not a repaint: the interval closes over THIS dock's slider.
+    play.textContent = "❚❚";
+    play.classList.add("on");
+  });
+  play.classList.add("md-play");
+  if (L._mdPlay) play.classList.add("on");
+  row.append(slider, mdButton("‹", () => step(-1)), play, mdButton("›", () => step(1)));
+  c.appendChild(row);
+  return c;
 }
 
 /* ---- small control builders ------------------------------------------ */
@@ -2464,7 +2877,12 @@ function setBasemap(name) {
   baseName = name; P.set("base", name);
   qs("basemap-seg").querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.b === name));
   styleReady = false;
-  map.setStyle(BASEMAPS[name]);   // overlay is a control → survives setStyle
+  // diff:false forces a full style reload. The default diff keeps the map from
+  // firing "style.load", yet still drops our runtime-added tile layers (they
+  // aren't in the incoming basemap style) — so they vanished with no event to
+  // re-add them. A full reload removes them too but fires "style.load", where
+  // they are rebuilt. The overlay is a control, so it survives either way.
+  map.setStyle(BASEMAPS[name], { diff: false });
 }
 map.on("style.load", () => {
   styleReady = true;
@@ -2473,6 +2891,7 @@ map.on("style.load", () => {
   for (const L of state.layers.values()) L._tileUrl = null;
   rebuildRasterTiles();
   rebuildVectorTiles();
+  rebuildDeck();
 });
 
 /* geocode (Photon) */

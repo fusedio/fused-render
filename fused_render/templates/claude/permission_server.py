@@ -53,7 +53,11 @@ confirmed end to end). The two shapes that look right and are not: a plain
 `deny` carrying the answer as its message arrives as `is_error: true` filed
 under `permission_denials`. `updatedInput` is re-validated against the tool's
 schema, so it must be the parked input PLUS the key — dropping `questions` is a
-`<tool_use_error>`, not a silent no-op.
+`<tool_use_error>`, not a silent no-op. The card also always offers an "Other"
+box the model did not author (D407, the CLI's own prompt does the same); what the
+user types there rides on the decision file as `custom` and reaches the CLI as
+both the answer AND a new option appended to that question in `questions`, so the
+label check the CLI runs over the answer finds it.
 
 ONE more tool needs nothing here, and that is worth writing down because it looks
 like it should: `ExitPlanMode` (the model asking to stop planning) rides the
@@ -116,6 +120,51 @@ _id_counter = 0
 
 def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
+
+
+def _utf8_stdio() -> None:
+    """Read and write the MCP wire as UTF-8, whatever the machine's locale is.
+
+    The client on the other end of these pipes is Node: it writes
+    `JSON.stringify(message) + "\\n"`, which leaves non-ASCII UNESCAPED and goes
+    out as UTF-8. Python decodes a PIPE at the locale encoding, and that is
+    UTF-8 on macOS and on Linux (where a C/POSIX locale additionally turns
+    PEP 540 UTF-8 mode on) but the ANSI code page on Windows — cp1252 on a
+    typical Western install, which leaves 0x81/0x8D/0x8F/0x90/0x9D UNDEFINED.
+
+    Those five bytes are ordinary UTF-8 continuation bytes, so on Windows the
+    first typographic character in a tool payload killed this server outright:
+    `Write` an index.html containing a curly quote (U+201D is E2 80 9D) and the
+    read loop in `main` raised UnicodeDecodeError *before* the request was
+    parked. No card ever appeared in the chat, the CLI's pending `approve` call
+    died with the transport, and the turn went nowhere — "it just got stuck
+    writing index.html", with no prompt to answer and nothing in the run dir to
+    say why. Nothing about it was rare: model-written HTML is full of curly
+    quotes, en dashes and emoji.
+
+    Two halves ship, because either can be absent. agent.py stamps `PYTHONUTF8`
+    into this server's env (the CLI's MCP client passes an allowlist of env vars
+    plus that dict, so it has to be named there to survive at all); this is the
+    half that does not depend on the client forwarding an env, or on the config
+    having been written by a version of agent.py that names it.
+
+    `errors="replace"` on the way IN, deliberately: an undecodable byte costs
+    one character of a payload the user is about to read on a card, and dying
+    costs them the whole turn with no way to answer it. On the way OUT the JSON
+    is `ensure_ascii` today, so the encoding is belt and braces — but
+    `newline="\\n"` is not: a Windows text stream would otherwise turn the
+    framing newline into CRLF.
+
+    Never raises. A stream that has already been read cannot be reconfigured,
+    and `sys.stdout` can be None where there is no stdio at all; neither is a
+    reason to refuse to serve, and both are worth a line on stderr.
+    """
+    for stream, extra in ((sys.stdin, {"errors": "replace"}),
+                          (sys.stdout, {"newline": "\n"})):
+        try:
+            stream.reconfigure(encoding="utf-8", **extra)
+        except (AttributeError, ValueError, OSError) as exc:
+            _log("permission_server.py: could not force UTF-8 stdio (%s)" % exc)
 
 
 def _send(payload: dict) -> None:
@@ -245,7 +294,7 @@ def _multi_answer_ok(value: str, labels: list) -> bool:
     return False
 
 
-def _answers_from(questions, answers):
+def _answers_from(questions, answers, custom=None):
     """The answer record that may be forwarded, or None — which means deny.
 
     MUST stay identical to `_answers_from` in agent.py: that copy validates the
@@ -257,10 +306,23 @@ def _answers_from(questions, answers):
     exact question, because the alternative failure is the model acting on a
     choice the user never made. An omitted question is allowed (the CLI reads it
     as unanswered, which is true); an invented one is not.
+
+    `custom` is the one way a value that the model did not author gets through:
+    the card's "Other" box (D407), keyed by the same question text, carrying what
+    the USER typed. It is folded in as one extra option for that question and
+    nothing more — the answer still has to match the option list exactly, the
+    typed string still has to come last in a multi-select join, and free text for
+    a question nobody asked is refused like any other invented answer. The
+    distinction that survives is authorship: a label the model offered, or a
+    sentence the user wrote — never a string neither of them ever produced.
     """
     if not isinstance(questions, list) or not questions:
         return None
     if not isinstance(answers, dict) or not answers:
+        return None
+    if custom is None:
+        custom = {}
+    if not isinstance(custom, dict):
         return None
     asked = {}
     for question in questions:
@@ -278,6 +340,22 @@ def _answers_from(questions, answers):
         if not labels or text in asked:
             return None
         asked[text] = (labels, bool(question.get("multiSelect")))
+    # The typed answers, each folded in as one more option for its own question.
+    # Validated first and as a whole, on the same all-or-nothing rule as the
+    # labels: free text for a question that was never asked is the same
+    # fabrication as an invented label, and an empty box is not an answer.
+    for text, typed in custom.items():
+        if not isinstance(text, str) or text not in asked:
+            return None
+        if not isinstance(typed, str) or not typed:
+            return None
+        labels, multi = asked[text]
+        # Typing out an option's own wording is not a second option: appending it
+        # would let "Alpha, Alpha" match a multi-select join.
+        if typed not in labels:
+            # LAST, because the multi-select join is matched in option order and
+            # the card puts the typed answer after everything ticked.
+            asked[text] = (labels + [typed], multi)
     out = {}
     for text, value in answers.items():
         if not isinstance(text, str) or text not in asked:
@@ -288,6 +366,38 @@ def _answers_from(questions, answers):
         if not (_multi_answer_ok(value, labels) if multi else value in labels):
             return None
         out[text] = value
+    return out
+
+
+# The description carried by an option the USER wrote. The model reads its own
+# input back, so the option list it is handed has to say which entry it did not
+# author — otherwise "Other" reads as a choice the model offered and forgot.
+TYPED_OPTION_NOTE = ("Written by the user in this window's \"Other\" box, not "
+                     "offered by you.")
+
+
+def _with_typed_options(questions, custom):
+    """`questions` with each typed answer appended as an option of its question.
+
+    Copied, never mutated in place: `tool_input` is the parked request and other
+    branches hand it back byte-identical. Only questions the user actually typed
+    into are touched, and a typed string that repeats an option's own wording
+    adds nothing — the same rule `_answers_from` applies when it folds the text
+    in as a label, so the two never disagree about what the option list is.
+    """
+    if not isinstance(questions, list):
+        return questions
+    out = []
+    for question in questions:
+        typed = custom.get(question.get("question")) if isinstance(question, dict) \
+            else None
+        if not typed:
+            out.append(question)
+            continue
+        options = list(question.get("options") or [])
+        if not any(isinstance(o, dict) and o.get("label") == typed for o in options):
+            options.append({"label": typed, "description": TYPED_OPTION_NOTE})
+        out.append(dict(question, options=options))
     return out
 
 
@@ -306,8 +416,9 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
         # No updatedPermissions on this branch by construction — a question is
         # one exchange, so there is nothing to grant for the rest of the reply
         # and nothing about it says anything about the permission mode.
+        typed = decision.get("custom")
         answers = _answers_from(tool_input.get("questions"),
-                                decision.get("answers"))
+                                decision.get("answers"), typed)
         if answers is None:
             return {"behavior": "deny", "message": BAD_ANSWER,
                     "decisionClassification": "user_reject"}
@@ -325,6 +436,18 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
         for model_written in ("response", "answers", "annotations"):
             updated.pop(model_written, None)
         updated["answers"] = answers
+        # An answer typed into "Other" also becomes an OPTION on the question it
+        # answers (D407). The CLI checks each answer against the option list it
+        # is handed, and an answer it cannot find there downgrades the
+        # tool_result from "Your questions have been answered" to the weaker
+        # "follow what they actually say" — measured, same finding as the
+        # multi-select join. Writing the typed string in as an option is what
+        # makes the user's own words land as a full answer rather than as an
+        # aside, and it is also the truth of what happened: the window offered a
+        # choice the model did not author, and the user took it.
+        if typed:
+            updated["questions"] = _with_typed_options(updated.get("questions"),
+                                                       typed)
         return {"behavior": "allow", "updatedInput": updated,
                 "decisionClassification": "user_temporary"}
     if verdict == "allow":
@@ -522,6 +645,9 @@ def _serve_request(req_id, method: str, params: dict) -> None:
 
 
 def main() -> int:
+    # Before the first read of stdin, which is what fixes the encoding: a
+    # TextIOWrapper cannot be reconfigured once it has read anything.
+    _utf8_stdio()
     if not PERM_DIR:
         _log("permission_server.py: missing perm-dir argument")
         return 2

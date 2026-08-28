@@ -1,4 +1,4 @@
-#include <windows.h>
+#include <windows.h> 
 
 /* The Win11 "Open with" picker reads an .exe's own embedded icon, not the
  * Applications\<exe>\DefaultIcon registry value, so the app icon has to live

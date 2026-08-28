@@ -21,6 +21,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
 from fused_render.server.gitignore import _git_ignored, _is_repo_root
+from fused_render.shell import fda as shell_fda
 # The tuning knobs (`_STAT_TTL_S`, `_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_mount._STAT_TTL_S`
 # and friends — never re-bound here by `from … import`. Each of those modules says
@@ -81,6 +82,11 @@ router = APIRouter()
 
 @router.get("/api/fs/stat")
 def api_fs_stat(path: str):
+    # The moment this app reads under a TCC-protected folder is the moment
+    # macOS starts prompting — which is when (and only when) the Full Disk
+    # Access nudge becomes worth showing (shell/fda.py). First line bails,
+    # so the steady-state cost is one bool read.
+    shell_fda.note_touch(path)
     # Short check-on-read TTL cache (mirrors api_fs_conditions) to avoid
     # re-paying the ~1.6s cold parent-prefix LIST that a mount stat costs
     # (see _STAT_CACHE). Only MOUNT-backed paths are cached: a local stat is
@@ -145,6 +151,9 @@ def api_fs_conditions(path: str):
 
 @router.get("/api/fs/list")
 def api_fs_list(path: str, cursor: str | None = None):
+    # See api_fs_stat: browsing into a protected folder is what makes the
+    # FDA nudge relevant.
+    shell_fda.note_touch(path)
     # A mount-backed listing must never issue kernel filesystem I/O: both
     # os.path.isdir and os.scandir below are kernel READDIR/GETATTR calls,
     # and on a flat remote prefix with millions of keys rclone's VFS must
@@ -744,4 +753,68 @@ def api_fs_pick_folder(body: dict = Body(...), x_fused: str | None = Header(defa
     except (dirpicker.PickerFailed, TimeoutError) as exc:
         logger.warning("folder chooser failed: %s", exc)
         return _error(str(exc) or "the folder chooser failed", status=500)
+    return JSONResponse({"path": chosen})
+
+
+def _file_types(raw) -> list[str] | None:
+    """The dialog's extension filter, off the wire and made safe to hand a shell.
+
+    Bare extensions, dots stripped and alphanumerics only: every one of these
+    ends up inside an AppleScript list, a zenity/kdialog glob and a Win32
+    `Filter` string, and the escaping that keeps those honest is not a licence to
+    forward whatever arrived. Clamped in both directions for the reason `title`
+    above is clamped — a runaway list is a dialog nobody can use, not a threat.
+
+    None for anything absent or unusable, which is the "show everything" the
+    route has always had: a filter is a courtesy, and a malformed one must not
+    turn into a dialog that can pick nothing at all.
+    """
+    if not isinstance(raw, list):
+        return None
+    kept = []
+    for item in raw[:24]:
+        ext = str(item).lstrip(".").lower()
+        # DROPPED past 8 characters, not truncated: a real extension is short,
+        # and slicing a long one invents a filter the caller never asked for and
+        # that quietly matches the wrong files.
+        if len(ext) <= 8 and ext.isalnum() and ext not in kept:
+            kept.append(ext)
+    return kept or None
+
+
+@router.post("/api/fs/pick-file")
+def api_fs_pick_file(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Raise the OS FILE chooser and answer with what the user picked.
+
+    The same shape as `/api/fs/pick-folder` above — sync `def` so the threadpool
+    absorbs a modal, `{"path": <abs>}` on a choice, `{"path": null}` on a
+    cancel, 409/501/500 for busy / no dialog here / it broke — and the same
+    reason for existing, one step further on: a browser strips a picked file's
+    path, and an endpoint that takes a PATH (`/api/ai/image`'s `image`) cannot
+    be reached from `<input type=file>` without uploading a COPY of bytes this
+    machine already has. `native_dir_picker` on `/api/config` answers for this
+    route too: one backend set raises both dialogs.
+
+    `types` is an optional list of bare extensions ("png", "jpg") to narrow the
+    dialog to — see `dirpicker.pick_file` for how each backend expresses it, and
+    for why it does not replace the caller's own check on what came back.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    start = body.get("start") or None
+    if start is not None and not os.path.isabs(start):
+        return _error("'start' must be an absolute filesystem path")
+    title = str(body.get("title") or "Choose a file")[:120]
+    types = _file_types(body.get("types"))
+    try:
+        chosen = dirpicker.pick_file(start=start, title=title, types=types)
+    except dirpicker.PickerBusy as exc:
+        return _error(str(exc), status=409)
+    except dirpicker.PickerUnavailable as exc:
+        return _error(str(exc), status=501)
+    except (dirpicker.PickerFailed, TimeoutError) as exc:
+        logger.warning("file chooser failed: %s", exc)
+        return _error(str(exc) or "the file chooser failed", status=500)
     return JSONResponse({"path": chosen})

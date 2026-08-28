@@ -45,6 +45,11 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
+let targetVerdict: typeof import("./NewJobModal").targetVerdict;
+let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
+let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
+let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
+let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
 
 beforeAll(async () => {
   const mod = await import("./NewJobModal");
@@ -73,6 +78,11 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
+  targetVerdict = mod.targetVerdict;
+  splitTargetPath = mod.splitTargetPath;
+  PATH_MISSING = mod.PATH_MISSING;
+  twoLevelsMissing = mod.twoLevelsMissing;
+  saveActionLabel = mod.saveActionLabel;
 });
 
 // Only the fields these functions read; the rest of a stored entry is noise
@@ -1520,5 +1530,275 @@ describe("the folder recents come from the app's own recents", () => {
     // suggestions, never the form.
     expect(src).toContain("getClaudeSessionFolders().then(");
     expect(src).toContain("      () => {},");
+  });
+});
+
+// ---- One new folder, and only one -------------------------------------------
+// The path field accepts a folder that does not exist YET (Akshil, 2026-08-20).
+// `targetVerdict` is the whole decision: it is handed the path and whatever the
+// PARENT's listing came back with, and answers with one of three things.
+describe("the path field's verdict on a folder that isn't there yet", () => {
+  test("a name the parent already holds is a plain target, not a new folder", () => {
+    // How a FILE target reaches here: listing the path itself failed (it is not
+    // a directory), so the parent was listed and the basename found in it.
+    expect(targetVerdict("/Users/a/fused/notes.md", ["notes.md", "src"]))
+      .toEqual({ kind: "ok" });
+  });
+
+  test("a missing last segment under an existing parent is a new folder", () => {
+    expect(targetVerdict("/Users/a/fused/ABC1", ["src", "notes.md"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
+  });
+
+  test("a trailing slash names the same folder", () => {
+    // Typing a path usually ends with the separator; it must not turn the name
+    // into an empty segment and read as junk.
+    expect(targetVerdict("/Users/a/fused/ABC1/", ["src"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
+  });
+
+  test("a backslash path is normalised before it is split", () => {
+    expect(targetVerdict("C:\\Users\\a\\ABC1", ["Desktop"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "C:/Users/a" });
+  });
+
+  test("two missing levels is refused, and says which one is missing", () => {
+    // null = the PARENT could not be listed either, so this is not "name me a
+    // folder", it is "build me a tree" — the ask a typo makes by accident.
+    expect(targetVerdict("/Users/a/new1/new2", null)).toEqual({
+      kind: "bad",
+      text: twoLevelsMissing("/Users/a/new1"),
+    });
+    expect(twoLevelsMissing("/Users/a/new1")).toContain("Only one new folder");
+    expect(twoLevelsMissing("/Users/a/new1")).toContain("/Users/a/new1");
+  });
+
+  test("a path with no last segment to create is the old refusal", () => {
+    // "." and ".." name somewhere that exists by definition, so arriving here
+    // with one means the string was junk rather than a new name.
+    expect(targetVerdict("/Users/a/fused/..", ["src"]))
+      .toEqual({ kind: "bad", text: PATH_MISSING });
+    expect(targetVerdict("/Users/a/fused/.", ["src"]))
+      .toEqual({ kind: "bad", text: PATH_MISSING });
+  });
+
+  test("splitTargetPath keeps a drive root's slash", () => {
+    // Bare "C:" reads as cwd-relative everywhere else in the shell.
+    expect(splitTargetPath("C:/ABC1")).toEqual({ parent: "C:/", base: "ABC1" });
+    expect(splitTargetPath("/ABC1")).toEqual({ parent: "/", base: "ABC1" });
+    expect(splitTargetPath("/Users/a/fused/ABC1"))
+      .toEqual({ parent: "/Users/a/fused", base: "ABC1" });
+  });
+
+  test("a new folder does not block Save — only a bad path does", () => {
+    // The verdict feeds two separate pieces of state, and only `bad` becomes
+    // `pathError`. The new-folder row is not a refusal.
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    expect(src).toContain('setPathError(v.kind === "bad" ? v.text : null);');
+    expect(src).toContain('setNewFolder(v.kind === "new-folder" ? v.name : null);');
+  });
+
+  test("the picker's New folder only NAMES one — nothing is written on cancel", () => {
+    const src = readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+    // No /api/fs/mkdir from this modal: the folder is created by the save, so
+    // backing out of the card leaves nothing behind on disk.
+    expect(src).not.toContain("mkdir");
+    expect(src).toContain("+ New folder");
+    // Escape backs out of the naming row before it backs out of the panel.
+    expect(src).toContain("if (namingOpen.current) {");
+  });
+});
+
+// ---- The verdict is shown in the dropdown, not under the field ---------------
+// "this UI should be in dropdown" (Akshil, 2026-08-20). The new-folder answer
+// used to be a row that appeared BELOW the path input and pushed the rest of the
+// card down as you typed; it now renders as the first row of the path field's
+// own dropdown, in the row shape of the folders listed under it.
+describe("where the new-folder answer is shown", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const css = () =>
+    readFileSync(join(import.meta.dir, "../styles/schedule.css"), "utf8");
+
+  test("the row lives inside the recents dropdown", () => {
+    const s = src();
+    const open = s.indexOf('className="schedule-recents"');
+    const rowAt = s.indexOf("schedule-recents-new\"");
+    expect(open).toBeGreaterThan(-1);
+    expect(rowAt).toBeGreaterThan(open);
+    // …and BEFORE the recents rows it sorts above.
+    expect(rowAt).toBeLessThan(s.indexOf("recents.slice(0, RECENTS_SHOWN)"));
+  });
+
+  test("no inline note is left under the path field", () => {
+    // The old row's two markers: its own class, and the sentence it carried.
+    expect(src()).not.toContain("schedule-form-new");
+    expect(src()).not.toContain("is created when the task is saved");
+    expect(css()).not.toContain(".schedule-form-new {");
+  });
+
+  test("the badge is kept, and now reads inside a dropdown row", () => {
+    expect(src()).toContain('<span className="schedule-new-badge">New folder</span>');
+    expect(src()).toContain("Created when the task is saved");
+    expect(css()).toContain(".schedule-new-badge {");
+  });
+
+  test("the field only points at the row while the row is on screen", () => {
+    // aria-describedby aimed at a node that is not in the document says nothing,
+    // and the row only exists while the list is open.
+    expect(src()).toContain("newFolder && recentsOpen");
+  });
+
+  test("the verdict never forces the dropdown open", () => {
+    const s = src();
+    // The reveal flag is GONE (Akshil, 2026-08-20): the verdict is debounced
+    // 400ms behind the keystroke, so any "bring the list back for it" logic
+    // reopened the dropdown after the user had clicked away — a dropdown that
+    // could not stay dismissed. The row rides the open list only.
+    expect(s).not.toContain("revealNew");
+    // A folder named in the picker refocuses the field WITHOUT the focus
+    // handler popping the list over the form.
+    expect(s).toContain("suppressOpen.current = true;\n              window.setTimeout(() => pathRef.current?.focus(), 0);");
+  });
+});
+
+// ---- The second verb: "+ New folder" under Browse ----------------------------
+describe("the + New folder button below Browse", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("it sits after Browse in the same dropdown", () => {
+    const s = src();
+    const browse = s.indexOf("Browse…");
+    const mk = s.indexOf("schedule-recents-mk");
+    expect(browse).toBeGreaterThan(-1);
+    expect(mk).toBeGreaterThan(browse);
+    // Same row vocabulary as Browse, so the prefs-section button skin cannot
+    // shrink-wrap it (that is what .schedule-form .schedule-picker-row fixes).
+    expect(s).toContain('className="schedule-picker-row schedule-recents-mk"');
+  });
+
+  test("its plus is the row's icon, not label text", () => {
+    const s = src();
+    // "+ New folder" as label text put the word on a different edge from every
+    // other label in the list (Akshil, 2026-08-20) — the plus rides the icon
+    // column like the folders' glyphs, and the label is just "New folder".
+    expect(s).toContain("{ICON_PLUS}");
+    expect(s).not.toContain(">\n                  + New folder");
+  });
+
+  test("clicking the verdict row keeps the path and closes the list", () => {
+    const s = src();
+    // It began as an inert role="status" div; a dead click beside five live
+    // rows read as broken (Akshil, 2026-08-20). The path is already in the
+    // field, so the click's whole job is the close.
+    expect(s).toContain('className="schedule-picker-row schedule-recents-new"');
+    const row = s.indexOf("schedule-recents-new\"");
+    expect(s.indexOf("onClick={() => setRecentsOpen(false)}", row)).toBeGreaterThan(row);
+  });
+
+  test("it opens the picker already naming — one flow, not a second one", () => {
+    const s = src();
+    expect(s).toContain("openPicker(true)");
+    expect(s).toContain("const [naming, setNaming] = useState(!!startNaming);");
+    // Keyed so it arrives naming even over a Browse panel still animating out.
+    expect(s).toContain('key={pickerNaming ? "naming" : "browse"}');
+  });
+
+  test("a folder named in the picker ends in the same dropdown row", () => {
+    const s = src();
+    // onName is the picker saying "this one was NAMED, not clicked" — only then
+    // does the field take focus back and the list come up with the verdict.
+    expect(s).toContain("onName?.();");
+    expect(s).toContain("onName={() => {");
+    expect(s).toContain("pathRef.current?.focus()");
+  });
+});
+
+// ---- Run now vs put it on the calendar -------------------------------------
+// The card serves two intentions now (Akshil, 2026-08-23): "do this" — typed on
+// the List or the Board, where the when-row is folded away and `now` is only a
+// default — and "plan this", from the calendar or a slot click. Nothing about
+// WHEN it runs differs; what differs is whether the calendar claims it as a
+// plan, and what the button says it is about to do.
+describe("did anybody actually pick a time", () => {
+  test("an untouched when-row on a one-off rides the wire as `immediate`", () => {
+    const payload = buildSchedulePayload(form({ timePicked: false }));
+    expect(payload.immediate).toBe(true);
+    // …and it is still due, and still due at the same minute: the flag changes
+    // what the calendar draws, never what the scheduler does.
+    expect(payload.due).toBe("2026-08-17T09:00");
+  });
+
+  test("a picked time leaves the flag off the wire entirely", () => {
+    expect(buildSchedulePayload(form({ timePicked: true })).immediate).toBeUndefined();
+    // Absent means the same thing — every caller that is not this form.
+    expect(buildSchedulePayload(form({})).immediate).toBeUndefined();
+  });
+
+  test("a repeat is never immediate, even with the row untouched", () => {
+    // Ticking Repeat marks the time as picked in the component; this is the
+    // belt to that braces — a rule's anchor is a chosen time by definition, and
+    // the server refuses the pairing anyway.
+    const rule = buildSchedulePayload(form({ rule: DAILY, timePicked: false }));
+    expect(rule.immediate).toBeUndefined();
+    const cron = buildSchedulePayload(
+      form({ repeat: "cron", legacyCron: "0 9 * * *", timePicked: false }),
+    );
+    expect(cron.immediate).toBeUndefined();
+  });
+});
+
+describe("what the primary button says it will do", () => {
+  const now = new Date("2026-08-17T09:00:00");
+
+  test("a time still ahead is a Schedule", () => {
+    expect(saveActionLabel(new Date("2026-08-17T09:01:00"), false, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("2026-09-01T08:00:00"), false, now)).toBe("Schedule");
+  });
+
+  test("now, or already past, is a Create", () => {
+    // MINUTE precision, matching the field: a card opened on this minute and
+    // saved unchanged runs, and must not offer to schedule the moment it is in.
+    expect(saveActionLabel(new Date("2026-08-17T09:00:40"), false, now)).toBe("Create");
+    expect(saveActionLabel(new Date("2026-08-17T08:59:00"), false, now)).toBe("Create");
+    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), false, now)).toBe("Create");
+  });
+
+  test("a repeat is always a Schedule, past anchor included", () => {
+    // A past anchor gets ONE catch-up run and then a standing pattern, and the
+    // pattern is the bigger fact — "Create" would name the catch-up and hide it.
+    expect(saveActionLabel(new Date("2026-08-10T09:00:00"), true, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("2026-09-10T09:00:00"), true, now)).toBe("Schedule");
+  });
+
+  test("an unreadable date does not claim it is about to run", () => {
+    expect(saveActionLabel(null, false, now)).toBe("Schedule");
+    expect(saveActionLabel(new Date("nonsense"), false, now)).toBe("Schedule");
+  });
+});
+
+describe("where the when-row lives", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("it is inside More options, which opens itself on a planning card", () => {
+    const s = src();
+    const more = s.indexOf('<details className="schedule-form-more"');
+    expect(more).toBeGreaterThan(-1);
+    // The when-row now sits AFTER the disclosure opens, not on the card's face.
+    expect(s.indexOf("Google's when-row")).toBeGreaterThan(more);
+    // Openness is React state, not a bare `open` attribute: a half-controlled
+    // <details> would slam shut on the next re-render, under the user's hand.
+    expect(s).toContain("const [moreOpen, setMoreOpen] = useState(planning);");
+    expect(s).toContain("onToggle={(e) => setMoreOpen(e.currentTarget.open)}");
+  });
+
+  test("the three when-controls are what mark the time as picked", () => {
+    const s = src();
+    // The date grid, the time list, and the Repeat tick — every way a person
+    // can state an opinion about when.
+    expect(s).toContain("setTimePicked(true);");
+    expect(s).toContain("if (on) setTimePicked(true);");
+    // And the opening value: an edit inherits what the entry was stored as, a
+    // new card is planned exactly when the caller says it is planning.
+    expect(s).toContain("(editing ? !editing.immediate : planning)");
   });
 });

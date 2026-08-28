@@ -6,7 +6,7 @@
 // Lives in the shell layer on purpose: it composes builder cards
 // (AppPreviewCard) with explorer cards and libs, which only the shell may
 // import together (scripts/check-boundaries.mjs).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { navigateUrl } from "@platform/lib/router";
 import { basename } from "@platform/lib/format";
 import {
@@ -17,11 +17,14 @@ import {
   type Config,
 } from "@platform/lib/api";
 import { useIndexStatus } from "@platform/lib/index-status";
+import { runCommunity } from "@platform/lib/community";
 import { loadRecents, recentFsPath, useRecentsVersion } from "@apps/explorer/lib/recents";
 import { FilesSearch } from "@apps/explorer/FilesHome";
 import { FolderPreviewCard, RecentPreviewCard } from "@apps/explorer/BookmarkCards";
-import { AppPreviewCard } from "@apps/builder/AppPreviewCard";
+import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
 import { ClaudeHealthStrip } from "@platform/ui/ClaudeHealthStrip";
+import { PLAYGROUND_GROUPS, type PlaygroundGroup } from "@apps/ai_models/playground/groups";
+import { tabHref } from "@apps/ai_models/routes";
 
 // One row per section: the page measures its own width and renders exactly
 // as many full-size cards as fit — no wrapping, no clipping, no scrolling.
@@ -111,16 +114,20 @@ function softNavigate(e: React.MouseEvent, href: string) {
 }
 
 function Section({
+  id,
   title,
   seeAllHref,
   children,
 }: {
+  /** Stable anchor for the welcome tour (platform/lib/tours/home.ts) — the
+      section's own classes are shared by all four strips. */
+  id?: string;
   title: string;
   seeAllHref: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="fh-section home-section">
+    <section id={id} className="fh-section home-section">
       <div className="home-sec-head">
         <h2 className="home-sec-title">
           <a className="home-sec-title-link" href={seeAllHref} onClick={(e) => softNavigate(e, seeAllHref)}>
@@ -136,6 +143,202 @@ function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+// Skeleton for one card while a strip's fetch is in flight. Two variants,
+// because Home's two async strips draw two DIFFERENT real cards and a single
+// shared shape would be wrong for one of them:
+//   - "app"    mirrors AppPreviewCard/`.app-pcard` (apps.css) — title + a meta
+//     row (tag pill, timestamp) OVER a full-bleed thumb. No icon: the real
+//     card has none.
+//   - "folder" mirrors FolderPreviewCard/`.fhb-card` (preferences.css) — a
+//     head row over an inset thumb well. The real card's head DOES carry an
+//     icon, but it's a static decorative folder glyph, identical on every
+//     card and independent of the fetch — shimmering it (or even placing an
+//     inert placeholder for it) would claim something is loading that isn't,
+//     so both variants render NO icon.
+// Built by reusing the real card's own classes rather than a bespoke shimmer
+// shape with hand-measured dimensions: the browser lays both variants out
+// with the exact same box model (padding, border, font metrics) the real
+// card gets, so the skeleton's height tracks the real card's automatically —
+// including through a CSS change neither this file nor a hand-derived
+// constant would notice. Pure decoration — `aria-hidden`, with the row
+// wrapper (below) carrying the one `role="status"` announcement for the
+// whole strip, the way the old "Loading apps" line (a single ~18px
+// paragraph) used to speak for the row rather than each line in it.
+function SkeletonCard({ variant }: { variant: "app" | "folder" }) {
+  if (variant === "app") {
+    return (
+      <span className="app-pcard home-skel-card" aria-hidden="true">
+        <span className="app-pcard-body">
+          <span className="skel-bar" style={{ width: "58%" }} />
+          <span className="app-pcard-meta">
+            <span className="skel-bar" style={{ width: "46px" }} />
+            <span className="skel-bar" style={{ width: "64px" }} />
+          </span>
+        </span>
+        <span className="app-pcard-thumb home-skel-body" />
+      </span>
+    );
+  }
+  return (
+    <span className="fhb-card home-skel-card" aria-hidden="true">
+      <span className="fhb-card-head">
+        {/* `.fh-card-text` is a shrink-to-fit flex item everywhere else (its
+            real content — the name/path text — decides its width, and here
+            it's the head row's ONLY child, since the icon is deliberately
+            gone); a percentage-width `.skel-bar` inside it has nothing to
+            shrink-to-fit against, so `home-skel-text` grows it to fill the
+            head row like the real text effectively does once it's long
+            enough to need the ellipsis. */}
+        <span className="fh-card-text home-skel-text">
+          {/* Wider bar on top: a name reads longer than the path underneath it
+              on every real card head, and matching that keeps the skeleton
+              from looking like a title-less placeholder. */}
+          <span className="skel-bar" style={{ width: "72%" }} />
+          <span className="skel-bar" style={{ width: "48%" }} />
+        </span>
+      </span>
+      <span className="fhb-thumb home-skel-body" />
+    </span>
+  );
+}
+
+// A skeleton row is sized by `shown`, not by a guess or the section's peak
+// `limit` — the same number of cards the real row will draw once the fetch
+// lands (Home.tsx slices every strip to `shown`), so the swap from skeleton to
+// content never changes the row's card count or width. Floored at 1: `shown`
+// is 0 before the wrapper has been measured (see useStripCount), and a row of
+// zero skeleton cards would render as nothing at all rather than as "loading".
+function SkeletonRow({
+  count,
+  label,
+  variant,
+}: {
+  count: number;
+  label: string;
+  variant: "app" | "folder";
+}) {
+  return (
+    <div className="home-row" role="status" aria-busy="true" aria-label={label}>
+      {Array.from({ length: Math.max(1, count) }, (_, i) => (
+        <SkeletonCard key={i} variant={variant} />
+      ))}
+    </div>
+  );
+}
+
+// The AI Playground strip's glyph vocabulary — plain strokes on the current
+// color, so the tinted body well colours them for free. Keyed by the THING a
+// task reads or writes rather than by the capability, because the card body
+// draws each task as the pair it maps between (see PLAYGROUND_FLOWS).
+const MEDIA_GLYPHS = {
+  // Material's `message` — a squared bubble with a corner tail and three lines
+  // of writing — and the SAME geometry the playground rail's Text generation
+  // section wears (apps/ai_models/playground/capabilityIcons.tsx). These two
+  // surfaces are one click apart and the card is a picture of where the click
+  // lands, so a different bubble on each end reads as two different features.
+  // It replaces a rounded balloon whose only marks were two short lines: at
+  // the 18px this draws at, that read as a speech balloon — someone talking —
+  // where every use of this glyph here is about WRITTEN text.
+  chat: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 4h14a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7l-4 4V6a2 2 0 0 1 2-2Z" />
+      <path d="M7 7.5h10M7 10.5h10M7 13.5h6" />
+    </svg>
+  ),
+  image: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <circle cx="9" cy="10" r="2" />
+      <path d="M3 17.5 8.5 13l4 3.5 3.5-3 5 4.5" />
+    </svg>
+  ),
+  speech: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" />
+    </svg>
+  ),
+  meaning: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="7" />
+      <path d="M20.5 20.5 15.6 15.6" />
+      <circle cx="8" cy="9" r="0.4" />
+      <circle cx="12.8" cy="8.2" r="0.4" />
+      <circle cx="10.2" cy="13" r="0.4" />
+    </svg>
+  ),
+  video: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="5.5" width="13" height="13" rx="2.5" />
+      <path d="M16 10.5 21 7.5v9L16 13.5z" />
+    </svg>
+  ),
+} satisfies Record<string, ReactNode>;
+
+type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
+
+// What each task takes in and hands back. The body renders it literally —
+// in-glyph, arrow, out-glyph — so the card shows "speech becomes text" without
+// leaning on the blurb, and chat → chat still reads as a mapping (rewriting)
+// rather than a doubled icon.
+const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
+  "text-generation": ["chat", "chat"],
+  "text-to-image": ["chat", "image"],
+  "text-to-video": ["chat", "video"],
+  "automatic-speech-recognition": ["speech", "chat"],
+  embeddings: ["chat", "meaning"],
+};
+
+// The header's single glyph names the task itself, which is not always the
+// flow's output — Transcription is filed under the mic, not under text.
+const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
+  "text-generation": "chat",
+  "text-to-image": "image",
+  "text-to-video": "video",
+  "automatic-speech-recognition": "speech",
+  embeddings: "meaning",
+};
+
+const FLOW_ARROW = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M4 12h15M13.5 6.5 20 12l-6.5 5.5" />
+  </svg>
+);
+
+// One card per playground task: the header names it, the body says what it
+// does. Static on purpose — the strip advertises the SURFACE, not this
+// machine's downloads, so it costs Home no catalog fetch. The link carries
+// only the capability (`?cap=`); the playground itself resolves that to its
+// vetted default model, so the choice lives in one place.
+function PlaygroundPreviewCard({ group }: { group: PlaygroundGroup }) {
+  const href = tabHref("playground", `?cap=${encodeURIComponent(group.capability)}`);
+  // A group added without a flow still renders (Home must not crash on a
+  // vocabulary edit): it falls back to the header glyph on both sides.
+  const head = PLAYGROUND_HEADS[group.capability] ?? "chat";
+  const flow = PLAYGROUND_FLOWS[group.capability] ?? [head, head];
+  return (
+    <a className="fhb-card home-pg-card" href={href} onClick={(e) => softNavigate(e, href)}>
+      <span className="fhb-card-head">
+        <span className="fh-card-icon home-pg-icon" aria-hidden="true">
+          {MEDIA_GLYPHS[head]}
+        </span>
+        <span className="fh-card-text">
+          <span className="fh-card-name">{group.label}</span>
+          <span className="fh-card-path">Runs on this machine</span>
+        </span>
+      </span>
+      <span className="home-pg-body" aria-hidden="true">
+        <span className="home-pg-flow">
+          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[0]]}</span>
+          <span className="home-pg-arrow">{FLOW_ARROW}</span>
+          <span className="home-pg-glyph">{MEDIA_GLYPHS[flow[1]]}</span>
+        </span>
+        <span className="home-pg-blurb">{group.blurb}</span>
+      </span>
+    </a>
   );
 }
 
@@ -159,7 +362,42 @@ export default function Home({ config }: { config: Config }) {
     if (limit === null) return;
     let alive = true;
     getHomeApps(Math.min(limit, MAX_ROW)).then(
-      (r) => alive && setApps(r.apps.slice(0, MAX_ROW)),
+      async (r) => {
+        if (!alive) return;
+        if (r.apps.length > 0) {
+          setApps(r.apps.slice(0, MAX_ROW));
+          return;
+        }
+        // Empty on a brand-new install usually isn't "no apps" — it's this
+        // fetch landing before the startup showcase clone (into
+        // <workspace>/showcase, kicked off in the background at server start)
+        // has finished. Apps.tsx already escalates the same "no-cache" catalog
+        // status into a wait-for-clone-then-refetch; Home is the first page a
+        // new user sees, so it needs the same escalation instead of settling
+        // on "No apps yet" forever.
+        try {
+          const local = await runCommunity<{ status?: string }>({ action: "catalog" });
+          if (!alive) return;
+          // A "no-cache" status means the clone is still missing — wait for
+          // it. But the clone can just as easily land in the gap between the
+          // first empty getHomeApps and this very check, which reports it
+          // "ok" already: that walk never re-ran, so its emptiness is just as
+          // stale. Either way, one more walk is needed before the row really
+          // is empty — retry unconditionally, only waiting on refresh first
+          // when the clone genuinely hasn't landed yet.
+          if (local.status === "no-cache") {
+            await runCommunity({ action: "refresh" });
+            if (!alive) return;
+          }
+          const retry = await getHomeApps(Math.min(limit, MAX_ROW));
+          if (!alive) return;
+          setApps(retry.apps.slice(0, MAX_ROW));
+          return;
+        } catch {
+          // Community backend unreachable — fall through to the empty state.
+        }
+        setApps([]);
+      },
       (e: Error) => {
         if (!alive) return;
         setApps([]);
@@ -228,9 +466,9 @@ export default function Home({ config }: { config: Config }) {
                 than spanning the window. Hidden while a search is live for the
                 same reason the strips are: the search result IS the page then. */}
             <ClaudeHealthStrip />
-            <Section title="Fused Apps" seeAllHref="/apps">
+            <Section id="home-sec-apps" title="Fused Apps" seeAllHref="/apps">
               {apps === null ? (
-                <p className="fh-empty">Loading apps…</p>
+                <SkeletonRow count={shown} label="Loading apps" variant="app" />
               ) : apps.length ? (
                 <div className="home-row">
                   {apps.slice(0, shown).map((app) => (
@@ -244,9 +482,25 @@ export default function Home({ config }: { config: Config }) {
               )}
             </Section>
 
-            <Section title="Claude Sessions" seeAllHref="/explorer?tab=sessions">
+            <Section
+              id="home-sec-playground"
+              title="AI Playground"
+              seeAllHref={tabHref("playground", "")}
+            >
+              <div className="home-row">
+                {PLAYGROUND_GROUPS.slice(0, shown).map((group) => (
+                  <PlaygroundPreviewCard key={group.capability} group={group} />
+                ))}
+              </div>
+            </Section>
+
+            <Section
+              id="home-sec-sessions"
+              title="Claude Sessions"
+              seeAllHref="/explorer?tab=sessions"
+            >
               {sessions === null ? (
-                <p className="fh-empty">Looking for sessions…</p>
+                <SkeletonRow count={shown} label="Loading Claude sessions" variant="folder" />
               ) : sessions.length ? (
                 <div className="home-row">
                   {sessions.slice(0, shown).map((f) => (

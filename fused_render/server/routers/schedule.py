@@ -19,9 +19,10 @@ X-Fused guard: one of them schedules code execution, and the other stops it.
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, File, Header, UploadFile
 
 from fused_render import recur, schedule, tasks_store
+from fused_render.server import image_convert
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -93,6 +94,94 @@ def api_schedule_events_ack(body: dict = Body(...),
     if not isinstance(event_id, int) or isinstance(event_id, bool):
         return _error("id: expected an integer event id", status=400)
     return {"delivered": schedule.ack_events(event_id)}
+
+
+# What the New task form's attach/drop accepts, and the one place bytes are
+# written: everything else (the create endpoint, the model) deals only in the
+# returned paths, which `schedule._images` refuses unless they live under
+# `schedule.shots_dir()`.
+#
+# MULTIPART, not the data-URL JSON this used to take (2026-08-28). The form no
+# longer holds the file as a data URL at all — the chip's thumbnail is a
+# `blob:` URL and only pictures get one — and base64 is a 33% tax paid twice
+# (once in the browser's string, once in the body) on a gesture whose whole
+# point is now that a 40 MB log can be dropped on the card. `UploadFile`
+# streams to a spooled temp file instead.
+#
+# NO CAPS AND NO TYPE GATE (D618, following D615 for the chat): any file, any
+# size. The image-only MIME check and the 4 MB byte ceiling are both gone; 4 MB
+# survives as `image_convert.PNG_MAX_BYTES`, which is a DOWNSCALE TRIGGER for a
+# picture and never a refusal.
+
+
+@router.post("/api/schedule/shot")
+async def api_schedule_shot(file: UploadFile | None = File(default=None),
+                            x_fused: str | None = Header(default=None)):
+    """Store one task attachment; return the path to schedule with.
+
+    `{path, kind, width?, height?}` — `kind` is "image" or "file", which is the
+    one thing the card cannot work out for itself once the extension may be
+    anything (and which the transcode below can CHANGE: a `.tif` arrives as
+    bytes no browser draws and leaves as a PNG the chip can show).
+
+    The file is OPTIONAL in the signature so that a body which is not multipart
+    at all reaches this function and gets the D3 guard's answer first: a
+    required `File(...)` is a validation error raised before any of our code
+    runs, which would have made an unguarded 422 the reply to a cross-origin
+    POST."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if file is None:
+        return _error("file: expected a multipart upload", status=400)
+    raw = await file.read()
+    if not raw:
+        return _error("file: empty upload", status=400)
+
+    mime = file.content_type or ""
+    ext = image_convert.ext_for(mime, file.filename)
+    shots = schedule.shots_dir()
+    os.makedirs(shots, mode=0o700, exist_ok=True)
+    # Server-minted name, never the client's: the path returned here is what
+    # `schedule._images` later trusts, and a filename is the one field in a
+    # multipart body a page chooses freely. Only the EXTENSION is taken from the
+    # client (sanitised by `ext_for`), because it is what decides the template a
+    # preview opens the file in.
+    name = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            + "-" + os.urandom(4).hex() + ext)
+    path = os.path.join(shots, name).replace("\\", "/")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(raw)
+
+    if not image_convert.is_image(ext, mime):
+        return {"path": path, "kind": "file"}
+
+    # A PICTURE gets one more decision, and it is taken HERE rather than in the
+    # browser (the chat takes it in the page, with a canvas; D613). Server-side
+    # for this form because the two cases are one call from here — a format no
+    # engine can decode and a picture merely too big share a ladder — where in
+    # the client they are two code paths, one of which cannot exist at all: a
+    # canvas cannot downscale bytes it cannot draw. The card stays small and the
+    # bytes are already on disk by the time the question is asked.
+    out, width, height = path, None, None
+    blind = image_convert.browser_blind(ext, mime)
+    if blind or len(raw) > image_convert.PNG_MAX_BYTES:
+        # A DIFFERENT name, not a same-extension sibling: a 6 MB `.png` being
+        # downscaled would otherwise be asked to overwrite itself.
+        conv = image_convert.transcode(
+            path, os.path.splitext(path)[0] + "-view")
+        if conv.get("path"):
+            out = conv["path"]
+            width, height = conv.get("width"), conv.get("height")
+    if width is None:
+        size = image_convert.dimensions(out)
+        if size:
+            width, height = size
+    body = {"path": out, "kind": "image"}
+    if width and height:
+        body["width"], body["height"] = width, height
+    return body
 
 
 @router.post("/api/schedule")
@@ -171,7 +260,8 @@ def api_schedule_create(body: dict = Body(...),
             return _error("delay_seconds: must be positive", status=400)
         due = datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
-    # `title`, `description`, `new_task_each_run` and `session_learned` are
+    # `title`, `description`, `new_task_each_run`, `session_learned` and
+    # `immediate` are
     # passed straight through and normalised by the model (`_text`/`_flag`),
     # not here. Deliberately NOT
     # validated into a 400: the form omits them when they are blank or unticked,
@@ -188,7 +278,24 @@ def api_schedule_create(body: dict = Body(...),
             repeats=repeats, rule=rule,
             title=body.get("title"), description=body.get("description"),
             new_task_each_run=body.get("new_task_each_run"),
-            session_learned=body.get("session_learned"))
+            session_learned=body.get("session_learned"),
+            immediate=body.get("immediate"),
+            images=body.get("images"),
+            # The SAME attachments with their names and kinds beside them
+            # (D619). Passed through unvalidated exactly like `images` is —
+            # `schedule._attachments` is what refuses anything not living under
+            # the task-shots dir, so the create endpoint keeps its habit of not
+            # holding a second copy of the model's rules. Either field alone is
+            # enough; each is derived from the other when only one arrives, so a
+            # client that has not been rebuilt still schedules attachments and a
+            # client that sends only the richer field still gets `images` stored.
+            attachments=body.get("attachments"),
+            # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
+            # you name a folder that does not exist yet — it shows the path as a
+            # new folder while you type it — and this is where that promise is
+            # kept: one missing leaf under an existing parent is created, two
+            # missing levels are still a 400. See `schedule.create`.
+            create_target=True)
     except ValueError as exc:
         return _error(str(exc), status=400)
 

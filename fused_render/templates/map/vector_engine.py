@@ -2,34 +2,35 @@
 
 Large vectors are never serialized wholesale for the browser. GeoPackage
 sources use their RTree for bounded reads. Detailed tiles are encoded by
-GDAL's native MVT writer, while tiles that contain more geometry than a screen
-can distinguish become occupancy overviews instead of arbitrary feature
-samples. Generated tiles are cached in memory and on disk.
+mvt_encode's direct protobuf writer, while tiles that contain more geometry
+than a screen can distinguish become occupancy overviews instead of arbitrary
+feature samples. Generated tiles are cached in memory and on disk.
 """
 from __future__ import annotations
 
 import contextlib
-import gzip
 import hashlib
 import math
 import os
 import sqlite3
-import tempfile
+import struct
 import threading
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 from urllib.parse import quote, urlsplit
 
 from geo_paths import (
     is_http_url,
-    is_managed_mount,
-    is_native_remote_path,
     is_remote_path,
     normalize_remote_path,
+    resolve_source,
 )
+from mvt_encode import LINESTRING, POINT, POLYGON, LayerWriter, path_commands, point_commands
 from optional_runtime import require
+from raster_engine import error_descriptor
 
 
 VECTOR_SUFFIXES = {
@@ -53,23 +54,53 @@ MAX_TILE_FEATURES = int(
 OVERVIEW_GRID_SIZE = int(
     os.environ.get("MAP_VIEWER_VECTOR_OVERVIEW_GRID", "64")
 )
+# Above this many features in a tile's bbox the exact per-cell SQL count is
+# retired for the rtree node summary (~1.3µs/feature measured: 400k ≈ 0.5s).
+OVERVIEW_EXACT_MAX = int(
+    os.environ.get("MAP_VIEWER_VECTOR_OVERVIEW_EXACT", "400000")
+)
 MAX_TILE_CACHE = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_SIZE", "512")
+)
+# Cap the on-disk .pbf tile cache; least-recently-served tiles are evicted past
+# this (see _evict_disk_tiles).
+VECTOR_TILE_CACHE_MAX_BYTES = int(
+    os.environ.get("MAP_VIEWER_VECTOR_TILE_CACHE_MAX_BYTES", str(2 << 30))
 )
 MAX_ATTRIBUTES = int(
     os.environ.get("MAP_VIEWER_VECTOR_TILE_ATTRIBUTES", "8")
 )
+# A source with no GeoPackage RTree gets one occupancy overview built from every
+# feature's bounding box, read once and cached to disk. Until it lands, dense
+# tiles are drawn from a fast capped sample so the map is never blank. Above this
+# many features the per-feature array would be large enough (a few hundred MB)
+# that the sample stays the overview rather than paying the full read.
+SUMMARY_MAX_FEATURES = int(
+    os.environ.get("MAP_VIEWER_VECTOR_SUMMARY_MAX", "20000000")
+)
 MVT_EXTENT = 4096
 MVT_BUFFER = 64
+# Douglas-Peucker tolerance in tile units. MVT is a fixed-resolution display
+# format (4096 units across a 512px tile => 8 units/px), so vertices closer than
+# a screen pixel are detail nobody can see but every one still costs an encode
+# and payload byte. One pixel (8 units) is imperceptible yet ~15% faster and
+# smaller on dense tiles; the old 2.0 preserved ~1/8 px.
+SIMPLIFY_TOLERANCE = float(os.environ.get("MAP_VIEWER_VECTOR_SIMPLIFY_UNITS", "8.0"))
+# A detail tile that is mostly features barely larger than a screen pixel wastes
+# both encode time and payload drawing specks that land on the same pixel.
+# Features whose footprint is under COALESCE_PIXELS px are collapsed to one (the
+# largest) per cell of that size; larger features — long lines, big polygons —
+# are always kept, so only visually-coincident geometry is dropped. 0 disables
+# it. Measured against the same 512px tile as SIMPLIFY_TOLERANCE (8 units/px).
+TILE_PIXELS = 512
+COALESCE_PIXELS = float(os.environ.get("MAP_VIEWER_VECTOR_COALESCE_PX", "1.5"))
 WEB_MERCATOR_LIMIT = math.pi * 6378137.0
 MAX_LATITUDE = 85.0511287798066
-ENGINE_VERSION = "native-mvt-v1"
+ENGINE_VERSION = "native-mvt-v2"
 # The MVT tile pyramid's {z}/{x}/{y} math is fixed to EPSG:4326 — this is this
 # pipeline's "canvas CRS" (the same role QGIS's project CRS plays: every layer,
 # regardless of its own native CRS, is reprojected on-the-fly for that one
-# render/tile). The source file's CRS is never touched. Previously left
-# implicit, relying on GDAL's OGR MVT writer to silently reproject internally
-# (GDAL >= 3.4 behavior) — now made explicit.
+# render/tile). The source file's CRS is never touched.
 TILE_CRS = "EPSG:4326"
 
 
@@ -83,62 +114,32 @@ VECTOR_RUNTIME = {
 }
 
 
+# _read_detail sentinel: the bbox holds more than MAX_TILE_FEATURES, as opposed
+# to None which means genuinely empty.
+_TILE_TOO_DENSE = object()
+
+
+class TileCancelled(Exception):
+    """The tile's client went away mid-render; the work was abandoned."""
+
+
+class TileResult(NamedTuple):
+    """A rendered tile plus whether it may be cached. Provisional sample tiles,
+    drawn while a source's overview is still building, are never cached: the key
+    ignores the summary revision, so a cached sample would outlive the exact
+    overview that replaces it."""
+
+    data: bytes
+    cacheable: bool = True
+
+
 def _vector_dependency_error() -> str | None:
     return require("Streamed vector layers", VECTOR_RUNTIME)
-
-
-def _dependency_descriptor(artifact_id: str, message: str) -> dict[str, Any]:
-    return {
-        "id": artifact_id,
-        "status": "error",
-        "kind": None,
-        "bounds": None,
-        "data": {},
-        "stats": {},
-        "style": {},
-        "warnings": [],
-        "detected_type": "vector",
-        "message": message,
-    }
 
 
 def _suffix(value: str) -> str:
     path = urlsplit(value).path if is_http_url(value) else value
     return Path(path.replace("\\", "/")).suffix.lower()
-
-
-def _raw_url(origin: str, path: str) -> str:
-    return (
-        origin.rstrip("/")
-        + "/api/fs/raw?path="
-        + quote(path, safe="")
-        + "&pooled=1"
-    )
-
-
-def _resolve_source(request: dict[str, Any], target: str) -> str:
-    target = normalize_remote_path(target) if is_remote_path(target) else target
-    supplied_url = str(request.get("source_url") or "")
-    if is_remote_path(supplied_url):
-        supplied_url = normalize_remote_path(supplied_url)
-    direct_target = str(request.get("target") or "")
-    if is_remote_path(direct_target):
-        direct_target = normalize_remote_path(direct_target)
-    local = (
-        not is_remote_path(target)
-        and not is_managed_mount(target)
-        and os.path.isfile(target)
-    )
-    if local:
-        return os.path.abspath(target)
-    if is_native_remote_path(target):
-        return target
-    if target == direct_target and supplied_url:
-        return supplied_url
-    if is_http_url(target):
-        return target
-    origin = str(request.get("source_origin") or "")
-    return _raw_url(origin, target) if origin else os.path.abspath(target)
 
 
 def _source_size(source: str) -> int | None:
@@ -238,53 +239,156 @@ def _buffered_bounds(
     )
 
 
-def _reproject_wkb(table: Any, geometry_name: str, source_crs: str) -> Any:
-    import pyarrow as pa
+def _tile_units(lon, lat, z: int, x: int, y: int):
+    """EPSG:4326 coordinates to this tile's integer-quantizable MVT units.
+    Mercator y is linear in tile y, so the tile fraction is computed directly."""
+    import numpy as np
+
+    scale = float(1 << z)
+    tx = ((np.asarray(lon) + 180.0) / 360.0 * scale - x) * MVT_EXTENT
+    lat_r = np.radians(np.clip(np.asarray(lat), -MAX_LATITUDE, MAX_LATITUDE))
+    ty = ((1.0 - np.arcsinh(np.tan(lat_r)) / math.pi) / 2.0 * scale - y) * MVT_EXTENT
+    return tx, ty
+
+
+def _int_path(coords, ring: bool):
+    """Quantize one path to integer tile units, dropping the closing point of a
+    ring and consecutive duplicates. None when the path degenerates."""
+    import numpy as np
+
+    quantized = np.rint(coords).astype(np.int64)
+    if ring and len(quantized) > 1 and (quantized[0] == quantized[-1]).all():
+        quantized = quantized[:-1]
+    if len(quantized) > 1:
+        keep = np.empty(len(quantized), dtype=bool)
+        keep[0] = True
+        keep[1:] = (quantized[1:] != quantized[:-1]).any(axis=1)
+        quantized = quantized[keep]
+    if ring and len(quantized) > 1 and (quantized[0] == quantized[-1]).all():
+        quantized = quantized[:-1]
+    if len(quantized) < (3 if ring else 2):
+        return None
+    return quantized
+
+
+def _shoelace2(points) -> int:
+    x, y = points[:, 0], points[:, 1]
+    main = x[:-1] * y[1:] - x[1:] * y[:-1]
+    return int(main.sum() + x[-1] * y[0] - x[0] * y[-1])
+
+
+def _polygon_rings(polygon):
+    """Quantized rings of one polygon, wound for MVT (in y-down tile units the
+    surveyor's formula gives an exterior a positive area, interiors negative).
+    A degenerate exterior voids the polygon."""
+    rings = []
     import shapely
-    from pyproj import Transformer
 
-    transformer = Transformer.from_crs(source_crs, TILE_CRS, always_xy=True)
+    for index, ring in enumerate([polygon.exterior, *polygon.interiors]):
+        points = _int_path(shapely.get_coordinates(ring), ring=True)
+        area = 0 if points is None else _shoelace2(points)
+        if area == 0:
+            if index == 0:
+                return []
+            continue
+        if (area > 0) != (index == 0):
+            points = points[::-1]
+        rings.append(points)
+    return rings
 
-    def _project(coordinates):
-        projected = coordinates.copy()
-        projected[:, 0], projected[:, 1] = transformer.transform(
-            coordinates[:, 0], coordinates[:, 1]
-        )
-        return projected
 
-    index = table.schema.get_field_index(geometry_name)
-    geometries = shapely.from_wkb(
-        table.column(index).to_numpy(zero_copy_only=False)
-    )
-    projected = shapely.to_wkb(shapely.transform(geometries, _project))
-    return table.set_column(
-        index,
-        pa.field(geometry_name, pa.binary()),
-        pa.array(projected, type=pa.binary()),
-    )
+def _mvt_features(geometry, type_id=None):
+    """(geometry_type, command_integers) features for one shapely geometry."""
+    import numpy as np
+    import shapely
+
+    if type_id is None:
+        type_id = shapely.get_type_id(geometry)
+    if type_id in (0, 4):
+        points = np.rint(shapely.get_coordinates(geometry)).astype(np.int64)
+        if len(points):
+            commands: list[int] = []
+            point_commands(commands, points.tolist(), [0, 0])
+            yield POINT, commands
+    elif type_id in (1, 2, 5):
+        commands = []
+        cursor = [0, 0]
+        parts = shapely.get_parts(geometry) if type_id == 5 else [geometry]
+        for part in parts:
+            points = _int_path(shapely.get_coordinates(part), ring=False)
+            if points is not None:
+                path_commands(commands, points.tolist(), cursor, close=False)
+        if commands:
+            yield LINESTRING, commands
+    elif type_id in (3, 6):
+        commands = []
+        cursor = [0, 0]
+        parts = shapely.get_parts(geometry) if type_id == 6 else [geometry]
+        for part in parts:
+            for points in _polygon_rings(part):
+                path_commands(commands, points.tolist(), cursor, close=True)
+        if commands:
+            yield POLYGON, commands
+    elif type_id == 7:
+        for part in shapely.get_parts(geometry):
+            yield from _mvt_features(part)
+
+
+def _coverage_grid(minx, maxx, miny, maxy, weight, bbox, size: int):
+    """Mark every grid cell each node bbox overlaps (difference array + 2D
+    prefix sum), so summary coverage has no holes between node centres. ``weight``
+    is per node (one value per box), so a node contributes its own feature count
+    rather than a single average shared across every node."""
+    import numpy as np
+
+    span_x = bbox[2] - bbox[0]
+    span_y = bbox[3] - bbox[1]
+    ix0 = np.clip(((minx - bbox[0]) / span_x * size).astype(np.int64), 0, size - 1)
+    ix1 = np.clip(((maxx - bbox[0]) / span_x * size).astype(np.int64), 0, size - 1)
+    iy0 = np.clip(((miny - bbox[1]) / span_y * size).astype(np.int64), 0, size - 1)
+    iy1 = np.clip(((maxy - bbox[1]) / span_y * size).astype(np.int64), 0, size - 1)
+    diff = np.zeros((size + 1, size + 1))
+    np.add.at(diff, (ix0, iy0), weight)
+    np.add.at(diff, (ix1 + 1, iy0), -weight)
+    np.add.at(diff, (ix0, iy1 + 1), -weight)
+    np.add.at(diff, (ix1 + 1, iy1 + 1), weight)
+    return diff.cumsum(axis=0).cumsum(axis=1)[:size, :size]
+
+
+def _needs_shx_restore(locator: str) -> bool:
+    """True for a local .shp whose .shx sidecar is missing. Browsers upload only
+    the file the user dropped, so a lone .shp is recoverable — the .shx is a
+    redundant index GDAL can rebuild. SHAPE_RESTORE_SHX forces that rebuild on
+    every open even when the .shx already exists (a full scan that turns a
+    .qix-indexed bbox read from ~20ms into ~11s), so it is scoped to exactly the
+    reads that need it rather than left on globally."""
+    if _suffix(locator) != ".shp" or not os.path.isfile(locator):
+        return False
+    stem = Path(locator)
+    return not any(stem.with_suffix(suffix).is_file() for suffix in (".shx", ".SHX"))
 
 
 @contextlib.contextmanager
-def _gdal_env():
+def _gdal_env(restore_shx: bool = False):
     import pyogrio
     import rasterio
 
-    # A .shp dragged in without its .shx sidecar (browsers only upload the
-    # file the user dropped) is recoverable: the .shx is a redundant index
-    # GDAL can rebuild. Binary wheels give pyogrio a GDAL copy of its own
-    # that rasterio.Env can't reach, so the option is set on both.
-    pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": True})
-    with rasterio.Env(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_USE_HEAD="YES",
-        GDAL_HTTP_MULTIRANGE="YES",
-        GDAL_HTTP_MAX_RETRY="2",
-        GDAL_HTTP_RETRY_DELAY="0.2",
-        CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
-        CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
-        SHAPE_RESTORE_SHX="YES",
-    ):
-        yield
+    if restore_shx:
+        pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": True})
+    try:
+        with rasterio.Env(
+            GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
+            CPL_VSIL_CURL_USE_HEAD="YES",
+            GDAL_HTTP_MULTIRANGE="YES",
+            GDAL_HTTP_MAX_RETRY="2",
+            GDAL_HTTP_RETRY_DELAY="0.2",
+            CPL_VSIL_CURL_CHUNK_SIZE=str(64 << 10),
+            CPL_VSIL_CURL_CACHE_SIZE=str(16 << 20),
+        ):
+            yield
+    finally:
+        if restore_shx:
+            pyogrio.set_gdal_config_options({"SHAPE_RESTORE_SHX": None})
 
 
 @dataclass
@@ -322,14 +426,55 @@ class VectorEngine:
             OrderedDict()
         )
         self.inflight: dict[tuple[str, int, int, int], threading.Event] = {}
-        self.encode_slots = threading.BoundedSemaphore(2)
+        self._summaries: dict[str, tuple | None] = {}
+        self._summary_jobs: dict[str, dict[str, Any]] = {}
+        # One persistent worker builds feature-bbox overviews off the tile path,
+        # so a viewport keeps drawing samples while an 11s read runs, and the
+        # thread never exits (a thread that has touched GDAL /vsicurl deadlocks
+        # the process at exit on Windows — the same rule the daemon's pools obey).
+        self.summary_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="vsummary"
+        )
+        self._transformers: dict[str, Any] = {}
         self.cache_dir = (
             Path(cache_dir) / "vector-tiles" / ENGINE_VERSION
             if cache_dir is not None
             else None
         )
+        self._disk_bytes = 0
         if self.cache_dir is not None:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self._evict_disk_tiles()
+
+    def _evict_disk_tiles(self) -> None:
+        """Keep the on-disk .pbf tile cache under VECTOR_TILE_CACHE_MAX_BYTES,
+        deleting least-recently-served tiles first. Runs on startup and whenever
+        the running byte count (bumped per write, tiles touched on read) crosses
+        the cap, so the whole-tree scan is rare rather than per tile."""
+        if self.cache_dir is None or VECTOR_TILE_CACHE_MAX_BYTES <= 0:
+            return
+        entries = []
+        for root, _dirs, files in os.walk(self.cache_dir):
+            for name in files:
+                if not name.endswith(".pbf") or ".tmp" in name:
+                    continue
+                path = os.path.join(root, name)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                entries.append((path, stat.st_size, stat.st_mtime))
+        total = sum(size for _, size, _ in entries)
+        if total > VECTOR_TILE_CACHE_MAX_BYTES:
+            for path, size, _ in sorted(entries, key=lambda item: item[2]):
+                if total <= VECTOR_TILE_CACHE_MAX_BYTES:
+                    break
+                try:
+                    os.remove(path)
+                except OSError:
+                    continue
+                total -= size
+        self._disk_bytes = total
 
     def try_describe(self, request: dict[str, Any], obj: Any | None = None):
         target = obj if isinstance(obj, (str, os.PathLike)) else request.get("target")
@@ -341,13 +486,13 @@ class VectorEngine:
         if not target or _suffix(target) not in VECTOR_SUFFIXES:
             return None
 
-        source = _resolve_source(request, target)
+        source = resolve_source(request, target)
         source_size = _source_size(source)
         artifact_id = str(request.get("artifact_id") or "")
         if source_size is None or source_size >= VECTOR_TILE_MIN_BYTES:
             dependency_error = _vector_dependency_error()
             if dependency_error:
-                return _dependency_descriptor(artifact_id, dependency_error)
+                return error_descriptor(artifact_id, dependency_error, detected_type="vector")
         try:
             locator = self.locator(source, target)
             return self._describe(
@@ -385,7 +530,7 @@ class VectorEngine:
         import pyogrio
         from pyproj import CRS, Transformer
 
-        with _gdal_env():
+        with _gdal_env(restore_shx=_needs_shx_restore(locator)):
             layers = pyogrio.list_layers(locator)
             if layers is None or not len(layers):
                 raise ValueError("the dataset has no vector layers")
@@ -409,11 +554,7 @@ class VectorEngine:
 
         dependency_error = _vector_dependency_error()
         if dependency_error:
-            return _dependency_descriptor(artifact_id, dependency_error)
-        if "w" not in str(pyogrio.list_drivers().get("MVT", "")):
-            raise RuntimeError(
-                "the installed GDAL runtime does not provide the MVT writer"
-            )
+            return error_descriptor(artifact_id, dependency_error, detected_type="vector")
 
         source_crs = info.get("crs")
         if not source_crs:
@@ -470,6 +611,7 @@ class VectorEngine:
         with self.lock:
             source = self.sources.setdefault(source_id, source)
 
+        overview_pending = self._prime_feature_summary(source)
         warnings = [
             (
                 f"{feature_count:,} features use native, cached vector tiles. "
@@ -477,15 +619,26 @@ class VectorEngine:
                 "individual geometries as the map zooms in."
             )
         ]
+        data = {
+            "source_id": source_id,
+            "source_layer": "layer",
+            "tile_url": (
+                f"{self.base_url}/vtiles/{source_id}"
+                f"/{{z}}/{{x}}/{{y}}.pbf?t={quote(self.token, safe='')}"
+            ),
+        }
         if source.rtree_table:
             warnings.append(
                 "GeoPackage RTree detected; every tile uses indexed spatial reads."
             )
-        else:
+        elif overview_pending:
             warnings.append(
-                "No directly queryable GeoPackage RTree was detected. The "
-                "source driver's spatial filter remains bounded, but dense "
-                "views may take longer."
+                "Building a one-time overview of every feature; a coarse sample "
+                "is shown until it is ready, then cached for instant reopening."
+            )
+            data["job_url"] = (
+                f"{self.base_url}/jobs/{source_id}"
+                f"?t={quote(self.token, safe='')}"
             )
         return {
             "id": artifact_id,
@@ -494,14 +647,7 @@ class VectorEngine:
             "bounds": bounds,
             "minzoom": 0,
             "maxzoom": 18,
-            "data": {
-                "source_id": source_id,
-                "source_layer": "layer",
-                "tile_url": (
-                    f"{self.base_url}/vtiles/{source_id}"
-                    f"/{{z}}/{{x}}/{{y}}.pbf?t={quote(self.token, safe='')}"
-                ),
-            },
+            "data": data,
             "stats": {
                 "feature_count": feature_count,
                 "geometry_types": [geometry_type],
@@ -550,6 +696,44 @@ class VectorEngine:
         except (OSError, sqlite3.Error):
             return
 
+    @contextlib.contextmanager
+    def _open_connection(self, source: VectorSource):
+        """A fresh read-only connection, closed on exit. Opened per query, not
+        cached: a cached connection locks the user's GeoPackage for the daemon's
+        life. Reopening is cheap, and tile work is serialised by VTILE_POOL."""
+        connection = sqlite3.connect(source.sqlite_uri, uri=True, timeout=30)
+        try:
+            yield connection
+        finally:
+            connection.close()
+
+    def _query(
+        self,
+        source: VectorSource,
+        cancel: threading.Event | None,
+        sql: str,
+        parameters: tuple,
+    ) -> list:
+        with self._open_connection(source) as connection:
+            if cancel is not None:
+                connection.set_progress_handler(cancel.is_set, 100_000)
+            try:
+                return connection.execute(sql, parameters).fetchall()
+            finally:
+                if cancel is not None:
+                    connection.set_progress_handler(None, 0)
+
+    def _transformer(self, source: VectorSource):
+        transformer = self._transformers.get(source.source_id)
+        if transformer is None:
+            from pyproj import Transformer
+
+            transformer = Transformer.from_crs(
+                source.crs, TILE_CRS, always_xy=True
+            )
+            self._transformers[source.source_id] = transformer
+        return transformer
+
     def _source_bbox(
         self,
         source: VectorSource,
@@ -567,25 +751,461 @@ class VectorEngine:
         self,
         source: VectorSource,
         bbox: tuple[float, float, float, float],
+        cancel: threading.Event | None = None,
     ) -> tuple[bool, list[int] | None]:
         if not source.rtree_table or not source.sqlite_uri:
             return False, None
         table = _quote_identifier(source.rtree_table)
-        with sqlite3.connect(
-            source.sqlite_uri,
-            uri=True,
-            timeout=30,
-        ) as connection:
-            rows = connection.execute(
-                f"SELECT id FROM {table} "
-                "WHERE maxx >= ? AND minx <= ? AND maxy >= ? AND miny <= ? "
-                "LIMIT ?",
-                (bbox[0], bbox[2], bbox[1], bbox[3], MAX_TILE_FEATURES + 1),
-            ).fetchall()
+        rows = self._query(
+            source,
+            cancel,
+            f"SELECT id FROM {table} "
+            "WHERE maxx >= ? AND minx <= ? AND maxy >= ? AND miny <= ? "
+            "LIMIT ?",
+            (bbox[0], bbox[2], bbox[1], bbox[3], MAX_TILE_FEATURES + 1),
+        )
         dense = len(rows) > MAX_TILE_FEATURES
         return dense, None if dense else [int(row[0]) for row in rows]
 
-    def _read_detail_arrow(
+    def _node_summary(self, source: VectorSource) -> tuple | None:
+        """Leaf-node bboxes of the GeoPackage's RTree, read once per source.
+
+        sqlite stores the rtree in an ordinary shadow ``<rtree>_node`` table
+        (blob format: 2-byte depth on the root, 2-byte cell count, then
+        {8-byte big-endian id, 4 big-endian f32 coords} cells). Walking the
+        internal levels takes ~0.4s on 13.8M features where the equivalent
+        virtual-table scan takes 16s. Any surprise in the format drops the
+        summary and tiles fall back to the exact per-cell SQL."""
+        if not source.rtree_table or not source.sqlite_uri:
+            return None
+        key = source.source_id
+        if key not in self._summaries:
+            try:
+                self._summaries[key] = self._parse_node_summary(source)
+            except (OSError, ValueError, sqlite3.Error):
+                self._summaries[key] = None
+        return self._summaries[key]
+
+    def _parse_node_summary(self, source: VectorSource) -> tuple | None:
+        import numpy as np
+
+        node_table = _quote_identifier(f"{source.rtree_table}_node")
+        with self._open_connection(source) as connection:
+            row = connection.execute(
+                f"SELECT data FROM {node_table} WHERE nodeno = 1"
+            ).fetchone()
+            if row is None:
+                raise ValueError("the rtree has no root node")
+            depth = int.from_bytes(row[0][:2], "big")
+            if depth < 1:
+                return None
+            blobs = [row[0]]
+            for level in range(depth):
+                ids, bounds = [], []
+                for blob in blobs:
+                    count = int.from_bytes(blob[2:4], "big")
+                    cells = np.frombuffer(
+                        blob, dtype=np.uint8, count=count * 24, offset=4
+                    ).reshape(count, 24)
+                    ids.append(cells[:, :8].copy().view(">i8").ravel())
+                    bounds.append(cells[:, 8:].copy().view(">f4").reshape(count, 4))
+                child_ids = np.concatenate(ids)
+                child_bounds = np.concatenate(bounds).astype(np.float64)
+                if level < depth - 1:
+                    blobs = self._fetch_nodes(connection, node_table, child_ids)
+        if not (source.feature_count / 500 <= len(child_bounds) <= source.feature_count):
+            raise ValueError("the rtree node walk is inconsistent with the layer")
+        weights = np.full(len(child_bounds), source.feature_count / len(child_bounds))
+        return (
+            child_bounds[:, 0],
+            child_bounds[:, 1],
+            child_bounds[:, 2],
+            child_bounds[:, 3],
+            weights,
+        )
+
+    def _fetch_nodes(self, connection, node_table: str, ids) -> list[bytes]:
+        ids = [int(value) for value in ids]
+        blobs: list[bytes] = []
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            rows = connection.execute(
+                f"SELECT data FROM {node_table} WHERE nodeno IN ({marks})",
+                chunk,
+            ).fetchall()
+            if len(rows) != len(chunk):
+                raise ValueError("the rtree node walk lost nodes")
+            blobs.extend(row[0] for row in rows)
+        return blobs
+
+    def _qix_summary(self, source: VectorSource) -> tuple | None:
+        """Occupancy overview from a shapefile's ``.qix`` quadtree — the analog
+        of the GeoPackage RTree walk. Reading the few-MB index instead of every
+        geometry is what keeps the first open of a large ``.shp`` from stalling
+        on a full-file read."""
+        locator = source.locator
+        if _suffix(locator) != ".shp" or not os.path.isfile(locator):
+            return None
+        stem = os.path.splitext(locator)[0]
+        qix = next(
+            (path for path in (stem + ".qix", stem + ".QIX") if os.path.isfile(path)),
+            None,
+        )
+        if qix is None:
+            return None
+        try:
+            return self._parse_qix(qix, source.feature_count)
+        except (OSError, ValueError, struct.error):
+            return None
+
+    def _parse_qix(self, qix: str, feature_count: int) -> tuple | None:
+        """Walk the ``.qix`` quadtree and return the bboxes of shape-bearing
+        nodes with each node's own shape count as its weight. Format (shapelib):
+        8-byte header, int32 shape count, int32 depth, then nodes of {int32
+        subtree size, 4 f64 bounds, int32 shape count, that many int32 ids, int32
+        subnode count, subnodes}. Carrying the real per-node count (a large
+        internal node holds more shapes than a small leaf) keeps the occupancy
+        weight honest instead of spreading one average across every node."""
+        import numpy as np
+
+        with open(qix, "rb") as handle:
+            buf = handle.read()
+        if buf[:3] != b"SQT" or len(buf) < 16:
+            raise ValueError("not a shapefile quadtree index")
+        order = "<" if buf[3] == 1 else ">"
+        one, four = struct.Struct(order + "i"), struct.Struct(order + "4d")
+        bounds: list[tuple[float, float, float, float]] = []
+        counts: list[int] = []
+        pos, remaining = 16, [1]
+        while remaining:
+            if remaining[-1] == 0:
+                remaining.pop()
+                continue
+            remaining[-1] -= 1
+            pos += 4
+            box = four.unpack_from(buf, pos)
+            pos += 32
+            shapes = one.unpack_from(buf, pos)[0]
+            pos += 4 + 4 * shapes
+            subnodes = one.unpack_from(buf, pos)[0]
+            pos += 4
+            if shapes:
+                bounds.append(box)
+                counts.append(shapes)
+            if subnodes:
+                remaining.append(subnodes)
+        if not bounds or not (feature_count / 500 <= len(bounds) <= feature_count):
+            raise ValueError("the quadtree node walk is inconsistent with the layer")
+        boxes = np.asarray(bounds, dtype="float64")
+        weights = np.asarray(counts, dtype="float64")
+        return (boxes[:, 0], boxes[:, 2], boxes[:, 1], boxes[:, 3], weights)
+
+    def _summary_disk_path(self, source: VectorSource) -> Path | None:
+        if self.cache_dir is None:
+            return None
+        return self.cache_dir / "summaries" / f"{source.source_id}.npy"
+
+    def _prime_feature_summary(self, source: VectorSource) -> bool:
+        """Ensure a non-GeoPackage source has, or is building, its feature-bbox
+        overview. Returns True while it is still pending — the signal describe
+        uses to advertise a job URL and warn that sample tiles are shown until
+        the exact overview lands."""
+        if source.rtree_table or source.feature_count > SUMMARY_MAX_FEATURES:
+            return False
+        sid = source.source_id
+        with self.lock:
+            if sid in self._summaries:
+                return False
+            job = self._summary_jobs.get(sid)
+            if job is not None:
+                return job["status"] in ("queued", "running")
+            self._summary_jobs[sid] = {"status": "queued"}
+        summary = self._load_summary_disk(source)
+        if summary is not None:
+            with self.lock:
+                self._summaries[sid] = summary
+                self._summary_jobs[sid] = {"status": "ready", "cached": True}
+            return False
+        summary = self._qix_summary(source)
+        if summary is not None:
+            with self.lock:
+                self._summaries[sid] = summary
+                self._summary_jobs[sid] = {"status": "ready", "indexed": True}
+            return False
+        self.summary_pool.submit(self._build_feature_summary, source)
+        return True
+
+    def _nongpkg_summary(self, source: VectorSource) -> tuple | None:
+        with self.lock:
+            return self._summaries.get(source.source_id)
+
+    def _load_summary_disk(self, source: VectorSource) -> tuple | None:
+        import numpy as np
+
+        path = self._summary_disk_path(source)
+        if path is None or not path.is_file():
+            return None
+        try:
+            bounds = np.load(path)
+        except (OSError, ValueError):
+            return None
+        if bounds.ndim != 2 or bounds.shape[1] != 4 or bounds.shape[0] == 0:
+            return None
+        return self._summary_from_bounds(bounds)
+
+    def _summary_from_bounds(self, bounds) -> tuple:
+        # shapely.bounds columns are (minx, miny, maxx, maxy); the overview grid
+        # and node-summary path both want (minx, maxx, miny, maxy, weights).
+        import numpy as np
+
+        column = bounds.astype("float64")
+        return (
+            column[:, 0], column[:, 2], column[:, 1], column[:, 3],
+            np.ones(column.shape[0]),
+        )
+
+    def _store_summary_disk(self, source: VectorSource, bounds) -> None:
+        import numpy as np
+
+        path = self._summary_disk_path(source)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(
+            f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            with open(temporary, "wb") as handle:
+                np.save(handle, bounds.astype("float32"))
+            os.replace(temporary, path)
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink(missing_ok=True)
+
+    def _build_feature_summary(self, source: VectorSource) -> None:
+        """Read every geometry once, reduce to bounding boxes, and persist them.
+        Runs on summary_pool off the tile path so tiles keep serving samples
+        while it works; the on-disk copy makes every later open instant."""
+        import numpy as np
+        import pyogrio
+        import shapely
+
+        sid = source.source_id
+        with self.lock:
+            self._summary_jobs[sid] = {"status": "running"}
+        try:
+            with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
+                metadata, table = pyogrio.read_arrow(
+                    source.locator,
+                    layer=source.layer,
+                    columns=[],
+                    read_geometry=True,
+                )
+            name = self._geometry_column(metadata, table)
+            geometries = shapely.from_wkb(
+                table.column(name).to_numpy(zero_copy_only=False)
+            )
+            bounds = shapely.bounds(geometries)
+            bounds = bounds[np.isfinite(bounds).all(axis=1)]
+            if bounds.shape[0] == 0:
+                raise ValueError("the layer has no finite feature bounds")
+            summary = self._summary_from_bounds(bounds)
+            self._store_summary_disk(source, bounds)
+        except Exception as error:
+            with self.lock:
+                self._summaries[sid] = None
+                self._summary_jobs[sid] = {
+                    "status": "error",
+                    "message": f"{type(error).__name__}: {error}",
+                }
+            return
+        with self.lock:
+            self._summaries[sid] = summary
+            self._summary_jobs[sid] = {"status": "ready"}
+
+    def job(self, source_id: str) -> dict[str, Any] | None:
+        with self.lock:
+            source = self.sources.get(source_id)
+            if source is None:
+                return None
+            recorded = self._summary_jobs.get(source_id)
+            if recorded is not None:
+                job = dict(recorded)
+            elif source.rtree_table or source_id in self._summaries:
+                # GeoPackage needs no build, and a loaded summary is complete.
+                job = {"status": "ready"}
+            else:
+                # No overview will ever exist (e.g. above SUMMARY_MAX_FEATURES);
+                # the source only ever serves biased samples.
+                job = {"status": "sample"}
+        job["source_id"] = source_id
+        return job
+
+    def _exact_grid(
+        self,
+        source: VectorSource,
+        bbox: tuple[float, float, float, float],
+        size: int,
+        cancel: threading.Event | None,
+    ):
+        import numpy as np
+
+        span_x = bbox[2] - bbox[0]
+        span_y = bbox[3] - bbox[1]
+        table = _quote_identifier(source.rtree_table)
+        rows = self._query(
+            source,
+            cancel,
+            f"""
+            SELECT
+                min(
+                    ? - 1,
+                    max(
+                        0,
+                        cast(
+                            ((((minx + maxx) * 0.5) - ?) / ? * ?)
+                            AS INTEGER
+                        )
+                    )
+                ) AS cell_x,
+                min(
+                    ? - 1,
+                    max(
+                        0,
+                        cast(
+                            ((((miny + maxy) * 0.5) - ?) / ? * ?)
+                            AS INTEGER
+                        )
+                    )
+                ) AS cell_y,
+                count(*) AS feature_count
+            FROM {table}
+            WHERE maxx >= ? AND minx <= ? AND maxy >= ? AND miny <= ?
+            GROUP BY cell_x, cell_y
+            """,
+            (
+                size,
+                bbox[0],
+                span_x,
+                size,
+                size,
+                bbox[1],
+                span_y,
+                size,
+                bbox[0],
+                bbox[2],
+                bbox[1],
+                bbox[3],
+            ),
+        )
+        grid = np.zeros((size, size))
+        for cell_x, cell_y, count in rows:
+            grid[int(cell_x), int(cell_y)] = count
+        return grid
+
+    def _overview_tile(
+        self,
+        source: VectorSource,
+        bbox: tuple[float, float, float, float],
+        z: int,
+        x: int,
+        y: int,
+        cancel: threading.Event | None = None,
+    ) -> bytes:
+        size = max(8, min(256, OVERVIEW_GRID_SIZE))
+        if bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
+            return b""
+        grid = None
+        summary = self._node_summary(source)
+        if summary is not None:
+            grid = self._summary_grid(summary, bbox, size)
+        if grid is None:
+            grid = self._exact_grid(source, bbox, size, cancel)
+        return self._render_cells(source, grid, bbox, size, z, x, y)
+
+    def _summary_grid(self, summary: tuple, bbox, size: int):
+        minx, maxx, miny, maxy, weights = summary
+        inside = (
+            (maxx >= bbox[0]) & (minx <= bbox[2])
+            & (maxy >= bbox[1]) & (miny <= bbox[3])
+        )
+        if float(weights[inside].sum()) <= OVERVIEW_EXACT_MAX:
+            return None
+        return _coverage_grid(
+            minx[inside], maxx[inside], miny[inside], maxy[inside],
+            weights[inside], bbox, size,
+        )
+
+    def _overview_from_summary(
+        self,
+        source: VectorSource,
+        summary: tuple,
+        bbox: tuple[float, float, float, float],
+        z: int,
+        x: int,
+        y: int,
+        inside=None,
+    ) -> bytes:
+        size = max(8, min(256, OVERVIEW_GRID_SIZE))
+        if bbox[2] - bbox[0] <= 0 or bbox[3] - bbox[1] <= 0:
+            return b""
+        minx, maxx, miny, maxy, weights = summary
+        if inside is None:
+            inside = (
+                (maxx >= bbox[0]) & (minx <= bbox[2])
+                & (maxy >= bbox[1]) & (miny <= bbox[3])
+            )
+        if not inside.any():
+            return b""
+        grid = _coverage_grid(
+            minx[inside], maxx[inside], miny[inside], maxy[inside],
+            weights[inside], bbox, size,
+        )
+        return self._render_cells(source, grid, bbox, size, z, x, y)
+
+    def _render_cells(
+        self,
+        source: VectorSource,
+        grid,
+        bbox: tuple[float, float, float, float],
+        size: int,
+        z: int,
+        x: int,
+        y: int,
+    ) -> bytes:
+        import numpy as np
+
+        cell_x, cell_y = np.nonzero(grid >= 0.5)
+        if len(cell_x) == 0:
+            return b""
+        counts = np.rint(np.maximum(grid[cell_x, cell_y], 1)).astype(np.int64)
+        cell_w = (bbox[2] - bbox[0]) / size
+        cell_h = (bbox[3] - bbox[1]) / size
+        x0 = bbox[0] + cell_x * cell_w
+        y0 = bbox[1] + cell_y * cell_h
+        corner_x = np.column_stack([x0, x0 + cell_w, x0 + cell_w, x0]).ravel()
+        corner_y = np.column_stack([y0, y0, y0 + cell_h, y0 + cell_h]).ravel()
+        if source.crs.upper() not in {"EPSG:4326", "OGC:CRS84"}:
+            corner_x, corner_y = self._transformer(source).transform(
+                corner_x, corner_y
+            )
+        tx, ty = _tile_units(corner_x, corner_y, z, x, y)
+        quads = np.rint(
+            np.stack([tx.reshape(-1, 4), ty.reshape(-1, 4)], axis=2)
+        ).astype(np.int64)
+        writer = LayerWriter("layer", MVT_EXTENT)
+        for quad, count in zip(quads, counts):
+            area = _shoelace2(quad)
+            if area == 0:
+                continue
+            ring = quad if area > 0 else quad[::-1]
+            commands: list[int] = []
+            path_commands(commands, ring.tolist(), [0, 0], close=True)
+            writer.feature(POLYGON, commands, {"feature_count": int(count)})
+        return writer.tile()
+
+    def _read_detail(
         self,
         source: VectorSource,
         bbox: tuple[float, float, float, float],
@@ -598,164 +1218,163 @@ class VectorEngine:
         }
         if fids is not None:
             if not fids:
-                return None, None
+                return None
             kwargs["fids"] = fids
         else:
             kwargs["bbox"] = bbox
             kwargs["max_features"] = MAX_TILE_FEATURES + 1
-        with _gdal_env():
+        with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
             metadata, table = pyogrio.read_arrow(
                 source.locator,
                 layer=source.layer,
                 **kwargs,
             )
         if table.num_rows > MAX_TILE_FEATURES:
-            return None, None
-        if source.crs.upper() not in {"EPSG:4326", "OGC:CRS84"}:
-            table = _reproject_wkb(
-                table, metadata["geometry_name"], metadata["crs"]
-            )
-            metadata["crs"] = TILE_CRS
+            return _TILE_TOO_DENSE
+        if table.num_rows == 0:
+            return None
         return metadata, table
 
-    def _overview_frame(
+    @staticmethod
+    def _geometry_column(metadata: dict[str, Any], table: Any) -> str:
+        """pyogrio's arrow output names the geometry column ``wkb_geometry`` and
+        leaves ``geometry_name`` empty for formats (like shapefiles) that carry
+        no named geometry field, so neither the metadata nor the descriptor's
+        column can be trusted alone."""
+        name = metadata.get("geometry_name")
+        if name and name in table.column_names:
+            return name
+        if "wkb_geometry" in table.column_names:
+            return "wkb_geometry"
+        return table.column_names[-1]
+
+    def _coalesce_rows(self, geometries, drawable):
+        """Row indices to draw for a detail tile, dropping sub-pixel features that
+        collapse onto a pixel another already fills. ``geometries`` are in tile
+        units; only features smaller than the coalesce cell in both dimensions are
+        candidates, so extended geometry (long lines, large polygons) is always
+        kept. The largest feature in each occupied cell wins."""
+        import numpy as np
+        import shapely
+
+        rows = np.flatnonzero(drawable)
+        cell = MVT_EXTENT / TILE_PIXELS * COALESCE_PIXELS
+        if COALESCE_PIXELS <= 0 or rows.size <= 256:
+            return rows
+        bounds = shapely.bounds(geometries)
+        width = bounds[:, 2] - bounds[:, 0]
+        height = bounds[:, 3] - bounds[:, 1]
+        small = drawable & (width < cell) & (height < cell)
+        small_rows = np.flatnonzero(small)
+        if small_rows.size <= 256:
+            return rows
+        cx = (bounds[small_rows, 0] + bounds[small_rows, 2]) * 0.5
+        cy = (bounds[small_rows, 1] + bounds[small_rows, 3]) * 0.5
+        col = np.floor((cx + MVT_BUFFER) / cell).astype(np.int64)
+        srow = np.floor((cy + MVT_BUFFER) / cell).astype(np.int64)
+        areas = shapely.area(geometries[small_rows])
+        order = np.argsort(-areas, kind="stable")
+        cells = np.stack([col[order], srow[order]], axis=1)
+        _, keep = np.unique(cells, axis=0, return_index=True)
+        kept_small = small_rows[order[keep]]
+        large_rows = np.flatnonzero(drawable & ~small)
+        return np.sort(np.concatenate([large_rows, kept_small]))
+
+    def _detail_tile(
         self,
         source: VectorSource,
-        bbox: tuple[float, float, float, float],
-    ):
-        if not source.rtree_table or not source.sqlite_uri:
-            return None
-        import geopandas as gpd
-        from shapely.geometry import box
-
-        size = max(8, min(256, OVERVIEW_GRID_SIZE))
-        span_x = bbox[2] - bbox[0]
-        span_y = bbox[3] - bbox[1]
-        if span_x <= 0 or span_y <= 0:
-            return None
-        table = _quote_identifier(source.rtree_table)
-        with sqlite3.connect(
-            source.sqlite_uri,
-            uri=True,
-            timeout=30,
-        ) as connection:
-            rows = connection.execute(
-                f"""
-                SELECT
-                    min(
-                        ? - 1,
-                        max(
-                            0,
-                            cast(
-                                ((((minx + maxx) * 0.5) - ?) / ? * ?)
-                                AS INTEGER
-                            )
-                        )
-                    ) AS cell_x,
-                    min(
-                        ? - 1,
-                        max(
-                            0,
-                            cast(
-                                ((((miny + maxy) * 0.5) - ?) / ? * ?)
-                                AS INTEGER
-                            )
-                        )
-                    ) AS cell_y,
-                    count(*) AS feature_count
-                FROM {table}
-                WHERE maxx >= ? AND minx <= ? AND maxy >= ? AND miny <= ?
-                GROUP BY cell_x, cell_y
-                """,
-                (
-                    size,
-                    bbox[0],
-                    span_x,
-                    size,
-                    size,
-                    bbox[1],
-                    span_y,
-                    size,
-                    bbox[0],
-                    bbox[2],
-                    bbox[1],
-                    bbox[3],
-                ),
-            ).fetchall()
-        if not rows:
-            return None
-
-        cell_width = span_x / size
-        cell_height = span_y / size
-        geometries = [
-            box(
-                bbox[0] + int(cell_x) * cell_width,
-                bbox[1] + int(cell_y) * cell_height,
-                bbox[0] + (int(cell_x) + 1) * cell_width,
-                bbox[1] + (int(cell_y) + 1) * cell_height,
-            )
-            for cell_x, cell_y, _count in rows
-        ]
-        return gpd.GeoDataFrame(
-            {"feature_count": [int(row[2]) for row in rows]},
-            geometry=geometries,
-            crs=source.crs,
-        ).to_crs(TILE_CRS)
-
-    def _native_tile(
-        self,
-        source: VectorSource,
+        metadata: dict[str, Any],
+        table: Any,
         z: int,
         x: int,
         y: int,
-        *,
-        metadata: dict[str, Any] | None = None,
-        arrow_table: Any | None = None,
     ) -> bytes:
+        import numpy as np
+        import shapely
+
+        geometry_name = self._geometry_column(metadata, table)
+        geometries = shapely.from_wkb(
+            table.column(geometry_name).to_numpy(zero_copy_only=False)
+        )
+        coords = shapely.get_coordinates(geometries)
+        lon, lat = coords[:, 0], coords[:, 1]
+        if source.crs.upper() not in {"EPSG:4326", "OGC:CRS84"}:
+            lon, lat = self._transformer(source).transform(lon, lat)
+        tx, ty = _tile_units(lon, lat, z, x, y)
+        geometries = shapely.set_coordinates(
+            geometries, np.column_stack([tx, ty])
+        )
+        geometries = shapely.clip_by_rect(
+            geometries,
+            -MVT_BUFFER,
+            -MVT_BUFFER,
+            MVT_EXTENT + MVT_BUFFER,
+            MVT_EXTENT + MVT_BUFFER,
+        )
+        geometries = shapely.simplify(
+            geometries, SIMPLIFY_TOLERANCE, preserve_topology=False
+        )
+        type_ids = shapely.get_type_id(geometries)
+        drawable = ~(shapely.is_missing(geometries) | shapely.is_empty(geometries))
+        rows = self._coalesce_rows(geometries, drawable)
+        columns = {
+            name: table.column(name).to_pylist()
+            for name in table.column_names
+            if name != geometry_name
+        }
+        writer = LayerWriter("layer", MVT_EXTENT)
+        for row in rows:
+            properties = {name: values[row] for name, values in columns.items()}
+            for geometry_type, commands in _mvt_features(
+                geometries[row], int(type_ids[row])
+            ):
+                writer.feature(geometry_type, commands, properties)
+        return writer.tile()
+
+    def _provisional_tile(
+        self,
+        source: VectorSource,
+        bbox: tuple[float, float, float, float],
+        z: int,
+        x: int,
+        y: int,
+    ) -> TileResult:
+        """Draw a non-GeoPackage source's dense tiles while its overview builds.
+        A geometry-only bbox read decides the tile: at or under the detail limit
+        it is sparse, so a second read fetches attributes for the exact, cacheable
+        detail tile; over it the capped geometries are a biased spatial sample,
+        drawn so the map is not blank but never cached — the exact overview
+        replaces it once the summary lands."""
         import pyogrio
+        import shapely
 
-        work_parent = self.cache_dir
-        if work_parent is not None:
-            work_parent.mkdir(parents=True, exist_ok=True)
-        with self.encode_slots, tempfile.TemporaryDirectory(
-            prefix="encode-",
-            dir=str(work_parent) if work_parent is not None else None,
-        ) as temporary:
-            output = Path(temporary) / "tiles"
-            dataset_options = {
-                "MINZOOM": str(z),
-                "MAXZOOM": str(z),
-                "SIMPLIFICATION": "8",
-                "SIMPLIFICATION_MAX_ZOOM": "4",
-                "MAX_SIZE": "250000",
-                "MAX_FEATURES": str(max(50000, MAX_TILE_FEATURES)),
-            }
-            layer_options = {
-                "MINZOOM": str(z),
-                "MAXZOOM": str(z),
-                "NAME": "layer",
-            }
-            if arrow_table is not None and metadata is not None:
-                with _gdal_env():
-                    pyogrio.write_arrow(
-                        arrow_table,
-                        output,
-                        layer="layer",
-                        driver="MVT",
-                        geometry_name=metadata["geometry_name"],
-                        geometry_type=metadata["geometry_type"],
-                        crs=TILE_CRS,
-                        dataset_options=dataset_options,
-                        layer_options=layer_options,
-                    )
-            else:
-                return b""
-
-            tile_path = output / str(z) / str(x) / f"{y}.pbf"
-            if not tile_path.is_file():
-                return b""
-            tile = tile_path.read_bytes()
-            return gzip.decompress(tile) if tile.startswith(b"\x1f\x8b") else tile
+        with _gdal_env(restore_shx=_needs_shx_restore(source.locator)):
+            metadata, table = pyogrio.read_arrow(
+                source.locator,
+                layer=source.layer,
+                columns=[],
+                bbox=tuple(bbox),
+                max_features=MAX_TILE_FEATURES + 1,
+            )
+        if table.num_rows == 0:
+            return TileResult(b"")
+        if table.num_rows <= MAX_TILE_FEATURES:
+            detail = self._read_detail(source, bbox, None)
+            if not isinstance(detail, tuple):
+                return TileResult(b"")
+            return TileResult(self._detail_tile(source, *detail, z, x, y))
+        name = self._geometry_column(metadata, table)
+        geometries = shapely.from_wkb(
+            table.column(name).to_numpy(zero_copy_only=False)
+        )
+        bounds = shapely.bounds(geometries)
+        size = max(8, min(256, OVERVIEW_GRID_SIZE))
+        grid = _coverage_grid(
+            bounds[:, 0], bounds[:, 2], bounds[:, 1], bounds[:, 3], 1.0, bbox, size
+        )
+        return TileResult(
+            self._render_cells(source, grid, bbox, size, z, x, y), cacheable=False
+        )
 
     def _encode_tile(
         self,
@@ -763,46 +1382,71 @@ class VectorEngine:
         z: int,
         x: int,
         y: int,
-    ) -> bytes:
+        cancel: threading.Event | None = None,
+    ) -> TileResult:
+        if cancel is not None and cancel.is_set():
+            raise TileCancelled(f"vector tile {z}/{x}/{y}")
         bounds_4326 = _tile_bounds_4326(z, x, y)
         if not _intersects(bounds_4326, source.bounds):
-            return b""
+            return TileResult(b"")
         source_bbox = self._source_bbox(
             source,
             _buffered_bounds(bounds_4326),
         )
-        dense, fids = self._indexed_feature_ids(source, source_bbox)
+        if not source.rtree_table:
+            return self._nongpkg_tile(source, source_bbox, z, x, y, cancel)
+        dense, fids = self._indexed_feature_ids(source, source_bbox, cancel)
         if dense:
-            overview = self._overview_frame(source, source_bbox)
-            if overview is None or overview.empty:
-                return b""
-            return self._native_tile(
-                source,
-                z,
-                x,
-                y,
-                metadata={
-                    "geometry_name": overview.geometry.name,
-                    "geometry_type": "Polygon",
-                    "crs": TILE_CRS,
-                },
-                arrow_table=overview.to_arrow(
-                    index=False,
-                    geometry_encoding="WKB",
-                ),
+            return TileResult(
+                self._overview_tile(source, source_bbox, z, x, y, cancel)
             )
+        if cancel is not None and cancel.is_set():
+            raise TileCancelled(f"vector tile {z}/{x}/{y}")
+        detail = self._read_detail(source, source_bbox, fids)
+        if not isinstance(detail, tuple):
+            return TileResult(b"")
+        metadata, table = detail
+        return TileResult(self._detail_tile(source, metadata, table, z, x, y))
 
-        metadata, table = self._read_detail_arrow(source, source_bbox, fids)
-        if table is None or table.num_rows == 0:
-            return b""
-        return self._native_tile(
-            source,
-            z,
-            x,
-            y,
-            metadata=metadata,
-            arrow_table=table,
+    def _nongpkg_tile(
+        self,
+        source: VectorSource,
+        source_bbox: tuple[float, float, float, float],
+        z: int,
+        x: int,
+        y: int,
+        cancel: threading.Event | None,
+    ) -> TileResult:
+        summary = self._nongpkg_summary(source)
+        if summary is None:
+            if cancel is not None and cancel.is_set():
+                raise TileCancelled(f"vector tile {z}/{x}/{y}")
+            return self._provisional_tile(source, source_bbox, z, x, y)
+        minx, maxx, miny, maxy, weights = summary
+        inside = (
+            (maxx >= source_bbox[0]) & (minx <= source_bbox[2])
+            & (maxy >= source_bbox[1]) & (miny <= source_bbox[3])
         )
+        if float(weights[inside].sum()) > MAX_TILE_FEATURES:
+            return TileResult(
+                self._overview_from_summary(
+                    source, summary, source_bbox, z, x, y, inside
+                )
+            )
+        if cancel is not None and cancel.is_set():
+            raise TileCancelled(f"vector tile {z}/{x}/{y}")
+        detail = self._read_detail(source, source_bbox, None)
+        if detail is _TILE_TOO_DENSE:
+            # float32 summary undercounted vs GDAL's exact filter; draw overview.
+            return TileResult(
+                self._overview_from_summary(
+                    source, summary, source_bbox, z, x, y, inside
+                )
+            )
+        if detail is None:
+            return TileResult(b"")
+        metadata, table = detail
+        return TileResult(self._detail_tile(source, metadata, table, z, x, y))
 
     def _disk_cache_path(
         self,
@@ -829,6 +1473,8 @@ class VectorEngine:
             tile = path.read_bytes()
         except OSError:
             return None
+        with contextlib.suppress(OSError):
+            os.utime(path, None)
         self._remember(key, tile)
         return tile
 
@@ -857,15 +1503,26 @@ class VectorEngine:
             f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
         )
         try:
+            replaced = path.stat().st_size if path.exists() else 0
             temporary.write_bytes(tile)
             os.replace(temporary, path)
+            self._disk_bytes += len(tile) - replaced
+            if self._disk_bytes > VECTOR_TILE_CACHE_MAX_BYTES:
+                self._evict_disk_tiles()
         finally:
             try:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
 
-    def tile(self, source_id: str, z: int, x: int, y: int) -> bytes | None:
+    def tile(
+        self,
+        source_id: str,
+        z: int,
+        x: int,
+        y: int,
+        cancel: threading.Event | None = None,
+    ) -> bytes | None:
         if z < 0 or z > 22 or x < 0 or y < 0 or x >= 1 << z or y >= 1 << z:
             return b""
         with self.lock:
@@ -884,18 +1541,29 @@ class VectorEngine:
                 event = threading.Event()
                 self.inflight[key] = event
         if not owner:
-            if not event.wait(timeout=120):
-                raise TimeoutError(
-                    f"timed out waiting for vector tile {z}/{x}/{y}"
-                )
-            return self.tile(source_id, z, x, y)
+            waited = 0.0
+            while not event.wait(timeout=0.5):
+                waited += 0.5
+                if cancel is not None and cancel.is_set():
+                    raise TileCancelled(f"vector tile {z}/{x}/{y}")
+                if waited >= 120:
+                    raise TimeoutError(
+                        f"timed out waiting for vector tile {z}/{x}/{y}"
+                    )
+            return self.tile(source_id, z, x, y, cancel)
 
         try:
-            tile = self._encode_tile(source, z, x, y)
-            self._write_cached(key, tile)
-            return tile
+            try:
+                result = self._encode_tile(source, z, x, y, cancel)
+            except sqlite3.OperationalError:
+                # A progress-handler abort lands as OperationalError.
+                if cancel is not None and cancel.is_set():
+                    raise TileCancelled(f"vector tile {z}/{x}/{y}") from None
+                raise
+            if result.cacheable:
+                self._write_cached(key, result.data)
+            return result.data
         finally:
-            if owner:
-                with self.lock:
-                    self.inflight.pop(key, None)
-                    event.set()
+            with self.lock:
+                self.inflight.pop(key, None)
+                event.set()

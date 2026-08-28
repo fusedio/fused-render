@@ -113,6 +113,69 @@ def test_a_killed_run_polls_as_done_with_an_error(agent, tmp_path, monkeypatch):
     out = agent._poll("run")
     assert out["done"] is True
     assert out["error"], "a killed run must not poll as a clean success"
+    assert out["cancelled"] is False, "nothing asked for this end"
+
+
+def test_a_cancel_leaves_the_run_saying_its_end_was_asked_for(agent, tmp_path,
+                                                              monkeypatch):
+    """The durable half. `_cancel` writes the marker BEFORE the kill, and every
+    later reader — this page's poll, a chat reopened tomorrow — reads the stop
+    off the run instead of having to have been told by whoever pressed it."""
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir)
+    (run_dir / "out.jsonl").write_text("")
+    monkeypatch.setattr(agent, "RUNS", str(tmp_path))
+    monkeypatch.setattr(agent, "_alive", lambda _d: False)
+
+    agent._cancel("run")  # no pid file: the kill cannot land, the intent stands
+    assert (run_dir / "cancelled").exists()
+    assert agent._poll("run")["cancelled"] is True
+
+
+def test_a_reopened_chat_is_told_the_last_turn_was_stopped(agent, tmp_path,
+                                                          monkeypatch):
+    """The transcript cannot say why a reply stops mid-thought — a killed run
+    just stops writing — so a chat reopened after a stop showed a half-finished
+    answer and nothing else. `_history` reads the newest run's cancel marker and
+    marks the turn, which is what puts the ⏹ note back on restore."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    projects = tmp_path / "projects"
+    monkeypatch.setattr(agent, "RUNS", str(runs))
+    monkeypatch.setattr(agent, "PROJECTS", str(projects))
+
+    session = "11111111-2222-3333-4444-555555555555"
+    proj_dir = projects / agent._munge(str(target))
+    proj_dir.mkdir(parents=True)
+    (proj_dir / f"{session}.jsonl").write_text("\n".join([
+        json.dumps({"message": {"role": "user",
+                                "content": [{"type": "text", "text": "build it"}]}}),
+        json.dumps({"message": {"role": "assistant",
+                                "content": [{"type": "text", "text": "I was hal"}]}}),
+    ]) + "\n")
+
+    run_dir = runs / "20260821-120000-abc123"
+    run_dir.mkdir()
+    (run_dir / "meta.json").write_text(json.dumps({"file": str(target)}))
+    (run_dir / "session").write_text(session)
+
+    # Before the stop: nothing to say, and nothing said.
+    assert "stopped" not in agent._history(str(target), session)["turns"][-1]
+
+    (run_dir / "cancelled").write_text("1")
+    turns = agent._history(str(target), session)["turns"]
+    assert turns[-1]["stopped"] is True
+    assert turns[-1]["role"] == "assistant"
+
+    # A LATER run that completed answers for the bottom of the chat instead:
+    # yesterday's stop is not what the reader is looking at.
+    later = runs / "20260821-130000-def456"
+    later.mkdir()
+    (later / "meta.json").write_text(json.dumps({"file": str(target)}))
+    (later / "session").write_text(session)
+    assert "stopped" not in agent._history(str(target), session)["turns"][-1]
 
 
 # ------------------------------------------------------------- runEnding, in node
@@ -158,6 +221,30 @@ def test_the_ending_of_a_stopped_run_is_a_note_not_an_error(template):
     assert not end["error"], end
     assert "stopped" in end["note"].lower()
     # the partial reply is real work and stays on screen
+    assert end["keepText"] is True
+
+
+def test_a_stop_this_page_did_not_press_is_still_a_stop(template):
+    """The queue card's ✕ (schedule.py -> agent._cancel) kills the run without
+    telling this page, so `stopped` is False here and the kill's error used to
+    be reported as a crash — to the person who asked for the stop. The RUN's own
+    cancel marker rides back on the poll (`cancelled`) and decides it instead."""
+    end = _run_ending(
+        {"done": True, "error": "claude exited before completing the reply",
+         "text": "I was hal", "cancelled": True}, False, template)
+    assert not end["error"], end
+    assert "stopped" in end["note"].lower()
+    assert end["keepText"] is True
+
+
+def test_a_cancelled_flag_on_a_clean_run_still_says_the_stop_missed(template):
+    """The marker is written before the kill, so a reply that completed in
+    between comes back cancelled AND clean — the same race the button already
+    has, and it must read the same way."""
+    end = _run_ending({"done": True, "error": "", "text": "all done",
+                       "cancelled": True}, False, template)
+    assert not end["error"]
+    assert end["note"], "a stop that did not land must not be silent"
     assert end["keepText"] is True
 
 

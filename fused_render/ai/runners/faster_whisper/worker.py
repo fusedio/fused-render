@@ -110,8 +110,15 @@ def load(model_id, fetched):
         raise RuntimeError(
             f"{model_id} has no {_CT2_WEIGHTS} — this looks like a "
             "transformers-format Whisper repo, and this runner loads "
-            "CTranslate2 conversions. Try Systran/faster-whisper-large-v3 or "
-            "deepdml/faster-whisper-large-v3-turbo-ct2.")
+            "CTranslate2 conversions. Try "
+            # Named models a refusal points at, and they must be models the
+            # CATALOG actually offers — a refusal naming a repo the page no
+            # longer suggests sends the user to a Hub search, which is the whole
+            # thing this string exists to prevent (the rule was first written
+            # for `torch_text._TRY_INSTEAD`, removed with that runner) — update
+            # this pair if SUGGESTIONS["faster-whisper"] moves.
+            "deepdml/faster-whisper-large-v3-turbo-ct2 or "
+            "Systran/faster-whisper-small.")
 
     from faster_whisper import WhisperModel
 
@@ -466,6 +473,13 @@ def generate(body):
         raise ValueError("'out' and 'outText' must be where to write the transcript")
 
     task = str(body.get("task") or "transcribe")
+    # `words` (D392) is ignored here, and ignoring it is the DESIGNED answer
+    # rather than an oversight: it is the one option answered best-effort, since
+    # a caller sees on the segment whether it was honoured. CTranslate2 could
+    # supply it — `model.transcribe` takes `word_timestamps` and returns
+    # `segment.words` from the same DTW alignment the MLX runner uses — so
+    # wiring it is a mapping into `{start, end, word}` and nothing else.
+    #
     # None, not "": faster-whisper reads a falsy language as "detect it", and an
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None
@@ -637,5 +651,9 @@ def generate(body):
 
 
 if __name__ == "__main__":
+    # No `release=` (see `worker_base._release`'s docstring): the CTranslate2
+    # backend underneath faster-whisper exposes no cache-release call at all —
+    # there is nothing here in the shape of `mx.clear_cache()`/`torch.*.
+    # empty_cache()` to hand the idle timer to reach for.
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False, memory=memory)

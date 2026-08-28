@@ -268,6 +268,26 @@
   color: var(--fg);
 }
 
+/* THE ONE PLACE THE GENERIC FILL ABOVE IS INVISIBLE (Akshil, 2026-08-20: "4
+   days / Week" showed no selected state). Every other `.schedule-form-seg` —
+   the List / Board / Calendar switch, the New task form's Once / On a
+   schedule pair — sits on a transparent toolbar over the page's own --bg, so
+   painting the active half --bg-alt reads as a fill a shade lighter than its
+   surroundings. This ONE toggle lives inside `.schedule-cal-bar`, whose
+   ambient background (`.schedule-cal`, above) already IS --bg-alt — the same
+   fill landed on a backdrop of itself and vanished.
+
+   The fix rebuilds the main tabbar's exact relationship instead of picking a
+   different active fill (a darker active was tried first and read as the
+   INVERSE of the view switcher — Akshil, 2026-08-20, "invert the colors,
+   follow same css"): the segment CONTAINER takes --bg, the page ground every
+   other seg already sits on, and the generic --bg-alt active rule above then
+   works here unmodified — active lighter than its rail, identical to
+   List / Board / Calendar. */
+.schedule-cal-bar-end .schedule-form-seg {
+  background: var(--bg);
+}
+
 /* The view switcher's halves carry a mark as well as a word (Scheduled.tsx).
    Only that switcher: the New task form's Once / On a schedule pair shares this
    component and stays text-only, because those two are a CHOICE being made
@@ -1308,6 +1328,16 @@
   border-radius: 4px;
 }
 
+/* THE GAP UNDER THE WHEN-ROW (Akshil, 2026-08-23). More options holds two
+   unrelated questions now — when this runs, and what it is allowed to do — and
+   with the when-row moved in they sat flush, so "Permissions" read as a label
+   belonging to the time above it rather than as the next thing. One space, at
+   the size the card already spaces its blocks by; the first child never takes
+   it, so a card whose fold contains only Permissions is unchanged. */
+.schedule-form-more > * + * {
+  margin-top: 12px;
+}
+
 .schedule-form-more[open] summary {
   margin-bottom: 10px;
 }
@@ -1382,28 +1412,81 @@
   white-space: nowrap;
 }
 
-/* Browse closes the list of nouns with the one verb, set off by a hairline.
-   The doubled selector outranks the base row rule's border:none. Padding is
-   the recents rows' own (6px 8px, NOT a fattened 8px top): the verb is one
-   more row, so it has to be the same height as the nouns above it — the
-   4px margin is what sets it apart, and it carries the same icon gutter so
-   every label in the list starts on one edge (audit 2026-08-16). */
+/* The line between the found paths and the verbs. Its OWN element, not a
+   border-top on Browse: a border rode inside the button, sat flush against its
+   hover wash, and could be repainted by the ambient button:hover skins — three
+   problems a plain div has none of (Akshil, 2026-08-20: "a proper separator").
+   Full-bleed across the panel (the negative inline margins cancel the panel's
+   4px padding), the way every menu draws this line. */
+.schedule-recents-sep {
+  height: 1px;
+  flex: none;
+  background: var(--border);
+  margin: 4px -4px;
+}
+
+/* Plain text, not accent (Akshil, 2026-08-16): the separator and the position
+   already say Browse is the odd row out, and the accent read as a link into
+   somewhere else rather than one more choice in the list. */
 .schedule-form .schedule-picker-row.schedule-recents-browse {
-  border-top: 1px solid var(--border);
-  border-radius: 0 0 8px 8px;
-  margin-top: 4px;
-  /* Plain text, not accent (Akshil, 2026-08-16): the hairline and the
-     position already say it is the odd row out, and the accent read as a
-     link into somewhere else rather than one more choice in the list. */
   font-weight: 500;
 }
 
-/* `.deploy-body button:hover` repaints border-color wholesale — including the
-   top hairline this row IS — so a hover turned the separator accent-green
-   (audit 2026-08-16). Restated, armored past that skin. */
-.deploy-body .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled),
-.prefs-section .schedule-form .schedule-picker-row.schedule-recents-browse:hover:not(:disabled) {
-  border-top-color: var(--border);
+/* "+ New folder" sits directly under Browse and belongs to the same verb group,
+   so it takes Browse's weight but NOT a second hairline — one rule separates
+   the nouns from the verbs. Both verbs keep the base row's 6px hover wash —
+   the panel's own 4px padding already holds every wash off its corners, and a
+   square-cornered wash on the last row read as a different kind of row
+   (Akshil, 2026-08-20). */
+.schedule-form .schedule-picker-row.schedule-recents-mk {
+  font-weight: 500;
+}
+
+/* The verdict row: what the typed path IS, in the row shape of the folders
+   below it — and clickable like them: picking it keeps the path the field
+   already holds and closes the list (it began as an inert status row and a
+   dead click next to five live siblings read as broken — Akshil, 2026-08-20).
+   The base row rule supplies the cursor and the hover wash. The hairline under
+   it is the mirror of Browse's: found-things above, existing things below. */
+.schedule-form .schedule-recents-new {
+  align-items: flex-start;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+/* Same armor as Browse's hairline: the ambient button:hover skins repaint
+   border-color wholesale, and this row's bottom border IS the separator. */
+.deploy-body .schedule-form .schedule-recents-new:hover:not(:disabled),
+.prefs-section .schedule-form .schedule-recents-new:hover:not(:disabled) {
+  border-bottom-color: var(--border);
+}
+
+.schedule-form .schedule-recents-new svg {
+  /* Pulled onto the first line's baseline now the row is two lines tall. */
+  margin-top: 2px;
+}
+
+.schedule-recents-new-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.schedule-recents-new-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* The line that says WHEN the folder starts existing. Muted and small: the
+   badge above already carried the fact, this only dates it. */
+.schedule-recents-new-why {
+  font-size: 11px;
+  color: var(--fg-muted);
 }
 
 /* The empty column where an icon would be, so a row without one still starts
@@ -2307,6 +2390,58 @@ input.schedule-when-field {
   gap: 8px;
 }
 
+/* -- Naming a folder that does not exist yet ------------------------------
+   Two surfaces say the same thing: this row inside the picker, and the
+   new-folder row in the path field's dropdown (.schedule-recents-new, up with
+   the rest of that list). Neither writes to disk — the folder is created by
+   the save. The badge at the bottom of this block is shared by both. */
+
+/* Pushed to the far edge, away from Cancel / Use this folder: it acts on the
+   folder you are standing IN, not on the errand the pair finishes. */
+.schedule-picker-newbtn {
+  margin-right: auto;
+}
+
+/* Sits where the folder it names will sort — first row of the listing — so it
+   reads as a row being typed rather than a dialog laid over the panel.
+   align-self/width for the same reason .schedule-picker-row restates them: the
+   listing is a flex COLUMN with align-content:flex-start, which shrink-wraps a
+   child to its content and left the name box a third of the panel wide. */
+.schedule-picker-new {
+  display: flex;
+  align-self: stretch;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+.schedule-picker-new-name {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Matched to the field beside it rather than to the foot's pills: the pair is
+   one control, and a full-height Save-shaped pill next to a 28px input read as
+   two. */
+.schedule-picker-new-ok {
+  flex: none;
+  padding: 4px 10px;
+}
+
+.schedule-new-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  color: var(--fg);
+}
+
 /* One shape for "this is the commit": the modal's Save, the explorer's "Use
    this folder" and the recurrence section's Done are the same promise, so they
    are the same pill (audit 2026-08-16). */
@@ -2315,6 +2450,36 @@ input.schedule-when-field {
 .deploy-body .schedule-picker-foot .btn-primary {
   border-radius: 999px;
   padding: 0 22px;
+}
+
+/* The ⌘↩ pill inside Save. Drawn in the button's own ink at a lower alpha so
+   it reads as a caption on the verb, not a second control; the right padding
+   is pulled in because the pill already ends the pill. */
+.schedule-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 14px;
+}
+.schedule-save-key {
+  display: inline-flex;
+  align-items: center;
+  /* Glyph, plus, glyph — with air between them (Akshil, screenshot,
+     2026-08-27: "a little bit of space between these two icons and a plus
+     icon"). Set glyph-to-glyph the two read as one unfamiliar ligature. */
+  gap: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  color: inherit;
+  opacity: 0.85;
+}
+.schedule-save-key-plus {
+  font-size: 9px;
+  opacity: 0.7;
 }
 
 /* The description hangs from a top-aligned icon (multi-line row), and grows
@@ -2501,6 +2666,18 @@ input.schedule-when-field {
    overlaps something it is about, while above the first row of a scroller there
    is nothing but the scroller's own clipped edge.
 
+   BELOW only WHILE SHOWN, though. `visibility: hidden` keeps a box in layout,
+   and a hidden panel hanging under the mark is scrollable overflow: the List's
+   LAST row carried a tooltip-height of phantom scroll, so a four-task list wore
+   a scrollbar thumb over empty space (Akshil, screenshot, 2026-08-27: "when
+   there are less items there is a scroll bar that still appears"). At rest the
+   panel parks ON its own element — top-left, untranslated, inside the row it
+   already occupies — and takes the below-the-mark position as part of the
+   reveal. The geometry legs of the transition are 0s-with-a-delay bookkeeping,
+   not animation: on the way in the panel is seated before the fade starts, and
+   on the way out it holds that seat until the fade-out has finished rather than
+   snapping home mid-fade.
+
    Not a component, because this app has none — no tooltip primitive exists in
    src/platform/ui, and one built for two call sites would be a portal, a
    positioner and a state machine to say four characters. If a real one arrives,
@@ -2512,9 +2689,8 @@ input.schedule-when-field {
 [data-tip]:not([data-tip=""])::before {
   content: attr(data-tip);
   position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: 0;
+  left: 0;
   z-index: 30;
   padding: 3px 7px;
   font-size: 11px;
@@ -2528,16 +2704,43 @@ input.schedule-when-field {
   box-shadow: 0 2px 8px var(--shadow-sm);
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.1s ease, visibility 0.1s ease;
+  transition:
+    opacity 0.1s ease,
+    visibility 0.1s ease,
+    top 0s 0.1s,
+    left 0s 0.1s,
+    transform 0s 0.1s;
   pointer-events: none;
 }
 
 [data-tip]:not([data-tip=""]):hover::before,
 [data-tip]:not([data-tip=""]):focus-visible::before {
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
   opacity: 1;
   visibility: visible;
   transition-delay: 0.3s;
 }
+
+/* THE TASK ROW'S MARKS ARE NOT `data-tip` USERS, and were for exactly one day
+   (2026-08-24). The row's title, the scope glyph, the folder chip, the message
+   count and the times all wore this panel for one pass — consistency was the
+   argument — and it took FOUR support rules to keep honest: a z-index lift so a
+   later sibling could not paint over the panel, a right-edge anchor so the last
+   cell's panel was not clipped by the scroller, a `:has()` so the row's caption
+   and a mark's did not draw six pixels apart, and a per-class fast-delay list.
+   Even with all four it drew DISPLACED: the panel is positioned under its
+   ELEMENT, so on the list's first row it opened over the row below, captioning
+   a different task's title (Akshil, screenshot: "it is displaced completely
+   from the title" — "I don't want you to use custom tooltip").
+   So the marks carry native `title`s instead. The browser's tooltip follows the
+   POINTER, which is the one placement that cannot caption the wrong row, and it
+   needs none of the four rules — what fixed the original wrong-tooltip bug was
+   never the panel, it was each mark having a title OF ITS OWN so the browser
+   stops walking up to the row's. This panel stays for what it was built for:
+   the status ring's unread count, a fast tip on a COLUMN of identical marks,
+   where the 300ms guard above is the point. */
 
 /* The In Progress ring is STATIC yellow. It used to breathe on a 2s loop, and
    that was one blink too many (Akshil, 2026-08-17): the lane is a column of

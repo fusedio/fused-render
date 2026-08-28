@@ -892,41 +892,16 @@ fi
 echo "    $(echo "$RCLONE_SMOKE_OUT" | head -1)"
 
 # ---------------------------------------------------------------------------
-# 4e. Bundle learn.zip (D123): the repo's core_apps/learn/ content ships as a single
-#     zip at Contents/Resources/learn.zip, and shell/mounts.py's
-#     ensure_learn_mount() mounts it read-only at startup via rclone's
-#     archive backend (:archive:<path>, new in v1.74) — the bundled default
-#     content is presented through the exact same mounts surface as remote
-#     data. Built fresh every run (a stale zip from a previous build must
-#     never ship). MUST run before signing (step 5): Resources content has
-#     to exist before the bundle seal.
+# 4e. Bundle sessions.zip (D123/D227): the repo's core_apps/sessions/ content
+#     ships as a single zip at Contents/Resources/sessions.zip, and
+#     shell/mounts/automount.py's ensure_builtin_mounts() mounts it read-only
+#     at startup via rclone's archive backend (:archive:<path>, new in v1.74) —
+#     the bundled default content is presented through the exact same mounts
+#     surface as remote data. Built fresh every run (a stale zip from a
+#     previous build must never ship). MUST run before signing (step 5):
+#     Resources content has to exist before the bundle seal.
 # ---------------------------------------------------------------------------
 
-echo "==> bundling learn.zip"
-LEARN_SRC="$REPO_ROOT/core_apps/learn"
-if [[ ! -d "$LEARN_SRC" ]]; then
-  echo "FATAL: $LEARN_SRC does not exist — the learn/ content is part of the app." >&2
-  exit 1
-fi
-LEARN_DEST="$APP_DIR/Contents/Resources/learn.zip"
-rm -f "$LEARN_DEST"
-# -X drops resource-fork/extended-attr entries; .DS_Store excluded so a
-# Finder-visited checkout builds the same zip as CI.
-(cd "$LEARN_SRC" && zip -qr -X "$LEARN_DEST" . -x '.DS_Store' -x '*/.DS_Store')
-
-# Smoke test with the just-bundled rclone: the exact binary the app ships
-# must be able to list the exact zip the app ships — catches an rclone
-# version bump that drops/renames the archive backend before it reaches a
-# user's first launch.
-if ! LEARN_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${LEARN_DEST}" 2>&1)"; then
-  echo "FATAL: bundled rclone cannot read the bundled learn.zip via :archive: :" >&2
-  echo "$LEARN_SMOKE_OUT" >&2
-  exit 1
-fi
-echo "    learn.zip OK ($(echo "$LEARN_SMOKE_OUT" | wc -l | tr -d ' ') top-level entries)"
-
-# Same treatment for the Sessions sub-app content (repo core_apps/sessions/ →
-# Contents/Resources/sessions.zip, mounted by ensure_builtin_mounts).
 echo "==> bundling sessions.zip"
 SESSIONS_SRC="$REPO_ROOT/core_apps/sessions"
 if [[ ! -d "$SESSIONS_SRC" ]]; then
@@ -935,8 +910,14 @@ if [[ ! -d "$SESSIONS_SRC" ]]; then
 fi
 SESSIONS_DEST="$APP_DIR/Contents/Resources/sessions.zip"
 rm -f "$SESSIONS_DEST"
+# -X drops resource-fork/extended-attr entries; .DS_Store excluded so a
+# Finder-visited checkout builds the same zip as CI.
 (cd "$SESSIONS_SRC" && zip -qr -X "$SESSIONS_DEST" . -x '.DS_Store' -x '*/.DS_Store' -x '__pycache__/*' -x '*/__pycache__/*')
 
+# Smoke test with the just-bundled rclone: the exact binary the app ships
+# must be able to list the exact zip the app ships — catches an rclone
+# version bump that drops/renames the archive backend before it reaches a
+# user's first launch.
 if ! SESSIONS_SMOKE_OUT="$("$RCLONE_DEST" lsf ":archive:${SESSIONS_DEST}" 2>&1)"; then
   echo "FATAL: bundled rclone cannot read the bundled sessions.zip via :archive: :" >&2
   echo "$SESSIONS_SMOKE_OUT" >&2
@@ -1033,6 +1014,11 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
   <!-- app.py points the bundled interpreter/worker at its own runtime via
        PYTHONHOME etc. -->
   <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+  <!-- fused.capture.audio records the microphone (SPEC §45). Under the
+       hardened runtime this entitlement is what makes the TCC prompt possible
+       at all: without it the mic is refused outright, prompt or no prompt.
+       Screen recording needs no entitlement — only the System Settings grant. -->
+  <key>com.apple.security.device.audio-input</key><true/>
 </dict>
 </plist>
 PLIST

@@ -258,6 +258,22 @@
   opacity: 0.86;
 }
 
+/* "enable it in Preferences" — a quiet inline link-button inside the result
+   note, same pattern as .mount-link (setup-modal.css): no border/background
+   of its own, so it reads as part of the sentence rather than a control. */
+.fh-link-button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  text-decoration: underline;
+}
+.fh-link-button:hover {
+  color: var(--fg);
+}
+
 .fh-result-note kbd {
   font: inherit;
   padding: 0 4px;
@@ -349,21 +365,160 @@
   min-width: 0;
 }
 
+/* The terminal empty state, close to its original one-line weight —
+   deliberately NOT a card-height well. An earlier version reserved a full
+   card's height here (`min-height` tied to a derived `--home-card-h`), on the
+   theory that the terminal state should hold the same box the skeleton row
+   held. In practice that turned "Recent files" on a fresh install into a
+   giant dashed box with one line of text adrift in the middle — worse than
+   the transient shift it replaced, because THIS state is permanent, not a
+   loading flicker. The skeleton's job was to stop a fetch-in-flight from
+   resizing the page; a `[]` result is not in flight, so it doesn't need the
+   same treatment. Padding only, no border, no min-height: enough breathing
+   room to not read as a stray line of text, nowhere near a card's worth of
+   empty box. */
+.home-section .fh-empty {
+  padding: 20px 0;
+  text-align: center;
+}
+
 .fh-empty {
   margin: 0;
   font-size: 13.5px;
   color: var(--fg-muted);
 }
 
+/* Section skeleton row (Home.tsx SkeletonCard): reuses the real card's own
+   class (`.fhb-card` for the Claude Sessions variant; `.app-pcard`, apps.css,
+   for the Fused Apps variant) for its box model — padding, border, radius,
+   head/thumb geometry — so the skeleton's height tracks whatever the real
+   card's CSS says, automatically, rather than a hand-measured constant that
+   silently goes stale the next time that CSS changes. These rules only
+   neutralise the hover treatment those classes carry, since a skeleton
+   `<span>` is decoration, not a link.
+   COMPOUND selectors, not `.home-skel-card:hover` alone: a bare compound of
+   one class + `:hover` has the same specificity as `.fhb-card:hover` /
+   `.app-pcard:hover` themselves, so which one wins would depend on which
+   rule happens to sit later in the built stylesheet — pairing the real card
+   class into the selector (three components, not two) wins outright,
+   independent of source order. The two variants revert to different values
+   because their unhovered base states differ: `.fhb-card` carries a resting
+   box-shadow, `.app-pcard` carries none. */
+.home-skel-card {
+  cursor: default;
+}
+
+.fhb-card.home-skel-card:hover {
+  border-color: var(--border);
+  box-shadow: 0 1px 2px var(--shadow-sm);
+  transform: none;
+}
+
+.app-pcard.home-skel-card:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+
+/* `.fh-card-text` normally shrink-wraps its real name/path text; the skeleton
+   bars have nothing to shrink-to-fit against, so this grows the column to
+   take the rest of the head row instead of collapsing near 0. Only the
+   "folder" variant needs it — the "app" variant's title/meta bars sit
+   directly in `.app-pcard-body`, a column flex child that already stretches
+   to the card's full width. */
+.home-skel-text {
+  flex: 1 1 auto;
+}
+
+/* The two shimmer bars in a skeleton head — reuses `.skel-bar` (explorer.css)
+   as-is; only the widths are per-instance (inline style in Home.tsx). */
+
+/* Shimmer wash for a whole panel — same gradient/animation recipe as
+   `.skel-bar`'s (explorer.css: the shared `@keyframes skel-shimmer` is
+   referenced by name, not restated — keyframe names are global, so there's no
+   file-load-order issue there). The gradient/size PROPERTIES are restated per
+   consumer rather than factored into one shared class, because each consumer
+   is compounded onto a real box class that already sets its own `background`
+   (`.fhb-thumb`, `.fhb-sheet-skel-body`'s sibling `.fhb-sheet`, `.fhb-preview`
+   in spirit) — a shared single-class rule would tie for specificity with that
+   base rule and the winner would come down to stylesheet order instead of
+   this rule. `.fhb-sheet-skel-body` and `.fhb-preview-skel` are already their
+   own standalone classes (see below) so they don't need the compound form. */
+.fhb-thumb.home-skel-body,
+.fhb-sheet-skel-body,
+.fhb-preview-skel {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+/* Light theme repaints `.fhb-thumb`'s background (below, ~line 928) with a
+   selector one class heavier than `.fhb-thumb.home-skel-body` above
+   (`:root[data-theme="light"]` + `.fhb-thumb` vs. two plain classes) — so in
+   light theme, unpatched, it silently won and the skeleton body was a flat
+   grey box with no shimmer at all. This repaints the shimmer back on top,
+   at higher specificity than both. */
+:root[data-theme="light"] .fhb-thumb.home-skel-body {
+  background: linear-gradient(90deg, var(--bg-alt) 25%, var(--border) 50%, var(--bg-alt) 75%);
+  background-size: 200% 100%;
+  animation: skel-shimmer 1.2s ease-in-out infinite;
+}
+
+/* The folder-stack skeleton's front-sheet body: same slot `.fhb-sheet-d0
+   .fhb-preview` fills once settled (flex-grown, full width, a 60px floor) —
+   stated on its own class rather than reusing `.fhb-preview` itself, which
+   would hit the same cross-file specificity problem `.home-skel-body` avoids
+   above. */
+.fhb-sheet-skel-body {
+  flex: 1 1 auto;
+  min-height: 60px;
+  width: 100%;
+}
+
+/* `LivePreview`'s shimmer while `!started || !loaded` (BookmarkCards.tsx):
+   fills the same absolutely-positioned box the iframe does, and stays out of
+   the card's click target like every other decoration in `.fhb-preview`. */
+.fhb-preview-skel {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 /* Search results: a flat scannable list (relevance order), not the launcher
-   card grid — icon, name, path, then size/date pushed to the right edge. */
+   card grid — icon, name, path, then size/date pushed to the right edge.
+
+   HOME_RESULT_CAP (home-search.ts) is 20, which does not fit a SHORT
+   viewport on its own — so the list SCROLLS internally rather than pushing
+   the AI row below the fold: `max-height` bounds it, and `.fh-ai-row`'s
+   `position: sticky; bottom: 0` keeps the action in view regardless of how
+   far the file rows scroll underneath it. Without a bound the sticky row
+   would simply sit at the end of a tall list, never actually needing to
+   stick.
+
+   That bound must NOT be a flat pixel value, though — 440px unconditionally
+   was measured against a laptop window and then applied to every window: on
+   a tall one it capped the list at ~13 rows and left the whole lower portion
+   of the page blank rather than using the space that was actually there.
+   `max()` makes 440px a FLOOR (short viewports still get a usable list, and
+   still scroll) while `calc(100dvh - 11rem)` gives a tall viewport the rest
+   of its height instead. `dvh` rather than `vh`: `vh` on a mobile browser
+   includes the area the address bar can retract into, which would size this
+   against space that is not actually available.
+
+   11rem is the measured chrome above the list on the explorer page — page
+   padding + the search bar + the result-note line + a little breathing
+   room before the window edge — checked against the running app at a short
+   (700px) and a tall (1346px) viewport: short still shows the internal
+   scrollbar with the AI row pinned under it, tall shows all 20 rows with no
+   scrollbar at all. Re-measure this if that chrome changes size. */
 .fh-results {
   list-style: none;
   margin: 0;
   padding: 0;
+  max-height: max(440px, calc(100dvh - 11rem));
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
-  overflow: hidden;
 }
 
 .fh-results li + li {
@@ -442,19 +597,51 @@
 
 /* -- the AI action row -------------------------------------------------------
    The last row in the list is not a file: it costs a model call and a wait, so
-   it reads as an action — accent glyph, accent label, a faint accent wash — and
-   never like the hits above it. On a zero-hit query it is the only row, and
-   FilesHome pre-selects it. */
+   it reads as an action — accent glyph, accent label — and never like the hits
+   above it. On a zero-hit query it is the only row, and FilesHome pre-selects
+   it.
+
+   It used to ALSO carry a faint accent background wash at rest, which is what
+   made it look like a second selected row: a background wash is this app's
+   existing signal for "the keyboard is here" (`.fh-result:hover,
+   .fh-result.is-active` below), and painting a resting row with one made a
+   hovered file row and the untouched AI row read as the same gesture at
+   different tints. The wash is gone; selection now means exactly one thing
+   across the whole list, and this row leans on the glyph/label/rule instead —
+   which does the "this is an action, not a hit" job without competing with
+   selection for the same visual channel.
+
+   Structural separation instead: a rule ABOVE it (border-top) says "the
+   results end here, this is something else", and STICKY positioning
+   (`.fh-results`'s max-height/overflow-y above) keeps it reachable at the
+   bottom of the viewport regardless of how many file rows scroll past above
+   it — the fix for both this row reading as a stray selection and for it
+   sliding below the fold at HOME_RESULT_CAP=20. `background: var(--bg)` here
+   is not a selection tint — it is an opaque backdrop so scrolling rows
+   disappear cleanly UNDER a sticky element instead of showing through it.
+
+   `.fh-ai-row` is on the <li>, NOT the <button> inside it (FilesHome.tsx's
+   `AiActionRow`). `position: sticky` offsets an element within its own
+   containing block, and a <li> that wraps exactly one full-width button has
+   no room of its own for the button to offset within — sticky landed on the
+   button once did nothing at all: the row scrolled out of view under the
+   fold exactly like an ordinary file row, silently reopening the very
+   problem HOME_RESULT_CAP=20 plus this scrolling list exists to fix.
+   `.fh-ai-action`, below, is the button's own class for what genuinely is
+   about the button. */
 .fh-ai-row {
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
 }
 
-.fh-ai-row:hover,
-.fh-ai-row.is-active {
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+.fh-ai-action {
+  padding-top: 12px;
+  padding-bottom: 12px;
 }
 
-.fh-ai-row .fh-result-name {
+.fh-ai-action .fh-result-name {
   color: var(--accent);
 }
 
@@ -462,16 +649,61 @@
   color: var(--accent);
 }
 
-.fh-ai-row:disabled {
+.fh-ai-action:disabled {
   cursor: default;
 }
 
-.fh-ai-row .fh-result-meta kbd {
+/* -- the "Open" row (section 7) ----------------------------------------------
+   The other action row — a resolving path address, offered at row 0 instead
+   of the last row, and for the opposite reason (ranking would be noise, not
+   ranking coming up empty). Shares `.fh-result`'s column layout (icon, name,
+   PATH — this one really is a path, unlike the AI row's query echo, so it
+   keeps `.fh-result-path`) and gets the same accent name treatment item 6
+   gives the AI row, so both read as "an action" the same way. */
+.fh-open-row .fh-result-name {
+  color: var(--accent);
+}
+
+/* The query echo — its own column, not `.fh-result-path` (the file rows' PATH
+   column): "parquet" is not a filesystem path, and sharing the class made it
+   read as one. Muted and quoted rather than the path's plain-text treatment,
+   so it reads as an ECHO of what was typed. */
+.fh-ai-query {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-muted);
+}
+
+/* The `↵` hint — its own column, not `.fh-result-meta` (the file rows'
+   size/date column): aligning it with the dates above claimed it was more
+   metadata about a hit, when it is the key that runs the action WHEN THE ROW
+   IS SELECTED — with file hits on screen Enter opens the top hit instead, so
+   the badge only renders while `active` (FilesHome.tsx's AiActionRow).
+
+   A fixed width (sized to "Asking…", the widest of the three states this
+   span cycles through — the badge, that text, or nothing while unselected)
+   keeps the row's columns from reflowing as the highlight moves onto or off
+   it; `text-align: right` keeps the badge and the text sharing the same
+   right edge the way the empty state's blank column implicitly does. */
+.fh-ai-hint {
+  flex: none;
+  width: 52px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.fh-ai-hint kbd {
   font: inherit;
   padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg);
+  background: var(--bg-alt);
 }
 
 /* The AI badge on the spec echo above AI results — the results on screen came
@@ -1132,6 +1364,15 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   resize: vertical;
+}
+
+/* The Hugging Face authorize link. An <a>, not a button, because it opens a URL
+   in a new tab and must survive a middle-click and a copy-link — but it is the
+   primary action of the section while a login is pending, so it wears .btn and
+   needs the inline-block and centring an <a> does not have. */
+.hf-authorize-link {
+  display: inline-block;
+  text-decoration: none;
 }
 
 /* Safety net for unmigrated selects only — .field-control selects carry their

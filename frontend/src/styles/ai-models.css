@@ -5,7 +5,8 @@
    imported just above: .cc-mdgrid/.cc-mdcard (the MD Files card), .cc-iconbtn
    for the actions, .cc-pill, .cc-heading. What lives here is only what those
    have no answer for — the size figure that is the whole point of the page, the
-   "Explore" link, the revision drawer a card opens, and the Discover tab. */
+   "Explore" link, the revision drawer a card opens, the horizontal row a
+   capability's cards scroll in, and the Hub search that replaces them. */
 
 /* -- the Engines tab --------------------------------------------------------
    Capped at the same 760px the Preferences page caps its own content column
@@ -30,12 +31,11 @@
   --am-engine-col-gap: 12px;
 }
 
-/* The one sentence above the cards: what "Automatic" means. */
-.am-engines-note {
-  margin: 0 0 2px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
+/* NO INTRO PARAGRAPH ANY MORE. What "Automatic" means used to be the tab's one
+   sentence above the cards (`.am-engines-note`); it is now the Automatic
+   option's own description inside each control's popup
+   (`EngineSelect.tsx`'s `buildOptions`), read at the moment it answers a
+   question instead of skimmed past above three closed controls. */
 
 /* Capability, control, reality — one line, and a real GRID rather than three
    rows that each size themselves.
@@ -69,17 +69,148 @@
 }
 
 /* .field-control carries the app's canonical select skin (styles/fields.css) —
-   its own chevron, its own metrics — which is what makes this control look
-   like every other select in the app instead of like the platform's. What is
-   left here is only how it behaves in this row. */
-/* `width: 100%` fills the grid's control column, which is what makes all three
-   selects the same width no matter which option is showing — a select left to
-   size itself grows to "MLX Whisper (Apple Silicon) — needs Apple Silicon…"
-   the moment somebody picks it, and the column would move under the user's
-   cursor. */
+   its own border/height/radius — which is what makes `EngineSelect`'s trigger
+   look like every other field in the app instead of like the platform's
+   default button. `.am-engine-select` used to be the native <select> itself;
+   it is now the trigger BUTTON inside `EngineSelect`'s root, and it keeps this
+   class for the same skin. What is left here is only how it behaves in this
+   row. */
+/* `width: 100%` on both the root and the trigger fills the grid's control
+   column, which is what makes all three controls the same width no matter
+   which option is showing — a control left to size itself grows to fit
+   "MLX Whisper (Apple Silicon)" the moment somebody picks it, and the column
+   would move under the user's cursor. The root wraps the trigger AND the
+   popup it opens (`position: relative` anchors nothing here — the popup is
+   `position: fixed`, placed by `EngineSelect` itself against the trigger's own
+   rect — but the root still has to fill the grid column for the trigger
+   inside it to have something to fill). */
+.am-engine-select-root {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
 .am-engine-select {
   width: 100%;
   min-width: 0;
+}
+
+/* The trigger shows one line of text — the current choice's label, nothing
+   else — so it needs none of the wrapping the popup's options do, and left-
+   aligns like every other field control rather than centering a button's
+   default text. */
+.am-engine-trigger {
+  /* `.field-control` only sets the 32px height on `input`/`select` elements
+     (fields.css) — the trigger is a <button>, so that one metric has to be
+     replicated here to match the row's other two controls. Same chevron SVG
+     `select.field-control` draws, so the trigger reads as a select rather
+     than as a button that happens to be the same height. */
+  height: 32px;
+  display: flex;
+  align-items: center;
+  text-align: left;
+  appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5l3 3 3-3' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+}
+
+/* `.disabled`, not `:disabled` — the trigger is never actually the native
+   disabled attribute (see EngineSelect.tsx's own comment on `aria-disabled`):
+   a disabled button drops out of the tab order and can't hold focus, which is
+   exactly what broke refocusing it after a pick kicks off the PUT that sets
+   this. */
+.am-engine-trigger.disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.am-engine-trigger-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The popup IS a `.context-menu` (context-menu.css) — `EngineSelect.tsx`
+   renders both classes on the same element — rather than a second copy of
+   that surface's background/border/radius/shadow: this app has exactly one
+   "small floating panel over a control" language, and re-declaring its
+   tokens here is how two of them drift apart the next time one changes.
+   `.context-menu`'s own `min-width: 220px` never actually applies — the
+   inline `min-width` `EngineSelect` sets from the trigger's own rect wins
+   over ANY class rule for the same property regardless of value — so nothing
+   here needs to override it. What IS specific to this popup: capped at
+   ~420px so a long registry sentence wraps across several lines rather than
+   making the popup as wide as the page, and a max-height with its own
+   scrollbar so a capability with many engines doesn't run off the viewport. */
+.am-engine-popup {
+  max-width: 420px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.am-engine-popup:focus {
+  outline: none;
+}
+
+/* One row per option: a fixed check-mark gutter (so labels stay aligned
+   whichever row is selected), then up to two lines of text. `align-items:
+   flex-start` because the description line makes disabled rows taller than
+   one line, and centering would float a one-line row's check off its label's
+   baseline. */
+.am-engine-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.am-engine-option.disabled {
+  cursor: default;
+}
+
+.am-engine-option.active {
+  background: rgba(var(--tint), 0.08);
+}
+
+.am-engine-option-check {
+  flex: 0 0 14px;
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--accent);
+}
+
+.am-engine-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.am-engine-option-label {
+  font-size: 13px;
+  color: var(--fg);
+  white-space: normal;
+}
+
+/* Dimmed via the app's muted foreground rather than `opacity` on the whole
+   row: `opacity` would also wash out the description line under it, and a
+   registry sentence explaining why the row can't be picked is the one line on
+   a disabled option that most needs to still be legible. */
+.am-engine-option.disabled .am-engine-option-label {
+  color: var(--fg-muted);
+}
+
+.am-engine-option-desc {
+  font-size: 12px;
+  color: var(--fg-muted);
+  white-space: normal;
 }
 
 /* What is actually serving the capability. Muted, because the control beside
@@ -89,15 +220,27 @@
   color: var(--fg-muted);
 }
 
-/* The second lines a card sometimes grows: why a stored choice is not in
-   force, and what a switch just did. Under the row rather than in it — both
-   are sentences about an event, not part of the control. */
+/* The second lines a card sometimes grows: what the engine in force is like,
+   and what a switch just did. Under the row rather than in it — both are
+   sentences about an event, not part of the control. Capped at 60ch so a long
+   one wraps at a readable measure instead of running the card's full width. */
 .am-engine-note {
   /* Starts where the select does, so it reads as a line about the control
      rather than about the capability naming the row. */
   margin-left: calc(var(--am-engine-cap-col) + var(--am-engine-col-gap));
+  max-width: 60ch;
   font-size: 12px;
   color: var(--fg-muted);
+}
+
+/* The one line on a card that reports a PROBLEM — a stored preference this
+   machine is silently not honouring — rather than describing normal state.
+   A MODIFIER on `.am-engine-note` (same element, both classes) rather than a
+   second rule re-declaring its metrics: only the colour differs, `--warning`
+   instead of the muted grey every other line here uses, so it is the one
+   thing on the card that reads as needing attention. */
+.am-engine-note.warning {
+  color: var(--warning);
 }
 
 @media (max-width: 620px) {
@@ -107,16 +250,16 @@
 }
 
 /* -- section headings -------------------------------------------------------
-   BOTH tabs' sections: Local's two ("User downloaded models" by capability,
-   and "Fetched by engines") and Discover's two faces (the curated shortlist,
-   the search results), each with its capabilities as subgroups inside. The
-   bucketing itself is shell/aiModelGroups.ts; what is here is the hierarchy
-   that makes it readable: a section title over a rule, and a capability title
-   one step quieter and with NO rule of its own.
+   Every section on the page: the Local tab's two ("User downloaded models" by
+   capability, and "Fetched by engines") and the one a query puts in their place
+   ("Search results"), each with its capabilities as subgroups inside where it
+   has them. The bucketing itself is lib/aiModelGroups.ts; what is here is the
+   hierarchy that makes it readable: a section title over a rule, and a
+   capability title one step quieter and with NO rule of its own.
 
    The right-hand slot of a head carries the ONE secondary fact about the group
-   — a byte subtotal on a Local capability row, "via MLX LM" on a Discover one,
-   and on Discover's section row the count and where it came from. Local's
+   — a byte subtotal on a capability row, "via MLX LM" where a runner is being
+   named, and on the search results row the count and where it came from. The
    section rows carry nothing there: three levels of arithmetic on one page
    (caption total, section subtotal, capability subtotal) meant every figure was
    correct and none of them was the one being looked for. The rule stays
@@ -161,10 +304,10 @@
 
 /* One step down from the section, and deliberately NOT a second bordered rule:
    two rules of the same weight would read as two sections rather than as a
-   section and its parts. Discover broke exactly this for a while — its
-   capability headings were `.am-section-head`s, so `TEXT GENERATION` and the
-   view's own name were drawn identically and the reader had no way to tell the
-   parent from the child. */
+   section and its parts. The old Discover tab broke exactly this for a while —
+   its capability headings were `.am-section-head`s, so `TEXT GENERATION` and
+   the view's own name were drawn identically and the reader had no way to tell
+   the parent from the child. */
 .am-subgroup-title {
   margin: 0;
   font-size: 12px;
@@ -225,6 +368,154 @@
   color: var(--fg-muted);
 }
 
+/* -- a capability's row ------------------------------------------------------
+   ONE horizontal row per capability, scrolled sideways, rather than a grid that
+   wraps.
+
+   The row became open-ended when the disk cards and the recommended ones joined
+   it: the left half grows with every download and the right half is as long as
+   the curation is. Wrapped, that made each capability a block of unknown height,
+   so the third heading on the page was reliably below the fold — on a page whose
+   whole job is to be swept for "what have I got, what should I get". A row per
+   capability keeps every heading on screen at once and puts the length INSIDE
+   the row, where a horizontal scroll is the reader's own business.
+
+   `proximity`, not `mandatory`: somebody who has dragged past two cards to read
+   a third should land where they stopped, and mandatory snapping fights a
+   trackpad flick by pulling the row to a card edge nobody aimed for.
+   `overscroll-behavior-x: contain` is the other half of behaving inside a page
+   — a flick that reaches the end of one capability's row must not turn into the
+   browser's back gesture. */
+.am-carousel {
+  display: flex;
+  gap: var(--am-gap-card);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  /* Room for the scrollbar under the cards rather than over them, so an
+     overlay scrollbar does not come to rest on a footer's Download button. */
+  padding-bottom: 6px;
+}
+
+/* Same family as the Kanban board's lanes (schedule.css, its "one decision
+   about one kind of furniture" block) — copied rather than joined to that
+   selector list only because this bar is HORIZONTAL: `height` here is `width`
+   there, and one axis-mixed rule would be wrong in both files.
+
+   `::-webkit-scrollbar-*` ONLY, deliberately not paired with the standard
+   `scrollbar-width`/`scrollbar-color` properties this rule briefly carried:
+   this app never renders in a Firefox-family engine at all — the desktop
+   shell is a native macOS WKWebView (`fused_render/menubar_pin.py` imports
+   `WKWebView` straight from the `WebKit` framework) — so the parity those
+   properties would buy is parity with a browser that never runs this page.
+   What they DO cost is real: per spec, a UA that supports the standard
+   properties at all is expected to let a non-`auto` value on either one
+   suppress its `::-webkit-scrollbar-*` rendering for that element, which is
+   exactly the fate schedule.css's own header warns a `::-webkit-scrollbar`
+   rule exists to dodge — the whole reason schedule.css reaches for this
+   pseudo-element in the first place is that STYLING it is what opts a lane
+   out of macOS's overlay scrollbars (a bare `scrollbar-gutter: stable` gets a
+   zero gutter from an overlay bar by spec). Carrying both mechanisms risked
+   quietly losing that opt-out — and with it the `padding-bottom: 6px` above,
+   reserved for a bar that would no longer draw in its own space — the moment
+   either engine's `scrollbar-width` support caught up. One mechanism, so
+   there is nothing left to go stale.
+
+   Quieter than the Kanban recipe on purpose: this row already SAYS it
+   scrolls with its own prev/next arrows (rendered whenever there is overflow
+   in that direction, not hover-gated — see Carousel.tsx), so the
+   scrollbar's only job left is the drag handle, not the announcement. It
+   stays fully transparent at rest and only draws a thin thumb on
+   hover/focus, which also keeps macOS "always show scrollbars" from turning
+   it into a permanent dark stripe under every row — that setting still
+   paints track+thumb at rest, but a transparent thumb paints nothing.
+   `scrollbar-width: none` (or its `::-webkit-scrollbar { display: none }`
+   equivalent) was ruled out for the same reason a standard-property mix was:
+   it would remove the drag handle for anyone without a trackpad or scroll
+   wheel, on the one engine that renders this page. */
+.am-carousel::-webkit-scrollbar {
+  height: 6px;
+}
+
+.am-carousel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.am-carousel::-webkit-scrollbar-thumb {
+  background: transparent;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+.am-carousel:hover::-webkit-scrollbar-thumb,
+.am-carousel:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+.am-carousel::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg-muted) 55%, transparent);
+  background-clip: padding-box;
+}
+
+/* THREE cards per view: the basis is a third of the row, so every card is the
+   same width whatever the window and the eye learns one rhythm — a card half in
+   view reads as "there is more" rather than as a narrower card. The 360px floor
+   is for narrow windows, where a true third would crush the footer's buttons
+   into each other; below it the row shows fewer than three and scrolls. */
+.am-carousel > .am-card {
+  flex: 0 0 max(360px, calc((100% - 2 * var(--am-gap-card)) / 3));
+  scroll-snap-align: start;
+}
+
+/* The arrows live OUTSIDE the flow — absolutely placed over the row's edges —
+   because their whole brief is "say the row scrolls without moving anything":
+   with exact thirds there is no half-visible card left to say it, and a control
+   that appears in the flow would shift the very cards it points at. Vertical
+   centring is against the wrapper, so a click scrolls sideways and nothing on
+   the page moves up or down. */
+.am-carousel-wrap {
+  position: relative;
+}
+
+/* A full-height fade with the chevron in it, not a floating disc: the gradient
+   dissolves the edge card into the page background, which is itself the "there
+   is more" signal — the row visibly runs out of view instead of ending at a
+   crisp border. The strip stops above the scrollbar's lane (`bottom: 6px`
+   mirrors the row's padding) so the fade never sits on the bar it shares an
+   edge with. */
+.am-caro-btn {
+  position: absolute;
+  top: 0;
+  bottom: 6px;
+  z-index: 1;
+  width: 56px;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.am-caro-btn:hover {
+  color: var(--fg);
+}
+
+.am-caro-btn.prev {
+  left: 0;
+  background: linear-gradient(to left, transparent, var(--bg) 75%);
+}
+
+.am-caro-btn.next {
+  right: 0;
+  background: linear-gradient(to right, transparent, var(--bg) 75%);
+}
+
 /* Cards in a row are the SAME height, and their footers line up.
    `align-items: start` was here to stop an open revision drawer stretching the
    card beside it — but it paid for that with a permanently ragged grid: a repo
@@ -253,9 +544,9 @@
 }
 
 /* The two destinations named in the page's captions: the cache directory this
-   machine fills (Local) and the host this page queries (Discover). One rule,
-   because they are the same idea on either tab — the caption states WHERE, and
-   where should be reachable rather than copied out by hand.
+   machine fills (the page caption) and the host a search queries (the results
+   note). One rule, because they are the same idea in either place — a caption
+   states WHERE, and where should be reachable rather than copied out by hand.
 
    Underlined only on hover: each sits in a line of plain facts ("8 cached ·
    43 GB total", "Searching huggingface.co, limited to…") and a permanently
@@ -289,10 +580,14 @@
   gap: 8px;
 }
 
-/* A repo id is a path-shaped string with no spaces. .cc-mdcard-name ellipsizes
-   on one line, which is right for a filename and wrong for `org/name`: the org
-   is the half that gets cut. Wrap inside it instead and let the card grow. */
+/* The head now holds the MODEL half of the id only (`RepoCard.modelName`), so
+   the wrapping this had goes with the reason for it: it wrapped because a repo
+   id is `org/name` and one-line ellipsis cut the org, which was the half a
+   reader needed. There is no org here any more — it leads the subtitle below —
+   and long single-token names (`FLUX.2-klein-4B-GGUF`) still break rather than
+   overflow the plate. */
 .am-card-name {
+  min-width: 0;
   color: inherit;
   text-decoration: none;
   white-space: normal;
@@ -310,31 +605,127 @@
   border-radius: 3px;
 }
 
-/* Pushed to the card's right edge, tabular so the figures line up down a
-   column of cards even though each card sizes itself. */
+/* -- the caption line: which repo it is, then what it costs -----------------
+   Directly under the name. The figure is pinned to the card's RIGHT edge
+   (`margin-left: auto`) so a column of cards lines its figures up against a
+   shared margin — tabular for the same reason — while the id continues the
+   name it sits under (Akshil, 2026-08-27: "move the size all the way to the
+   right in the card"). */
 .am-card-size {
+  flex: 0 0 auto;
   margin-left: auto;
-  padding-left: 8px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   white-space: nowrap;
 }
 
-/* "Explore" is the local door — the model card view — and it wears .cc-iconbtn
-   like the ✕ beside it, so the card's actions read as one row of controls at
-   the same visual weight rather than a word and some buttons. Still an <a>,
-   because it navigates and middle-click and copy-link have to keep working;
-   this only restores the dimensions and the hover the class expects on a
-   <button>. No `color` override: `.cc-iconbtn` already sets the muted resting
-   colour, and an anchor here previously overrode it to `inherit`, which picked
-   up the card's full-brightness text instead — this Explore icon read heavier
-   than Delete right beside it, though both wear the same class. */
-.am-card-explore {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  text-decoration: none;
+/* No separator between the two: a middot in `--border` at 11px over a card wash
+   is a mark nobody can see ("the dot here is barely visible, let's just remove
+   it"), and the gap already does the work. */
+.am-card-sub {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
 }
+
+/* The id is the half that can be arbitrarily long, so it is the half that
+   shrinks — ellipsised, with the whole string on the line's own hint. Mono,
+   like every other place this page prints a repo address. */
+.am-card-slug {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The curation's seal, at the end of the name. A mark ON the name rather than a
+   control beside it — no box, no plate, no hover wash. Accent, because it is
+   this app's own opinion and accent is what this app says that in; FILLED,
+   because a hairline check at 13px is a smudge and read as one more quiet claim
+   about the disk rather than as an endorsement. */
+.am-card-pick {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-left: -2px;
+  color: var(--accent);
+  cursor: default;
+}
+
+.am-card-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* The (i), pinned to the head's right corner whatever the name's length —
+   the `margin-left: auto` the size figure used to carry. Exactly one thing in
+   this row may claim the free space, and it is now a control rather than a
+   number. */
+.am-card-info {
+  margin-left: auto;
+}
+
+/* NO `.am-card-explore` RULE (2026-08-24): the local door — this folder's own
+   model card view — is a NAMED link inside the (i) panel ("Know more") rather
+   than a third unlabelled glyph in the actions strip. `.am-card-explore-link`
+   further down is a different control, on the Hub search card, and is
+   untouched. */
+
+/* "Try" — into the Playground with this model selected. Rides the cc-iconbtn
+ * chrome beside Explore, widened for a word instead of a glyph.
+ *
+ * OUTLINED IN ACCENT, not filled with it (Akshil, 2026-08-24). It shipped filled
+ * for a day — the argument being that "use this model now" is the one thing a
+ * reader came to the card to do, so it earns the page's one solid control. What
+ * that argument left out is the card it sits on: Load is RIGHT NEXT TO IT, and
+ * Load is the control that costs memory and does the irreversible thing. A lime
+ * plate beside it made the cheap navigation the loudest mark on the card and the
+ * consequential button the quiet one. An outline keeps Try the most VISIBLE of
+ * the four controls — it is the only one with a border at all — while leaving the
+ * one filled weight on the card unspent, which is the state badges' (Loaded) and
+ * nobody else's.
+ *
+ * It also puts the page back inside the house rule rather than beside it: accent
+ * for focus, selection and emphasis, `--fg` for a true primary fill
+ * (.btn-primary). An accent OUTLINE was never the exception; the fill was. */
+.am-card-try {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+/* Doubled selector to outrank `.cc-iconbtn:hover`, which is the same weight and
+   would otherwise be decided by import order alone — it paints a translucent
+   --tint wash and --fg text, and --fg ink is the one thing this button must not
+   take, since the accent border would then be labelling text of a different
+   colour. Hover WASHES rather than fills: 12% is enough to read as pressed-able
+   against the card, and stopping short of a fill is the whole point of the
+   change above. */
+.am-card .am-card-try:hover,
+.am-card .am-card-try:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* No `outline-color` override any more, and that is a consequence of the fill
+   going rather than an oversight. `.cc-iconbtn:focus-visible` draws a 2px
+   --accent outline; on an --accent PLATE that was an invisible focus ring and
+   had to be forced to --fg. On a transparent plate it is the highest-contrast
+   ring available and needs nothing said about it — so the rule that said it is
+   deleted rather than kept pointing at a fill that no longer exists.
+   `outline-offset` from .cc-iconbtn keeps the ring clear of the new border. */
 
 /* A card's controls are ALWAYS visible — the delete ✕ and the revisions
    chevron included, which were hidden at `opacity: 0` until the card was
@@ -359,8 +750,7 @@
    drops further and takes the pointer with it, and `cursor: not-allowed` is
    what makes a hover that changes nothing legible as a refusal rather than as a
    dead page. The `title` on every one of them says why. */
-.am-card .cc-iconbtn:disabled,
-.am-rev .cc-iconbtn:disabled {
+.am-card .cc-iconbtn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
@@ -372,8 +762,7 @@
    rather than on the shared class: the base rule is wrong on every surface, but
    this page is the one that made it visible, and widening it would restyle
    pages nothing in this change has looked at. */
-.am-card .cc-iconbtn:disabled:hover,
-.am-rev .cc-iconbtn:disabled:hover {
+.am-card .cc-iconbtn:disabled:hover {
   background: none;
   color: var(--fg-muted);
 }
@@ -396,16 +785,17 @@
   min-height: 16px;
 }
 
-/* -- which engine loads it -------------------------------------------------- */
-/* The card's most load-bearing tag: in this app a repo belongs to a BACKEND,
-   not to a capability, and the three formats of Whisper are mutually
-   unloadable. It wears the same outline as .am-card-quant beside it — one
-   vocabulary of small facts — with the ACCENT reserved for the state that
-   answers "can I press Load": an engine that runs here. */
+/* -- the two tags that are STATE ---------------------------------------------
+   The class is still called `am-card-engine` because both of its survivors sit
+   in the slot the engine tag used to occupy and wear its chrome — a small
+   outlined pill, the same vocabulary as the facts that used to sit beside it. */
 .am-card-engine {
   padding: 1px 6px;
   font-size: 11px;
-  color: var(--accent-soft);
+  /* Muted, flatly: the two tags left wearing this base are a stopped download
+     and a component, and both are quiet facts. The per-family hues that used to
+     override it are gone with the tags that carried them. */
+  color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 4px;
   white-space: nowrap;
@@ -416,24 +806,19 @@
   text-overflow: ellipsis;
 }
 
-/* "This is a Mac's model, on a PC" — or a model whose engine runs here fine
-   and is not the one selected. Either way it will not load right now.
-   Deliberately not the same as "nothing reads this": the download was not a
-   mistake, and the hover carries the registry's own reason.
+/* NO HUE, AND NO `-family` / `-off` / `-none` TAGS (2026-08-25).
+   Three of the five engine-tag states are gone from the page along with the
+   `--am-eng` hue that separated them: which backend reads a model's weights is
+   IDENTITY, so it is a row in the (i) panel now, on all three kinds of card. A
+   hue exists to make "all the MLX LM ones" findable by sweeping a row — inside
+   a panel opened deliberately, about one model, there is nothing to tell apart.
 
-   **The tag reads the same in both states, so this styling is the signal.**
-   It used to say "needs Diffusers"; the word went because on a card the
-   reader is being told a fact, not given an instruction. What carries the
-   state now is the warning hue AND the dashed border — two channels, which is
-   the point: the dash survives greyscale, a monochrome display and every form
-   of colour blindness, so nothing here depends on distinguishing yellow from
-   the accent green beside it. `--warning-soft` is the stylesheet's existing
-   attention token and measures 8.4:1 on the card in dark and 4.9:1 in light,
-   both past AA for text this size. */
-.am-card-engine-off {
-  color: var(--warning-soft);
-  border-style: dashed;
-}
+   What survives are the two tags that are STATE rather than identity, below:
+   `partly downloaded` (why the button says Continue downloading) and `part of X`
+   (why there is no Load at all). The reason a Load or a Download is REFUSED
+   survives too, as the amber `Switch engines` link in the actions strip — that
+   was the second job the `-off` tag had been doing, and it is the half a reader
+   can act on. */
 
 /* The reason lives in the title attribute, and a tag nobody can focus is a
    tooltip that only exists for a mouse. The unavailable states take a tab stop
@@ -443,12 +828,19 @@
   outline-offset: 1px;
 }
 
-/* And the honest dead end. Quiet, because it is a fact about the repo rather
-   than a warning to act on — there is nothing to press. */
-.am-card-engine-none {
-  color: var(--fg-muted);
+
+/* "partly downloaded" — a fetch that stopped (D424). DASHED like the two dead
+   ends above, because something really is missing; WARNING-coloured rather than
+   muted, because unlike them this one is waiting on the reader — the Download
+   beside it finishes the job and the trash discards it. It borrows
+   `am-card-engine-off`'s palette deliberately: both mean "not loadable as it
+   stands", and a third colour for one more shade of that would spend the card's
+   attention on a distinction the tag's own words already draw. */
+.am-card-engine-partial {
+  color: var(--warning-soft);
   border-style: dashed;
-  opacity: 0.85;
+  border-color: color-mix(in srgb, var(--warning-soft) 40%, transparent);
+  background: color-mix(in srgb, var(--warning-soft) 10%, transparent);
 }
 
 /* "part of FLUX.2 klein 4B" — a repo this app fetched as a piece of something
@@ -458,6 +850,8 @@
    supposed to. Same two channels, the other way round. */
 .am-card-engine-component {
   color: var(--fg-muted);
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, transparent);
+  background: color-mix(in srgb, var(--fg-muted) 8%, transparent);
 }
 
 /* Sentence case, not Title Case: `capitalize` would render the Hub's
@@ -493,76 +887,99 @@
   margin-right: 10px;
 }
 
-/* -- revision drawer -------------------------------------------------------- */
+/* -- the (i) panel: everything the face gave up (2026-08-24) -----------------
+   A fact sheet — not a menu, not a card. `position: fixed`, placed by
+   `ModelInfo.tsx` from the trigger's rect, and that is the whole reason it can
+   exist: these cards sit in a horizontal carousel, so anything opening INSIDE a
+   card would change that card's height and shove every card to the right of it
+   mid-scroll. The ask was explicit — "it shouldn't change card sizes or
+   layouts, it is a popover".
 
-.am-drawer,
-.am-drawer-note {
-  font-size: 12px;
-}
+   ONE GREY throughout, labels and values alike. The chips this replaced were
+   five different colours (an engine hue, an accent, a warning dash, two mutes)
+   because each was competing to be spotted in a GRID. Nothing in here is being
+   swept past — a reader is looking at one model, having asked — so colour has
+   no work left to do, and five hues on a 200px panel read as five kinds of
+   urgency.
 
-.am-drawer-note {
+   `--bg-popover` and the app's own popover shadow, so it is the same species as
+   every other floating surface in the shell rather than a card that got loose. */
+.am-info-panel {
+  position: fixed;
+  z-index: 60;
+  min-width: 184px;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  box-shadow: 0 8px 24px var(--shadow-md);
+  font-size: 11.5px;
+  line-height: 1.5;
   color: var(--fg-muted);
 }
 
-/* The facts the card's face gave up: file count, revision count, branch,
-   added date. A middot-separated run rather than a table, because it is the
-   same sentence the footer used to hold — it has just moved somewhere it is
-   read one repo at a time instead of a dozen at once. The separator belongs to
-   the item that follows it, so an absent branch leaves no dangling middot. */
-.am-drawer-facts {
+/* Label left, value right, one line each — a table, because that is what it is:
+   the labels are a fixed vocabulary, so lining the values up down a common edge
+   is what lets someone find "Engine" without reading the rest. */
+.am-info-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 2px 0;
-  padding: 6px 0 2px;
-  font-size: 12px;
-  color: var(--fg-muted);
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
 }
 
-.am-drawer-facts > span + span::before {
-  content: "·";
-  margin: 0 8px;
+.am-info-label {
+  flex: 0 0 auto;
 }
 
-.am-rev {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 0;
-  border-top: 1px solid var(--border);
-}
-
-.am-rev-main {
-  display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
+/* The value may be long (a hardware-qualified engine name), so it is the half
+   that shrinks. Brighter than its label — the one contrast inside the panel,
+   separating answers from questions without spending a hue on it. */
+.am-info-value {
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--fg);
 }
 
-.am-rev-commit {
-  font-weight: 500;
+/* The one thing in here that can be pressed, so the one thing that looks it: a
+   full-width row under a hairline, in accent. It is the Explore glyph that used
+   to sit unlabelled in the actions strip — an icon nobody could name, now a
+   control that says where it goes. */
+.am-info-more {
+  display: block;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  text-decoration: none;
 }
 
-.am-rev-meta,
-.am-rev-size {
-  color: var(--fg-muted);
+.am-info-more:hover,
+.am-info-more:focus-visible {
+  text-decoration: underline;
 }
 
-.am-rev-size {
+/* The download glyph, on all three Download buttons. `flex: 0 0 auto` so the
+   arrow never squeezes when the label is the long one ("Continue downloading"),
+   and a hair of optical lift because the tray's baseline sits below the text's. */
+.am-dl-glyph {
   flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
+  margin-right: 1px;
+  transform: translateY(0.5px);
 }
 
-/* A drawer row's ✕ is smaller than a card's, and — like the card's — always
-   there rather than revealed by hovering the row it belongs to. Same reason:
-   the drawer is a list of revisions to compare, and one visible ✕ chasing the
-   pointer down it says nothing about which of them can be deleted. */
-.am-rev .cc-iconbtn {
-  flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
-}
+/* NO DRAWER, AND NO REVISION LIST (2026-08-24). The chevron's drawer
+   (`.am-drawer*`) and the per-revision rows inside it (`.am-rev*`) went with
+   their markup. The drawer held a file count, a branch name, an added date and
+   a list of git commits: the added date is a row in the (i) panel now, and the
+   rest were dropped as facts nobody brings a question about to this page —
+   picking a commit off a folder whose only real question is what it costs
+   (Akshil: "does the user need to know this? if not, abstract it away"). See
+   `RepoCard`'s headstone for the whole argument. */
 
 /* -- the tab strip ----------------------------------------------------------
    Cards on every tab are the same .cc-mdcard/.am-card — one model should not
@@ -580,6 +997,12 @@
   overflow: hidden;
 }
 
+/* Worn by two different elements: the page's tab strip, whose tabs are <a>
+   since D420 made each one an address, and the Usage tab's window picker,
+   which is still <button>. So it resets BOTH defaults — the button's border
+   and font, and the link's underline and visited colour. Without the
+   text-decoration line the strip renders as five underlined links inside a
+   pill, which reads as prose rather than as a control. */
 .am-tab {
   padding: 5px 12px;
   font: inherit;
@@ -588,6 +1011,7 @@
   background: transparent;
   border: 0;
   cursor: pointer;
+  text-decoration: none;
 }
 
 .am-tab + .am-tab {
@@ -610,19 +1034,19 @@
   outline-offset: -2px;
 }
 
-/* The empty Local tab carries a control as well as a sentence (HF-8): it is a
-   door to Discover, not a dead end. .cc-empty centres the text; the paragraph
-   only needs its default margins dropped so the button sits under the line
-   rather than a blank line below it. */
-.am-empty p {
-  margin: 0 0 12px;
-}
+/* The empty Local tab used to carry a control as well as a sentence (HF-8) — a
+   door to the old Discover tab rather than a dead end — and `.am-empty p` existed to
+   sit the sentence on top of the button. Both are gone: a machine with no models
+   now gets a capability row with recommended cards in it, so the sentence is
+   only reached when the curation is empty too, and there is nowhere left to send
+   anybody from there. `.cc-empty` alone centres it. */
 
-/* -- the Discover tab's search ----------------------------------------------
-   At the TOP of the tab, above the curated sections, because it is what
-   somebody opened this tab to use. It spent its life below them, which meant
-   the only way to reach the search was to scroll past the shortlist it exists
-   to be an alternative to. */
+/* -- the Hub search ---------------------------------------------------------
+   At the TOP of the Local tab, above everything it has to say about this
+   machine, because it is the one control that changes what the page IS — a
+   query replaces the capability rows with one grid of results (D426). It spent
+   its life at the bottom of a tab of its own, which meant the only way to reach
+   it was to scroll past the shortlist it exists to be an alternative to. */
 .am-hub-controls {
   display: flex;
   flex-wrap: wrap;
@@ -701,12 +1125,78 @@
   outline-offset: -1px;
 }
 
-/* The two menus wear .field-control (styles/fields.css), the app's canonical
-   select skin, for the same reason the Engines tab's do — a native select is
-   the one control that renders as the platform's rather than as this app's.
-   What is left here is only that they do not stretch. */
-.am-hub-select {
+/* The two menus' TRIGGERS (D426). They were native selects wearing
+   .field-control, the app's canonical select skin; a select renders as the
+   PLATFORM's control rather than as this app's, and — the reason these two
+   changed — it cannot carry an icon, which is the whole of what makes a task
+   filter and five orderings readable at a glance. So: a button holding the
+   active option's glyph, its label and a caret, opening
+   @platform/ui/ContextMenu.
+   The metrics here are .field-control's to the pixel (32px tall, 13px text, 1px
+   border, 6px radius, 10px inset), so this row's height and rhythm are
+   unchanged and a trigger beside the search box reads as its sibling rather
+   than as a new species of control. */
+.am-hub-menu {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Hover and open both raise the border to the weight select.field-control's own
+   :focus uses. Deliberately NOT a fill: these are two quiet controls in a row
+   whose loud element is the page of results they produce. */
+.am-hub-menu:hover,
+.am-hub-menu.open {
+  border-color: var(--fg-muted);
+}
+
+.am-hub-menu:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* The glyph, at the 16px every other menu icon in the app is drawn at, and
+   muted — it identifies the option rather than asking to be pressed. It
+   brightens with the trigger so the whole control lights as one thing. */
+.am-hub-menu-icon {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+.am-hub-menu:hover .am-hub-menu-icon,
+.am-hub-menu.open .am-hub-menu-icon {
+  color: var(--fg);
+}
+
+/* Truncates rather than stretching the row: a task label is the server's
+   (HS-7), so its length is not this stylesheet's to promise. */
+.am-hub-menu-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Same muted grey, stroke weight and 12px box as the chevron
+   select.field-control paints as a background image, so a menu trigger and a
+   select elsewhere in the app wear one affordance. */
+.am-hub-menu-caret {
+  flex: 0 0 12px;
+  color: var(--fg-muted);
 }
 
 .am-hub-search:focus-visible {
@@ -728,6 +1218,28 @@
 .am-hub-stale {
   opacity: 0.55;
   transition: opacity 120ms ease-out;
+}
+
+/* Signing in to Hugging Face, offered where a gated result needs it (D426).
+   ONE row, between the host note and the grid: a token is a fact about this
+   MACHINE, so a login button on each gated card would be four copies of one act
+   asking to be pressed four times — and above the cards rather than below them,
+   because the reader should meet the way past the gate before the results that
+   are behind it. It appears only while a gated row came back and this machine
+   has no token, which is what keeps it from reading as the page recommending an
+   account to somebody who never hit a wall. */
+.am-hub-login {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 var(--am-gap-head);
+}
+
+/* The caption's own bottom margin is for a caption under a heading; in a row of
+   controls it would push the text off the button's baseline. */
+.am-hub-login .cc-caption {
+  margin: 0;
 }
 
 /* "Explore" on a search result — a word, beside the Download button, where the
@@ -798,6 +1310,130 @@
 .am-card-runtime-ready { color: var(--fg); }
 .am-card-runtime-error { color: var(--error); }
 
+/* WHY LOAD IS DISABLED — in the actions strip, beside the button it explains.
+   It was a `<p>` below the strip with a warning rail down its leading edge, and
+   it was allowed to WRAP, on the argument that ellipsising a long refusal would
+   put the answer back behind a hover. On a 300px card that meant three lines of
+   grey prose under two buttons — taller than the model's own name, on the cards
+   that can do the least (Akshil, 2026-08-24: "reduce this message more, and it
+   should be next to load button").
+
+   So it takes whatever width the buttons leave and ellipsises into it. Nothing
+   is lost by that: the whole sentence is still on this span's hover AND on the
+   disabled button's accessible name, which is where a screen reader was always
+   going to find it — and the REMEDY, the half that says what to do, is a
+   separate element that never shrinks.
+
+   MUTED, and now with no rail: the line sits inside a row of controls, and a
+   coloured edge in that row would read as a fourth control rather than as a
+   caption on the third. */
+/* -- and the shape it takes when there IS something to do (2026-08-25) -------
+   `Switch engines`, in the warning hue, on the amber wash this app uses for a
+   state that wants a decision. It replaced `Set to MLX FLUX` beside a separate
+   `Engines` link: a statement of configuration ("i don't know what it means")
+   followed by a noun, where what a reader wants is the verb.
+
+   Loud on purpose, and it is the one refusal that gets to be: it is also the
+   only one that can be acted on, and everything else in this strip is either a
+   greyed button or grey text. `align-items: center` on the strip is what keeps
+   it optically level with the button beside it — baseline alignment sat a
+   bordered pill and a bordered button on different lines, which is the
+   misalignment in the screenshot. */
+.am-card-fix {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--warning);
+  text-decoration: none;
+}
+
+.am-card-fix:hover {
+  border-color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+}
+
+.am-card-fix:focus-visible {
+  outline: 2px solid var(--warning);
+  outline-offset: 2px;
+}
+
+.am-card-why {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* The one thing in this strip that gives up width. Every button beside it is
+     `flex: 0 0 auto`, so the sentence absorbs the whole remainder and shrinks to
+     nothing before a control does. */
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-right: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fg-muted);
+}
+
+.am-card-why-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* …and the two ancestors that have to ALLOW that shrink. A flex item's floor is
+   its content width unless something says otherwise, so `min-width: 0` on the
+   sentence alone is not enough: the strip holding it kept its full intrinsic
+   width and pushed the Load button off the card's right edge — the exact
+   control the sentence exists to explain. Scoped to `.am-card` because
+   `.cc-mdcard-actions` is shared chrome and nothing else that wears it has a
+   sentence inside. */
+.am-card .cc-mdcard-foot,
+.am-card .cc-mdcard-actions {
+  min-width: 0;
+}
+
+.am-card .cc-mdcard-actions {
+  flex: 0 1 auto;
+  align-items: center;
+}
+
+/* The "used 4h ago" beside it gives up its width FIRST. Both are grey text in
+   the same row, and between the two the one that matters on a card whose Load
+   is dead is the reason it is dead — an atime is a fact about the past, and the
+   refusal is about what the reader is trying to do right now. It keeps its own
+   ellipsis rather than being dropped: a card that hid it would change what the
+   footer means depending on a state two lines up. */
+.am-card .cc-mdcard-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The remedy, where the remedy is a place. Accent because it is the one thing in
+   this line that can be pressed, and underlined on hover rather than at rest so
+   a card at rest grows no second emphasis beside the Try button's outline.
+   `flex: 0 0 auto` is load-bearing: splitting the cause from the remedy is only
+   worth anything if the half telling somebody what to DO is never the half that
+   gets cut off. */
+.am-card-refusal-link {
+  flex: 0 0 auto;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.am-card-refusal-link:hover,
+.am-card-refusal-link:focus-visible {
+  text-decoration: underline;
+}
+
 .am-runtime-mem {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
@@ -857,10 +1493,129 @@
    Read: a filled BADGE beside the name, in the same green as the sidebar's live
    dot (--success-bright). One colour means "running" across this app rather
    than one colour per surface. */
+/* ONE wash for both states, and the difference is the BORDER and the RAIL. Two
+   strengths of the same green was the wrong instrument: read side by side the
+   pair looked like two shades of one thing rather than two things, and a reader
+   comparing cards was being asked to judge a 3% difference in a tint. The rail
+   and the tinted border are categorical — either the card has an edge or it does
+   not — so they carry the distinction, and the surface just says "this model is
+   on this machine".
+
+   GREY for DOWNLOADED, and the loaded card keeps its green (Akshil). Two passes
+   to get here. The problem was real: in a capability row where almost every card
+   is downloaded, a green plate on all of them marked nothing, and the one model
+   actually spending memory had to be picked out of a row of near-identical
+   plates. But the first fix took green off BOTH surfaces and left the resident
+   card wearing a 1px border and a 3px rail as its whole distinction — which is a
+   thin thing to find from across a carousel, and made the loudest state on the
+   page the quietest to spot. Green comes off the ORDINARY state instead.
+
+   So the two are now set apart in every channel — surface, border, rail — and the
+   earlier rule that they may differ only in border and gutter is deliberately
+   dropped. That rule existed to stop a reader judging two shades of one green;
+   there is no such judgement left once one card is green and the other is grey.
+
+   Downloaded mixes toward --fg-muted rather than being lightened by hand, because
+   the DIRECTION has to survive both palettes: toward the ink is brighter on the
+   dark page and darker on the light one, and both read as "more present". Its
+   pair is `.am-card-none` below, mixed the other way, so have/not-have is one
+   axis with two ends and a reader sweeping the grid gets it from surface weight
+   alone — with the green loaded card sitting outside that axis entirely, which is
+   the point of it being a different colour rather than a further step along.
+
+   BOTH ARE TOKENS NOW, declared once per palette (2026-08-24). They were
+   `color-mix`es — a DIRECTION rather than a colour, chosen so one declaration
+   would serve both themes. It does not: light mode's `--fg-muted` is a warm
+   grey (#61656c), and 14% of it over `--bg-alt` lands on a muddy #dcdde0 plate
+   that reads as disabled rather than as present, so the cards a user HAS looked
+   like the cards they cannot use (Akshil: "light mode colors are messed up,
+   pick new color, the bg of grey"). A mix that is right in one palette and
+   wrong in the other is two colours wearing one declaration — so they are
+   written twice, in tokens.css, where the theme test allows literals. */
+.am-card-have {
+  background: var(--am-surface-have);
+}
+
+/* …and the far end of that axis: nothing of this model is on this disk. Mixed
+   toward --bg so the plate recedes toward the PAGE in both themes — --bg is
+   darker than --bg-alt in dark and lighter in light, and either way the card
+   stops reading as a raised surface.
+
+   Surface only, like every other state here (no border, no rail, no radius), and
+   deliberately NOT `opacity`: these are the cards carrying this page's one
+   primary action, and dimming the whole card would mute the Download button with
+   it, which reads as a control that has been refused rather than as a model
+   nobody has fetched. */
+.am-card-none {
+  background: var(--am-surface-none);
+}
+
+/* Resident, and it keeps the green surface it shipped with. The two classes are
+   mutually exclusive in the TSX — `RepoCard` picks `am-card-loaded` OR
+   `am-card-have` from one ternary, never both — so this does not need to outrank
+   the grey above it; it is ordered after it only to read in the same sequence the
+   states do. */
 .am-card-loaded {
-  border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
   background: color-mix(in srgb, var(--success-bright) 9%, var(--bg-alt));
+  border-color: color-mix(in srgb, var(--success-bright) 55%, var(--border));
   box-shadow: inset 3px 0 0 var(--success-bright);
+}
+
+/* -- on this disk, and how much of it (D436) ---------------------------------
+   The card's own surface answers the question the grid is read for. Three of
+   this page's four states are facts about the disk and the background stated
+   exactly one of them; these are the other two.
+
+   BACKGROUND ONLY — no border, no rail, no radius, no padding. A card changing
+   state must not change size: these sit in a horizontal carousel, and a
+   finished download that nudged its card's box would shift every card to the
+   right of it mid-scroll.
+
+   Downloaded shares loaded's wash exactly (declared with it above) and differs
+   in the two channels that are categorical rather than a matter of degree: the
+   tinted border and the 3px rail, which only a resident model wears. */
+
+/* Partly downloaded, drawn as the FRACTION that is here: a hard-stop gradient at
+   `--am-part` (set inline; see `aiModelGroups.partialFraction`). A wash at 14%
+   rather than a fill, because text sits on top of it — and hard stops rather
+   than a blend, because the boundary IS the information. */
+.am-card-part {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--warning) 14%, var(--bg-alt)) 0 var(--am-part, 100%),
+    var(--bg-alt) var(--am-part, 100%) 100%
+  );
+}
+
+/* -- arriving, i.e. a download in flight (D439) ----------------------------------------------------------------
+   A download IN FLIGHT, drawn as the same boundary in the colour of where it is
+   going: green fills up to `--am-part` and the rest is the plain card. Worn by
+   all three cards that can be downloading — a recommendation, a search result
+   and a partly downloaded repo — because "this is filling up" is one fact and
+   the 3px bar in the progress row is not enough of it to read from across a
+   carousel.
+
+   Green rather than the amber a paused partial wears, and that pair is the point:
+   amber is a boundary that has STOPPED moving and green is one that has not, which
+   is the distinction the `partly downloaded` tag cannot draw, since a partial repo
+   wears that tag while it is being resumed too.
+
+   Never worn together with the amber classes — each card picks exactly one of
+   the two, in TSX, because a card cannot be both stopped and running. */
+.am-card-arriving {
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--success-bright) 14%, var(--bg-alt)) 0 var(--am-part, 0%),
+    var(--bg-alt) var(--am-part, 0%) 100%
+  );
+}
+
+/* …and the same state with no denominator anywhere on this page: a flat wash
+   across the whole card. "Some of this is here and we cannot say how much" is a
+   different sentence from "2% of this is here", and a gradient stopped at an
+   invented number would tell the reader the second one. */
+.am-card-part-unknown {
+  background: color-mix(in srgb, var(--warning) 10%, var(--bg-alt));
 }
 
 .am-loaded-badge {
@@ -879,9 +1634,15 @@
   background: var(--success-bright);
 }
 
-/* Bytes only: a download knows its total, so it gets a real bar. Loading
-   weights into memory does NOT, and an invented percentage there is what makes
-   live work read as frozen — so that state shows text and a pulse, no bar. */
+/* The track is drawn for BOTH kinds of work now (2026-08-24). It used to be
+   bytes-only — a download knows its total, so it got a real bar, while loading
+   weights into memory got text and a pulse and nothing else — on the argument
+   that an invented percentage is what makes live work read as frozen. That
+   argument is still right about the FILL and is why there is still no fake
+   percentage below; it was wrong about the track. A load that says "Preparing…"
+   beside a dot for thirty seconds reads as a card that has stalled, and the row
+   changed height between the two states, so a load followed by nothing looked
+   like a different component. One track, two fills. */
 .am-runtime-bar {
   flex: 1 1 auto;
   min-width: 40px;
@@ -896,6 +1657,45 @@
   height: 100%;
   background: var(--accent);
   transition: width 200ms linear;
+}
+
+/* The measureless fill: a short stripe that travels the track. It says "moving"
+   and declines to say how far, which is exactly what this app knows while a
+   worker brings weights up — the supervisor reports a STATE (`venv`,
+   `downloading`, `loading`), never a fraction.
+
+   `width` is a third of the track and the travel is `translateX` on a multiple
+   of its own box, so the animation is one composited transform and never a
+   layout. No `transition: width` inherited surprise either — the fill above
+   animates width, this one never sets it after the first paint.
+
+   reduced-motion.css already blankets `animation-duration: 0.01ms` over
+   everything, which parks this stripe at its start position: a static third of a
+   bar, which still reads as an unmeasured amount rather than as a stalled
+   percentage. Nothing to add there. */
+.am-runtime-bar-indeterminate {
+  width: 34%;
+  animation: am-runtime-slide 1.15s ease-in-out infinite;
+}
+
+@keyframes am-runtime-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(295%); }
+}
+
+/* The stop, at the end of the progress row. `.cc-iconbtn` is 26px square, which
+   is taller than this row's 11px text — so it is scaled down to sit in the line
+   without setting the row's height, and given back the negative margin the box
+   would otherwise add to the row's right edge. Still a 22px target, which is the
+   point of moving it here: the old one was a 26px box that appeared and
+   vanished, and a target that moves is smaller than any of its pixels. */
+.am-runtime-stop {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin-right: -4px;
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* Load / Unload. A word, not an icon: this is the one control on the page that
@@ -942,22 +1742,66 @@
   border-color: var(--accent);
 }
 
+/* The dead end's way out (D437): the primary control on a partly downloaded repo
+   whose fetch cannot be resumed. Error-coloured TEXT on the ordinary button
+   shell, not a filled danger button — it destroys nothing on its own (the
+   confirm dialog does the deleting), and the loudest thing on a card should not
+   be the card nobody wants. */
+.am-card-power-discard {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+}
+
+.am-card-power-discard:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+}
+
 .am-card-power:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
-/* -- Suggested (the curated shortlist, SPEC §40) ------------------------------
-   One of the Discover tab's two faces, laid out in the LOCAL tab's vocabulary —
-   .am-section per capability, and the .am-section-head / .am-subgroup-title
-   pair for the heading — so a group of cards means the same thing on either
-   tab. What is left here is only the things that hang off that heading. */
+/* -- a recommended card ------------------------------------------------------
+   A model this machine does NOT have, sitting in the same row as the ones it
+   does. It has almost NOTHING here on purpose: it is `.cc-mdcard.am-card` with
+   the same head, facts row and footer as the card beside it, because the whole
+   argument for putting the two in one row is that a reader sees one kind of
+   thing at two stages of its life rather than two grids of differently-shaped
+   cards that happen to both be about models. What tells them apart is the
+   CONTENT — a Download where the others have Load, Explore, details and delete,
+   and no "used 4h ago" — not a second card skin.
+
+   What it does need is the footer, and only because of what goes in it: this
+   card's left-hand fact is a full repo id, where a disk card's is "used 4h ago".
+   `.cc-mdcard-meta` is `nowrap` with no overflow rule, which in a fixed-width
+   card put `mlx-community/Qwen3.5-9B-OptiQ-4bit` straight through the Download
+   button. The id ellipsizes and the actions keep their width; the whole id is on
+   the hover, and the card's NAME above is the readable form of it anyway. */
+.am-reccard .cc-mdcard-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.am-reccard .cc-mdcard-actions {
+  flex: 0 0 auto;
+}
+
+/* -- the search results' own chrome (SPEC §39) --------------------------------
+   Laid out in the vocabulary of the sections it replaces — .am-section, and the
+   .am-section-head / .am-subgroup-title pair for the heading — so a group of
+   cards means the same thing whichever face of the page drew it. What is left
+   here is only the things that hang off that heading.
+
+   The `am-discover-*` names below predate the move (D426) and are kept as
+   stable selectors rather than churned; what they style is the results heading
+   of the Local tab. */
 
 /* How many, and from where — the right-hand slot of the heading that names
-   which face of the tab is on screen. This is the half of the distinction a
-   title alone cannot carry: "11 picked for this machine" against '"whisper" ·
-   24 on huggingface.co' says in one line both what you are looking at and who
-   chose it. Same size and colour as the runner labels below, for the same
+   which face of the page is on screen. This is the half of the distinction a
+   title alone cannot carry: '"whisper" · 24 on huggingface.co' says in one line
+   both what you are looking at and who chose it, against the byte subtotals the
+   page's own capability rows carry in the same slot. Same size and colour as the runner labels below, for the same
    reason: it qualifies the heading rather than competing with it. */
 .am-discover-summary {
   flex: 0 0 auto;
@@ -976,7 +1820,7 @@
   min-width: 0;
 }
 
-/* "← Back to suggested models", beside the count. Deliberately LOUDER than the
+/* "← Back to models", beside the count. Deliberately LOUDER than the
    count it sits next to — it is the only control in that row and the answer to
    the question somebody reading unwanted results is asking, so it takes the
    foreground colour where the count stays muted. Still a text button and not a
@@ -1340,4 +2184,1124 @@
   border: 1px solid var(--border);
   border-radius: 999px;
   vertical-align: 1px;
+}
+
+/* -- Benchmark (the Benchmark tab, SPEC AI-14) --------------------------------
+   Laid out in the Local tab's vocabulary — .am-section per capability, the
+   .am-section-head / .am-section-title pair for the heading — so a capability
+   means the same thing on either tab. What is here is only what those classes
+   have no answer for: a model row that carries a measurement, a line chart, and
+   the run archive under it.
+
+   Every colour is a global token (tokens.css), so both themes come for free the
+   way the rest of this file gets them — including the chart's lines, which is
+   what `--series-1..6` was added to that palette for: a categorical scale is
+   the one thing the status tokens could not stand in for. */
+
+.am-bench {
+  /* One capability's numbers are read against another's; a wide measure would
+     put a model name and its throughput at opposite ends of the window. */
+  max-width: 1000px;
+}
+
+/* -- more width on a big screen, WITHOUT reopening the concern above (D482) -
+   1000px was never really a limit on the whole tab — it was a limit on the
+   ONE instrument that actually separates a name from its number as it
+   grows: the comparison chart's bar plot (`.am-bench-compare-body` below),
+   whose name column is FIXED (`flex: 0 0 26ch`) while its plot area is
+   `flex: 1 1 auto` — every extra pixel of width lengthens the bars, and the
+   value label sitting right after each bar drifts that much further from
+   the name column it belongs to. The leaderboard rows do NOT have this
+   problem: a row's model-name and headline-value columns are adjacent grid
+   tracks with a fixed 12px gap between them regardless of the row's own
+   total width, so widening the row only grows blank space before the Run
+   button — annoying at the extreme, never "opposite ends of the window".
+   Neither does the per-model trend chart or the run archive table, which
+   both read MORE easily with more room (a longer time axis, less column
+   truncation) and carry no name-column-vs-drifting-value pairing to break.
+
+   So: raise `.am-bench`'s own ceiling for a genuinely large viewport, but
+   give `.am-bench-compare-body` (below) its OWN, separate, unraised cap —
+   the freed width becomes blank trailing space beside the chart rather
+   than additional bar length, which is exactly the "cap the column, let a
+   spacer absorb the surplus" shape this needed. 1440px is the trigger
+   because it is the point real 13"-16" laptops and small external
+   monitors stop being the majority case and an unscaled 24"+ desktop
+   display becomes the reader — narrower than that, the original 1000px
+   was already a comfortable fit and raising it would just be page filler.
+   1320px is the new ceiling: wide enough to give the trend chart and the
+   archive table a real, noticeable amount of extra breathing room (+32%
+   over 1000px) without approaching the width at which even THOSE start
+   reading as an uncomfortably long line, and comfortably short of 1440px
+   so the panel never touches the viewport's own edges. */
+@media (min-width: 1440px) {
+  .am-bench {
+    max-width: 1320px;
+  }
+}
+
+/* Each capability is now a distinct PANEL, not just a heading with a rule
+   under it — the four capabilities used to blur into one scroll of sections
+   that differed only by their headings. The card face is the same one
+   `.am-card` uses elsewhere on this page, so a reader who already knows what
+   a card means on the Local tab does not have to learn a second visual
+   vocabulary for this one. Scoped to `.am-bench .am-section` rather than
+   changing `.am-section` itself, which the rest of the page's own sections
+   (not panels) still use. */
+.am-bench .am-section {
+  padding: 16px 20px 20px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* The border-bottom rule `.am-section-head` normally draws would sit oddly
+   flush against this panel's own border a few pixels below it; a plain gap
+   reads as separation just as well inside a panel that already has an edge. */
+.am-bench .am-section-head {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+/* Narrow enough that the heading and the Metric select (added here so it sits
+   beside the instruments it actually governs — see BenchmarkTab.tsx) can
+   genuinely run out of room side by side; wrapping the select to its own line
+   under the heading reads better than either one clipping. */
+.am-bench-section-head {
+  flex-wrap: wrap;
+}
+
+/* The Metric select's own row — a smaller, quieter sibling of the page-level
+   capability select (same select skin via `.am-bench-capsel-input`, reused
+   rather than redeclared), visually subordinate to the `<h3>` beside it
+   because IT chooses within a section the heading already named, not a
+   sibling heading in its own right. Unlabelled on screen, like the capability
+   select — an option's own text names the metric, so a "Metric" caption was
+   repeating it — and now UNBADGED as well: the unit and direction cue live
+   inside the option text (`metricOptionLabel`, lib/benchmark.ts), so this is a
+   one-child flex box today. It stays a flex box rather than becoming a bare
+   `<select>`: `.am-bench-headtools` above already spaces the head's controls,
+   and this wrapper is what keeps the select a group of its own if a per-metric
+   mark ever earns its place beside it again. */
+/* The heading plus its info glyph (D483), as one group — the same reason
+   `.am-bench-headtools` below is one group for the Metric select and Share:
+   `.am-section-head`'s `justify-content: space-between` expects exactly TWO
+   children, the heading end and the controls end, and a bare THIRD child
+   between them would get its own share of that spacing instead of sitting
+   flush against the `<h3>` it explains. */
+.am-bench-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The info glyph itself — icon-only, the same reset every other icon-only
+   control on this tab uses (no border/background of its own, sized to its
+   16×16 svg). Muted at rest, same as `.am-bench-rowdetail-chevron`'s own
+   ink: this is reference material, not a call to action, and should not
+   outweigh the `<h3>` it sits beside. `data-hint`/`aria-label` carry the
+   actual explanation (BenchmarkTab.tsx) — nothing here draws it, this is
+   layout and colour only. */
+.am-bench-workload-info {
+  display: inline-flex;
+  align-items: center;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.am-bench-workload-info:hover,
+.am-bench-workload-info:focus-visible {
+  color: var(--fg);
+}
+
+.am-bench-workload-info:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* The section head's control group — the Metric select and the Share button.
+   One flex group rather than two children of the head itself, so
+   `.am-section-head`'s own `justify-content: space-between` keeps holding the
+   heading at one end and ALL the controls at the other, instead of pushing the
+   select into the middle of the row once a second control appeared. */
+.am-bench-headtools {
+  display: flex;
+  /* CENTRE, not baseline. An icon-only button's baseline is the BOTTOM EDGE of
+     its `<svg>` (an inline-flex box with no text in it has no text baseline of
+     its own), so under `baseline` the Share glyph was pulled up until its
+     bottom sat on the select's TEXT baseline — a few pixels above the select's
+     own box centre, which is what read as "not aligned with the rest". These
+     are two boxes of known height (a `.field-control` select and a 26px
+     `.cc-iconbtn`), and what a reader lines up is their centres; baseline was
+     inherited from when this row held a text badge, where it was the right
+     rule and there was a second run of text to line up with. `.am-engine-row`
+     above already made this exact call for the same reason ("the select is a
+     32px box and the two text runs beside it should sit on its middle, not
+     hang off the text baseline inside it") — this row is that lesson arriving
+     a second time, now that the badge is gone and the only thing beside the
+     select is a glyph with no text baseline at all. */
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+/* Share (D480): the chart, this machine's hardware and the fused render mark
+   as one PNG (benchmark/shareCard.ts). The receipt for where it went used to
+   be an inline note living right here, in `.am-bench-share` — a wrapper that
+   existed only to hold the button and that note side by side. It is gone now:
+   the receipt is a global toast (`ShareChartButton.tsx`'s file-top comment
+   has the measured layout-shift and heading-collision reasons it moved), and
+   with nothing left to sit beside, the button needs no wrapper of its own —
+   `<ShareChartButton>` renders the `<button>` directly into
+   `.am-bench-headtools`'s flex row, so this class and its two receipt-colour
+   rules (`.am-bench-share-note` / `.am-bench-share-error`) are deleted rather
+   than kept pointing at a wrapper that no longer exists. */
+
+.am-bench-metricsel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.am-group-note a {
+  color: var(--accent-soft);
+}
+
+/* -- the comparison chart: the tab's hero instrument -------------------------
+   One horizontal bar per BENCHMARKED model, ranked best-first (SPEC AI-14).
+   Plain CSS flex, not SVG — a horizontal bar's length is `width: N%` on a
+   flex child and its value label is simply the next flex sibling, so there is
+   no stretched-viewBox distortion to work around (ModelTrendChart.tsx needs
+   that machinery for a line chart; a bar chart does not). Sits ABOVE the
+   leaderboard rows in the DOM (BenchmarkTab's `CapabilitySection`) — it
+   answers the question a reader arrives with, and unlike the per-model trend
+   chart below it renders whenever more than one model has been benchmarked,
+   which is the normal case. */
+.am-bench-compare {
+  margin-bottom: var(--am-gap-head);
+  /* Capped independently of `.am-bench`'s own ceiling (D482) — this is the
+     one instrument on the tab where more width is actively harmful: its
+     name column (`.am-bench-compare-namecol`, below) is fixed-width while
+     its plot area stretches, so extra width lengthens every bar and drags
+     the value label after it further from the name it belongs to. On the
+     WHOLE wrapper, not just `.am-bench-compare-body` — `.am-bench-compare-
+     foot`'s tick labels are positioned by percentage relative to THEIR OWN
+     element's width, and body/foot are separate block-level children of
+     this one; capping only the body would let the foot's axis row stay
+     wide while the plot above it narrowed, misaligning every gridline from
+     the tick that names it. 900px keeps this chart at roughly the same
+     footprint it always had (`.am-bench`'s pre-D482 1000px, minus the
+     panel's own horizontal padding — `.am-bench .am-section`'s
+     `padding: 16px 20px 20px` above), no matter how wide `.am-bench`
+     itself is allowed to grow at a large viewport; the extra room becomes
+     blank trailing space to the chart's right rather than additional bar
+     length. */
+  max-width: 900px;
+}
+
+.am-bench-compare-body {
+  display: flex;
+  gap: 10px;
+}
+
+/* Shared by the name column AND the empty spacer in the axis row below it —
+   ONE class for both widths, so the plot area and the tick row explaining it
+   can never drift out of alignment from editing one without the other. */
+.am-bench-compare-namecol {
+  flex: 0 0 26ch;
+  min-width: 0;
+}
+
+.am-bench-compare-names {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-name {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.am-bench-compare-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.am-bench-compare-axis-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+
+/* The gridlines above zero — lighter and dashed, the same treatment
+   `.am-bench-gridline` gives the trend chart's own axis, so the two
+   instruments read as one visual system. */
+.am-bench-compare-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--border);
+  opacity: 0.6;
+}
+
+.am-bench-compare-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.am-bench-compare-row {
+  height: 22px;
+  display: flex;
+  align-items: center;
+}
+
+/* The bar's own colour matches the trend chart's line (`--accent`) — one
+   instrument's worth of colour vocabulary shared across both, rather than a
+   second palette decision for a chart that is showing the same underlying
+   numbers a different way. */
+.am-bench-compare-bar {
+  height: 10px;
+  min-width: 2px;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+.am-bench-compare-value {
+  margin-left: 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.am-bench-compare-foot {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.am-bench-compare-axis {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 14px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-compare-axis span {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* The first tick (0) and the last would otherwise hang off the plot's own
+   edges under `translateX(-50%)` — nudge them back onto the axis rather than
+   letting either spill past the chart's own box. */
+.am-bench-compare-axis span:first-child {
+  transform: translateX(0);
+}
+
+.am-bench-compare-axis span:last-child {
+  transform: translateX(-100%);
+}
+
+/* -- Run all: one queue per capability, driven by BenchmarkTab's runAllFor --
+   Sits between the two chart instruments and the ledger rows it drives —
+   right above `.am-bench-rows`, since that is exactly the list it acts on.
+   The full `--am-gap-head` above stays: that break is what separates this
+   instrument from the comparison chart, and is still owed. What changes
+   (D479) is BELOW: see `.am-bench-runall + .am-bench-rows` — the button and
+   the rows it drives now close ranks into one block. */
+.am-bench-runall {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+/* The idle Run All button (D479) — see the long comment in BenchmarkTab.tsx
+   above this button's JSX for the full rationale; this is just the chrome
+   that carries it out. `--fg` border and text, transparent plate: no accent
+   (that ink is spoken for as chart/value/selection data on this tab) and no
+   fill (reserved by the D475 precedent for the one truly consequential
+   action beside a cheaper one — here Run All has no cheaper sibling to sit
+   next to, but it IS the single most expensive press on this page, so it
+   gets the same restraint a fill would violate). Glyph then label, one
+   inline-flex row, so `MenuIcons.play` sits on the same baseline as the
+   text rather than floating above or below it. */
+.am-bench-runall-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+/* Hover/focus wash in `--fg` at the same 12% a Try button's accent hover
+   uses (`.am-card-try:hover` in this file's Models-tab neighbour) — the
+   fill stays a wash, never solid, for the identical reason: a solid --fg
+   fill here would BECOME the filled plate the comment above just rejected.
+   `disabled` gets no hover at all; `busy`'s title already explains why. */
+.am-bench-runall-btn:hover:not(:disabled),
+.am-bench-runall-btn:focus-visible:not(:disabled) {
+  background: color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.am-bench-runall-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.am-bench-runall-btn svg {
+  flex: none;
+}
+
+.am-bench-runall-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* Reuses `.am-runtime-dot`'s own animation (defined alongside
+   `.am-bench-busy`) — the same "something is happening" signal a single
+   in-flight row's own spinner already gives, not a second one invented for
+   the queue. */
+
+.am-bench-runall-tally,
+.am-bench-runall-note {
+  color: var(--fg-muted);
+}
+
+.am-bench-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--am-gap-head);
+}
+
+/* D479: when a Run All button precedes the rows, it IS that list's control
+   — the two should read as one block, not two instruments sharing a gap
+   that belongs to neither. Collapse `.am-bench-rows`'s own `--am-gap-head`
+   down to the same 6px the rows already use between each other, but only
+   when the button is actually there: `runnable.length === 0` still hides
+   `.am-bench-runall` entirely, and in that case the rows keep their full
+   head gap under the chart above, same as always. */
+.am-bench-runall + .am-bench-rows {
+  margin-top: 6px;
+}
+
+/* One model, one line: who, the bar, the number, the button. Compacted from a
+   two-line row (a headline plus a full sentence of detail) specifically so a
+   failed run's error paragraph — which used to dump straight into this row —
+   cannot dominate the section; it lives behind the row's own disclosure now
+   (click the row to open `.am-bench-rowexpand` below it — the chevron,
+   `.am-bench-rowdetail-chevron`, is only that state's indicator, not the
+   control). */
+.am-bench-row {
+  display: grid;
+  /* FOUR columns, not three — a leading one reserved for the chevron
+     (D481), sized to its own 16×16 glyph (`MenuIcons`' `svgProps`) rather
+     than `auto`: `auto` would size to content, and an EMPTY cell (a
+     non-expandable row draws no glyph — see `.am-bench-rowdetail-chevron`
+     below) would collapse to zero width, pulling that row's model name
+     left of every other row's. A fixed column keeps every row's chevron —
+     drawn or not — at the identical x, which is the whole point of an
+     accordion's disclosure indicator living in a column of its own rather
+     than wherever the text before it happens to end (D481's own history:
+     it used to sit after the headline and delta, and visibly drifted
+     row to row with how long those were). Not the trailing column either —
+     the Run `▷` button already owns that end, and a second triangle there
+     would read as a second run control.
+     The 30ch model-name column is wide enough that two repos differing
+     only in a variant suffix ("whisper-large-v3-mlx" vs. "-turbo") both
+     fit whole — the old 16ch column truncated both to the identical
+     "whisper-large-v3…", which defeats a LEADERBOARD: two rows a reader
+     cannot tell apart. There was also just unused space here (the third
+     column already flexes), so widening this one costs nothing. */
+  grid-template-columns: 16px minmax(0, 30ch) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  /* No `cursor`/focus ring here any more — those are conditional on
+     `.expandable` (below) and on the row's own focusable descendant
+     respectively. This is a plain container: BenchmarkTab.tsx puts NO
+     `role`/`tabIndex` on it, since a `<button>` (the Run button, always
+     inside) cannot contain another `<button>`, and the row's own click
+     handler is enough to make it clickable without also making it
+     ITSELF a focus stop — the model-name button inside is that stop. */
+}
+
+/* The whole-row accordion header (D481) — a hand cursor for the entire row,
+   not a stray div-as-button rule any more, and gated so a row with nothing
+   to expand (`row === null`, "Never benchmarked") never LOOKS clickable:
+   BenchmarkTab.tsx only adds this class when `row !== null`. */
+.am-bench-row.expandable {
+  cursor: pointer;
+}
+
+/* Hover says "this row CAN be opened" — a small step toward the border, far
+   short of the accent treatment `.selected` below uses, and the two states
+   must stay visually distinct rather than one bleeding into the other.
+   `:not(.selected)` is what keeps them apart: without it this rule's THREE
+   simple selectors would outrank `.selected`'s two on specificity alone and
+   win regardless of source order, downgrading an already-OPEN row's accent
+   border to this muted hover tint the instant a pointer passed over it —
+   exactly the "two states blurring together" this rule exists to prevent.
+   So hover only ever does anything on a CLOSED expandable row; an open
+   row's border stays accent no matter where the pointer is, which is
+   itself the distinguishing behaviour a reader can rely on. Never drawn on
+   a non-expandable row either (gated on `.expandable`, same as the cursor
+   above) — hovering a never-benchmarked row must not promise an action its
+   click will refuse to perform. */
+.am-bench-row.expandable:hover:not(.selected) {
+  border-color: color-mix(in srgb, var(--fg) 35%, var(--border));
+}
+
+/* The row whose expansion (detail text + trend, D481) is open right below
+   it. Border plus a light accent wash rather than either alone — the same
+   idiom `.bar-menu-item.active` (explorer.css) uses for its own "which one
+   is this" state, kept stronger than the hover tint above so the two never
+   blur into each other.
+
+   **Also: one card that grew, not a header with a floating block under
+   it.** This row is ALWAYS immediately followed by its own
+   `.am-bench-rowexpand` whenever `.selected` is set (both are driven by
+   the identical `model === selectedModel && row !== null` test in
+   BenchmarkTab.tsx), so the pairing is a real invariant, not a guess —
+   square the row's own bottom corners and drop its bottom border, and
+   `.am-bench-rowexpand` below picks up the matching side/bottom border,
+   radius and background so the two read as one continuous card rather
+   than two stacked with a seam between them. */
+.am-bench-row.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+}
+
+.am-bench-model {
+  min-width: 0;
+  font-size: 12px;
+  /* `middleEllipsis` (lib/benchmark.ts) does the truncating now, to a budget
+     matching this column's width — the middle, not the tail, is what it
+     elides, because two names sharing a long prefix differ at the END. This
+     overflow/nowrap pair is a safety net for the rare id that still exceeds
+     the budget's character count in a wider glyph, not the primary mechanism.
+     The full id is the row's `title`. */
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* This cell is a real `<button>` for an EXPANDABLE row (BenchmarkTab.tsx) —
+   the row's one focusable disclosure control, carrying `aria-expanded`/
+   `aria-controls` — so it needs the usual reset off native button chrome:
+   no border/background of its own (the row already draws both), text-align
+   left rather than centred, and the same font this cell always had rather
+   than the browser's own button font. A non-expandable row keeps a plain
+   `<div>` here instead (no rule needed — a div has none of this chrome to
+   reset in the first place). */
+button.am-bench-model {
+  display: block;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: inherit;
+}
+
+button.am-bench-model:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* A model whose weights are gone but whose runs are not. Not an error colour —
+   nothing failed; the history simply outlived its subject. Its own line under
+   the name, since the name column is now too narrow to fit both. */
+.am-bench-gone {
+  display: block;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* **`flex-wrap: wrap` is the actual fix for a real overlap bug**, not a
+   defensive extra: every child here (`.am-bench-headline`, the delta, the
+   Details expander) is `flex: 0 0 auto` and none of them can shrink, so at a
+   narrow enough width (~650px total window — well within a real reader's
+   split-pane, and this row's own value strings got longer this round: "1384.6
+   × realtime · 281 MB") their combined width used to exceed this cell's
+   shrunk grid track. Nothing here clipped that overflow, so it painted PAST
+   the cell — the Details expander vanishing behind the Run button, reading as
+   a missing control rather than a layout bug. Wrapping lets the row grow
+   taller instead: the button's own grid column is unaffected (a separate
+   track), so it never overlaps regardless of how many lines this cell wraps
+   to. */
+.am-bench-latest {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  font-size: 12px;
+}
+
+/* No `white-space: nowrap` here (there used to be one) — below roughly
+   600px this row's own value string ("1384.6 × realtime · 281 MB") is wider
+   than the whole flexible column on its own, so `.am-bench-latest`'s
+   `flex-wrap` (which moves the DELTA and Details onto their own line) is not
+   enough by itself: the headline was still one unbreakable unit, still wide
+   enough to overflow past the button's column at that width. Letting it wrap
+   internally is the same fix at one layer deeper — nothing here FORCES a
+   wrap at any width that already fits it on one line, since flex items
+   without a fixed width still lay out on one line while there is room. */
+.am-bench-headline {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Never benchmarked" — the absence of a measurement, said quietly. It is the
+   normal state of a fresh machine, not a warning. */
+.am-bench-never {
+  color: var(--fg-muted);
+}
+
+/* A run in flight. A plain spinner line, NOT `.am-card-runtime`/ModelProgress:
+   that draws a job row's detail and byte counts, and a benchmark deliberately
+   has no job row (see BenchmarkTab.tsx). There is genuinely nothing to report
+   until the held-open request returns, and an invented percentage is what makes
+   live work read as frozen. The reused `.am-runtime-dot` is the one honest
+   signal — something is happening. */
+.am-bench-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-muted);
+}
+
+/* The row's open/closed STATE INDICATOR (D481) — a plain `<span
+   aria-hidden>` now, not a button: the whole row is the disclosure control
+   (its model-name cell carries the actual `aria-expanded`/`aria-controls`),
+   so a second independently-focusable, independently-clickable chevron
+   would just be a smaller, harder-to-hit copy of the same control — which
+   is exactly the design this class used to BE (a 16px glyph as the only
+   thing on a 36px row that actually opened it) and exactly what "let's make
+   the entire row have a dropdown" replaces.
+
+   **Lives in the row's own LEADING grid column now, not beside the
+   headline and delta.** It used to sit after them, inside `.am-bench-
+   latest`, which put its x-position at the mercy of however long that
+   row's own text happened to be — a chevron that visibly drifted row to
+   row is not a column, it is noise near the middle of the row. An
+   accordion's disclosure indicator belongs at the leading edge, and the
+   trailing edge is already the Run `▷` button's — a second triangle there
+   would read as a second run control. This element is now rendered for
+   EVERY row, expandable or not, so every row's chevron — drawn or empty —
+   shares the identical x (`.am-bench-row`'s fixed leading column, above);
+   it is simply left with no glyph inside it for a non-expandable row
+   rather than the column disappearing and pulling that row's name left of
+   its neighbours'. */
+.am-bench-rowdetail-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-muted);
+}
+
+/* Rotated open rather than swapped for a second "collapse" glyph. Keyed off
+   `.am-bench-row.selected` — the ROW's own open/closed class — rather than
+   an `aria-expanded` this element no longer carries (that attribute now
+   lives on the model-name button, not here): the row's class is the one
+   place this open/closed fact lives, so every visual dependent on it,
+   chevron included, reads off the SAME flag rather than a copy that could
+   drift from it. */
+.am-bench-row.selected .am-bench-rowdetail-chevron {
+  transform: rotate(90deg);
+}
+
+/* The detail text, now inside the row's full-width expansion rather than a
+   `<details>`'s own `<p>` — TTFT, load time, device, or a failed run's full
+   error text. Same typography as before the move: it is evidence for a row
+   whose headline already gave the answer, not something that needs to shout
+   once it is finally visible. */
+.am-bench-rowexpand-detail {
+  margin: 0 0 10px;
+  max-width: 60ch;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  font-size: 11px;
+}
+
+/* -- icon-only buttons: the spinner glyph's motion (SPEC AI-14) --------------
+   The glyph itself (`MenuIcons.spinner`) is a static partial ring; this is
+   the only thing that turns it into "working". Shared by the Benchmark tab's
+   Run button and the Share button, so one rule covers both rather than two
+   copies drifting apart. */
+.am-icon-spin {
+  display: inline-flex;
+  animation: am-icon-spin 0.9s linear infinite;
+}
+
+@keyframes am-icon-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-icon-spin { animation: none; }
+}
+
+/* A run stopped from outside — `fused.ai.cancel()` from another page reaching
+   the shared worker. Muted, not `--error`: nothing failed and the model is not
+   at fault, so it reads as an explanation rather than as a fault. Deliberately
+   not the ErrorBanner for the same reason. */
+.am-bench-stopped {
+  margin: 0 0 var(--am-gap-head);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The change against the last comparable run. Colour comes from `better`, never
+   from the sign: on an image section a negative change is the improvement, so a
+   green-for-plus rule would be wrong on one section in four. */
+.am-bench-delta {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.am-bench-delta.better {
+  color: var(--success-bright);
+}
+
+.am-bench-delta.worse {
+  color: var(--warning-soft);
+}
+
+/* -- the selectors: capability, and which metric to read it by ----------------
+   The page-level toolbar now holds one bare `<select>` — Capability — with no
+   visible caption of its own (an option's text already names the capability,
+   e.g. "Text generation", so a "Capability" label beside it repeated that);
+   `aria-label` on the element (BenchmarkTab.tsx) keeps it named for assistive
+   tech. Metric moved into each capability's own card below and is now
+   captionless too (`.am-bench-metricsel`), carrying its unit and direction cue
+   inside its own option text rather than in a badge — see BenchmarkTab.tsx for
+   why native
+   selects rather than a segmented control: this count of options does not
+   earn a second control vocabulary on this page, and a THIRD control for the
+   model picker is avoided entirely — a leaderboard row IS the model picker,
+   by click. `flex-wrap` survives from when this row held two selects; kept in
+   case a page-level control joins Capability here again. */
+.am-bench-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-bottom: var(--am-gap-head);
+}
+
+/* `.field-control` carries the app's canonical select skin (styles/fields.css)
+   — its own chevron, its own metrics — so this looks like every other select
+   in the app rather than the platform's bare one. What's left here is a floor
+   on the width: a bare native select sizes to whichever option happens to be
+   showing, so picking a short label ("Embeddings") would visibly narrow the
+   control the reader is about to click again. */
+.am-bench-capsel-input {
+  min-width: 220px;
+}
+
+/* -- the row's expansion: detail text, then the trend, one control (D481) --
+   A plain flex child of `.am-bench-rows`, directly after the one row whose
+   model is `selectedModel` — not in its own block below the whole
+   leaderboard, which is where the trend half used to live on its own. At N
+   models that block-below position put the trend a full screen away from
+   the click that changed it.
+
+   **This block also carries the per-row detail/failure text** that used to
+   open behind its own `<details>` inside the row's grid cell — one
+   disclosure for both, rather than two independent expanders on the same
+   row (the hazard this decision has been through several rounds of
+   fixing). Detail text first (`.am-bench-rowexpand-detail`), the trend
+   after — the text explains what the row's own headline had no room for,
+   the chart elaborates on it.
+
+   **Drawn as ONE continuous card with the row above it, not a floating
+   block under a header.** The row it follows is ALWAYS `.am-bench-row
+   .selected` (same `model === selectedModel && row !== null` test drives
+   both, in BenchmarkTab.tsx) — that row's own bottom corners are squared
+   and its bottom border dropped (see `.am-bench-row.selected`), so this
+   element supplies the matching left/right/bottom border, the bottom
+   radius the row's TOP corners already have, and the identical accent
+   wash, with `margin-top` cancelling `.am-bench-rows`'s own 6px `gap` so
+   there is no seam between "the header" and "the part that opened". */
+.am-bench-rowexpand {
+  /* Full row width for free: this is a SIBLING of `.am-bench-row`'s grid, not
+     a cell inside it, so it never has to fight that row's
+     `grid-template-columns` for room the chart needs in full. */
+  padding: 10px 12px 12px;
+  /* Cancels `.am-bench-rows`' own 6px flex `gap` between this and the row
+     above it — a negative margin equal to the gap is the standard way to
+     opt ONE pair of flex/grid siblings out of an otherwise-uniform gap
+     without touching the container itself (the gap must still separate
+     every OTHER pair of rows normally). */
+  margin-top: -6px;
+  border: 1px solid var(--accent);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg));
+}
+
+/* `.am-group-note` is a widely shared class (Local tab section notes, the
+   empty-leaderboard note, the no-chart note above the rows) whose base rule
+   (near the top of this file) carries a `--am-gap-head` bottom margin sized
+   for a section-level caption clearing space before the cards under it.
+   The "no {metric} recorded for this model yet" note is the ONE usage of
+   it that lives INSIDE this expansion instead — there is no card under it
+   to clear, only `.am-bench-rowexpand`'s own bottom padding, so that margin
+   just opened the same stale gap `.am-bench-chart`/`.am-bench-trend-single`
+   used to. Scoped to this one descendant context rather than touched on
+   the shared base rule, which every OTHER `.am-group-note` still needs. */
+.am-bench-rowexpand .am-group-note {
+  margin-bottom: 0;
+}
+
+/* No bottom margin here any more — checked (grep) and `ModelTrendChart.tsx`
+   is this class's ONE consumer, and that component is itself only ever
+   rendered inside `.am-bench-rowexpand` now (D481 moved the trend chart
+   off its own page-level section and into the row's expansion); it is NOT
+   shared with `ComparisonChart` (the section-level hero chart), which
+   carries its own, entirely separate `.am-bench-compare*` classes and
+   never touches this one. So the old `--am-gap-head` (16px) bottom margin
+   — sized for when this WAS a page-level section that needed to clear
+   space before the archive table below it — had nothing left to clear:
+   `.am-bench-rowexpand`'s own padding is the expansion's bottom edge now,
+   and the old margin only opened an extra gap between the expansion and
+   the NEXT row, breaking `.am-bench-rows`' 6px rhythm between every other
+   pair of rows. */
+.am-bench-chart {
+  margin-bottom: 0;
+}
+
+/* The ONE-RUN state: no trend to draw (a single point has no before to read
+   it against), so no ~400px frame either — the actual bug this exists to fix
+   was a lone dot in an otherwise empty chart, reading as the page being
+   broken rather than as "here is the one number we have". A fraction of the
+   chart's own height, the value stated as plainly as the leaderboard states
+   it, with the fix in the same breath.
+
+   **No border/background/margin of its own any more.** Like `.am-bench-
+   chart` above, this class's one consumer (BenchmarkTab.tsx) is inside
+   `.am-bench-rowexpand` — the row's own card — so a second bordered,
+   `--bg`-filled box here drew a box inside a box, with a visible band of
+   plain `--bg` sitting inside the expansion's accent wash around it. The
+   card is the container now; this is one of its children, not a second
+   container of its own. */
+.am-bench-trend-single {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.am-bench-trend-value {
+  font-size: 20px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-trend-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+/* The y-axis label column plus the plot, side by side. Both children share the
+   plot's own fixed height (`--am-bench-plot-h`) so a tick label's `top: N%` and
+   the gridline it names land on the same pixel. */
+.am-bench-chartbody {
+  --am-bench-plot-h: 220px;
+  display: flex;
+  align-items: stretch;
+  /* Tight on purpose: the tick labels are meant to read as PART of the axis
+     they name, not a separate column floating beside it — a wider gap here
+     is what made the y-axis numbers look detached from the plot's left edge. */
+  gap: 3px;
+}
+
+.am-bench-yaxis {
+  position: relative;
+  flex: 0 0 auto;
+  width: 36px;
+  height: var(--am-bench-plot-h);
+}
+
+.am-bench-ytick {
+  position: absolute;
+  right: 0;
+  left: 0;
+  /* Centred on its gridline rather than sitting above it, so the label reads
+     as "this line" and not "the line below me". */
+  transform: translateY(-50%);
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+.am-bench-plotwrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Height is set HERE and the viewBox does not preserve its aspect ratio, so the
+   plot fills whatever width the column has without the component measuring
+   anything (see ModelTrendChart.tsx).
+
+   **No `background`/`border`/`border-radius` of its own any more** — this
+   was the actual "box inside a box": a `--bg`-filled, bordered rectangle
+   floating inside `.am-bench-rowexpand`'s own accent-tinted card, with a
+   visible plain band around the plot where the two backgrounds disagreed.
+   `ModelTrendChart` (this class's only consumer, confirmed by grep — it is
+   NOT shared with `ComparisonChart`, which draws its own `.am-bench-
+   compare-plot`) already delineates the plot with its OWN gridlines and
+   baseline (`.am-bench-gridline`/`.am-bench-axis-line`, drawn inside the
+   SVG) — a second, outer rectangle around all of that was doing the same
+   job twice. */
+.am-bench-plot {
+  display: block;
+  width: 100%;
+  height: var(--am-bench-plot-h);
+}
+
+.am-bench-axis-line {
+  stroke: var(--border);
+  stroke-width: 1;
+  /* The viewBox is stretched horizontally, which would scale a stroke with it. */
+  vector-effect: non-scaling-stroke;
+}
+
+/* The gridlines above zero — lighter than the baseline, since the baseline is
+   the one that carries the domain's promise (the axis starts at zero) and the
+   others are just its equal-step siblings. */
+.am-bench-gridline {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+  vector-effect: non-scaling-stroke;
+}
+
+/* `color` set once here rather than on a per-series wrapper: the trend chart
+   (ModelTrendChart.tsx) is scoped to ONE model now, so there is no longer a
+   categorical palette to pick from — `--series-1..6` (tokens.css) stays
+   reserved for wherever a page next needs to tell several lines apart by hue.
+   The line, its dots and its value label all inherit this ONE declaration,
+   the same reason `currentColor` was used when there were several: a label
+   whose colour were declared separately from its line could disagree with
+   the chart. */
+.am-bench-line,
+.am-bench-dot,
+.am-bench-endlabel {
+  color: var(--accent);
+}
+
+.am-bench-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.am-bench-dot {
+  fill: currentColor;
+  stroke: var(--bg);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The latest run's own value, anchored to its point — see ModelTrendChart's
+   comment on why this is HTML positioned by percentage rather than SVG
+   `<text>`, and on why it shows the VALUE rather than the model name (the
+   section heading above already names it).
+   No `transform` here — ModelTrendChart.tsx sets it inline, flipping the
+   anchor near an edge (right-aligning / dropping below the point) so a label
+   near the panel's border or its top gridline extends INTO the plot instead
+   of overflowing it. A single CSS rule cannot do that: it would need to know
+   where on the chart THIS particular point landed. */
+.am-bench-endlabel {
+  position: absolute;
+  white-space: nowrap;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+/* The date ticks, in a row UNDER the plot rather than as <text> inside a
+   stretched viewBox — the same reason UsageChart puts its axis in a sibling
+   div. Left-aligned first tick, right-aligned last, so each date sits under
+   the edge of the plot it actually names; a middle tick (3 runs or more) reads
+   fine centred between them. */
+.am-bench-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 4px;
+  padding-left: 39px; /* clears the y-axis label column (36px + 3px gap) */
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+
+/* The single date every time tick shares (`chartAxisTicks`'s `dateCaption`) —
+   present only when the axis switched from dates to times because every run
+   landed the same day. Its own line under the ticks, not squeezed into the
+   flex row above: that row's `space-between` already spaces exactly three
+   things, and a fourth would either crowd the middle tick or (if excluded
+   from the distribution) sit at an arbitrary offset from it. */
+.am-bench-axis-caption {
+  margin-top: 2px;
+  padding-left: 39px;
+  font-size: 10px;
+  color: var(--fg-muted);
+}
+
+/* -- the run archive -------------------------------------------------------- */
+
+/* Collapsed by default. The rows above are the answer and this is the evidence,
+   so it opens on request — the summary says how many runs are folded, which is
+   what keeps "collapsed" from meaning "hidden". */
+.am-bench-history {
+  margin-top: var(--am-gap-head);
+  font-size: 12px;
+}
+
+.am-bench-history > summary {
+  cursor: pointer;
+  color: var(--fg-muted);
+  padding: 4px 0;
+}
+
+/* The table is wider than a narrow window on purpose (eight columns of facts),
+   so it scrolls INSIDE this box rather than making the page scroll sideways. */
+.am-bench-tablewrap {
+  overflow-x: auto;
+  margin-top: 6px;
+}
+
+.am-bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.am-bench-table th,
+.am-bench-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Numbers right-aligned and tabular, so a column of them can be compared by
+   eye — which is the entire reason this table exists. */
+.am-bench-table th.num,
+.am-bench-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-bench-table thead th {
+  padding: 0;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+
+/* The whole header cell is the sort control, so the hit target is the column
+   heading rather than a few pixels of text inside it. */
+.am-bench-sort {
+  width: 100%;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+.am-bench-sort:hover {
+  color: var(--fg);
+}
+
+.am-bench-sort:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* A run that failed. Tinted rather than hidden: "this model OOMs on this
+   laptop" is a result, and it has to be legible as one. */
+.am-bench-table tr.failed td {
+  color: var(--error);
+}
+
+/* A run measured under a different workload version — the comparability seam.
+   Marked so a reader knows why no delta is drawn across it. */
+.am-bench-rev {
+  color: var(--warning-soft);
+  font-size: 11px;
+}
+
+.am-bench-forget {
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.am-bench-forget:hover {
+  color: var(--error);
+  border-color: var(--border);
+}
+
+.am-bench-forget:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

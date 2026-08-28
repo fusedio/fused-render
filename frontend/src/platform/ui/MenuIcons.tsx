@@ -1,5 +1,8 @@
-// Inline monochrome icons for the file-explorer context menu
-// (components/ContextMenu.tsx, wired up in views/Listing.tsx). Same house
+// Inline monochrome icons for menus drawn with @platform/ui/ContextMenu — the
+// file explorer's right-click menus first, and since D426 the AI models page's
+// task/sort dropdowns too. ONE table, because a glyph is a word: a funnel that
+// means "narrow this down" in one menu and something else in another is a
+// vocabulary with two dialects. Same house
 // style as FileIcons/SplitIcons but tuned to match macOS Finder's menu icons:
 // 16x16, viewBox 0 0 24 24, fill none, stroke currentColor at a lighter 1.5px
 // weight, round caps/joins. Hand-written Lucide-geometry paths — no npm
@@ -23,6 +26,13 @@ const svgProps = {
 // One entry per menu action. Kept as ready-made elements (not components) so
 // callers just drop `MenuIcons.copy` into an item's `icon` slot.
 export const MenuIcons: Record<string, ReactNode> = {
+  // Camera — a capture of what is on screen ("Set Current View as Preview").
+  camera: (
+    <svg {...svgProps}>
+      <path d="M4 8.5A1.5 1.5 0 0 1 5.5 7h2.3l1.4-2h5.6l1.4 2h2.3A1.5 1.5 0 0 1 20 8.5v9A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z" />
+      <circle cx="12" cy="13" r="3.2" />
+    </svg>
+  ),
   // Open — arrow pointing up-and-out of a box.
   open: (
     <svg {...svgProps}>
@@ -46,6 +56,16 @@ export const MenuIcons: Record<string, ReactNode> = {
   folder: (
     <svg {...svgProps}>
       <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
+    </svg>
+  ),
+  // Open in New Tab — browser window (tab strip across the top) with a plus in
+  // the body. Distinct from `open` (an arrow out of a box: this same page
+  // navigating) and from `folder`: the target lands in ANOTHER tab.
+  newTab: (
+    <svg {...svgProps}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18" />
+      <path d="M12 12v5M9.5 14.5h5" />
     </svg>
   ),
   // Delete — trash can with lid + two ribs.
@@ -78,6 +98,16 @@ export const MenuIcons: Record<string, ReactNode> = {
       <rect x="3" y="4" width="18" height="4.5" rx="1" />
       <path d="M5 8.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8.5" />
       <path d="M10 12h4" />
+    </svg>
+  ),
+  // Download — arrow dropping into a tray. Distinct from `compress` (an
+  // archive box): exporting an app file is a download to the user, while
+  // Compress writes an archive beside the folder and never leaves the disk.
+  download: (
+    <svg {...svgProps}>
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M12 15V3" />
     </svg>
   ),
   // Cut — scissors.
@@ -136,6 +166,126 @@ export const MenuIcons: Record<string, ReactNode> = {
     <svg {...svgProps}>
       <path d="M4 8V6a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8z" />
       <path d="M12 11v5M9.5 13.5h5" />
+    </svg>
+  ),
+
+  // ---- Choosing rather than doing -----------------------------------------
+  // The five below are for menus that are a set of ALTERNATIVES (the AI models
+  // page's task filter and result sort, D426) rather than a list of actions.
+  // They live here with the rest because the vocabulary is shared: a funnel has
+  // to mean "narrow this down" in whatever menu it appears in, and a second
+  // hand-rolled funnel three directories away is how one meaning becomes two
+  // glyphs. Downloads deliberately has no entry of its own — it reuses
+  // `download` above, an arrow into a tray, which is exactly what a download
+  // COUNT is a count of.
+
+  // Filter — funnel. "Show me only some of these", which is what a task filter
+  // does; distinct from `openWith`'s grid of choices, which switches WHICH tool
+  // rather than narrowing a set.
+  filter: (
+    <svg {...svgProps}>
+      <path d="M20 4H4l6.5 8v6l3 1.5V12L20 4z" />
+    </svg>
+  ),
+  // Likes — heart. The Hub's own word for the count, and its own glyph for it.
+  heart: (
+    <svg {...svgProps}>
+      <path d="M12 20.5l-6.4-6.4A4.5 4.5 0 0 1 12 7.8a4.5 4.5 0 0 1 6.4 6.3L12 20.5z" />
+    </svg>
+  ),
+  // Updated — clock. NOT `refresh` (two circular arrows), which is already the
+  // page's glyph for "fetch this again" — an action the reader can take. This
+  // is a fact about the repo: when it last changed.
+  clock: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3.2 2" />
+    </svg>
+  ),
+  // New — sparkle. Recently PUBLISHED, which is not the same fact as recently
+  // changed, so it cannot share the clock.
+  sparkle: (
+    <svg {...svgProps}>
+      <path d="M11 3.5l1.6 4.4 4.4 1.6-4.4 1.6L11 15.5 9.4 11.1 5 9.5l4.4-1.6L11 3.5z" />
+      <path d="M17.5 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8.8-2z" />
+    </svg>
+  ),
+  // Size — hard drive. The figure a size sort ranks by is bytes you will have to
+  // store, so the glyph is the thing they land on rather than a scale or a
+  // ruler: the reader's question is "what fits".
+  drive: (
+    <svg {...svgProps}>
+      <path d="M5.6 5.1L3 11v6a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-6l-2.6-5.9A2 2 0 0 0 16.6 4H7.4a2 2 0 0 0-1.8 1.1z" />
+      <path d="M3 11h18" />
+      <path d="M6.5 15h.01M10 15h.01" />
+    </svg>
+  ),
+
+  // ---- Benchmark tab buttons (SPEC AI-14) ----------------------------------
+  // These four replace text labels with icons on the Benchmark tab; each
+  // caller keeps the word it replaced as both `aria-label` and `title`, so the
+  // glyph is a shorthand for the label rather than its only carrier.
+
+  // Run — a plain outline play triangle. Doubles for both "Run benchmark" and
+  // "Run again": the action is identical, only the tooltip's wording differs.
+  play: (
+    <svg {...svgProps}>
+      <path d="M8 5l11 7-11 7z" />
+    </svg>
+  ),
+  // Running — a partial ring, spun by `.am-icon-spin` (ai-models.css) rather
+  // than baked into the path, so the SAME glyph works in a static context
+  // (none today, but a second consumer should not need a second path). Not
+  // `refresh` (a full two-arrow loop, already meaning "fetch this again") —
+  // this is a plainer arc, the shape most spinners actually use.
+  spinner: (
+    <svg {...svgProps}>
+      <path d="M20 12a8 8 0 1 1-2.34-5.66" />
+    </svg>
+  ),
+  // Details disclosure — a chevron. Rotated 90° by `[open] > summary` in
+  // ai-models.css rather than swapped for a second path: a `<details>` is
+  // already the open/closed state, and a CSS rotation of one glyph is a
+  // smaller vocabulary than a "closed" and an "open" glyph that must always
+  // agree with each other.
+  chevron: (
+    <svg {...svgProps}>
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  ),
+  // Share — the three-node graph: one point on the left, two on the right,
+  // joined by the two edges between them. The universal "send this somewhere
+  // else" glyph, and it reads at 16px in a way the tray-plus-arrow it replaced
+  // did not: that one was a stack of three near-parallel strokes that blurred
+  // into `download`'s mirror image at button size, while three round nodes stay
+  // distinct shapes however small the button gets.
+  share: (
+    <svg {...svgProps}>
+      <circle cx="18" cy="5" r="2.6" />
+      <circle cx="6" cy="12" r="2.6" />
+      <circle cx="18" cy="19" r="2.6" />
+      <path d="M8.4 10.8l7.2-4.2" />
+      <path d="M8.4 13.2l7.2 4.2" />
+    </svg>
+  ),
+  // Stop — a plain filled-outline square, the universal "halt" glyph and
+  // distinct from `trash` (this does not delete anything that ran).
+  stop: (
+    <svg {...svgProps}>
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  ),
+  // Info — a circle with a dot above a stem, the universal "there is more to
+  // read here" glyph. Its one consumer (the Benchmark tab's per-capability
+  // workload explanation, D483) wraps it in a real `<button>` carrying
+  // `data-hint` (platform/lib/hints.ts, D474) rather than a native `title` —
+  // this glyph is the announced control, never the caption itself, so it
+  // stays the plain outline every other glyph here is.
+  info: (
+    <svg {...svgProps}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 8h.01" />
     </svg>
   ),
 };

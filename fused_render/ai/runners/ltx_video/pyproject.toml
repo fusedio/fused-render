@@ -1,0 +1,78 @@
+# The ltx_video runner's environment (SPEC §40, PY-16).
+#
+# LTX-2.3 on MLX, through `ltx-2-mlx` (https://github.com/xocialize/ltx-2-mlx)
+# — a pure-MLX, MIT-licensed port that is the only accessible engine keeping
+# AUDIO in the output (see the plan's "ltx-2-mlx, not mlx-video" decision:
+# mlx-video's own LTX loader wants the 57-108 GB bf16 trees and its Wan path
+# renders silent video). `worker.py` constructs `DistilledPipeline` from
+# `ltx_pipelines_mlx` and calls `generate_and_save` — the same "one folder,
+# one `pyproject.toml`, one `worker.py`" shape every runner here uses.
+#
+# **Both packages are declared, and that is not redundant.** `ltx-pipelines-
+# mlx` depends on `ltx-core-mlx` BY NAME with no version bound at all — there
+# is no PyPI release of either to version against; upstream's own workspace
+# resolves the pair through a root `uv.lock` this folder does not share. Name
+# only `ltx-pipelines-mlx` here and `uv sync` has no source for `ltx-core-mlx`
+# and fails to resolve; the runner would never build. See
+# `tests/test_ai_runner_deps.py`'s `SPLIT_DISTRIBUTIONS` table, which this
+# pair now shares an entry with the whisper runners' `sherpa-onnx` split —
+# same defect class (a project naming a companion it does not itself supply
+# a source for), different cause (no version bound to lose vs. no PyPI
+# listing to route to at all).
+#
+# **Pinned to a commit SHA, not a branch or a tag — because there is neither.**
+# Upstream ships no tags or releases (checked 2026-08-22; HEAD had moved as
+# recently as 2026-08-21), so a bare `git = "..."` source would re-resolve
+# HEAD on every fresh venv key, on a user's machine, with nothing here to
+# explain what changed — the exact unbounded-dependency risk
+# `test_every_runner_BOUNDS_its_model_runtimes` exists to catch for versioned
+# PyPI releases. A 40-hex `rev` is the only form of "pinned" a tagless,
+# releaseless repo can offer, and that test's git-aware half now accepts
+# exactly this shape (and only this shape — a branch name in `rev` still
+# fails it, see that test's own two synthetic cases). Bumping the sha is a
+# normal, deliberate change; it should happen with a render behind it, the
+# same discipline every version ceiling on this page already gets.
+#
+# `subdirectory` routes each source to its own package folder inside the one
+# monorepo checkout uv makes for the pin above — `packages/ltx-core-mlx` and
+# `packages/ltx-pipelines-mlx` are siblings in the same tree, not two repos.
+#
+# **ffmpeg.** `ltx_pipelines_mlx.utils.media_io` shells out to a real ffmpeg
+# executable to mux frames for I2V preprocessing, through `ltx_core_mlx.
+# utils.ffmpeg.find_ffmpeg()`. That function does not read an environment
+# variable — it is a bare `shutil.which("ffmpeg")` — so `worker.py` cannot
+# simply point an env var at `imageio_ffmpeg.get_ffmpeg_exe()`; it has to make
+# the bundled ffmpeg resolvable on PATH instead (see `worker.py` for exactly
+# how). `imageio-ffmpeg` is the right dependency for it: one wheel per
+# platform with a real, statically-linked executable inside, no source build,
+# no compiler — this folder's "wheels-only" rule.
+#
+# Bounded per this folder's own rule: the floor is the version installed when
+# this folder was written, the ceiling is the next major.
+[project]
+name = "fused-render-runner-ltx-video"
+version = "0.1.0"
+# ">=3.11", not this folder's siblings' ">=3.10": `ltx-core-mlx` and
+# `ltx-pipelines-mlx` both declare `requires-python = ">=3.11"` upstream
+# (gemma4-checkpoint support needs an mlx-lm only 3.11+ wheels carry), and `uv
+# sync` refuses to resolve a manifest whose own floor promises a Python this
+# folder's actual dependencies do not support. Every runner still builds on
+# the app's pinned 3.12 interpreter (`setting-up-dev-env`), so this changes
+# nothing about which Python is ever actually used — it only stops this one
+# folder's manifest from lying about what it needs.
+requires-python = ">=3.11"
+dependencies = [
+    "ltx-core-mlx",
+    "ltx-pipelines-mlx",
+    "imageio-ffmpeg>=0.5,<1",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+ltx-core-mlx = { git = "https://github.com/xocialize/ltx-2-mlx", rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc", subdirectory = "packages/ltx-core-mlx" }
+ltx-pipelines-mlx = { git = "https://github.com/xocialize/ltx-2-mlx", rev = "8ebae0a7cb08312fbf884790b91b4d155e714cdc", subdirectory = "packages/ltx-pipelines-mlx" }

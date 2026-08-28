@@ -11,12 +11,17 @@ distributions no app interpreter ships, so under this engine their scripts can
 die on a bare `ModuleNotFoundError` from inside a tile request — a message that
 names a package but not the reason, in a packaged app where `pip install` is not
 something the user can do (D176's defect all over again). Three reachable paths,
-all of which worked before D276:
+all of which worked before D276 (the second is now closed — see below):
 
   1. Preferences -> engine = builtin, a first-class UI toggle;
   2. `pip install "fused-render[bundled]"` on Python 3.10, where the `fused`
-     requirement's `python_version >= "3.11"` marker skips the engine entirely;
+     requirement's `python_version >= "3.11"` marker skipped the engine
+     entirely. Gone: `requires-python` is >=3.11, so there is no supported
+     interpreter that installs the extra and misses the engine this way;
   3. `FUSED_RENDER_ENGINE=builtin`.
+
+Two reachable paths remain, and either is enough for everything below: nothing
+here depends on WHICH of them selected the built-in engine.
 
 **The fix explains, it does not refuse.** The first version of this file pinned a
 pre-flight refusal keyed on the folder's state, and that was wrong at a
@@ -174,7 +179,7 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
     that message opens with the exact phrase this enrichment matches on. Which
     one the user sees depends on whether `x` is something map DECLARES:
 
-      * **not declared** (`xarray`, `torch`, anything of the user's own) —
+      * **not declared** (`user_owned_module`, `torch`, anything of the user's own) —
         worker's message survives, because the gate is the declaration and a
         module map never asked for is not this function's business;
       * **declared and absent here** (`duckdb` on a packaged app running the
@@ -199,7 +204,7 @@ def test_which_of_two_overlapping_messages_wins(tmp_path, monkeypatch):
     # Not declared by map -> worker keeps the floor.
     assert executor.explain_missing_module(
         worker, {"type": "ModuleNotFoundError",
-                 "message": worker_message.format("xarray")},
+                 "message": worker_message.format("user_owned_module")},
     ) is None
     # Declared by map and absent here -> the engine explanation takes over.
     taken_over = executor.explain_missing_module(

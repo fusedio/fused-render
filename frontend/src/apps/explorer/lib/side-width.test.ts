@@ -28,21 +28,26 @@ describe("COMPANION_FRAC", () => {
 describe("defaultSideWidth", () => {
   it("opens at 30% of a normal container", () => {
     expect(defaultSideWidth(1440)).toBe(432);
-    expect(defaultSideWidth(1200)).toBe(360);
+    expect(defaultSideWidth(1600)).toBe(480);
   });
 
   it("opens at 50% of a small container — 1000 counts as small", () => {
     // D283 restored this step, and the boundary is inclusive (`<=`), matching CSS
-    // `(max-width: 1000px)`. The assertion this replaces claimed the 280px FLOOR
-    // reached the same answer without a step, which was simply false: 280 of 720
-    // is 39%, not 50%. The boundary itself moved from 720 to 1000 on the owner's
-    // window, which was on the 30% side of it and wanted half.
+    // `(max-width: 1000px)`. The assertion this replaces claimed the OLD 280px
+    // floor reached the same answer without a step, which was simply false: 280
+    // of 720 is 39%, not 50%. The boundary itself moved from 720 to 1000 on the
+    // owner's window, which was on the 30% side of it and wanted half.
     expect(defaultSideWidth(1000)).toBe(500);
-    expect(defaultSideWidth(720)).toBe(360);
-    expect(defaultSideWidth(680)).toBe(340);
-    // Just over the boundary is the general case: 30% of 1001 is 300, over the
-    // 280px floor, so the share itself answers.
-    expect(defaultSideWidth(1001)).toBe(300);
+    // 50% of 720 is 360, under the 380px floor (MIN_W raised for the claude
+    // template's composer row, side-width.ts), so the floor answers here now.
+    expect(defaultSideWidth(720)).toBe(380);
+    // 680 no longer has room for both floors at all (680 - CONTENT_MIN_W = 360 <
+    // MIN_W), so this is the no-split branch below, not the 50% share.
+    expect(defaultSideWidth(680)).toBe(380);
+    // Just over the boundary is the general (30%) case, but 30% of 1001 is only
+    // 300 — still under the 380px floor, so the floor keeps answering until the
+    // share itself clears it (~1267px, see the 1600 case above).
+    expect(defaultSideWidth(1001)).toBe(380);
   });
 
   it("never needs the MIN_W floor once both floors fit — the SHARE always clears it", () => {
@@ -64,17 +69,18 @@ describe("defaultSideWidth", () => {
     }
   });
 
-  it("gives the content column its floor back when the SHARE is greedy", () => {
-    // 600px is a 50% container, so the share wants 300 — and the content column's
-    // 320px floor claws 20 of it back, leaving 280. The two floors meet exactly
-    // here, which makes 600 the tightest point in the range for the content side.
-    //
-    // It is the CONTENT cap that answers, not the column's own MIN_W: this case
-    // read "the column's own 280px floor beats 30% (=180)" and passed for that
-    // reason until D283 put 600 on the 50% side. Same number, different mechanism —
-    // which is exactly the kind of green worth distrusting.
-    expect(defaultSideWidth(600)).toBe(600 - CONTENT_MIN_W);
-    expect(defaultSideWidth(600)).toBe(280);
+  it("the two floors meet exactly at their sum, and MIN_W answers there", () => {
+    // This used to be 600px demonstrating the CONTENT column's floor clawing
+    // room back from a greedy 50% share (300 → 280). Raising MIN_W to 380
+    // (side-width.ts) retired that scenario outright: with MIN_W(380) +
+    // CONTENT_MIN_W(320) = 700, no container between the "no room for both
+    // floors" cutoff and the point where the SHARE itself clears 380 ever
+    // asks for more than `max` — the arithmetic no longer has a width where
+    // the content floor is the one doing the clipping. 700 is now the exact
+    // seam: one px narrower and there is no split to express at all (the
+    // "answers MIN_W when the two floors cannot both fit" case below), one at
+    // or past it and MIN_W answers directly before the share ever gets a say.
+    expect(defaultSideWidth(MIN_W + CONTENT_MIN_W)).toBe(MIN_W);
   });
 
   it("answers MIN_W when the two floors cannot both fit", () => {

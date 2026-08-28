@@ -46,8 +46,24 @@ def view_url_path(fs_path: str) -> str:
     norm = canonical_fs_path(fs_path)
     if fs_path.lower().endswith(".bookmark"):
         return "/explorer/view/_bookmark?file=" + quote(norm, safe="")
+    if fs_path.lower().endswith(".fused"):
+        # An OS-delivered .fused open (Finder double-click, Explorer "Open
+        # with") lands on the file's own EMBED URL: the fusedapp preview
+        # template extracts and renders the app chrome-free — the app
+        # experience, not the explorer (SPEC §43, D390). An in-explorer click
+        # uses the ordinary /explorer/view prefix (shell chrome kept), which
+        # needs no special case anywhere.
+        return embed_url_path(fs_path)
     segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
     return "/explorer/view/" + "/".join(segments)
+
+
+def embed_url_path(fs_path: str) -> str:
+    """Chrome-free embed URL path for an absolute fs path — the page alone,
+    no sidebar/breadcrumb/header. What an opened .fused app lands on."""
+    norm = canonical_fs_path(fs_path)
+    segments = [quote(seg, safe="!*'()") for seg in norm.lstrip("/").split("/") if seg]
+    return "/explorer/embed/" + "/".join(segments)
 
 
 def view_url(port: int, fs_path: str | None) -> str:

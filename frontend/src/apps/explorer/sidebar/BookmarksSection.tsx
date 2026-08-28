@@ -902,11 +902,12 @@ export default function BookmarksSection() {
   return (
     <div className="sidebar-section sidebar-bookmarks">
       <div
-        className="sidebar-heading recents-heading"
+        className={"sidebar-heading recents-heading" + (sectionCollapsed ? " collapsed" : "")}
         title={sectionCollapsed ? "Show bookmarks" : "Hide bookmarks"}
         onClick={toggleSectionCollapsed}
       >
         Bookmarks
+        <span className="sidebar-heading-chevron" aria-hidden="true" />
         {/* `.sidebar-count-chip` is the shared skin every count in this sidebar
             wears — the folder rows' nested count and the Tasks entry's unread
             count are the same element (sidebar.css). */}

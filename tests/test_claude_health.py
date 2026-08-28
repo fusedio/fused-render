@@ -12,6 +12,7 @@ module boundary (the same discipline as test_server_ai.py).
 """
 import json
 import os
+import sys
 import time
 
 import pytest
@@ -43,6 +44,11 @@ def _isolated_home(tmp_path, monkeypatch):
     # default; the tests that care restore the real one by name.
     monkeypatch.setattr(claude_health, "_shell_probe", lambda: None)
     monkeypatch.setattr(claude_health, "_auth_status", lambda path: None)
+    # Same discipline for the doctor probe: it is gated to the unhealthy path,
+    # so only the tests that BUILD an unhealthy machine would reach it — and
+    # those must not spawn the suite runner's real CLI to find that out.
+    monkeypatch.setattr(claude_health, "_doctor", lambda path: None)
+    monkeypatch.delenv("DISABLE_UPDATES", raising=False)
     # Adoption is module state that outlives a test (it mirrors an env var the
     # process publishes once). Without this reset, a test that adopts leaves the
     # next one resolving through a path it never set up.
@@ -50,9 +56,20 @@ def _isolated_home(tmp_path, monkeypatch):
 
 
 def _fake_cli(tmp_path, name="claude", executable=True):
-    """An executable stand-in for the CLI, in its own dir. Returns the path."""
+    """An executable stand-in for the CLI, in its own dir. Returns the path.
+
+    Never actually spawned by anything below (every test here patches
+    `probe_version`/`subprocess.run` rather than running it) — it only has to
+    be a file `resolve()`'s real `shutil.which` can find on PATH. That is a
+    file with an exec bit on POSIX and a file with a PATHEXT extension on
+    Windows, which is why the name gets `.exe` there: a bare `claude` with a
+    shebang is invisible to Windows' extension-based PATH lookup no matter
+    what `chmod` says about it.
+    """
     d = tmp_path / "fake-bin"
     d.mkdir(exist_ok=True)
+    if os.name == "nt" and not name.lower().endswith((".exe", ".cmd", ".bat")):
+        name += ".exe"
     p = d / name
     p.write_text("#!/bin/sh\necho 2.1.220\n")
     p.chmod(0o755 if executable else 0o644)
@@ -132,9 +149,26 @@ def test_a_stale_override_is_reported_not_silently_replaced(tmp_path, monkeypatc
 def test_path_beats_the_candidate_list(tmp_path, monkeypatch):
     bin_path = _fake_cli(tmp_path)
     monkeypatch.setenv("PATH", os.path.dirname(bin_path))
-    assert claude_health.resolve() == (bin_path, "path")
+    resolved, source = claude_health.resolve()
+    # normcase, not a bare ==: shutil.which() on Windows matches "claude"
+    # against PATHEXT (.COM;.EXE;...) and returns it with THAT extension's
+    # case, e.g. "claude.EXE", regardless of the actual on-disk filename's
+    # case ("claude.exe" here) — a case difference on a filesystem where it is
+    # not a different file. Same idiom as templates/claude/agent.py's
+    # containment check.
+    assert os.path.normcase(resolved) == os.path.normcase(bin_path)
+    assert source == "path"
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fakes os.name='posix' on a real filesystem — executable()'s "
+           "os.access(X_OK) branch that gates on it is then a REAL syscall, "
+           "and on real Windows os.access(X_OK) is true for any existing "
+           "file regardless of chmod (see executable()'s own docstring), so "
+           "the POSIX candidate-list behaviour this exercises can only be "
+           "tested where os.name='posix' is also true.",
+)
 def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     """A Finder/Dock-launched .app inherits the supervisor's PATH, not a
     shell's, so the known install dirs are all that is left."""
@@ -151,6 +185,12 @@ def test_candidate_dirs_are_probed_when_path_is_stripped(tmp_path, monkeypatch):
     assert claude_health.resolve() == (str(cli), "candidate")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="fakes os.name='posix' on a real filesystem — see the skip on "
+           "test_candidate_dirs_are_probed_when_path_is_stripped just above "
+           "for why that's unsafe on real Windows.",
+)
 def test_a_non_executable_file_does_not_shadow_a_real_install(tmp_path, monkeypatch):
     """isfile alone was not enough: a non-executable file in an earlier
     candidate dir would win and then fail to spawn."""
@@ -324,7 +364,17 @@ def test_augmented_path_appends_install_dirs_without_duplicating(monkeypatch):
     parts = claude_health.augmented_path().split(os.pathsep)
     assert parts[0] == "/usr/bin"
     assert len(parts) == len(set(parts))
-    assert "/opt/homebrew/bin" in parts
+    # candidates() (and so the dirs augmented_path() appends) is platform-
+    # specific — WINDOWS_CANDIDATES on os.name == "nt", POSIX_CANDIDATES
+    # elsewhere — so "/opt/homebrew/bin" is only ever a real member of that
+    # list on the POSIX branch; asserting it unconditionally is a POSIX-only
+    # literal masquerading as a platform-independent one. Deriving the
+    # expectation from candidates() itself is what makes this check the same
+    # guarantee on both platforms.
+    for candidate in claude_health.candidates():
+        expected_dir = os.path.dirname(
+            os.path.expanduser(os.path.expandvars(candidate)))
+        assert expected_dir in parts
 
 
 # -- the version probe --------------------------------------------------------
@@ -769,3 +819,240 @@ def test_the_health_endpoint_is_not_on_api_config():
     src = open(os.path.join(os.path.dirname(__file__), "..", "fused_render",
                             "server", "routers", "config.py")).read()
     assert "claude_health" not in src
+
+
+# -- doctor, the install method, and whether an update can work ----------------
+#
+# Three questions the module never used to ask. The first two are how "the
+# install is broken" becomes something sayable; the third is the whole of "do
+# not offer an update that would do nothing".
+
+_REAL_DOCTOR_OUTPUT = """Claude Code doctor
+
+Running: native (2.1.246)
+Commit: 1ba9d2211ae1
+Platform: linux-x64
+Path: /opt/claude-code/bin/claude
+Config install method: unknown
+Search: OK (/usr/bin/rg)
+Auto-updates: enabled
+
+3 warnings found
+- Running native installation but config install method is 'unknown'
+  Fix: Run claude install to update configuration
+- claude command at /root/.local/bin/claude missing or broken
+  Fix: Run claude install to repair the installation.
+- Leftover npm global installation at /opt/node22/bin/claude
+  Fix: Run: npm -g uninstall @anthropic-ai/claude-code
+"""
+
+
+def test_parse_doctor_reads_the_method_and_every_warning_fix_pair():
+    """Pinned against output captured from a real `claude doctor` (2.1.246).
+
+    The warnings are the CLI's own words about its own installation, which is
+    the entire reason the broken-install card has anything to show — anything we
+    inferred instead would be a guess dressed as a diagnosis."""
+    report = claude_health.parse_doctor(_REAL_DOCTOR_OUTPUT)
+    assert report["install_method"] == "native"
+    assert len(report["warnings"]) == 3
+    assert report["warnings"][1] == {
+        "problem": "claude command at /root/.local/bin/claude missing or broken",
+        "fix": "Run claude install to repair the installation.",
+    }
+
+
+def test_parse_doctor_survives_output_it_does_not_recognise():
+    """Never raises, and never invents. A future doctor that changes its layout
+    degrades to "no method, no warnings" — which produces no advice, rather than
+    wrong advice."""
+    report = claude_health.parse_doctor("something else entirely")
+    assert report["install_method"] is None
+    assert report["warnings"] == []
+    assert report["text"] == "something else entirely"
+
+
+def test_doctor_wins_over_the_path_when_it_names_a_method():
+    """The path sniffing is a fallback and genuinely a guess; doctor reads its
+    own install config. A Homebrew-looking path that doctor calls `native` is
+    native."""
+    doctor = {"install_method": "native", "warnings": [], "text": ""}
+    assert claude_health.install_method("/opt/homebrew/bin/claude", doctor) == "native"
+
+
+@pytest.mark.parametrize("path,want", [
+    ("/opt/homebrew/bin/claude", "brew"),
+    ("/home/u/.local/bin/claude", "native"),
+    ("/usr/bin/claude", "system"),
+    (r"C:\Users\a\AppData\Local\Microsoft\WinGet\Links\claude.exe", "winget"),
+    (r"C:\Users\a\AppData\Roaming\npm\claude.cmd", "npm"),
+    ("/home/u/.npm-global/bin/claude", "npm"),
+    # Somewhere nobody's list knows about. UNKNOWN IS THE RIGHT ANSWER — a
+    # guess here would decide whether an Update button appears.
+    ("/somewhere/nobody/guessed/claude", None),
+])
+def test_install_method_from_the_path_when_doctor_could_not_be_asked(path, want):
+    assert claude_health.install_method(path, None) == want
+
+
+def test_doctor_saying_unknown_is_not_a_method():
+    """Doctor prints `Config install method: unknown` on a perfectly fine
+    install. Treating that string as a method name would put it in neither the
+    self-updating list nor the managed one, which is the same place as None —
+    but by accident rather than on purpose."""
+    doctor = {"install_method": "unknown", "warnings": [], "text": ""}
+    assert claude_health.install_method("/somewhere/odd/claude", doctor) is None
+
+
+@pytest.mark.parametrize("method,updatable,command", [
+    # These update through the CLI, so the app can run it.
+    ("native", True, "claude update"),
+    ("npm", True, "claude update"),
+    # These do not: `claude update` answers "Claude is up to date!" and changes
+    # nothing, so we name the command that WOULD work and offer no button.
+    ("brew", False, "brew upgrade claude-code"),
+    ("winget", False, "winget upgrade Anthropic.ClaudeCode"),
+    ("apt", False, "sudo apt update && sudo apt upgrade claude-code"),
+    ("dnf", False, "sudo dnf upgrade claude-code"),
+    ("apk", False, "apk update && apk upgrade claude-code"),
+    # A system bindir tells us a package manager owns it and NOT which one, so
+    # there is no command to name. Naming `claude update` anyway would be
+    # offering the one answer we know is wrong.
+    ("system", False, None),
+])
+def test_update_plan_knows_which_installs_can_update_themselves(method, updatable, command):
+    plan = claude_health.update_plan(method)
+    assert plan["updatable"] is updatable
+    assert plan["command"] == command
+
+
+@pytest.mark.parametrize("method", [None, "something-new"])
+def test_an_unknown_method_still_offers_the_update(method):
+    """NOT KNOWING IS NOT A NO, and this is the same rule `signed_in` follows:
+    only an authoritative negative may withhold an offer. `claude update` is the
+    CLI's own generic answer, and an install method we could not read is no
+    evidence against it."""
+    plan = claude_health.update_plan(method)
+    assert plan["updatable"] is None
+    assert plan["command"] == "claude update"
+
+
+def test_disable_updates_beats_the_install_method():
+    """DISABLE_UPDATES blocks manual updates too, where DISABLE_AUTOUPDATER stops
+    only the background check and leaves `claude update` working. Reading the
+    wrong one of those two is the difference between a button that works and a
+    button that silently does nothing."""
+    plan = claude_health.update_plan("native", {"DISABLE_UPDATES": "1"})
+    assert plan["updatable"] is False
+    assert plan["command"] is None
+    # The autoupdater flag alone must NOT withhold the button.
+    still_on = claude_health.update_plan("native", {"DISABLE_AUTOUPDATER": "1"})
+    assert still_on["updatable"] is True
+
+
+def test_the_install_command_matches_the_platform(monkeypatch):
+    monkeypatch.setattr(claude_health.os, "name", "posix")
+    assert claude_health.install_command() == claude_health.INSTALL_COMMAND_POSIX
+    monkeypatch.setattr(claude_health.os, "name", "nt")
+    assert claude_health.install_command() == claude_health.INSTALL_COMMAND_WINDOWS
+
+
+# -- the gate: doctor runs only when there is something to explain -------------
+
+
+def _measure_with(monkeypatch, tmp_path, version, calls):
+    """Measure one machine with a findable CLI reporting `version`, recording
+    every doctor spawn into `calls`."""
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(claude_health, "probe_version", lambda path: version)
+
+    def _doctor(path):
+        calls.append(path)
+        return {"install_method": "brew", "warnings": [], "text": "…"}
+
+    monkeypatch.setattr(claude_health, "_doctor", _doctor)
+    return claude_health._measure(allow_shell=False)
+
+
+def test_a_healthy_machine_never_pays_for_a_doctor_probe(monkeypatch, tmp_path):
+    """The gate, and the reason it exists: doctor is a ~1.2s spawn. It is fine to
+    pay for a card that renders while something is wrong and is not fine on every
+    health read of a machine that is fine."""
+    calls = []
+    snap = _measure_with(monkeypatch, tmp_path, "2.1.220", calls)
+    assert calls == []
+    assert snap["doctor"] is None
+    assert snap["broken"] is False
+    # And with no method read, the update offer stays open rather than being
+    # withheld on a guess.
+    assert snap["updatable"] is None
+
+
+def test_a_cli_that_will_not_report_a_version_is_broken_and_gets_a_doctor(
+        monkeypatch, tmp_path):
+    """The silent state, finally said out loud. It was measured all along — the
+    module refuses to guess a cause from one failed probe — and so a user with a
+    half-replaced install got silence and an app that did not work."""
+    calls = []
+    snap = _measure_with(monkeypatch, tmp_path, None, calls)
+    assert snap["broken"] is True
+    assert len(calls) == 1
+    assert snap["doctor"]["install_method"] == "brew"
+
+
+def test_an_outdated_cli_gets_a_doctor_so_the_update_offer_can_be_decided(
+        monkeypatch, tmp_path):
+    """Doctor is the only party that authoritatively reports the install method,
+    and the method is what decides whether an Update button can work at all."""
+    calls = []
+    snap = _measure_with(monkeypatch, tmp_path, "1.0.0", calls)
+    assert snap["outdated"] is True
+    assert len(calls) == 1
+    assert snap["install_method"] == "brew"
+    assert snap["updatable"] is False
+    assert snap["update_command"] == "brew upgrade claude-code"
+
+
+def test_a_missing_cli_is_never_broken_and_never_asked_for_a_doctor(monkeypatch, tmp_path):
+    """`broken` means "it is here and it will not answer". A machine with no
+    Claude Code at all has its own, louder finding, and spawning a diagnostic on
+    a path that does not exist would waste a spawn on a certain failure."""
+    calls = []
+    monkeypatch.setattr(claude_health, "_doctor", lambda p: calls.append(p))
+    snap = claude_health._measure(allow_shell=False)
+    assert snap["found"] is False
+    assert snap["broken"] is False
+    assert calls == []
+
+
+def test_the_snapshot_carries_the_platform_and_its_own_install_line(monkeypatch, tmp_path):
+    """The UI used to guess which install line to show and guessed wrong on
+    Windows. The server knows its own platform, so it states it."""
+    snap = claude_health._measure(allow_shell=False)
+    assert snap["platform"] == sys.platform
+    assert snap["install_command"] == claude_health.install_command()
+
+
+@pytest.mark.parametrize("path", [
+    # Caught on a real machine: `/bin/` as a SUBSTRING matches almost every path
+    # a binary sits in, so this npm install — which updates itself perfectly
+    # well — was classified `system` and had its update offer withheld.
+    "/opt/node22/bin/claude",
+    "/opt/anything/bin/claude",
+    # Ambiguous by construction: a common npm prefix, an Intel-Mac Homebrew link
+    # target and a hand-install location all at once.
+    "/usr/local/bin/claude",
+])
+def test_a_generic_bindir_is_unknown_rather_than_guessed_as_system(path):
+    """UNKNOWN KEEPS THE UPDATE ON OFFER; a wrong guess takes it away. That
+    asymmetry is why the generic needles are anchored and the ambiguous one is
+    absent altogether."""
+    assert claude_health.install_method(path, None) is None
+    assert claude_health.update_plan(claude_health.install_method(path, None))[
+        "updatable"] is None
+
+
+@pytest.mark.parametrize("path", ["/usr/bin/claude", "/bin/claude", "/usr/lib/claude/claude"])
+def test_a_real_system_bindir_is_still_recognised(path):
+    assert claude_health.install_method(path, None) == "system"

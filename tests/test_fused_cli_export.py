@@ -120,6 +120,63 @@ def test_wrapper_scrubs_interpreter_vars_only_for_an_external_cli(
     assert "unset PYTHONHOME" not in text
 
 
+def test_wrapper_exports_the_engines_own_interpreter_for_app_serve(
+        monkeypatch, tmp_path):
+    """`fused app serve` must compute on the interpreter PAGE runs use.
+
+    OPENFUSED_APP_SERVE_PYTHON (openfused #364) becomes the compute backend's
+    `python_executable` inside the serve process, which is the same input
+    `engine.get_backend()` passes for page runs — so with the two equal, the
+    venv cache key (interpreter identity + sorted requirements) a tool resolves
+    is the key the page already built, and a tool with no declared dependencies
+    runs on that interpreter rather than in a bare stdlib venv. The MCP panel
+    registers `<fused-bin>/fused app serve <dir>` globally, so THIS wrapper is
+    the only place that value can be put.
+    """
+    if os.name == "nt":
+        pytest.skip("asserted on the sh branch; the .cmd branch mirrors it")
+    from fused_render import envinstall
+
+    monkeypatch.setattr(envinstall, "script_python",
+                        lambda: "/opt/pythons/3.12.7/bin/python3.12")
+    bin_dir = _export_with_stub(monkeypatch, tmp_path)
+    text = open(os.path.join(bin_dir, "fused"), encoding="utf-8").read()
+    assert ('[ -n "${OPENFUSED_APP_SERVE_PYTHON:-}" ] || '
+            "OPENFUSED_APP_SERVE_PYTHON=/opt/pythons/3.12.7/bin/python3.12"
+            ) in text
+    assert "export OPENFUSED_APP_SERVE_PYTHON" in text
+
+
+def test_app_serve_python_falls_back_to_this_interpreter(monkeypatch):
+    """`script_python()` returning None means "ours" — and "ours" is exactly
+    what the backend then runs on, because `python_executable=None` leaves it on
+    `sys.executable`. So the export must resolve None to sys.executable VERBATIM:
+    a hardcoded path would be wrong on every other machine, and a `realpath` of
+    a venv's python would name the base interpreter instead of the venv and so
+    key a different environment than the page's runs do.
+    """
+    from fused_render import envinstall
+
+    monkeypatch.setattr(envinstall, "script_python", lambda: None)
+    assert fusedcli._app_serve_python() == sys.executable
+
+
+def test_app_serve_python_is_the_engines_resolution_not_a_second_one(monkeypatch):
+    """One derivation, two consumers (D146: a duplicated rule needs a test).
+
+    The wrapper's value has to come from `envinstall.script_python()` — the same
+    call `engine.get_backend()` hands the backend as `python_executable`. Two
+    independent resolutions is how the serve process ends up filling a venv no
+    page run ever reads.
+    """
+    from fused_render import engine, envinstall
+
+    monkeypatch.setattr(envinstall, "script_python", lambda: "/opt/probe/python3.12")
+    assert fusedcli._app_serve_python() == "/opt/probe/python3.12"
+    src = open(engine.__file__, encoding="utf-8").read()
+    assert "python_executable=envinstall.script_python()" in src
+
+
 def test_wrapper_default_matches_the_canvases_default(monkeypatch):
     """canvases.py and the wrapper share one knob through
     fusedcli.workbench_env — this pins that the canvases module actually
@@ -269,8 +326,8 @@ def test_a_matching_install_is_silent(monkeypatch):
     from fused_render import fusedcli
 
     monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
-    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b4")
-    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b5")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b5")
     assert fusedcli.log_cli_provenance() is None
 
 
@@ -280,10 +337,10 @@ def test_version_drift_is_reported(monkeypatch):
     from fused_render import fusedcli
 
     monkeypatch.delenv("FUSED_RENDER_FUSED_BIN", raising=False)
-    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b3")
-    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_installed_fused_version", lambda: "2.9.3b4")
+    monkeypatch.setattr(fusedcli, "_pinned_fused_version", lambda: "2.9.3b5")
     message = fusedcli.log_cli_provenance()
-    assert message and "2.9.3b3" in message and "2.9.3b4" in message
+    assert message and "2.9.3b4" in message and "2.9.3b5" in message
 
 
 def test_no_fused_at_all_adds_nothing(monkeypatch):

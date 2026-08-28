@@ -20,6 +20,12 @@ external apps' recents: `openedAt` here is what `opened_at` reports for these
 entries, where a workspace app's comes from ``app_recents.json``. One folder,
 one entry: a re-open updates `openedAt` in place.
 
+One carve-out (D396): a ``.fused`` extract dir (under ``appfile.appfiles_root``)
+is refused on write and filtered on read. Rendering an opened app file's entry
+still hits the D301 recorder, but its identity on the hub is the ``.fused``
+FILE (exported_apps.py, tag ``Fused-App``) — registering the cache dir too would
+double-list the app under ``linked`` with a path the user never chose.
+
 A registry over a symlink into the workspace, for the same reasons as before:
 `app_git.app_dir_for` scopes auto-commits by path prefix and a symlink would
 let fused-render commit inside the user's own repository; symlink creation is
@@ -39,7 +45,7 @@ from fused_render.index.ignore import MountGuard
 from fused_render.shell import storage
 
 # The reserved virtual tag external apps file under on the /apps hub — the
-# "Repo" facet chip they share. Reused from the old registry deliberately;
+# "Folders" facet chip they share. Reused from the old registry deliberately;
 # DECISIONS already calls it the reserved tag. A workspace folder literally
 # named `linked/` merges chips with it, and that is accepted.
 REGISTERED_TAG = "linked"
@@ -102,6 +108,17 @@ def _resolves_into_workspace(folder: str) -> bool:
     )
 
 
+def _in_appfiles_cache(folder: str) -> bool:
+    """Whether `folder` is the ``.fused`` extract cache or inside it. Pure
+    string work on abspaths, same reasoning as `_in_or_over_workspace`:
+    `read_entries` runs this per entry with no MountGuard in front."""
+    from fused_render.appfile import appfiles_root
+
+    root = os.path.abspath(appfiles_root())
+    folder = os.path.abspath(folder)
+    return root == folder or folder.startswith(root + os.sep)
+
+
 def read_entries() -> list[dict]:
     """The registry's valid entries, in stored order (newest-open first).
     Corrupt/missing file or malformed entries read as absent — a registry
@@ -117,6 +134,7 @@ def read_entries() -> list[dict]:
         and isinstance(e.get("path"), str)
         and os.path.isabs(e["path"])
         and not _in_or_over_workspace(e["path"])
+        and not _in_appfiles_cache(e["path"])
     ]
 
 
@@ -137,6 +155,10 @@ def record_open(path: str) -> bool:
         return False
     path = os.path.abspath(path)
     if _in_or_over_workspace(path):
+        return False
+    if _in_appfiles_cache(path):
+        # An opened .fused's extract dir: its hub identity is the .fused FILE
+        # (exported_apps.record_open, fed by POST /api/appfile/open — D396).
         return False
     # BEFORE any syscall on the candidate, same ordering as the walk: a stat
     # under a wedged rclone mount blocks the serving thread, and the guard

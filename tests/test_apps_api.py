@@ -13,7 +13,7 @@ not list — a page-less folder at depth 1 is a shelf of apps, not an app — so
 these assertions are unchanged by the walk becoming recursive. The depth rules
 are exercised directly in tests/test_app_listing.py.
 
-The spawn is stubbed at the module seam (_start_app_session) — no test here
+The spawn is stubbed at the module seam (_create_app_task) — no test here
 launches a real claude.
 """
 import json
@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from fused_render import app_listing
 from fused_render.server import create_app
+from fused_render import claude_spawn, schedule
 from fused_render.server.routers import apps as apps_mod
 
 
@@ -266,16 +267,17 @@ def test_new_app_requires_the_fused_header(client):
 
 def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     called = []
-    monkeypatch.setattr(apps_mod, "_start_app_session",
-                        lambda entry, prompt: called.append((entry, prompt)) or ("r-1", None))
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda entry, prompt, *rest:
+                        called.append((entry, prompt)) or ("r-1", None))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
     assert r.status_code == 200
     body = r.json()
     dest = workspace / "local" / "demo"
     assert body["path"] == str(dest)
     assert body["entry_html"] == str(dest / "index.html")
-    assert body["session_started"] is False
-    assert called == []  # empty prompt: no spawn attempt at all
+    assert body["task"] is None
+    assert called == []  # empty prompt: no task attempt at all
     assert (dest / "index.html").is_file()
     assert (dest / "CLAUDE.md").is_file()
     # the starter kit's entry is a valid single-entry app: it lists back
@@ -284,54 +286,173 @@ def test_new_app_happy_path_no_prompt(client, workspace, monkeypatch):
     assert apps[0]["tag"] == "local"
 
 
-def test_new_app_has_no_dot_claude_and_syncs_user_skills(
+def test_new_app_scaffolds_the_dot_fused_state_folder(client, workspace, monkeypatch):
+    """D548 / SPEC §47. Creation makes the folder BEFORE `init_repo`, so the
+    boilerplate commit never sees it — assert both halves: the layout is there,
+    and the `.gitignore` git init just wrote already excludes it."""
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, None))
+    client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
+
+    dest = workspace / "local" / "demo"
+    assert (dest / ".fused" / "data").is_dir()
+    assert (dest / ".fused" / "cache").is_dir()
+    meta = json.loads((dest / ".fused" / "meta.json").read_text())
+    assert meta["app_dir"] == os.path.abspath(str(dest))
+    assert ".fused/" in (dest / ".gitignore").read_text()
+
+
+def test_opening_an_app_creates_its_dot_fused_folder(client, workspace):
+    """The convention has to hold for apps that predate it, which is most of
+    them — so creation hangs off the OPEN (record_app_open, reached from GET
+    /render whenever a marker-carrying page is served), not off scaffolding."""
+    d = _app_dir(workspace, "old-app")
+    assert not (d / ".fused").exists()
+
+    assert apps_mod.record_app_open(str(d)) is True
+
+    assert (d / ".fused" / "data").is_dir()
+    assert (d / ".fused" / "cache").is_dir()
+    assert json.loads((d / ".fused" / "meta.json").read_text())["app_dir"] == \
+        os.path.abspath(str(d))
+
+
+def test_a_dot_fused_that_cannot_be_made_never_fails_the_open(client, workspace):
+    """`record_app_open` is on the render path, and its answer is about
+    RECENCY — the state folder is a side effect that may not influence it. A
+    plain FILE at `.fused` is the cheapest way to make creation genuinely
+    impossible without touching permissions."""
+    d = _app_dir(workspace, "old-app")
+    (d / ".fused").write_text("in the way")
+
+    assert apps_mod.record_app_open(str(d)) is True
+    assert (d / ".fused").is_file()  # untouched, not clobbered
+
+
+def test_a_folder_that_is_not_an_app_gets_no_dot_fused(client, workspace):
+    """The gate is `app_listing.app_entry` (D301's marker), not "this function
+    was reached" — the legacy open endpoint takes an arbitrary path."""
+    d = workspace / "local" / "notanapp"
+    d.mkdir(parents=True)
+    (d / "page.html").write_text("<html><body>no marker</body></html>")
+
+    apps_mod.record_app_open(str(d))
+
+    assert not (d / ".fused").exists()
+
+
+def test_new_app_has_no_dot_claude_and_publishes_the_plugin_root(
     client, workspace, tmp_path, monkeypatch
 ):
-    """D185: the app folder itself carries no .claude/; creating an app
-    installs the canonical skills at Claude Code's user level instead."""
-    from fused_render import user_skills
+    """D185: the app folder carries no .claude/ of its own. What supplies the
+    skills the starter CLAUDE.md names is the plugin root the scaffolding
+    session is handed (D216), refreshed here at create time — so the assertion
+    is that the root exists and the env var points at it.
+
+    And what create-app must NOT do (D492): touch the user's Claude config. The
+    user's own sessions are covered by the published plugin, synced once at
+    startup on a thread, because it is a network clone — running one on this
+    request would put a `claude` spawn on a UI path."""
+    from fused_render import skill_plugin, skill_sources
 
     claude_dir = tmp_path / "claude-config"
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_dir))
-    monkeypatch.setattr(apps_mod, "_start_app_session", lambda e, p: (None, "x"))
+    monkeypatch.setattr(apps_mod, "_create_app_task", lambda e, p, *rest: (None, "x"))
     client.post("/api/apps/new", json={"name": "demo", "prompt": ""}, headers=HDRS)
 
     assert not (workspace / "local" / "demo" / ".claude").exists()
-    for name in user_skills.SKILLS:
-        skill = claude_dir / "skills" / name
-        assert (skill / "SKILL.md").is_file()
-        assert (skill / user_skills._MARKER).is_file()
+    root = os.environ[skill_plugin.PLUGIN_DIR_ENV]
+    for name in skill_sources.skill_names():
+        assert os.path.isfile(os.path.join(root, "skills", name, "SKILL.md"))
+    assert not claude_dir.exists()
 
 
 def test_new_app_with_prompt_starts_a_session(client, workspace, monkeypatch):
     seen = {}
 
-    def fake_start(app_dir, prompt):
+    def fake_start(app_dir, prompt, model="", effort=""):
         seen["target"] = app_dir
         seen["prompt"] = prompt
+        seen["model"] = model
+        seen["effort"] = effort
         return "run-42", None
 
-    monkeypatch.setattr(apps_mod, "_start_app_session", fake_start)
+    monkeypatch.setattr(apps_mod, "_create_app_task", fake_start)
     r = client.post("/api/apps/new",
                     json={"name": "demo", "prompt": "build a todo app"},
                     headers=HDRS)
-    assert r.json()["session_started"] is True
-    assert r.json()["session_error"] is None
-    assert r.json()["run_id"] == "run-42"   # the UI can attach to the live run
-    # The scaffolding session starts on the app FOLDER (claude agent),
-    # so its transcript lands where the split view lists sessions from.
-    assert seen["target"] == str(workspace / "local" / "demo")
+    assert r.json()["task"] == "run-42"   # the UI attaches to the entry's run
+    assert r.json()["task_error"] is None
+    # The scaffolding task is scheduled on the app's index.html — the FILE, not
+    # the folder (D-855's `_create_app_task`), which is what lets "open this
+    # task" land on the page rather than on the directory listing.
+    assert seen["target"] == str(workspace / "local" / "demo" / "index.html")
     assert seen["prompt"] == "build a todo app"
+    # no pickers touched: "" both, i.e. no --model/--effort on the spawn, so the
+    # session keeps whatever a chat opened by hand would have detected
+    assert (seen["model"], seen["effort"]) == ("", "")
+
+
+def test_the_composers_model_and_effort_reach_the_session(client, workspace,
+                                                          monkeypatch):
+    """The hero composer's two pickers are what the scaffolding turn runs
+    with, so they have to arrive at the spawn — a create that accepted them and
+    started a default session is the whole feature missing."""
+    seen = {}
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda e, p, model="", effort="":
+                        seen.update(model=model, effort=effort) or ("r-1", None))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "build it",
+                          "model": "opus", "effort": "xhigh"}, headers=HDRS)
+    assert r.status_code == 200
+    assert seen == {"model": "opus", "effort": "xhigh"}
+
+
+@pytest.mark.parametrize("body", [
+    {"model": "gpt-4"},          # not in the claude template's vocabulary
+    {"model": "claude-opus-5"},  # a full API id, not the short name
+    {"effort": "maximum"},
+    {"effort": "ultra"},
+    {"model": 7},
+    {"effort": None},
+])
+def test_an_unknown_model_or_effort_is_a_400_not_a_substitution(client, workspace,
+                                                               monkeypatch, body):
+    """A caller that asked for `opus` and silently got the default has been
+    handed the wrong session — worse than being told the value is unknown. Our
+    own UI can only send list values, so this only fires for a hand-rolled
+    request. And nothing is created: the folder must not survive a rejected
+    request any more than a bad name's does."""
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda *a, **k: pytest.fail("must not spawn"))
+    r = client.post("/api/apps/new",
+                    json={"name": "demo", "prompt": "hi", **body}, headers=HDRS)
+    assert r.status_code == 400
+    assert not (workspace / "local" / "demo").exists()
+
+
+def test_an_empty_pick_means_no_flag_and_older_clients_still_work(
+        client, workspace, monkeypatch):
+    """"" is a first-class value in both lists, not a rejected one — it is what
+    the pickers' "Auto" option sends and what a client predating them omits."""
+    seen = []
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda e, p, model="", effort="":
+                        seen.append((model, effort)) or ("r-1", None))
+    for body in ({"model": "", "effort": ""}, {}):
+        client.post("/api/apps/new",
+                    json={"name": f"demo{len(seen)}", "prompt": "hi", **body},
+                    headers=HDRS)
+    assert seen == [("", ""), ("", "")]
 
 
 def test_spawn_failure_does_not_fail_creation_and_says_why(client, workspace, monkeypatch):
-    monkeypatch.setattr(apps_mod, "_start_app_session",
-                        lambda e, p: (None, "claude CLI not found"))
+    monkeypatch.setattr(apps_mod, "_create_app_task",
+                        lambda e, p, *rest: (None, "claude CLI not found"))
     r = client.post("/api/apps/new", json={"name": "demo", "prompt": "hi"}, headers=HDRS)
     assert r.status_code == 200
-    assert r.json()["session_started"] is False
-    assert r.json()["run_id"] is None
-    assert r.json()["session_error"] == "claude CLI not found"
+    assert r.json()["task"] is None
+    assert r.json()["task_error"] == "claude CLI not found"
     assert (workspace / "local" / "demo" / "index.html").is_file()
 
 
@@ -611,26 +732,32 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     seen = {}
 
     def fake_run(cmd, **kwargs):
-        seen["cmd"] = cmd
-        seen["kwargs"] = kwargs
+        # Scheduling also shells out (launchctl, for the wake stub), and that
+        # call lands here too — the one this test is about is the fork-safe
+        # python helper, so match it rather than keeping whatever came last.
+        if cmd and cmd[0] == claude_spawn.sys.executable:
+            seen["cmd"] = cmd
+            seen["kwargs"] = kwargs
         return type("R", (), {"returncode": 0,
                               "stdout": '{"run_id": "r-1"}', "stderr": ""})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    monkeypatch.setattr(apps_mod, "_claude_agent", lambda: None)
-    started_threads = []
-    monkeypatch.setattr(apps_mod.threading, "Thread",
-                        lambda **kw: type("T", (), {"start": lambda s: started_threads.append(kw)})())
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    watched = []
+    monkeypatch.setattr(schedule, "_watch_turn",
+                        lambda entry, run_id: watched.append(run_id))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "secret prompt $(boom)")
-    assert (run_id, err) == ("r-1", None)
+    run_id, err = apps_mod._create_app_task(str(entry), "secret prompt $(boom)")
+    assert err is None and run_id["run_id"] == "r-1"
 
     # a real python -c helper, not claude itself, and prompt over stdin only
-    assert seen["cmd"][0] == apps_mod.claude_spawn.sys.executable
+    assert seen["cmd"][0] == claude_spawn.sys.executable
     assert "secret prompt" not in " ".join(seen["cmd"])
     import json as jsonlib
     req = jsonlib.loads(seen["kwargs"]["input"])
-    assert req["message"] == "secret prompt $(boom)"
+    # Prefixed with the scheduler's `<live-app-state>` block (schedule._outgoing),
+    # so the user's words are the tail — what matters here is that they travel
+    # over stdin and never through argv.
+    assert req["message"].endswith("secret prompt $(boom)")
     assert req["file"] == str(entry)
     # unattended: nobody polls `decide` for a session started from a POST, so
     # the strict default mode would park the first tool call until the
@@ -638,6 +765,9 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     assert req["permission_mode"] == "auto"
     # an app is being scaffolded: there is no prior conversation to resume
     assert req["session_id"] == ""
+    # no pickers used: both empty, which the helper turns into NO --model /
+    # --effort flag rather than into a hardcoded default
+    assert (req["model"], req["effort"]) == ("", "")
     # posix_spawn preconditions on the helper spawn (the crash was fork+exec)
     assert seen["kwargs"]["close_fds"] is False
     assert "cwd" not in seen["kwargs"]
@@ -648,7 +778,43 @@ def test_spawn_runs_agent_start_in_a_helper_subprocess_not_in_process(
     # model output) raised UnicodeDecodeError instead of returning a run_id.
     assert seen["kwargs"]["encoding"] == "utf-8"
     assert seen["kwargs"]["errors"] == "replace"
-    assert started_threads  # the session-recording poll thread was kicked off
+    assert watched  # the scheduler's turn watcher was kicked off for the run
+
+
+
+def _an_entry(tmp_path) -> str:
+    """A real index.html to schedule against.
+
+    `_create_app_task` goes through `schedule.create`, which refuses a target
+    that is not on disk — unlike the spawn seam it replaced (PR #855), which
+    never looked at the filesystem at all. The file's CONTENT is irrelevant
+    here; its existence is the precondition.
+    """
+    entry = tmp_path / "an-app" / "index.html"
+    entry.parent.mkdir(parents=True, exist_ok=True)
+    entry.write_text("<!doctype html>", encoding="utf-8")
+    return str(entry)
+
+def test_the_picked_model_and_effort_reach_the_helper_request(tmp_path, workspace,
+                                                             monkeypatch):
+    """The other half: the pickers' values have to survive the fork-safe hop
+    into the helper, which is where agent._start turns them into --model /
+    --effort."""
+    def fake_run(cmd, **kwargs):
+        seen.update(json.loads(kwargs["input"]))
+        return type("R", (), {"returncode": 0,
+                              "stdout": '{"run_id": "r-1"}', "stderr": ""})()
+
+    seen = {}
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    monkeypatch.setattr(schedule, "_watch_turn", lambda entry, run_id: None)
+
+    run_id, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi", "haiku", "low")
+    assert err is None and run_id["run_id"] == "r-1"
+    assert (seen["model"], seen["effort"]) == ("haiku", "low")
+    # still the apps API's own policy, unchanged by the new args
+    assert seen["permission_mode"] == "auto"
+    assert seen["session_id"] == ""
 
 
 def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
@@ -656,10 +822,11 @@ def test_spawn_helper_failure_reports_why(tmp_path, workspace, monkeypatch):
         return type("R", (), {"returncode": 1, "stdout": "",
                               "stderr": "boom\nFileNotFoundError: claude"})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
-    assert run_id is None
-    assert "FileNotFoundError: claude" in err
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert err is None          # the task stored fine; the SEND is what failed
+    assert not entry["run_id"]
+    assert "FileNotFoundError: claude" in entry["error"]
 
 
 def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
@@ -676,11 +843,12 @@ def test_a_missing_claude_cli_reports_the_fix_not_a_traceback_tail(
                               "of the environment that launched fused-render. "
                               "Also looked in: /opt/foo"})()
 
-    monkeypatch.setattr(apps_mod.claude_spawn.subprocess, "run", fake_run)
-    run_id, err = apps_mod._start_app_session("/x/index.html", "hi")
-    assert run_id is None
-    assert "Claude Code isn't installed" in err
-    assert "render.fused.io/#troubleshooting-notfound" in err
+    monkeypatch.setattr(claude_spawn.subprocess, "run", fake_run)
+    entry, err = apps_mod._create_app_task(_an_entry(tmp_path), "hi")
+    assert err is None          # stored fine; the reason rides the entry
+    assert not entry["run_id"]
+    assert "Claude Code isn't installed" in entry["error"]
+    assert "render.fused.io/#troubleshooting-notfound" in entry["error"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="/bin/sh stub claude is POSIX-only")
@@ -688,7 +856,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
         tmp_path, workspace, monkeypatch):
     """The regression the mocked tests could never catch.
 
-    Everything below _start_app_session is real here — the helper subprocess,
+    Everything below _create_app_task is real here — the helper subprocess,
     agent._start, the detached spawn — with only `claude` itself replaced by a
     shell stub that records the argv and stdin it was handed. The live bug was
     precisely that this whole path produced nothing: the helper's absence meant
@@ -705,7 +873,7 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "hello from the test")
+    run_id, err = apps_mod._create_app_task(str(entry), "hello from the test")
     assert err is None and run_id, err
 
     # the spawn is detached, so wait for the stub to finish writing
@@ -718,7 +886,10 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     # the prompt reached the process, over stdin as one stream-json user line
     assert "hello from the test" not in "\n".join(argv)   # never in argv
     row = json.loads(stdin_log.read_text())
-    assert row["message"]["content"][0]["text"] == "hello from the test"
+    # A scheduled turn is prefixed with the `<live-app-state>` block naming the
+    # file the task was scheduled against (schedule._outgoing), so the user's
+    # own words are the tail rather than the whole message.
+    assert row["message"]["content"][0]["text"].endswith("hello from the test")
     # ...and it can act on it unattended: prompt-tool wired AND a mode that
     # doesn't park every tool call on a card nobody is watching for.
     assert argv[argv.index("--permission-mode") + 1] == "auto"
@@ -809,14 +980,15 @@ def _repo_text(*parts):
 
 def test_home_navigates_into_the_claude_chat_for_the_started_run():
     home = _repo_text("frontend", "src", "apps", "builder", "HomeHero.tsx")
-    # Folder-first: the scaffolding session runs via the claude agent on
-    # the app FOLDER, so the re-attach must land there (same runs dir, same
-    # .claude-split.json sidecar) rather than on the entry html.
-    assert '_mode: "claude"' in home, "post-create nav must select the claude mode"
-    assert "claudeChatUrl(res.path" in home, "…on the app folder, not entry_html"
+    # The scaffolding work is a TASK on the app's index.html now, and the chat
+    # rides beside that page as a SIDE PANE rather than as a whole-page mode —
+    # so the re-attach carries `_side=claude` plus the run to attach to.
+    assert '_side: "claude"' in home, "post-create nav must open the claude pane"
+    assert "appLandingUrl(res.entry_html, res.task.run_id" in home, \
+        "…on the app's entry html, carrying the task's run"
     assert "run: runId" in home, "…and attach to the run the POST just started"
     # the run_id is what gates it: no session (no prompt) -> the default view
-    assert "if (res.run_id) navigateUrl(claudeChatUrl(" in home
+    assert "if (res.task?.run_id) {" in home
 
 
 def test_claude_is_the_selectable_chat_mode_for_html():
@@ -877,10 +1049,16 @@ def test_poll_serves_a_run_started_by_the_server(tmp_path, workspace, monkeypatc
     stub.chmod(0o755)
     monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", str(stub))
 
-    run_id, err = apps_mod._start_app_session(str(entry), "make it red")
-    assert err is None and run_id, err
+    task, err = apps_mod._create_app_task(str(entry), "make it red")
+    assert err is None and task, err
+    run_id = task["run_id"]
+    assert run_id, task.get("error")
 
-    agent = apps_mod._claude_agent()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "claude_agent_poll", claude_spawn.agent_path())
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
     deadline = time.monotonic() + 30
     data = {}
     while time.monotonic() < deadline:
@@ -996,3 +1174,51 @@ def test_rendering_an_external_marked_page_registers_the_folder(
     # ...and the folder now lists on the hub under the reserved tag.
     apps = {a["name"]: a for a in client.get("/api/apps").json()["apps"]}
     assert apps["myapp"]["tag"] == registered_apps.REGISTERED_TAG
+
+
+# ------------------------------------------------------------ set preview
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+
+
+def test_set_preview_writes_and_then_replaces_preview_png(client, workspace):
+    """The path-bar's "Set Current View as Preview": first call creates the
+    file under the one name the card reads, second call replaces it and says
+    so — the client's confirm-before-overwrite reads `replaced`."""
+    d = _app_dir(workspace, "lens")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG, "image/png")})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"path": str(d / "preview.png"), "replaced": False}
+    assert (d / "preview.png").read_bytes() == _PNG
+    assert app_listing.app_preview_image(str(d)) == str(d / "preview.png")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                    data={"path": str(d)}, files={"preview": ("preview.png", _PNG + b"\x01", "image/png")})
+    assert r.json()["replaced"] is True
+    assert (d / "preview.png").read_bytes() == _PNG + b"\x01"
+    # No temp file left behind.
+    assert sorted(os.listdir(d)) == ["index.html", "preview.png"]
+
+
+def test_set_preview_refuses_non_apps_non_pngs_and_unguarded_calls(client, workspace, tmp_path):
+    d = _app_dir(workspace, "lens")
+    png = {"preview": ("preview.png", _PNG, "image/png")}
+    # A folder with no tagged page is not an app; nothing would read the file.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "index.html").write_text("<html></html>")
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(plain)}, files=png)
+    assert r.status_code == 400 and "not an app" in r.json()["error"]
+    assert not (plain / "preview.png").exists()
+    # Not a PNG.
+    r = client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)},
+                    files={"preview": ("preview.png", b"GIF89a....", "image/gif")})
+    assert r.status_code == 400 and "PNG" in r.json()["error"]
+    # Missing file, relative path, missing folder.
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": str(d)}).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"}, data={"path": "rel"}, files=png).status_code == 400
+    assert client.post("/api/apps/preview", headers={"X-Fused": "1"},
+                       data={"path": str(tmp_path / "gone")}, files=png).status_code == 404
+    # A write route: the X-Fused guard applies.
+    assert client.post("/api/apps/preview", data={"path": str(d)}, files=png).status_code != 200
+    assert not (d / "preview.png").exists()

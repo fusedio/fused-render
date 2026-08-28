@@ -11,11 +11,12 @@ Three groups of properties, and they fail in different places:
   path (which is why the packaged manifest is a flat `skills/plugin.json`).
   A dotted path that the build backend's globs quietly drop is a failure you
   only ever see in a built wheel on a user's machine.
-* **the seams** — `SKILLS` and the source roots exist here AND in
-  `user_skills.py`; the root reaches the two claude templates (which may not
-  import the package, SPEC PY-15) only as an env var, decision already made
-  server-side. Each seam is pinned below, so the ends cannot drift apart
-  unnoticed.
+* **the seams** — the skill set and the source roots come from
+  `skill_sources.py`, and are re-derived a second time by the build hook,
+  which may not import the package it is building; the
+  root reaches the claude template (which may not import the package either,
+  SPEC PY-15) only as an env var, decision already made server-side. Each seam
+  is pinned below, so the ends cannot drift apart unnoticed.
 """
 import importlib.util
 import json
@@ -27,9 +28,14 @@ import time
 
 import pytest
 
-from fused_render import skill_plugin, user_skills
+from fused_render import skill_plugin, skill_sources
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# The real repo's skills, discovered the way production discovers them (D490):
+# the fixtures build fakes named after them, so a test tree always has the same
+# shape as the tree that ships.
+SKILLS = skill_sources.skill_names()
 
 
 @pytest.fixture
@@ -56,18 +62,18 @@ def sources(tmp_path, monkeypatch):
     """Fake repo-level sources: one dir per skill plus a manifest, with the
     packaged fallback pointed at nothing so resolution order is unambiguous."""
     repo = tmp_path / "repo"
-    for name in skill_plugin.SKILLS:
+    for name in SKILLS:
         (repo / "skills" / name).mkdir(parents=True)
         (repo / "skills" / name / "SKILL.md").write_text(
             f"# {name}\n", encoding="utf-8")
     (repo / ".claude-plugin").mkdir(parents=True)
     (repo / ".claude-plugin" / "plugin.json").write_text(
         json.dumps({"name": "fused-render", "description": "d"}), encoding="utf-8")
-    monkeypatch.setattr(skill_plugin, "_REPO_SKILLS_DIR", str(repo / "skills"))
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(repo / "skills"))
     monkeypatch.setattr(
         skill_plugin, "_REPO_MANIFEST",
         str(repo / ".claude-plugin" / "plugin.json"))
-    monkeypatch.setattr(skill_plugin, "_PACKAGED_SKILLS_DIR",
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR",
                         str(tmp_path / "no-such-dir"))
     monkeypatch.setattr(skill_plugin, "_PACKAGED_MANIFEST",
                         str(tmp_path / "no-such-dir" / "plugin.json"))
@@ -83,10 +89,10 @@ def test_a_gutted_root_is_rebuilt_rather_than_trusted(home, sources):
     sessions kept being handed a plugin that teaches the model nothing until the
     sources happened to change again."""
     root = skill_plugin.sync_skill_plugin()
-    shutil.rmtree(os.path.join(root, "skills", skill_plugin.SKILLS[0]))
+    shutil.rmtree(os.path.join(root, "skills", SKILLS[0]))
 
     assert skill_plugin.sync_skill_plugin() == root
-    assert os.path.isfile(os.path.join(root, "skills", skill_plugin.SKILLS[0],
+    assert os.path.isfile(os.path.join(root, "skills", SKILLS[0],
                                        "SKILL.md"))
 
 
@@ -95,7 +101,7 @@ def test_the_manifest_alone_is_not_called_loadable(home, sources):
     os.makedirs(os.path.join(root, ".claude-plugin"))
     open(os.path.join(root, ".claude-plugin", "plugin.json"), "w").close()
     assert skill_plugin._is_loadable(root) is True          # nothing expected
-    assert skill_plugin._is_loadable(root, skill_plugin.SKILLS) is False
+    assert skill_plugin._is_loadable(root, SKILLS) is False
 
 
 def test_two_syncs_at_once_do_not_stage_into_the_same_directory(home, sources):
@@ -134,7 +140,7 @@ def test_two_syncs_at_once_do_not_stage_into_the_same_directory(home, sources):
     assert len(seen) == 2 and seen[0] != seen[1], seen
     # and whoever won, what is published is whole
     root = skill_plugin.plugin_dir()
-    assert skill_plugin._is_loadable(root, skill_plugin.SKILLS)
+    assert skill_plugin._is_loadable(root, SKILLS)
 
 
 def test_a_staging_directory_is_not_left_behind(home, sources):
@@ -152,7 +158,7 @@ def test_the_sync_builds_a_loadable_plugin_root(home, sources):
     assert root == os.path.join(home, "skill-plugin")
     manifest = os.path.join(root, ".claude-plugin", "plugin.json")
     assert json.load(open(manifest, encoding="utf-8"))["name"] == "fused-render"
-    for name in skill_plugin.SKILLS:
+    for name in SKILLS:
         assert os.path.isfile(os.path.join(root, "skills", name, "SKILL.md"))
     # The bookkeeping stamp stays OUT of the tree the plugin loader parses.
     assert os.path.isfile(root + ".stamp.json")
@@ -161,7 +167,7 @@ def test_the_sync_builds_a_loadable_plugin_root(home, sources):
 
 def test_a_second_sync_with_unchanged_sources_touches_nothing(home, sources):
     root = skill_plugin.sync_skill_plugin()
-    marker = os.path.join(root, "skills", skill_plugin.SKILLS[0], "SKILL.md")
+    marker = os.path.join(root, "skills", SKILLS[0], "SKILL.md")
     before = os.stat(marker).st_ino
     assert skill_plugin.sync_skill_plugin() == root
     # Same inode: the stamp short-circuited rather than deleting and recopying
@@ -171,10 +177,10 @@ def test_a_second_sync_with_unchanged_sources_touches_nothing(home, sources):
 
 def test_a_changed_skill_is_picked_up(home, sources):
     root = skill_plugin.sync_skill_plugin()
-    src = sources / "skills" / skill_plugin.SKILLS[0] / "SKILL.md"
+    src = sources / "skills" / SKILLS[0] / "SKILL.md"
     src.write_text("# rewritten\n" + "x" * 100, encoding="utf-8")
     skill_plugin.sync_skill_plugin()
-    out = os.path.join(root, "skills", skill_plugin.SKILLS[0], "SKILL.md")
+    out = os.path.join(root, "skills", SKILLS[0], "SKILL.md")
     assert "rewritten" in open(out, encoding="utf-8").read()
 
 
@@ -183,9 +189,9 @@ def test_a_stale_file_does_not_survive_a_rebuild(home, sources):
     one) that the sources no longer have must not linger in the output, or a
     session keeps loading guidance the install stopped shipping."""
     root = skill_plugin.sync_skill_plugin()
-    junk = os.path.join(root, "skills", skill_plugin.SKILLS[0], "OLD.md")
+    junk = os.path.join(root, "skills", SKILLS[0], "OLD.md")
     open(junk, "w").close()
-    (sources / "skills" / skill_plugin.SKILLS[0] / "SKILL.md").write_text(
+    (sources / "skills" / SKILLS[0] / "SKILL.md").write_text(
         "# changed\n", encoding="utf-8")
     skill_plugin.sync_skill_plugin()
     assert not os.path.exists(junk)
@@ -195,20 +201,20 @@ def test_the_packaged_copy_is_the_fallback(home, tmp_path, monkeypatch):
     """A wheel install has no repo. The packaged manifest is FLAT
     (skills/plugin.json) and still lands as .claude-plugin/plugin.json."""
     packaged = tmp_path / "pkg" / "skills"
-    for name in skill_plugin.SKILLS:
+    for name in SKILLS:
         (packaged / name).mkdir(parents=True)
         (packaged / name / "SKILL.md").write_text("# s\n", encoding="utf-8")
     (packaged / "plugin.json").write_text(
         json.dumps({"name": "fused-render"}), encoding="utf-8")
-    monkeypatch.setattr(skill_plugin, "_REPO_SKILLS_DIR", str(tmp_path / "gone"))
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(tmp_path / "gone"))
     monkeypatch.setattr(skill_plugin, "_REPO_MANIFEST", str(tmp_path / "gone.json"))
-    monkeypatch.setattr(skill_plugin, "_PACKAGED_SKILLS_DIR", str(packaged))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
     monkeypatch.setattr(skill_plugin, "_PACKAGED_MANIFEST",
                         str(packaged / "plugin.json"))
     root = skill_plugin.sync_skill_plugin()
     assert json.load(open(os.path.join(root, ".claude-plugin", "plugin.json"),
                           encoding="utf-8"))["name"] == "fused-render"
-    for name in skill_plugin.SKILLS:
+    for name in SKILLS:
         assert os.path.isfile(os.path.join(root, "skills", name, "SKILL.md"))
     # `plugin.json` is a file at the skills root, not a skill: it must not be
     # copied in as one.
@@ -217,8 +223,8 @@ def test_the_packaged_copy_is_the_fallback(home, tmp_path, monkeypatch):
 
 def test_no_source_at_all_is_not_an_error(home, tmp_path, monkeypatch):
     """Callers are server startup and scaffolding; neither may fail over this."""
-    for attr in ("_REPO_SKILLS_DIR", "_PACKAGED_SKILLS_DIR"):
-        monkeypatch.setattr(skill_plugin, attr, str(tmp_path / "gone"))
+    for attr in ("REPO_SKILLS_DIR", "PACKAGED_SKILLS_DIR"):
+        monkeypatch.setattr(skill_sources, attr, str(tmp_path / "gone"))
     for attr in ("_REPO_MANIFEST", "_PACKAGED_MANIFEST"):
         monkeypatch.setattr(skill_plugin, attr, str(tmp_path / "gone.json"))
     assert skill_plugin.sync_skill_plugin() is None
@@ -254,8 +260,9 @@ def test_nothing_the_wheel_ships_lives_under_a_dotted_path():
     source tree has no dotted entries at all, and the dotted dir is created by
     the sync instead."""
     assert skill_plugin._PACKAGED_MANIFEST == os.path.join(
-        skill_plugin._PACKAGED_SKILLS_DIR, "plugin.json")
-    for path in (skill_plugin._PACKAGED_SKILLS_DIR, skill_plugin._PACKAGED_MANIFEST):
+        skill_sources.PACKAGED_SKILLS_DIR, "plugin.json")
+    for path in (skill_sources.PACKAGED_SKILLS_DIR,
+                 skill_plugin._PACKAGED_MANIFEST):
         rel = os.path.relpath(path, skill_plugin._REPO_ROOT)
         assert not rel.startswith(os.pardir), rel
         assert not any(part.startswith(".") for part in rel.split(os.sep)), rel
@@ -287,21 +294,103 @@ def test_the_repo_root_is_itself_a_plugin_root():
     moves."""
     manifest = os.path.join(REPO_ROOT, ".claude-plugin", "plugin.json")
     assert json.load(open(manifest, encoding="utf-8"))["name"] == "fused-render"
-    for name in skill_plugin.SKILLS:
+    for name in SKILLS:
         assert os.path.isfile(
             os.path.join(REPO_ROOT, "skills", name, "SKILL.md"))
 
 
 # ------------------------------------------------------- the two duplications
 
-def test_the_two_skill_deliveries_agree_on_the_skill_list():
-    """D216's plugin root and D185's user-level sync ship the same three skills
-    from the same two source roots. Separate modules, deliberately — but a skill
-    added to one list and not the other would be missing from half the sessions
-    on the machine."""
-    assert skill_plugin.SKILLS == user_skills.SKILLS
-    assert skill_plugin._REPO_SKILLS_DIR == user_skills._REPO_SKILLS_DIR
-    assert skill_plugin._PACKAGED_SKILLS_DIR == user_skills._PACKAGED_SKILLS_DIR
+def test_every_skill_in_the_repo_is_discovered(tmp_path, monkeypatch):
+    """D490: a skill IS a directory under `skills/` with a `SKILL.md`, and there
+    is no list anywhere that has to name it. Pinned against the real repo,
+    because the whole point is that adding a directory is the entire act of
+    adding a skill.
+
+    `plugin.json` sits in the PACKAGED skills root beside the skill dirs (it may
+    not live under a dotted path in the wheel), so the scan has to reject a
+    plain file there rather than deliver it as a nameless skill."""
+    on_disk = {name for name in os.listdir(os.path.join(REPO_ROOT, "skills"))
+               if os.path.isfile(os.path.join(REPO_ROOT, "skills", name,
+                                              "SKILL.md"))}
+    assert on_disk and set(skill_sources.skill_names()) == on_disk
+
+    # The packaged root is only ever consulted with no repo present (D106): it
+    # wins nothing while the repo resolves, so exercising its own scan rules
+    # (rejecting the flat `plugin.json` and a manifest-less dir) means making
+    # the repo root unresolvable here too, the same as a wheel install with no
+    # checkout on disk.
+    packaged = tmp_path / "pkg"
+    (packaged / "later-skill").mkdir(parents=True)
+    (packaged / "later-skill" / "SKILL.md").write_text("# s\n", encoding="utf-8")
+    (packaged / "plugin.json").write_text("{}", encoding="utf-8")
+    (packaged / "not-a-skill").mkdir()
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(tmp_path / "no-repo"))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
+    found = skill_sources.skill_names()
+    assert "later-skill" in found
+    assert "plugin.json" not in found and "not-a-skill" not in found
+
+
+def test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_packaged_copy(
+        tmp_path, monkeypatch):
+    """The scenario a per-skill union would get wrong (D106): a dev checkout
+    whose `skills/` no longer has a skill, sitting beside a stale
+    `fused_render/skills/` (a leftover local wheel build) that still does.
+
+    The repo root IS resolvable here, so it is the whole answer about which
+    skills exist — the packaged copy contributes nothing, not even the names
+    the repo happens to be missing. Getting this wrong means a skill deleted
+    or renamed in `skills/` keeps shipping to that developer indefinitely,
+    because nothing ever deletes the stale packaged dir on its own."""
+    repo = tmp_path / "repo" / "skills"
+    (repo / "kept-skill").mkdir(parents=True)
+    (repo / "kept-skill" / "SKILL.md").write_text("# k\n", encoding="utf-8")
+    # No "deleted-skill" dir here: this repo checkout has already removed it.
+
+    packaged = tmp_path / "pkg" / "skills"
+    (packaged / "kept-skill").mkdir(parents=True)
+    (packaged / "kept-skill" / "SKILL.md").write_text("# k\n", encoding="utf-8")
+    (packaged / "deleted-skill").mkdir(parents=True)
+    (packaged / "deleted-skill" / "SKILL.md").write_text("# d\n", encoding="utf-8")
+
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(repo))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
+
+    found = skill_sources.skill_sources()
+    assert "kept-skill" in found
+    assert "deleted-skill" not in found
+
+
+def test_the_build_hook_discovers_the_same_skills_as_the_runtime():
+    """The packaged copy under `fused_render/skills/` is the ONLY source either
+    delivery has on a machine with no repo, and the build hook is its only
+    author — so a skill the hook does not copy does not exist for any wheel or
+    DMG user. It cannot import `skill_sources` (a build hook must not import the
+    package it is building), so the two scans agree only by convention; before
+    D490 both sides were hardcoded lists and `fused-render-ai` was in one of
+    them, shipping four of five skills for months with nothing failing.
+
+    Compared as SETS, not tuples: `_canonical_skills` always returns its result
+    `sorted`, while `skill_sources.skill_names()` is repo-order-then-any-
+    packaged-extras — a legitimate difference in ORDER that a tuple `==` cannot
+    tell apart from an actual disagreement about WHICH skills exist. Pinning on
+    order made a real bug (a stale packaged `fused_render/skills/` still
+    delivering a skill this repo checkout deleted, see
+    `test_a_skill_deleted_from_the_repo_stops_shipping_even_with_a_stale_...`
+    below) fail here too, but with an order/extra-element mismatch that names
+    neither cause — exactly the confusing failure this reshaping removes. A set
+    comparison still catches the original `fused-render-ai` bug: that bug was a
+    name present in one scan and absent from the other, which changes set
+    membership regardless of order."""
+    from scripts.hatch_build import _canonical_skills
+
+    canonical = set(_canonical_skills(REPO_ROOT))
+    runtime = set(skill_sources.skill_names())
+    assert canonical == runtime, (
+        "build-hook scan and runtime scan disagree about which skills exist "
+        f"-- only in build hook: {canonical - runtime}; "
+        f"only in runtime: {runtime - canonical}")
 
 
 def _agent(template):
@@ -384,8 +473,8 @@ def test_a_failed_sync_clears_a_stale_publication(home, tmp_path, monkeypatch):
     """The var is inherited by every child, so leaving a path there that no
     longer holds a plugin would make each spawn pass `--plugin-dir` at nothing."""
     monkeypatch.setenv(skill_plugin.PLUGIN_DIR_ENV, "/stale")
-    for attr in ("_REPO_SKILLS_DIR", "_PACKAGED_SKILLS_DIR"):
-        monkeypatch.setattr(skill_plugin, attr, str(tmp_path / "gone"))
+    for attr in ("REPO_SKILLS_DIR", "PACKAGED_SKILLS_DIR"):
+        monkeypatch.setattr(skill_sources, attr, str(tmp_path / "gone"))
     for attr in ("_REPO_MANIFEST", "_PACKAGED_MANIFEST"):
         monkeypatch.setattr(skill_plugin, attr, str(tmp_path / "gone.json"))
     assert skill_plugin.export_skill_plugin_env() is None
@@ -953,3 +1042,203 @@ def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
     assert "except Exception" in helper
     assert "daemon=True" in helper
     assert "acquire(blocking=False)" in helper
+
+
+# -- retiring the legacy `fused@fused-marketplace` plugin ----------------------
+#
+# The pre-rename plugin the app itself once told users to install. It is still
+# installed on those machines, its canvas skills are stale copies of the
+# `workbench:*` ones, and an old seeded CLAUDE.md names its `fused:` prefix — so
+# it does not merely sit there, it actively wins. Disabling it is a mutation of
+# the user's GLOBAL Claude config, which is exactly what D360 refused for the
+# install side, so the blast radius is pinned hard below: one exact id, only when
+# already enabled, `false` rather than deleted, and no git init of a home dir
+# that isn't already a repo.
+
+@pytest.fixture
+def claude_home(tmp_path, monkeypatch):
+    """A scratch CLAUDE_DIR. `lib` resolves its paths from the env once at import
+    (deliberately — they are process constants), so setting the var in a test is
+    too late; every path derived at import gets repointed, since missing one
+    writes into the developer's real ~/.claude."""
+    from fused_render.claude_config import lib
+
+    root = tmp_path / "claude-home"
+    root.mkdir()
+    monkeypatch.setattr(lib, "CLAUDE_DIR", str(root))
+    monkeypatch.setattr(lib, "SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
+    return root
+
+
+def _write_settings(root, value: dict) -> None:
+    with open(os.path.join(str(root), "settings.json"), "w", encoding="utf-8") as f:
+        json.dump(value, f)
+
+
+def _read_settings(root) -> dict:
+    with open(os.path.join(str(root), "settings.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_retire_disables_an_enabled_legacy_plugin(claude_home):
+    """The whole point: enabled → False, so the stale `fused:*` skills stop
+    loading into every session on the machine."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    enabled = _read_settings(claude_home)["enabledPlugins"]
+    assert enabled[skill_plugin.LEGACY_PLUGIN_ID] is False
+
+
+def test_retire_writes_false_rather_than_deleting_the_key(claude_home):
+    """`false` is what the Preferences page's own toggle writes, so the plugin
+    stays listed there and one click puts it back. A delete would make it vanish
+    with no trace of what happened or how to undo it."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    skill_plugin.retire_legacy_fused_plugin()
+    assert skill_plugin.LEGACY_PLUGIN_ID in _read_settings(claude_home)["enabledPlugins"]
+
+
+def test_retire_leaves_every_other_plugin_alone(claude_home):
+    """Matched EXACTLY — never a prefix, never a marketplace-wide sweep.
+    `agent-core@fused-marketplace` is a live plugin from the same marketplace and
+    none of our business, and a name that merely contains ours is not ours."""
+    others = {
+        "agent-core@fused-marketplace": True,
+        "fused-render@fused-render": True,
+        "fused@other-marketplace": True,
+        "fused-extra@fused-marketplace": True,
+    }
+    _write_settings(claude_home, {"enabledPlugins": {
+        **others, skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    skill_plugin.retire_legacy_fused_plugin()
+    enabled = _read_settings(claude_home)["enabledPlugins"]
+    for pid in others:
+        assert enabled[pid] is True, pid
+
+
+def test_retire_does_not_add_the_key_when_it_was_never_installed(claude_home):
+    """A machine that never installed it keeps a settings.json we never touched.
+    Writing `false` for an absent plugin would state on disk that something is
+    installed-and-off when nothing is installed at all."""
+    _write_settings(claude_home, {"enabledPlugins": {"other@mkt": True}})
+    before = _read_settings(claude_home)
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    assert _read_settings(claude_home) == before
+
+
+def test_retire_is_a_no_op_on_a_settings_file_with_no_plugins_at_all(claude_home):
+    """No `enabledPlugins` key, and the shape it does have is not a dict in every
+    install — neither may raise out of a canvas open."""
+    for value in ({}, {"enabledPlugins": None}, {"enabledPlugins": []},
+                  {"model": "opus"}):
+        _write_settings(claude_home, value)
+        assert skill_plugin.retire_legacy_fused_plugin() is False
+        assert _read_settings(claude_home) == value
+
+
+def test_retire_survives_a_missing_or_malformed_settings_file(claude_home):
+    """Absent is normal (a fresh Claude install). Malformed is not, but a config
+    we cannot parse must still leave the canvas open working — every other write
+    path in the app treats corruption as a hard error precisely because a USER is
+    waiting on the answer; nobody is waiting on this one."""
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    with open(os.path.join(str(claude_home), "settings.json"), "w") as f:
+        f.write("{not json")
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+
+
+def test_retire_is_idempotent(claude_home):
+    """The canvas hooks repeat — every open, and every poll that re-arms the
+    watcher. The second call must find it already off and write nothing, so
+    callers need no bookkeeping."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    mtime = os.path.getmtime(os.path.join(str(claude_home), "settings.json"))
+    assert skill_plugin.retire_legacy_fused_plugin() is False
+    assert os.path.getmtime(os.path.join(str(claude_home), "settings.json")) == mtime
+
+
+def test_retire_never_git_inits_the_users_claude_dir(claude_home):
+    """`lib.commit` calls `ensure_repo`, which `git init`s ~/.claude and writes a
+    .gitignore into it. Right when the user pressed a button in a config UI built
+    around versioning; NOT something an unattended canvas open may do to their
+    home directory behind their back."""
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert not os.path.exists(os.path.join(str(claude_home), ".git"))
+    assert not os.path.exists(os.path.join(str(claude_home), ".gitignore"))
+
+
+def test_retire_records_the_flip_when_a_config_repo_already_exists(claude_home,
+                                                                  monkeypatch):
+    """The user versioning their Claude config is the user who will go looking
+    for an unexplained settings change — so when the history is already there,
+    the flip lands in it."""
+    from fused_render.claude_config import lib
+
+    seen = []
+    monkeypatch.setattr(lib, "commit", lambda msg, **kw: seen.append(msg))
+    os.makedirs(os.path.join(str(claude_home), ".git"))
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert len(seen) == 1 and skill_plugin.LEGACY_PLUGIN_ID in seen[0]
+
+
+def test_a_failed_commit_does_not_undo_the_retirement(claude_home, monkeypatch):
+    """The setting is already written and that is the part that matters — the
+    audit trail is a nicety and its failure must not report the flip as failed
+    (a caller that retried on False would keep re-reading a config it already
+    fixed)."""
+    from fused_render.claude_config import lib
+
+    def boom(*a, **kw):
+        raise RuntimeError("no git here")
+
+    monkeypatch.setattr(lib, "commit", boom)
+    os.makedirs(os.path.join(str(claude_home), ".git"))
+    _write_settings(claude_home, {"enabledPlugins": {
+        skill_plugin.LEGACY_PLUGIN_ID: True,
+    }})
+    assert skill_plugin.retire_legacy_fused_plugin() is True
+    assert _read_settings(claude_home)["enabledPlugins"][
+        skill_plugin.LEGACY_PLUGIN_ID] is False
+
+
+def test_the_legacy_id_is_the_pre_rename_plugin_and_not_the_live_one():
+    """A seam: `LEGACY_PLUGIN_ID` names the plugin we RETIRE and
+    `WORKBENCH_PLUGIN_SUBDIR` the one we SUPPLY. Should these ever come to name
+    the same thing, the canvas hook would disable the skills it just fetched."""
+    assert skill_plugin.LEGACY_PLUGIN_ID.startswith("fused@")
+    assert not skill_plugin.LEGACY_PLUGIN_ID.startswith(
+        skill_plugin.WORKBENCH_PLUGIN_SUBDIR + "@")
+
+
+def test_an_empty_repo_skills_dir_does_not_shadow_the_packaged_copy(monkeypatch,
+                                                                    tmp_path):
+    """Precedence is claimed by a root that HAS skills, not by one that merely
+    lists. REPO_SKILLS_DIR is `<parent of the package>/skills`, which on a wheel
+    is `<site-packages>/skills` — a path any other distribution may create.
+    Reading an empty one as "this checkout has no skills" would deliver nothing
+    on exactly the installs that only have the packaged copy."""
+    empty = tmp_path / "site-packages-skills"
+    empty.mkdir()
+    (empty / "not-a-skill").mkdir()  # no SKILL.md: not a skill, and not a veto
+    packaged = tmp_path / "packaged"
+    (packaged / "fused-render-usage").mkdir(parents=True)
+    (packaged / "fused-render-usage" / "SKILL.md").write_text("x")
+
+    monkeypatch.setattr(skill_sources, "REPO_SKILLS_DIR", str(empty))
+    monkeypatch.setattr(skill_sources, "PACKAGED_SKILLS_DIR", str(packaged))
+    assert skill_sources.skill_names() == ("fused-render-usage",)

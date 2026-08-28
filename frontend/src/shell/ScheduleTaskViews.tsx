@@ -59,6 +59,7 @@ import {
   dropLanes,
   filingIntent,
   filterTasks,
+  filtersForView,
   firstLine,
   groupByColumn,
   heldMessages,
@@ -76,9 +77,11 @@ import {
   markReadIntent,
   messageEditEntry,
   messageHref,
+  taskFile,
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
@@ -106,6 +109,7 @@ import type {
   LaneChoices,
   ListMemory,
   OpenThreadIntent,
+  OutcomeTag,
   TaskFilters,
   TaskRunIntent,
 } from "./tasks-lib";
@@ -113,7 +117,7 @@ import type {
 // The page composes these from one import; re-exported here so Scheduled.tsx
 // takes its filter type, its empty value and its filter function from the same
 // module it takes the views from.
-export { EMPTY_FILTERS, filterTasks, projectOptions, tildePath, basename };
+export { EMPTY_FILTERS, filterTasks, filtersForView, projectOptions, tildePath, basename };
 export type { TaskFilters };
 
 /**
@@ -193,6 +197,14 @@ const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
 );
+// The mark a task about ONE DOCUMENT wears after its title. Paired with
+// ICON_FOLDER above and drawn at the same 12px: the two answer the same
+// question ("what is this task about") at two scales.
+const ICON_FILE = icon(
+  <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+  <path d="M14 2v6h6" /></>,
+  12,
+);
 // There is no ICON_CLOCK/ICON_CHAT pair here any more (2026-08-18). A clock on a
 // scheduled message and a speech bubble on a chat one used to sit between the
 // status ring and MSG-003 on every thread row, saying where the message came
@@ -223,6 +235,20 @@ const ICON_RERUN = icon(
 // fact this button asserts. Deliberately NOT the single `ICON_CHECK` above: that
 // one means "this filter is on" in the popovers, and a row action wearing the
 // same glyph would read as a toggle that is currently checked.
+/** A speech bubble, for the thread count on a List row (D448).
+ *
+ *  SQUARE-CORNERED (Akshil, 2026-08-24: "make this icon boxy icon for
+ *  messages"). It was lucide `message-circle` — a round bubble whose outline is
+ *  one continuous curve — and at 12px beside a digit that curve is a blob. This
+ *  is `message-square`: a rectangle with a tail, whose corners give the glyph
+ *  the same flat edges as everything else on the row (the id chip, the folder
+ *  pill, the file mark), so it reads as a mark in this row's vocabulary rather
+ *  than as the one round thing in it. Same 12px, same stroke, same box. */
+const ICON_MSG = icon(
+  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  12,
+);
+
 const ICON_MARK_READ = icon(
   <><path d="M18 6 7 17l-5-5" /><path d="m22 10-7.5 7.5L13 16" /></>, 13);
 // Filing away. lucide `archive`: a lidded box with a pull-slot in the front.
@@ -362,15 +388,97 @@ export function StatusIcon({
    restoring a mark for it later is a rendering decision, not a data one — it just
    cannot be a filled dot after a title. */
 
-/** The folder a task's work happens in — a plain folder glyph and the folder's
- * own name, with the whole path (with ~ for home) as the tooltip. Deliberately
- * not an initials avatar: that stands for a PERSON, and a directory is not one. */
-export function IdentityChip({ name, title }: { name: string; title?: string }) {
+/** The folder a task's work happens in — the folder's own name, with the whole
+ * path (with ~ for home) as the tooltip. Deliberately not an initials avatar:
+ * that stands for a PERSON, and a directory is not one.
+ *
+ * NO GLYPH ANY MORE (Akshil, 2026-08-24: "in folder name we have folder icon,
+ * let's remove that"). The chip carried a 12px folder in front of its name, and
+ * the name is already the name of a folder — the glyph restated the one thing the
+ * chip could not be mistaken about, on the busiest end of the row, on every row.
+ * What it cost was width the title needed and a second small mark next to the
+ * message bubble and the file mark, which are marks that DO say something the
+ * text does not.
+ *
+ * The glyph is not gone from the row, it MOVED: it follows the title now, in the
+ * same slot the file mark uses, on the tasks that have no file mark to wear
+ * (`.tasks-row-file` in the row below). There it answers a question the row
+ * otherwise cannot — is this task about the whole folder, or one document in it
+ * — which is worth a mark, where "this folder chip contains a folder" was not. */
+export function IdentityChip({ name, title, onPick, active = false }: {
+  name: string;
+  title?: string;
+  /** Is the page filtered to this folder right now? Only meaningful with
+   * `onPick` — it is the pressed state of a control, not a fact about a label.
+   * It paints the chip as an ON pill and turns its press into "let it go". */
+  active?: boolean;
+  /** Makes the chip a TAG: pressed, it filters the page to this folder (Akshil,
+   * 2026-08-23). Given one, the chip becomes a real button — hover wash, focus
+   * ring, `stopPropagation` so it never counts as a press on the row it sits in.
+   * Without one it stays the plain label it has always been, which is what the
+   * board card and every other reader want. */
+  onPick?: () => void;
+}) {
   if (!name) return null;
+  const body = <span className="schedule-tv-id-name">{name}</span>;
+  if (!onPick) {
+    return (
+      <span className="schedule-tv-id" data-hint={title || name}>{body}</span>
+    );
+  }
+  // A SHIELD around the tag, and the tag back at its own size (Akshil,
+  // 2026-08-24, final pass on this chip).
+  //
+  // The problem it solves is what the row does with the gap AROUND the pill. The
+  // row is one big stretched link, so the few pixels above, below and beside the
+  // chip belonged to the ROW: hovering them raised the task's title and clicking
+  // them opened the task — a click a pixel outside a filter chip navigating away
+  // is the worst possible outcome for a near-miss. Two earlier passes tried to
+  // fix it by growing the BUTTON to the row's full height, and both were wrong in
+  // the same way: `border-radius` draws on the padding box, so the hover wash
+  // grew with the target into a slab around an 11px word ("that is such a bad
+  // design and hover").
+  //
+  // So the two jobs are split across two elements. This span is the shield: it
+  // occupies the band, it sits above the stretched link so the link never
+  // receives a pointer there, and it does NOTHING — `title=""` stops the
+  // browser walking up to the row's tooltip, `cursor: default` says it is not a
+  // control, and `stopPropagation` covers the row's own click handler on the arm
+  // that has one. The button inside is the whole live target: its own size, its
+  // own wash, its own tooltip, its own press.
   return (
-    <span className="schedule-tv-id" title={title || name}>
-      <span className="schedule-tv-folder-icon" aria-hidden>{ICON_FOLDER}</span>
-      <span className="schedule-tv-id-name">{name}</span>
+    <span
+      className="schedule-tv-id-shield"
+      /* EMPTY, not absent, and it is the whole reason the band says nothing: the
+         ROW carries `data-hint={task.title}`, and `hints.ts` resolves a hint by
+         walking up with `closest("[data-hint]")` — so without this the band
+         would answer with the task's name, which is exactly what it must not
+         do. An empty value is found first and resolves to no hint, the same job
+         `title=""` used to do against the native tooltip. */
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+    >
+      <button
+        type="button"
+        className={"schedule-tv-id schedule-tv-id--tag" + (active ? " is-on" : "")}
+        // The tooltip says what the press DOES, on top of the path it already
+        // said: a chip that only ever labelled something gives the reader no
+        // reason to try clicking it. On an ON chip it says the opposite thing,
+        // because that is what the press now does.
+        //
+        // A NATIVE `title`, by owner call after the custom panel drew displaced
+        // from the chip it captioned. Having one OF ITS OWN is also what stops
+        // the walk up to the row's, which is what put the task's name here.
+        data-hint={active ? `Showing only ${title || name} — press to clear` : `Show only ${title || name}`}
+        aria-label={active ? `${name} — showing only this folder, press to clear` : `Show only ${name}`}
+        aria-pressed={active}
+        onClick={(e) => {
+          e.stopPropagation();
+          onPick();
+        }}
+      >
+        {body}
+      </button>
     </span>
   );
 }
@@ -380,6 +488,31 @@ export function IdentityChip({ name, title }: { name: string; title?: string }) 
  * out loud and searched for. Monospaced, because a column of them is scanned. */
 function IdChip({ id, kind }: { id: string; kind: "task" | "message" }) {
   return <span className={`tasks-id tasks-id--${kind}`}>{id}</span>;
+}
+
+/* The one word a lane cannot say about the run it is showing — today only
+   "Stopped", for a run the user ended (tasks-lib.outcomeTag).
+
+   A PILL, and the only one on this page. Every other mark here has been argued
+   down to a ring, a weight, or bare text, because they all competed with the
+   title for the same glance. This one is different in kind: it is not a status
+   the lane already carries (that is the ring's job) but a CORRECTION to what the
+   lane implies — Done, but it did not finish — and it has to survive being read
+   beside whatever else is on the line. Bare text did not: in the card's foot
+   next to the folder chip, "Fused Stopped" read as the name of the folder
+   (Akshil, 2026-08-21, screenshot). A border is what makes it a separate object
+   rather than the next word in a phrase.
+
+   BESIDE THE ID, in both views. The id line is where marks ABOUT the task live
+   (the off-lane status ring is already there), the title line is for the work's
+   own words, and the foot is for the run's circumstances — the folder it ran in,
+   the run ahead. This is a fact about the task, so it goes with the id. */
+function OutcomePill({ outcome }: { outcome: OutcomeTag }) {
+  return (
+    <span className="tasks-outcome-pill" title={outcome.title}>
+      {outcome.text}
+    </span>
+  );
 }
 
 /* There is no `UnreadDot` any more (2026-08-18). It was a 7px grey dot trailing a
@@ -455,10 +588,34 @@ function popStyle(el: HTMLElement | null): React.CSSProperties {
 function FilterMenu({
   label,
   count,
+  icon: glyph,
+  onClear,
   children,
 }: {
   label: string;
   count: number;
+  /** The trigger's glyph. Defaults to the ring, which is the STATUS menu's own
+   *  mark — that is the vocabulary this page states a status in, so on that menu
+   *  the ring is the label said twice and it belongs there.
+   *
+   *  It was the default for BOTH menus, and hardcoded (Akshil, 2026-08-24: "this
+   *  icon next to project in filters is not accurate, change the icon to
+   *  something related to projects"). A ring beside the word Project claims a
+   *  status is being filtered — the one thing the ring means everywhere else on
+   *  this page — so the two menus read as two status filters, one of them
+   *  mislabelled. A prop rather than a `label === "Project"` branch inside:
+   *  which glyph belongs to a filter is the caller's fact, not this popover's. */
+  icon?: React.ReactNode;
+  /** Drop THIS menu's selections. Given one, the trigger becomes a split
+   *  control — `[ ⊙ Project 1 | ✕ ]` — whenever the count is non-zero.
+   *
+   *  Attached to the menu rather than standing off to one side, because that is
+   *  what it acts on: a lone "Clear" on the bar had to mean all three controls
+   *  at once (there is no room for one per menu), so undoing a project filter
+   *  also threw away a status filter and a search the user had not finished
+   *  with. It also sat as a fourth box in a row of three that were menus, which
+   *  is how it came to look misaligned — it was not the same kind of thing. */
+  onClear?: () => void;
   children: (close: () => void) => React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -492,18 +649,37 @@ function FilterMenu({
     };
   }, [open]);
 
+  // The ✕ is only ever drawn with something to drop, so the control is one box
+  // at rest and two only while it is doing something.
+  const splittable = !!onClear && count > 0;
   return (
     <div className="schedule-tv-pop-wrap" ref={wrap}>
-      <button
-        type="button"
-        ref={btn}
-        className="schedule-tv-filter-btn"
-        aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {ICON_CIRCLE_DOT} {label}
-        {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
-      </button>
+      <span className="schedule-tv-filter-group">
+        <button
+          type="button"
+          ref={btn}
+          className={"schedule-tv-filter-btn" + (splittable ? " is-split" : "")}
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+        >
+          {glyph ?? ICON_CIRCLE_DOT} {label}
+          {count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
+        </button>
+        {splittable && (
+          <button
+            type="button"
+            className="schedule-tv-filter-x"
+            /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
+               this replaces, and a bare ✕ beside a label is read as belonging
+               to it only if the accessible name agrees. */
+            title={`Clear the ${label.toLowerCase()} filter`}
+            aria-label={`Clear the ${label.toLowerCase()} filter`}
+            onClick={onClear}
+          >
+            ✕
+          </button>
+        )}
+      </span>
       {open && (
         <div
           className="schedule-tv-pop tasks-pop"
@@ -523,12 +699,27 @@ export function TaskFilterControls({
   projects,
   home = "",
   onChange,
+  hideArchiveStatus = false,
 }: {
   filters: TaskFilters;
   /** Every folder that has a task — `projectOptions(tasks)`. */
   projects: string[];
   home?: string;
   onChange: (next: TaskFilters) => void;
+  /**
+   * True while the Calendar is the active view (Akshil, 2026-08-20). The
+   * calendar draws nothing for an archived task — see tasks-lib.filtersForView
+   * for the full argument — which makes Archive a dead option in this same
+   * popover on that view alone: picking it always empties the grid, with
+   * nothing on screen to say why. List and Board keep the row.
+   *
+   * The STORED value is untouched either way (one `TaskFilters` still backs
+   * all three views); this only hides the row and the count that follow from
+   * it — a person's Archive tick made on List survives a switch to Calendar
+   * and back, it is just not counted or offered while the calendar cannot
+   * act on it.
+   */
+  hideArchiveStatus?: boolean;
 }) {
   const toggleStatus = (key: BoardColumn) =>
     onChange({
@@ -537,6 +728,16 @@ export function TaskFilterControls({
         ? filters.statuses.filter((s) => s !== key)
         : [...filters.statuses, key],
     });
+
+  const statusColumns = hideArchiveStatus
+    ? BOARD_COLUMNS.filter((c) => c.key !== "archived")
+    : BOARD_COLUMNS;
+  // Excludes Archive from the badge for the same reason the row is hidden: a
+  // count that includes a facet the popover will not even show would read as
+  // a filter this menu cannot explain.
+  const statusCount = hideArchiveStatus
+    ? filters.statuses.filter((s) => s !== "archived").length
+    : filters.statuses.length;
 
   const toggleProject = (path: string) =>
     onChange({
@@ -563,9 +764,13 @@ export function TaskFilterControls({
         />
       </div>
 
-      <FilterMenu label="Status" count={filters.statuses.length}>
+      <FilterMenu
+        label="Status"
+        count={statusCount}
+        onClear={() => onChange({ ...filters, statuses: [] })}
+      >
         {() =>
-          BOARD_COLUMNS.map((col) => {
+          statusColumns.map((col) => {
             const on = filters.statuses.includes(col.key);
             return (
               <button
@@ -590,7 +795,16 @@ export function TaskFilterControls({
           is simply absent on a machine whose tasks all live in one folder —
           a control with one choice is not a choice. */}
       {projects.length > 1 && (
-        <FilterMenu label="Project" count={filters.projects.length}>
+        <FilterMenu
+          label="Project"
+          count={filters.projects.length}
+          /* A FOLDER, because a project on this page IS a folder — it is
+             auto-detected from where each task's work happens, and the same
+             glyph now marks a folder-scoped task at the end of its title and
+             every folder row in the New-task picker. One mark, one meaning. */
+          icon={ICON_FOLDER}
+          onClear={() => onChange({ ...filters, projects: [] })}
+        >
           {() =>
             projects.map((path) => {
               const on = filters.projects.includes(path);
@@ -614,6 +828,7 @@ export function TaskFilterControls({
           }
         </FilterMenu>
       )}
+
     </div>
   );
 }
@@ -828,6 +1043,8 @@ export function TaskList({
   stale = false,
   onEditEntry,
   onReload,
+  onPickProject,
+  pinnedProjects = [],
   emptyLabel = "Nothing to show here.",
 }: {
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
@@ -854,6 +1071,24 @@ export function TaskList({
    * still saying "Scheduled" — not a stuck row, and nothing worth withholding
    * the affordance over. */
   onReload?: () => void;
+  /** Narrow the page to ONE project — what a press on a row's folder chip means
+   * (Akshil, 2026-08-23). The chip was already the answer to "where did this
+   * happen"; making it pressable turns it into the way to ask "what else
+   * happened there", which is the question a reader has the moment they notice
+   * the folder. It writes the SAME `projects` filter the toolbar's popover owns,
+   * so there is one filter with two ways in and the toolbar keeps showing (and
+   * clearing) what is on.
+   *
+   * Optional: without it the chip stays the plain label it has always been. */
+  onPickProject?: (project: string) => void;
+  /** The projects the page is currently FILTERED to — the toolbar's own
+   * `projects` value (Akshil, 2026-08-23). Two jobs, both about not hiding the
+   * thing the reader just pressed: it keeps the folder chip drawn when the
+   * filter has narrowed the list to one project (`spansProjects` would
+   * otherwise take it away at exactly the moment it became the answer to "what
+   * am I looking at"), and it is what a chip reads to know it is the one that
+   * is ON. */
+  pinnedProjects?: string[];
   emptyLabel?: string;
 }) {
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
@@ -901,15 +1136,30 @@ export function TaskList({
     latest.current = tasks;
   }, [tasks]);
 
-  // Whether a row draws its folder chip at all — asked ONCE for the whole list,
-  // because the question is about the list and not about any one row
-  // (tasks-lib.spansProjects). Cheap, and memoised only so it is not a new answer
-  // on every keystroke of the search box.
-  const showProject = useMemo(() => spansProjects(tasks), [tasks]);
+  // Whether a row draws its folder chip at all, in two halves. The first is the
+  // old rule: a chip every visible row repeats distinguishes nothing
+  // (tasks-lib.spansProjects). The second is what a FILTER changes about that
+  // (Akshil, 2026-08-23) — narrowing to one project makes every row agree,
+  // which used to make the chips vanish; but the chip is now the control that
+  // did the narrowing, and a control that deletes itself on use leaves the
+  // reader with no on-screen answer to "which folder is this" and nothing to
+  // press to get back. So a pinned project keeps its chip, wearing the state.
+  const pinnedKey = pinnedProjects.join("\u0000");
+  const showProject = useMemo(
+    () => spansProjects(tasks) || pinnedKey !== "",
+    [tasks, pinnedKey],
+  );
 
-  // The list's rows, in rank order (tasks-lib.sortByLane). Memoised for the same
-  // reason `showProject` is: this runs on every keystroke of the search box and
-  // the answer only moves when the rows do.
+  // The list's rows, in rank order and then by printed time (tasks-lib.sortByLane).
+  // Memoised for the same reason `showProject` is: this runs on every keystroke of
+  // the search box and the answer only moves when the rows do.
+  //
+  // `now` is left to the default rather than threaded through a dep, exactly as the
+  // Board does with groupByColumn: the recency order can only change when a run
+  // does, and a run that happened is a new `tasks` from the poll — so the poll that
+  // makes the order stale is the same poll that re-runs this memo with a fresh
+  // clock. A ticking `now` in the deps would re-sort the list every second to
+  // produce the identical order.
   const rows = useMemo(() => sortByLane(tasks), [tasks]);
 
   /**
@@ -1102,6 +1352,49 @@ export function TaskList({
     remember({ ...memory.current, expanded: [...expanded] });
   }, [expanded]);
 
+  // ---- the wheel works in the margins too -------------------------------------
+  // `.schedule-main` is capped at 1050px and centred, so a wide window leaves a
+  // band of empty page either side of the card — and the card is the scroller,
+  // so a wheel out in that band lands on `.schedule-page`, which is
+  // `overflow: hidden` and scrolls nothing: the reader had to aim at the card
+  // (Akshil, 2026-08-20). Making the scroller full-width instead was tried first
+  // and traded this for two worse bugs — the card's frame scrolled away with its
+  // content, and the reserved scrollbar gutters pushed the card off the
+  // toolbar's axis (bugbot, #678) — so the geometry stays exactly as it was and
+  // the wheel is forwarded: a wheel anywhere on this page that no scroller of
+  // its own claims is handed to the list. Board and Calendar mount their own
+  // components, so nothing here can touch their scrolling.
+  useEffect(() => {
+    // The page div, NOT via the ref: on the mount this effect runs after, the
+    // rows are usually still in flight and the ref is still null — the page
+    // ancestor is the one element of this pair that is always there. The ref is
+    // read again inside the handler, per wheel, for the same reason.
+    const page = document.querySelector<HTMLElement>(".schedule-page");
+    if (!page) return;
+    const onWheel = (e: WheelEvent) => {
+      const el = listRef.current;
+      if (!el || !(e.target instanceof Element) || e.deltaY === 0) return;
+      // Pinch-zoom arrives as ctrl+wheel; that is a zoom, not a scroll.
+      if (e.ctrlKey) return;
+      // Anything between the pointer and the page that scrolls for itself —
+      // the list, a menu, a popover — keeps its native wheel untouched.
+      for (let n: Element | null = e.target; n && n !== page; n = n.parentElement) {
+        const s = getComputedStyle(n);
+        if (
+          (s.overflowY === "auto" || s.overflowY === "scroll") &&
+          n.scrollHeight > n.clientHeight
+        ) {
+          return;
+        }
+      }
+      // deltaMode 1 is lines (Firefox with a wheel mouse); everything else
+      // that reaches a web page is already pixels.
+      el.scrollTop += e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    };
+    page.addEventListener("wheel", onWheel, { passive: true });
+    return () => page.removeEventListener("wheel", onWheel);
+  }, []);
+
   const onScroll = () => {
     const el = listRef.current;
     if (!el) return;
@@ -1171,9 +1464,19 @@ export function TaskList({
           reason. */}
       {pageNote && <p className="schedule-tv-note tasks-list-note">{pageNote}</p>}
       <div className="tasks-list" ref={listRef} onScroll={onScroll}>
+      {/* THE FRAME IS INSIDE THE SCROLLER, not the scroller itself. When the
+          bordered box was the thing that scrolled, its bar stood INSIDE the
+          border: a 10px column between the last row's edge and the frame, so
+          every hairline stopped short of the box it was meant to reach and the
+          rows read as cut off (Akshil, screenshot, 2026-08-27: "the scroll cuts
+          the item ... move the scroll UI outside"). Now the bar stands beside
+          the frame, and the frame scrolls with its rows like any other
+          content. */}
+      <div className="tasks-list-frame">
       {/* ORDERED BY STATUS, NOT GROUPED BY IT (tasks-lib.sortByLane): Upcoming,
-          In Progress, Failed, Done, Archive — rank order, server order inside
-          each rank, and no headers, dividers or counts between them.
+          In Progress, Failed, Done, Archive — rank order, and inside each rank
+          the time the rows themselves print (newest first; Upcoming soonest
+          first), with no headers, dividers or counts between them.
 
           The grouping is a SORT and nothing more (Akshil, 2026-08-18). Headers
           lived here for a round and were wrong on a list: the Board's lanes are
@@ -1197,6 +1500,8 @@ export function TaskList({
           error={errors[task.key]}
           onEditEntry={onEditEntry}
           onReload={onReload}
+          onPickProject={onPickProject}
+          pinned={pinnedProjects.includes(task.project)}
           onPageNote={setPageNote}
           read={read}
           onRead={clear}
@@ -1205,6 +1510,7 @@ export function TaskList({
           onSettleAll={settleAll}
         />
       ))}
+      </div>
       </div>
     </>
   );
@@ -1224,6 +1530,8 @@ function TaskNode({
   error,
   onEditEntry,
   onReload,
+  onPickProject,
+  pinned,
   onPageNote,
   read,
   onRead,
@@ -1257,6 +1565,12 @@ function TaskNode({
   error?: string;
   onEditEntry?: (entryId: string) => void;
   onReload?: () => void;
+  /** Filter the page to this row's folder — the List's handler, passed through
+   * untouched. See TaskList's own `onPickProject`. */
+  onPickProject?: (project: string) => void;
+  /** Is the page filtered to THIS row's folder? The chip wears it, so the
+   * control that narrowed the list is visibly the one that is on. */
+  pinned?: boolean;
   /** The List's page-level note — the only holder that survives this row being
    * filtered out by the very move it announces (see TaskList's render). */
   onPageNote: (s: string) => void;
@@ -1318,6 +1632,9 @@ function TaskNode({
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
   const ahead = isUpcomingTask(task);
+  // The file this task is about, or "" for a task about its folder — the mark
+  // after the title. tasks-lib.taskFile owns the test.
+  const taskFile_ = taskFile(task);
   // The scheduled run a ONE-MESSAGE UPCOMING row's press edits when it has no
   // conversation to open instead, because the instruction that has not run yet is
   // the only content such a row has. tasks-lib.upcomingEditEntry owns all three conditions — the
@@ -1333,6 +1650,9 @@ function TaskNode({
   const when = taskWhen(task);
   // The run still to come, when the row's own time is not already it.
   const soon = nextRunChip(task);
+  // ...and the one word a settled lane cannot say: that the last run was
+  // STOPPED rather than finished (tasks-lib.outcomeTag).
+  const outcome = outcomeTag(task);
   // Run now / Re-run. tasks-lib decides all of it — whether it is offered,
   // which message it acts on, and WHICH CALL that is. The run-now half comes
   // from the same function the drag asks (runNowIntent), so the button and the
@@ -1370,6 +1690,17 @@ function TaskNode({
   // row would leave the reader working out which press each answered.
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  // THE FILING PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the
+  // pointer on the row, and the hover swap above kept right on swapping: the slot
+  // instantly redrew the OPPOSITE verb (Unarchive), so the press's only visible
+  // outcome was an icon flip — no sign the action landed at all. CSS cannot say
+  // "hovered, but the hover already spent its press", so the row says it: this
+  // flag goes up on the press and comes down when the pointer LEAVES the row
+  // (`onMouseLeave` below), and while it is up `.is-refiled` (tasks.css) hands
+  // the mark slot back to the STATUS RING — now drawing the new state, which is
+  // the confirmation — instead of the reveal. Leave and return, and the hover
+  // offers the (now opposite) action again, exactly like any other row.
+  const [refiled, setRefiled] = useState(false);
 
   const runNow = async (intent: TaskRunIntent) => {
     setActing(true);
@@ -1403,6 +1734,12 @@ function TaskNode({
   const refile = async (intent: FilingIntent) => {
     setActing(true);
     setNote("");
+    // On the PRESS, not on the answer: the ring under the suppressed button is
+    // this press's feedback either way — the new state when the call lands, the
+    // unchanged one (plus the note below) when the server refuses. Both
+    // directions, deliberately: Unarchive under a resting pointer flipped to
+    // Archive just as instantly.
+    setRefiled(true);
     try {
       if (intent.kind === "archive") {
         await archiveTask(task.key);
@@ -1646,7 +1983,8 @@ function TaskNode({
     <div className="tasks-node">
       <div
         className={"tasks-row" + (open ? " is-open" : "")
-          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")}
+          + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
+          + (refiled ? " is-refiled" : "")}
         // The row is a CONTAINER now, not a control: when it has somewhere to go
         // the stretched `<a>` below is the button, the tab stop and the
         // accessible name, and hanging a second role and a second tab stop on
@@ -1656,7 +1994,17 @@ function TaskNode({
         // claimed (`is-inert` turns the cursor and the hover tint off).
         role={pressable && !href ? "button" : undefined}
         tabIndex={pressable && !href ? 0 : undefined}
-        title={task.title}
+        /* NO CAPTION ON THE ROW ITSELF (Akshil, 2026-08-24: "the tooltip of
+           title should only show up if I am on title text"). It lived here
+           through three passes — as a native `title`, as the CSS panel, as the
+           instant one — and a caption on the row is a caption on ALL of it: the
+           id chip, the status ring, the empty space between the title and the
+           folder, and every band around a mark answered with the task's name
+           because `closest()` walks up to whatever the row is holding. The
+           TITLE is the thing whose text can be cut off and therefore the only
+           thing here worth captioning, so it carries its own (see
+           `.tasks-title` below). Every other mark on the row already carries the
+           one fact its own ink cannot show. */
         onClick={href ? undefined : pressable ? activate : undefined}
         onKeyDown={
           href
@@ -1669,6 +2017,11 @@ function TaskNode({
                 }
               }
         }
+        // The other half of the filing receipt (Akshil, 2026-08-19): leaving the
+        // row is what re-arms its hover reveal. Handled — not conditional — even
+        // while the flag is down, because a handler that appears and disappears
+        // with the state it clears is a re-render race waiting to be read about.
+        onMouseLeave={() => setRefiled(false)}
       >
         {/* The disclosure gutter is drawn WHETHER OR NOT there is a chevron in it.
             `--tasks-caret-w` is the first term of `--tasks-rail-x`, which every
@@ -1725,7 +2078,12 @@ function TaskNode({
           <a
             className="tasks-rowlink"
             href={href}
-            title={task.title}
+            /* NO `title` OF ITS OWN (2026-08-24). This <a> is stretched over the
+               whole row and sits above it, so a title here is the one actually
+               shown — and the row div already carries the same words, one walk
+               up, which is where the browser lands when this link stays silent.
+               One copy of the caption, not two. `aria-label` stays: it is this
+               link's accessible NAME, not a tooltip. */
             aria-label={label}
             onClick={(e) => {
               if (opensElsewhere(e)) return;
@@ -1815,16 +2173,95 @@ function TaskNode({
           )}
         </span>
         <IdChip id={task.task_id} kind="task" />
+        {/* Beside the id, the same component in the same place as on the card
+            (design-principles §1): a tag that moved between the two views would
+            be two different marks to learn. */}
+        {outcome && <OutcomePill outcome={outcome} />}
         {/* Greyed while the work is still ahead of it (tasks-lib.isUpcomingTask):
             a list is mostly history, and the rows that have not happened yet are
             the ones a reader is not being asked to read. The TITLE only — the id,
             the ring, the folder and the time all stay at full strength, because
             fading the whole row would say "archived", which is a different fact
             with a lane of its own. */}
-        <span className={"tasks-title" + (ahead ? " is-upcoming" : "")}>{label}</span>
-        {/* Nothing follows the title. The live ping used to (see LivePulse's
-            headstone above): a blue disc in the one position, and the one shape,
-            that means unread everywhere else. */}
+        {/* THE CAPTION LIVES HERE, not on the row (see the row's own note).
+            This element is the one on the row that ELLIPSISES — `overflow:
+            hidden` in tasks.css — so it is the one whose full text a reader can
+            actually be missing, which is the whole job of a tooltip. The panel
+            is `position: fixed` on <body>, so this element's own clipping has no
+            say in whether the caption is readable. */}
+        <span
+          className={"tasks-title" + (ahead ? " is-upcoming" : "")}
+          data-hint={task.title}
+        >
+          {label}
+        </span>
+        {/* The one thing that follows the title (Akshil, 2026-08-23): a file
+            mark, on the tasks whose target is a FILE rather than the folder.
+            The row already says which project the work happened in; what it
+            could not say is that this task is about one document inside it —
+            the difference between "something happened in this repo" and
+            "something happened to this file".
+
+            A GLYPH, not the name — the opposite call to the message count two
+            elements along, and for the opposite reason. A count is a number
+            that needs a unit to be read at all; a filename is prose, and a
+            column of prose at the busiest end of the row is the crowding this
+            row has twice been trimmed for. The name is one hover away, in the
+            same `title` the folder chip has always used for its path.
+
+            The live ping used to sit here (see LivePulse's headstone above): a
+            blue disc in the one position, and the one shape, that means unread
+            everywhere else. This is a hollow outline and never blue. */}
+        {/* FILE MARK ONLY (Akshil, 2026-08-25: "drop the folder icon, keep the
+            file icon as is"). The folder arm briefly lived here as the fallback
+            (2026-08-24's one-mark-either-way rule), but a folder-scoped task is
+            the common case and the mark restated what the folder chip at the
+            row's far end already says — so the glyph is back to marking the one
+            genuinely extra fact: this task is about a single document.
+
+            A NATIVE `title`, like every caption on this row (2026-08-24, third
+            pass): the custom panel drew displaced from what it captioned, and
+            its own `title` is also what stops the browser walking up to the
+            row's — the walk is the bug that showed the task's name over every
+            mark that carried no title of its own. */}
+        {taskFile_ ? (
+          <span
+            className="tasks-row-file"
+            data-hint={tildePath(taskFile_, home)}
+            aria-label={`This task is about ${basename(taskFile_)}`}
+            // A PRESS HERE IS A PRESS ON THE ROW (Akshil, 2026-08-27: "when I
+            // click on the whole task list item anywhere ... it opens the task
+            // for me, but when I click on the file icon, it does not"). The
+            // mark sits above the stretched link (`z-index: 2`, for its
+            // tooltip), which is exactly what made it the one dead pixel-run
+            // on the row. So it spends the same gesture the link spends — a
+            // modified press goes to a new tab, a plain one to `activate` —
+            // and nothing on the row has a private meaning.
+            onClick={(e) => {
+              if (!href) return;
+              if (opensElsewhere(e)) {
+                window.open(href, "_blank", "noopener");
+                return;
+              }
+              activate();
+            }}
+            // Middle-click never reaches onClick (it is `auxclick`), and on the
+            // <a> it is the browser's own new-tab; the mark owes the same
+            // (Bugbot, 2026-08-27).
+            onAuxClick={(e) => {
+              if (e.button !== 1 || !href) return;
+              e.preventDefault();
+              window.open(href, "_blank", "noopener");
+            }}
+            // …and the default a middle press STARTS is autoscroll, which the
+            // <a> never triggers and this span otherwise would (Bugbot).
+            onMouseDown={(e) => {
+              if (e.button === 1 && href) e.preventDefault();
+            }}
+          >
+            {ICON_FILE}
+          </span>
+        ) : null}
 
         {/* Exactly ONE auto margin in this row: flex distributes free space
             equally across every auto margin, so a second one would park the
@@ -1936,8 +2373,84 @@ function TaskNode({
             round when the time arrived; at the end of a row the last thing before
             the edge is the one a reader lands on, and the time is what changes. */}
         {showProject && (
-          <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />
+          <IdentityChip
+            name={basename(task.project)}
+            title={tildePath(task.project, home)}
+            // A TAG, not a label (Akshil, 2026-08-23): pressing it narrows the
+            // page to this folder, and pressing it again lets it go. Only on
+            // the List — the Board card's foot keeps the plain chip, because a
+            // card is a drag target first and a button inside one competes with
+            // the gesture that moves it.
+            onPick={onPickProject && (() => onPickProject(task.project))}
+            // …and while the filter is on, the chip SAYS SO. Without this the
+            // one row-level trace of an active filter was the toolbar's little
+            // "1", four hundred pixels away from the rows it was acting on.
+            active={pinned}
+          />
         )}
+        {/* HOW MANY MESSAGES this task holds, between the folder and the time
+            (Akshil, 2026-08-23). The row already says where the work happened
+            and when it last moved; the one thing it could not say is how much
+            of it there is — a task with one prompt and a task with forty read
+            identically until you opened them, which is the wrong thing to have
+            to do to choose which to open.
+
+            THE WORD, NOT A GLYPH (Akshil, 2026-08-23, second pass). It began as
+            a speech bubble and a number, on the argument that the row's busiest
+            end could not afford three more characters.
+
+            **Reversed by request (D448): the bubble is back, after the number.**
+            The argument against it was that a reader has to LEARN what the glyph
+            means before the row reads — true exactly once, and paid back on
+            every row after it, on a page whose rows are read by sweeping a
+            column. What made the old "4" ambiguous was that it stood alone
+            between a folder and a time; a number with a bubble welded to its
+            right is not that number. The noun survives for anything that cannot
+            see the glyph, as this element's `aria-label`.
+
+            ALWAYS DRAWN, AND NEVER BELOW ONE (Akshil, 2026-08-24). It used to be
+            gated on `> 0`, on the reasoning that zero is a thread that has not
+            started and "0 messages" is worse than the space it fills. The gate
+            was right about the words and wrong about the rows: the tasks that
+            count zero are the EMPTY SESSIONS — a session holding only a `/clear`,
+            a 97-byte file holding only a title record — and they are scattered
+            through the list, so the column of counts had holes in it exactly
+            where the odd rows were. A hole in a column reads as a broken row (the
+            same argument the time beside it settled on 2026-08-18), and it drew
+            attention to the rows that least deserved it.
+            So the floor is one. A session that exists is a conversation somebody
+            opened; a count of zero is an artefact of what this app declines to
+            COUNT — slash commands, skill injections, tool results are all real
+            entries that are not prose — rather than a fact about the row. Showing
+            "1" for them is the honest reading of "there is something in here",
+            and it is what the ask asked for.
+            (The deeper bug is real and is NOT fixed here, by decision: one
+            session on this machine holds 25 assistant turns and counts zero
+            because none of its user entries is typed prose. This default is the
+            preventive fix; the counter is a separate job.) */}
+        {(() => {
+          const shown = Math.max(1, task.message_count);
+          return (
+            <span
+              className="tasks-row-msgs"
+              /* The noun the glyph replaces, for anything that cannot see it. A
+                 bare "5" to a screen reader is the same unlabelled number the
+                 comment above objected to on screen. */
+              aria-label={`${shown} message${shown === 1 ? "" : "s"}`}
+              /* A `title` OF ITS OWN is the fix for the screenshot bug ("if i
+                 hover over button/tag of folder it shows me task title instead
+                 of path"): an element with none lets the browser walk up to the
+                 row's, whose title is the task's name — and it was never about
+                 the folder chip alone, every mark here without its own title
+                 was borrowing the row's. Native, like everything on this row
+                 (third pass — the custom panel drew displaced and was pulled). */
+              data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}
+            >
+              {shown}
+              <span className="tasks-row-msgs-icon" aria-hidden>{ICON_MSG}</span>
+            </span>
+          );
+        })()}
         {/* ALWAYS drawn (2026-08-18). It used to be `{when && …}` and taskWhen
             returned null on a task whose three-message window is empty — a session
             holding only a `/clear` — which left the last cell of that row blank
@@ -1966,11 +2479,11 @@ function TaskNode({
             rather than aligned. Nothing is drawn on an Upcoming row, where the
             time IS the next run and the chip would say it twice. */}
         {soon && (
-          <span className="tasks-row-next" title={soon.title}>
+          <span className="tasks-row-next" data-hint={soon.title}>
             {soon.text}
           </span>
         )}
-        <span className="tasks-row-time" title={when.title}>
+        <span className="tasks-row-time" data-hint={when.title}>
           {when.text}
         </span>
       </div>
@@ -2011,7 +2524,6 @@ function TaskNode({
                   // that opens a modal keeps them here.
                   role={to ? undefined : "button"}
                   tabIndex={to ? undefined : 0}
-                  title={m.body}
                   // One handler for both ways in, the same rule the task row obeys:
                   // `pressMessage` opens the form on a message that has not gone out
                   // and the transcript turn on one that has.
@@ -2036,7 +2548,6 @@ function TaskNode({
                     <a
                       className="tasks-rowlink"
                       href={to}
-                      title={m.body}
                       aria-label={firstLine(m.body) || "(empty)"}
                       onClick={(e) => {
                         if (opensElsewhere(e)) return;
@@ -2065,7 +2576,13 @@ function TaskNode({
                       distinction the row's own words and time make anyway. The
                       id and the body lead now. */}
                   <IdChip id={m.message_id} kind="message" />
-                  <span className="tasks-msg-body">{firstLine(m.body) || "(empty)"}</span>
+                  {/* The message's own caption, on the text and not on the row —
+                      the same rule the task row above follows, and for the same
+                      reason: this is the element that ellipsises. The hint is the
+                      WHOLE body where the ink is only its first line. */}
+                  <span className="tasks-msg-body" data-hint={m.body}>
+                    {firstLine(m.body) || "(empty)"}
+                  </span>
                   {/* No dot after the body any more (2026-08-18). It trailed the
                       title here, and led the row in a reserved rail slot before
                       that, and both arrangements were arguing about WHERE to put a
@@ -2130,7 +2647,7 @@ function TaskNode({
                       (messageWhenTitle). The "ran 07:12 today" label that used to
                       sit beside this is gone: 2026-08-17, "I don't think I need this
                       as well, the RAND Today stuff". */}
-                  <span className="tasks-msg-time" title={messageWhenTitle(m)}>
+                  <span className="tasks-msg-time" data-hint={messageWhenTitle(m)}>
                     {relativeWhen(m.at)}
                   </span>
                 </div>
@@ -2661,6 +3178,11 @@ function TaskCard({
   const run = showsRowActions(task) ? taskRunIntent(task) : null;
   // The run still to come, when this card's lane does not already order by it.
   const soon = nextRunChip(task);
+  // ...and the one word the Done lane cannot say on its own: that this card's
+  // last run was STOPPED rather than finished (tasks-lib.outcomeTag). Same
+  // function the List row asks, so the two views cannot describe one run
+  // differently.
+  const outcome = outcomeTag(task);
   // The lane this card is IN. Not passed down: `groupByColumn` files every card
   // by `taskColumn`, so asking it here is asking the same function that decided
   // which lane header the card is sitting under — a prop would be a second
@@ -2702,7 +3224,11 @@ function TaskCard({
           (draggable ? " is-draggable" : "") +
           (isDragging ? " is-dragging" : "")
         }
-        title={task.title}
+        /* The Board card's own caption, on the same instant panel as the List's
+           (hints.ts). It is the same page and the same fact; a card that waited
+           four seconds while the rows beside it answered at once would read as a
+           different kind of thing. */
+        data-hint={task.title}
         draggable={draggable}
         onDragStart={(ev) => {
           // Some data is required for Firefox to start a drag at all; the task
@@ -2762,6 +3288,7 @@ function TaskCard({
         <span className="schedule-tv-card-head">
           {failedOffLane && <StatusIcon status={lane} failed />}
           <IdChip id={task.task_id} kind="task" />
+          {outcome && <OutcomePill outcome={outcome} />}
         </span>
         {/* Nothing trails the title any more (2026-08-18). Three arrangements of
             an unread mark lived in this slot and each one was a fix for the last:

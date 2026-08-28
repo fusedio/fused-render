@@ -16,7 +16,9 @@ See specs/query.md.
 import logging
 import os
 import re
+import time
 
+from fused_render.index.cancel import Cancelled
 from fused_render.index.config import IndexConfig
 from fused_render.index.ignore import is_inside_leaf_dir, is_leaf_dir, norm
 from fused_render.index.rank import query_wants_hidden as _wants_hidden
@@ -31,6 +33,23 @@ from fused_render.index.store import (
 logger = logging.getLogger(__name__)
 
 _DRIVE = re.compile(r"^[A-Za-z]:/")
+
+# A bare drive letter ("C:") is what rstrip("/") leaves a Windows drive root
+# ("C:/") reduced to — the same way rstrip("/") leaves a POSIX root ("/")
+# reduced to "". Every root normalization below restores the trailing "/" for
+# the POSIX case (the existing `or "/"`); this is the matching restoration for
+# the Windows one, without which a scan root that IS a whole drive would
+# resolve here to "C:" while canonical_root() (index/runner.py) — what every
+# stored dirs.parquet row is actually keyed under — resolves the identical
+# input to "C:/", and the two would never compare equal.
+_BARE_DRIVE = re.compile(r"^[A-Za-z]:$")
+
+
+def _root_or_bare(stripped: str) -> str:
+    """`stripped` (already rstripped of "/") restored to its canonical bare-
+    root spelling if it collapsed to one — "" -> "/", "C:" -> "C:/" — else
+    unchanged."""
+    return stripped + "/" if not stripped or _BARE_DRIVE.match(stripped) else stripped
 
 SORTS = {
     "path": "path ASC", "size": "size DESC", "mtime": "mtime DESC",
@@ -203,8 +222,12 @@ def stats(cfg: IndexConfig, root: str = "") -> dict:
 
     con = duckdb.connect()
     root = norm(os.path.expanduser(root.strip())) if root.strip() else ""
-    root = (root or m.get("last_root") or "").rstrip("/") or "/"
-    pfx = (like_literal(root) + "/") if root != "/" else "/"
+    root = _root_or_bare((root or m.get("last_root") or "").rstrip("/"))
+    # `root` already ends in "/" for a bare root (POSIX "/", or a Windows
+    # drive root "C:/" via _root_or_bare above) — appending another "/"
+    # unconditionally, as a plain `root != "/"` check used to, would double
+    # it on the drive-root case and match nothing.
+    pfx = like_literal(root if root.endswith("/") else root + "/")
     inside = (f"(dir = '{_q(root)}' "
               f"OR dir LIKE '{pfx}%' ESCAPE '\\')")
     n_rows, total_size, n_dirs = 0, 0, 0
@@ -294,7 +317,8 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     # string, which the guard below then reads as "no root given" — so a
     # search of "/" answered `covered: false` every time. Everything past
     # here already special-cases "/" (see `prefix`); only this line did not.
-    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
+    root = _root_or_bare(
+        norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     empty = {"covered": False, "fresh": False, "updated": None, "age_s": None,
              "root": root, "entries": [], "truncated": False, "total": 0,
@@ -313,8 +337,10 @@ def search_under(cfg: IndexConfig, root: str, q: str = "", limit: int = MAX_CORP
     covered = _root_is_covered(con, cfg, root)
     if not covered:
         return {**empty, "updated": updated, "age_s": age}
-    prefix = (root + "/") if root != "/" else "/"
-    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
+    # See stats()'s identical fix above: root already ends in "/" for
+    # any bare root (POSIX or a Windows drive), not only "/" itself.
+    prefix = root if root.endswith("/") else root + "/"
+    prefix_like = like_literal(prefix)
     limit = max(0, min(int(limit), MAX_CORPUS))
     hit = prune(m["partitions"], prefix)
     qlit = like_literal(q.strip()) if q and q.strip() else ""
@@ -468,7 +494,7 @@ def _ignore_roots(con, cfg: IndexConfig, parts, root: str, prefix: str,
 def search_ranked(cfg: IndexConfig, root: str, q: str = "",
                   limit: int = RANK_LIMIT, include_dirs: bool = True,
                   cap: int = RANK_CANDIDATE_CAP,
-                  gitignore_filter=None) -> dict:
+                  gitignore_filter=None, token=None) -> dict:
     """Search `root` for `q` — filtered AND ranked here, top `limit` returned.
 
     The home page used to fetch the whole corpus and rank it in the browser:
@@ -539,8 +565,26 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     missing index or a package directory answers `covered: false` with no hits
     — never an error, because "no index yet", "not covered" and "a scan is
     running" are one condition to a search box.
+
+    `token` (index/cancel.CancelToken), when given, is bound to the duckdb
+    connection the moment it exists and checked at every phase boundary in
+    `pass_over` — before each `execute`, after the `fetchall`, before
+    `rank_entries`, before the gitignore filter. Binding is to the whole
+    CONNECTION, though, not just `pass_over`'s statement, so a
+    `duckdb.InterruptException` can land in any query run on it —
+    `_coverage_reason`'s and `_ignore_roots`' included, both of which execute
+    on this same connection before `pass_over` ever does. One try/except
+    around the whole bound region (not one per query site) re-raises as
+    `Cancelled` an interrupt this token caused; one it did NOT cause (a real
+    duckdb error, or another caller's timeout on a connection this function
+    does not own — it never shares one) keeps surfacing as itself.
+    `search_ranked` cannot make the abandoned THREAD return on its own
+    (`asyncio.to_thread` has no such power); this is what makes the QUERY
+    inside it return quickly instead, which is what the caller is actually
+    waiting on.
     """
-    root = norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/") or "/"
+    root = _root_or_bare(
+        norm(os.path.abspath(os.path.expanduser((root or "").strip()))).rstrip("/"))
     m = read_manifest(cfg)
     # `reason` is the miss's cause, and it is what the in-folder search box
     # switches on: a package or a mount-backed folder goes to the live walk, an
@@ -563,105 +607,166 @@ def search_ranked(cfg: IndexConfig, root: str, q: str = "",
     age = (time.time() - updated) if isinstance(updated, (int, float)) else None
     fresh = age is not None and age <= FRESH_MAX_AGE_S
     con = duckdb.connect()
-    miss = _coverage_reason(con, cfg, root)
-    if miss:
-        return {**empty, "reason": miss, "updated": updated, "age_s": age}
-    prefix = (root + "/") if root != "/" else "/"
-    prefix_like = (like_literal(root) + "/") if root != "/" else "/"
-    limit = max(0, min(int(limit), MAX_RANK_LIMIT))
-    cap = max(1, int(cap))
-    hit = prune(m["partitions"], prefix)
-    base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
-            "root": root, "reason": "", "scanned_partitions": len(hit),
-            "of_partitions": len(m["partitions"])}
-    qs = (q or "").strip()
-    if not qs:
-        # Nothing typed is not "everything": the empty query has no ranking to
-        # apply, and answering with an arbitrary 200 files would be noise.
-        return {**base, "hits": [], "truncated": False, "total": 0,
-                "escalated": False}
+    # Bound the instant the connection exists: a token cancelled before this
+    # point still has to stop it (CancelToken.bind's own docstring), and every
+    # `return`/`raise` from here on must close it — hence the try/finally
+    # wrapping the entire rest of the function, replacing what used to be a
+    # connection leaked on any early return or raised exception.
+    if token is not None:
+        token.bind(con)
+    try:
+        miss = _coverage_reason(con, cfg, root)
+        if miss:
+            return {**empty, "reason": miss, "updated": updated, "age_s": age}
+        # See stats()'s identical fix above: root already ends in "/" for
+        # any bare root (POSIX or a Windows drive), not only "/" itself.
+        prefix = root if root.endswith("/") else root + "/"
+        prefix_like = like_literal(prefix)
+        limit = max(0, min(int(limit), MAX_RANK_LIMIT))
+        cap = max(1, int(cap))
+        hit = prune(m["partitions"], prefix)
+        base = {"covered": True, "fresh": fresh, "updated": updated, "age_s": age,
+                "root": root, "reason": "", "scanned_partitions": len(hit),
+                "of_partitions": len(m["partitions"])}
+        qs = (q or "").strip()
+        if not qs:
+            # Nothing typed is not "everything": the empty query has no ranking to
+            # apply, and answering with an arbitrary 200 files would be noise.
+            return {**base, "hits": [], "truncated": False, "total": 0,
+                    "escalated": False}
 
-    # `substr` from the prefix's length, so every comparison below is against
-    # the REL — exactly the string stage B scores. Filtering on the full path
-    # would let the root's own spelling admit rows no fuzzy match will keep.
-    rel_from = len(prefix) + 1
-    branches = []
-    if hit:
-        fsrc = files_src(cfg, hit)
-        branches.append(
-            f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
-            f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth "
-            f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
-    if include_dirs:
-        dsrc = dirs_src(cfg)
-        branches.append(
-            f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
-            f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
-            f"{_depth_col(con, dsrc, 'dir')} AS depth "
-            f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
-    if not branches:
-        return {**base, "hits": [], "truncated": False, "total": 0,
-                "escalated": False}
+        # `substr` from the prefix's length, so every comparison below is against
+        # the REL — exactly the string stage B scores. Filtering on the full path
+        # would let the root's own spelling admit rows no fuzzy match will keep.
+        rel_from = len(prefix) + 1
+        branches = []
+        if hit:
+            fsrc = files_src(cfg, hit)
+            branches.append(
+                f"SELECT substr(path, {rel_from}) AS rel, size, mtime, "
+                f"false AS is_dir, {_depth_col(con, fsrc, 'path')} AS depth "
+                f"FROM {fsrc} WHERE path LIKE '{prefix_like}%' ESCAPE '\\'")
+        if include_dirs:
+            dsrc = dirs_src(cfg)
+            branches.append(
+                f"SELECT substr(dir, {rel_from}) AS rel, CAST(NULL AS BIGINT) AS size, "
+                f"nullif(mtime_ns, 0) / 1e9 AS mtime, true AS is_dir, "
+                f"{_depth_col(con, dsrc, 'dir')} AS depth "
+                f"FROM {dsrc} WHERE dir LIKE '{prefix_like}%' ESCAPE '\\'")
+        if not branches:
+            return {**base, "hits": [], "truncated": False, "total": 0,
+                    "escalated": False}
 
-    ql = like_literal(qs.lower())
-    qq = _q(qs.lower())
-    # The coarse tier. Deliberately cruder than `rank_entries`' — it exists to
-    # decide which `cap` rows are worth scoring properly, not to order the
-    # answer, and every extra SQL expression here is paid on all 571k rows.
-    tier = (f"CASE WHEN nm = '{qq}' THEN 1 "
-            f"WHEN nm LIKE '{ql}%' ESCAPE '\\' THEN 2 "
-            f"WHEN nm LIKE '%{ql}%' ESCAPE '\\' THEN 3 "
-            f"WHEN lrel LIKE '%{ql}%' ESCAPE '\\' THEN 4 "
-            f"ELSE 5 END")
-    # Hidden entries are dropped HERE as well as in the ranker, so a query that
-    # does not want them cannot spend the candidate cap on them (rank.py's
-    # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
-    hidden = ("" if _wants_hidden(qs)
-              else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
-    inner = (f"SELECT *, lower(rel) AS lrel, "
-             f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
-             + " UNION ALL ".join(branches) + ")")
+        ql = like_literal(qs.lower())
+        qq = _q(qs.lower())
+        # The coarse tier. Deliberately cruder than `rank_entries`' — it exists to
+        # decide which `cap` rows are worth scoring properly, not to order the
+        # answer, and every extra SQL expression here is paid on all 571k rows.
+        tier = (f"CASE WHEN nm = '{qq}' THEN 1 "
+                f"WHEN nm LIKE '{ql}%' ESCAPE '\\' THEN 2 "
+                f"WHEN nm LIKE '%{ql}%' ESCAPE '\\' THEN 3 "
+                f"WHEN lrel LIKE '%{ql}%' ESCAPE '\\' THEN 4 "
+                f"ELSE 5 END")
+        # Hidden entries are dropped HERE as well as in the ranker, so a query that
+        # does not want them cannot spend the candidate cap on them (rank.py's
+        # query_wants_hidden / is_hidden_rel are the definitions; this mirrors them).
+        hidden = ("" if _wants_hidden(qs)
+                  else " AND NOT (lrel LIKE '.%' OR lrel LIKE '%/.%')")
+        inner = (f"SELECT *, lower(rel) AS lrel, "
+                 f"regexp_extract(lower(rel), '[^/]*$') AS nm FROM ("
+                 + " UNION ALL ".join(branches) + ")")
 
-    def pass_over(predicate: str):
-        """One candidate pass: `predicate` over every row under the root, coarse
-        tier order, one row past the cap so "the cap bit" needs no count."""
-        rows = con.execute(
-            f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
-            f"WHERE {predicate}{hidden} "
-            f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
-        if len(rows) > cap:
-            # DEBUG, not WARNING: this fires on every keystroke of any broad
-            # query — "a" and "e" alone exceed the cap on the substring pass —
-            # and a line that appears whenever the app is working normally
-            # trains everyone to ignore the log. The response says the same
-            # thing where it can be acted on (`truncated: true`), so nothing is
-            # silent; it is just not shouted.
-            logger.debug(
-                "index rank: the candidate cap (%d) bit for %r under %s — the "
-                "ranked answer is drawn from stage A's coarse top rows only",
-                cap, qs, root)
-        entries = [{"rel": rel, "is_dir": bool(is_dir),
-                    "size": int(size) if size is not None else None,
-                    "mtime": float(mtime) if mtime is not None else None}
-                   for rel, size, mtime, is_dir in rows[:cap]]
-        ranked = rank_entries(qs, entries)
-        if gitignore_filter is not None:
-            ranked = gitignore_filter(
-                root, ranked,
-                _ignore_roots(con, cfg, hit, root, prefix, updated))
-        return ranked, len(rows) > cap
+        def pass_over(predicate: str, name: str):
+            """One candidate pass: `predicate` over every row under the root, coarse
+            tier order, one row past the cap so "the cap bit" needs no count.
 
-    # The LADDER (see the docstring): the cheap substring pass first, and the
-    # regex only when the cheap one cannot fill the cut. `capped` also stops the
-    # escalation — a pass that filled the candidate cap already handed stage B
-    # more coarsely-better rows than it can return, so widening the filter can
-    # only push MORE of them out of the cap.
-    ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'")
-    escalated = False
-    if not capped and len(ranked) < limit:
-        escalated = True
-        ranked, capped = pass_over(
-            f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')")
-    return {**base, "hits": ranked[:limit],
-            "truncated": capped or len(ranked) > limit,
-            "total": len(ranked[:limit]), "escalated": escalated}
+            The between-passes check (the one before `rank_entries`, and the
+            one before this function is even called a second time for the
+            escalated pass) is the highest-value cancellation point: escalation
+            is the expensive half, and it runs precisely for the broad queries
+            a fast typist is most likely to have already abandoned."""
+            if token is not None:
+                token.check()
+            t0 = time.monotonic()
+            rows = con.execute(
+                f"SELECT rel, size, mtime, is_dir FROM ({inner}) "
+                f"WHERE {predicate}{hidden} "
+                f"ORDER BY {tier}, depth, rel LIMIT {cap + 1}").fetchall()
+            if token is not None:
+                token.check()
+            # DEBUG: stage A's own cost, per pass, separate from stage B's ranking
+            # and the gitignore filter below — this fires on every keystroke, so
+            # it stays DEBUG rather than something louder (same reasoning as the
+            # cap-bit line right after it).
+            logger.debug("index rank: stage A (%s) for %r under %s: %d row(s) "
+                        "in %.1fms", name, qs, root,
+                        len(rows), (time.monotonic() - t0) * 1000)
+            if len(rows) > cap:
+                # DEBUG, not WARNING: this fires on every keystroke of any broad
+                # query — "a" and "e" alone exceed the cap on the substring pass —
+                # and a line that appears whenever the app is working normally
+                # trains everyone to ignore the log. The response says the same
+                # thing where it can be acted on (`truncated: true`), so nothing is
+                # silent; it is just not shouted.
+                logger.debug(
+                    "index rank: the candidate cap (%d) bit for %r under %s — the "
+                    "ranked answer is drawn from stage A's coarse top rows only",
+                    cap, qs, root)
+            entries = [{"rel": rel, "is_dir": bool(is_dir),
+                        "size": int(size) if size is not None else None,
+                        "mtime": float(mtime) if mtime is not None else None}
+                       for rel, size, mtime, is_dir in rows[:cap]]
+            if token is not None:
+                token.check()
+            ranked = rank_entries(qs, entries)
+            if gitignore_filter is not None:
+                if token is not None:
+                    token.check()
+                ranked = gitignore_filter(
+                    root, ranked,
+                    _ignore_roots(con, cfg, hit, root, prefix, updated))
+            return ranked, len(rows) > cap
+
+        # The LADDER (see the docstring): the cheap substring pass first, and the
+        # regex only when the cheap one cannot fill the cut. `capped` also stops the
+        # escalation — a pass that filled the candidate cap already handed stage B
+        # more coarsely-better rows than it can return, so widening the filter can
+        # only push MORE of them out of the cap.
+        ranked, capped = pass_over(f"lrel LIKE '%{ql}%' ESCAPE '\\'", "substring")
+        escalated = False
+        if not capped and len(ranked) < limit:
+            escalated = True
+            ranked, capped = pass_over(
+                f"regexp_matches(lrel, '{_subseq_regex(qs.lower())}')", "subsequence")
+        return {**base, "hits": ranked[:limit],
+                "truncated": capped or len(ranked) > limit,
+                "total": len(ranked[:limit]), "escalated": escalated}
+    except duckdb.InterruptException:
+        # `token.bind(con)` above binds the WHOLE connection, not just
+        # pass_over's own SELECT — con.interrupt() can land in any statement
+        # run on it, including `_coverage_reason`'s and `_ignore_roots`'
+        # queries above, both of which run on this same bound connection
+        # before pass_over ever does. Handled once here for the entire bound
+        # region rather than wrapping each query site separately.
+        #
+        # An interrupt with NO token, or one this token did not cause, is a
+        # real error (someone else's timeout, a genuine duckdb abort) and
+        # must keep surfacing as one — only attribute it to cancellation when
+        # this token says it actually happened.
+        if token is not None and token.cancelled:
+            raise Cancelled() from None
+        raise
+    finally:
+        # `unbind` BEFORE `close`, not after: the disconnect watcher
+        # (server/routers/index.py's `_watch_disconnect`) can call
+        # `token.cancel()` from another thread at any time, including in the
+        # window right here between the query finishing and the connection
+        # closing. Closing first would let that `cancel()` call `interrupt()`
+        # on an already-closed connection (`duckdb.ConnectionException`, on a
+        # task nothing then retrieves the result of — an unhandled-exception
+        # warning on a perfectly normal disconnect). Same ordering
+        # `guarded_query.py` already uses for its own connection-owning
+        # `threading.Timer` (`timer.cancel()` before `close()`).
+        if token is not None:
+            token.unbind()
+        con.close()

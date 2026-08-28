@@ -27,6 +27,7 @@ import {
   dropAction,
   dropLanes,
   filterTasks,
+  filtersForView,
   firstLine,
   groupByColumn,
   heldMessages,
@@ -37,6 +38,7 @@ import {
   isMessageRunning,
   isRunningNow,
   isRunningIn,
+  taskFile,
   activeMessage,
   hasStarted,
   isPastDue,
@@ -63,10 +65,12 @@ import {
   threadTone,
   messageWhenTitle,
   nextRunChip,
+  outcomeTag,
   nextRunAt,
   openMessageHref,
   openThreadIntent,
   opensElsewhere,
+  dayPill,
   popoverPill,
   parseLaneChoices,
   parseListMemory,
@@ -96,6 +100,7 @@ import {
   upcomingEditEntry,
   viewFromSearch,
   viewUrl,
+  mergeTaskChanges,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -2197,8 +2202,10 @@ describe("the unread mark", () => {
     // unused constants for the next reader to wonder about.
     expect(VIEWS).not.toContain("const ICON_CLOCK");
     expect(VIEWS).not.toContain("const ICON_CHAT");
+    // The body is the row's ink and carries the row's caption (`data-hint`), so
+    // the element opens with an attribute now rather than closing immediately.
     expect(thread).toMatch(
-      /className="tasks-msg-body">\{firstLine\(m\.body\)[^}]*\}<\/span>/,
+      /className="tasks-msg-body" data-hint=\{m\.body\}>\s*\{firstLine\(m\.body\)[^}]*\}\s*<\/span>/,
     );
   });
 
@@ -3777,6 +3784,47 @@ describe("the archive action", () => {
     );
   });
 
+  it("hands the slot back to the ring on the press, until the pointer leaves", () => {
+    // The hover swap used to keep swapping THROUGH the press (Akshil,
+    // 2026-08-19): clicking Archive keeps the pointer on the row, the intent
+    // flips on the reload, and the slot instantly redrew the OPPOSITE verb — an
+    // icon flip where a confirmation should be. A spent press now returns the
+    // RING (drawing the new state, which is the feedback) and keeps the button
+    // down until the pointer leaves the row; leave and return, and the reveal
+    // re-arms with the now-opposite action.
+    //
+    // CSS cannot say "hovered, but the hover already spent its press", so the
+    // ROW says it: a flag set on the filing press — on the press, not on the
+    // answer, and for BOTH directions, because Unarchive flipped just as
+    // instantly — and cleared by the row's own mouseleave.
+    expect(NODE).toContain("const [refiled, setRefiled] = useState(false);");
+    const refileAt = NODE.indexOf("const refile = async (intent: FilingIntent)");
+    const refile = NODE.slice(refileAt, NODE.indexOf("\n  };", refileAt));
+    expect(refile).toContain("setRefiled(true);");
+    expect(ROW).toContain('(refiled ? " is-refiled" : "")');
+    expect(ROW).toContain("onMouseLeave={() => setRefiled(false)}");
+    // The suppression outranks the reveal, is scoped to the MARK SLOT's occupant
+    // only, and takes the events down with the ink — so the button's enlarged
+    // ::after zone (which inherits pointer-events) goes intangible with it.
+    const down = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark .tasks-act:not(:focus-visible)",
+    );
+    expect(down).toContain("opacity: 0");
+    expect(down).toContain("pointer-events: none");
+    // And the ring comes back where the fade above took it away.
+    const back = block(
+      TASKS_CSS,
+      ".tasks-row.is-refiled:hover .tasks-rowmark:not(:has(.tasks-act:focus-visible)) .schedule-ring",
+    );
+    expect(back).toContain("opacity: 1");
+    // NEITHER HALF TOUCHES THE KEYBOARD: both step aside for the button's own
+    // `:focus-visible` — the same arm the reveal and the handover honour — so a
+    // tabbed-to button is never invisible over a faded ring. (That the two
+    // selectors above RESOLVE at all, `:not(:focus-visible)` guards included, is
+    // the claim; `block` throws on a selector list it cannot find.)
+  });
+
   it("is bigger to aim at than it is to look at", () => {
     // 22px was a small target for a control the pointer arrives at sideways, so the
     // ZONE grows and the SKIN does not (Akshil, 2026-08-18). A pseudo-element and
@@ -4166,14 +4214,94 @@ describe("the folder chip on a row and a card", () => {
   });
 
   it("takes the whole chip away, not the name inside it", () => {
-    // On the card the chip is the only thing in the foot, so the foot goes with it
-    // rather than leaving a line of padding.
+    // On the card the foot holds the chip and the run ahead, so it goes
+    // entirely when neither has anything to say rather than leaving a line of
+    // padding. The outcome pill is deliberately NOT among them: it sits beside
+    // the id, where marks about the task live — in the foot it read as part of
+    // the folder's name (Akshil, 2026-08-21).
     expect(CARD).toMatch(
       /\{\(showProject \|\| soon\) && \(\s*<span className="schedule-tv-card-foot">/,
     );
-    // The path is still on the row itself, so nothing is unreachable: the row's
-    // `title` is the task's own, and the chip's tooltip was never the only copy.
-    expect(ROW).toContain("title={task.title}");
+    // The task's own name is still captioned — on the TITLE now, not the row
+    // (Akshil: "the tooltip of title should only show up if I am on title
+    // text"), and through the instant panel rather than a native tooltip.
+    expect(ROW).toContain("data-hint={task.title}");
+  });
+});
+
+describe("every caption on a row is an INSTANT hint", () => {
+  // Akshil, 2026-08-24, third pass — final. The custom `[data-tip]` panel had a
+  // day here and was pulled the same day: it is positioned under its ELEMENT, so
+  // on the list's first row it opened over the row below, captioning a different
+  // task ("it is displaced completely from the title — I don't want you to use
+  // custom tooltip"). It also needed four support rules (a z-index lift, a
+  // right-edge anchor, a `:has()` suppression, a fast-delay list) to survive the
+  // row at all. The browser's tooltip follows the POINTER — the one placement
+  // that cannot caption the wrong row — and needs none of them.
+  it("uses no data-tip and no native title anywhere on the task row", () => {
+    // The one legitimate data-tip user in this file is the status ring's unread
+    // count (StatusIcon), which predates all of this — a fast tip on a COLUMN of
+    // identical marks, where the 300ms guard is the point. Everything the row
+    // itself captions is a native title.
+    const row = ROW.slice(0, ROW.indexOf("tasks-thread"));
+    expect(row).not.toContain("data-tip={task.title}");
+    expect(row).not.toContain('data-tip={tildePath');
+    expect(row).not.toContain("data-tip={when.title}");
+    // …and no native `title` either: it is placed perfectly and waits four to
+    // five seconds on a session's first hover, which is the whole reason
+    // platform/lib/hints.ts exists.
+    expect(row).not.toContain("title={task.title}");
+    expect(row).not.toContain("title={when.title}");
+    // …and the four support rules are gone from the stylesheet with it.
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row[data-tip]');
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row:has([data-tip]');
+    expect(SCHEDULE_CSS).not.toContain('.tasks-row-time[data-tip]');
+  });
+
+  it("gives every mark a hint OF ITS OWN, which is the actual bug fix", () => {
+    // What fixed "hovering the folder chip shows the task title" was never the
+    // tooltip mechanism — it was each mark carrying its own caption, so the
+    // resolver stops at it instead of walking up. That survived two rewrites of
+    // the mechanism underneath.
+    expect(ROW).toContain("data-hint={tildePath(taskFile_, home)}");
+    // The folder glyph's own hint left with the glyph (2026-08-25) — the folder
+    // chip still captions the path through IdentityChip's `title` prop.
+    expect(ROW).toContain('data-hint={`${shown} message${shown === 1 ? "" : "s"} in this task`}');
+    expect(ROW).toContain("data-hint={when.title}");
+    // The stretched link stays silent so the row's own title is the one copy of
+    // the caption; its accessible NAME is not a tooltip and stays.
+    const link = ROW.slice(ROW.indexOf('className="tasks-rowlink"'));
+    expect(link.slice(0, link.indexOf("/>"))).not.toContain("title=");
+    expect(ROW).toContain("aria-label={label}");
+  });
+
+  it("lets the THREAD's time answer its own hover too", () => {
+    // Akshil: "the same should be applied in the messages time". The message row
+    // is a stretched-link row like the task row, so without the lift the link
+    // swallows the pointer and answers with the message BODY; and 11px of ink on
+    // a padded row is a target a pointer misses above and below.
+    expect(VIEWS).toContain('className="tasks-msg-time" data-hint={messageWhenTitle(m)}');
+    const time = block(TASKS_CSS, ".tasks-msg-time");
+    expect(time).toContain("z-index: 2");
+    expect(time).toContain("align-self: stretch");
+    expect(time).toContain("padding-block: var(--tasks-msg-pad-y)");
+    expect(time).toContain("margin-block: calc(var(--tasks-msg-pad-y) * -1)");
+  });
+});
+
+describe("the Project filter's glyph", () => {
+  it("is a folder, not the status ring", () => {
+    // Akshil, 2026-08-24: "this icon next to project in filters is not accurate".
+    // A ring beside the word Project claims a STATUS is being filtered — the one
+    // thing the ring means everywhere else on this page — so the two menus read
+    // as two status filters, one of them mislabelled.
+    const project = VIEWS.slice(VIEWS.indexOf('label="Project"'));
+    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
+    // A prop with the ring as its default, so the Status menu is untouched — there
+    // the ring IS the vocabulary a status is stated in.
+    expect(VIEWS).toContain("{glyph ?? ICON_CIRCLE_DOT} {label}");
+    const status = VIEWS.slice(VIEWS.indexOf('label="Status"'));
+    expect(status.slice(0, status.indexOf("onClear"))).not.toContain("icon=");
   });
 });
 
@@ -4184,7 +4312,7 @@ describe("the message row's second time", () => {
     const from = VIEWS.indexOf('className={"tasks-msg"');
     const msgRow = VIEWS.slice(from, VIEWS.indexOf("{why && <p", from));
     expect(msgRow).toContain("{relativeWhen(m.at)}");
-    expect(msgRow).toContain("title={messageWhenTitle(m)}");
+    expect(msgRow).toContain("data-hint={messageWhenTitle(m)}");
     // The label and its rule are gone, and nothing renders the class.
     expect(VIEWS).not.toContain("tasks-msg-ran");
     expect(VIEWS).not.toContain("ranNote");
@@ -4325,8 +4453,10 @@ describe("the time a task row prints", () => {
     // used to render `{when && (…)}`, which is what turned a null into a missing
     // cell. taskWhen no longer returns null and the element is no longer guarded.
     expect(ROW).not.toContain("{when && (");
+    // A native `title` of its own — which is also what stops the browser walking
+    // up to the ROW's title and answering with the task's name.
     expect(ROW).toMatch(
-      /<span className="tasks-row-time" title=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
+      /<span className="tasks-row-time" data-hint=\{when\.title\}>\s*\{when\.text\}\s*<\/span>/,
     );
     // And the dash takes the column's own register rather than a class of its own —
     // it IS one of the column's values, not a different kind of thing.
@@ -4654,6 +4784,52 @@ describe("filters", () => {
   it("offers every project that has a task, once, sorted", () => {
     expect(projectOptions(tasks)).toEqual(["/Users/me/code", "/Users/me/news"]);
     expect(projectOptions([])).toEqual([]);
+  });
+});
+
+describe("filtersForView — the calendar's Archive facet (2026-08-20)", () => {
+  // The calendar draws nothing for an archived task, so Archive is a dead
+  // Status option there: picking it always empties the grid, with nothing on
+  // screen to explain why. filtersForView is what Scheduled.tsx asks before
+  // running the query FOR A GIVEN VIEW — it never touches the stored
+  // TaskFilters value itself, only the effective one a view's `filterTasks`
+  // call receives.
+  const tasks = [
+    task({ key: "a", task_id: "TASK-001", title: "Upcoming thing", status: "upcoming" }),
+    task({ key: "b", task_id: "TASK-002", title: "Archived thing", status: "archived" }),
+  ];
+
+  it("drops Archive from the calendar's effective statuses", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual([]);
+  });
+
+  it("keeps Archive alongside other statuses, on the calendar, minus itself", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const, "archived" as const] };
+    expect(filtersForView(f, "calendar").statuses).toEqual(["done"]);
+  });
+
+  it("leaves List and Board untouched", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    expect(filtersForView(f, "list")).toBe(f);
+    expect(filtersForView(f, "board")).toBe(f);
+  });
+
+  it("is a no-op when Archive was never selected — same reference back", () => {
+    const f = { ...EMPTY_FILTERS, statuses: ["done" as const] };
+    expect(filtersForView(f, "calendar")).toBe(f);
+  });
+
+  it("never empties the calendar just because Archive alone was picked", () => {
+    // The whole point: a hidden facet must not silently filter the view to
+    // nothing. Archive-only on the calendar reads as "no status filter" —
+    // filterTasks applies no status test at all once the list is empty — so
+    // the query stays a pass-through rather than the always-empty result the
+    // dead facet used to produce. (Whether an archived task itself DRAWS
+    // anything is ScheduleCalendar's own separate rule, not this one's.)
+    const f = { ...EMPTY_FILTERS, statuses: ["archived" as const] };
+    const out = filterTasks(tasks, filtersForView(f, "calendar"));
+    expect(out.map((t) => t.key)).toEqual(["a", "b"]);
   });
 });
 
@@ -5987,9 +6163,25 @@ describe("the tasks toolbar", () => {
     // doing nothing — worse than hidden.
     const cal = PAGE.slice(PAGE.indexOf("<ScheduleCalendar"));
     expect(cal.slice(0, cal.indexOf("/>"))).toContain("tasks={shown}");
-    // `shown` is the same derivation the other two views read, not a second one.
-    expect(PAGE).toContain("const shown = useMemo(() => filterTasks(tasks, filters), [tasks, filters]);");
+    // `shown` is the same derivation the other two views read, not a second
+    // one — it now routes the stored filters through `filtersForView` first
+    // (2026-08-20), which is a no-op for List and Board and drops the dead
+    // Archive facet only when the calendar is the active view. See the
+    // "the calendar's Archive facet" describe block below for the semantics.
+    // `inScope` since D488: the app page mounts this page narrowed to one folder,
+    // and the scope is applied BEFORE these filters (`tasks` unscoped = what
+    // publishTasks hands the sidebar).
+    expect(PAGE).toContain("filterTasks(inScope, filtersForView(filters, view))");
     expect(PAGE).toContain("<TaskBoard tasks={shown}");
+  });
+
+  it("hides the dead Archive option from Status only on the calendar", () => {
+    // The calendar draws nothing for an archived task (ScheduleCalendar's own
+    // "AN ARCHIVED TASK DRAWS NOTHING" rule) — Archive in this same Status
+    // popover is a live, renderable lane on List and Board, so the row and
+    // its count survive there unmodified and it is the calendar alone that
+    // hides it.
+    expect(PAGE).toContain('hideArchiveStatus={view === "calendar"}');
   });
 
   it("centres the page on one measure wide enough for the widest view", () => {
@@ -6088,12 +6280,97 @@ describe("sortByLane", () => {
       .toEqual(["soon", "run", "fail", "done", "arch"]);
   });
 
-  it("keeps the server's order inside a rank, and never re-sorts", () => {
+  // ---- and, inside a rank, by the time the row PRINTS ------------------------
+  // The rank is only half the order. The other half used to be "whatever the
+  // server said", and on screen that read as random: the server sorts by
+  // `last_active`, a row prints its next or last run, so two adjacent Done rows
+  // could show "2h ago" above "10m ago". These pin the key the reader can see.
+
+  const S = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+
+  /** A settled row whose printed time is `at` — its last run (taskWhen). */
+  const ran = (key: string, at: number, over: Partial<Task> = {}) =>
+    task({
+      key,
+      status: "done",
+      messages: [msg({ ran_at: at, at })],
+      message_count: 1,
+      last_active: at,
+      ...over,
+    });
+
+  /** A row that prints no time at all: the em-dash row, `kind: "none"`. */
+  const timeless = (key: string, over: Partial<Task> = {}) =>
+    task({ key, status: "done", messages: [], message_count: 0, last_active: 0, ...over });
+
+  it("orders a settled rank most recent first", () => {
     const rows = [
-      task({ key: "first", status: "done", last_active: 1 }),
-      task({ key: "second", status: "done", last_active: 999 }),
+      ran("mid", S("2026-08-16T10:00:00")),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
     ];
-    expect(sortByLane(rows).map((t) => t.key)).toEqual(["first", "second"]);
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual(["new", "mid", "old"]);
+    // And it is the PRINTED time doing it, not `last_active`: give the oldest run
+    // the newest `last_active` and the order does not budge, because that number
+    // is not on the row.
+    const lying = [
+      ran("new", S("2026-08-16T11:00:00"), { last_active: 1 }),
+      ran("old", S("2026-08-16T09:00:00"), { last_active: S("2026-08-16T11:59:00") }),
+    ];
+    expect(sortByLane(lying, NOW).map((t) => t.key)).toEqual(["new", "old"]);
+  });
+
+  it("orders Upcoming soonest first, so an overdue run is the top row", () => {
+    const rows = [
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T11:00:00")], { key: "overdue" }), // before NOW
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["overdue", "soon", "later"]);
+  });
+
+  it("keeps the server's order when two rows print the same time", () => {
+    const at = S("2026-08-16T10:00:00");
+    const rows = [ran("first", at), ran("second", at), ran("third", at)];
+    expect(sortByLane(rows, NOW).map((t) => t.key))
+      .toEqual(["first", "second", "third"]);
+    // The tie is broken by the incoming index explicitly, not by engine
+    // stability: two runs in the same second must not trade places between polls.
+    const flipped = [ran("second", at), ran("first", at)];
+    expect(sortByLane(flipped, NOW).map((t) => t.key)).toEqual(["second", "first"]);
+  });
+
+  it("puts a row with no time at all LAST in its rank, both directions", () => {
+    // Descending: it cannot claim a place among rows sorted by a fact it lacks.
+    const settled = [
+      timeless("none"),
+      ran("old", S("2026-08-16T09:00:00")),
+      ran("new", S("2026-08-16T11:00:00")),
+    ];
+    expect(taskWhen(settled[0], NOW).kind).toBe("none");
+    expect(sortByLane(settled, NOW).map((t) => t.key)).toEqual(["new", "old", "none"]);
+    // Ascending too — a 0 sorted as a time would be 1970 and lead the rank.
+    const ahead = [
+      timeless("none", { status: "upcoming" }),
+      upcoming([S("2026-08-16T18:00:00")], { key: "later" }),
+      upcoming([S("2026-08-16T13:00:00")], { key: "soon" }),
+    ];
+    expect(sortByLane(ahead, NOW).map((t) => t.key)).toEqual(["soon", "later", "none"]);
+  });
+
+  it("sorts inside each rank without leaking a row across ranks", () => {
+    const rows = [
+      ran("done-old", S("2026-08-16T09:00:00")),
+      upcoming([S("2026-08-16T18:00:00")], { key: "up-late" }),
+      ran("fail-new", S("2026-08-16T11:00:00"), { status: FAILED }),
+      ran("done-new", S("2026-08-16T11:30:00")),
+      upcoming([S("2026-08-16T13:00:00")], { key: "up-soon" }),
+      ran("fail-old", S("2026-08-16T08:00:00"), { status: FAILED }),
+    ];
+    expect(sortByLane(rows, NOW).map((t) => t.key)).toEqual([
+      "up-soon", "up-late", "fail-new", "fail-old", "done-new", "done-old",
+    ]);
   });
 
   it("never mutates the polled list React is still holding", () => {
@@ -6135,6 +6412,97 @@ describe("sortByLane", () => {
 });
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
+
+describe("the outcome pill, beside the id in both views", () => {
+  /** The two markups this pill has to appear in, sliced the same way the ring
+   *  and chevron tests slice them. */
+  const CARD = VIEWS.slice(
+    VIEWS.indexOf('<span className="schedule-tv-card-head">'),
+    VIEWS.indexOf('className="tasks-card-acts"'),
+  );
+  const ROW = VIEWS.slice(
+    VIEWS.indexOf('className={"tasks-row"'),
+    VIEWS.indexOf("{open && (", VIEWS.indexOf('className={"tasks-row"')),
+  );
+
+  it("is one component, used in the same place on the row and the card", () => {
+    // §1: same element, same behaviour in every view. The pill shipped as bare
+    // text in the card's FOOT, where it ran together with the folder chip into
+    // one phrase — "Fused Stopped" (Akshil, 2026-08-21). Beside the id it cannot
+    // be read as part of anything else, and one component in both views is what
+    // keeps the two from drifting back apart.
+    expect(VIEWS).toContain("function OutcomePill(");
+    expect((VIEWS.match(/<OutcomePill outcome=\{outcome\} \/>/g) ?? []).length).toBe(2);
+    // Directly after the task id, in both.
+    expect(ROW).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>[\s\S]{0,400}?<OutcomePill/);
+    expect(CARD).toMatch(/<IdChip id=\{task\.task_id\} kind="task" \/>\s*\{outcome && <OutcomePill/);
+    // ...and nowhere near the foot, which is the arrangement that failed.
+    expect(CARD).not.toMatch(/schedule-tv-card-foot"[\s\S]*?<OutcomePill/);
+  });
+
+  it("is a bordered pill, not another line of muted text", () => {
+    // The border IS the fix: words in a row of words join into a phrase, a
+    // bordered object cannot. Quiet for a pill — muted foreground, hairline
+    // border, no fill — because it corrects the lane rather than raising an
+    // alarm (the red ring is the alarm).
+    expect(TASKS_CSS).toContain(".tasks-outcome-pill");
+    const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-outcome-pill"));
+    expect(rule).toMatch(/border-radius: 999px/);
+    expect(rule).toMatch(/border: 1px solid/);
+  });
+});
+
+describe("outcomeTag: the word the Done lane cannot say", () => {
+  const AT = Math.floor(Date.parse("2026-08-16T09:00:00") / 1000);
+
+  it("says Stopped for a run the user ended", () => {
+    // A stop settles in Done (it was asked for, so it is an outcome and not a
+    // fault) and wears the same green ring a completed run does — so without a
+    // word, the card cannot say the work did not finish.
+    const t = task({
+      status: "done",
+      messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: "cancelled" })],
+    });
+    expect(outcomeTag(t)!.text).toBe("Stopped");
+    expect(outcomeTag(t)!.title).toContain("stopped");
+  });
+
+  it("says nothing about a run that finished, failed, or is still going", () => {
+    // Every other outcome is already carried by the lane or by the ring, and a
+    // second mark for a fact the row already states is the double-signalling
+    // this page keeps removing.
+    for (const turn of ["done", "idle", "unknown", ""]) {
+      const t = task({
+        messages: [msg({ at: AT, ran_at: AT, state: "sent", turn: turn as never })],
+      });
+      expect([turn, outcomeTag(t)]).toEqual([turn, null]);
+    }
+  });
+
+  it("reads the NEWEST started run, so an old stop is history", () => {
+    // The tag describes the run the status is about. A stopped run under a
+    // later completed one is not what the lane is reporting, and labelling the
+    // card Stopped there would put the word under a finished reply.
+    const t = task({
+      status: "done",
+      messages: [
+        msg({ message_id: "MSG-002", at: AT + 3600, ran_at: AT + 3600, turn: "done" }),
+        msg({ message_id: "MSG-001", at: AT, ran_at: AT, turn: "cancelled" }),
+      ],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+
+  it("says nothing on a task that has never run", () => {
+    // `pending` has not started, so there is no outcome to name — the belt to
+    // activeMessage's braces, and what keeps a projected occurrence quiet.
+    const t = task({
+      status: "upcoming",
+      messages: [msg({ state: "pending", turn: "" })],
+    });
+    expect(outcomeTag(t)).toBe(null);
+  });
+});
 
 describe("nextRunChip", () => {
   const AHEAD = Math.floor(NOW / 1000) + 3600;
@@ -6334,12 +6702,113 @@ describe("isRunningIn", () => {
 });
 
 // ---- the popover header's pill --------------------------------------------------
-// Akshil, 2026-08-19: a one-off's pill is its task; a REPEATING task's pill is
-// the clicked OCCURRENCE — In Progress while it works, Upcoming for a future or
-// projected day, a past day's own outcome otherwise. And never dashed: solid in
+// Akshil, 2026-08-19 / 2026-08-20: a one-off's pill is its task; a REPEATING
+// task's pill is the clicked DAY, rolled up — In Progress while that day works,
+// Upcoming while it is ahead or still owes runs, and its own outcome (any
+// failure -> Failed, else Done) once it is finished. And never dashed: solid in
 // every state, because the pill is a word about status, not a drawing of a day.
+describe("dayPill", () => {
+  const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const day = new Date("2026-08-15T00:00:00");
+  const ran = (iso: string, over: Partial<TaskMessage> = {}) =>
+    msg({
+      message_id: `MSG-${iso}`, at: at(iso), ran_at: at(iso),
+      state: "sent", turn: "done", ...over,
+    });
+  const promise = (iso: string) =>
+    msg({ message_id: `GHOST-${iso}`, at: at(iso), ran_at: 0, state: "pending" });
+
+  it("a day that is OVER and went clean is Done", () => {
+    const out = dayPill(
+      [ran("2026-08-15T09:00:00"), ran("2026-08-15T23:00:00")],
+      day,
+      new Date("2026-08-17T08:00:00"),
+      false,
+    );
+    expect(out).toMatchObject({ label: "Done", column: "done", failed: false });
+  });
+
+  it("one broken run makes the whole past day Failed, wherever it sits", () => {
+    // Buried under clean runs on either side: a failure is the thing you have
+    // to see, and green siblings must not hide it.
+    const rows = [
+      ran("2026-08-15T09:00:00"),
+      ran("2026-08-15T14:00:00", { state: "error" }),
+      ran("2026-08-15T20:00:00"),
+    ];
+    const now = new Date("2026-08-17T08:00:00");
+    expect(dayPill(rows, day, now, false).label).toBe("Failed");
+    // Order of the hand-over must not matter — this is a rollup, not a "newest".
+    expect(dayPill([...rows].reverse(), day, now, false).label).toBe("Failed");
+  });
+
+  it("a day still AHEAD is Upcoming, whatever it holds", () => {
+    const now = new Date("2026-08-13T12:00:00");
+    expect(dayPill([promise("2026-08-15T09:00:00")], day, now, false).label).toBe("Upcoming");
+    expect(dayPill([], day, now, false).label).toBe("Upcoming");
+  });
+
+  it("a run in flight beats every rollup", () => {
+    const now = new Date("2026-08-15T10:30:00");
+    const rows = [ran("2026-08-15T09:00:00", { state: "error" })];
+    // via the caller's isRunningIn reading of THIS day...
+    expect(dayPill(rows, day, now, true).label).toBe("In Progress");
+    // ...and via a row that is mid-send on its own account.
+    const sending = msg({
+      message_id: "M9", at: at("2026-08-15T10:00:00"), state: "sending",
+    });
+    expect(dayPill([...rows, sending], day, now, false).label).toBe("In Progress");
+  });
+
+  it("TODAY mid-day is Upcoming — some runs done, more still owed", () => {
+    // THE BUG, from the other side (Akshil, 2026-08-20): this used to read the
+    // NEWEST row, which on today is tonight's promise, so a day whose runs had
+    // already happened still said Upcoming. It says Upcoming here for the right
+    // reason — the day is not finished — and stops the moment the last slot is
+    // behind us (the case below).
+    const rows = [
+      ran("2026-08-15T09:00:00"),
+      ran("2026-08-15T10:00:00"),
+      promise("2026-08-15T11:00:00"),
+      promise("2026-08-15T23:00:00"),
+    ];
+    expect(dayPill(rows, day, new Date("2026-08-15T10:30:00"), false).label).toBe("Upcoming");
+  });
+
+  it("TODAY after its last slot settles into the day's outcome", () => {
+    const clean = [ran("2026-08-15T09:00:00"), ran("2026-08-15T23:00:00")];
+    expect(dayPill(clean, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Done");
+    const broke = [ran("2026-08-15T09:00:00", { state: "error" }), ran("2026-08-15T23:00:00")];
+    expect(dayPill(broke, day, new Date("2026-08-15T23:30:00"), false).label).toBe("Failed");
+  });
+
+  it("a past day whose slots never ran is Archive, never Upcoming", () => {
+    // Past ghosts (`missed` + template_id) are the rows a closed app leaves
+    // behind. They are not outcomes, so neither rollup arm claims them — and
+    // calling the day Upcoming afterwards is the original bug in a new hat.
+    const skipped = msg({
+      message_id: "GHOST-2026-08-15T09:00:00", at: at("2026-08-15T09:00:00"),
+      ran_at: 0, state: "missed", template_id: "ENT-1",
+    });
+    expect(dayPill([skipped], day, new Date("2026-08-17T08:00:00"), false).label).toBe("Archive");
+  });
+
+  it("is solid in every state — a status is a word, not a drawing of a day", () => {
+    const now = new Date("2026-08-17T08:00:00");
+    for (const p of [
+      dayPill([promise("2026-08-15T09:00:00")], day, new Date("2026-08-13T00:00:00"), false),
+      dayPill([ran("2026-08-15T09:00:00", { state: "error" })], day, now, false),
+      dayPill([ran("2026-08-15T09:00:00")], day, now, true),
+    ]) {
+      expect(p.projected).toBe(false);
+    }
+  });
+});
+
 describe("popoverPill", () => {
   const at = (iso: string) => Math.floor(Date.parse(iso) / 1000);
+  const day = new Date("2026-08-15T00:00:00");
+  const later = new Date("2026-08-17T08:00:00");
   const done = msg({
     message_id: "MSG-001", at: at("2026-08-15T09:00:00"),
     ran_at: at("2026-08-15T09:00:00"), state: "sent", turn: "done",
@@ -6348,50 +6817,28 @@ describe("popoverPill", () => {
     message_id: "MSG-002", at: at("2026-08-15T14:00:00"),
     ran_at: at("2026-08-15T14:00:00"), state: "error", turn: "done",
   });
-  const ghost = msg({
-    message_id: "GHOST-2026-08-20T09:00:00",
-    at: at("2026-08-20T09:00:00"), ran_at: 0, state: "pending",
-  });
 
   it("a ONE-OFF keeps saying what the List's row and the Board's card say", () => {
     const t = task({ status: "done", failed: false });
-    expect(popoverPill(t, false, false, false, t.messages)).toMatchObject({
+    expect(popoverPill(t, false, false, t.messages, day, later)).toMatchObject({
       label: "Done", column: "done",
     });
     // failed folds into the column, exactly as StatusIcon reads it...
     const f = task({ status: "done", failed: true });
-    expect(popoverPill(f, false, false, false, f.messages).label).toBe("Failed");
+    expect(popoverPill(f, false, false, f.messages, day, later).label).toBe("Failed");
     // ...and the day's contents cannot move a one-off's word: it IS its task.
-    expect(popoverPill(t, false, false, false, [broke]).label).toBe("Done");
+    expect(popoverPill(t, false, false, [broke], day, later).label).toBe("Done");
   });
 
-  it("a REPEATING task answers for the clicked day, not for the rule", () => {
+  it("a REPEATING task hands the whole question to dayPill", () => {
     // The rule's task-level column is upcoming — the next run always is — which
     // is exactly why the task-level word was useless on a grid about days.
     const rule = task({ status: "upcoming", messages: [done, broke] });
-    // A past day whose NEWEST real run broke: Failed, matching the top row
-    // below — order of the hand-over must not matter.
-    expect(popoverPill(rule, true, false, false, [done, broke]).label).toBe("Failed");
-    expect(popoverPill(rule, true, false, false, [broke, done]).label).toBe("Failed");
-    // A day that ended clean: Done.
-    expect(popoverPill(rule, true, false, false, [done]).label).toBe("Done");
-    // A projected day is cron arithmetic: Upcoming — and so is a day holding
-    // nothing but ghosts, whichever of the two flags arrives first.
-    expect(popoverPill(rule, true, true, false, [ghost]).label).toBe("Upcoming");
-    expect(popoverPill(rule, true, false, false, [ghost]).label).toBe("Upcoming");
-    // Working right now beats everything: the pill is the shimmer's seat.
-    expect(popoverPill(rule, true, false, true, [done, broke]).label).toBe("In Progress");
-  });
-
-  it("is solid in every state — projected never reaches the pill", () => {
-    const rule = task({ status: "upcoming", messages: [done] });
-    for (const p of [
-      popoverPill(rule, true, true, false, [ghost]),
-      popoverPill(rule, true, false, false, [done, broke]),
-      popoverPill(task({ status: "upcoming" }), false, true, false, []),
-    ]) {
-      expect(p.projected).toBe(false);
-    }
+    expect(popoverPill(rule, true, false, [done, broke], day, later)).toEqual(
+      dayPill([done, broke], day, later, false),
+    );
+    expect(popoverPill(rule, true, false, [done, broke], day, later).label).toBe("Failed");
+    expect(popoverPill(rule, true, true, [done], day, later).label).toBe("In Progress");
   });
 
   it("is what the popover actually renders, shimmer seat and all", () => {
@@ -6402,11 +6849,308 @@ describe("popoverPill", () => {
     // whose run was live somewhere else. One-offs keep the task-level fact.
     expect(CAL).toContain("const liveToday = isRunningIn(task, chip.messages);");
     expect(CAL).toContain("const pillLive = recurring ? liveToday : liveNow;");
-    // The pill comes from this function, over the day's own rows...
-    expect(CAL).toContain("popoverPill(task, recurring, chip.projected, pillLive, today)");
+    // The pill comes from this function, over the day's own rows, and it is
+    // told WHICH day was clicked and WHEN now is — the two facts the day
+    // rollup turns on, and the two the newest-row reading did without.
+    expect(CAL).toContain(
+      "popoverPill(task, recurring, pillLive, today, chip.time, new Date(nowSec * 1000))",
+    );
     // ...the running day's pill carries the shimmer class...
     expect(CAL).toContain('pillLive ? " is-running" : ""');
-    // ...and the dashes can no longer reach it.
+    // ...and neither the dashes nor the chip's projected flag can reach it.
     expect(CAL).not.toContain('pill.projected ? " is-projected"');
+    expect(CAL).not.toContain("popoverPill(task, recurring, chip.projected");
+  });
+});
+
+// ---- The row's right-hand end: folder, count, time --------------------------
+// Three chips in a fixed order, and the order was argued over twice — folder
+// first because the time is what changes and the last thing before the edge is
+// what a reader lands on; the count between them because it is the fact that
+// says how much there is to read, and it is read WITH the folder rather than
+// with the clock (Akshil, 2026-08-23).
+describe("the list row's message count", () => {
+  it("sits between the folder chip and the time", () => {
+    const folder = VIEWS.indexOf("<IdentityChip\n            name={basename(task.project)}");
+    const count = VIEWS.indexOf('className="tasks-row-msgs"');
+    const time = VIEWS.indexOf('className="tasks-row-time"');
+    expect(folder).toBeGreaterThan(-1);
+    expect(count).toBeGreaterThan(folder);
+    expect(time).toBeGreaterThan(count);
+  });
+
+  it("is always drawn, and never reads below one", () => {
+    // Reversed 2026-08-24 (Akshil). It was gated on `> 0`, on the argument that
+    // "0" is worse than the space it fills — right about the words, wrong about
+    // the rows. The tasks that count zero are the EMPTY SESSIONS (one holding
+    // nothing but a `/clear`, one whose whole file is a lone title record), and
+    // they are scattered through the list, so the column had holes in it exactly
+    // where the odd rows were. A hole in a column reads as a broken row, which is
+    // the argument the TIME beside it settled the same way on 2026-08-18.
+    //
+    // The floor is the fix: a session that exists is a conversation somebody
+    // opened, and a count of zero is an artefact of what this app declines to
+    // COUNT — slash commands, skill injections and tool results are all real
+    // entries that are not prose — rather than a fact about the row.
+    expect(VIEWS).toContain("const shown = Math.max(1, task.message_count);");
+    expect(VIEWS).not.toContain("{task.message_count > 0 && (");
+  });
+
+  it("draws the glyph after the number, and keeps the noun for readers", () => {
+    // Reversed by request (D448). The objection to the bubble was that it has to
+    // be learned before the row can be read — true once, and repaid on every row
+    // after it on a page read by sweeping a column. What made the old bare "4"
+    // ambiguous was standing alone between a folder and a time; a number with a
+    // bubble welded to its right is not that number, which is what the
+    // inline-flex + gap in `.tasks-row-msgs` is for.
+    expect(VIEWS).toContain("tasks-row-msgs-icon");
+    expect(VIEWS).toContain("{ICON_MSG}");
+    // …and the noun is not gone, it moved to where a screen reader finds it: a
+    // bare digit is exactly as unlabelled to a reader who cannot see the glyph.
+    // Off `shown`, not off the raw count, so the spoken number and the drawn one
+    // are the same on an empty session (see the floor above).
+    expect(VIEWS).toContain(
+      'aria-label={`${shown} message${shown === 1 ? "" : "s"}`}',
+    );
+  });
+
+  it("is a SQUARE bubble", () => {
+    // Akshil, 2026-08-24: "make this icon boxy icon for messages". lucide
+    // `message-square` in place of `message-circle` — at 12px beside a digit a
+    // continuous curve is a blob, and every other mark on this row (the id chip,
+    // the folder pill, the scope glyph) has flat edges.
+    const glyph = VIEWS.slice(VIEWS.indexOf("const ICON_MSG = icon("));
+    const body = glyph.slice(0, glyph.indexOf(");"));
+    expect(body).toContain("M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z");
+  });
+
+  it("reads in the same register as the chip beside it", () => {
+    // Same 11px, same muted colour, same `flex: 0 0 auto` — the TITLE is the
+    // only thing that gives way when a row runs out of room — and tabular
+    // digits so a count going 9 → 10 does not shift the column.
+    const rule = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs {"));
+    const body = rule.slice(0, rule.indexOf("}"));
+    expect(body).toContain("font-size: 11px");
+    expect(body).toContain("color: var(--fg-muted)");
+    expect(body).toContain("flex: 0 0 auto");
+    expect(body).toContain("font-variant-numeric: tabular-nums");
+  });
+});
+
+describe("the folder chip as a filter tag", () => {
+  it("only the LIST's chip is pressable — the board card's stays a label", () => {
+    // A card is a drag target first, and a button inside one competes with the
+    // gesture that moves it.
+    expect(VIEWS).toContain("onPick={onPickProject && (() => onPickProject(task.project))}");
+    expect(VIEWS.match(/onPick=\{onPickProject/g)?.length).toBe(1);
+  });
+
+  it("a press filters the page and never counts as a press on the row", () => {
+    // The chip lives inside a row that opens a thread when clicked; without
+    // the stop the tag would do both.
+    const chip = VIEWS.slice(VIEWS.indexOf("export function IdentityChip"));
+    expect(chip.slice(0, chip.indexOf("\n}\n"))).toContain("e.stopPropagation();");
+    // It REPLACES the project selection rather than widening it, and pressing
+    // the pinned one again lets it go: the chip stays on screen wearing the
+    // state, so it has to be the way back out too.
+    expect(SCHEDULED).toContain("f.projects.length === 1 && f.projects[0] === project");
+    expect(SCHEDULED).toContain("pinnedProjects={filters.projects}");
+  });
+
+  it("survives the filter it applies, and wears it", () => {
+    // `spansProjects` drops the chip when every row agrees about its folder —
+    // which is exactly what pressing the chip causes. Left alone, the control
+    // deleted itself on use and the reader had no on-screen answer to "which
+    // folder is this" and nothing to press to get back.
+    expect(VIEWS).toContain('spansProjects(tasks) || pinnedKey !== ""');
+    expect(VIEWS).toContain("pinned={pinnedProjects.includes(task.project)}");
+    expect(VIEWS).toContain("active={pinned}");
+    expect(VIEWS).toContain("aria-pressed={active}");
+    // Legible at REST, not on hover: it is a state, not an affordance. Painted on
+    // the NAME since 2026-08-24 — the button is the full-height hit area now and
+    // paints nothing, so an ON state drawn there would be an accent slab the
+    // height of the row.
+    expect(TASKS_CSS).toContain(
+      ".tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {",
+    );
+  });
+
+  it("looks like a control only when it is pointed at", () => {
+    // A permanent box on every row would be a column of buttons down the
+    // busiest edge of the list.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("background: none");
+    expect(body).toContain("cursor: pointer");
+    // THE PILL IS ITS OWN SIZE AGAIN (2026-08-24, final pass). Two passes tried
+    // to make this box the hit area by growing it to the row's full height, and
+    // both failed the same way: `border-radius` draws on the padding box, so the
+    // target and the WASH grew together into a slab around an 11px word — "that
+    // is such a bad design and hover … keep the tag/button size same". The
+    // enlarged target moved to the shield around it (next test).
+    expect(body).toContain("padding: 3px 5px");
+    expect(body).toContain("border-radius: 5px");
+    // …and its 3px must not grow the ROW: the shield is stretched, so the flex
+    // line is sized from this element plus the shield's box, which made every row
+    // 39px instead of 36px until this went in. Verified in the browser after: 36.
+    expect(body).toContain("margin-block: -3px");
+    // The wash and the focus ring are on the pill, not on a child — one box for
+    // the thing a reader sees, presses, and gets feedback from.
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:hover,");
+    expect(TASKS_CSS).toContain(".tasks-row .schedule-tv-id--tag:focus-visible {");
+    expect(TASKS_CSS).not.toContain(".tasks-row .schedule-tv-id--tag:hover .schedule-tv-id-name");
+  });
+
+  it("puts a DEAD band around the pill, so a near-miss does nothing", () => {
+    // Akshil, 2026-08-24: "don't show the title or [be] clickable in that whole
+    // padding top bottom, and a little bit to the side as well … make that area
+    // unclickable and no hover as well, no tooltip on hover. But when I hover on
+    // the tag itself, that should be clickable and show me the folder [tooltip]."
+    //
+    // The band used to belong to the ROW, whose navigation is an <a> stretched
+    // over all of it — so a pointer a few pixels above a folder chip raised the
+    // TASK's tooltip, and a click there opened the task. The shield takes the
+    // band and does nothing with it.
+    expect(VIEWS).toContain('className="schedule-tv-id-shield"');
+    // `title=""`, not absent: an element with no title lets the browser walk up
+    // the tree, and what it finds is the row's.
+    const shieldJsx = VIEWS.slice(VIEWS.indexOf('className="schedule-tv-id-shield"'));
+    expect(shieldJsx.slice(0, shieldJsx.indexOf(">"))).toContain('title=""');
+    expect(VIEWS).toContain("onClick={(e) => e.stopPropagation()}");
+    const shield = block(TASKS_CSS, ".tasks-row .schedule-tv-id-shield");
+    expect(shield).toContain("cursor: default");
+    // Above the stretched link, which is what stops the click reaching the row.
+    expect(shield).toContain("z-index: 2");
+    expect(shield).toContain("align-self: stretch");
+    // The band is a pseudo-element rather than padding on the shield, so the pill
+    // still centres in the row; `z-index: -1` keeps it BEHIND the pill so the
+    // pill keeps its own hover, cursor and press.
+    const band = block(TASKS_CSS, ".tasks-row .schedule-tv-id-shield::after");
+    expect(band).toContain("top: calc(var(--tasks-row-pad-y) * -1)");
+    expect(band).toContain("bottom: calc(var(--tasks-row-pad-y) * -1)");
+    expect(band).toContain("z-index: -1");
+  });
+
+  it("leaves the other marks reaching the row's full height", () => {
+    // Those were never the complaint — "like you did for messages and time" — and
+    // they have no visual box, so a full-height target is invisible there.
+    const marks = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-msgs,\n.tasks-row-time,"));
+    const body = marks.slice(0, marks.indexOf("}"));
+    expect(body).toContain("align-self: stretch");
+    expect(body).toContain("padding-block: var(--tasks-row-pad-y)");
+    expect(body).toContain("margin-block: calc(var(--tasks-row-pad-y) * -1)");
+    // The scope glyph carries it too, with its margin-left left alone — that is a
+    // deliberate pull toward the title and a shorthand would drop it.
+    const file = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const fileBody = file.slice(0, file.indexOf("}"));
+    expect(fileBody).toContain("align-self: stretch");
+    expect(fileBody).toContain("margin-left: calc(var(--tasks-row-gap) * -1)");
+  });
+
+  it("sits above the row's stretched link, or it is not clickable at all", () => {
+    // `.tasks-rowlink` is an absolutely positioned <a> over the whole row at
+    // z-index 1. A control that does not lift out of the way never receives the
+    // press — the row navigates instead. It shipped without this and only the
+    // ONE upcoming row worked, because a task with no conversation yet draws no
+    // rowlink (Akshil, 2026-08-23).
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row .schedule-tv-id--tag {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+  });
+});
+
+describe("the file mark after a task's title", () => {
+  it("names the file only when the target is not the folder", () => {
+    // routers/tasks.py `_place` falls back to the project folder when a task
+    // has no file, so target-equals-project IS the test for "about a folder".
+    expect(taskFile(task({ target: "/p/one.py", project: "/p" }))).toBe("/p/one.py");
+    expect(taskFile(task({ target: "/p", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "", project: "/p" }))).toBe("");
+  });
+
+  it("does not grow a mark over a trailing slash", () => {
+    // A folder target arrives spelled either way; "/p/" and "/p" are one place.
+    expect(taskFile(task({ target: "/p/", project: "/p" }))).toBe("");
+    expect(taskFile(task({ target: "/p", project: "/p/" }))).toBe("");
+  });
+
+  it("is a glyph with the name in the tooltip, not the name itself", () => {
+    // The opposite call to the message count two elements along, for the
+    // opposite reason: a count is a number that needs a unit to be read at
+    // all, and a filename is prose. A column of prose is the crowding this
+    // row has twice been trimmed for.
+    expect(VIEWS).toContain('className="tasks-row-file"');
+    expect(VIEWS).toContain("data-hint={tildePath(taskFile_, home)}");
+    expect(VIEWS).toContain("{ICON_FILE}");
+  });
+
+  it("renders nothing on a folder task — the file mark has no fallback", () => {
+    // Akshil, 2026-08-25: "drop the folder icon, keep the file icon as is". The
+    // folder glyph briefly filled this slot on file-less tasks (2026-08-24's
+    // one-mark-either-way rule), but folder-scoped is the common case and the
+    // mark restated what the folder chip at the row's far end already says — so
+    // the slot is back to file-or-nothing.
+    expect(VIEWS).toContain("{taskFile_ ? (");
+    expect(VIEWS).not.toContain('aria-label={`This task is about the folder ');
+    // The glyph really is gone from inside the chip: its body is the name alone.
+    expect(VIEWS).toContain('const body = <span className="schedule-tv-id-name">{name}</span>;');
+  });
+
+  it("sits above the row's stretched link, like every other hoverable", () => {
+    // `.tasks-rowlink` is an <a> over the whole row at z-index 1. An element
+    // that does not lift out of the way never receives the pointer — and this
+    // one exists only to be pointed at. Same lesson as the folder tag.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("position: relative");
+    expect(body).toContain("z-index: 2");
+    // And it is not what gives way when a long title runs out of room —
+    // absent would read as "about a folder".
+    expect(body).toContain("flex: 0 0 auto");
+  });
+
+  it("wears the row's own cursor, not a question mark", () => {
+    // The whole row is a link and reads as one under the pointer; a `help`
+    // cursor over one glyph inside it announces a different kind of thing to
+    // press and looks broken beside the row's own pointer (Akshil,
+    // 2026-08-23).
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    // Comments stripped first — the rule's own headstone names the property it
+    // no longer sets, and a substring search would find that instead.
+    const body = rest.slice(0, rest.indexOf("}")).replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(body).not.toContain("cursor:");
+  });
+
+  it("sits against the title rather than floating between it and the folder", () => {
+    // The row's flex `gap` is 10px and applies between every pair of children,
+    // so the mark shipped with 10px on both sides plus a margin of its own. It
+    // belongs to the title, so the gap is pulled back on that side only.
+    const rest = TASKS_CSS.slice(TASKS_CSS.indexOf(".tasks-row-file {"));
+    const body = rest.slice(0, rest.indexOf("}"));
+    expect(body).toContain("margin-left: calc(var(--tasks-row-gap) * -1");
+  });
+});
+
+describe("mergeTaskChanges", () => {
+  const row = (key: string, last_active: number): Task =>
+    ({ key, last_active, status: "done", messages: [] }) as unknown as Task;
+
+  it("upserts by key, drops gone, and keeps last_active descending", () => {
+    const shown = [row("a", 30), row("b", 20), row("c", 10)];
+    const merged = mergeTaskChanges(shown, [row("c", 40), row("d", 25)], ["b"]);
+    expect(merged.map((t) => t.key)).toEqual(["c", "a", "d"]);
+    expect(merged.find((t) => t.key === "c")?.last_active).toBe(40);
+  });
+
+  it("is a no-op for an empty answer and does not mutate its input", () => {
+    const shown = [row("a", 2), row("b", 1)];
+    const merged = mergeTaskChanges(shown, [], []);
+    expect(merged.map((t) => t.key)).toEqual(["a", "b"]);
+    expect(merged).not.toBe(shown);
+  });
+
+  it("a key both upserted and gone is gone", () => {
+    expect(mergeTaskChanges([row("a", 1)], [row("a", 5)], ["a"])).toEqual([]);
   });
 });

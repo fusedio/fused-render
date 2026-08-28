@@ -70,7 +70,10 @@ def test_start_writes_a_spec_the_worker_can_read(tmp_path, spawned):
     cfg.ignore = ["node_modules"]
     started = runner.start(cfg, str(tmp_path), full=True)
     spec = json.load(open(os.path.join(cfg.runs_dir, started["run_id"], "spec.json")))
-    assert spec["root"] == str(tmp_path)
+    # `start` writes `canonical_root(root)`, not the caller's raw spelling
+    # (platform.md §1) — a no-op of that on POSIX, but forward-slashed on
+    # Windows where `str(tmp_path)` itself is backslash-native.
+    assert spec["root"] == runner.canonical_root(str(tmp_path))
     assert spec["full"] is True
     # the config travels WITH the run: the detached worker must not re-derive
     # the store location from an environment that may have moved
@@ -84,7 +87,11 @@ def test_start_expands_and_canonicalizes_the_root(tmp_path, spawned):
     sub = tmp_path / "sub"
     sub.mkdir()
     started = runner.start(cfg, str(sub) + "/")
-    assert started["root"] == str(sub)
+    # `str(sub)` alone is Windows' backslash-native spelling; `start` records
+    # `canonical_root(root)` (forward-slashed, trailing slash gone) — the
+    # same reason `test_start_writes_a_spec_the_worker_can_read` above needs
+    # the wrap, not a gap in `canonical_root` despite this test's name.
+    assert started["root"] == runner.canonical_root(str(sub))
 
 
 def test_start_rejects_a_non_directory(tmp_path, spawned):

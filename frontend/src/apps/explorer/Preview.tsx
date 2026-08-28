@@ -6,7 +6,12 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
+  getAppEntry,
+  setAppPreview,
+  getAppFileCloneTarget,
+  cloneAppFile,
   rawUrl,
+  statPath,
   resolveConditions,
   renameEntry,
   copyEntry,
@@ -17,6 +22,7 @@ import {
   repairTemplateRegistry,
 } from "@platform/lib/api";
 import type { StatResult, TemplateEntry, RegistryEntryForPath } from "@platform/lib/api";
+import { captureAppPreview, cropRect, exportAppFile } from "@platform/lib/appShot";
 import { navigate, navigateUrl, urlForFsPath, viewUrlForFsPath, replaceSearch, IS_EMBED, IS_FOREIGN_EMBED, IS_PREVIEW } from "@platform/lib/router";
 import { formatSize, formatMtimeFull, basename } from "@platform/lib/format";
 import {
@@ -31,7 +37,7 @@ import {
   friendlyFsError,
   claudeTerminalCommand,
 } from "@apps/explorer/lib/fs-actions";
-import { fileBarMenu } from "@apps/explorer/lib/bar-menus";
+import { crumbMenu, fileBarMenu } from "@apps/explorer/lib/bar-menus";
 import { enterPanel } from "@apps/explorer/lib/split-actions";
 import { publishTopbarMenu } from "@apps/explorer/topbar-menu";
 import { acquireOverlay, releaseOverlay } from "@platform/lib/ui-overlay";
@@ -39,7 +45,6 @@ import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
-import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
@@ -50,6 +55,12 @@ import {
   effectiveActive,
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
+import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
+import {
+  pendingClaudeAskVersion,
+  subscribePendingClaudeAsk,
+  takePendingClaudeAsk,
+} from "@apps/explorer/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -58,17 +69,18 @@ import {
   writeQueryParam,
   sideToggleTarget,
   reconcileSideSearch,
+  sideReopenedByUrl,
   type SideRequest,
 } from "@apps/explorer/lib/preview-side";
+import { getSideHidden, setSideHidden } from "@apps/explorer/lib/side-hidden-store";
 import {
   activeRev,
   revFromHook,
   revSrc,
-  shortSha,
   type RevSelection,
 } from "@apps/explorer/lib/preview-rev";
 import { ModeMenu } from "@apps/explorer/BarMenu";
-import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideReopenEdge, SideToggleButton } from "@apps/explorer/SideChrome";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
@@ -82,9 +94,21 @@ import Listing from "@apps/explorer/Listing";
 // template as `window._fusedSelectRev`). Declared here, beside the assignment that
 // installs it, exactly as main.tsx declares `_fusedFsChanged` beside its own — the
 // other half of the same ancestor-global contract with that runtime.
+//
+// `_fusedClaudeAsk`/`_fusedClaudeAskTake` are the git sidebar's "Fix with AI"
+// hop (static/runtime.js `noteAskClaude`/`pullClaudeAsk`, reached from the git
+// template as `window._fusedAskClaude` and from the claude template as
+// `window._fusedTakeClaudeAsk`). Two calls, not one, because this is a PULL:
+// `_fusedClaudeAsk` is the PUSH half — the git template hands over the prompt
+// and this shell remembers it and switches to Claude — and `_fusedClaudeAskTake`
+// is what the claude template's OWN boot calls to collect it, which is also
+// what CONSUMES it (see the effect below for why the prompt is never baked
+// into that iframe's `src`).
 declare global {
   interface Window {
     _fusedRevSelected?: (sha: unknown) => void;
+    _fusedClaudeAsk?: (text: unknown) => void;
+    _fusedClaudeAskTake?: () => string | null;
   }
 }
 
@@ -135,25 +159,44 @@ function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
 }
 
-// "Clone" in the preview header of a showcase app: copy the app (current
-// state, edits included) into the workspace (Fused/local/<slug>, community.py's
-// `install`) and navigate to the cloned copy — the same open convention the
-// /apps community grid uses. The showcase tree itself is fully editable; the
-// clone is how you keep a copy that catalog refreshes never touch.
-function CloneCommunityButton({ slug }: { slug: string }) {
+// "Clone" in the preview header of a `.fused` app file: copy the payload into
+// the workspace (Fused/local/<slug>) as an ordinary editable app and open it —
+// the way OUT of an artifact whose own files are 0444 by construction (D397).
+// Once a copy is there the same button reads "Go to local version" and only
+// navigates, so the artifact never becomes a way to overwrite your own edits.
+//
+// Whether a copy exists is the destination folder EXISTING — no records file —
+// which is why this probes on mount and re-probes per file rather than trusting
+// anything cached.
+//
+// Header-only, like ExportAppButton beside it, and with the same consequence
+// worth knowing: embed mode hides the whole topbar, so a `.fused` opened by
+// double-click shows no Clone. Reaching it means opening the file in the
+// explorer (owner's call — the embed stays chrome-free, D386/D390).
+function CloneAppFileButton({ fsPath }: { fsPath: string }) {
+  const [target, setTarget] = useState<{ path: string; cloned: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
-  const doClone = async () => {
+  useEffect(() => {
+    let alive = true;
+    setTarget(null);
+    getAppFileCloneTarget(fsPath)
+      .then((r) => alive && setTarget({ path: r.path, cloned: r.cloned }))
+      .catch(() => {
+        /* unreadable file / not a .fused — no button rather than a broken one */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!target) return null;
+  const go = async () => {
     if (busy) return;
+    // Already cloned: this is pure navigation, so it never needs the spinner
+    // or the write route.
+    if (target.cloned) return navigate(target.path, { isDir: true });
     setBusy(true);
     try {
-      const r = await runCommunity<{ status?: string; message?: string; path?: string }>({
-        action: "install",
-        slug,
-      });
-      // `already-installed` also carries the path — an app cloned elsewhere
-      // still opens the user's copy rather than erroring.
-      if (!r.path) throw new Error(r.message || "clone failed");
-      touchCommunityApp(slug);
+      const r = await cloneAppFile(fsPath);
       navigate(r.path, { isDir: true });
     } catch (e) {
       pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
@@ -165,12 +208,92 @@ function CloneCommunityButton({ slug }: { slug: string }) {
     <button
       type="button"
       className="bar-ctl bar-ctl-bordered"
-      title={"Clone this app into Fused/local/" + slug + " and open your copy"}
-      onClick={doClone}
+      title={
+        target.cloned
+          ? "Open your editable copy at " + target.path
+          : "Copy this app into " + target.path + " and open it for editing"
+      }
+      onClick={go}
       disabled={busy}
     >
       {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Cloning…" : "Clone"}
+      {busy ? "Cloning…" : target.cloned ? "Go to local version" : "Clone"}
+    </button>
+  );
+}
+
+// Export the containing app as a .fused file (SPEC §43 AF-4), shown only when
+// the previewed page IS its folder's app entry — asked of the server (the one
+// shared entry rule, /api/apps/entry) rather than guessed from the filename.
+// You export from the app you're looking at; a plain html file gets nothing.
+function ExportAppButton({ fsPath }: { fsPath: string }) {
+  const [isEntry, setIsEntry] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // The server answers os.path.abspath (backslashes on Windows) while fsPath
+  // is the shell's canonical forward-slash form — same drive-letter-only
+  // normalization rule as the URL codec (a backslash in a POSIX filename must
+  // not be rewritten).
+  const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+  useEffect(() => {
+    let alive = true;
+    setIsEntry(false);
+    const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+    getAppEntry(dir)
+      .then((r) => {
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no button for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath]);
+  if (!isEntry) return null;
+  const dir = fsPath.slice(0, fsPath.lastIndexOf("/")) || "/";
+  const name = basename(dir);
+  const doExport = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      // Same capture-on-export as the /apps card (appShot, D396): the shown
+      // preview frame IS the app rendering, so it is the crop source — no
+      // navigation, no flash. exportAppFile itself skips capture when the
+      // folder carries an authored preview.png; the probe below is only so a
+      // pointless native shot (and, on a Mac that has not granted Screen
+      // Recording, its permission dialog) isn't taken for a capture the
+      // server would discard anyway (stat failure reads as "no authored
+      // still" — worst case is that redundant shot, never a lost export).
+      //
+      // `.is-shown` satisfies appShot's crop-source contract (pixels that ARE
+      // the app, not a box it may fill): the class rides `shown`, which the
+      // frame swap only sets once that frame paints — the same guarantee
+      // `data-fused-annotate-target` below relies on.
+      const authored = await statPath(dir + "/preview.png").then(
+        (s) => !s.is_dir,
+        () => false,
+      );
+      await exportAppFile(
+        { path: dir, name, entry_html: fsPath,
+          preview_image: authored ? dir + "/preview.png" : null },
+        document.querySelector(".preview-frame.is-shown"),
+      );
+    } catch (e) {
+      pushToast({ msg: "Could not export " + name + ": " + (e as Error).message, tone: "error" });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="bar-ctl bar-ctl-bordered"
+      title={"Export " + name + " as a single .fused app file"}
+      onClick={doExport}
+      disabled={busy}
+    >
+      {busy && <span className="mode-icon-spinner" />}
+      {busy ? "Exporting…" : "Export App"}
     </button>
   );
 }
@@ -364,6 +487,88 @@ function usePreviewFileMenu(
     });
   };
 
+  // IS THIS FILE AN APP'S FACE? The one shared entry rule, asked of the server
+  // (/api/apps/entry) exactly as ExportAppButton asks it — under the marker
+  // rule a filename says nothing. Only an entry gets "Set Current View as
+  // Preview": a preview.png beside a plain html file has no card to show it.
+  const [isAppEntry, setIsAppEntry] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    setIsAppEntry(false);
+    if (stat.is_dir) return;
+    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
+    getAppEntry(parent)
+      .then((r) => {
+        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+      })
+      .catch(() => {
+        /* indeterminate reads as "not an entry" — no verb for nothing */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [fsPath, parent, stat.is_dir]);
+
+  // "Set Current View as Preview" (Akshil, 2026-08-27): photograph what the
+  // frame is showing and write it as the folder's preview.png. Same capture
+  // the .fused export bakes in (appShot.captureAppPreview, tab capture cropped
+  // to the shown frame), so the same one-time share prompt.
+  //
+  // ORDER: the share prompt needs the click's own transient activation, which
+  // Chrome expires a few seconds out. The one thing awaited before it is a stat
+  // of preview.png (milliseconds) — and when that says a still already exists,
+  // the capture moves to the CONFIRM's click instead (Akshil: confirm before
+  // overwriting), which is a fresh activation of its own. Nothing is written
+  // until a frame is in hand: a dismissed prompt leaves the old file alone.
+  const shootPreview = async (replacing: boolean) => {
+    const name = basename(parent);
+    // THE CURRENT VIEW OR NOTHING. appShot's export path falls back to a fresh
+    // full-viewport reload of the entry when the frame can't be cropped; that
+    // is not the view the user is looking at, so here it is refused up front
+    // (and `stage: false` refuses it again inside) rather than saved under a
+    // "Preview saved" toast (Bugbot, 2026-08-27).
+    const frame = document.querySelector(".preview-frame.is-shown");
+    if (!cropRect(frame)) {
+      pushToast({
+        msg: "Preview not captured — the app frame has to be fully on screen",
+        tone: "error",
+      });
+      return;
+    }
+    const blob = await captureAppPreview(fsPath, frame, { stage: false });
+    if (!blob) {
+      pushToast({ msg: "Preview not captured — nothing was changed", tone: "info" });
+      return;
+    }
+    try {
+      await setAppPreview(parent, blob);
+      pushToast({
+        msg: (replacing ? "Preview replaced — " : "Preview saved — ") + name + "/preview.png",
+        tone: "info",
+      });
+    } catch (e) {
+      pushToast({ msg: "Could not save preview: " + (e as Error).message, tone: "error" });
+    }
+  };
+  const doSetPreview = () => {
+    statPath(join(parent, "preview.png")).then(
+      (s) => {
+        if (s.is_dir) {
+          pushToast({ msg: "preview.png here is a folder — move it first", tone: "error" });
+          return;
+        }
+        setDialog({
+          kind: "confirm",
+          title: "Replace preview?",
+          message: `"${basename(parent)}" already has a preview.png. Replace it with what the app shows now?`,
+          confirmLabel: "Replace",
+          onConfirm: () => void shootPreview(true),
+        });
+      },
+      () => void shootPreview(false),
+    );
+  };
+
   // The CRUMB BAR's menu for this file — deliberately not `buildMenu` above (see
   // lib/bar-menus for what it leaves out and why). The splits are offered on the
   // same condition TemplatePreview uses for its own split affordances: a single
@@ -374,6 +579,8 @@ function usePreviewFileMenu(
       onOpenInClaude: doOpenInClaude,
       onCopyPath: doCopyPath,
       onReveal: doReveal,
+      onOpenInNewTab: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
+      onSetPreview: isAppEntry ? doSetPreview : undefined,
       onSplit:
         !stat.is_dir && !IS_EMBED ? (dir) => enterPanel(fsPath, dir) : undefined,
     });
@@ -384,12 +591,33 @@ function usePreviewFileMenu(
   // would churn the registry (topbar-menu.ts). A DIRECTORY opened here renders an
   // embedded <Listing> that claims the bar and publishes its own folder menu —
   // this one stands down rather than racing it.
-  const openBarMenuRef = useRef<(x: number, y: number) => void>(() => {});
-  openBarMenuRef.current = (x, y) => setMenu({ x, y, items: barMenuItems() });
+  //
+  // A right-click on an ANCESTOR crumb names that folder (Breadcrumb's
+  // onBarContextMenu) and gets the ancestor pair, not this file's menu: the
+  // crumb the pointer is on is a directory two levels up, and Rename/Copy Path
+  // about the open file is not what it asked.
+  const openBarMenuRef = useRef<(x: number, y: number, crumb?: string) => void>(() => {});
+  openBarMenuRef.current = (x, y, crumb) =>
+    setMenu({
+      x,
+      y,
+      items: crumb
+        ? crumbMenu({
+            onReveal: () =>
+              revealPath(crumb).catch((e) =>
+                pushToast({
+                  msg: friendlyFsError(e, { verb: "reveal", name: basename(crumb) }),
+                  tone: "error",
+                })
+              ),
+            onOpenInNewTab: () => window.open(urlForFsPath(crumb), "_blank", "noopener"),
+          })
+        : barMenuItems(),
+    });
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   useEffect(() => {
     if (!ownsBar) return;
-    return publishTopbarMenu((x, y) => openBarMenuRef.current(x, y));
+    return publishTopbarMenu((x, y, crumb) => openBarMenuRef.current(x, y, crumb));
   }, [ownsBar]);
 
   const overlays = (
@@ -496,71 +724,18 @@ const FRAME_SWAP_TIMEOUT_MS = 4000;
 // same 7-character form the sidebar's rows and `git log --oneline` use, and one
 // obvious way back.
 //
-// Chrome, not a new visual language: a `.bar-ctl`-sized pill in the same bar the
-// mode control and the sidebar toggle sit in (preview.css), reading as a state
-// badge rather than as an action, with the way out being an ordinary bar button.
-//
-// THE HONEST BIT, and the reason the caveat is in the title rather than nowhere:
-// `fused.runPython` readers and the "_render" mode still read the LIVE file
-// (static/runtime.js, above runPython — phase 2b), so a parquet/xlsx pane, or an
-// .html file previewed as a page, can show current content under this badge. The
-// alternative — declining the revision for those modes — would need the shell to
-// know which modes get their bytes from Python, which it cannot know for a
-// user-registered template, and would leave the user with a Git commit list whose
-// clicks silently did nothing on some files.
-function RevisionPill({ sha, onLive }: { sha: string; onLive: () => void }) {
-  const short = shortSha(sha);
-  return (
-    <span
-      className="preview-rev"
-      title={
-        `Showing this file as of commit ${short} — read-only. ` +
-        "Views that read the file through a Python reader (or run it as a page) " +
-        "may still show its current content."
-      }
-    >
-      <span className="preview-rev-label" aria-hidden="true">
-        {/* An eye — "you are looking at an old version", not a rewind/clock,
-            which would read as "restore to here" for a badge that changes
-            nothing on disk. Same paths as the git view's row toggle
-            (templates/git/template.html PREVIEW_GLYPH); drawn in the same 16px
-            currentColor stroke every glyph in these bars uses (SideChrome). */}
-        <svg
-          viewBox="0 0 24 24"
-          width="14"
-          height="14"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M3 12c2.4-3.6 5.4-5.4 9-5.4s6.6 1.8 9 5.4" />
-          <path d="M21 12c-2.4 3.6-5.4 5.4-9 5.4s-6.6-1.8-9-5.4" />
-          <path d="M12 9a3 3 0 1 0 0 6 3 3 0 1 0 0-6" />
-        </svg>
-      </span>
-      {/* Both facts VISIBLE, not tooltipped: which commit, and that the pane
-          cannot be edited. A badge saying only `abc1234` leaves "why did my save
-          refuse?" to a hover nobody performs. */}
-      <code className="preview-rev-sha">{short}</code>
-      <span className="preview-rev-note">read-only</span>
-      <button type="button" className="bar-ctl" onClick={onLive}>
-        {/* "Live", not "Close": the pane is not being dismissed, it is being
-            returned to the file as it is now. */}
-        Live
-      </button>
-    </span>
-  );
-}
-
+// The revision badge that used to sit here is GONE (owner: the state now
+// lives where it is controlled — the git sidebar's commit list wears a dot and
+// a `previewing` pill on the previewed row, and its banner carries the way
+// back). The MECHANISM is untouched: `rev` still swaps the pane's bytes, and
+// the honest caveat about runPython readers now lives on the sidebar's eye
+// toggle tooltip (templates/git/template.html).
 function TemplatePreview({
   fsPath,
   stat,
   templates,
   conditions,
   onRenderedTitle,
-  hideHeader,
   actionsInTopbar,
 }: {
   fsPath: string;
@@ -568,7 +743,6 @@ function TemplatePreview({
   templates: TemplateEntry[];
   conditions: Record<string, boolean> | null;
   onRenderedTitle?: (title: string | null) => void;
-  hideHeader?: boolean;
   actionsInTopbar?: boolean;
 }) {
   // Caller only renders this when `templates` (already sentinel-filtered by
@@ -588,31 +762,47 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  // Showcase clone app: fully editable, no mode restrictions — the slug only
-  // decides whether the Clone button renders in the header.
-  const communitySlug = communityCacheSlug(fsPath);
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
-  // --- the BORROWED companion: `git`, from this file's parent folder ----------
-  // A working tree belongs to the FOLDER (templates/git/condition.py), so the
-  // registry keeps `git` on the universal "/" key alone and this file's own
-  // template list will never carry one. "What has changed in here" is worth just
-  // as much while reading a file, so the sidebar asks the PARENT DIRECTORY for
-  // its entry through the ordinary stat + condition machinery every mode surface
-  // uses (lib/dir-mode — which is also where the caching lives, so walking a
-  // folder file by file costs one probe rather than one per file). A parent
-  // outside a repository, or on a mount, denies the gate and there is simply no
-  // Git pill.
+  // --- the BORROWED companions: `git` and `mcp`, from this file's parent folder -
+  // A working tree belongs to the FOLDER (templates/git/condition.py), and so does
+  // an app's MCP manifest (templates/mcp/condition.py), so the registry keeps both
+  // on the universal "/" key alone and this file's own template list will never
+  // carry either. "What has changed in here" and "what tools does this app
+  // publish" are worth just as much while reading one of its files, so the sidebar
+  // asks the PARENT DIRECTORY for its entries through the ordinary stat +
+  // condition machinery every mode surface uses (lib/dir-mode — which is also
+  // where the caching lives, so walking a folder file by file costs one probe per
+  // mode rather than one per file). A parent outside a repository, or one that is
+  // not an app, or one on a mount, denies the gate and there is simply no pill.
   //
-  // Unless the file HAS one of its own: a user registry may bind `git` to a file
-  // extension, and then the entry is the file's, aimed at the file, and there is
-  // nothing to borrow — offering both would draw the same mode twice.
+  // Unless the file HAS one of its own: a user registry may bind either mode to a
+  // file extension, and then the entry is the file's, aimed at the file, and there
+  // is nothing to borrow — offering both would draw the same mode twice.
   const parentDir = dirname(fsPath);
   const ownGit = parts.sidebar.some((e) => e.mode === "git");
+  const ownMcp = parts.sidebar.some((e) => e.mode === "mcp");
   const parentGit = useDirMode(splitCapable && !ownGit ? parentDir : null, "git");
-  const borrowedGit = ownGit ? null : parentGit.entry;
-  const borrowedPending = !ownGit && parentGit.pending;
+  const parentMcp = useDirMode(splitCapable && !ownMcp ? parentDir : null, "mcp");
+  // One list, because `sideSplit` ranks the assembled set and the probes are
+  // independent — which is also why the pending half names MODES rather than
+  // being a flag: `git` answering before `mcp` is ordinary.
+  const borrowedEntries = [
+    !ownGit ? parentGit.entry : null,
+    !ownMcp ? parentMcp.entry : null,
+  ].filter((e): e is TemplateEntry => !!e);
+  const borrowedPendingModes = [
+    ...(!ownGit && parentGit.pending ? ["git"] : []),
+    ...(!ownMcp && parentMcp.pending ? ["mcp"] : []),
+  ];
+  // Is THIS mode one the sidebar took from the parent? Asked in three places
+  // downstream (the pending predicate, the iframe's target, the `_remote` flag),
+  // and a predicate rather than three `m === "git" && !ownGit` because a file that
+  // binds the mode itself must answer no at every one of them or the sidebar aims
+  // a file-scoped view at the parent directory.
+  const isBorrowedMode = (m: string): boolean =>
+    (m === "git" && !ownGit) || (m === "mcp" && !ownMcp);
   // Registry order for the file's own companions, then SIDEBAR_MODES order over
   // the assembled list — Claude / Git, whatever the registry ranked
   // (see orderSidebarModes). `on` vs `offered` is the pending placeholder's whole
@@ -634,8 +824,8 @@ function TemplatePreview({
     splitCapable,
     content: parts.content,
     own: parts.sidebar,
-    borrowed: borrowedGit,
-    borrowedPending,
+    borrowed: borrowedEntries,
+    borrowedPending: borrowedPendingModes,
     // This file's own gates, for `defaultSide` alone: an absent `_side` must not
     // open a companion whose condition.py has not answered — `claude` HAS one, so
     // that is every file for as long as /api/fs/conditions takes, and on a
@@ -644,6 +834,7 @@ function TemplatePreview({
     bound: [
       ...partitionModes(stat.templates).sidebar,
       ...(parentGit.bound ? [parentGit.bound] : []),
+      ...(parentMcp.bound ? [parentMcp.bound] : []),
     ],
   });
   const sideOn = split.on;
@@ -662,13 +853,13 @@ function TemplatePreview({
   // reads the short list, so a disabled row can be rendered without becoming
   // something the URL or the split can land on.
   const sidebarMenu = split.offered ? split.menu : [];
-  // Pending, for a SIDEBAR entry. The borrowed `git` entry is gated on the
-  // PARENT's verdicts, resolved by lib/dir-mode — not on any of this file's, so
-  // it cannot go through `isPending` (which reads `conditions`, this file's map,
-  // and would call a borrowed entry settled the moment the file's own gates
-  // landed). Everything else is an ordinary entry of this file's.
+  // Pending, for a SIDEBAR entry. A borrowed entry is gated on the PARENT's
+  // verdicts, resolved by lib/dir-mode — not on any of this file's, so it cannot
+  // go through `isPending` (which reads `conditions`, this file's map, and would
+  // call a borrowed entry settled the moment the file's own gates landed).
+  // Everything else is an ordinary entry of this file's.
   const isSidePending = (t: TemplateEntry) =>
-    t.mode === "git" && !ownGit ? borrowedPending : isPending(t);
+    isBorrowedMode(t.mode) ? borrowedPendingModes.includes(t.mode) : isPending(t);
 
   const defaultEntry = defaultTemplate(contentModes);
   // `mode` is what the user (or the URL) ASKED for; `entry` is what this paint
@@ -700,7 +891,49 @@ function TemplatePreview({
   // Nothing about it is persisted anywhere. It rides the URL, so it survives the
   // shell's pushState navigation within this file, and a refresh — or an open of a
   // different file, which starts from a bare URL — lands on the default again.
-  const [sideReq, setSideReq] = useState<SideRequest>(() => parseSide(location.search));
+  const [sideReq, setSideReq] = useState<SideRequest>(() =>
+    parseSide(location.search, getSideHidden())
+  );
+  // Whether the CURRENT `sideReq` is closed ONLY because the session's hidden
+  // flag (`lib/side-hidden-store.ts`) closed a URL that was itself silent about
+  // `_side` — as opposed to an explicit `_side=off`, which needs none of this
+  // (see the reconcile effect below). Tracked separately from `sideReq` itself
+  // because the reconcile effect must not write this particular closed state
+  // into the URL: the flag is documented memory-only (no storage, cleared by a
+  // refresh), and a `_side=off` written on its behalf would defeat both halves
+  // of that promise — a refresh no longer reopens the panel because the URL,
+  // not just the module variable, now says shut, and a link copied from the
+  // address bar for this file carries a close nobody clicked (exactly what
+  // `platform/lib/session-params.ts` strips `_side` to prevent for recents).
+  // `parseSide(location.search)` here (hidden defaulted false) is what the URL
+  // ALONE would have resolved to; it differs from `sideReq.open` only in this
+  // one case, since an explicit `_side` — off or a mode — resolves the same way
+  // whether or not the flag is set (lib/preview-side's `unchosenOrHidden` is
+  // only ever reached where the URL said nothing). `setSide` below always
+  // clears this, since any explicit open/close from here on is real, URL-worthy
+  // state, not a flag's inference.
+  const [sideFromHiddenFlag, setSideFromHiddenFlag] = useState<boolean>(
+    () => parseSide(location.search).open && !sideReq.open
+  );
+  // D495's two rules — "an explicit `_side` always wins" and "reopening on
+  // either surface clears the flag" — collide exactly here: a deep link that
+  // OPENS the sidebar (`?_side=claude`) wins over the flag per the first rule
+  // (`parseSide`'s explicit branches never even look at `hidden`), but nothing
+  // was clearing the flag for it, so the flag stayed "shut" even though the
+  // panel the user is looking at right now is open. The very next hop to a
+  // silent URL then closed it again — the opposite of what "wins" should mean
+  // for state that outlives this one paint. Resolved as: a deep link that
+  // OPENS is the same observable outcome as clicking reopen, so it clears the
+  // flag too (see the corrected D495 entry in DECISIONS.md). The pure rule is
+  // `sideReopenedByUrl` (lib/preview-side.ts); this is only a MOUNT-TIME
+  // reconciliation of it — `setSide` is what keeps the flag current for every
+  // click from here on.
+  useEffect(() => {
+    if (sideReopenedByUrl(getSideHidden(), sideReq)) setSideHidden(false);
+    // Mount only, deliberately: this reconciles the flag against what the URL
+    // asked for when this file OPENED, not on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Same request/paint distinction as `mode` above, and here it is RESOLVED rather
   // than reconciled: a verdict that denies the open companion cannot leave this
   // paint framing it, because `activeSide` is recomputed from the lists every
@@ -770,7 +1003,16 @@ function TemplatePreview({
   // than a deleted param now that absence means open — while choosing the
   // companion a bare URL would have opened deletes the param instead, so the
   // ordinary state keeps the clean URL (`sideParam`, lib/preview-side).
+  //
+  // Also the one place that records a close/reopen into the session's shared
+  // hidden flag (`lib/side-hidden-store.ts`) — a close here must be visible to
+  // the folder pane's later mounts too, same store either surface writes.
   const setSide = (next: string | null) => {
+    setSideHidden(next === null);
+    // A user click is always real, URL-worthy state now, whichever way it
+    // went — the flag-only closed state `sideFromHiddenFlag` guards against
+    // does not survive a click either way.
+    setSideFromHiddenFlag(false);
     // Written textually (`writeQueryParam`) so a click on the sidebar cannot
     // re-encode a template's own params on its way past them — LSN-2's verbatim
     // rule, and this runs on the first close of every auto-opened sidebar.
@@ -786,6 +1028,197 @@ function TemplatePreview({
     if (activeSide) setSide(null);
     else if (sideTarget) setSide(sideTarget);
   };
+
+  // --- the CLAUDE sidebar's seeded prompt (`window._fusedAskClaude`) ---------
+  // The git sidebar's "Fix with AI" button has no chat of its own — it hands the
+  // prompt it built to whichever ancestor owns a Claude sidebar, through the
+  // runtime's ancestor-window hop (static/runtime.js `noteAskClaude`), the same
+  // idiom `_fusedRevSelected` above uses for `_rev`.
+  //
+  // THIS IS A PULL, NOT A PARAM ON THE SRC (review #804 round 2). It used to be
+  // the latter — a `_fused_ask` query baked into the claude iframe's URL, kept
+  // one-shot by a cache keyed on "has the src's own base changed" — and that
+  // shape had a hole no amount of caching closed: ANY remount of that iframe
+  // for a reason that has NOTHING to do with a new ask (toggling the sidebar to
+  // `git` and back, closing and reopening the folder pane, a panel/tab
+  // reattaching) rebuilds the exact same cached src and replays the ask into a
+  // brand-new conversation. A `src` is an ADDRESS; "visit this document, but
+  // only follow this part of the address the first time" is not a thing a URL
+  // can express, however the cache around it is shaped.
+  //
+  // So the prompt lives here as plain in-memory state instead, and the CLAUDE
+  // TEMPLATE pulls it at its own boot (`window._fusedClaudeAskTake`, called
+  // through the claude template's `_fusedTakeClaudeAsk` export — see
+  // static/runtime.js `pullClaudeAsk`). Consumption is then a property of WHEN
+  // a pull happens (the one frame that is actually about to use the text, at
+  // the one moment — its own boot — that can matter) rather than something a
+  // cache has to reconstruct from a src string. `sideSrcFor` below carries
+  // nothing about this at all any more.
+  const claudeSeedRef = useRef<string | null>(null);
+  // A new ask can arrive while claude is ALREADY showing — a second "Fix with
+  // AI" click without leaving it first — and that is the one case a plain ref
+  // cannot handle: whatever frame is showing claude (sidebar OR content pane)
+  // is `key`ed on the mode alone, so if the mode does not change, NEITHER does
+  // the key, and nothing remounts the frame to make it boot and pull again.
+  // This state exists to force exactly that remount: bumped on every incoming
+  // ask (see the ref below) and folded into the key `sideSrcFor`'s caller
+  // passes down (`claudeFrameKey`, further down), so a second ask on an
+  // already-open sidebar gets a fresh document the same as a first one does.
+  const [claudeAskInstance, setClaudeAskInstance] = useState(0);
+  // --- review #804 round 3: is claude actually going to be SHOWN? ----------
+  // `window._fusedAskClaude`'s return value has to mean that, not merely "a
+  // callback exists" (finding 4) — and answering it honestly is also what
+  // closes finding 1 (a target with no sidebar at all, a directory opened at
+  // `?_mode=git` as Preview's MAIN BODY, still has a real route to claude:
+  // its own content-mode switch) and finding 3 (a seed is only ever STORED
+  // once we already know it is about to be delivered, so there is nothing
+  // left to leak into an unrelated later boot).
+  //
+  // `claudeSideEntry`/`claudeContentEntry` ask the exact question `resolveSide`/
+  // `setMode`'s own gate would ask of a click doing this by hand — `split.all`
+  // is what `_side` may NAME (preview-side.ts), `contentModes` is what
+  // `setMode` may switch to — with `claudeEntryReady` additionally requiring
+  // the gate to have SETTLED (not merely exist): a pending verdict is not a
+  // "no", but promising delivery for it would be exactly finding 3's hole
+  // again, so it reads as "not ready yet" and the click can be retried once
+  // the gate lands.
+  const claudeSideEntry = split.all.find((e) => e.mode === "claude") ?? null;
+  const claudeSideReady = claudeEntryReady(
+    claudeSideEntry,
+    !!claudeSideEntry && isSidePending(claudeSideEntry)
+  );
+  const claudeContentEntry = contentModes.find((t) => t.mode === "claude") ?? null;
+  const claudeContentReady = claudeEntryReady(
+    claudeContentEntry,
+    !!claudeContentEntry && isPending(claudeContentEntry)
+  );
+  const claudeAskRoute = resolveClaudeAskRoute({
+    splitCapable,
+    sideReady: claudeSideReady,
+    contentReady: claudeContentReady,
+  });
+  // The action this render would take, kept in a ref updated on EVERY render
+  // (no dependency array) rather than folded straight into the installed
+  // export below — review #804 round 3 finding 6. The export itself is
+  // installed ONCE (empty deps) and stays a stable function forever; without
+  // this indirection it would have to be reinstalled whenever anything it
+  // closes over changes (`claudeAskRoute`, `setSide`, `setMode`) to stay
+  // current, and the ORIGINAL version of this hook — reinstalled only on
+  // `splitCapable` changing — proved that "this closure doesn't need to
+  // react" is exactly the kind of claim that goes stale quietly: `setSide`
+  // reads `split.defaultSide`, which resolves asynchronously from the
+  // companion gates and can legitimately change without `splitCapable` doing
+  // so, and an ask handled through the stale closure would write the wrong
+  // `_side` spelling (explicit when it should be the clean/default form, or
+  // the reverse) — invisible in the moment (`sideReq` still paints correctly)
+  // and wrong only on a later reload or bookmark. Delegating through a ref
+  // updated every render is what makes "always current" true without paying
+  // for a reinstall on every one of those renders too.
+  const claudeAskActionRef = useRef<(text: string) => boolean>(() => false);
+  useEffect(() => {
+    claudeAskActionRef.current = (text: string) => {
+      if (claudeAskRoute === null) return false;
+      claudeSeedRef.current = text;
+      setClaudeAskInstance((n) => n + 1);
+      if (claudeAskRoute === "side") {
+        // Switches the sidebar to Claude — REPLACING whatever companion (most
+        // often `git`, the one that just failed) was showing. Two sidebars is
+        // not a layout this column has, and it is not a loss here: the error
+        // and the repo state the git pane knew are already folded into `text`.
+        setSide("claude");
+      } else {
+        // No sidebar exists for this target (review #804 round 3 finding 1) —
+        // most commonly a DIRECTORY opened at `?_mode=git` as Preview's own
+        // main body, where `splitCapable` is false because `stat.is_dir` is
+        // true. Claude is still one of this target's ordinary content modes,
+        // so switch the whole pane to it the same way clicking its own
+        // switcher entry would.
+        void setMode("claude");
+      }
+      return true;
+    };
+  });
+  // A directory's `_listing` mode embeds its OWN `<Listing>` (the folder
+  // peek, below) — the same window, a CHILD component — and that component
+  // installs its own copy of this pair for its OWN companion pane
+  // (Listing.tsx, gated on `paneEnabled`). Two installers in one window would
+  // just be a last-mount-wins race for the property assignment, so this one
+  // stands down entirely while `_listing` owns the screen, and reclaims the
+  // export the moment the mode moves to anything else (including back to a
+  // route this component itself can serve, like `claude` or `git` directly).
+  const suppressForListing = entry.mode === "_listing";
+  useEffect(() => {
+    if (suppressForListing) return;
+    window._fusedClaudeAsk = (text: unknown) => {
+      if (typeof text !== "string" || !text) return false;
+      return claudeAskActionRef.current(text);
+    };
+    // The other half of the pull: the claude template's own boot calls this
+    // (through the runtime's `pullClaudeAsk`) to collect whatever is pending.
+    // `takeClaudeAsk` (lib/claude-ask.ts) is what actually reads-and-clears —
+    // read its header for why that single step is the whole guarantee.
+    window._fusedClaudeAskTake = () => takeClaudeAsk(claudeSeedRef);
+    return () => {
+      delete window._fusedClaudeAsk;
+      delete window._fusedClaudeAskTake;
+    };
+    // The only thing this effect needs to re-run for is `suppressForListing`
+    // itself — everything the wrapper function DOES is read fresh out of
+    // `claudeAskActionRef.current` at call time (see that ref's own comment),
+    // so the wrapper never goes stale just by staying installed.
+  }, [suppressForListing]);
+  // A still-pending ask abandoned by a file navigation that lands BETWEEN
+  // storing the seed (once `claudeAskRoute` confirmed it was about to be
+  // delivered) and the switch actually completing — the target changes out
+  // from under a `setSide`/`setMode` call already in flight — must not
+  // survive into an unrelated later boot on a DIFFERENT file: `fsPath` carries
+  // no key of its own into `PreviewSidebar`'s iframe (unlike the folder pane's
+  // `paneKey`, which already includes it), so without this the ref would sit
+  // there until the next file's claude sidebar opened and pulled someone
+  // else's error.
+  useEffect(() => {
+    claudeSeedRef.current = null;
+  }, [fsPath]);
+
+  // The other side of a "Fix with Claude" staged from OUTSIDE this surface
+  // entirely — a repo-updates row in the activity card (shell/
+  // RepoUpdatesDock.tsx), which stages `{path, prompt}`
+  // (lib/pending-claude-ask.ts) and navigates here rather than calling
+  // `window._fusedClaudeAsk` the way the git companion's OWN button does,
+  // because that export only exists once a surface for this exact path is
+  // already mounted — the whole reason this file's copy of the pull exists.
+  // Gated on `claudeAskRoute` (not merely mounted) for the same reason the
+  // installer above is: nothing may be handed to a surface whose Claude
+  // entry cannot actually show it yet. ALSO gated on `suppressForListing`,
+  // for the same reason the installer above stands down there: a directory
+  // is exactly the target "Fix with Claude" navigates to (the repo root),
+  // which mounts `_listing` mode — `claudeAskRoute` resolves to `"content"`
+  // there (no split), so without this gate this file's own pull would win
+  // the race against the child `<Listing>`'s independent pull and consume
+  // the staged ask itself, `void setMode("claude")`-ing over the folder
+  // listing wholesale instead of leaving it to whichever installer the
+  // Lockstep contract actually intends for a directory target.
+  // `askVersion` (finding 17b, code review 2026-08-27): the case
+  // `[fsPath, claudeAskRoute, suppressForListing]` alone misses is a SECOND
+  // stage for the SAME path while this surface never left it — the common
+  // one, since the user is usually already looking at the very repo whose
+  // card just failed. None of those three deps change, so without this the
+  // effect would never re-run and the prompt would sit unseen until it
+  // expires. `pending-claude-ask.ts`'s own header has the full reasoning;
+  // Listing.tsx's copy of this hook does the identical thing, independently
+  // (the "Lockstep" its own comment names) — this file's own subscription
+  // must not be merged into that one.
+  const askVersion = useSyncExternalStore(
+    subscribePendingClaudeAsk,
+    pendingClaudeAskVersion,
+    pendingClaudeAskVersion,
+  );
+  useEffect(() => {
+    if (suppressForListing) return;
+    if (!claudeAskRoute) return;
+    const prompt = takePendingClaudeAsk(fsPath);
+    if (prompt) claudeAskActionRef.current(prompt);
+  }, [fsPath, claudeAskRoute, suppressForListing, askVersion]);
 
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
@@ -806,7 +1239,13 @@ function TemplatePreview({
     const search = reconcileSideSearch(location.search, {
       splitCapable,
       offered: split.offered,
-      open: sideReq.open,
+      // NOT `sideReq.open` when the hidden flag alone is what closed it —
+      // `sideFromHiddenFlag`'s own comment has the full argument. Passing
+      // `true` here with `activeSide` genuinely null (the panel IS shut for
+      // rendering) lands in `reconcileSideSearch`'s own "no verdict yet, leave
+      // `_side` alone" branch, which is exactly the outcome wanted: the URL
+      // stays exactly as silent as it already was.
+      open: sideFromHiddenFlag ? true : sideReq.open,
       activeSide,
       defaultSide: split.defaultSide,
     });
@@ -814,7 +1253,15 @@ function TemplatePreview({
     replaceSearch(location.pathname + (search ? "?" + search : ""));
     // `sideKeys` is in the deps because a landing verdict is what makes a
     // previously-fine `_side` stale.
-  }, [splitCapable, split.offered, split.defaultSide, sideReq.open, activeSide, sideKeys]);
+  }, [
+    splitCapable,
+    split.offered,
+    split.defaultSide,
+    sideReq.open,
+    sideFromHiddenFlag,
+    activeSide,
+    sideKeys,
+  ]);
   // `_listing` sentinel (D81): the shell's built-in directory listing, mounted
   // in place of the preview iframe — no iframe, no `_file`. Every directory
   // renders through this same header + body chrome (even a plain folder's
@@ -1031,10 +1478,15 @@ function TemplatePreview({
   //
   // Null while the mode's gate is unresolved — a pending borrowed entry has no
   // template path yet — and the column holds a spinner.
+  // No mention of the "Fix with AI" prompt anywhere in here (review #804 round
+  // 2): it is no longer a param this src carries at all — see the seed ref's
+  // own comment above for why, and `claudeFrameKey` below for the other half
+  // (forcing a fresh mount so the claude template's boot-time PULL actually
+  // fires when one is waiting).
   const sideSrcFor = (m: string): string | null => {
     const t = sidebarModes.find((e) => e.mode === m);
     if (!t || t.path === null) return null;
-    const borrowed = m === "git" && !ownGit;
+    const borrowed = isBorrowedMode(m);
     const target = borrowed ? parentDir : fsPath;
     const rem = borrowed ? "" : remote;
     const chatOnly = m === "claude" ? "&chat_only=1" : "";
@@ -1043,6 +1495,19 @@ function TemplatePreview({
       `&_file=${encodeURIComponent(target)}${rem}${chatOnly}${thumbFlags}`
     );
   };
+  // The claude iframe's REMOUNT key, distinct from the mode name `active`
+  // everything else keys off of (the switcher's highlighted row, the title).
+  // Ordinarily the mode alone is the right key — switching to a DIFFERENT
+  // companion and back is exactly when a fresh document is wanted. The one
+  // gap is a second "Fix with AI" ask that arrives while claude is ALREADY
+  // active: the mode never changes, so a key of just the mode never would
+  // either, and nothing would remount the frame to make its boot pull the new
+  // text. `claudeAskInstance` (bumped on every incoming ask, above) closes
+  // that gap without disturbing the ordinary case: it only changes when an ask
+  // arrives, so toggling away to `git` and back with no new ask reuses the
+  // same instance number and still remounts on the mode change alone, exactly
+  // as before.
+  const claudeFrameKey = (m: string) => (m === "claude" ? `claude:${claudeAskInstance}` : m);
 
   // Held-frame swap. Switching mode used to destroy the iframe and mount the
   // next one bare (`key={mode}`), so the user watched a blank pane for as long
@@ -1158,20 +1623,22 @@ function TemplatePreview({
 
   const headerActions = (
     <>
-      {/* FIRST in the bar, left of the mode control: it describes what the pane is
-          SHOWING, and the controls that follow act on it. Rendered only while a
-          revision actually resolves (lib/preview-rev's `activeRev`), so it cannot
-          outlive the pane it describes — and "Live" clears the same state the
-          sidebar sets, which is why it does not touch the URL either.
-          The sidebar is not touched by it: its own pane still shows the commit's
-          DIFF, which is a true statement about that column and the subject its row
-          highlight names. The one cost is that re-selecting the SAME row then
-          toggles it off first (the template treats a click on the selected row as
-          "deselect"), so getting the revision back takes a second click. */}
-      {rev && <RevisionPill sha={rev} onLive={() => setRevSel(null)} />}
-      {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
-          never touch your copy. */}
-      {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
+      {/* The revision badge that sat FIRST in this bar is gone: which commit the
+          pane shows (and the way back to Live) is stated in the git sidebar's
+          own commit list — the dot, the `previewing` pill, and its banner's
+          "Back to now". One surface owns the state it controls. */}
+      {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
+          app, or opens the copy that is already there (D397). Keyed off the
+          extension, which is what routes this file to the fusedapp template in
+          the first place. */}
+      {!stat.is_dir && fsPath.toLowerCase().endsWith(".fused") && (
+        <CloneAppFileButton fsPath={fsPath} />
+      )}
+      {/* The containing app as one .fused file (SPEC §43 AF-4) — rendered only
+          when this page is its folder's app entry (the component asks the
+          server). Embed mode hides the whole header/topbar, so an opened
+          .fused app never shows it. */}
+      {!stat.is_dir && <ExportAppButton fsPath={fsPath} />}
       {/* One mode control per view, and for an explorer FOLDER it is the
           preview pane's, not this one. The pane header carries a ModeMenu of
           its own beside the previewed row (ListingPreviewPane), so a folder
@@ -1255,15 +1722,13 @@ function TemplatePreview({
       {actionsInTopbar ? (
         <TopbarActions>{headerActions}</TopbarActions>
       ) : (
-        !hideHeader && (
-          <Header
-            fsPath={fsPath}
-            stat={stat}
-            onContextMenu={fileMenu.onContextMenu}
-          >
-            {headerActions}
-          </Header>
-        )
+        <Header
+          fsPath={fsPath}
+          stat={stat}
+          onContextMenu={fileMenu.onContextMenu}
+        >
+          {headerActions}
+        </Header>
       )}
       <div className="preview-body">
         {isPending(entry) ? (
@@ -1442,12 +1907,21 @@ function TemplatePreview({
               disabledReason: t.disabledReason,
             }))}
             active={activeSide}
+            frameKey={claudeFrameKey(activeSide)}
             src={sideEntry && isSidePending(sideEntry) ? null : sideSrcFor(activeSide)}
             onSelect={setSide}
             onClose={() => setSide(null)}
           />,
           sideSlot
         )}
+      {/* And when it is SHUT, the seam it left behind, into the same slot: drag
+          the split's right edge to pull the column back (SideChrome's
+          SideReopenEdge, which argues why a gesture is allowed here when a second
+          button would not be). Gated on exactly what the opener button is gated
+          on — a file with no companion at all gets no edge, because there would
+          be nothing on the other side of it. */}
+      {sideTargetEntry && !activeSide && sideSlot &&
+        createPortal(<SideReopenEdge onOpen={toggleSide} />, sideSlot)}
       {fileMenu.overlays}
     </>
   );
@@ -1641,9 +2115,6 @@ interface PreviewProps {
   // better tab title than the filename can use it (App's StatView). Undefined
   // for every dispatch branch that isn't the "_render"-carrying TemplatePreview.
   onRenderedTitle?: (title: string | null) => void;
-  // Chrome-free render (the /learn page): no preview header, no mode switcher —
-  // the content fills the body directly.
-  hideHeader?: boolean;
   // Explorer variant: no preview header bar; the mode switcher actions
   // portal into the breadcrumb bar's #topbar-mode-slot instead.
   actionsInTopbar?: boolean;
@@ -1651,12 +2122,11 @@ interface PreviewProps {
   // FallbackPreview's RegistryFixNotice calls this after a fix succeeds, so a
   // file that starts rendering again (e.g. "_render" is back) does so without
   // a manual refresh. Undefined for callers that don't wire up StatView's
-  // reload (e.g. the learn page), where FallbackPreview simply omits the
-  // "reloading…" step.
+  // reload, where FallbackPreview simply omits the "reloading…" step.
   onReload?: () => void;
 }
 
-export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, actionsInTopbar, onReload }: PreviewProps) {
+export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -1745,7 +2215,6 @@ export default function Preview({ fsPath, stat, onRenderedTitle, hideHeader, act
         templates={visible}
         conditions={conditions}
         onRenderedTitle={onRenderedTitle}
-        hideHeader={hideHeader}
         actionsInTopbar={actionsInTopbar}
       />
     );

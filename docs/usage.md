@@ -182,21 +182,50 @@ where a first model comes from.
     model — one labelled "image + text to text" — counts as a chat model: it is
     loaded for its text, and its picture-reading half simply goes unused.
   - **Every kind of model runs on every supported desktop platform**, on the
-    backend that suits it: chat models prefer MLX on Apple Silicon with PyTorch
-    as a fallback, while Windows and Linux use PyTorch directly; images use
-    PyTorch everywhere; transcription uses CTranslate2 everywhere. The Discover
-    tab names which backend a suggestion will load on, because the shortlists
-    differ — an MLX checkpoint is packed for Metal and will not load on a PC, so
-    you are never offered one there.
+    backend that suits it. On Apple Silicon that is MLX throughout — MLX LM for
+    chat, MLX FLUX for images, MLX Whisper for transcription. Everywhere else,
+    and on a Mac whose MLX backend is unavailable, chat runs on llama.cpp,
+    images on PyTorch and transcription on CTranslate2. The Discover tab names
+    which backend a suggestion will load on,
+    because the shortlists differ — an MLX checkpoint is packed for Metal and
+    will not load on a PC, so you are never offered one there.
+  - **Chat models off a Mac are GGUF files, which are much smaller than the
+    full-precision originals.** The llama.cpp backend reads a quantized copy of
+    the same model — a current Qwen at around 3GB instead of 9GB, answering
+    several times quicker — and that is what the Discover tab offers you. The
+    trade is that a plain `.safetensors` chat model from the Hub is loadable on
+    Apple Silicon only; off a Mac, take the GGUF the shortlist names instead. It
+    is the same model, not a smaller one.
+  - **The accelerated builds are opt-in, and the default is the unaccelerated
+    one.** Images offer Diffusers (CPU), (CUDA) and (ROCm); chat offers
+    llama.cpp (CPU) and (Vulkan), which reaches both NVIDIA and AMD from one
+    wheel. The unaccelerated build is what you get without choosing: it is a
+    smaller install, it runs on any machine, and nothing about it can fail on
+    hardware you do not have. The accelerated ones are much larger downloads and
+    are offered on the Engines tab **only** when the app can see a matching,
+    usable GPU — otherwise the option is greyed out with the reason, such as a
+    driver that is not loaded or a `/dev/kfd` your user cannot open.
+    Transcription has no GPU build outside Apple Silicon: CTranslate2's AMD
+    wheels are not installable the way this app installs things, so AMD
+    transcribes on the CPU.
+  - **On an AMD card that also drives your screen, a long render can freeze the
+    desktop.** The render and the display share one queue on a single-GPU
+    machine, so a big generation can starve the compositor until the driver
+    resets it — the graphics card recovers on its own, but your session may not,
+    and on Linux that looks like the whole machine locking up. Short renders are
+    normally fine. If it bites, render smaller or with fewer steps, or keep a
+    second card for the display; nothing in the app can prevent it for you.
   - **A model may be running on your processor rather than a graphics card**, and
     the page says so: a loaded card carries **on CPU** beside its memory figure
     when it is, and Discover warns before the download. It works — expect a few
-    words a second rather than an instant answer. On Windows the standard PyTorch
-    build is CPU-only, so that is the usual case there whatever card is fitted.
+    words a second rather than an instant answer, and minutes rather than seconds
+    per image. That is the normal case unless you picked a CUDA or ROCm engine.
     The smaller suggestions exist for exactly this: Qwen3 1.7B answers at a
     readable speed with no GPU at all.
-  - The first use of a backend builds a several-GB environment, which shows as
-    its own row in the download manager before any weights are fetched.
+  - The first use of a backend builds its own environment, which shows as its own
+    row in the download manager before any weights are fetched. The CPU builds
+    are a few hundred MB; a CUDA or ROCm build is several GB before a single
+    weight arrives.
 - **Pages can use these models.** `fused.ai(prompt, {model: "org/name"})` runs a
   local chat model instead of Claude, `fused.ai.image({prompt})` renders a
   picture, and `fused.ai.transcribe({path})` turns a recording into text — all
@@ -238,13 +267,16 @@ where a first model comes from.
     the Hub publishes for the weights. Other files in the repo aren't counted,
     and a repo the Hub has no such metadata for shows no size rather than a
     guess.
-  - If you have an `HF_TOKEN` (or have logged in with the Hugging Face CLI), it
-    is used — that is what makes gated and private repos searchable, and it
+  - If this machine has a Hub token — from **Preferences → AI → Hugging Face**, an
+    `HF_TOKEN` in the environment, or a `hf auth login` — it is used. That is
+    what makes gated and private repos searchable and downloadable, and it
     raises the rate limit.
 
 ## Preferences
 
-The gear at the sidebar's bottom-left opens **Preferences**:
+The gear at the sidebar's bottom-left opens **Preferences**, whose controls
+are split across tabs — **Render preferences** (the one it opens on), **AI**,
+and **Indexing**:
 
 - **Appearance** — System (follows your desktop), Light or Dark. Applies
   immediately — to the app and to every open built-in view, with no reload —
@@ -255,6 +287,23 @@ The gear at the sidebar's bottom-left opens **Preferences**:
   buttons. **Your own `.html` views are never touched** — their CSS stays
   entirely yours; see the authoring skill for how to follow the desktop
   preference if you want to.
+- **AI › Default model** — which Claude model the chat and `fused.ai()` reach
+  for when nothing else has said. A page's own `model` argument still wins, and
+  a project's Claude settings win for the chat.
+- **AI › Hugging Face** — **Log in to Hugging Face** to download AI models.
+  Without an account the Hub serves this machine anonymously: a lower rate
+  limit, slower downloads, no gated or private repos, and a "you are sending
+  unauthenticated requests" warning in every model log. The button opens
+  huggingface.co to authorize (confirm the short code it shows you); the token
+  is then held by `huggingface_hub` — the same place `hf auth login` puts it —
+  so **fused-render never stores it**, and any other Hugging Face tool on your
+  machine is signed in too. Model downloads and Hub search use it from the next
+  request, with no restart. **Log out** signs the machine out of that account.
+  If `HF_TOKEN` (or `HUGGING_FACE_HUB_TOKEN`) is set in the environment, that
+  wins — hf reads it ahead of its own store — and the section says so instead of
+  offering a login that would change nothing; that is also the way to give
+  fused-render one specific fine-grained token. See
+  [SECURITY.md](../SECURITY.md#secrets-at-rest).
 - **Call log** — whether the app records the API calls your pages make, how
   much of each run's parameters it keeps, and how long records are kept. See
   [Call log](#call-log) below.

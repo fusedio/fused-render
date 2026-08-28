@@ -68,7 +68,12 @@ def test_init_repo_ships_boilerplate_commit(workspace):
     assert (d / ".git").is_dir()
     assert _log(d) == ["New app from starter"]
     # Session sidecars stay out of history.
-    assert "*.html.json" in (d / ".gitignore").read_text()
+    gi = (d / ".gitignore").read_text()
+    assert "*.html.json" in gi
+    # …and so does the app's own `.fused/` state folder (D548). The trailing
+    # slash is load-bearing: it ignores the DIRECTORY without touching an
+    # exported `<name>.fused` app file (SPEC §43) sitting in the same folder.
+    assert ".fused/" in gi
 
 
 def test_commit_records_changes_and_noops_when_clean(workspace):
@@ -83,6 +88,13 @@ def test_commit_records_changes_and_noops_when_clean(workspace):
     assert not app_git.commit(str(d / "index.html"), "Edit index.html")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="os.fork() (and os.register_at_fork with it) does not exist on "
+           "Windows — there is no fork() there at all, so a forked child "
+           "cannot hold a stale copy of parent state, which is exactly the "
+           "hazard this test simulates and the reason app_git spawns via "
+           "posix_spawnp rather than fork+exec in the first place")
 def test_commit_survives_a_fork_hostile_process(workspace):
     # The server ends up with libproj resident (the fused-engine availability
     # probe imports it), and PROJ's pthread_atfork child handler SIGSEGVs

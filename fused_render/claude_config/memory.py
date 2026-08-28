@@ -7,6 +7,8 @@ Claude Code, never edited here.
 
 main(action=...):
   list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
+            files: [{name, description}], description from the file's own
+            YAML frontmatter (None when missing or malformed — never guessed).
   commit -> {ok, committed}   params: project  (path-limited commit)
   clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
@@ -129,19 +131,84 @@ def _project_path(slug: str) -> Optional[str]:
     # it is where those sessions ran, not a guess we are making now.
     if cwd:
         return cwd
-    # Only an absolute POSIX path can be reconstructed: the leading "-" is the
-    # munged root separator, and without it there is no anchor to walk from.
-    if not slug.startswith("-"):
+    # A munged absolute path carries its root as a recognizable prefix: POSIX's
+    # leading "/" munges to a leading "-", while Windows' "C:\" munges to a
+    # leading "C--" (the drive letter survives — it's alnum — then ":" and the
+    # first "\" each become their own "-"). Without one of these there is no
+    # anchor to walk from.
+    drive_match = re.match(r"^([A-Za-z])--", slug)
+    if drive_match:
+        base = drive_match.group(1) + ":" + os.sep
+        rest = slug[drive_match.end():]
+    elif slug.startswith("-"):
+        base = os.sep
+        rest = slug[1:]
+    else:
         return None
-    parts = slug[1:].split("-")
+    parts = rest.split("-") if rest else []
     if not parts or len(parts) > _MAX_SEGMENTS:
         return None
-    return _rejoin(parts, os.sep)
+    return _rejoin(parts, base)
 
 
 def _memory_dir(project: str) -> str:
     """Validated projects/<slug>/memory path (traversal-guarded, must exist)."""
     return lib.safe_subdir(PROJECTS_DIR, project, "memory")
+
+
+# How many lines of a candidate frontmatter block to read before giving up on
+# finding the closing `---`. Claude Code's own frontmatter (name, description,
+# metadata + a few nested keys) is well under this; a file that doesn't close
+# within it is either not frontmatter or malformed either way, and this caps
+# reading a large memory file line-by-line just to decide that.
+_FRONTMATTER_SCAN_LIMIT = 40
+
+_DESCRIPTION_RE = re.compile(r"^description:\s*(.*?)\s*$")
+
+
+def _file_description(path: str) -> Optional[str]:
+    """The one-line `description:` value from a memory file's YAML frontmatter,
+    or None. Never invents one — a missing, unparsed or malformed frontmatter
+    block all fall back to None, which the UI renders as the bare filename
+    rather than guessing at what the file is about.
+
+    Deliberately not a real YAML parser: Claude Code's own frontmatter is a
+    flat `key: value` block (plus one nested `metadata:` map this doesn't need
+    to read), and pulling in a YAML dependency for one scalar field is not
+    worth it. `description` is read as plain text with matching outer quotes
+    stripped, which is exactly what Claude Code itself writes.
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            if f.readline().rstrip("\n") != "---":
+                return None
+            block = []
+            closed = False
+            for _ in range(_FRONTMATTER_SCAN_LIMIT):
+                line = f.readline()
+                if not line:
+                    break  # EOF before a closing --- : not frontmatter.
+                if line.rstrip("\n") == "---":
+                    closed = True
+                    break
+                block.append(line)
+    except OSError:
+        return None
+    # An unterminated block is never real frontmatter — collecting a
+    # description out of it would be reading arbitrary file content as if it
+    # were structured, which is exactly the "plausible but wrong" failure mode
+    # this whole function exists to avoid.
+    if not closed:
+        return None
+    for line in block:
+        m = _DESCRIPTION_RE.match(line)
+        if not m:
+            continue
+        value = m.group(1)
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        return value or None
+    return None
 
 
 def _list() -> dict:
@@ -152,11 +219,15 @@ def _list() -> dict:
             mem_dir = os.path.join(PROJECTS_DIR, slug, "memory")
             if not os.path.isdir(mem_dir):
                 continue
-            files = [n for n in os.listdir(mem_dir) if n.endswith(".md")]
-            if not files:
+            names = [n for n in os.listdir(mem_dir) if n.endswith(".md")]
+            if not names:
                 continue
             # MEMORY.md first, then alphabetical
-            files.sort(key=lambda n: (n != "MEMORY.md", n.lower()))
+            names.sort(key=lambda n: (n != "MEMORY.md", n.lower()))
+            files = [
+                {"name": n, "description": _file_description(os.path.join(mem_dir, n))}
+                for n in names
+            ]
             path = _project_path(slug)
             projects.append({
                 "project": slug,

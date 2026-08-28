@@ -1584,6 +1584,12 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     cannot call `projectenv` itself. Two independent derivations of the venv
     directory is exactly how a loader ends up filling a directory no run reads.
 
+    The uv cache slot (4) carries the SAME empty-string-means-None idiom slots
+    5 and 6 use, for the same reason: `projectenv.uv_cache_dir()` answers
+    `None` — "let uv pick its own default" — whenever `FUSED_RENDER_HOME` is
+    not set, which argv cannot carry directly. See that function for why an
+    explicit sibling cache is no longer the unconditional default.
+
     Slot 5 is the base interpreter — `uv sync --python`. The backend's
     `_python_executable()` rather than the worker's own `sys.executable`: the
     backend runs the code, so its interpreter and the environment's have to be
@@ -1617,7 +1623,13 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
         child = subprocess.Popen(
             [sys.executable, worker, key, d,
              os.path.abspath(project_dir), venv_dir_for(project_dir),
-             projectenv.uv_cache_dir(),
+             # Empty means "let uv pick its own default cache" — the SAME
+             # empty-string-means-None idiom slots 5 and 6 already use, and
+             # `projectenv.uv_cache_dir()` returns exactly that (`None`)
+             # whenever `FUSED_RENDER_HOME` is not set. See that function
+             # for why: an explicit sibling cache used to be unconditional,
+             # and fragmented per branch as a result.
+             projectenv.uv_cache_dir() or "",
              _python_executable() or "", acquire_python or ""],
             stdout=logf, stderr=logf, stdin=subprocess.DEVNULL,
             env=_worker_env(), **detach,
@@ -1629,8 +1641,17 @@ def _spawn(key: str, project_dir: str, acquire_python: str | None = None) -> int
     return child.pid
 
 
-def _reported(key: str, record: dict) -> dict:
+def _reported(key: str, record: dict, claimed: bool = False) -> dict:
     """`record` plus the key it belongs to, for the response body only.
+
+    `claimed` is whether THIS CALL is the one that spawned the installer, as
+    opposed to one that joined an install already running (or found nothing to
+    do). Only the owner may cancel: the key names the SHARED install, so a
+    caller holding a key alone cannot tell the two apart — which is how
+    cancelling one AI model download tore down an environment build that every
+    other download of that runner was waiting on. It stays out of `progress()`
+    on purpose: it is a fact about this call and not about the install, and a
+    polled record carrying it would mean something different on the next read.
 
     The caller (/api/env/install) hands the client a key to poll with, and it must
     be the key this install actually reports under rather than one recomputed from
@@ -1644,7 +1665,7 @@ def _reported(key: str, record: dict) -> dict:
     ON DISK is the shape `templates/docs/install_worker.py` also writes, and the page
     shell polls one shape.
     """
-    return {**record, "key": key}
+    return {**record, "key": key, "claimed": claimed}
 
 
 def start(project_dir: str) -> dict:
@@ -1654,6 +1675,10 @@ def start(project_dir: str) -> dict:
     install already running is joined rather than duplicated. Two workers running
     `uv sync` into one venv directory is a race nothing else covers — the loser
     dies on a half-built `<venv>/bin/python`.
+
+    The returned record says which of the two happened: `claimed` is True only
+    for the call that spawned the installer (see `_reported`). A joiner must not
+    cancel what it merely joined, and the key cannot tell it apart.
 
     Keyed on the PROJECT, so this is also what makes a page calling five scripts
     from one folder install once: all five resolve to the same key, the first
@@ -1729,8 +1754,11 @@ def start(project_dir: str) -> dict:
         # rule as the join branch above, and for the same reason: a record shape
         # written only into this response body could disagree with the GET that
         # follows it.
-        return _reported(key, progress(key) or record)
-    return _reported(key, record)
+        return _reported(key, progress(key) or record, claimed=True)
+    # `claimed=True` on both, and on neither of the two returns above: this is
+    # the only path that reached `_spawn`, and the ownership `claimed` reports is
+    # ownership of that process (see `_reported`).
+    return _reported(key, record, claimed=True)
 
 
 def cancel(key: str) -> bool:

@@ -99,6 +99,7 @@ module; keep it acyclic.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -272,9 +273,259 @@ _watched_lock = threading.Lock()
 _thread: threading.Thread | None = None
 _thread_lock = threading.Lock()
 
+# THE LOOP'S DOORBELL — how work that is due NOW gets sent now.
+#
+# The loop used to `time.sleep(POLL_INTERVAL_S)`, which is right for asking
+# "what came due while I was asleep" and wrong for the one case the user
+# actually watches: scheduling something for a time that has already passed, or
+# restoring a skipped run whose time has gone. Those are due the instant they
+# are stored, and the tick that would send them was up to 30 seconds away —
+# then the Tasks page's own poll (10-30s) on top of that. A message asked for
+# NOW sat reading "Upcoming" for the best part of a minute with nothing
+# happening, which is indistinguishable from a scheduler that is not running.
+#
+# So a mutation that stores past-due work rings this, and the loop wakes. It is
+# a HINT AND NEVER A MECHANISM: every rule about what fires stays in `tick`,
+# which still runs on its own timer, so a missed ring costs latency and nothing
+# else. That is what makes it safe to ring from a request thread (`Event.set`
+# is atomic and idempotent), and why the loop clears the flag AFTER waking
+# rather than before ticking — a ring that lands mid-tick then wakes the pass
+# after it, instead of being swallowed by the pass that was already running
+# when it arrived.
+_wake = threading.Event()
+
+
+def _ring(entries: list[dict] | None = None, now: datetime | None = None) -> bool:
+    """Wake the loop if anything in `entries` is pending and already due.
+
+    Reads the store when handed nothing. The test is deliberately the cheap
+    half of `_claim_due`'s — pending, and due — because a spurious ring costs
+    one early tick that finds nothing to do, while a missed one costs the user
+    the whole poll interval."""
+    now = now or _now()
+    if entries is None:
+        with _lock:
+            entries = _read()
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            if parse_due(entry.get("due")) <= now:
+                _wake.set()
+                return True
+        except ValueError:
+            continue
+    return False
+
 
 def store_path() -> str:
     return os.path.join(storage.home_dir(), _STORE_NAME)
+
+
+def shots_dir() -> str:
+    """Where task-attached images live: ``~/.fused-render/task-shots``.
+
+    NOT the claude template's own ``shots`` dir, which is tempdir-rooted and
+    swept on a 12-hour TTL — an annotation is junk once its turn is over, but a
+    scheduled task can fire days after its images were attached, and a repeat
+    re-reads them on every run. Branch-aware via ``storage.home_dir()`` like
+    the store itself.
+
+    **Resolved, and forward-slashed.** The pre-allowed Read rule matches TEXT,
+    not inodes, so every spelling of this directory in the system has to be the
+    same spelling: `_images` stores `realpath`s on the entry, `_attachments_block`
+    puts those in the prompt, and `_send` pre-allows THIS. Left unresolved, the
+    two disagree wherever a symlink sits on the path — a symlinked home, or
+    macOS' own `/tmp` -> `/private/tmp` — and the headless run is handed paths it
+    is not allowed to open (Bugbot, PR #865)."""
+    return os.path.realpath(
+        os.path.join(storage.home_dir(), "task-shots")).replace("\\", "/")
+
+
+#: The claude page's wire tag for a message's attachments — a SECOND COPY of
+#: `PANE_SHOT_TAG` in fused_render/templates/claude/template.html, which is the
+#: canonical one. It cannot be imported in either direction (a template may not
+#: import fused_render, SPEC PY-15 / D166), and it is already spelled a third
+#: time in `tasks_store._MACHINERY_STRIP` and a fourth in `agent.py`'s. The
+#: parity test in tests/test_schedule_images.py reads the page's constant out of
+#: template.html and compares this one to it.
+_PANE_SHOT_TAG = "pane-shot"
+
+
+def _images(value) -> list[str]:
+    """Validate a request's ``images`` into stored task-shot paths.
+
+    NO COUNT CAP and NO TYPE CHECK (D618). `IMAGES_MAX` (4) is gone, for the
+    reason D615 deleted the chat's byte cap: it protected nothing the shots
+    directory's own pruner did not already own, and it refused the gesture the
+    feature exists for — dropping the five files a task is about. The key is
+    still spelled ``images`` on the wire and in the store, because every entry
+    written before today spells it that way and a rename would be a migration
+    bought for a word; what it holds is any file the upload endpoint minted.
+
+    Only paths under ``shots_dir()`` are accepted — the upload endpoint is the
+    only thing that writes there, so this is what keeps the field from being a
+    way to point a scheduled prompt at an arbitrary file on disk. Realpath
+    membership, not string prefix on the raw value, so a symlink under the dir
+    cannot smuggle a target out of it."""
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise ValueError("images: expected a list of attachment paths")
+    return [_shot_path(item, "images") for item in value]
+
+
+def _shot_path(value, field: str) -> str:
+    """One request-supplied attachment path, resolved into a shots_dir resident.
+
+    The containment rule, in ONE function, because two fields now carry the
+    same paths — ``images`` (the flat list every stored entry has always had)
+    and ``attachments`` (the same paths with the user's own filename and kind
+    beside them, see `_attachments`). Two copies of a containment check is two
+    chances to relax one of them."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field}: expected a list of attachment paths")
+    root = os.path.realpath(shots_dir())
+    real = os.path.realpath(os.path.expanduser(value.strip()))
+    if not real.startswith(root + os.sep):
+        raise ValueError(f"{field}: not a task attachment path")
+    if not os.path.isfile(real):
+        raise ValueError(f"{field}: attachment no longer exists")
+    return real.replace("\\", "/")
+
+
+#: What an attachment's `kind` may be. The claude page's own vocabulary minus
+#: the two kinds only a browser can produce: "pane" and "overview" are pictures
+#: of a screen somebody was looking at, and a scheduled run has no screen (see
+#: `_outgoing`). A task attachment is a picture the user brought in ("image") or
+#: a file that is not a picture at all ("file") — the same two the upload
+#: endpoint mints and the same two the New task card draws.
+_ATTACH_KINDS = ("image", "file")
+
+#: How long an attachment's display name may be. It is the filename the user
+#: recognises, shown on a chip and named in the prompt — not a place to put a
+#: paragraph, and the field arrives from a request body.
+_ATTACH_NAME_MAX = 255
+
+
+def _attachments(value, images: list[str]) -> list[dict]:
+    """Validate a request's ``attachments`` into stored ``{path, name, kind}``.
+
+    WHY THIS EXISTS ALONGSIDE ``images``: the fired run's message is the claude
+    page's own `<pane-shot>` block now (see `_attachments_block`), and that
+    block is read back by the chat to draw a RECEIPT ROW per attachment — a
+    thumbnail, or a 📄 and the file's name. A bare path cannot fill that row
+    honestly: the stored name is a minted timestamp (`a1b2c3d4.pdf`), and the
+    kind of a `.tif` that the upload endpoint transcoded is not the kind its
+    extension says. Both facts are known in the browser at attach time and
+    nowhere else, so they travel.
+
+    ``images`` DOES NOT GO AWAY, and neither field is required:
+
+      * both sent — what the New task card does — and each is validated on
+        its own, `create` storing both exactly as they arrived. They are not
+        cross-checked: both fields are already confined to `shots_dir()`, so a
+        client that disagreed with itself would only be describing its own
+        files oddly, and refusing the schedule over it would turn a cosmetic
+        mismatch into a lost task;
+      * only ``images`` (every client written before today, and every entry
+        already on disk) — the name is the path's basename and the kind is
+        guessed from its extension. A worse answer than the browser's, and the
+        only one available; it is exactly what the New task card's own Edit
+        path does with a stored path (`attachmentKindOf`);
+      * only ``attachments`` — ``images`` is derived from it, so `_send`, the
+        occurrence copy and every existing reader keep working unchanged.
+
+    Same containment as `_images` (`_shot_path`), because this field is the
+    other way a request names a file to put in a prompt."""
+    if value in (None, ""):
+        return [_derived_attachment(p) for p in images]
+    if not isinstance(value, list):
+        raise ValueError("attachments: expected a list of "
+                         "{path, name, kind} objects")
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("attachments: expected a list of "
+                             "{path, name, kind} objects")
+        path = _shot_path(item.get("path"), "attachments")
+        kind = item.get("kind")
+        if kind not in _ATTACH_KINDS:
+            raise ValueError("attachments: kind must be one of "
+                             + ", ".join(_ATTACH_KINDS))
+        name = item.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError("attachments: name must be a string")
+        # BASENAME, and never the raw value: this name is only ever DISPLAYED,
+        # so a client that sent a path here must not have it read as one — and
+        # a newline in it would break the one-line-per-row reading of the block
+        # it lands in. An empty one falls back to the stored file's own name
+        # rather than refusing: a nameless chip is a small loss, a refused
+        # schedule is not.
+        name = os.path.basename((name or "").strip().replace("\\", "/"))
+        name = name.replace("\r", " ").replace("\n", " ").strip()
+        if len(name) > _ATTACH_NAME_MAX:
+            raise ValueError(
+                f"attachments: name is longer than {_ATTACH_NAME_MAX} characters")
+        out.append({"path": path, "name": name or os.path.basename(path),
+                    "kind": kind})
+    return out
+
+
+def _stored_attachments(entry: dict) -> list[dict]:
+    """An ENTRY's attachments, read back — never re-validated.
+
+    `_attachments` is the request path and it refuses a file that has gone; a
+    stored entry has to survive one. A scheduled task can fire days after it
+    was written and its files can be moved out from under it, and a
+    materialization or a send that RAISED over that would take down the whole
+    tick — where the run itself only needs to be handed the path and let the
+    Read fail with something the user can read.
+
+    Also the migration: an entry written before the field existed has only
+    ``images``, and gets basename/extension answers (`_derived_attachment`)."""
+    stored = entry.get("attachments")
+    if isinstance(stored, list) and stored:
+        out: list[dict] = []
+        for item in stored:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            kind = item.get("kind")
+            fallback = _derived_attachment(path)
+            out.append({
+                "path": path,
+                "name": str(item.get("name") or "").strip() or fallback["name"],
+                "kind": kind if kind in _ATTACH_KINDS else fallback["kind"],
+            })
+        if out:
+            return out
+    return [_derived_attachment(str(p)) for p in (entry.get("images") or [])
+            if isinstance(p, str) and p.strip()]
+
+
+def _derived_attachment(path: str) -> dict:
+    """One `{path, name, kind}` for a path that arrived WITHOUT one — a legacy
+    entry, or a client still sending only ``images``.
+
+    The extension is all there is to go on, and it is the same list the New
+    task card guesses from (`DRAWABLE_EXTS` in NewJobModal.tsx): only formats a
+    browser actually draws count as "image", because the receipt row this feeds
+    puts an `<img>` on a picture and a 📄 on everything else — and an `<img>`
+    pointed at a `.csv` is a broken-image glyph, which reads as a bug."""
+    ext = os.path.splitext(path)[1].lower()
+    return {"path": path, "name": os.path.basename(path),
+            "kind": "image" if ext in _DRAWABLE_EXTS else "file"}
+
+
+#: Mirror of `DRAWABLE_EXTS` in frontend/src/shell/NewJobModal.tsx — the formats
+#: a browser can draw. Duplicated rather than shared because one side is Python
+#: and the other TypeScript; a test pins the pair (D146: the duplicated rule
+#: gets a test, not a comment).
+_DRAWABLE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif",
+                            ".bmp", ".svg", ".ico"})
 
 
 def max_late_seconds() -> int | None:
@@ -338,6 +589,11 @@ def _emit(kind: str, entry: dict, detail: str = "") -> None:
             # asked for are what identifies it to them.
             "message": str(entry.get("message") or "")[:200],
             "detail": detail,
+            # Whether this was a task somebody RAN (New task with the when-row
+            # untouched, a new app's scaffolding task) rather than one they
+            # scheduled. The shell's toast reads it: "Scheduled message ran"
+            # is a lie about a task that ran because the user just clicked.
+            "immediate": _flag(entry.get("immediate")),
             "ts": time.time(),
         })
         del _events[:-_EVENTS_MAX]
@@ -561,7 +817,10 @@ def _from_local(when: datetime) -> datetime:
 def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
-           new_task_each_run=None, session_learned=None) -> dict:
+           new_task_each_run=None, session_learned=None,
+           immediate=None, images=None, attachments=None,
+           create_target: bool = False,
+           model: str = "", effort: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
 
     `title` and `description` are the user's own words about the work, both
@@ -610,6 +869,26 @@ def create(target: str, message: str, due=None, session_id: str = "",
     rewritten on every materialization to mirror the next occurrence, and a
     series numbered from a moving anchor would renumber itself every tick.
 
+    `create_target` opts the caller into ONE new folder: a target whose last
+    segment does not exist yet is made here, provided its parent already does.
+    The New task form offers this (it shows the path as a new folder while you
+    type it), so the endpoint behind that form passes it; every other caller
+    leaves it off and keeps the plain "no such file or directory" refusal. It is
+    a flag rather than the default precisely because of the re-send path
+    (`resend` below), where a target that has since been deleted is a fact the
+    user needs told — silently re-making a deleted FILE's name as a directory
+    would be the worst possible answer.
+
+    Exactly one level, never `-p`: two missing segments means the user is not
+    naming a new folder in a place they know, they are typing into a tree that
+    is not there, and inventing both is how a typo becomes a real directory.
+
+    The folder is CHECKED where the target is resolved and MADE at the very
+    bottom, immediately before the entry is stored — so a request refused by a
+    later validation (a cron line, a due date, a permission mode) leaves nothing
+    on disk. Ordering rather than a rollback: an unlink after the fact could
+    remove a directory something else had already raced into.
+
     Raises ValueError for everything a caller can get wrong (the router maps it
     to a 400). The one validation deliberately NOT here is "is this path
     mount-backed" — that needs the mounts registry, which lives above this
@@ -619,9 +898,37 @@ def create(target: str, message: str, due=None, session_id: str = "",
         raise ValueError("message: cannot be empty")
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target: required")
+    # BOTH FIELDS, either one sufficient. `images` is the flat path list every
+    # entry on disk carries; `attachments` is the same paths with the filename
+    # and the kind the browser knew, which is what the fired run's `<pane-shot>`
+    # block needs to draw a receipt row rather than a raw path. Each is derived
+    # from the other when only one arrived — see `_attachments`.
+    images = _images(images)
+    attachments = _attachments(attachments, images)
+    if not images:
+        images = [a["path"] for a in attachments]
     target = os.path.abspath(os.path.expanduser(target))
+    # The new folder is only CHECKED here; it is made at the very bottom, right
+    # before the entry is stored. Everything between this point and there can
+    # still refuse the request (a cron line that will not parse, an unreadable
+    # due date, an unknown permission mode), and a directory made up here would
+    # outlive that refusal — the user gets a 400 and an empty folder they never
+    # asked for. Deciding now and acting last keeps the create path all-or-
+    # nothing without a rollback that could delete someone else's work.
+    make_target = False
     if not os.path.exists(target):
-        raise ValueError(f"target: no such file or directory: {target}")
+        if not create_target:
+            raise ValueError(f"target: no such file or directory: {target}")
+        parent = os.path.dirname(target)
+        # abspath has already collapsed "." and "..", so a basename of either is
+        # only reachable at the filesystem root — where there is nothing to make.
+        if not os.path.basename(target) or os.path.basename(target) in (".", ".."):
+            raise ValueError(f"target: no such file or directory: {target}")
+        if not os.path.isdir(parent):
+            raise ValueError(
+                f"target: only one new folder can be created, and {parent} "
+                "does not exist either")
+        make_target = True
 
     repeats = (repeats or "").strip()
     if rule is not None and repeats:
@@ -695,16 +1002,51 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # provenance for nothing is a claim the form would have to second-guess.
         "session_learned": _flag(session_learned) and bool(session_id or ""),
         "permission_mode": mode,
+        # WHICH Claude runs the turn, and how hard: the new-app composer's two
+        # pickers (routers/apps.py), handed to `spawn_helper` by `_send` exactly
+        # as the direct spawn used to hand them. "" is "no flag" — the session
+        # detects its own defaults — and is what every other creator stores.
+        # Not carried through an edit (the Tasks form does not know them), so a
+        # re-created entry falls back to the defaults; stated, not fixed.
+        "model": str(model or ""),
+        "effort": str(effort or ""),
         # The user's own words, both optional and both "" by default. Read
         # through `_text` because the router hands this module the request body
         # unvalidated, exactly as it does for every other field here.
         "title": _text(title),
         "description": _text(description),
+        # Task-shot paths, already validated into shots_dir() residents by
+        # `_images` above. Stored on the entry (and copied onto every
+        # occurrence) so the send path and an edit both read them off the row.
+        "images": images,
+        # The same attachments, with the two facts a path does not carry: the
+        # NAME the user recognises (a stored path is a minted timestamp) and the
+        # KIND the browser settled (a `.tif` the upload endpoint transcoded is a
+        # picture whose extension says otherwise). Read by
+        # `_attachments_block` to write the claude page's own `<pane-shot>`
+        # block, which is what makes the fired turn render receipt rows in the
+        # chat instead of a list of paths (D619).
+        "attachments": attachments,
         # Threading, not scheduling: whether each run of a REPEAT opens its own
         # session. Stored on one-shots too (as False) so every entry has the
         # same shape and the form reads it back the same way — a one-shot has
         # one run, so there is nothing for it to mean there.
         "new_task_each_run": _flag(new_task_each_run),
+        # "RUN THIS NOW", not "run this at a time I chose". The New task form
+        # sets it when the card was opened from the List or the Board and the
+        # user never touched the when-row: the message is due now because now is
+        # what the form defaults to, not because anybody planned it for now.
+        #
+        # It changes nothing about WHEN this runs — the scheduler still reads
+        # `due` and only `due`. It exists so the CALENDAR can tell the two apart:
+        # a grid of everything anyone ever typed into the Tasks page is not a
+        # plan, and a task nobody scheduled has no business drawing a chip on it
+        # (Akshil, 2026-08-23). See `_scheduled_message` in the tasks router,
+        # which carries it onto the message the calendar reads.
+        #
+        # Only ever true on a one-off: touching the repeat tick IS choosing a
+        # time, so the form never sends it alongside a rule.
+        "immediate": _flag(immediate) and not (repeats or spec is not None),
         "state": RECURRING if (repeats or spec is not None) else PENDING,
         # "" on a one-shot; the cron line on a template. An OCCURRENCE never
         # carries it — the link runs the other way, through `template_id`.
@@ -724,6 +1066,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # call, and reporting that as a send failure would send the user looking
         # in the wrong place.
         "turn": "",
+        # WHEN the turn's verdict landed — stamped by the same write that fills
+        # `turn` in, "" until then. The Tasks page compares it against the
+        # transcript's tail: activity meaningfully after this moment is new
+        # work, not the verdict's own closing echo.
+        "turn_at": "",
         # The Claude Code session this message's turn actually ran in, filled in by
         # the watcher from the run's first reporting tick. Distinct from
         # `session_id` above (the input) precisely so a fresh send does not end up
@@ -743,6 +1090,24 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # scheduled. Counting only the ones that fired would quietly extend the
         # series every time the app was closed at the wrong moment.
         entry["made"] = 0
+    if make_target:
+        # LAST, after every validation above has had its chance to refuse: from
+        # here on the only thing left is writing the entry, so the folder and
+        # the task appear together or neither does.
+        try:
+            # mkdir, not makedirs: the one-level rule is enforced by the call
+            # itself, so a parent that vanished since the check above raises
+            # rather than being invented.
+            os.mkdir(target)
+        except FileExistsError:
+            # Someone else made it in the meantime, which is the outcome asked
+            # for. Only a non-directory is a problem, and os.path.exists above
+            # would not have missed one that was already there.
+            if not os.path.isdir(target):
+                raise ValueError(
+                    f"target: {target} exists and is not a folder") from None
+        except OSError as exc:
+            raise ValueError(f"target: could not create {target}: {exc}") from exc
     with _lock:
         entries = _read()
         entries.append(entry)
@@ -752,6 +1117,11 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # First occurrence, immediately — so the schedule the user just wrote
         # is visible (and wake-synced) without waiting for the next tick.
         _materialize(_now())
+    # AFTER materialization, so a repeat anchored in the past rings for the
+    # catch-up occurrence that pass just created rather than for the template
+    # (which never fires). Reads the store rather than testing `entry`, for the
+    # same reason. A future-dated message rings nothing and waits for its time.
+    _ring()
     return entry
 
 
@@ -1035,6 +1405,7 @@ def _claim_due(now: datetime) -> list[dict]:
                 # `_close_unwatched` uses for a watch that ended without one.
                 if not _is_watched(str(entry.get("id") or "")):
                     entry["turn"] = "unknown"
+                    entry["turn_at"] = now.isoformat()
                     entry["error"] = ("interrupted: the app stopped while this "
                                       "message's turn was running")
                     announce.append((EVENT_FAILED, dict(entry), entry["error"]))
@@ -1123,6 +1494,156 @@ def _fail(entry: dict, reason: str) -> None:
     _emit(EVENT_FAILED, entry, reason)
 
 
+def _outgoing(entry: dict) -> str:
+    """The entry's message with the file it was scheduled against named in
+    front of it, or the message unchanged.
+
+    The Claude page prepends a `<live-app-state>` block to every send a human
+    makes, and that block is the ONLY durable record of which FILE a chat is
+    about: a transcript's own `cwd` is always the folder, because Claude Code
+    keys its session store by cwd and a file has no cwd. Both readers of that
+    record — `tasks_store.pane_file`, for which file "open this task" lands on,
+    and the template's `_cli_sessions`, for which chats a file is offered —
+    find nothing on a scheduled run, because the block is built in browser JS
+    at send time and a scheduled run has no browser. The session came from a
+    file and then read as if it had come from the folder.
+
+    So the one fact the scheduler actually holds is written in the same shape:
+    `entry["target"]`, when it is a file. Nothing else. There is no screen to
+    snapshot, no pane shot to take and no annotation to carry, and inventing
+    any of them would put a description of a screen nobody was looking at into
+    the transcript — the block says plainly that this is a scheduled run.
+
+    A folder target is left alone: the folder is already what the transcript's
+    cwd says, so a block naming it would add nothing and claim a pane that
+    never existed."""
+    message = entry.get("message") or ""
+    # A message with no words is left exactly as it is. The block is a PREFIX
+    # to something a human said, and prepending it to nothing would send a
+    # send that is pure machinery — which every reader here strips back to ""
+    # anyway, leaving a turn whose only content the model is asked to answer
+    # is a description of a file.
+    if not message.strip():
+        return message
+    state = _outgoing_state(entry)
+    return (state + "\n\n" + message) if state else message
+
+
+def _outgoing_state(entry: dict) -> str:
+    """The `<live-app-state>` block alone, or "" for a target that has none.
+
+    Split out of `_outgoing` for `_composed`, which has to put the attachments
+    block BETWEEN this one and the user's words — the claude page's own block
+    order (`composeOutgoing`), and the order every leading-block strip in the
+    system expects."""
+    target = entry.get("target") or ""
+    if not target or os.path.isdir(target) or not os.path.isfile(target):
+        return ""
+    state = json.dumps({"entry": target, "scheduled": True})
+    return ("<live-app-state>\n"
+            "The file this task was scheduled against. No one is at the "
+            "screen — this is a scheduled run, so there is no pane snapshot, "
+            "no screenshot and no annotation, only the target itself.\n"
+            f"{state}\n"
+            "</live-app-state>")
+
+
+def _attachments_block(entry: dict) -> str:
+    """The task's attachments as the claude page's own `<pane-shot>` block, or "".
+
+    THE CHAT'S WIRE, NOT A SENTENCE OF OUR OWN (D619). This used to append a
+    plain-text tail — "Attached files (read them with the Read tool):" and the
+    paths, one per line — and it worked for the model and failed for the human:
+    opening the fired task's chat showed the user's turn ending in a list of
+    `/Users/…/task-shots/…pdf` temp paths, where the SAME chat renders its own
+    attachments as receipt rows (a thumbnail, or 📄 and the file's name, both
+    opening the viewer). Same files, two presentations, and the one the user
+    could not read was the one they never chose.
+
+    The block the chat writes is the block that renders. `template.html` reads
+    it back on restore (`paneShotIn` → `shotRestoreReceipt`) and every reader of
+    a transcript already strips it from a row title (`tasks_store`,
+    `agent.py::_strip_machinery`, `sessionTitle`), because `pane-shot` has been
+    in `_MACHINERY_STRIP` all along. Nothing new had to learn anything; the
+    scheduler just had to stop inventing a shape.
+
+    Paths, not pixels, exactly as before: the spawned run pre-allows Read of
+    ``shots_dir()`` (`_send` passes it as an extra read dir), so the model opens
+    the files itself and a repeat re-reads them on every run without the store
+    carrying megabytes of base64.
+
+    THE TAG AND THE PAYLOAD SHAPE ARE DUPLICATED, not imported: a template may
+    not import fused_render and fused_render may not import a template (SPEC
+    PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the page's
+    `PANE_SHOT_TAG` and the entries are hand-written to the shape `paneShotIn`
+    parses. A parity test reads the page's constant out of template.html and
+    compares (D146: the duplicated rule gets a test, not a comment).
+
+    What the payload leaves out, and why that is safe: `viewNote` is "" (there
+    is nothing this picture fails to show — nobody cropped it), and there is no
+    `size` (the browser drew every picture it kept, or the upload endpoint
+    transcoded it). `paneShotIn` reads whatever parses and every consumer treats
+    a missing field as absent, so an entry is exactly `{kind, view, name,
+    viewNote}` rather than a row of nulls."""
+    shots = [a for a in _stored_attachments(entry) if a.get("path")]
+    if not shots:
+        return ""
+    # WHAT they are, in one word, before the per-kind paragraph — the same
+    # three-way choice `paneShotBlock` makes, and for its reason: a list that is
+    # nothing but files must not be announced as pictures, and a mixed one has
+    # no honest singular noun at all.
+    files = sum(1 for a in shots if a["kind"] == "file")
+    if files == len(shots):
+        noun = "a file" if len(shots) == 1 else "files"
+    elif files:
+        noun = "attachments"
+    else:
+        noun = "a picture" if len(shots) == 1 else "pictures"
+    what = noun if len(shots) == 1 and noun.startswith("a ") \
+        else f"{len(shots)} {noun}"
+    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
+                           "name": a["name"], "viewNote": ""} for a in shots])
+    # The chat's own two kind sentences, minus the two kinds a scheduled run
+    # cannot have: "pane" and "overview" are pictures of a screen taken at send
+    # time, and there was no screen (`_outgoing` says so in the block above
+    # this one). Saying WHEN they were attached instead: the user chose these
+    # files when they wrote the task, which may have been days ago, and a model
+    # told "to this message, deliberately" would be reading a claim about a
+    # conversation that never happened.
+    return (f"<{_PANE_SHOT_TAG}>\n"
+            f"The user attached {what} to this task when they scheduled it — "
+            "not to a conversation, and nobody is at the screen for this run. "
+            "Each entry's `view` is a path to read and `name` is what they "
+            "called it. `kind` says what you are looking at: \"image\" is a "
+            "picture the user brought in from somewhere else, so it is NOT a "
+            "picture of this app; \"file\" is a file that is not a picture at "
+            "all — read it as text, and say so plainly rather than guessing if "
+            "it is a binary format (xlsx, zip, a PDF) that will not parse.\n"
+            f"{payload}\n"
+            f"</{_PANE_SHOT_TAG}>")
+
+
+def _composed(entry: dict) -> str:
+    """Everything the scheduler prepends to the user's words, in the claude
+    page's own reading order — state block, attachments block, message.
+
+    The inverse of `composeOutgoing` in template.html, and the order is that
+    function's: the machinery first, the words last. It matters for more than
+    tidiness — `tasks_store`'s and `agent.py`'s strips only peel a LEADING
+    block, so a block wedged after the message would be read as something the
+    user typed and would title the row with itself.
+
+    Kept out of `_outgoing`, which stays exactly what it was: one block, about
+    the target, testable on its own."""
+    parts = [p for p in (_outgoing_state(entry), _attachments_block(entry)) if p]
+    message = entry.get("message") or ""
+    if not message.strip():
+        # A send that is pure machinery — see `_outgoing`. The blocks are a
+        # PREFIX to something a human said, and there is nothing to prefix.
+        return message
+    return "\n\n".join(parts + [message])
+
+
 def _send(entry: dict) -> None:
     """Spawn one claimed entry's session and record the outcome.
 
@@ -1131,9 +1652,20 @@ def _send(entry: dict) -> None:
     scheduled message that failed is exactly the thing the user needs to be able
     to read afterwards."""
     try:
+        # The extra Read pre-allowance is passed only when this run actually
+        # HAS attachments — not as `None` on every other send. Two reasons, and
+        # the second is the load-bearing one: a directory rule on a run with
+        # nothing to read there is standing permission for no reason, and every
+        # send without images keeps the exact call shape it has always had.
+        attachments = ({"extra_read_dirs": [shots_dir()]}
+                       if _stored_attachments(entry) else {})
         res = claude_spawn.spawn_helper(
-            entry["target"], entry["message"], entry.get("permission_mode")
-            or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "")
+            entry["target"], _composed(entry),
+            entry.get("permission_mode")
+            or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
+            model=str(entry.get("model") or ""),
+            effort=str(entry.get("effort") or ""),
+            **attachments)
     except Exception as exc:  # noqa: BLE001 — the reason belongs on the entry
         _fail(entry, f"failed to start session: {exc}")
         return
@@ -1201,12 +1733,39 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
         _chain_session(str(entry.get("template_id") or ""), ran)
     if data.get("done"):
         reason = str(data.get("error") or "")
+        if data.get("cancelled"):
+            # THE OTHER STOP BUTTON. The queue card's ✕ arrives as a
+            # `cancel_requested` flag on the job row and is handled below, so
+            # this module knows that stop was asked for. The CHAT's own Stop
+            # calls `agent._cancel` directly and tells this module nothing — so
+            # all the watcher used to see was the kill's error, which it filed
+            # as a FAILED turn: the chat said "Stopped." and the board flew a
+            # red Failed mark for the same act on the same run, which is the
+            # disagreement this whole branch exists to end.
+            #
+            # The run's own cancel marker is the shared fact (agent.py
+            # `_cancel` writes it, `_poll` reports it), so both stops are
+            # recorded identically — and the kill's error is deliberately NOT
+            # kept: it describes a truncated reply, which is what a stop IS,
+            # and storing it would put a reason on the row for something that
+            # went exactly as asked. No event either, for the same reason the ✕
+            # below emits none: a stop needs no toast to tell the person who
+            # pressed it.
+            _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
+            _report(entry_id, state="cancelled")
+            return False
         if reason:
-            _update(entry_id, turn="failed", error=reason)
+            _update(entry_id, turn="failed", error=reason,
+                    turn_at=_now().isoformat())
             _report(entry_id, state="error", message=reason)
             _emit(EVENT_FAILED, entry, reason)
         else:
-            _update(entry_id, turn="ok")
+            # `turn_at` is WHEN the verdict landed, stamped wherever `turn` is
+            # written. The Tasks page needs the moment, not just the word: a
+            # transcript still being written to meaningfully after this stamp
+            # is new work, and only the verdict's own closing echo may be set
+            # aside (`tasks._verdict_outvotes_live`).
+            _update(entry_id, turn="ok", turn_at=_now().isoformat())
             _report(entry_id, state="done", detail="finished")
             _emit(EVENT_DONE, entry)
         return False
@@ -1223,7 +1782,7 @@ def _turn_tick(entry: dict, run_id: str, agent, data: dict) -> bool:
             agent._cancel(run_id)
         except Exception:  # noqa: BLE001 — a cancel that fails is still a stop attempt
             logger.debug("could not cancel scheduled run %s", run_id, exc_info=True)
-        _update(entry_id, turn="cancelled")
+        _update(entry_id, turn="cancelled", turn_at=_now().isoformat())
         _report(entry_id, state="cancelled")
         return False
     return True
@@ -1360,7 +1919,8 @@ def _close_unwatched(entry: dict, reason: str) -> None:
         stored = next((e for e in _read() if e.get("id") == entry_id), None)
         if stored is None or stored.get("state") != SENT or stored.get("turn"):
             return  # already resolved, or never got far enough to need this
-    _update(entry_id, turn="unknown", error=reason)
+    _update(entry_id, turn="unknown", error=reason,
+            turn_at=_now().isoformat())
     _report(entry_id, state="error", message=reason)
     _emit(EVENT_FAILED, entry, reason)
 
@@ -1847,6 +2407,14 @@ def _materialize(now: datetime) -> None:
                 # to the template for the label.
                 "title": _text(entry.get("title")),
                 "description": _text(entry.get("description")),
+                # The attachments travel with every run for the same reason the
+                # words above do: an occurrence IS that template's run.
+                "images": list(entry.get("images") or []),
+                # …and their names/kinds with them, so the occurrence's own
+                # `<pane-shot>` block reads like the template's would. Derived
+                # for a template stored before this field existed, which is the
+                # same fallback `_attachments` takes on the wire.
+                "attachments": _stored_attachments(entry),
                 # Carried so an occurrence reads the same shape as any other
                 # entry. It is the TEMPLATE's answer that decided the session id
                 # above; copying it keeps the record of which way that went.
@@ -1873,6 +2441,7 @@ def _materialize(now: datetime) -> None:
                 "run_id": "",
                 "error": "",
                 "turn": "",
+                "turn_at": "",
                 "claude_session_id": "",
             }
             fresh.append(occurrence)
@@ -2333,15 +2902,23 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
 
 
 def _loop() -> None:
-    """Daemon-thread body: tick() on a timer, forever. `tick` already keeps a
-    per-entry failure on its entry, but wrap here too so nothing — not even an
-    unreadable store — can kill the loop and take the schedule with it."""
+    """Daemon-thread body: tick() on a timer — or as soon as something rings —
+    forever. `tick` already keeps a per-entry failure on its entry, but wrap
+    here too so nothing, not even an unreadable store, can kill the loop and
+    take the schedule with it.
+
+    `_wake.wait(POLL_INTERVAL_S)` in place of `time.sleep`: the timer is
+    unchanged (an entry that comes due on its own is found by the next pass, as
+    it always was) and the wait is what lets work stored ALREADY DUE go
+    immediately — see `_wake`. Cleared after the wait and before the tick, so a
+    ring that arrives while a tick is running wakes the pass after it."""
     while True:
         try:
             tick()
         except Exception:
             logger.exception("scheduled-message tick failed")
-        time.sleep(POLL_INTERVAL_S)
+        _wake.wait(POLL_INTERVAL_S)
+        _wake.clear()
 
 
 def start() -> None:

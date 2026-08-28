@@ -104,17 +104,22 @@ def record_session_when_ready(agent, run_id: str, on_tick=None) -> None:
 #
 # `session_id` rides through as a real parameter because a scheduled message may
 # target an EXISTING conversation ("" is a fresh one, which is all the apps API
-# ever wants). model/effort stay empty: neither caller has a picker, so the
-# session takes the same defaults a chat opened by hand would.
+# ever wants). model/effort ride through the same way now that the /apps hero
+# composer has a picker for them: empty means "no --model/--effort flag
+# at all", which is what leaves the session on the same defaults a chat opened
+# by hand would detect for itself. `.get` and not `[...]`: the request dict is
+# built by whichever caller ran, and the ones with no picker send neither key.
 SESSION_HELPER = """\
 import importlib.util, json, sys
 req = json.load(sys.stdin)
 spec = importlib.util.spec_from_file_location("claude_agent", req["agent"])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", "",
+print(json.dumps(mod._start(req["file"], req["message"], req["session_id"],
+                            req.get("model", ""), req.get("effort", ""),
                             permission_mode=req["permission_mode"],
-                            message_via_stdin=True)))
+                            message_via_stdin=True,
+                            extra_read_dirs=req.get("extra_read_dirs") or None)))
 """
 
 
@@ -126,7 +131,7 @@ print(json.dumps(mod._start(req["file"], req["message"], req["session_id"], "", 
 # error string.
 #
 # This is the ONLY place the sentence lives. A pre-check that knew the CLI was
-# missing (SPEC §43, SF-13f) still routes its click through here rather than
+# missing (SPEC §48, SF-13f) still routes its click through here rather than
 # answering from a copy, so there is no second copy to keep in step.
 CLAUDE_MISSING_ERROR = (
     "Claude Code isn't installed (or couldn't be found). "
@@ -137,7 +142,8 @@ CLAUDE_MISSING_ERROR = (
 
 
 def spawn_helper(target: str, prompt: str, permission_mode: str,
-                 session_id: str = "") -> dict:
+                 session_id: str = "", model: str = "", effort: str = "",
+                 extra_read_dirs: list[str] | None = None) -> dict:
     """Run `agent._start` in the fork-safe helper; return its result dict.
 
     close_fds=False + no cwd + no start_new_session keeps THIS Popen on the
@@ -161,7 +167,12 @@ def spawn_helper(target: str, prompt: str, permission_mode: str,
         [sys.executable, "-c", SESSION_HELPER],
         input=json.dumps(
             {"agent": agent_path(), "file": target, "message": prompt,
-             "session_id": session_id, "permission_mode": permission_mode}),
+             "session_id": session_id, "permission_mode": permission_mode,
+             "model": model, "effort": effort,
+             # Extra dirs whose Read the run pre-allows (agent._start): the
+             # scheduler passes its task-shots dir so an attached image never
+             # raises a permission card in a headless run nobody is watching.
+             "extra_read_dirs": list(extra_read_dirs or [])}),
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         timeout=60, close_fds=False,
     )

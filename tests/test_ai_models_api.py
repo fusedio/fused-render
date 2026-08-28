@@ -22,6 +22,7 @@ Four things here are easy to get quietly wrong, so each is pinned:
 The layout the fixtures build is huggingface_hub's own CACHE_STRUCTURE:
 ``<hub>/models--org--name/{blobs,snapshots/<commit>,refs/<ref>}``.
 """
+import dataclasses
 import json
 import os
 
@@ -31,7 +32,8 @@ from fastapi.testclient import TestClient
 from fused_render.server import create_app
 from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
-from fused_render.server.routers import ai_models as ai_models_mod
+from fused_render.ai import hub_cache as ai_models_mod
+from fused_render.ai import tasks as ai_tasks
 
 # Windows makes symlinks a privileged operation, and huggingface_hub itself
 # falls back to copies there — the dedup rule under test is a POSIX-cache one.
@@ -250,6 +252,51 @@ def test_a_file_that_vanishes_mid_scan_is_skipped(client, hub, monkeypatch):
     (out,) = _get(client)["repos"]
     assert out["size"] == 100
     assert out["files"] == 1
+
+
+def test_a_file_that_vanishes_between_the_two_stats_is_skipped(
+        client, hub, monkeypatch):
+    """On win32 the scan takes a SECOND, uncached os.stat to get real
+    st_nlink/st_ino (DirEntry.stat reports 0 for both there, which would
+    silently disable hardlink dedup). That is another trip to the filesystem,
+    so the same mid-download deletion the test above covers can land in this
+    narrower window instead — and must be skipped like any other, not abort
+    the whole listing.
+
+    Skipped means counting for NOTHING — the timestamps too, not just
+    size/files. They are asserted here because they used to be accumulated
+    before the re-stat could rule the file out, so a vanished blob still dated
+    the repo. `lastUsed` is the one with teeth: it drives prune selection in
+    the client, so a deleted blob's atime leaking in marks a stale repo as
+    recently used and shields it from the cleanup that removed the blob.
+    """
+    repo = _repo(hub, "models--org--m", blobs={"stays": 100, "vanishes": 50})
+    gone = str(repo / "blobs" / "vanishes")
+
+    # Distinctive, far-apart stamps so a leak cannot hide inside a max()/min():
+    # the doomed blob is BOTH the newest and the most recently used AND the
+    # oldest, so if any of the three accumulators still sees it, one of the
+    # assertions below reads its number instead of the survivor's.
+    os.utime(repo / "blobs" / "stays", (5_000_000, 5_000_000))
+    os.utime(gone, (9_000_000, 1_000_000))
+    real_stat = os.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if str(path) == gone:
+            raise FileNotFoundError(2, "No such file or directory")
+        return real_stat(path, *args, **kwargs)
+
+    # The DirEntry.stat() in the loop still succeeds for both blobs — only the
+    # win32-only re-stat finds this one gone.
+    monkeypatch.setattr(ai_models_mod.sys, "platform", "win32")
+    monkeypatch.setattr(ai_models_mod.os, "stat", fake_stat)
+    (out,) = _get(client)["repos"]
+    assert out["size"] == 100
+    assert out["files"] == 1
+    # Every field describes the surviving blob alone.
+    assert out["mtime"] == 5_000_000       # not the vanished 1_000_000 mtime
+    assert out["lastUsed"] == 5_000_000    # not its 9_000_000 atime
+    assert out["added"] == 5_000_000       # not its 1_000_000 mtime as "oldest"
 
 
 # -- no cache at all -----------------------------------------------------------
@@ -679,7 +726,11 @@ def test_pipeline_tag_from_the_model_card_wins(client, hub):
         (["BertForSequenceClassification"], "bert", "text classification"),
         (["BertForMaskedLM"], "bert", "fill mask"),
         (["ViTForImageClassification"], "vit", "image classification"),
-        (["T5ForConditionalGeneration"], "t5", "text-to-text generation"),
+        # An encoder-decoder is not the causal-LM path mlx-lm serves, and the
+        # Hub retired its own `text2text-generation` tag — so what such a
+        # checkpoint is USED for is the surviving honest answer, and it is not
+        # served here either way.
+        (["T5ForConditionalGeneration"], "t5", "translation"),
         # Same head, different job — the model type is what separates them.
         (["WhisperForConditionalGeneration"], "whisper", "speech recognition"),
         (["SomethingEntirelyNew"], "mystery", None),
@@ -765,8 +816,11 @@ def test_a_text_only_encoder_decoder_is_still_text_to_text(client, hub):
     _snapshot_file(repo, "c1", "config.json", json.dumps(
         {"architectures": ["T5ForConditionalGeneration"], "model_type": "t5"}))
     row = _repo_row(client, "org/t5")
-    assert row["task"] == "text-to-text generation"
+    assert row["task"] == "translation"
     assert row["capability"] is None
+    # …and it SAYS so, rather than leaving a null the card has to guess about.
+    assert row["support"] == "no-runner"
+    assert row["supportReason"]
 
 
 @requires_symlinks
@@ -775,7 +829,7 @@ def test_diffusers_and_sentence_transformers_are_recognised(client, hub):
     _snapshot_file(a, "c1", "model_index.json", json.dumps({"_class_name": "StableDiffusionXLPipeline"}))
     b = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(b, "c1", "modules.json", "[]")
-    assert _repo_row(client, "org/sd")["task"] == "image generation"
+    assert _repo_row(client, "org/sd")["task"] == "text to image"
     assert _repo_row(client, "org/sd")["library"] == "diffusers"
     assert _repo_row(client, "org/st")["task"] == "embeddings"
 
@@ -865,7 +919,7 @@ def test_diffusers_weights_in_component_subfolders_are_counted(client, hub):
     _snapshot_file(repo, "c1", "text_encoder/model.safetensors", _safetensors({"emb": (32000, 4096)}))
     _snapshot_file(repo, "c1", "vae/diffusion_pytorch_model.safetensors", _safetensors({"conv": (512, 512)}))
     row = _repo_row(client, "org/flux")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["params"] == 12000 * 1_000_000 + 32000 * 4096 + 512 * 512
 
 
@@ -994,15 +1048,20 @@ def test_quantization_is_read_even_when_the_card_named_the_task(client, hub):
 
 @requires_symlinks
 def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
-    """The one a llama.cpp user's cache is full of: no config.json, no card,
-    just weights — and the library is all that can honestly be read off them.
+    """No config.json, no card, no real GGUF header either — a fixture whose
+    `.gguf` file is fake bytes, not a real one — and the library is all that
+    can honestly be read off it.
 
-    It used to say "text generation" here, which is a guess about the MODALITY
-    made from a CONTAINER, and it was wrong on the first image repo it met
-    (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized transformer the diffusers
-    recipe fetches). The guess never bought anything either: no runner that
-    ships loads a GGUF-only repo, so all it ever produced was a Load button
-    that fails.
+    It used to say "text generation" here unconditionally, which is a guess
+    about the MODALITY made from a CONTAINER, and it was wrong on the first
+    image repo it met (`unsloth/FLUX.2-klein-4B-GGUF`, the quantized
+    transformer the diffusers recipe fetches). Since SPEC AI-11 a GGUF whose
+    OWN `general.architecture` metadata names a real causal-text model DOES
+    get a task and a Load button (`llamacpp-text`) —
+    `test_ai_runtime.py::test_a_cached_gguf_repo_now_loads_as_text_via_llamacpp`
+    covers that with a real header. This fixture's file is not one (no magic
+    bytes to read at all), which is why it still reads exactly as it did
+    before that runner existed: nothing here can tell what it is.
     """
     repo = _repo(hub, "models--TheBloke--m-GGUF", blobs={"w": 10},
                  snapshots={"c1": {"model.Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
@@ -1018,18 +1077,23 @@ def test_a_gguf_repo_is_named_but_not_given_a_task(client, hub):
 
 @requires_symlinks
 @pytest.mark.parametrize(
-    "class_name,expected",
+    "class_name,expected,tag",
     [
-        ("StableVideoDiffusionPipeline", "video generation"),
-        ("MusicGenPipeline", "audio generation"),
-        ("AudioLDM2Pipeline", "audio generation"),
-        ("StableDiffusionPipeline", "image generation"),
+        ("StableVideoDiffusionPipeline", "video generation", "text-to-video"),
+        ("MusicGenPipeline", "audio generation", "text-to-audio"),
+        ("AudioLDM2Pipeline", "audio generation", "text-to-audio"),
+        ("StableDiffusionPipeline", "text to image", "text-to-image"),
     ],
 )
-def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected):
+def test_a_diffusers_pipeline_names_its_medium(client, hub, class_name, expected, tag):
+    """…in the Hub's own vocabulary. A pipeline read from `model_index.json` and
+    a card that names the same thing must classify identically, which is why
+    this path emits a TAG and the label comes from the one table."""
     repo = _repo(hub, "models--org--p", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
     _snapshot_file(repo, "c1", "model_index.json", json.dumps({"_class_name": class_name}))
-    assert _repo_row(client, "org/p")["task"] == expected
+    row = _repo_row(client, "org/p")
+    assert row["task"] == expected
+    assert row["taskTag"] == tag
 
 
 @requires_symlinks
@@ -1203,71 +1267,67 @@ def test_an_architecture_derived_task_is_explained_too(client, hub):
 
 
 @requires_symlinks
-def test_an_unknown_tag_still_shows_its_label_and_source(client, hub):
-    # The Hub's vocabulary is open-ended, so a tag we have no sentence for
-    # degrades to label + provenance rather than to nothing.
+def test_a_tag_this_build_never_heard_of_still_shows_its_label_and_source(client, hub):
+    """The Hub's vocabulary GROWS, and this table is a snapshot of it — so an
+    unvendored tag degrades to label + provenance rather than to nothing.
+
+    What it must not degrade to is a capability. `support` says `unknown`, which
+    is a different answer from the ruled-out tag below and is what stops the
+    format fallbacks from filing it under whichever runner reads the bytes."""
     repo = _repo(hub, "models--org--m", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: graph-ml\n---\n")
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: holographic-telepathy\n---\n")
     row = _repo_row(client, "org/m")
-    assert row["task"] == "graph ml"
+    assert row["task"] == "holographic telepathy"
+    assert row["taskTag"] == "holographic-telepathy"
     assert row["taskSource"] == "the model card's pipeline_tag"
     assert row["taskHelp"] is None
+    assert row["support"] == "unknown"
+    assert row["capability"] is None
 
 
-def test_every_label_this_module_can_produce_is_explained():
-    """The glossary is keyed by LABEL so one table serves both evidence paths —
-    which only works while the paths agree on the label.
+@requires_symlinks
+def test_a_task_nothing_here_runs_says_which_and_why(client, hub):
+    """The state the page could not draw before: not a missing button, a
+    sentence. `graph-ml` is a task we recognise perfectly well and serve not at
+    all, and telling that apart from "we have never heard of this" is the whole
+    reason `support` has three values."""
+    repo = _repo(hub, "models--org--g", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md", "---\npipeline_tag: graph-ml\n---\n")
+    row = _repo_row(client, "org/g")
+    assert row["task"] == "graph machine learning"
+    assert row["support"] == "no-runner"
+    assert row["supportReason"] == "Nothing on this machine runs graph machine learning models."
+    assert row["capability"] is None
+    # …and the glossary still explains the TASK, which is a different question
+    # from whether we run it.
+    assert row["taskHelp"]
 
-    They drifted once: a whisper model read from its card said "automatic
-    speech recognition" and the same model read from its config said "speech
-    recognition", so the card path — the preferred one — fell through the
-    glossary. This pins the invariant instead of the two instances: every label
-    the module's OWN tables can produce has a sentence. (Passthrough tags from
-    the Hub's open vocabulary are deliberately not covered; those degrade to
-    label + source.)
+
+def test_every_tag_this_module_can_produce_is_in_the_vocabulary():
+    """The evidence paths here INVENT nothing: each one answers with a Hub tag,
+    and every tag it can answer with is a row in `ai/tasks.py`.
+
+    This replaces two tests that enumerated the prose labels the module could
+    produce and checked each was explained and classified. Both were sound until
+    the tag-to-label step grew a passthrough — after which the enumeration was a
+    fiction, and `reinforcement-learning` walked through the hole and took a
+    Load button with it. Keyed on the tag now, which is the value that actually
+    travels: a producer emitting something unvendored fails HERE, where it is
+    one line to classify, rather than on somebody's card.
     """
-    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
-    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
-    produced |= {ai_models_mod._diffusers_task(name)
-                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline", "MusicGenPipeline")}
-    produced |= {"embeddings", "text generation"}  # the sentence-transformers and GGUF branches
-    missing = sorted(label for label in produced if label not in ai_models_mod._TASK_HELP)
-    assert not missing, f"labels with no explanation: {missing}"
-
-
-def _labels_this_module_can_produce():
-    """Every task label the listing's own tables can put on a card."""
-    produced = set(ai_models_mod._FRIENDLIER_TAGS.values())
-    produced |= {task for _, task in ai_models_mod._ARCH_TASKS}
-    produced |= {ai_models_mod._diffusers_task(name)
-                 for name in ("StableDiffusionPipeline", "StableVideoDiffusionPipeline",
-                              "MusicGenPipeline")}
-    produced |= {"embeddings", "text generation"}
-    return {label for label in produced if label}
-
-
-def test_every_task_label_is_classified():
-    """Every label is either loadable by a runner or explicitly ruled out.
-
-    A label nobody has thought about and a label that has been ruled out both
-    produce `capability: null`, so they look identical from the page — and that
-    is how "image + text to text" lost its Load button while the app's own
-    Discover tab went on recommending the models that carry exactly that label
-    — today every entry in the MLX catalog — as chat models.
-
-    Pinning the CLASSIFICATION rather than the instance: growing the vocabulary
-    without deciding what runs it now fails here instead of quietly removing a
-    control from a card.
-    """
-    unclassified = sorted(
-        label for label in _labels_this_module_can_produce()
-        if label not in _ai_registry._TASK_CAPABILITIES
-        and label not in _ai_registry.NO_RUNNER_YET
-    )
-    assert not unclassified, (
-        "task labels neither mapped to a capability nor listed in "
-        f"registry.NO_RUNNER_YET: {unclassified}"
-    )
+    produced = {task for _, task in ai_models_mod._ARCH_TASKS}
+    produced |= {ai_models_mod._diffusers_task(name) for name in
+                 ("StableDiffusionPipeline", "StableVideoDiffusionPipeline", "MusicGenPipeline")}
+    # The branches that answer without a table: sentence-transformers, and the
+    # decisive weight layouts.
+    produced |= {"feature-extraction"}
+    produced |= {found[0] for found in (
+        ai_models_mod._format_task("mlx-community/FLUX.2-Klein-4B-4bit", set(),
+                                   {"transformer", "text_encoder", "vae"}, {}),
+        ai_models_mod._format_task("org/w", {"model.bin", "vocabulary.txt"}, set(), {}),
+    ) if found}
+    unvendored = sorted(tag for tag in produced if tag not in ai_tasks.TASKS)
+    assert not unvendored, f"tags this module emits that nothing classifies: {unvendored}"
 
 
 def test_a_vision_language_model_is_still_loadable_as_a_chat_model(client, hub):
@@ -1297,7 +1357,8 @@ def test_every_suggested_model_could_be_loaded_by_the_page():
     for code, entries in catalog.SUGGESTIONS.items():
         runner = _ai_registry.by_code(code)
         assert runner is not None, f"{code!r} suggests models and is not a runner"
-        assert runner.capability in set(_ai_registry._TASK_CAPABILITIES.values()), (
+        assert runner.capability in {ai_tasks.TASKS[t].capability
+                                     for t in ai_tasks.supported_tags()}, (
             f"nothing in the task vocabulary maps to {runner.capability!r}, so no "
             f"cached card will ever offer Load for the models suggested under it"
         )
@@ -1343,10 +1404,28 @@ def test_a_repo_reports_the_capability_that_could_load_it(client, hub):
 @requires_symlinks
 def test_a_repo_no_runner_serves_reports_no_capability(client, hub):
     """None is the honest answer, and the page turns it into "no Load button" —
-    rather than a button that is offered and always fails."""
+    rather than a button that is offered and always fails.
+
+    **`image-feature-extraction`, and the tag had to change twice.** This test
+    first used the module's own `modules.json` detection, which sets `meta.task`
+    to the bare string "embeddings" — a label the embedding runners now serve, so
+    that stopped being an unserved task. It then used `sentence-similarity`,
+    which was unserved for as long as the capability meant DUAL ENCODERS only.
+    SPEC §40's widening claimed that one too: both engines load a prose encoder
+    now, so a sentence-transformers checkpoint is genuinely loadable and
+    reporting `None` for it would be the lie this test exists to prevent, in
+    reverse.
+
+    `image-feature-extraction` is the neighbour that did NOT move, and it is
+    unserved for a structural reason rather than a scheduling one: it wears an
+    IMAGE-ONLY encoder (DINOv2/v3), which has no text tower at all — the dual
+    load path wants both towers and the prose path wants a tokenizer, so neither
+    can open one. That makes it a stable choice here rather than the next tag to
+    be claimed.
+    """
     embed = _repo(hub, "models--org--st", blobs={"w": 10}, snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
-    _snapshot_file(embed, "c1", "modules.json", "[]")
-    assert _repo_row(client, "org/st")["task"] == "embeddings"
+    _snapshot_file(embed, "c1", "README.md", "---\npipeline_tag: image-feature-extraction\n---\n")
+    assert _repo_row(client, "org/st")["task"] == "image embeddings"
     assert _repo_row(client, "org/st")["capability"] is None
 
 
@@ -1435,8 +1514,12 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
     not even a model, it is the quantized transformer the diffusers recipe
     fetches for FLUX.2 klein. It read "Text generation" with a Load button,
     which is the exact failure `capability_for_task` warns about: a GGUF file
-    is a container, not a modality, and no shipping runner loads a GGUF-only
-    repo at all."""
+    is a container, not a modality. `formats.component()` is what excludes
+    THIS repo specifically (it is a COMPONENT, never a `load()` target on its
+    own); a GGUF repo that is not a known component additionally needs its
+    own `general.architecture` metadata to name a real causal-text model
+    before `llamacpp-text` (SPEC AI-11) calls it decisively text — the
+    fixture's file has none, so it reads the same either way."""
     _repo(hub, "models--unsloth--FLUX.2-klein-4B-GGUF", blobs={"w": 10},
           snapshots={"c1": {"flux-2-klein-4b-Q4_K_M.gguf": "w"}}, refs={"main": "c1"})
     row = _repo_row(client, "unsloth/FLUX.2-klein-4B-GGUF")
@@ -1448,10 +1531,11 @@ def test_a_gguf_only_repo_is_not_called_a_text_model(client, hub):
 
 @requires_symlinks
 def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypatch):
-    """`black-forest-labs/FLUX.2-klein-4B` is `catalog.py`'s suggestion for the
-    diffusers runner, and its card's `pipeline_tag` says image-to-image — a
-    label in NO_RUNNER_YET, so the page offered no Load for a model the app
-    recommends on the next tab. The card names the model FAMILY; the
+    """`black-forest-labs/FLUX.2-klein-4B` is the FLUX.2 base pipeline the
+    diffusers runner loads by id (it has a `_GGUF_RECIPES` row, and was
+    `catalog.py`'s second diffusers suggestion until the int8 repo made it
+    redundant), and its card's `pipeline_tag` says image-to-image — a label in
+    NO_RUNNER_YET, so the page offered no Load for a model a user can reach. The card names the model FAMILY; the
     `model_index.json` in the snapshot names the pipeline that is actually
     here, written by the library that will load it."""
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
@@ -1462,9 +1546,45 @@ def test_the_apps_own_recommended_image_model_is_loadable(client, hub, monkeypat
     _snapshot_file(repo, "c1", "model_index.json",
                    json.dumps({"_class_name": "Flux2KleinPipeline"}))
     row = _repo_row(client, "black-forest-labs/FLUX.2-klein-4B")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "diffusers-image"
+
+
+@requires_symlinks
+def test_the_engine_payload_carries_the_family_name_beside_the_hardware_one(
+        client, hub, monkeypatch):
+    """Three names on the wire, because the card wants two different things.
+
+    The card's TAG is a format claim, so it wears the family ("Diffusers") —
+    every Diffusers row reads the identical safetensors and "(CPU)" on a tag
+    describing a file on disk is noise plus a leak of which machine is reading
+    it. The tag's hover keeps the hardware-qualified `shortLabel`, so nothing
+    is lost. Both are asserted here rather than only in the registry because
+    the payload is built at TWO sites in this router — the serving engine and
+    the engine that merely reads the format — and one of them shipped without
+    a key before now.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--black-forest-labs--FLUX.2-klein-4B", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "Flux2KleinPipeline"}))
+    # The SERVING site: Diffusers CPU is the image engine on Linux.
+    serving = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert serving["shortLabel"] == "Diffusers (CPU)"
+    assert serving["familyLabel"] == "Diffusers"
+    # …and the OTHER site: on a Mac the image engine is MLX FLUX, so this repo
+    # comes back naming the engine that reads it with `available: false`. Same
+    # row, same two names — a payload missing the key here would leave the tag
+    # blank on exactly the cards that need explaining.
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    other = _engine(client, "black-forest-labs/FLUX.2-klein-4B")
+    assert other["code"] == "diffusers-image" and other["available"] is False
+    assert other["shortLabel"] == "Diffusers (CPU)"
+    assert other["familyLabel"] == "Diffusers"
 
 
 @requires_symlinks
@@ -1517,12 +1637,12 @@ def test_the_two_FLUX_klein_repos_read_the_same_and_the_label_matches_the_gate(
         _snapshot_file(mlx, "c1", f"{component}/weights.safetensors",
                        _safetensors({"w": (4, 4)}))
     row = _repo_row(client, "mlx-community/FLUX.2-Klein-4B-4bit")
-    assert row["task"] == "image generation"
+    assert row["task"] == "text to image"
     assert row["capability"] == _ai_registry.IMAGE_GENERATION
     assert row["engine"]["code"] == "mflux-image" and row["engine"]["available"]
     # The invariant behind both halves: a card that offers Load shows a task
     # this machine can actually serve.
-    assert _ai_registry.capability_for_task(row["task"]) == row["capability"]
+    assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"]
 
 
 @requires_symlinks
@@ -1569,7 +1689,80 @@ def test_no_card_offers_a_load_under_a_task_the_app_cannot_serve(client, hub, mo
     for row in rows:
         if not (row["engine"] and row["engine"]["available"]):
             continue  # no Load button, so nothing to contradict
-        assert _ai_registry.capability_for_task(row["task"]) == row["capability"], row
+        assert ai_tasks.capability_for_tag(row["taskTag"]) == row["capability"], row
+
+
+@requires_symlinks
+def test_a_decisive_format_cannot_overrule_a_task_we_have_ruled_out(client, hub, monkeypatch):
+    """The general gate, exercised against a still-ruled-out video task.
+
+    `text-to-video` stopped being an example of a ruled-out task once
+    `ltx-video` shipped (SPEC §40's LTX-2.3 plan) — every
+    diffusers class name containing "video" maps to that tag
+    (`_diffusers_task`), and it is genuinely SUPPORTED now (see the test
+    right below this one for that new, correct shape). `image-to-video` is
+    still ruled out — no runner here is image-conditioned — so it is the
+    example now: the `FL2VA/` layout is DECISIVE about the format (D468
+    dropped the runner that read it, but `formats.loaders` still returns
+    early on it — see that function's own comment), and without this guard
+    `_engine`'s "let the format answer"
+    branch would resurrect the ruled-out task into video generation just
+    because a decisive format happens to sit beside it. The branch itself is
+    not removed — it fires for a real case (a CT2 conversion carries no tag,
+    an MLX one carries no config, and both are speech models beyond doubt) —
+    this pins that it fires ONLY where the task is UNKNOWN, never where it
+    is refused with a sentence.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--vid", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "README.md",
+                   "---\npipeline_tag: image-to-video\n---\n")
+    _snapshot_file(repo, "c1", "FL2VA/model.safetensors", b"x")
+    row = _repo_row(client, "org/vid")
+    assert row["task"] == "image to video"
+    assert row["support"] == "no-runner"
+    assert row["capability"] is None
+    # No engine row either: `_engine` returns nothing once the capability is
+    # refused, so the card cannot promise a backend for it.
+    assert row["engine"] is None
+    # …and the same repo read by the LOAD route agrees, which is the invariant
+    # that stops a card offering what a load then refuses.
+    assert ai_models_mod.cached_capability("org/vid").capability is None
+
+
+@requires_symlinks
+def test_a_diffusers_video_pipeline_is_supported_but_has_no_engine(client, hub, monkeypatch):
+    """The NEW, correct shape for a diffusers video pipeline, now that
+    `text-to-video` genuinely has a runner (`ltx-video`).
+
+    A `StableVideoDiffusionPipeline` snapshot's `_class_name` maps to
+    `text-to-video` (`_diffusers_task`) — a real, SUPPORTED task, unlike the
+    ruled-out case above. But `meta.loaders` for a `model_index.json` repo is
+    `DIFFUSERS_RUNNERS` (image generation), and the video runner does not
+    read THAT format at all (`has_ltx_split_layout` checks for a layout this
+    repo does not have) — so `_engine` finds no
+    VIDEO_GENERATION candidate among the format's own readers and correctly
+    returns no engine. This is `_engine`'s own "task supported, format
+    unreadable" trap (its docstring's `openai/whisper-large-v3` example),
+    reachable through video for the first time: the card must say "video
+    generation" without offering a Load button pointed at a runner that will
+    refuse the file.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--org--svd", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "model_index.json",
+                   json.dumps({"_class_name": "StableVideoDiffusionPipeline"}))
+    row = _repo_row(client, "org/svd")
+    assert row["task"] == "video generation"
+    assert row["support"] == "supported"
+    assert row["capability"] == _ai_registry.VIDEO_GENERATION
+    assert row["engine"] is None
+    assert (ai_models_mod.cached_capability("org/svd").capability
+            == _ai_registry.VIDEO_GENERATION)
 
 
 @requires_symlinks
@@ -1600,9 +1793,11 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     assert _engine(client, "mlx-community/Qwen3-8B-4bit")["code"] == "mlx-text"
 
-    # The same checkpoint off a Mac: still MLX's, and torch will not read it —
-    # which is exactly what the transformers runner's `_refuse_unloadable`
-    # raises about a `quantization` block with a `group_size` in it.
+    # The same checkpoint off a Mac: still MLX's, and nothing else here reads
+    # it — an MLX `quantization` block with a `group_size` in it is bit-packed
+    # for Metal kernels, which is what the removed transformers runner's
+    # `_refuse_unloadable` raised about and why `loaders()` never offered it to
+    # anything but `mlx-text`.
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
@@ -1610,7 +1805,70 @@ def test_an_mlx_text_checkpoint_reports_the_mlx_engine(client, hub, monkeypatch)
 
 
 @requires_symlinks
-def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, hub, monkeypatch):
+def test_a_cards_engine_reason_comes_from_the_probe_that_PICKED_the_row(
+        client, hub, monkeypatch):
+    """One probe per candidate, and the row is described by ITS answer.
+
+    `_engine` asked `available()` twice — once to choose the row
+    (`next(r for r in candidates if r.available().ok)`) and again to read the
+    reason off it. That was free while every probe was a `platform` fact and
+    stopped being free when the per-hardware rows made a probe a live device read
+    (AI-6): the two calls can straddle a `modprobe`, a container restart or an
+    eGPU being unplugged, and the card then reports a row chosen by one answer and
+    explained by another — including "not available" beside the reason the machine
+    had a moment ago rather than the one it has.
+
+    Driven with a probe whose refusal is NUMBERED, so the assertion names the
+    call the reason came from instead of counting calls: `refusal 1` is the probe
+    that selected the row, and anything later is a second look.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    seen = []
+
+    def numbered():
+        seen.append(1)
+        return _ai_registry.Availability(False, f"refusal {len(seen)}")
+
+    runners = tuple(
+        dataclasses.replace(r, _available=numbered) if r.code == "mlx-text" else r
+        for r in _ai_registry.all_runners()
+    )
+    monkeypatch.setattr(_ai_registry, "_RUNNERS", runners)
+    # The SERVING engine is answered without probing, so the only calls left are
+    # the ones `_engine` makes about the candidate — otherwise this test would be
+    # counting the resolution's probes too and would pass for the wrong reason.
+    monkeypatch.setattr(_ai_registry, "for_capability",
+                        lambda capability: _ai_registry.by_code("llamacpp-text"))
+
+    # An MLX text checkpoint on Linux: the only runner that reads it is the one
+    # that cannot run here, which is the branch that does the double probe.
+    repo = _repo(hub, "models--mlx-community--Qwen3-8B-4bit", blobs={"w": 10},
+                 snapshots={"c1": {"m": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps(
+        {"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3",
+         "quantization": {"group_size": 64, "bits": 4}}))
+    _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
+    engine = _engine(client, "mlx-community/Qwen3-8B-4bit")
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+    assert engine["reason"] == "refusal 1", (engine["reason"], len(seen))
+
+
+@requires_symlinks
+def test_a_plain_safetensors_causal_lm_is_MLXS_AND_UNAVAILABLE_off_a_mac(client, hub, monkeypatch):
+    """A cached bf16 causal LM off a Mac names `mlx-text` and says it cannot run.
+
+    This asserted `transformers-text` and `available: True` until D416, and the
+    change of answer is the one user-visible cost of removing that family rather
+    than an accident of the test: `formats.loaders()` maps a directory of plain
+    safetensors to exactly one engine now, and that engine is Apple-only. So a
+    Linux user with a bf16 Qwen already on disk gets a card that names the
+    engine which reads the format and the registry's own sentence about why this
+    machine is not it — which is the honest answer, and is what the card is for.
+    What that user CAN run is a GGUF of the same model through `llamacpp-text`;
+    `catalog.SUGGESTIONS["llamacpp-text"]` is what the Discover tab offers them,
+    and its 9B entry's note makes the size comparison to exactly this download.
+    """
     monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
     repo = _repo(hub, "models--Qwen--Qwen3-8B", blobs={"w": 10},
@@ -1619,7 +1877,8 @@ def test_a_plain_safetensors_causal_lm_loads_on_transformers_off_a_mac(client, h
                    json.dumps({"architectures": ["Qwen3ForCausalLM"], "model_type": "qwen3"}))
     _snapshot_file(repo, "c1", "model.safetensors", _safetensors({"w": (8, 8)}))
     engine = _engine(client, "Qwen/Qwen3-8B")
-    assert engine["code"] == "transformers-text" and engine["available"] is True
+    assert engine["code"] == "mlx-text" and engine["available"] is False
+    assert "Apple Silicon" in engine["reason"]
 
 
 # -- and the same reading answers a load that omitted one (D321) -----------------
@@ -1651,7 +1910,7 @@ def test_the_card_and_a_load_without_a_capability_agree(client, hub):
 def test_a_repo_that_is_not_cached_says_so(client, hub):
     """`cached=False` is what lets the load route fall back to the catalog and
     then to the old default, instead of refusing a cold load."""
-    assert ai_models_mod.cached_capability("org/never-downloaded") == (False, None, None)
+    assert ai_models_mod.cached_capability("org/never-downloaded")[:3] == (False, None, None)
     # A folder with no revision in it is an interrupted download, not evidence.
     (hub / "models--org--empty").mkdir()
     assert ai_models_mod.cached_capability("org/empty").cached is False
@@ -1660,7 +1919,7 @@ def test_a_repo_that_is_not_cached_says_so(client, hub):
 def test_a_repo_id_can_never_become_a_path(hub):
     """The lookup builds a cache folder name out of a request body's string."""
     for hostile in ("../../etc", "..", "a/../../b", "org\\evil"):
-        assert ai_models_mod.cached_capability(hostile) == (False, None, None)
+        assert ai_models_mod.cached_capability(hostile)[:3] == (False, None, None)
 
 
 @requires_symlinks
@@ -1730,7 +1989,7 @@ def test_a_two_megabyte_helper_reads_the_same_way(client, hub):
 
     row = _repo_row(client, "onnx-community/silero-vad")
 
-    assert row["component"]["owner"] == "MLX transcription"
+    assert row["component"]["owner"] == "MLX Whisper"
     assert row["component"]["part"] == "speech detector"
     # An engine's component, not a model's — nothing to point at, and the prose
     # says the cost of deleting it is a slower transcription rather than a
@@ -1750,7 +2009,7 @@ def test_an_ordinary_model_is_not_a_component(client, hub):
 @requires_symlinks
 def test_loading_a_component_is_refused_by_name(client, hub):
     """`cached_capability` is what the load route refuses with (D321). "a
-    speech detector that belongs to MLX transcription" is a far more useful
+    speech detector that belongs to MLX Whisper" is a far more useful
     sentence than the "model repo" reading it used to produce."""
     _repo(hub, "models--onnx-community--silero-vad", blobs={"w": 10},
           snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
@@ -1758,4 +2017,450 @@ def test_loading_a_component_is_refused_by_name(client, hub):
     reading = ai_models_mod.cached_capability("onnx-community/silero-vad")
 
     assert reading.cached is True and reading.capability is None
-    assert reading.looks_like == "a speech detector that belongs to MLX transcription"
+    assert reading.looks_like == "a speech detector that belongs to MLX Whisper"
+
+
+# -- a download that never finished (D424) ----------------------------------------
+# The reading is POSITIVE EVIDENCE ONLY, and every test here is about one of the
+# two halves of that: the residue of a stopped fetch says "partial", and nothing
+# else is allowed to — least of all a format no engine reads, which is what a
+# perfectly complete SigLIP tower looks like.
+
+
+@requires_symlinks
+def test_a_part_file_marks_the_repo_partly_downloaded(client, hub):
+    """The bug this whole reading exists for.
+
+    Our fetcher publishes each blob and links it into `snapshots/<commit>/` as
+    that FILE lands, so a cancel halfway through a repo leaves a real revision
+    beside a part file — and the revision alone read as "downloaded", which took
+    the recommendation and its working Download button off the page and left a
+    card with no weights, no engine and a disabled Load.
+    """
+    repo = _repo(hub, "models--mlx-community--whisper-tiny.en-8bit",
+                 blobs={"cfg": 10}, snapshots={"c1": {"config.json": "cfg"}})
+    # The 4.6GB of weights that never arrived, mid-flight when the ✕ was pressed.
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 64)
+
+    row = _repo_row(client, "mlx-community/whisper-tiny.en-8bit")
+
+    assert row["partial"] is True
+    # And NOT because the revision is missing: it is there, which is exactly why
+    # the count could not answer this question.
+    assert row["revisions"] == 1
+
+
+@requires_symlinks
+def test_hugging_faces_own_incomplete_file_counts_too(client, hub):
+    """The cache is shared. A pull by `hf`, transformers or a template a user
+    pasted in leaves `.incomplete`, and this page reads that cache too."""
+    repo = _repo(hub, "models--org--m", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+    (repo / "blobs" / "abc123.incomplete").write_bytes(b"x" * 8)
+
+    assert _repo_row(client, "org/m")["partial"] is True
+
+
+def test_a_repo_with_no_snapshot_at_all_is_partly_downloaded(client, hub):
+    """A folder with blobs and nothing to open — a cancel that landed before the
+    first file did. hub search has always called this partial; the listing now
+    says the same word."""
+    _repo(hub, "models--org--m", blobs={"w": 10})
+
+    assert _repo_row(client, "org/m")["partial"] is True
+
+
+@requires_symlinks
+def test_a_completed_repo_no_engine_reads_is_NOT_partial(client, hub):
+    """The false positive that would have been worse than the bug.
+
+    A SigLIP tower or an ACE-Step checkpoint downloads perfectly and no runner
+    here opens it: `engine` is null and `capability` may be too. Reading THAT as
+    "partly downloaded" would offer to resume a download that finished months
+    ago — so the format never enters the question.
+    """
+    repo = _repo(hub, "models--google--siglip2-base", blobs={"w": 10},
+                 snapshots={"c1": {"model.onnx": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["Siglip2Model"]}))
+
+    row = _repo_row(client, "google/siglip2-base")
+
+    assert row["engine"] is None
+    assert row["partial"] is False
+
+
+@requires_symlinks
+def test_a_repo_pinned_at_a_commit_is_not_partial_for_having_no_ref(client, hub):
+    """The other tempting reading, and the other false positive: neither hf nor
+    `_write_ref` writes a ref named after a sha, so "no refs/" is the ordinary
+    state of a repo fetched at a pinned commit."""
+    _repo(hub, "models--org--pinned", blobs={"w": 10},
+          snapshots={"deadbeef": {"model.safetensors": "w"}})
+
+    assert _repo_row(client, "org/pinned")["partial"] is False
+
+
+@requires_symlinks
+def test_a_repo_this_app_never_fetched_is_not_partial(client, hub):
+    """`.fused-fetch-<commit>.json` is written only by our own fetcher, so its
+    ABSENCE describes every repo pulled by the `hf` CLI or by a build older than
+    the record — none of which is half-downloaded."""
+    _repo(hub, "models--org--legacy", blobs={"w": 10},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert _repo_row(client, "org/legacy")["partial"] is False
+
+
+def test_a_dataset_is_never_partly_downloaded(client, hub):
+    """A dataset with no snapshot is not something this page can resume, and the
+    card it would draw the state on has no Download button."""
+    _repo(hub, "datasets--squad", blobs={"a": 10})
+
+    assert _repo_row(client, "squad")["partial"] is False
+
+
+def test_the_part_suffix_is_the_fetchers_own(client):
+    """Two modules, one name. This module reads a cache the fetcher writes, and
+    the constant is duplicated deliberately (see `_PART_SUFFIXES`) — so the
+    duplication is pinned rather than trusted."""
+    from fused_render.ai.runners import worker_base
+
+    assert worker_base.PART_SUFFIX in ai_models_mod._PART_SUFFIXES
+
+
+@requires_symlinks
+def test_deleting_a_partly_downloaded_repo_frees_it_and_it_leaves_the_listing(
+        client, hub):
+    """The second of the two ways out. Discarding the bytes is what puts the
+    model back among the recommendations, so it has to actually work on a repo
+    whose snapshot is incomplete."""
+    repo = _repo(hub, "models--org--m", blobs={"cfg": 10},
+                 snapshots={"c1": {"config.json": "cfg"}})
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 128)
+    assert _repo_row(client, "org/m")["partial"] is True
+
+    r = client.post("/api/ai-models/delete", headers={"X-Fused": "1"},
+                    json={"targets": [{"dir": "models--org--m"}]})
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["failures"] == []
+    assert body["freed"] >= 128
+    assert [row["id"] for row in body["repos"]] == []
+    assert not repo.exists()
+
+
+@requires_symlinks
+def test_cached_models_does_not_offer_half_a_snapshot(client, hub):
+    """`cached_models()` is what `/api/ai/catalog` and every page's picker read
+    (D323). A repo whose download stopped is not a model this disk HAS, and a
+    picker offering one is a Load that fails."""
+    repo = _repo(hub, "models--org--chat", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"architectures": ["LlamaForCausalLM"]}))
+    assert "org/chat" in {m.repo_id for m in ai_models_mod.cached_models()}
+
+    # The same repo, one interrupted fetch later.
+    (repo / "blobs" / "shard2.fusedpart").write_bytes(b"x" * 32)
+
+    assert "org/chat" not in {m.repo_id for m in ai_models_mod.cached_models()}
+
+
+# -- the empty shell a stopped fetch leaves behind (D437) ----------------------
+# The state a user hit: a cancelled download whose folder held one 40-byte
+# `refs/main` and not a single blob. The listing has to call that partial (no
+# snapshot IS the evidence), so the page drew a "partly downloaded" card under
+# Unrecognised offering to resume a download with nothing to resume from. The
+# fetch thread tidies it on its way out now; these pin what it may and may not
+# take with it.
+
+
+def test_a_refs_only_shell_is_discarded(client, hub):
+    repo = _repo(hub, "models--org--never-started", refs={"main": "c1"})
+    # …and the folder really is the state the field reported: partial, tiny, and
+    # filed with no capability of its own.
+    row = _repo_row(client, "org/never-started")
+    assert row["partial"] is True
+    assert row["capability"] is None
+
+    assert ai_models_mod.discard_empty_shell("org/never-started") is True
+    assert not repo.exists()
+
+
+def test_a_stopped_fetch_with_bytes_on_disk_is_KEPT(client, hub):
+    """The rule this must not break (D275/AI-5i). A part file is exactly what a
+    resume picks up, so a folder holding one is a download in progress as far as
+    this app is concerned — not litter."""
+    repo = _repo(hub, "models--org--half")
+    (repo / "blobs" / "weights.fusedpart").write_bytes(b"x" * 4096)
+
+    assert ai_models_mod.discard_empty_shell("org/half") is False
+    assert repo.exists()
+
+
+@requires_symlinks
+def test_a_finished_download_is_never_discarded(client, hub):
+    """Called on every fetch's way out, including the successful ones — so the
+    successful ones have to be a no-op. Read off the FOLDER, never off the job's
+    outcome."""
+    repo = _repo(hub, "models--org--done", blobs={"w": 10},
+                 snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    assert ai_models_mod.discard_empty_shell("org/done") is False
+    assert repo.exists()
+
+
+def test_discarding_a_shell_that_is_not_there_is_not_an_error(client, hub):
+    """The ordinary case: nothing was ever created, or a previous pass already
+    tidied it. This runs in a `finally` and must never raise."""
+    assert ai_models_mod.discard_empty_shell("org/nothing") is False
+
+
+def test_a_shell_named_by_a_path_is_refused(client, hub):
+    """Same discipline as every other destructive path here: a repo id is turned
+    into ONE folder name, and anything that is not one is not looked at."""
+    assert ai_models_mod.discard_empty_shell("../../etc") is False
+
+
+# -- bytes that ARRIVED, vs blocks reserved for them (D440) --------------------
+# Our fetcher preallocates a part file to the full length of the file it is
+# fetching, so a repo 15% into a 1.6GB download measures 1.6GB on disk. `size`
+# is right about the disk and wrong about the download, and a card drawing "how
+# much of this is here" from it read as nearly finished.
+
+
+def _sidecar(repo, blob, size, done_per_segment, segment=32 * 1024 * 1024):
+    """A part file's sidecar in the shape `worker_base._FileFetch.flush` writes."""
+    segments = []
+    start = 0
+    for done in done_per_segment:
+        end = min(start + segment, size) - 1
+        segments.append({"start": start, "end": end, "done": done})
+        start = end + 1
+    (repo / "blobs" / f"{blob}.fusedpart.json").write_text(
+        json.dumps({"version": 3, "etag": blob, "size": size, "segments": segments})
+    )
+
+
+def test_fetched_bytes_reads_the_sidecar_not_the_part_files_length(client, hub):
+    repo = _repo(hub, "models--org--pulling")
+    # Preallocated to 96MB; only 40MB of it is durable.
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * (96 * 1024 * 1024))
+    _sidecar(repo, "w", 96 * 1024 * 1024,
+             [32 * 1024 * 1024, 8 * 1024 * 1024, 0])
+
+    row = _repo_row(client, "org/pulling")
+
+    # `size` still counts the part file's whole length (plus its little sidecar):
+    # that is what the folder holds, and it is what the page PRINTS.
+    assert row["size"] > 96 * 1024 * 1024
+    # …and this is what arrived: two full segments and a third of a third one.
+    assert row["fetchedBytes"] == 40 * 1024 * 1024
+
+
+def test_a_part_file_with_no_sidecar_counts_nothing(client, hub):
+    """No sidecar means nothing has SAID any of those bytes are durable, and the
+    file may be pure preallocation — so it contributes zero rather than its
+    length. Same posture as `_unfinished_fetch`: positive evidence only."""
+    repo = _repo(hub, "models--org--bare")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+
+    assert _repo_row(client, "org/bare")["fetchedBytes"] == 0
+
+
+def test_a_torn_sidecar_counts_nothing_rather_than_raising(client, hub):
+    repo = _repo(hub, "models--org--torn")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 4096)
+    (repo / "blobs" / "w.fusedpart.json").write_text("{not json")
+
+    assert _repo_row(client, "org/torn")["fetchedBytes"] == 0
+
+
+def test_a_sidecar_claiming_more_than_its_segment_is_clamped(client, hub):
+    """A sidecar is written by another process; a `done` past the segment's own
+    width must not inflate the total."""
+    repo = _repo(hub, "models--org--liar")
+    (repo / "blobs" / "w.fusedpart").write_bytes(b"x" * 1024)
+    _sidecar(repo, "w", 1024, [999_999_999], segment=1024)
+
+    assert _repo_row(client, "org/liar")["fetchedBytes"] == 1024
+
+
+def test_hf_incomplete_files_count_their_length(client, hub):
+    """`huggingface_hub` APPENDS, so for its part files the length IS the
+    progress — the opposite of ours, which is why the two are read differently."""
+    repo = _repo(hub, "models--org--hf", blobs={"done": 100})
+    (repo / "blobs" / "abc.incomplete").write_bytes(b"x" * 900)
+
+    assert _repo_row(client, "org/hf")["fetchedBytes"] == 1000
+
+
+@requires_symlinks
+def test_a_finished_repo_reports_every_byte_as_fetched(client, hub):
+    """The ordinary case, and the one the fraction never draws: nothing is
+    outstanding, so the two numbers agree."""
+    _repo(hub, "models--org--done", blobs={"w": 4096},
+          snapshots={"c1": {"model.safetensors": "w"}}, refs={"main": "c1"})
+
+    row = _repo_row(client, "org/done")
+
+    assert row["fetchedBytes"] == row["size"]
+
+
+# -- has_vision_tower: can a cached checkpoint be handed an image? (AI-11j) ---
+#
+# Read straight off `config.json`, WITHOUT loading the model — the question
+# `ai_runtime._accepts_image` has to answer before an attach button is even
+# drawn, let alone before a request reaches the worker.
+
+
+def test_has_vision_tower_reads_the_vision_config_key(hub):
+    """The same evidence `_architecture_task` already uses to route a unified
+    checkpoint to `image-text-to-text` rather than plain `text-generation`."""
+    repo = _repo(hub, "models--org--vlm", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"model_type": "qwen3_5", "vision_config": {"depth": 4}}))
+
+    assert ai_models_mod.has_vision_tower("org/vlm") is True
+
+
+def test_has_vision_tower_is_false_for_a_plain_text_checkpoint(hub):
+    repo = _repo(hub, "models--org--chat", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json", json.dumps({"model_type": "llama"}))
+
+    assert ai_models_mod.has_vision_tower("org/chat") is False
+
+
+def test_has_vision_tower_reads_the_optiq_sidecar_checkpoints_config_too(hub):
+    """**The gotcha, verified by hand:** `Qwen3.5-*-OptiQ` keeps its vision
+    tower in a SIDE-CAR `optiq/optiq_vision.safetensors`, not in
+    `model.safetensors` — a checkpoint that would read as tower-less to
+    anything that decided the answer by globbing weight files (non-recursively,
+    which is the version of that mistake that is easy to write). `config.json`
+    carries `vision_config`/`image_token_id` regardless of where the tower's
+    OWN weights live, which is why this is never answered by a file listing."""
+    repo = _repo(hub, "models--org--optiq", snapshots={"c1": {}}, refs={"main": "c1"})
+    _snapshot_file(repo, "c1", "config.json",
+                   json.dumps({"model_type": "qwen3_5", "image_token_id": 151655,
+                               "vision_config": {"depth": 4}}))
+    # The tower's weights, off in their own side-car — nothing here reads this
+    # file, and that absence is the point of the test.
+    _snapshot_file(repo, "c1", "optiq/optiq_vision.safetensors", b"\x00" * 8)
+
+    assert ai_models_mod.has_vision_tower("org/optiq") is True
+
+
+def test_has_vision_tower_is_false_for_a_never_cached_repo(hub):
+    """No snapshot on disk at all: the answer cannot be determined, and False
+    is the failure-closed direction — an attach button whose request 400s is
+    exactly the failure AI-11j exists to prevent."""
+    assert ai_models_mod.has_vision_tower("org/never-downloaded") is False
+
+
+def test_has_vision_tower_is_false_for_a_hostile_repo_id(hub):
+    """The same path-segment guard `cached_capability` applies to a request
+    body's model id — a repo id is not a place to go looking for `..`."""
+    assert ai_models_mod.has_vision_tower("../../etc/passwd") is False
+
+
+# -- has_cached_snapshot: is there anything to trust has_vision_tower's False
+# -- reading on at all (SPEC AI-17 item 17) -----------------------------------
+
+
+def test_has_cached_snapshot_is_true_for_a_real_snapshot(hub):
+    _repo(hub, "models--org--chat", snapshots={"c1": {}}, refs={"main": "c1"})
+    assert ai_models_mod.has_cached_snapshot("org/chat") is True
+
+
+def test_has_cached_snapshot_is_false_for_a_never_cached_repo(hub):
+    assert ai_models_mod.has_cached_snapshot("org/never-downloaded") is False
+
+
+def test_has_cached_snapshot_is_false_for_a_hostile_repo_id(hub):
+    assert ai_models_mod.has_cached_snapshot("../../etc/passwd") is False
+
+
+# -- the partly downloaded, engine-stranded repo (PR #830 regression) ----------
+
+
+@requires_symlinks
+def test_a_partial_MLX_ONLY_repo_names_the_engine_and_is_unservable(
+        client, hub, monkeypatch):
+    """**`engine` must not be null here, and that was the bug.**
+
+    A download that never finished has no weights, so `formats.loaders()` has
+    nothing to judge and `_engine` used to answer `None` — no engine, no
+    sentence, and so nothing for the Local tab to withhold the resume on. It
+    offered one, and the fetch died inside a runner that cannot read MLX
+    safetensors.
+
+    The CURATION knows what the format check cannot: this id's only curated home
+    is `mlx-embed`, whether or not a byte has landed. So the row now names that
+    engine, marks itself `unservable`, and carries the sentence — and
+    `capability` comes back too, since the curation knows that as well.
+
+    `unservable` rather than leaning on `available: false`: that is ALSO what a
+    merely-unselected engine reports, and resuming one of those is fine.
+    """
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    # A partial fetch: a blob with our own in-progress suffix and no snapshot
+    # file materialised for it.
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    assert engine is not None, "a curated id must not report a null engine"
+    assert engine["shortLabel"] == "MLX Embeddings"
+    assert engine["available"] is False
+    assert engine["unservable"] is True
+    assert "onnx-community/siglip2-base-patch16-384-ONNX" in engine["reason"]
+
+
+@requires_symlinks
+def test_the_same_repo_on_a_MAC_is_servable(client, hub, monkeypatch):
+    """The Mac path: `mlx-embed` serves there, so nothing is stranded and the
+    resume must stay offered. A fix that flagged this everywhere would have
+    broken the platform the model is FOR."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "arm64")
+    repo = _repo(hub, "models--google--siglip2-base-patch16-384",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "google/siglip2-base-patch16-384")
+    assert row["partial"] is True
+    engine = row["engine"]
+    # Either no engine claim at all (no format evidence, nothing curated against
+    # it here) or one that does NOT declare itself unservable — never the flag.
+    assert engine is None or not engine.get("unservable")
+
+
+@requires_symlinks
+def test_a_partial_UNCURATED_repo_still_reports_no_engine(client, hub,
+                                                          monkeypatch):
+    """"No information" stays no information. Nobody here has an opinion about a
+    repo the user found themselves, so inventing an engine for it would be
+    claiming something reads a format nothing has looked at — and its resume
+    stays offered, with the runner's own format check as the backstop, exactly as
+    before this fix."""
+    monkeypatch.setattr(_ai_registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(_ai_registry.platform, "machine", lambda: "x86_64")
+    repo = _repo(hub, "models--someone--found-this-myself",
+                 blobs={"cfg": 20}, snapshots={"c1": {"config.json": "cfg"}},
+                 refs={"main": "c1"})
+    # `_PART_SUFFIXES` — the residue only an interrupted fetch leaves.
+    (repo / "blobs" / "model.safetensors.fusedpart").write_bytes(b"x" * 4096)
+
+    row = _repo_row(client, "someone/found-this-myself")
+    assert row["partial"] is True
+    assert row["engine"] is None

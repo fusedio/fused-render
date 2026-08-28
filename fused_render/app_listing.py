@@ -183,7 +183,14 @@ def app_dict(path: str, name: str, tag: str, entry_html: str | None, *,
     return {
         "name": name,
         "tag": tag,
-        "path": os.path.abspath(path),
+        # realpath, not abspath (2026-08-26 code review): a background app's
+        # run-state identity (`background_apps.engine_id_for`, D509/D512) is
+        # realpath-keyed, so a folder reached through a symlink alias got a
+        # DIFFERENT string here than the one `engine_host.background_running_folders`
+        # returns, and the /apps grid's running badge never lit for it. This
+        # is a strict refinement of abspath, not a behavior change for the
+        # common no-symlink case (realpath == abspath there).
+        "path": os.path.realpath(path),
         # `entry` is the file a card opens and previews. For an app of this
         # shape that is exactly its entry HTML; it is reported under its own key
         # because "the file to open" and "this entry is a renderable page" are
@@ -285,7 +292,7 @@ def workspace_apps(root: str) -> list[dict]:
     underneath it. So a top-level folder with a page lists AND its children
     still list.
 
-    `tag` — the page's "Repo" facet — is THE FIRST PATH SEGMENT at every depth,
+    `tag` — the page's "Folders" facet — is THE FIRST PATH SEGMENT at every depth,
     so `showcase/sub/bar` files under `showcase` exactly as `showcase/bar` does.
     A depth-1 app IS that segment, so it is its own tag (an empty tag would add a
     nameless chip to the facet list and a `?tag=` that filters on "").

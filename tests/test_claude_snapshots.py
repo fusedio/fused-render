@@ -221,12 +221,74 @@ def test_the_store_is_never_written(agent, claude_home, tmp_path):
     assert before == after
 
 
+# ----------------------------------------- getting the chain written at all
+
+
+def _spawn_kw(agent, monkeypatch, target, tmp_path):
+    """The Popen kwargs of one run — for asserting on the child ENV rather
+    than the CLI flags. Mirrors the helper in test_fused_cli_export.py."""
+    seen = {}
+
+    class _Proc:
+        pid = 4242
+
+    agent.RUNS = str(tmp_path / "runs")
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent.subprocess, "Popen",
+                        lambda cmd, **kw: (seen.__setitem__("kw", kw),
+                                           _Proc())[1])
+    out = agent._start(str(target), "hi", "", "", "")
+    assert "error" not in out, out
+    return seen["kw"]
+
+
+def test_a_headless_run_asks_for_the_checkpoints_the_panel_reads(
+        agent, tmp_path, monkeypatch):
+    """Without this the panel is structurally empty for its own chat's work.
+
+    Checkpointing is OFF by default in a non-interactive session, and every run
+    this module spawns is `-p`. So the store only ever held versions written by
+    a TERMINAL claude in that folder, and a file this chat had just edited four
+    times reported "Claude has no recorded versions of this file" — the one
+    question the panel exists to answer. Asked for in the ENV, not in
+    `--settings`: the CLI takes a separate branch when `isInteractive()` is
+    false and that branch reads only the two env vars (D394)."""
+    monkeypatch.delenv("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+                       raising=False)
+    target = tmp_path / "notes.md"
+    target.write_text("# now\n")
+    kw = _spawn_kw(agent, monkeypatch, target, tmp_path)
+    assert kw["env"]["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "1"
+
+
+def test_a_user_who_set_it_themselves_keeps_their_value(
+        agent, tmp_path, monkeypatch):
+    """setdefault, not assignment. The CLI coerces the value (`1/true/yes/on`,
+    everything else false), so an explicit `=0` is a real opt-out and must not
+    be overwritten by ours — this template does not get to re-enable a
+    checkpoint store the user turned off."""
+    monkeypatch.setenv("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "0")
+    target = tmp_path / "notes.md"
+    target.write_text("# now\n")
+    kw = _spawn_kw(agent, monkeypatch, target, tmp_path)
+    assert kw["env"]["CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING"] == "0"
+
+
 # --------------------------------------------------- going back to a snapshot
 
 
 def _target(tmp_path, content, name="notes.md"):
+    # `newline=""` disables universal-newline translation — same fix, same
+    # reason, as _claude_history.write_version's own comment: file_history.py
+    # compares this file's on-disk bytes against a checkpoint's bytes exactly
+    # (`differs` is a byte comparison, by design — see file_history._locate),
+    # and `Path.write_text`'s default text mode would silently inflate every
+    # "\n" here to "\r\n" on Windows, making a target deliberately written to
+    # equal a checkpoint's content ("disk\n" == "disk\n") no longer equal it
+    # on disk, and derailing the positional walk that test is asserting about.
     f = tmp_path / name
-    f.write_text(content)
+    with open(f, "w", encoding="utf-8", newline="") as fh:
+        fh.write(content)
     return str(f)
 
 

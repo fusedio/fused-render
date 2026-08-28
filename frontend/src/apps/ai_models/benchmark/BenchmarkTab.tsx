@@ -1,0 +1,1636 @@
+// The Benchmark tab: one capability at a time, THREE instruments for it — a
+// ranked comparison chart (the hero: "which of these is fastest here"), a
+// leaderboard of every model with its own action (Run, Details), and a
+// per-model trend chart (secondary: "is THIS model getting faster or
+// slower"), now rendered INLINE directly under whichever row it belongs to
+// (D481) rather than in its own block below the whole list — plus the
+// archive underneath and a button to measure again (SPEC AI-14).
+//
+// **The question this tab exists to answer is "how fast is THIS model on THIS
+// laptop", and the only way to answer it comparably is to fix the work.** So a
+// run is not configurable: the server owns one frozen workload per capability
+// (ai/benchmark.py) and this tab presses a button. That is the deliberate cost —
+// a number exists only where somebody pressed it — and the deliberate gain: two
+// models here, or one model across two app versions, are legitimately
+// comparable, which the passive Usage tab's figures never are.
+//
+// **Comparison and trend are two DIFFERENT questions, and this tab has tried
+// to answer them with one chart TWICE, wrong both times.** First attempt:
+// every model as its own series on one shared timeline — with one or two runs
+// per model that was a scatter of near-unlabelable dots, which is the real
+// reason it needed edge-avoiding end labels and kept repeating one date three
+// times. Second attempt, after splitting the trend out: make the LEADERBOARD's
+// own inline mini-bar the whole comparison story and give the per-model trend
+// chart the hero's spot. That one shipped and broke differently — the trend
+// chart needs TWO RUNS OF THE SAME MODEL, and real usage spreads a handful of
+// runs ACROSS several different models far more often than it re-runs one, so
+// the trend chart's "single" state fired for nearly every model and the page
+// had NO CHART AT ALL. `ComparisonChart` is the actual fix: a real, gridlined
+// bar chart across every BENCHMARKED model, which renders whenever more than
+// one model has a measurement — the normal case — and the leaderboard's own
+// inline bar is deleted, since drawing the identical proportional comparison
+// twice (once properly, with an axis, once as an unlabelled sliver in each
+// row) was the duplicated ink. `ModelTrendChart` keeps its own spot,
+// correctly secondary, for the model a reader picks by clicking a leaderboard
+// row — see the D481 comment above `.am-bench-rows`' render loop for why that
+// spot moved from a block below the whole list to right under the clicked
+// row itself.
+//
+// THE LISTING IS NOT THIS TAB'S. `scan` arrives from the page above
+// (lib/useCacheScan.ts) exactly as it does for the Local tab, because "which
+// models could I benchmark" is the question that shared cache walk already
+// answers, and a second crawl behind this tab is precisely the cost that hook
+// exists to avoid.
+//
+// Three-state loading discipline throughout, the same one UsageTab and LocalTab
+// follow: `null` is "not answered yet" and draws a skeleton, `[]` is "answered,
+// and there is nothing", and a failure draws an ErrorBanner while KEEPING the
+// last good value — a failed refresh must not blank a history somebody is
+// reading.
+//
+// **A run holds its HTTP request open for minutes** (the server does this
+// deliberately — see routers/ai_benchmark.py), so the click cannot be awaited
+// as if it were a save. Only the pressed capability's buttons go dead; the rest
+// of the page stays live.
+//
+// **A benchmark now opens its OWN download-manager row for the measurement
+// phase, titled distinctly from the load's** (`ai/benchmark.py`'s
+// `_MeasurementRow`/`_bench_job_title`) — the fourth design, after three that
+// collided on TITLE. Server job rows are keyed by TITLE (`useCacheScan` maps
+// `job.title -> job`) and `supervisor.load` already owns the row titled with
+// the bare model id; a benchmark row sharing that title either could not be
+// found or SHADOWED the load's, which put the manager's only ✕ on the load and
+// let a cold run spin to its hour-long timeout. `_bench_job_title` fixes the
+// title rather than removing the row, so through a COLD run the load's own row
+// still shows up first, with real byte counts, and once loading ends this
+// module's own row takes over — the phase that used to be total silence.
+//
+// **This tab's OWN busy row is a second, complementary view of the same run —
+// phase plus a REAL elapsed clock, never an invented percentage** (see
+// `busyRowText` in lib/benchmark.ts, and the ai-models.css comment near line
+// 1282 for the house rule against invented bars). It reuses `lib/aiRuntime.ts`'s
+// already-polled table rather than adding a second poll: while that table
+// still reports the model loading, the row says so; once it does not, the row
+// switches to "Measuring — mm:ss" ticking from the moment Run was pressed.
+import { Fragment, useEffect, useRef, useState } from "react";
+import { ComparisonChart } from "./ComparisonChart";
+import { ShareChartButton } from "./ShareChartButton";
+import { ModelTrendChart } from "./ModelTrendChart";
+import { CAPABILITY_ORDER } from "@apps/ai_models/lib/aiModelGroups";
+import { capabilityLabel } from "@apps/ai_models/lib/engines";
+import { readParam, writeParams } from "@apps/ai_models/lib/params";
+import { tabHref, tabLabel } from "@apps/ai_models/routes";
+import {
+  DASH,
+  availableMetrics,
+  chartSeries,
+  commonDevice,
+  comparisonBars,
+  failureReason,
+  formatLoad,
+  formatMemory,
+  benchmarkableCapabilities,
+  busyRowText,
+  formatMetricSpecValue,
+  closedModelSentinel,
+  formatPrimary,
+  latestByModel,
+  leaderboard,
+  metricOptionLabel,
+  middleEllipsis,
+  orderCapabilities,
+  primaryMetric,
+  primaryValue,
+  resolveCapability,
+  resolveMetric,
+  resolveModel,
+  rowDetail,
+  rowHeadline,
+  runButtonState,
+  runCountsByCapability,
+  runCountsByModel,
+  runsFor,
+  shortModelName,
+  stoppedNote,
+  trendKind,
+  workloadNote,
+  type LeaderboardRow,
+  type MetricSpec,
+  type ModelLatest,
+  type RunButtonState,
+  type RunsInFlight,
+} from "@apps/ai_models/lib/benchmark";
+import { type CacheScan } from "@apps/ai_models/lib/useCacheScan";
+import { refreshAiRuntime } from "@apps/ai_models/lib/aiRuntime";
+import {
+  advanceQueue,
+  observeStop,
+  queueableModels,
+  queueStatus,
+  queueTally,
+  requestQueueStop,
+  startQueue,
+  type BenchmarkQueue,
+} from "@apps/ai_models/lib/benchmarkQueue";
+import { navigateUrl } from "@platform/lib/router";
+import {
+  cancelAiGeneration,
+  deleteAiBenchmarks,
+  getAiBenchmarks,
+  runAiBenchmark,
+  type AiBenchmarkMachine,
+  type AiBenchmarkRun,
+  type AiBenchmarkWorkload,
+  type AiRuntime,
+} from "@platform/lib/api";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { MenuIcons } from "@platform/ui/MenuIcons";
+import { SkeletonLines } from "@platform/ui/Skeleton";
+
+export function BenchmarkTab({ scan }: { scan: CacheScan }) {
+  const { data, repos, scanEpoch } = scan;
+  // Every run ever recorded, oldest first. `null` until the store has answered.
+  const [runs, setRuns] = useState<AiBenchmarkRun[] | null>(null);
+  // The server's own answer to "which capabilities can a Run press actually
+  // measure" (`AiBenchmarkHistory.workloadCapabilities`, exactly `benchmark.
+  // WORKLOADS`' keys) — narrower than `CAPABILITY_ORDER`'s full list. `[]`
+  // before the first fetch resolves is safe: `loading` (below) gates every
+  // render that reads `all` until `runs` and this land together out of the
+  // same response.
+  const [workloadCapabilities, setWorkloadCapabilities] = useState<string[]>([]);
+  // The fixed workload EACH capability above actually runs (D483) — what a
+  // Run press measures, in the server's own words: a fixed prompt and token
+  // budget, a generated tone of a fixed length, a fixed image size and
+  // guidance, eight fixed texts. Turned into one sentence by `CapabilitySection`
+  // (`workloadNote`, below) and carried on the section heading's info glyph
+  // as a `data-hint` rather than restated here as frontend prose that could
+  // silently drift from `fused_render/ai/benchmark.py`'s `WORKLOADS` table —
+  // see that function's own comment for why the drift is guarded by a
+  // Python-side test rather than trusted to stay in sync by hand.
+  const [workloads, setWorkloads] = useState<Record<string, AiBenchmarkWorkload>>({});
+  // THIS machine, as the server sees it now — the caption the share card is
+  // unshareable without ("62 tok/s" means nothing without the laptop that
+  // produced it). Read from the history rather than from each run, because it
+  // travels there for exactly this reason (`AiBenchmarkHistory.machine`): the
+  // page has to caption a comparison spanning several runs, and picking one
+  // run's block would caption every bar with whichever model happened to be
+  // last. `null` until the first fetch answers — `hardwareLine` draws what it
+  // has, so a card made in that window is short a line rather than broken.
+  const [machine, setMachine] = useState<AiBenchmarkMachine | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Which capability has a run in flight, and on which model. **Keyed by
+  // capability, not a single slot**, because that is the unit the server
+  // serialises on: one resident model per capability, so a second text run
+  // would evict the first's model (a 409) while an image run alongside it is
+  // explicitly permitted. A single slot greyed out every other section under a
+  // tooltip claiming a per-capability rule, making a legal action unreachable.
+  const [inFlight, setInFlight] = useState<RunsInFlight>({});
+  // WHEN the currently in-flight run was pressed, epoch ms, keyed by
+  // capability like `inFlight` itself — the busy row's elapsed clock
+  // (`busyRowText`, lib/benchmark.ts) counts from here, not from whenever the
+  // load happens to finish, so "Measuring — 1:24" means what it says: time
+  // actually spent, including the load, matching the wall clock a person
+  // watching the tab experienced.
+  const [runStartedAt, setRunStartedAt] = useState<Record<string, number>>({});
+  // Ticks once a second while ANYTHING is in flight, for no reason but to
+  // force the busy row's elapsed clock to re-render — `busyRowText` is pure
+  // and reads `Date.now()` itself, so this state's VALUE is never read,
+  // only its change. Stopped the moment `inFlight` empties: an idle tab
+  // re-rendering every second for a clock nothing is showing would be the
+  // exact kind of waste `useAiRuntime`'s own idle/active split (aiRuntime.ts)
+  // exists to avoid elsewhere on this page.
+  const [, setClockTick] = useState(0);
+  const anyInFlight = Object.keys(inFlight).length > 0;
+  useEffect(() => {
+    if (!anyInFlight) return;
+    const timer = window.setInterval(() => setClockTick((n) => n + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [anyInFlight]);
+  // A run that came back STOPPED rather than measured. Its own state, not
+  // `error`: this is not a request failure and must not draw the ErrorBanner —
+  // see `stoppedNote`. Cleared when the next run starts, rather than on a timer:
+  // a timer that hides an explanation before it has been read is worse than a
+  // line that waits to be replaced.
+  const [stopped, setStopped] = useState<string | null>(null);
+  // The three selectors' raw choices — each `null` until the reader (or a
+  // landing `?benchCap=`/`?benchMetric=`/`?benchModel=`) has actually picked
+  // one, at which point the matching `resolve*` function stops filling in a
+  // default and just honours it. SEEDED from the URL once and held in state
+  // thereafter, the same reason the capability filter always was:
+  // `writeParams` uses `history.replaceState`, which deliberately fires no
+  // navigation event (a selection must not stack a history entry) — so a
+  // component that read only the URL would clear the param and go on drawing
+  // the old choice.
+  //
+  // **All THREE are tab-private names, never `?cap=`/`?metric=`/`?model=`.**
+  // `?model=` already means something specific and page-wide (the
+  // Playground's own picker seed, carried across tabs by `tabHref`), and
+  // reusing it here would mean clicking a leaderboard row silently changes
+  // what model the Playground preselects on the next tab switch, and a Local
+  // tab "Try" link would silently jump this tab's trend chart to an unrelated
+  // model. `?cap=` is the same hazard in the OTHER direction, and it shipped
+  // once: `focus` used to read AND write the shared `?cap=` — Home's cards
+  // seed Playground with it (routes.ts) — so merely opening this tab, with no
+  // click at all, resolved a default capability and wrote it into `?cap=`
+  // (the effect below), and switching to Playground right after landed on
+  // that default as if it had been asked for. A private key cannot collide
+  // with anything else later, which is the guarantee "only write after an
+  // explicit selection" does not give — that rule has to be re-derived
+  // correctly at every future capability this tab grows, and getting it
+  // wrong once is exactly how `?cap=` ended up written unconditionally here.
+  const [focus, setFocus] = useState<string | null>(() => readParam("benchCap"));
+  const [metricParam, setMetricParam] = useState<string | null>(() => readParam("benchMetric"));
+  const [modelParam, setModelParam] = useState<string | null>(() => readParam("benchModel"));
+
+  // On the same trigger as the cache walk, for the reason the Local tab's
+  // catalog fetch rides it: a run that just finished is a new row here, and a
+  // model that just landed on disk is a new row to put it in. Two answers one
+  // poll apart would draw a model with no history beside a history with no
+  // model.
+  useEffect(() => {
+    let alive = true;
+    getAiBenchmarks().then(
+      (history) => {
+        if (!alive) return;
+        setRuns(history.runs);
+        setWorkloadCapabilities(history.workloadCapabilities);
+        setWorkloads(history.workloads);
+        setMachine(history.machine);
+        setError(null);
+      },
+      (e) => {
+        if (!alive) return;
+        setError((e as Error).message);
+        // KEEP whatever is already drawn. A failed re-fetch costs the update,
+        // never the history — the same discipline LocalTab's `?? []` follows,
+        // with `?? []` here too so a FIRST failure still leaves the three-state
+        // rule intact (answered, and empty) rather than a permanent skeleton.
+        setRuns((prev) => prev ?? []);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [scanEpoch]);
+
+  // Returns whether a comparable measurement came out of it — a real `run`
+  // with `ok: true`. `runAllFor` below is the one caller that reads this
+  // return value (to feed `advanceQueue`); a plain single-button click
+  // ignores it exactly as it always has.
+  const start = async (model: string, capability: string): Promise<{ ok: boolean }> => {
+    setError(null);
+    setStopped(null);
+    // Optimistic only about the BUTTON, never about a result. Functional
+    // updates on both halves, because two capabilities can be running at once
+    // and a `{...inFlight}` closed over at click time would drop whichever one
+    // started in between.
+    setInFlight((prev) => ({ ...prev, [capability]: model }));
+    setRunStartedAt((prev) => ({ ...prev, [capability]: Date.now() }));
+    try {
+      const { run, cancelled } = await runAiBenchmark(model, capability);
+      // Stopped from outside — say so. Silence here was finding 6: nothing
+      // appended, no error, the button quietly re-enabled, so several minutes of
+      // waiting ended with no signal at all.
+      if (cancelled) setStopped(stoppedNote(model));
+      // **Presence of `run`, not `run.ok`.** A cancelled run answers with no
+      // `run` at all, because nothing was measured; appending it would draw a
+      // phantom "Failed — cancelled" row that becomes this model's LATEST — so
+      // the delta and the summary compare against it — until a reload. A run
+      // that genuinely failed DOES come back and does belong in the history.
+      if (run) {
+        // Append rather than re-fetch: the server just handed back the very
+        // record it appended, so a second read of the same file would be a
+        // round trip to learn what we hold.
+        setRuns((prev) => [...(prev ?? []), run]);
+      }
+      // A benchmark loads a model either way, so the runtime's idea of what is
+      // resident has changed — the Local tab's Loaded badges are reading it.
+      refreshAiRuntime();
+      return { ok: run?.ok === true };
+    } catch (e) {
+      setError((e as Error).message);
+      return { ok: false };
+    } finally {
+      setInFlight((prev) => {
+        const next = { ...prev };
+        delete next[capability];
+        return next;
+      });
+    }
+  };
+
+  // One queue per capability, the same scoping `inFlight` already uses and
+  // for the identical reason: the server serialises per capability, so a
+  // "Run all" over text-generation and one over embeddings are two
+  // independent, legitimately-parallel queues.
+  const [queues, setQueues] = useState<Record<string, BenchmarkQueue>>({});
+
+  // **A REF, mirroring `queues`, because `runAllFor`'s loop needs to observe
+  // a Stop that happens WHILE it is awaiting `start` — and React state does
+  // not give it that.** The bug this fixes: the loop used to drive
+  // `advanceQueue` off its own LOCAL `queue` variable, reassigning it only
+  // from `advanceQueue`'s own return value, while `stopAllFor` called
+  // `setQueues` — a state update the loop's closed-over variable never reads
+  // back. So `requestQueueStop` could be dispatched all day and the running
+  // loop's `queue.stopped` stayed `false` forever: Stop killed the in-flight
+  // model (recorded as a failure) and every model after it started anyway.
+  // `queuesRef.current` is written SYNCHRONOUSLY by `setQueue` below,
+  // wherever `setQueues` used to be called directly, so a read of it right
+  // after an `await` sees whatever `stopAllFor` wrote in the meantime —
+  // unlike `queues` itself, which is only current as of the last render.
+  // `observeStop` (benchmarkQueue.ts) is the pure fold that turns that
+  // observation into the queue the loop advances next; see its own docstring
+  // for the exact mechanism and why the bug shipped past every test in
+  // `benchmarkQueue.test.ts` (they reassign the SAME variable this loop used
+  // not to).
+  const queuesRef = useRef<Record<string, BenchmarkQueue>>({});
+  const setQueue = (capability: string, queue: BenchmarkQueue) => {
+    queuesRef.current = { ...queuesRef.current, [capability]: queue };
+    setQueues(queuesRef.current);
+  };
+
+  // Drives `benchmarkQueue.ts`'s pure state machine with the REAL requests —
+  // this is the one place that awaits `start` in a loop rather than firing
+  // it once. Deliberately lives here, not inside `CapabilitySection`: a
+  // capability's queue must keep running even if the reader switches to a
+  // DIFFERENT capability's card (`CapabilitySection` is remounted per
+  // `selected`, via its own `key`), the same way a single in-flight run
+  // already survives a capability switch. Switching the METRIC selector
+  // never touches this at all — metric is a display choice, the queue does
+  // not read it.
+  const runAllFor = async (capability: string, models: string[]) => {
+    if (models.length === 0) return;
+    let queue = startQueue(capability, models);
+    setQueue(capability, queue);
+    while (queue.current) {
+      const model = queue.current;
+      const { ok } = await start(model, capability);
+      // Re-read the REF, not the closed-over `queue`, so a `requestQueueStop`
+      // written by `stopAllFor` while `start` was in flight is actually seen
+      // — see the ref's own comment above for the bug this closes.
+      const observed = queuesRef.current[capability]?.stopped ?? false;
+      queue = advanceQueue(observeStop(queue, observed), { model, ok });
+      setQueue(capability, queue);
+    }
+  };
+
+  // Stop: mark the queue so it will not start another model once the
+  // in-flight one settles (`requestQueueStop`, pure), AND separately
+  // interrupt that in-flight request — through `cancelAiGeneration`
+  // (`POST /api/ai/cancel`), the SAME mechanism a single text run's own Stop
+  // button already uses elsewhere in the app (Playground's `TextStage`). This
+  // used to call `unloadAiModel` instead, on the theory that unloading the
+  // model a benchmark is using would resolve its held-open request with
+  // `cancelled: true` — **that theory was wrong.** `unload` terminates the
+  // worker PROCESS; it does not touch the in-flight generation's own
+  // `cancelled` flag, so the held-open `/generate` read does not get a clean
+  // `{"cancelled": true}` frame — it gets the process disappearing out from
+  // under it (`ConnectionResetError`/`IncompleteRead`), which `run()`'s
+  // generic `except BaseException` then recorded as a normal `ok:false`
+  // failure — a real, permanent "this model failed" row in the one history
+  // this feature exists to keep trustworthy, for a run somebody stopped on
+  // purpose. `cancel_generation` (`ai/supervisor.py`, untouched) is the
+  // COOPERATIVE channel: it asks the resident worker to set its own
+  // `cancelled` flag, which `_measure_text`/`_measure_image`/
+  // `_measure_transcript` all already recognise and turn into
+  // `benchmark.Cancelled` — nothing stored, exactly like a single run's ✕
+  // (see `benchmark.Cancelled`'s own docstring). `start` already turns the
+  // resulting `{cancelled: true}` into a `stoppedNote` and an `ok: false`
+  // for the queue, unchanged by this switch.
+  const stopAllFor = (capability: string) => {
+    // Read and write through the REF, not the `queues` state closure — the
+    // same reason `runAllFor`'s loop does: this is the write half of the
+    // exact race that comment describes, and a click handler closing over a
+    // stale `queues` from its own last render is as capable of missing a
+    // concurrent update as the loop was.
+    const queue = queuesRef.current[capability];
+    if (queue) setQueue(capability, requestQueueStop(queue));
+    if (queue?.current) cancelAiGeneration(capability).catch(() => {});
+  };
+
+  const forget = async (id: string) => {
+    setError(null);
+    try {
+      // The endpoint answers with the fresh history, so the page adopts state it
+      // just re-read rather than splicing an array it hopes still matches disk —
+      // the same discipline the Local tab's delete follows.
+      const history = await deleteAiBenchmarks([id]);
+      setRuns(history.runs);
+      setWorkloadCapabilities(history.workloadCapabilities);
+      setWorkloads(history.workloads);
+      setMachine(history.machine);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  // Whether the history has answered at all — the same predicate the early
+  // return below used to gate on. Named here because the sync effect right
+  // after it needs to know the SAME thing: don't write a resolved default
+  // into the URL while `runs` is still `null` and every count below therefore
+  // reflects no recorded run yet, which could clobber an explicit param with a
+  // premature guess the moment the real counts land one render later.
+  const loading = !data && runs === null;
+
+  // Which capabilities the selector offers: every one this machine has a
+  // downloaded model for, UNION every one with a recorded run. The union is
+  // what keeps a history reachable after its model was deleted — the runs are
+  // still the truth about what happened, and dropping it from the list would
+  // silently hide them.
+  //
+  // **The two SPECULATIVE sources — `CAPABILITY_ORDER` and the on-disk
+  // repos — are filtered to `workloadCapabilities` first; recorded RUNS
+  // never are.** A capability with a downloaded model but no workload (video
+  // generation today) would otherwise render a section whose only Run
+  // outcome is a 400 — `/api/ai/benchmark`'s own refusal, since the POST
+  // route checks the identical `benchmark.WORKLOADS` this list is filtered
+  // against. A recorded run, by contrast, could only exist for a capability
+  // that HAD a workload at the time it ran — the same route already refused
+  // it otherwise — so it is real history regardless of what the CURRENT
+  // table says, and hiding it would be the same silent loss the comment
+  // above already argues against for a deleted model.
+  const all = orderCapabilities([
+    ...new Set([
+      ...benchmarkableCapabilities(
+        [...CAPABILITY_ORDER, ...repos.map((r) => r.capability).filter((c): c is string => !!c)],
+        workloadCapabilities,
+      ),
+      ...(runs ?? []).map((r) => r.capability),
+    ]),
+  ]);
+
+  const capabilityCounts = runCountsByCapability(runs ?? []);
+  const selected = resolveCapability(all, focus, capabilityCounts);
+
+  // Everything below is scoped to the ONE selected capability, computed here
+  // (not inside a child component) because the URL-sync effect needs the
+  // final answers — `selectedMetric` and `selectedModel` — to write, and a
+  // hook cannot read state a child component holds.
+  const capabilityRepos = selected ? repos.filter((r) => r.capability === selected) : [];
+  const capabilityRuns = selected && runs !== null ? runsFor(runs, selected) : null;
+
+  // The metric selector's options recompute per capability (and per its own
+  // runs) — `availableMetrics` (lib/benchmark.ts) drops anything nothing has
+  // measured yet, so the dropdown never offers an option that would render an
+  // empty chart.
+  const metricSpecs = selected ? availableMetrics(selected, capabilityRuns ?? []) : [];
+  const selectedMetric = resolveMetric(metricSpecs, metricParam);
+
+  // The leaderboard — ranked best-first BY THE SELECTED METRIC, never pinned
+  // to the capability's primary. `leaderboard` (lib/benchmark.ts) owns the
+  // ordering and every bar's length, so the rule about which way a metric
+  // points is tested once rather than guessed again here.
+  const latest = new Map<string, ModelLatest>(
+    (capabilityRuns ? latestByModel(capabilityRuns, selectedMetric) : []).map((row) => [row.model, row]),
+  );
+  // Models with a card, then models that only have HISTORY — a run whose model
+  // has since been deleted is still a fact, and it belongs in the ranking
+  // rather than nowhere.
+  const orphans = [...latest.keys()].filter((model) => !capabilityRepos.some((r) => r.id === model));
+  const gone = new Set(orphans);
+  const ranked: LeaderboardRow[] = leaderboard(selectedMetric, [
+    ...capabilityRepos.map((r) => ({ model: r.id, row: latest.get(r.id) ?? null })),
+    ...orphans.map((model) => ({ model, row: latest.get(model) ?? null })),
+  ]);
+
+  // The trend chart's model: the URL's `?benchModel=` when it names a model IN
+  // THIS CAPABILITY's leaderboard, otherwise the one with the most recorded
+  // runs here — ties broken by the leaderboard's OWN rank (`ranked`'s order),
+  // so a tie breaks toward whichever model is already reading as the better
+  // one rather than an arbitrary list order.
+  const modelCounts = capabilityRuns ? runCountsByModel(capabilityRuns) : {};
+  const selectedModel = resolveModel(ranked.map((r) => r.model), modelParam, modelCounts, selected);
+  const trendRuns = selectedModel && capabilityRuns
+    ? capabilityRuns.filter((r) => r.model === selectedModel)
+    : [];
+  // This capability's own "closed" marker (`resolveModel`'s own comment) —
+  // computed once here since both `toggleModel` and the URL-sync effect
+  // below need the exact same string to write or compare against.
+  const closedSentinel = selected ? closedModelSentinel(selected) : null;
+
+  // Selecting a row now OPENS it (D481) — which means it has to be closable
+  // too, or `aria-expanded="true"` on an open row would be a control with no
+  // way back. `toggleModel` is the WHOLE ROW's own click (the row is the
+  // accordion header now, not a small chevron target inside it — see the
+  // big comment above `.am-bench-rows`' render loop): already-open closes
+  // it (writes THIS capability's own `closedSentinel`, never a bare `""` —
+  // a bare flag would still read as "closed" after switching to a different
+  // capability, since `modelParam` is one piece of state shared across all
+  // of them; see `closedModelSentinel`'s own comment in lib/benchmark.ts),
+  // anything else opens it. `openModel` never closes anything — it is what
+  // the Run button uses, since starting a benchmark must never hide the row
+  // you are about to watch update (see the Run button's own comment in
+  // `BenchmarkRow`). Both bail out with no-ops if `selected` is somehow
+  // null — `CapabilitySection`, where both are actually wired to a click,
+  // only ever renders under a real capability, so this is defensive, not
+  // reachable in practice.
+  const toggleModel = (model: string) => {
+    if (!closedSentinel) return;
+    setModelParam(model === selectedModel ? closedSentinel : model);
+  };
+  const openModel = (model: string) => setModelParam(model);
+
+  // Keep the URL in sync with whatever is actually selected — landing on a
+  // default (no param yet) writes it in, and choosing a different capability,
+  // metric or model updates it — via `replaceState` (`writeParams`), never a
+  // navigation: a selector change is not a page to go Back to. Runs after
+  // render rather than during it, since writing history is a side effect.
+  //
+  // **An explicit close is written VERBATIM (`modelParam === closedSentinel`
+  // — THIS capability's own marker, never any other), not as
+  // `selectedModel`** (which `resolveModel` resolves to `null` for exactly
+  // this case): `writeParams` deletes a key given `null`, and a deleted
+  // `?benchModel=` is indistinguishable from one that was never set, which
+  // would make a closed row silently re-open itself on the next reload. Every
+  // OTHER case — including a marker closed under a DIFFERENT capability,
+  // left over in `modelParam` from before the reader switched — writes the
+  // resolved `selectedModel` rather than echoing `modelParam` raw, which
+  // doubles as the fix for the cross-capability leak: the stale foreign
+  // marker gets overwritten with this capability's own real default the
+  // very next time this effect runs, rather than lingering in the URL.
+  //
+  // **This hook must run on EVERY render, loading or not** — React throws
+  // ("Rendered more hooks than during the previous render") the moment a hook
+  // sits below a conditional return, because the loading render would then
+  // call one fewer hook than the render after it. The `loading` guard
+  // therefore lives INSIDE the effect, on the WRITE, not on the hook: skipping
+  // the call while `runs` is still `null` is what stops a not-yet-known
+  // history from clobbering an explicit param with a premature guess one
+  // render before the real counts arrive.
+  useEffect(() => {
+    if (loading) return;
+    writeParams({
+      benchCap: selected,
+      benchMetric: selectedMetric?.key ?? null,
+      benchModel: modelParam !== null && modelParam === closedSentinel ? modelParam : selectedModel,
+    });
+  }, [loading, selected, selectedMetric, selectedModel, modelParam, closedSentinel]);
+
+  if (loading) return <SkeletonLines rows={6} label="Loading benchmarks" />;
+
+  return (
+    <div className="am-bench">
+      <ErrorBanner>{error}</ErrorBanner>
+      {stopped && <p className="am-bench-stopped">{stopped}</p>}
+      {/* THE CAPABILITY SELECTOR. A native `<select>`, unlabelled ON SCREEN — the
+          reader asked for the redundant "Capability" caption gone, since the
+          option text (a capability's own name, e.g. "Text generation")
+          already says what the control is. `aria-label` keeps it an
+          accessible control without reintroducing the visible chrome. This is
+          the one selector that stays in the page-level toolbar rather than
+          inside the card below — it chooses WHICH section you are looking
+          at, which is a page-level question, unlike Metric (now inside
+          `CapabilitySection`, right beside the instruments it actually
+          governs, and unlabelled on screen there too — same reasoning, an
+          option's own text names the metric, so both selects now carry their
+          name in `aria-label` alone). No run count in the option labels
+          any more — the reader asked for that gone too, and `capabilityCounts`
+          still drives `resolveCapability`'s default pick, it just no longer
+          prints itself. */}
+      <div className="am-bench-controls">
+        <select
+          id="am-bench-cap"
+          aria-label="Capability"
+          className="field-control am-bench-capsel-input"
+          value={selected ?? ""}
+          onChange={(e) => setFocus(e.target.value)}
+        >
+          {all.map((capability) => (
+            <option key={capability} value={capability}>
+              {capabilityLabel(capability)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {selected && (
+        <CapabilitySection
+          key={selected}
+          capability={selected}
+          metric={selectedMetric}
+          metricSpecs={metricSpecs}
+          onSelectMetric={setMetricParam}
+          workload={workloads[selected] ?? null}
+          runs={capabilityRuns}
+          machine={machine}
+          ranked={ranked}
+          gone={gone}
+          selectedModel={selectedModel}
+          trendRuns={trendRuns}
+          onToggleModel={toggleModel}
+          onOpenModel={openModel}
+          inFlight={inFlight}
+          runStartedAt={runStartedAt}
+          runtime={scan.runtime}
+          onRun={start}
+          onForget={forget}
+          queue={queues[selected]}
+          onRunAll={runAllFor}
+          onStopAll={stopAllFor}
+        />
+      )}
+    </div>
+  );
+}
+
+function CapabilitySection({
+  capability,
+  metric,
+  metricSpecs,
+  onSelectMetric,
+  workload,
+  runs,
+  machine,
+  ranked,
+  gone,
+  selectedModel,
+  trendRuns,
+  onToggleModel,
+  onOpenModel,
+  inFlight,
+  runStartedAt,
+  runtime,
+  onRun,
+  onForget,
+  queue,
+  onRunAll,
+  onStopAll,
+}: {
+  capability: string;
+  /** The reader's SELECTED metric — not necessarily the primary — resolved by
+   *  `BenchmarkTab`. Null only for a capability this frontend does not know. */
+  metric: MetricSpec | null;
+  /** The Metric `<select>`'s own options — every metric this capability
+   *  offers that at least one run has actually measured (`availableMetrics`,
+   *  lib/benchmark.ts). Lives here, not in the page-level toolbar: the metric
+   *  changes what the chart plots and what the rows rank by, both of which
+   *  are inside this card, unlike Capability (still in the toolbar — it
+   *  picks WHICH card). Empty for a capability with nothing to select. */
+  metricSpecs: MetricSpec[];
+  onSelectMetric: (key: string) => void;
+  /** This capability's own fixed workload (D483) — null while the history
+   *  has not answered, or for a capability with none (`NO_WORKLOAD_YET`
+   *  server-side, video generation today, which draws no Run button either
+   *  and therefore has nothing here to caption). Turned into one sentence by
+   *  `workloadNote` and carried on the section heading's info glyph as a
+   *  `data-hint`, not drawn on screen — see that glyph's own comment. */
+  workload: AiBenchmarkWorkload | null;
+  /** null while the history has not answered. */
+  runs: AiBenchmarkRun[] | null;
+  /** This machine, for the share card's caption — null until the history has
+   *  answered. Nothing on screen reads it: a reader looking at their own
+   *  laptop does not need it spelled out, but a card leaving the laptop does. */
+  machine: AiBenchmarkMachine | null;
+  /** Every model this capability knows about, ranked best-first — computed by
+   *  `BenchmarkTab` (`leaderboard`), since its length already answers "is
+   *  there anything to show" (repos + history, deleted models included). */
+  ranked: LeaderboardRow[];
+  /** Which of `ranked`'s models are orphans — on disk no longer, history
+   *  only. A model whose weights are gone still shows its history and still
+   *  answers a click (the trend chart draws it fine); it just has no button. */
+  gone: Set<string>;
+  /** The model the trend chart is currently showing, or null when there is
+   *  truly nothing to pick from. */
+  selectedModel: string | null;
+  /** `selectedModel`'s own runs, already filtered — `ModelTrendChart` draws
+   *  nothing else. */
+  trendRuns: AiBenchmarkRun[];
+  /** The whole row's own click (the entire row is the accordion header —
+   *  see D481): closes an already-open row, opens any other
+   *  (`BenchmarkTab`'s `toggleModel`). Exactly one row open at a time, same
+   *  as `selectedModel` always meant — the new part is that re-clicking the
+   *  open one now closes it instead of being a no-op. */
+  onToggleModel: (model: string) => void;
+  /** The Run button's own click: opens this row, NEVER closes it — starting
+   *  a benchmark must not hide the chart you are about to watch update
+   *  (`BenchmarkTab`'s `openModel`, a plain "select" with no toggle branch).
+   *  See the Run button's own comment below for how its click avoids also
+   *  triggering the row's toggle. */
+  onOpenModel: (model: string) => void;
+  /** Every capability's in-flight run, not just this one's — `runButtonState`
+   *  reads its own key out, which keeps the "which capability blocks which"
+   *  rule in one tested place rather than in each section's props. */
+  inFlight: RunsInFlight;
+  /** When the in-flight run on THIS capability was pressed, epoch ms — absent
+   *  for a capability with nothing running. Feeds the busy row's elapsed
+   *  clock (`busyRowText`); `BenchmarkTab` is the one place that knows when a
+   *  click happened, so it owns this rather than each row inventing its own
+   *  start time. */
+  runStartedAt: Record<string, number>;
+  /** The AI runtime table (`lib/aiRuntime.ts`), already polled by the page —
+   *  read here ONLY to answer "is the in-flight model still loading, or is it
+   *  measuring now" (`busyRowText`'s `stillLoading`). Reusing this poll is
+   *  why the busy row does not need one of its own. */
+  runtime: AiRuntime;
+  onRun: (model: string, capability: string) => void;
+  onForget: (id: string) => void;
+  /** This capability's own "Run all" queue, or undefined before one has ever
+   *  been started here. Persists across a capability switch (owned by
+   *  `BenchmarkTab`, keyed by capability) — this component only reads it. */
+  queue: BenchmarkQueue | undefined;
+  onRunAll: (capability: string, models: string[]) => void;
+  onStopAll: (capability: string) => void;
+}) {
+  // What a Run press here actually measures, in one sentence (D483) — null
+  // for a capability `workloadNote` does not know how to describe, or
+  // while `workload` itself has not arrived yet.
+  const note = workloadNote(capability, workload);
+  // The trend instrument's shape — `trendKind` (lib/benchmark.ts) decides
+  // "none" / "single" / "trend" from how many of `trendRuns` actually
+  // measured `metric`. Computed here, once, rather than inline in the JSX
+  // below: both the compact single-run state and the full chart need the
+  // series `chartSeries` already produced, and a second call would just be
+  // the first one's answer computed twice.
+  const trendSeries = metric ? chartSeries(trendRuns, metric).series[0] ?? null : null;
+  const trend = trendKind(trendSeries?.points.length ?? 0);
+  // The comparison chart's own data — every model with a real value, ranked
+  // best-first, direction included (`comparisonBars`, lib/benchmark.ts).
+  const bars = comparisonBars(ranked, metric);
+  // Every model "Run all" would attempt — everything in `ranked` except the
+  // `gone` ones (no weights, no button to press). Recomputed on every render
+  // rather than cached in state: it has to reflect whatever is on disk RIGHT
+  // NOW at the moment the button is pressed, not whatever it was when the
+  // queue started (a model deleted mid-queue is skipped the same way a
+  // single Run press already can't reach it).
+  const runnable = queueableModels(ranked, gone);
+  const status = queue ? queueStatus(queue) : null;
+  // Blocked by ANY in-flight run on this capability, not just a queue's own —
+  // a manual single "Run again" press sets the identical `inFlight` slot a
+  // queue's own `start()` calls do, and the server allows only one resident
+  // model per capability either way.
+  const busy = inFlight[capability] !== undefined;
+  // The busy row's own text, computed here rather than in `BenchmarkRow`:
+  // this is where `capability` and `inFlight` are both already in scope, and
+  // a single site keeps "which phase" (the runtime's own answer) and "how
+  // long" (this tab's own click timestamp) from drifting into two different
+  // readings for two different rows of the same run.
+  const busyModel = inFlight[capability];
+  const stillLoading = busyModel
+    ? runtime.loaded.some(
+        (m) => m.model === busyModel && m.capability === capability &&
+          m.state !== "ready" && m.state !== "error",
+      )
+    : false;
+  const busyText = busyModel
+    ? busyRowText(stillLoading, runStartedAt[capability] ?? Date.now(), Date.now())
+    : null;
+  // The device most of THIS section's models last ran on — the hardware
+  // doesn't change per model, so a row's own detail line (`BenchmarkRow`
+  // below, via `rowDetail`) drops it whenever it MATCHES this, and keeps it
+  // only for the outlier that differs (see `commonDevice`, lib/benchmark.ts).
+  const expectedDevice = commonDevice(
+    ranked.map((r) => r.row).filter((row): row is ModelLatest => row !== null),
+  );
+  // The app version the plotted numbers were MEASURED under — the newest run's
+  // (`runs` is oldest-first), not the running build. The app is part of what a
+  // benchmark measures, so a card drawn after an upgrade must keep naming the
+  // version that produced the bars. Only the share card reads this; nothing on
+  // screen does (a per-run "Details" expander already shows each run's own).
+  const measuredVersion = runs && runs.length > 0 ? runs[runs.length - 1]!.appVersion : null;
+
+  return (
+    <section className="am-section">
+      {/* The heading STAYS a plain `<h3>` — this `<section>` also frames the
+          leaderboard (every model, not just the selected one) and the run
+          archive below, and a landmark section needs its own accessible
+          name rather than borrowing a sibling `<select>`'s current value, the
+          select's value changes on click, the heading should not blink with
+          it.
+
+          **The Metric select lives HERE now, not in the page-level toolbar
+          above** — it changes what the comparison chart plots and what the
+          leaderboard rows rank by, and both of those are inside this card;
+          Capability (still in the toolbar) picks WHICH card, a page-level
+          question. Hidden rather than disabled when there is nothing to pick
+          from — a select with zero options renders as an empty,
+          clickable-looking box, and there is nothing honest for it to say.
+
+          **The unit and the direction cue are IN the option text**
+          (`metricOptionLabel`, lib/benchmark.ts — "Speed (× realtime)", "Peak
+          memory (lower is better)"), not in a badge beside the select. Two
+          badges have now been tried and both failed on the same axis. Trailing
+          the select it was a third mark in a row that already holds an `<h3>`
+          and a Share button, saying nothing the control it followed could not
+          say itself. Moved to the LEFT of the select — where the "Metric"
+          caption used to be, so the row would read unit-then-choice — it broke
+          outright on transcription: `× realtime` is a multiplier SUFFIX, it
+          parses only when it trails a number ("1.4× realtime"), and alone in a
+          bordered pill beside a control it read as the dismiss ✕ of a
+          removable filter chip — a shape this app uses elsewhere for exactly
+          that (D448's Tasks filter pills). Inside the option the words have a
+          subject again, the empty-unit metric (`Peak memory` formats through
+          the byte formatter and has no unit string, so the pill there held
+          only "lower is better") stops being a special case, and the fact is
+          stated where the choice is made rather than beside it.
+
+          The CUE is one-sided on purpose: "lower is better" for exactly the
+          metrics where the ordinary "longer bar / bigger number wins" habit
+          reads backwards (Peak memory, Load time, …), nothing extra for the
+          metrics where that habit already reads right — labelling both
+          directions everywhere would bury the one case actually worth
+          flagging. Read by both instruments below (the comparison chart's
+          shorter-is-better bars and the trend chart's downward-is-better line
+          invert the same way), and still said only once: the old
+          per-model-name-plus-unit pill on the trend heading below is GONE
+          too. */}
+      <div className="am-section-head am-bench-section-head">
+        <div className="am-bench-section-heading">
+          <h3 className="am-section-title">{capabilityLabel(capability)}</h3>
+          {/* What a Run press on this capability actually DOES (D483) — the
+              page's only other words about this were the tab-level subtitle,
+              "a fixed workload per capability, timed on this machine", which
+              said THAT the work is fixed without ever saying what it is.
+              Behind an info glyph now, not a visible line: the first version
+              put the sentence directly under the heading, unconditionally,
+              and the user's own call was that an EXPLICIT glyph is the ink
+              this data earns, rather than a line every reader scans past on
+              every visit whether they want it or not.
+
+              `data-hint` (platform/lib/hints.ts, D474), never a native
+              `title` — D474 measured the browser's own tooltip delay at
+              four to five seconds on a session's first hover, which reads
+              as "no tooltip" to whoever is waiting on it. A real
+              `<button>` is what makes `hints.ts`'s FOCUS path find this
+              (`onFocus`, anchored to the element rather than a pointer that
+              is not there) — a `<span>` or a `<div role="button">` would
+              have the hint but not the Tab stop, which is a control a
+              keyboard cannot reach let alone understand. `aria-label`
+              carries what the control IS ("what this benchmark
+              measures"); `data-hint` carries the answer itself — the exact
+              sentence the visible line used to say, workload name and
+              revision included, unchanged.
+
+              Placed beside the HEADING, not inside `.am-bench-headtools`
+              with the Metric select and Share: it explains the SECTION as
+              a whole (what a Run press on ANY row here measures), not
+              those two controls, and that group is already this row's
+              busy end. Rendered only when there is a workload to explain
+              (`note` — a capability with none, video generation today,
+              gets no dead glyph pointing at nothing). */}
+          {note && (
+            <button
+              type="button"
+              className="am-bench-workload-info"
+              data-hint={note}
+              aria-label="What this benchmark measures"
+            >
+              {MenuIcons.info}
+            </button>
+          )}
+        </div>
+        {/* The head's controls, as one group: the Metric select and — only
+            when there is actually a chart to send — Share. Share sits HERE
+            rather than over the chart because what it shares is this
+            section's current selection (capability + metric), which is
+            precisely what these two controls between them decide. */}
+        <div className="am-bench-headtools">
+          {metricSpecs.length > 0 && (
+            <div className="am-bench-metricsel">
+              <select
+                id={`am-bench-metric-${capability}`}
+                className="field-control am-bench-capsel-input"
+                aria-label="Metric"
+                value={metric?.key ?? ""}
+                onChange={(e) => onSelectMetric(e.target.value)}
+              >
+                {metricSpecs.map((spec) => (
+                  <option key={spec.key} value={spec.key}>
+                    {metricOptionLabel(spec)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {/* Rendered on exactly the condition the chart itself is (below): a
+              Share button above "no runs recorded yet" offers to send an empty
+              axis. */}
+          {metric && bars.length > 0 && (
+            <ShareChartButton
+              card={{
+                capability,
+                metric,
+                bars,
+                machine,
+                device: expectedDevice,
+                appVersion: measuredVersion,
+              }}
+            />
+          )}
+        </div>
+      </div>
+      {runs === null ? (
+        <SkeletonLines rows={2} label={`Loading ${capabilityLabel(capability)} benchmarks`} />
+      ) : ranked.length === 0 ? (
+        // Answered, and empty. It says WHICH nothing — no model rather than no
+        // benchmark — and points at the next step rather than leaving the
+        // reader to guess where a model would come from.
+        <p className="am-group-note">
+          No {capabilityLabel(capability).toLowerCase()} model is downloaded yet. Get one from the{" "}
+          <a
+            href={tabHref("local")}
+            onClick={(e) => {
+              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
+                return;
+              e.preventDefault();
+              navigateUrl(tabHref("local"));
+            }}
+          >
+            {tabLabel("local")} tab
+          </a>
+          .
+        </p>
+      ) : (
+        <>
+          {/* INSTRUMENT ONE, THE HERO: the comparison chart — one bar per
+              BENCHMARKED model, ranked best-first. This is what answers the
+              question a reader arrives with ("which of these is fastest"),
+              and it renders whenever more than one model has been
+              benchmarked at all — the normal case. It replaces an earlier
+              design where the trend chart tried to be the hero: that needs
+              TWO RUNS OF THE SAME MODEL, and real usage spreads a handful of
+              runs across several different models far more often than it
+              re-runs one, so the trend chart's "single" state fired for
+              nearly every model and the page had no chart at all. Failed and
+              never-benchmarked models have nothing to plot (`comparisonBars`
+              excludes them) but stay fully visible in the rows below, which
+              is where their action — Run, Details — lives anyway. */}
+          {metric && bars.length > 0 ? (
+            <ComparisonChart bars={bars} metric={metric} />
+          ) : (
+            <p className="am-group-note">
+              No {(metric?.label ?? "runs").toLowerCase()} recorded for any {capabilityLabel(capability).toLowerCase()} model yet — press Run on one below.
+            </p>
+          )}
+          {/* RUN ALL — benchmarks every runnable model in this section, one
+              after another, reusing the exact same `start()` a single "Run"
+              press does (`BenchmarkTab`'s `runAllFor`), so a queued run and a
+              manual one are indistinguishable to the server and to the
+              history. Sits between the two chart instruments and the ledger
+              rows it drives, since it acts on exactly that list — and now
+              (D479) sits FLUSH against those rows in the markup's own order
+              (see `.am-bench-runall + .am-bench-rows` in ai-models.css): the
+              button is that list's control, not a third, orphaned instrument
+              floating in the gap the chart and the rows each already own a
+              margin into.
+
+              **The label states the true cost up front** — "Run all 6
+              models" — rather than reading like a single cheap click; each
+              one is a COLD load (the benchmark unloads whatever it loaded),
+              so six Whisper models is many minutes and several GB of
+              repeated downloads-from-disk. `runnable.length === 0` hides the
+              button entirely rather than disabling it — there is nothing
+              honest for a Run All button to say when every model is
+              already `gone`.
+
+              **Idle branch is `--fg`-outlined, glyph-led, plain text (D479)**
+              — not the accent outline `.am-card-try` wears on the Models tab,
+              and not a filled plate. Accent on THIS tab is already spoken
+              for as DATA ink: the comparison chart's bars, the metric values
+              in each row, and the selected row's ring all draw in it, so an
+              accent-outlined button sitting between the chart and the
+              selection would read as one more lime thing competing to be the
+              current selection rather than a control. `--fg` says "control",
+              not "selected" or "value", and stays true everywhere on the
+              page. A filled plate was rejected on the D475 precedent this
+              tab does not get to except itself from: filled is the loudest
+              mark this page can make, reserved for the ONE genuinely
+              consequential action beside a cheaper one (Load, filled, next
+              to Try, outlined, on the Models tab) — and Run All is minutes
+              of compute across N cold loads and several GB re-read from
+              disk, the single most expensive thing a press can start here.
+              It should be findable, which the border and full-opacity text
+              do; it should not be the loudest thing on the page competing
+              with the chart above it. The glyph is `MenuIcons.play`, the
+              exact triangle every row below already wears on its own Run
+              button — "run all" is that same act N times over, so it borrows
+              the row's own vocabulary instead of inventing a second one; a
+              bare word here would say the same thing in a different
+              language than the list it operates on. */}
+          {runnable.length > 0 && (
+            <div className="am-bench-runall">
+              {status === "running" && queue ? (
+                <>
+                  <span className="am-bench-runall-progress" role="status">
+                    <span className="am-runtime-dot" />
+                    Running {queue.started} of {queue.models.length} —{" "}
+                    {shortModelName(queue.current!)}
+                  </span>
+                  <button
+                    type="button"
+                    className="cc-iconbtn"
+                    onClick={() => onStopAll(capability)}
+                    title="Stop"
+                    aria-label="Stop"
+                  >
+                    {MenuIcons.stop}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="am-bench-runall-btn"
+                    disabled={busy}
+                    title={
+                      busy
+                        ? `Waiting for the ${inFlight[capability]} benchmark to finish`
+                        : `Benchmark all ${runnable.length} models in this section, one after another — each is a cold load and this can take a while`
+                    }
+                    onClick={() => onRunAll(capability, runnable)}
+                  >
+                    {MenuIcons.play}
+                    Run all {runnable.length} models
+                  </button>
+                  {/* The one category Run All silently leaves out — say so,
+                      rather than a count that quietly excludes it with no
+                      explanation. Each `gone` row already states its own
+                      reason ("not on this machine any more"); this is the
+                      same fact stated once for the button that skips all of
+                      them at once. */}
+                  {gone.size > 0 && (
+                    <span className="am-bench-runall-note">
+                      {gone.size} not on this machine — skipped
+                    </span>
+                  )}
+                  {/* The tally from the LAST completed or stopped run, until
+                      the next one starts (a fresh `startQueue` clears
+                      `results`, which flips `status` back to "running" before
+                      this branch is ever reached again). Says WHICH ended it
+                      — a stop reads differently from simply finishing. */}
+                  {status && queue && (
+                    <span className="am-bench-runall-tally">
+                      {(() => {
+                        const tally = queueTally(queue);
+                        const parts = [`${tally.succeeded} succeeded`, `${tally.failed} failed`];
+                        if (status === "stopped") parts.push(`${tally.remaining} not run — stopped`);
+                        return parts.join(", ");
+                      })()}
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+          {/* INSTRUMENT TWO: the ledger — every model, ranked, one line each,
+              with the action (Run, Details) the chart above has no room for.
+              **The WHOLE ROW is the accordion header** ("let's make the
+              entire row have a dropdown of sorts") — clicking anywhere on
+              it except the Run button, or Enter/Space on its one focusable
+              disclosure control (the model-name cell, `BenchmarkRow`),
+              TOGGLES it: an already-open row closes, any other opens (and
+              closes whichever row was open before it — exactly one at a
+              time). Open is the one full-width expansion rendered as that
+              row's sibling in `.am-bench-rows`, holding BOTH the per-run
+              detail/failure text and INSTRUMENT THREE, the trend, for
+              `selectedModel` — and visually FUSED to its row into one card
+              that grew (ai-models.css: the open row's own bottom corners
+              square off and its bottom border drops, the expansion picks
+              up the matching side/bottom border and radius and the same
+              accent wash, so there is no seam between "the header" and
+              "the part that opened").
+
+              **One row, one open state, one hit target — three passes to
+              get here.** Pass one put the trend behind a SEPARATE
+              `<details>` beside a plain-select row — two independent
+              expanders on one row. Pass two merged them into a single
+              `<button>` chevron with `aria-expanded`, but selection was
+              still a plain assignment with no way back to closed — a
+              control reporting `aria-expanded="true"` that cannot collapse.
+              Pass two-and-a-half fixed closing (an explicit `""` in
+              `?benchModel=`, `resolveModel`/lib/benchmark.ts, distinct from
+              `null`'s "no opinion yet, pick the default" — survives a
+              reload instead of the closed row silently reopening) but left
+              the 16px chevron glyph as the ONLY thing on a 36px-tall row
+              that actually opened it, with the row's own click doing the
+              same job right beside it with no visual hint that it did.
+              This pass fixes THAT: the chevron is now a plain, `aria-
+              hidden` rotation indicator with no handler or focus stop of
+              its own, the row itself carries the click (bubbling from
+              anywhere inside it, Run excepted — see its own comment), and
+              the model-name cell is the row's one real focusable control,
+              carrying `aria-expanded`/`aria-controls` so there is exactly
+              one place that contract lives and exactly one extra Tab stop
+              per row (that cell, then Run) instead of three. A row with
+              nothing to expand (`row === null`, never benchmarked) gets
+              none of this — no chevron, no hand cursor, no `aria-expanded`,
+              a click that does nothing (`BenchmarkRow`'s `expandable`). At
+              N models the trend's original position (a block below the
+              WHOLE list) put row N's click a full screen away from the
+              thing it changed; the sibling-of-the-row position fixed that,
+              and each later pass fixed a way the fix itself still fell
+              short of "click the thing, see the thing change, right
+              there". One more since: the `""` mentioned above was a BARE
+              flag, and `modelParam` is one piece of state shared across
+              every capability — closing a row under one capability left
+              every OTHER capability's `?benchModel=` reading as "closed"
+              too the instant the reader switched to it. The sentinel now
+              carries the capability it was closed under
+              (`closedModelSentinel`, lib/benchmark.ts) so a marker closed
+              elsewhere fails the equality check here and falls through to
+              this capability's own default instead. */}
+          <div className="am-bench-rows">
+            {ranked.map(({ model, row }) => {
+              const button = gone.has(model)
+                ? undefined
+                : runButtonState(capability, model, inFlight, row !== null);
+              // The one line beyond the headline — TTFT, load time, device,
+              // or a failed run's own error. Computed HERE, not inside
+              // `BenchmarkRow`, because the expansion that shows it is a
+              // sibling of the row in this same list, not a child of it —
+              // one calculation feeds both the row (whether it has anything
+              // to expand at all) and the expansion's own content.
+              const detail = row
+                ? row.latest.ok
+                  ? rowDetail(row.latest, metric, expectedDevice)
+                  : failureReason(row.latest)
+                : null;
+              const expansionId = benchExpandId(model);
+              return (
+                <Fragment key={model}>
+                  <BenchmarkRow
+                    model={model}
+                    row={row}
+                    metric={metric}
+                    detail={detail}
+                    expansionId={expansionId}
+                    button={button}
+                    busyText={model === busyModel ? busyText : null}
+                    gone={gone.has(model)}
+                    selected={model === selectedModel}
+                    onToggle={() => onToggleModel(model)}
+                    onRun={() => {
+                      onOpenModel(model);
+                      onRun(model, capability);
+                    }}
+                  />
+                  {/* The row's single expansion (D481): full row width for
+                      free, since this is a SIBLING of `.am-bench-row`'s grid
+                      rather than a cell inside it — the trend chart needs
+                      the whole width, which is exactly what a `<details>`
+                      living in the row's own grid cell could never give it.
+                      Rendered only for `selectedModel`'s own row (selection
+                      IS the open state — nothing new to track), and only
+                      when it has anything to hold: `row !== null` is the
+                      SAME "has this model ever been benchmarked" fact that
+                      already sends a never-run model to "Never benchmarked"
+                      with no chevron below, and the `(detail || metric)`
+                      guard beside it is the belt-and-braces case where
+                      somehow neither a detail line nor a metric to trend
+                      survived — never open a block with nothing in it.
+
+                      Detail first, then the trend: the text explains what
+                      this row's own headline didn't have room for, the
+                      chart elaborates on it with a real time axis. Three
+                      shapes for the trend half, not two — a single measured
+                      point is NOT a trend (no before to compare against, and
+                      drawing it in the same ~400px frame as a real chart was
+                      the actual bug: one dot, ~95% empty frame, the largest
+                      element on the page), so it gets its own compact state,
+                      and only two-or-more points earn `ModelTrendChart`.
+                      Zero points for THIS metric (the model has other runs,
+                      just none that measured it) says so in words rather
+                      than drawing an empty axis. */}
+                  {model === selectedModel && row !== null && (detail || metric) && (
+                    <div id={expansionId} className="am-bench-rowexpand">
+                      {detail && <p className="am-bench-rowexpand-detail">{detail}</p>}
+                      {metric &&
+                        (trend === "trend" ? (
+                          <ModelTrendChart runs={trendRuns} metric={metric} />
+                        ) : trend === "single" ? (
+                          <div className="am-bench-trend-single">
+                            <span className="am-bench-trend-value">
+                              {formatMetricSpecValue(trendSeries!.points[0]!.y, metric)}
+                            </span>
+                            <span className="am-bench-trend-note">one run · run again to see a trend</span>
+                          </div>
+                        ) : (
+                          <p className="am-group-note">No {metric.label.toLowerCase()} recorded for this model yet.</p>
+                        ))}
+                    </div>
+                  )}
+                </Fragment>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* The archive, under both instruments: the ranked rows and the trend
+          are the current answer, and this is the evidence behind them. Always
+          shows every run for the capability, independent of the metric/model
+          selection above — it is the raw record, not a filtered view. */}
+      {runs !== null && runs.length > 0 && <RunTable capability={capability} runs={runs} onForget={onForget} />}
+    </section>
+  );
+}
+
+/** This row's full-width expansion sibling's own DOM id — needed so the
+ *  row's model-name button can point `aria-controls` at it. Sanitized rather than the
+ *  raw model id verbatim: a model id is a repo path ("org/name") and `/` (or
+ *  other punctuation a real id might carry) is not a legal `id` token in
+ *  every consumer of this string. Collisions are not a real risk — model ids
+ *  are already unique within one capability's leaderboard, and the
+ *  sanitizing regex only merges characters that were already distinct
+ *  punctuation, never two different alphanumeric runs. */
+function benchExpandId(model: string): string {
+  return `am-bench-expand-${model.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+}
+
+function BenchmarkRow({
+  model,
+  row,
+  metric,
+  detail,
+  expansionId,
+  button,
+  busyText,
+  gone,
+  selected,
+  onToggle,
+  onRun,
+}: {
+  model: string;
+  row: ModelLatest | null;
+  /** The SELECTED metric — what the headline reads. Decided in
+   *  `BenchmarkTab`/`leaderboard`, never here. */
+  metric: MetricSpec | null;
+  /** The one line beyond the headline — TTFT, load time, device, or a failed
+   *  run's own error. Computed by `CapabilitySection` (its `rowDetail`/
+   *  `expectedDevice` call), not here: the SAME string also opens inside
+   *  this row's full-width expansion sibling, and that element is a sibling
+   *  of this component's own return value, not a child of it — so the one
+   *  place that can hand it to both is the caller. `null` just means this
+   *  row's whole story already fits the headline — it does NOT decide
+   *  whether the row is expandable at all (`row !== null` alone does that,
+   *  below): the expansion can still hold a trend worth opening even when
+   *  there is no extra detail line to go with it. */
+  detail: string | null;
+  /** DOM id of this row's own expansion sibling in `.am-bench-rows`
+   *  (`benchExpandId`) — the model-name button's `aria-controls` target.
+   *  Only actually points at something real while `open` is true (that is
+   *  the only time the sibling exists at all), which is exactly when the
+   *  button supplies it below. */
+  expansionId: string;
+  /** What the Run button says and whether it can be pressed — decided by
+   *  `runButtonState`, never here: the rule about which run blocks which button
+   *  is exactly the thing a screenshot cannot check. Absent for a `gone` row,
+   *  which has no button at all. */
+  button?: RunButtonState;
+  /** `busyRowText`'s own answer for THIS model, or null when it is not the one
+   *  running — computed once in `CapabilitySection` (`busyRowText`,
+   *  lib/benchmark.ts) from the AI runtime's own phase plus the tab's own
+   *  click timestamp, never invented here. */
+  busyText?: string | null;
+  /** The model is no longer on disk; its history is shown, its button is not. */
+  gone?: boolean;
+  /** This row's expansion (detail text + trend, D481) is open right below
+   *  it — closing it is a real, reachable state (the whole row's own
+   *  toggle, below), not just an implementation detail of "which one is
+   *  selected". Only ever true for an EXPANDABLE row (`row !== null`) —
+   *  `CapabilitySection` never sets it otherwise, since a model with no
+   *  history has nothing to open. */
+  selected: boolean;
+  /** The whole row's own toggle — a click ANYWHERE on it (the model name,
+   *  the headline, empty space — everything except the Run button, which
+   *  carves itself out below), or Enter/Space on the row's one focusable
+   *  disclosure control (the model-name button — see below for why it, and
+   *  not the row itself, carries the keyboard/ARIA contract). Opens this
+   *  row's expansion if it was closed, closes it if it was already open
+   *  (`BenchmarkTab`'s `toggleModel`). Called only when `row !== null`: a
+   *  row with nothing to expand gets no click handler at all, not a toggle
+   *  that would silently write a selection with nothing to show for it. */
+  onToggle: () => void;
+  /** Runs this model AND opens its row — never closes it, even when the row
+   *  is already open (`BenchmarkTab` wires this to call `onOpenModel`
+   *  before starting the run). See the Run button's own comment below for
+   *  why its click must not also reach `onToggle` via bubbling. */
+  onRun?: () => void;
+}) {
+  // Whether this row has ANYTHING to expand — the one fact that decides
+  // four things at once: whether the leading chevron column draws a glyph
+  // or stays empty; whether the model-name cell becomes a real disclosure
+  // button or stays a plain, inert label; whether the row's own click does
+  // anything; and whether the row gets the `expandable` class that turns
+  // on its pointer cursor and hover hint. A model with no history
+  // (`row === null`, "Never benchmarked") must not LOOK openable — no
+  // chevron glyph (the column itself still reserves its width, so the
+  // model name stays aligned with every other row's — see
+  // `.am-bench-rowdetail-chevron` in ai-models.css), no hand cursor, no
+  // `aria-expanded` implying a state that does not exist, and a click
+  // that does nothing rather than writing a pointless selection.
+  const expandable = row !== null;
+  // `selected` can only be true here when `expandable` is too (see its own
+  // doc comment), but computing this once, locally, means every use below
+  // reads as "is this row's card actually open" rather than trusting a
+  // caller invariant silently.
+  const open = selected && expandable;
+  const nameCell = (
+    <>
+      {/* Budget (28) is a hair under the column's own 30ch so the CSS
+          `overflow: hidden` safety net (ai-models.css) never has to fire
+          for a monospace glyph at this size — see `middleEllipsis`'s own
+          comment for why the ellipsis goes in the MIDDLE rather than the
+          tail. */}
+      <span className="cc-mono">{middleEllipsis(shortModelName(model), 28)}</span>
+      {gone && <span className="am-bench-gone">not on this machine any more</span>}
+    </>
+  );
+  return (
+    // A div-as-container, not a `<button>`: the Run button lives inside
+    // this row (the same shape the Playground's model cards settled on,
+    // D428), and a `<button>` cannot contain another `<button>`. The whole
+    // row is still the accordion header a reader can click anywhere on
+    // ("Let's make the entire row have a dropdown of sorts" — the direction
+    // this replaces the small chevron-target design with) — but the row
+    // itself carries no ARIA or keyboard contract of its own any more.
+    // That belongs on ONE real focusable control inside it instead (the
+    // model-name button below), so there is exactly one place `aria-
+    // expanded`/`aria-controls` live and exactly one extra Tab stop per
+    // row, rather than the row AND a second element both claiming to be
+    // "the" disclosure control. Only the Run button's click stops here —
+    // see its own comment — everything else (the model name, the headline,
+    // empty space) is left to bubble to `onClick` below.
+    <div
+      className={"am-bench-row" + (open ? " selected" : "") + (expandable ? " expandable" : "")}
+      onClick={expandable ? onToggle : undefined}
+    >
+      {/* The row's LEADING column, reserved on every row (ai-models.css'
+          `.am-bench-row` grid-template gives it a fixed width, not `auto`)
+          so an accordion indicator sits at one consistent x down the whole
+          list rather than drifting with the length of the headline/delta
+          text that used to precede it. Empty, not omitted, for a
+          non-expandable row — see `.am-bench-rowdetail-chevron`'s own
+          comment for why the column still has to exist even with nothing
+          drawn inside it. */}
+      <span className="am-bench-rowdetail-chevron" aria-hidden="true">
+        {expandable && MenuIcons.chevron}
+      </span>
+      {expandable ? (
+        // The row's ONE focusable disclosure control. A real `<button>`,
+        // not the row div itself (which has no `tabIndex`/`role` any more)
+        // and not the old chevron-only button (demoted below to a bare,
+        // `aria-hidden` indicator with no handler or focus stop of its
+        // own) — putting the ARIA/keyboard contract on the cell that NAMES
+        // what is being expanded is the natural choice, and it collapses
+        // three former Tab stops (row, chevron, Run) to two (this button,
+        // Run). No `onClick` of its own: its native click bubbles to the
+        // row's `onClick` exactly like any other click on the row would,
+        // and Enter/Space on a focused `<button>` fires that same native
+        // click for free, so the row's toggle needs no separate keyboard
+        // handler either.
+        <button type="button" className="am-bench-model" title={model} aria-expanded={open} aria-controls={open ? expansionId : undefined}>
+          {nameCell}
+        </button>
+      ) : (
+        // Not expandable — a plain, inert cell. No button, no `aria-
+        // expanded`, nothing implying this row does something a click on
+        // it will not actually do.
+        <div className="am-bench-model" title={model}>
+          {nameCell}
+        </div>
+      )}
+      <div className="am-bench-latest">
+        {button?.busy ? (
+          // A plain spinner, not `ModelProgress`: that component draws a
+          // download-manager row's OWN detail and byte counts, and reading it
+          // here would be a second, possibly-stale copy of exactly what the
+          // corner already shows for `ai/benchmark.py`'s own measurement row
+          // (see that module's docstring). This is a DIFFERENT view of the
+          // same run: phase plus a real elapsed clock (`busyText`,
+          // `busyRowText` in lib/benchmark.ts) rather than an invented
+          // percentage — "Loading weights into memory…" while the AI runtime
+          // still reports this model coming up, then "Measuring — 1:24"
+          // ticking from the moment Run was pressed.
+          <span className="am-bench-busy" role="status">
+            <span className="am-runtime-dot" />
+            {busyText}
+          </span>
+        ) : row ? (
+          <>
+            {/* No bar here any more — the comparison chart above draws the
+                SAME proportional comparison once, properly, with a real
+                axis. Two copies of it (a mini-bar per row AND a chart) was
+                the duplicated ink this row is compacted to remove. The
+                chevron that used to trail this cluster now lives in the
+                row's own LEADING column instead (see above) — its x used
+                to drift with how long this headline/delta text happened to
+                be, which is the opposite of what a disclosure indicator's
+                column is supposed to give a reader. */}
+            <span className="am-bench-headline">{rowHeadline(row.latest, metric)}</span>
+            {row.delta && (
+              // The sign is not the meaning — on a lower-is-better metric a
+              // negative change is the improvement — so `better` decides the
+              // class and the sign is only printed.
+              <span className={"am-bench-delta" + (row.delta.better ? " better" : " worse")}>
+                {row.delta.percent >= 0 ? "+" : ""}
+                {row.delta.percent.toFixed(1)}%
+              </span>
+            )}
+          </>
+        ) : (
+          <span className="am-bench-never">Never benchmarked</span>
+        )}
+      </div>
+      {!gone && button && (
+        // `stopPropagation` HERE now, deliberately reversing the old rule —
+        // the row's own click used to be a plain, idempotent select, so
+        // letting Run's click bubble into it was harmless (selecting the
+        // already-selected model twice does nothing). Now that click is a
+        // TOGGLE: on an already-open row, an unstoppped bubble would fire
+        // `onToggle` right after `onRun`'s own open, closing the row this
+        // same press just opened (or was already showing) — hiding the
+        // chart you pressed Run specifically to watch. `onRun` itself
+        // (wired in `CapabilitySection`) opens this row via `onOpenModel`
+        // before starting the run, so the row still opens on a first press;
+        // it simply never gets a chance to close on a second one.
+        <button
+          type="button"
+          className="cc-iconbtn"
+          disabled={button.blocked}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRun?.();
+          }}
+          title={button.title}
+          aria-label={button.label}
+        >
+          {/* `button.busy`'s spinner is still disabled (`button.blocked` is
+              true whenever `busy` is — `runButtonState`, lib/benchmark.ts) —
+              this is a status glyph on a dead button, not a second way to
+              start or stop the run. `.am-icon-spin` (ai-models.css) is the
+              only thing that turns the static ring into motion; the glyph
+              itself does not encode spinning. */}
+          <span className={button.busy ? "am-icon-spin" : undefined}>
+            {button.busy ? MenuIcons.spinner : MenuIcons.play}
+          </span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The table's columns, and how each one sorts.
+ *
+ *  A table rather than a switch in the comparator, so a column cannot exist in
+ *  the header and be unsortable in the body — which is what a per-column `if`
+ *  produced the first time round.
+ *
+ *  Every `value` may return null, and null always sorts LAST regardless of
+ *  direction. That is deliberate: an unmeasured metric is not "the smallest",
+ *  and sorting by throughput must not fill the top of the table with runs that
+ *  measured nothing.
+ */
+const COLUMNS: {
+  key: string;
+  label: string;
+  numeric: boolean;
+  value: (run: AiBenchmarkRun) => number | string | null;
+}[] = [
+  { key: "date", label: "When", numeric: true, value: (r) => r.startedAt },
+  { key: "model", label: "Model", numeric: false, value: (r) => r.model },
+  // Labelled by the capability's own PRIMARY metric at render time —
+  // "Throughput", "Per step" — because one heading cannot name four different
+  // things. Deliberately the primary, not the tab's current selection: the
+  // archive is the raw record, independent of whatever the reader has the
+  // leaderboard/trend chart showing right now.
+  { key: "metric", label: "", numeric: true, value: primaryValue },
+  { key: "memory", label: "Memory", numeric: true, value: (r) => r.peakResidentBytes },
+  { key: "load", label: "Load", numeric: true, value: (r) => r.loadSeconds },
+  { key: "device", label: "Device", numeric: false, value: (r) => r.device },
+  { key: "version", label: "App", numeric: false, value: (r) => r.appVersion },
+];
+
+/** Every run for one capability, newest first by default.
+ *
+ *  **Collapsed by default**, because it is the archive and the two instruments
+ *  above are the answer: a section with four models and thirty runs would
+ *  otherwise open as a wall of numbers with the current state buried at the
+ *  top of it. The summary line says how many are hiding, so nothing is
+ *  invisible — only folded.
+ */
+function RunTable({
+  capability,
+  runs,
+  onForget,
+}: {
+  capability: string;
+  runs: AiBenchmarkRun[];
+  onForget: (id: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Newest first: the default question about a history is "what happened last".
+  const [sort, setSort] = useState<{ key: string; desc: boolean }>({ key: "date", desc: true });
+  const metric = primaryMetric(capability);
+
+  const column = COLUMNS.find((c) => c.key === sort.key) ?? COLUMNS[0]!;
+  const ordered = [...runs].sort((a, b) => {
+    const left = column.value(a);
+    const right = column.value(b);
+    // Nulls last in BOTH directions — see COLUMNS.
+    if (left === null && right === null) return 0;
+    if (left === null) return 1;
+    if (right === null) return -1;
+    const cmp =
+      typeof left === "number" && typeof right === "number"
+        ? left - right
+        : String(left).localeCompare(String(right));
+    return sort.desc ? -cmp : cmp;
+  });
+
+  return (
+    <details className="am-bench-history" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary>
+        {runs.length} recorded {runs.length === 1 ? "run" : "runs"}
+      </summary>
+      <div className="am-bench-tablewrap">
+        <table className="am-bench-table">
+          <thead>
+            <tr>
+              {COLUMNS.map((col) => (
+                <th key={col.key} className={col.numeric ? "num" : undefined}>
+                  <button
+                    type="button"
+                    className="am-bench-sort"
+                    aria-sort={
+                      sort.key === col.key ? (sort.desc ? "descending" : "ascending") : "none"
+                    }
+                    onClick={() =>
+                      setSort((prev) =>
+                        prev.key === col.key
+                          ? { key: col.key, desc: !prev.desc }
+                          : // A fresh column starts DESCENDING for a number and
+                            // ASCENDING for a name, which is what each one's
+                            // interesting end is.
+                            { key: col.key, desc: col.numeric },
+                      )
+                    }
+                  >
+                    {col.key === "metric" ? (metric?.label ?? "Result") : col.label}
+                    {sort.key === col.key && <span aria-hidden="true">{sort.desc ? " ↓" : " ↑"}</span>}
+                  </button>
+                </th>
+              ))}
+              {/* No header for the delete column: a heading over a column of ✕
+                  buttons names the action, not the data. */}
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map((run) => (
+              <tr key={run.id} className={run.ok ? undefined : "failed"}>
+                {/* Locale date and time, not a relative age: two runs an hour
+                    apart are the interesting case, and "3 days ago" cannot tell
+                    them apart. */}
+                <td className="num">{new Date(run.startedAt * 1000).toLocaleString()}</td>
+                <td className="cc-mono">{run.model}</td>
+                {/* A failed run's cell carries the REASON rather than a dash:
+                    the row exists because something went wrong, and the dash
+                    would make it look like a page bug. */}
+                <td className="num" title={run.ok ? undefined : (run.error ?? "")}>
+                  {run.ok ? formatPrimary(run) : "failed"}
+                </td>
+                <td className="num">{formatMemory(run)}</td>
+                <td className="num">{formatLoad(run)}</td>
+                <td>{run.device ?? DASH}</td>
+                <td>
+                  {run.appVersion}
+                  {/* The workload revision, shown only where it is NOT the
+                      newest one in this section — a seam the reader has to know
+                      about, because runs either side of it are not comparable
+                      and the chart deliberately draws no delta across it. */}
+                  {run.workload.revision !== newestRevision(runs) && (
+                    <span className="am-bench-rev" title="A different workload version — not comparable with the newest runs">
+                      {" "}
+                      w{run.workload.revision}
+                    </span>
+                  )}
+                </td>
+                <td>
+                  <button
+                    type="button"
+                    className="am-bench-forget"
+                    title="Forget this run"
+                    aria-label={`Forget the run from ${new Date(run.startedAt * 1000).toLocaleString()}`}
+                    onClick={() => onForget(run.id)}
+                  >
+                    ✕
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  );
+}
+
+/** The workload revision the newest run in this section was measured under —
+ *  what every other row's revision is marked AGAINST. Computed from the runs
+ *  rather than from the frontend's own idea of "current", because this page has
+ *  no such idea: the server owns the revision, and a hardcoded copy here would
+ *  start marking every row the day the server bumped it. */
+function newestRevision(runs: AiBenchmarkRun[]): number | null {
+  let newest: AiBenchmarkRun | null = null;
+  for (const run of runs) if (!newest || run.startedAt > newest.startedAt) newest = run;
+  return newest ? newest.workload.revision : null;
+}

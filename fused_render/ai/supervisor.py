@@ -54,7 +54,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from fused_render import jobs
-from fused_render.ai import registry
+from fused_render.ai import catalog, fit, footprints, hub_metadata, hw_detect, registry
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +96,17 @@ GENERATE_TIMEOUT_S = 900.0
 # daemon thread on that forever is the thing worth refusing.
 TRANSCRIBE_TIMEOUT_S = 4 * 3600.0
 
+# How long a video request will wait for the worker to finish rendering.
+# `TRANSCRIBE_TIMEOUT_S`'s reasoning restated for the other job that can
+# genuinely run for hours on ordinary hardware: a high-resolution video
+# render on an M3 can far exceed the image path's `GENERATE_TIMEOUT_S`
+# (900s), and the
+# precedent for a carve-out this wide is transcription's own four hours. Two,
+# not four, because a render — unlike a multi-hour recording — is bounded by
+# `frames`/`steps` this app itself clamps (`ai_runtime.py`'s video route), so
+# the worst case here is a known ceiling rather than an open-ended file.
+VIDEO_TIMEOUT_S = 2 * 3600.0
+
 # How long an image request will wait for its model to become resident. Long,
 # because the honest worst case is a multi-GB download on a slow connection
 # followed by a minutes-long load — and the alternative to waiting is failing a
@@ -110,6 +121,8 @@ JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-model:"
 IMAGE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-image:"
 #: And one row per RECORDING, for the same reason.
 TRANSCRIBE_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-transcribe:"
+#: And one row per RENDER, same reasoning as `IMAGE_JOB_PREFIX`.
+VIDEO_JOB_PREFIX = jobs.SERVER_ID_PREFIX + "ai-video:"
 
 #: One transcription in flight at a time, decided HERE rather than left to the
 #: worker's `GENERATE_LOCK`.
@@ -196,6 +209,19 @@ class Worker:
     #: actually doing, and quitting the app during a first-ever runner build left
     #: gigabytes downloading with nothing left to cancel them.
     install_key: str = ""
+    #: Whether THIS worker is the one that claimed the install named above, as
+    #: opposed to one that joined an install already running. Set from
+    #: `envinstall.start`'s own `claimed`, never inferred, and always set and
+    #: cleared together with `install_key`.
+    #:
+    #: It words the ROW and nothing else (`_JOINED_INSTALL_DETAIL`). Whether the
+    #: install may be cancelled is NOT this question and must not be answered
+    #: from here: see `_install_waiters`. Ownership was tried as the condition
+    #: and is wrong in both directions — a joiner cancelling on the key tore
+    #: down a build others were waiting on, and an OWNER cancelling it killed
+    #: the joiners just as dead, because `envinstall.cancel` writes its error
+    #: into the shared record that every joiner is polling.
+    install_owned: bool = False
     state: str = "starting"  # starting | venv | downloading | loading | ready | error
     detail: str = ""
     error: str = ""
@@ -208,14 +234,38 @@ class Worker:
     #: on offering a dead model as `ready`.
     proc: subprocess.Popen | None = field(default=None, repr=False)
     resident_bytes: int | None = None
+    #: What the OS says the worker process is holding RIGHT NOW — macOS
+    #: `phys_footprint`, i.e. the number Activity Monitor shows, RSS elsewhere
+    #: (D597, `worker_base.os_footprint_bytes`). ADDITIVE beside
+    #: `resident_bytes`: that field feeds `peak_resident_bytes` ->
+    #: `footprints.py` -> `fit.py`'s "measured" rung, and redefining it would
+    #: re-verdict every model the user has ever run.
+    os_footprint_bytes: int | None = None
+    #: The high-water mark of what this model has cost, as the runner
+    #: reported it (SPEC AI-8c, D497) — `worker_base.peak_resident_bytes()`,
+    #: which prefers a runner's own true-peak probe (`mx.get_peak_memory()`
+    #: on MLX) over its own RSS high-water fallback. `refresh_memory` writes
+    #: this into `footprints.py` on every poll that grows it, which is what
+    #: `fit.py` (AI-16) reads back as the "measured" basis.
+    peak_resident_bytes: int | None = None
     #: "cuda" | "mps" | "cpu", as the WORKER reported it — never as this process
     #: worked it out. The supervisor can see that a machine has a GPU and not
-    #: whether the runner's torch was built to use it, and on Windows those
-    #: differ by default (the PyPI wheel is CPU-only). Same argument AI-8 makes
+    #: whether the runner's torch was built to use it, and since D381 those
+    #: differ BY DEFAULT everywhere: the default torch rows pin the `whl/cpu`
+    #: build and the accelerated ones are opt-in. Same argument AI-8 makes
     #: about resident bytes: only the process holding the weights knows.
     device: str = ""
     loaded_at: float | None = None
     started_at: float = field(default_factory=time.time)
+    #: `time.monotonic()` of the last thing this worker did, and how many turns
+    #: are doing it right now. Seeded at construction — not left `None` until
+    #: first use — so a model nobody has generated on yet still has a well-formed
+    #: idle age rather than a crash in `reap_idle` (AI-13). Monotonic, not
+    #: `time.time()`: see Key decisions in the AI-13 plan — wall-clock jumps
+    #: (DST, NTP, a laptop's clock stepping on wake) must not make a model look
+    #: idle for longer than it was, or fresher than it is.
+    last_activity: float = field(default_factory=time.monotonic)
+    in_flight: int = 0
     #: Set when the user cancels or a newer load evicts this one. The bring-up
     #: thread checks it at every step so an evicted load stops downloading
     #: instead of finishing into a table it no longer belongs to.
@@ -250,6 +300,43 @@ _fetch_workers: dict[str, Worker] = {}
 #: environment, presented back in a header. Tokens are dropped the moment the
 #: worker they belong to stops.
 _worker_tokens: set[str] = set()
+
+#: An evicted worker, for as long as `_start_resident` is tearing it down
+#: outside `_lock` (see that function). Popped from `_workers` the instant its
+#: replacement is published, so for the ~9s worst case `_terminate` can take,
+#: it exists nowhere `unload_all()` (walking `_workers` at shutdown) would ever
+#: find it — quitting the app in that window used to leave the OLD process
+#: running with nothing left tracking it to stop, the same orphan-holding-
+#: gigabytes failure `unload_all`'s own docstring exists to prevent for
+#: weights-only fetches. Added under the SAME lock hold that pops the worker
+#: from `_workers`, removed under `_lock` once its `_terminate` call returns
+#: (successfully or not); `unload_all` waits on it rather than re-terminating
+#: it itself, since two threads calling `_terminate` on the same `Worker`
+#: concurrently is its own hazard.
+_draining: dict[str, Worker] = {}
+
+#: `envinstall` key -> how many bring-ups are currently WAITING on that install.
+#:
+#: The one fact that decides whether an install may be killed, and it cannot be
+#: read off any single worker. `envinstall.start` is single-flight per key: one
+#: caller spawns the detached `uv sync` and every later caller joins and polls
+#: the same record. `envinstall.cancel` kills that process AND writes
+#: `error: "the install was cancelled"` into the shared record — so a cancel
+#: issued by ANY worker, owner or joiner, is a cancel of every worker joined to
+#: it: the others' next poll reads the error and raises past the retry loop.
+#:
+#: Hence a refcount rather than an ownership flag. The install dies when the
+#: LAST worker waiting on it stops waiting, whatever the reason (a ✕, an
+#: eviction, `unload_all` at shutdown) — which keeps the property this
+#: cancellation exists for (nothing multi-GB outlives the app, and an install
+#: nobody is waiting for is not left running) without ever taking down work
+#: somebody else is still waiting on.
+#:
+#: A worker's share is held exactly while its `install_key` is set, so the key
+#: is both the state and the token: `_hold_install` takes the share, and
+#: `_release_install` gives it back once per worker however many times it is
+#: called. Read and written under `_lock`.
+_install_waiters: dict[str, int] = {}
 
 
 def is_worker_token(token: str) -> bool:
@@ -297,6 +384,50 @@ def _health(worker: Worker) -> dict | None:
             return json.loads(response.read().decode() or "{}")
     except (OSError, ValueError):
         return None
+
+
+def _touch(worker: Worker) -> None:
+    """Re-stamp `last_activity` mid-turn, without touching `in_flight`.
+
+    For the events inside a long stream: `_in_use` alone would only mark the
+    worker busy at the START of a generation, and a transcription running
+    twenty minutes on one request would look no fresher at minute nineteen
+    than at minute one. The idle reaper (AI-13) reads only this stamp for a
+    `ready` worker with nothing in flight, so a still-busy worker never needs
+    this call to be spared — but the plan wraps every yielded chunk in it
+    anyway, since a stalled loop on the worker side (no chunks, `in_flight`
+    still 1) is exactly the leak `reap_idle`'s ceiling is for.
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+
+
+@contextlib.contextmanager
+def _in_use(worker: Worker):
+    """Bracket one turn of generation on `worker`, for the idle reaper (AI-13).
+
+    Stamps and increments on entry, stamps and decrements in `finally` — both
+    under `_lock`, since `reap_idle` reads `last_activity` and `in_flight` from
+    the reaper thread while a generation may be mutating them from its own.
+
+    **The `finally` is what makes a client disconnect mid-stream release the
+    counter.** `generate_text` is a generator built around this context
+    manager: a page that stops iterating without calling `close()` still
+    unwinds through here when the generator is garbage-collected, because a
+    `with` block inside a generator runs its `finally` on `GeneratorExit` same
+    as on a normal return. Without it, one abandoned stream would pin
+    `in_flight` at 1 and hold the model resident forever — worse than no idle
+    unload at all (see the leak-ceiling decision).
+    """
+    with _lock:
+        worker.last_activity = time.monotonic()
+        worker.in_flight += 1
+    try:
+        yield
+    finally:
+        with _lock:
+            worker.last_activity = time.monotonic()
+            worker.in_flight -= 1
 
 
 # ------------------------------------------------------------------- lifecycle
@@ -402,6 +533,84 @@ def _cleanup_files(worker: Worker) -> None:
             pass
 
 
+def _hold_install(worker: Worker, key: str, owned: bool) -> None:
+    """Record that `worker` is waiting on the install `key` names.
+
+    Under one lock with the key itself: the share and the record of holding it
+    are the same fact, and a `_terminate` from another thread landing between
+    two statements would either cancel an install with a waiter or leave a count
+    nobody ever gives back.
+    """
+    with _lock:
+        worker.install_key = key
+        worker.install_owned = owned
+        _install_waiters[key] = _install_waiters.get(key, 0) + 1
+
+
+def _release_install(worker: Worker, cancel: bool = True) -> None:
+    """`worker` stops waiting on its install; cancel it if nobody else is.
+
+    Idempotent, because two threads legitimately release the same worker: its
+    own bring-up thread on the way out of `_ensure_venv`, and `_terminate` from
+    an eviction or `unload_all`. The key is the token — cleared inside the lock,
+    so the second caller finds nothing to give back.
+
+    `cancel=False` is for leaving an install that is already OVER, built or
+    failed: there is no detached process to stop, and the record carries a
+    resolver error somebody has to read. (`envinstall.cancel` refuses a `done`
+    record anyway — it has no live pid to signal — so this is saying it rather
+    than relying on it.) Every other exit walks away from an install that is
+    still running, which is the case this whole mechanism is about.
+    """
+    with _lock:
+        key = worker.install_key
+        if not key:
+            return
+        worker.install_key = ""
+        worker.install_owned = False
+        left = _install_waiters.get(key, 1) - 1
+        if left > 0:
+            _install_waiters[key] = left
+            # Somebody else is still waiting on this install, so it lives —
+            # whatever happened to this worker. Cancelling here is what killed
+            # every joiner of a cancelled owner: `envinstall.cancel` writes its
+            # error into the record they are all polling.
+            return
+        _install_waiters.pop(key, None)
+    if not cancel:
+        return
+    from fused_render import envinstall
+
+    # Re-checked in a SECOND lock hold rather than folded into the one above,
+    # because `envinstall.cancel` signals a pid and writes a small file, and
+    # this module never holds `_lock` across I/O (see `ready_worker`,
+    # `_claim_for_removal`) — doing so here would serialise every table
+    # operation behind one process's local disk write.
+    #
+    # The gap that leaves is real: `_install_waiters.pop` above can be
+    # followed by an entirely fresh `_hold_install` for this same key — a
+    # `load()` that raced our departure, ran `envinstall.start()`, found the
+    # install still alive, and joined it — all before we reach the line
+    # below. `envinstall.cancel` has no way to tell that apart from an install
+    # nobody wants any more (see its docstring: it only refuses an already-
+    # DONE record), so calling it unconditionally is what let a cancel-then-
+    # reload kill the very install the reload just joined.
+    #
+    # `key in _install_waiters` is that check: `_hold_install` re-adds `key`
+    # the instant it registers a new waiter, so its presence here means a
+    # fresh claim already exists and this worker's departure is no longer the
+    # last word on the install's fate — cancelling would be undoing someone
+    # else's join, exactly the bug this closes. This does not shrink the
+    # window to zero (a rehold landing in the few bytecodes between releasing
+    # the lock above and re-acquiring it here would still slip through), but
+    # it closes the one that mattered in practice: an entire `envinstall.start`
+    # round trip's worth of time, not a handful of instructions.
+    with _lock:
+        if key in _install_waiters:
+            return
+    envinstall.cancel(key)
+
+
 def _terminate(worker: Worker) -> None:
     """Ask the worker to quit, then make sure of it.
 
@@ -413,11 +622,13 @@ def _terminate(worker: Worker) -> None:
     # thing this worker is doing: there is no process of ours to kill yet, and
     # the `uv sync` pulling several GB is detached, so it survives both the
     # thread and the app unless it is cancelled by name.
-    if worker.install_key:
-        from fused_render import envinstall
-
-        envinstall.cancel(worker.install_key)
-        worker.install_key = ""
+    # Cancelled only once nothing is waiting on it any more (see
+    # `_install_waiters`): this used to cancel whatever key was recorded, so
+    # shutting one worker down killed a build another worker of the same runner
+    # was joined to. `unload_all` terminates every worker, so the last one
+    # through here still ends the install — which is the property that matters at
+    # shutdown.
+    _release_install(worker)
     if worker.port:
         try:
             _worker_request(worker, "/quit", body={}, timeout=2.0).close()
@@ -436,7 +647,38 @@ def _terminate(worker: Worker) -> None:
     _cleanup_files(worker)
 
 
-def _child_env(token: str) -> dict:
+def _mirror_ok(model: str) -> str:
+    """The repo id `model` may name to the mirror, or `""` (SPEC AI-5l, AI-5m).
+
+    A repo id rather than a yes/no, because the two are not the same answer for
+    every runner: `llamacpp-text`'s catalog ids are bare `.gguf` filenames and
+    the worker names the recipe's REPO, which is what `mirror.allowed` compares
+    against. `catalog.mirror_id` does that translation; a permission carrying the
+    filename would be refused by the client and the mirror would be off for every
+    llama.cpp model without a single symptom.
+
+    The decision has to happen HERE, in the server process, because `catalog` is
+    unreachable from a runner's interpreter — a worker imports `worker_base` and
+    `mirror` as bare modules with no `fused_render` package on `sys.path`. But
+    the reason it must happen here is a privacy one rather than a mechanical
+    one: the worker is told the answer for the ONE model it was sent to fetch
+    and for nothing else, so our distribution is never asked about a model the
+    user picked from Discover, and we cannot learn that they downloaded it.
+
+    Best-effort: a catalog that cannot be read is "not suggested", which leaves
+    the download on the Hub path exactly as it is today.
+    """
+    if not model:
+        return ""
+    try:
+        from fused_render.ai import catalog
+
+        return catalog.mirror_id(model)
+    except Exception:  # noqa: BLE001 - no answer means the Hub, which always works
+        return ""
+
+
+def _child_env(token: str, model: str = "", capability: str = "") -> dict:
     """Environment for a worker process.
 
     The PYTHON* vars are stripped for the reason `local_chat/chat.py` documents
@@ -444,11 +686,60 @@ def _child_env(token: str) -> dict:
     inside itself, and a venv interpreter that inherits it dies at startup with
     "Failed to import encodings module" before running a line. The origin is
     passed through so the worker can report its own download progress.
+
+    **No Hub token is placed here, deliberately** (D402). A worker imports
+    `huggingface_hub` and therefore finds the machine's token exactly where every
+    other hf caller finds it — hf's own store, written by the Preferences login
+    button (routers/hf_auth.py) — or an `HF_TOKEN` this process already inherited
+    and passes on in the copy below. Nothing in this app holds a credential to
+    inject, and manufacturing one here would assert something about an
+    environment the caller was asked nothing about.
+
+    **`FUSED_MODEL_MIRROR_OK` is the model mirror's permission** and carries the
+    repo id the worker will NAME to the mirror rather than a bare flag, so a
+    value that arrived some other way cannot licence a probe for whatever the
+    next download happens to be. That id is not always what this app calls the
+    model — a curated GGUF is a filename here and a repo id there (AI-5m) — and
+    `_mirror_ok` is what translates it. It is
+    also POPPED when the answer is no, because this environment is a copy of the
+    server's: an operator (or a parent process) exporting it would otherwise hand
+    every worker permission for every model. `FUSED_MODEL_MIRROR` itself is left
+    alone — an operator pointing it at staging is the supported way to use this,
+    and unset now means the shipped default (`mirror.DEFAULT_BASE`), not "no
+    mirror" — this permission is what still keeps that default from widening
+    anything: a base URL alone names no repo, and only a suggested model's id
+    ever reaches `FUSED_MODEL_MIRROR_OK`.
+
+    **`FUSED_AI_MEMORY_BUDGET_BYTES` carries `fit.available_budget_bytes()`
+    across the identical process boundary** (SPEC AI-24 item 14's real
+    wiring) — a worker's bare-module interpreter cannot import
+    `fused_render.ai.fit`/`hw_detect` (see `formats.py`'s own top-of-file
+    note on why it stays stdlib-only), so the one place this figure CAN be
+    computed is here, server-side, on every spawn — never once and cached,
+    since `hw_detect`'s own background refresh means the answer can
+    genuinely change between one worker's bring-up and the next. `llama_
+    text.py`'s curated-recipe resolver is the one reader today. POPPED when
+    the computation answers `None` (RAM itself unreadable), for the same
+    "this environment is a copy of the server's" reason `FUSED_MODEL_
+    MIRROR_OK` is: a stale or operator-set value must not silently outlive
+    the fresh computation that is supposed to produce it.
     """
     env = dict(os.environ)
     for name in ("PYTHONHOME", "PYTHONPATH", "PYTHONEXECUTABLE", "PYTHONSTARTUP"):
         env.pop(name, None)
     env["FUSED_AI_WORKER_TOKEN"] = token
+    permitted = _mirror_ok(model)
+    if permitted:
+        # The id the WORKER will name to the mirror, which is not always the id
+        # this app calls the model — see `_mirror_ok` and `catalog.mirror_id`.
+        env["FUSED_MODEL_MIRROR_OK"] = permitted
+    else:
+        env.pop("FUSED_MODEL_MIRROR_OK", None)
+    budget = fit.available_budget_bytes()
+    if budget is not None:
+        env["FUSED_AI_MEMORY_BUDGET_BYTES"] = str(int(budget))
+    else:
+        env.pop("FUSED_AI_MEMORY_BUDGET_BYTES", None)
     return env
 
 
@@ -511,7 +802,7 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
         stdout=subprocess.DEVNULL,
         stderr=open(log, "w"),
         cwd=runner.folder,
-        env=_child_env(worker.token),
+        env=_child_env(worker.token, worker.model, worker.capability),
         close_fds=True,
         **SPAWN_KWARGS,
     )
@@ -612,6 +903,13 @@ def _cancel_state(job: str) -> bool | None:
 
     Callers that can act on the distinction take the tri-state; the rest keep
     the boolean below, whose behaviour is unchanged.
+
+    Deliberately calls `jobs.list_jobs()` with its default `mark_read=False`:
+    this is a poll of our own (`_CANCEL_CHECK_INTERVAL_S`, 0.5s, for the whole
+    duration of every model load), not a person looking at the corner, and
+    marking a terminal row read here would start its retention clock from a
+    poll nobody ever saw — see `list_jobs`'s own docstring, which names this
+    exact function as the reason `mark_read` defaults to False.
     """
     for record in jobs.list_jobs():
         if record["id"] == job:
@@ -654,26 +952,86 @@ def _ensure_venv(runner: registry.Runner, worker: Worker, job: str) -> str:
         # exists to hand the caller the right one — this is that caller.
         started = envinstall.start(runner.folder)
         key = started.get("key") or envinstall.venv_key_for(runner.folder)
-        # Published on the worker so `_terminate` can cancel it. During this
-        # phase the install IS the work, and it belongs to a detached process
-        # that outlives us unless something says otherwise.
-        worker.install_key = key
-        while True:
-            if worker.stopping or _cancel_requested(job):
-                envinstall.cancel(key)
-                raise SupervisorError("cancelled")
-            record = envinstall.progress(key) or {}
-            if record.get("done"):
-                if record.get("error"):
-                    raise SupervisorError(str(record["error"]))
-                break
-            _report(job,
-                    detail=f"Preparing {runner.short} — {record.get('stage') or 'installing'}…")
-            time.sleep(0.5)
-        worker.install_key = ""
+        # Published on the worker — and counted — so that stopping this bring-up
+        # can stop the install when it is the only thing left waiting on it, and
+        # cannot when it is not (`_install_waiters`). During this phase the
+        # install IS the work, and it belongs to a detached process that outlives
+        # us unless something says otherwise.
+        _hold_install(worker, key, bool(started.get("claimed")))
+        # Whether the install is still going when this worker walks away from
+        # it, which decides whether walking away means cancelling it. An
+        # install that has finished — built OR failed — has nothing to stop.
+        still_running = True
+        try:
+            while True:
+                if worker.stopping or _cancel_requested(job):
+                    # This row stops, and the install stops only if nobody else
+                    # is waiting on it — `finally` below, so a raise from
+                    # anywhere in this loop settles the count exactly once.
+                    raise SupervisorError("cancelled")
+                record = envinstall.progress(key) or {}
+                if record.get("done"):
+                    still_running = False
+                    if record.get("error"):
+                        # A GENUINE build failure — a resolver error, a missing
+                        # wheel — and it is reported verbatim rather than
+                        # retried, which is the whole point of PY-18. It can no
+                        # longer be a cancellation somebody else's ✕ wrote into
+                        # this shared record, because a cancel now only happens
+                        # once this is the last waiter (`_release_install`).
+                        raise SupervisorError(str(record["error"]))
+                    break
+                # Two different things happen in this loop and they have to READ
+                # differently: the owner is building the environment, the joiner
+                # is parked behind somebody else's build. See
+                # `_JOINED_INSTALL_DETAIL`.
+                #
+                # `activity`/`bytes_done`/`bytes_total` are `_env_install_worker`'s
+                # (its `_UvProgress`, streaming uv's own stderr) — `None` before
+                # uv has printed its first `Downloading` line, or when the
+                # record came from an older/other writer that never learned
+                # these keys. Falling back to `record["stage"]` in that case is
+                # exactly what this line did before the byte-level work landed,
+                # so a build with nothing to report yet (or a python-bootstrap
+                # round, which never gets a tracker) reads identically to
+                # before.
+                #
+                # Bytes go on the OWNER's row only. A joiner's row is not doing
+                # any work (`_JOINED_INSTALL_DETAIL` exists specifically so it
+                # does not read as though it were), so it must not draw a bar
+                # that implies otherwise — see that constant's own comment.
+                activity = record.get("activity") if worker.install_owned else None
+                bytes_done = record.get("bytes_done") if worker.install_owned else None
+                bytes_total = record.get("bytes_total") if worker.install_owned else None
+                _report(job, detail=(
+                    f"Preparing {runner.short} — {activity or record.get('stage') or 'installing'}…"
+                    if worker.install_owned
+                    else _JOINED_INSTALL_DETAIL.format(short=runner.short)),
+                    done=bytes_done, total=bytes_total,
+                    unit="bytes" if bytes_total else "")
+                time.sleep(0.5)
+        finally:
+            _release_install(worker, cancel=still_running)
         if envinstall.is_installed(runner.folder):
+            # The loop above breaks on `record.get("done")` BEFORE ever
+            # reporting the terminal record — the byte counters it may have
+            # set (owner only) therefore survive on the job row exactly as
+            # they stood on the last "still downloading" tick, done == total.
+            # `_bring_up` reports "Starting the model process…" right after
+            # this return with no reset of its own (mirroring the ENTRY point
+            # above, which does `done=None, total=None` for the same reason),
+            # so without this a finished venv build would leave a full
+            # "3.4 GB / 3.4 GB" bar sitting under that sentence until the
+            # runner's own first weight tick overwrote it.
+            _report(job, done=None, total=None, unit="")
             return envinstall.venv_python_for(runner.folder)
     raise SupervisorError(f"the environment for {runner.short} did not build")
+
+
+#: How often `_bring_up`'s health-poll loop checks `jobs.list_jobs()` for a
+#: cancel, independent of the loop's own health-poll cadence. See the comment
+#: where it is used.
+_CANCEL_CHECK_INTERVAL_S = 0.5
 
 
 def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
@@ -690,16 +1048,35 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
         # From here the WORKER is the one that knows what is happening — it is
         # doing the downloading and the loading — so its /health is the source
         # of truth and it reports its own byte counts to the same job row.
+        #
+        # `_cancel_requested` is checked on its own WALL-CLOCK cadence
+        # (`_CANCEL_CHECK_INTERVAL_S`), not every health-poll tick: it calls
+        # `jobs.list_jobs()`, which takes the global jobs lock, runs a sweep,
+        # and `asdict()`s up to `MAX_JOBS` records — cheap once, but tying it
+        # to the health poll's own interval means a future change to THAT
+        # (this loop's `time.sleep` below went 0.5s -> 0.1s for load latency,
+        # nothing to do with cancel responsiveness) silently changes how often
+        # this contends with every `_report` call from every other loading
+        # worker. Expressed in seconds for the same reason `_ERROR_GRACE_S`
+        # in benchmark.py is: a poll-count budget silently tracks whatever the
+        # poll interval happens to be.
+        last_cancel_check = 0.0  # forces a check on the very first iteration
         while True:
             # BOTH, and the second is the one a user actually presses. `stopping`
             # is set by an eviction or an explicit unload — things the server
-            # decided. The ✕ on the download row sets `cancel_requested` on the
-            # JOB, which the env-build loop above already honours; without it
-            # here, pressing ✕ during the phase that actually takes the time —
-            # the multi-GB fetch the worker is doing — did nothing at all, and
-            # the download ran to completion under a row that said cancelled.
-            if worker.stopping or _cancel_requested(job):
+            # decided, and reading it costs nothing (an in-memory attribute).
+            # The ✕ on the download row sets `cancel_requested` on the JOB,
+            # which the env-build loop above already honours; without it here,
+            # pressing ✕ during the phase that actually takes the time — the
+            # multi-GB fetch the worker is doing — did nothing at all, and the
+            # download ran to completion under a row that said cancelled.
+            if worker.stopping:
                 raise SupervisorError("cancelled")
+            now = time.monotonic()
+            if now - last_cancel_check >= _CANCEL_CHECK_INTERVAL_S:
+                last_cancel_check = now
+                if _cancel_requested(job):
+                    raise SupervisorError("cancelled")
             if not _alive(worker):
                 raise SupervisorError("the model process exited while loading")
             health = _health(worker)
@@ -708,17 +1085,45 @@ def _bring_up(runner: registry.Runner, worker: Worker, job: str) -> None:
                 worker.detail = str(health.get("detail") or "")
                 resident = health.get("resident_bytes")
                 worker.resident_bytes = resident if isinstance(resident, int) else None
+                footprint = health.get("os_footprint_bytes")
+                worker.os_footprint_bytes = (
+                    footprint if isinstance(footprint, int) else None)
                 # Read on every poll rather than once at `ready`: a runner sets
                 # it inside `load()`, and this loop is what is watching when
                 # that happens.
                 worker.device = str(health.get("device") or "")
                 if worker.state == "ready":
                     worker.loaded_at = time.time()
+                    # AI-13: the idle clock starts HERE, not at construction.
+                    # `last_activity` is otherwise seeded once, in the
+                    # `Worker` dataclass, at the moment `_start_resident`
+                    # builds the object — before this loop's `uv sync`, pull
+                    # and load even begin. A first-ever multi-GB download
+                    # that takes longer than the idle window would then
+                    # become `ready` already past it, and the reaper's very
+                    # next tick (<=30s) would unload it before a single
+                    # request had used it — `generate_text` looping
+                    # ModelNotReady -> load -> ready -> reaped forever, and
+                    # the image/transcript paths worse still, since
+                    # `_wait_ready` would hand back a worker the reaper is
+                    # about to kill out from under the request. Every
+                    # generation path re-stamps on its own first touch
+                    # anyway (`_in_use`), so this only matters for the
+                    # window between becoming ready and someone asking —
+                    # which is exactly the window a slow bring-up ate.
+                    worker.last_activity = time.monotonic()
                     _report(job, state="done", detail="Model loaded")
                     return
                 if worker.state == "error":
                     raise SupervisorError(str(health.get("error") or "the model failed to load"))
-            time.sleep(0.5)
+            # 0.1s: `_health` is a local loopback GET, not a real network
+            # call, so tightening THAT part of this loop costs nothing — and
+            # `benchmark.py`'s own `_LOAD_POLL_S` wait sits on top of this
+            # one, so the two used to stack into up to a full second of extra
+            # latency per load at the old 0.5s each. The cancel check above is
+            # deliberately NOT tied to this cadence any more — see
+            # `_CANCEL_CHECK_INTERVAL_S`.
+            time.sleep(0.1)
     except BaseException as e:  # noqa: BLE001 - top of a thread; see below
         # EVERYTHING, not just SupervisorError. This is the top of a thread, so
         # an exception that escapes it is not raised to anyone — it kills the
@@ -773,7 +1178,7 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
         proc = subprocess.Popen(
             [python, runner.worker, "--model", model, "--job", job, "--download-only"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w"),
-            cwd=runner.folder, env=_child_env(stub.token), close_fds=True,
+            cwd=runner.folder, env=_child_env(stub.token, model), close_fds=True,
             **SPAWN_KWARGS,
         )
         stub.pid = proc.pid
@@ -810,6 +1215,21 @@ def _fetch_only(runner: registry.Runner, model: str, job: str) -> None:
             _downloads.pop(model, None)
             _fetch_workers.pop(model, None)
         _cleanup_files(stub)
+        # A fetch that stopped before its first file leaves a cache folder with
+        # nothing in it but bookkeeping, and the AI Models page then has to draw
+        # that folder as a partly downloaded model (D437) — it cannot tell "no snapshot
+        # yet" from "no snapshot ever" any other way (D424). So the thread that
+        # made the folder tidies it on its way out. Reads the FOLDER, never this
+        # function's outcome: a successful fetch has a snapshot and the call is a
+        # no-op, and a cancel with real bytes in it keeps every one of them
+        # because that is what a resume picks up (D275).
+        #
+        # Imported at call time, the same way `hub_cache` imports THIS module
+        # inside `_require_not_in_use`: the two modules ask each other one
+        # question apiece, and neither may need the other to be importable.
+        from fused_render.ai import hub_cache
+
+        hub_cache.discard_empty_shell(model)
 
 
 def _runner_or_raise(capability: str) -> registry.Runner:
@@ -864,22 +1284,65 @@ def _start_resident(model: str, capability: str) -> tuple[dict, Worker]:
             # bring-up and the switch never happened. A mismatch falls through
             # to the eviction below, which is what a change of engine means.
             return {"jobId": job, "model": model, "state": current.state}, current
-        if current is not None:
+        evicting = current is not None
+        if evicting:
             # Eviction: the weights of the old model must be released BEFORE the
-            # new ones start loading, or the machine holds both at once — which
-            # on 16GB of unified memory is the difference between a load and a
-            # swap storm.
+            # new one's process is spawned, or the machine holds both at once —
+            # which on 16GB of unified memory is the difference between a load
+            # and a swap storm. `current.stopping = True` and popping it out of
+            # `_workers` happen HERE, in the same locked block that inserts the
+            # new worker below — so no other thread ever reads the capability
+            # slot as briefly empty (and mints a competing worker into it) or
+            # sees two workers resident for one capability at once. What moves
+            # outside the lock is only the actual teardown I/O below
+            # (`_terminate`, ~9s worst case: a `/quit` POST, SIGTERM+wait,
+            # SIGKILL+wait, `proc.wait`) and the new worker's `_bring_up`
+            # thread, which this function deliberately does not start until
+            # AFTER that teardown returns — so the memory-overlap invariant
+            # holds even though the lock is no longer what's enforcing the
+            # ordering. `RLock`, not a plain `Lock`, so `_terminate`
+            # re-acquiring `_lock` for its own bookkeeping below is not a
+            # deadlock either way; this was always a latency problem
+            # (everything else queued behind the ~9s teardown), not a
+            # correctness one.
             current.stopping = True
-            _terminate(current)
             _workers.pop(capability, None)
+            # Made visible to `unload_all` here — the SAME lock hold that pops
+            # it from `_workers` — so there is no instant where the old worker
+            # exists in neither table (see `_draining`'s own comment).
+            _draining[current.token] = current
 
         worker = Worker(model=model, capability=capability, runner_code=runner.code,
                         token=secrets.token_urlsafe(24))
         _workers[capability] = worker
         _worker_tokens.add(worker.token)
 
-    _report(job, title=model, state="running", kind="download", cancellable=True,
-            detail="Preparing…", done=None, total=None)
+    if evicting:
+        try:
+            _terminate(current)
+        except Exception:  # noqa: BLE001 - best-effort; see below
+            # `_terminate` is best-effort internally (its own `/quit` call is
+            # guarded), but not blanket-guarded: `_release_install` ->
+            # `envinstall.cancel` and `_cleanup_files`'s callees can still
+            # raise. Every OTHER caller of `_terminate` pops its target from
+            # `_workers` BEFORE calling it, so a raise there never poisons a
+            # live slot. This is the one call site where the NEW worker is
+            # already published into `_workers[capability]` by the time this
+            # runs — an uncaught raise here would leave that worker resident
+            # in the table with its `_bring_up` thread never started, so
+            # every later `load()` for this capability takes the join branch
+            # above, hands back that permanently-"starting" record, and
+            # `_wait_ready` blocks for `LOAD_WAIT_TIMEOUT_S` (an hour). The
+            # eviction's job — releasing the OLD worker's resources — is done
+            # as well as it can be; a failure in that best-effort cleanup
+            # must not also break the NEW load it was clearing room for.
+            logger.exception("failed to terminate evicted worker %r", current.model)
+        finally:
+            with _lock:
+                _draining.pop(current.token, None)
+
+    _report(job, title=model, model=model, state="running", kind="download",
+            cancellable=True, detail="Preparing…", done=None, total=None)
     threading.Thread(target=_bring_up, args=(runner, worker, job),
                      name=f"ai-load-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": worker.state}, worker
@@ -910,8 +1373,9 @@ def load(model: str, capability: str, *, weights_only: bool = False) -> dict:
             return {"jobId": job, "model": model, "state": "downloading"}
         _downloads[model] = {"model": model, "capability": capability,
                              "jobId": job, "startedAt": time.time()}
-    _report(job, title=model, state="running", kind="download", cancellable=True,
-            unit="bytes", detail="Preparing…", done=None, total=None)
+    _report(job, title=model, model=model, state="running", kind="download",
+            cancellable=True, unit="bytes", detail="Preparing…", done=None,
+            total=None)
     threading.Thread(target=_fetch_only, args=(runner, model, job),
                      name=f"ai-fetch-{capability}", daemon=True).start()
     return {"jobId": job, "model": model, "state": "downloading"}
@@ -927,26 +1391,37 @@ def image_job_id(uid: str) -> str:
     return IMAGE_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
-def start_image(model: str, request: dict, job: str) -> None:
-    """Open `job` and render on a thread. Raises before starting if it cannot.
+def _start_render(capability: str, model: str, request: dict, job: str,
+                   generate, *, noun: str, thread_name: str) -> None:
+    """Open `job` and render `generate(model, request, job)` on a thread.
+    Raises before starting if it cannot.
 
-    The runner check happens HERE, synchronously, so an image asked of a machine
-    with no image runner answers the request with the reason instead of opening
-    a job row that immediately fails — the caller gets an error it can show,
-    rather than a progress bar it has to watch die.
+    Shared by `start_image` and `start_video`, which were near-byte-copies
+    of this body differing only in the capability, which `generate` to call,
+    and the noun in the terminal "Saved …" detail and the thread's name — a
+    genuine format, not two things that happened to look alike once.
+
+    The runner check happens HERE, synchronously, so a request asked of a
+    machine with no runner for `capability` answers with the reason instead
+    of opening a job row that immediately fails — the caller gets an error
+    it can show, rather than a progress bar it has to watch die.
     """
     # `_runner_or_raise`, not a third copy of the same lookup — which is what
     # this was, and it drifted the moment a capability grew a second runner.
-    _runner_or_raise(registry.IMAGE_GENERATION)
+    _runner_or_raise(capability)
     _require_build_tools()
 
     title = str(request.get("prompt") or model).strip() or model
-    _report(job, title=title[:80], state="running", kind="task", cancellable=True,
-            unit="", detail="Preparing…", done=None, total=None)
+    # `model` rides as its own field (jobs.py `Job.model`), a dimmed suffix
+    # JobRow draws after the title — never folded into `title` (that's the
+    # prompt) or `detail` (that's the worker's progress ticks, which would
+    # overwrite a model name concatenated there on the very next tick).
+    _report(job, title=title[:80], model=model, state="running", kind="task",
+            cancellable=True, unit="", detail="Preparing…", done=None, total=None)
 
     def run() -> None:
         try:
-            result = generate_image(model, request, job)
+            result = generate(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
             message = _failure_text(e)
             if message == "cancelled":
@@ -955,16 +1430,33 @@ def start_image(model: str, request: dict, job: str) -> None:
                 _report(job, state="error", message=message)
             return
         _report(job, state="done", done=result.get("steps"), total=result.get("steps"),
-                detail=f"Saved {os.path.basename(result.get('path') or 'image')}")
+                detail=f"Saved {os.path.basename(result.get('path') or noun)}")
 
-    threading.Thread(target=run, name="ai-image", daemon=True).start()
+    threading.Thread(target=run, name=thread_name, daemon=True).start()
+
+
+def start_image(model: str, request: dict, job: str) -> None:
+    """Open `job` and render an image on a thread. See `_start_render`."""
+    _start_render(registry.IMAGE_GENERATION, model, request, job, generate_image,
+                  noun="image", thread_name="ai-image")
 
 
 #: What a queued transcription's row says while it waits.
 _QUEUED_DETAIL = "Queued behind another transcription…"
 
+#: What a download's row says while it waits for a runner environment ANOTHER
+#: download is building (`_ensure_venv`, and only for a joiner —
+#: `Worker.install_owned` is False). Same argument as `_QUEUED_DETAIL` above: a
+#: wait a person can see is a wait the row has to name. Both rows used to read
+#: "Preparing <runner> — <stage>…", so a download parked behind someone else's
+#: multi-GB `uv sync` looked exactly like the one doing the work — and exactly
+#: like one that had died. There is deliberately no percentage with it: nothing
+#: here knows how far another worker's install has got, and inventing a number
+#: is what `ModelProgress` refuses to do for precisely this phase.
+_JOINED_INSTALL_DETAIL = "Waiting for the {short} environment — another download is building it…"
 
-def transcribe_row_fields(title: str) -> dict:
+
+def transcribe_row_fields(title: str, model: str = "") -> dict:
     """Everything a report must carry for a transcription row to survive being
     RE-CREATED — the row's identity, as opposed to its progress.
 
@@ -989,13 +1481,18 @@ def transcribe_row_fields(title: str) -> dict:
 
     `state` is deliberately NOT here: the terminal report needs `done`/`error`/
     `cancelled` and would have to override it. Callers say their own.
+
+    `model` rides along the same way, for the same reason: a dimmed suffix on
+    the title row (jobs.py `Job.model`) that a rebuilt row must not lose any
+    more than it may lose its title.
     """
-    return {"title": title, "kind": "task", "cancellable": True, "unit": "s"}
+    return {"title": title, "model": model, "kind": "task", "cancellable": True,
+            "unit": "s"}
 
 
-def _transcribe_row(title: str, detail: str) -> dict:
+def _transcribe_row(title: str, detail: str, model: str = "") -> dict:
     """`transcribe_row_fields` plus the progress of a row that has none yet."""
-    return {**transcribe_row_fields(title), "state": "running",
+    return {**transcribe_row_fields(title, model), "state": "running",
             "done": None, "total": None, "detail": detail}
 
 
@@ -1030,21 +1527,21 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     # relabels itself under the user. The payload is shared with the queue
     # ticks so an evicted row is rebuilt as the same row, not a partial one.
     title = _transcribe_title(request, model)
-    _report(job, **_transcribe_row(title, "Preparing…"))
+    _report(job, **_transcribe_row(title, "Preparing…", model))
     # The worker reports to this same row for the whole decode, so it needs the
     # row's identity to restate — it is a different PROCESS, and a tick of its
     # that arrives after an eviction would otherwise be dropped outright
     # (`upsert` refuses a first report with no title) and take the ✕, the
     # progress and the terminal state with it. Sent rather than re-spelled
     # there, so the two cannot disagree about what this row is.
-    request = {**request, "row": transcribe_row_fields(title)}
+    request = {**request, "row": transcribe_row_fields(title, model)}
 
     def run() -> None:
         # Every terminal report carries the identity too: the row may have been
         # evicted at any point during a decode that ran for hours, and a bare
         # `state="done"` would be refused, leaving the page watching a row that
         # never finishes for a transcript that is already on disk.
-        fields = transcribe_row_fields(title)
+        fields = transcribe_row_fields(title, model)
         try:
             result = generate_transcript(model, request, job)
         except BaseException as e:  # noqa: BLE001 - top of a thread; see _bring_up
@@ -1061,20 +1558,53 @@ def start_transcribe(model: str, request: dict, job: str) -> None:
     threading.Thread(target=run, name="ai-transcribe", daemon=True).start()
 
 
-def unload(model: str | None = None, capability: str | None = None) -> bool:
-    """Stop a resident worker. True if there was one to stop."""
+def _claim_for_removal(match) -> list[Worker]:
+    """Atomically find-and-pop every worker `match(worker)` accepts.
+
+    The shared atomic core `unload()` and `reap_idle()` both build on: the
+    SELECTION and the POP happen inside one `_lock` hold, so whatever
+    `match` decided stays true for every worker in the returned list — no
+    caller re-scans `_workers` by name afterward, which is what would let a
+    DIFFERENT worker that has since claimed the same capability be swept up
+    by mistake, or let a worker's `in_flight`/`last_activity` change between
+    being decided and being removed (see `reap_idle`'s docstring for the
+    concrete failure that gap caused).
+
+    Deliberately does NOT terminate or report here: `_terminate` does network
+    I/O (a `/quit` POST, a process wait) and must run OUTSIDE `_lock`, or
+    reaping one idle worker would block every other table operation for as
+    long as that teardown takes.
+    """
     with _lock:
-        targets = [
-            w for w in _workers.values()
-            if (model is None or w.model == model)
-            and (capability is None or w.capability == capability)
-        ]
+        targets = [w for w in _workers.values() if match(w)]
         for worker in targets:
             worker.stopping = True
             _workers.pop(worker.capability, None)
+        return targets
+
+
+def _remove(targets: list[Worker], reason: str) -> None:
+    """Tear down every worker in `targets` — already popped from `_workers` by
+    `_claim_for_removal`, so this runs outside `_lock` with nothing left to
+    race: `_terminate`'s I/O and `_report`'s job-row write."""
     for worker in targets:
         _terminate(worker)
-        _report(job_id_for(worker.model), state="done", detail="Unloaded")
+        _report(job_id_for(worker.model), state="done", detail=reason)
+
+
+def unload(model: str | None = None, capability: str | None = None,
+          reason: str = "Unloaded") -> bool:
+    """Stop a resident worker. True if there was one to stop.
+
+    `reason` lands verbatim in the job row's `detail`, so every caller — a
+    page's explicit unload, `evict_stale_engines`, a newer load claiming the
+    capability, shutdown, and the idle reaper (AI-13) — can say which of them
+    it was, without a parallel teardown for each.
+    """
+    targets = _claim_for_removal(
+        lambda w: (model is None or w.model == model)
+        and (capability is None or w.capability == capability))
+    _remove(targets, reason)
     return bool(targets)
 
 
@@ -1113,6 +1643,373 @@ def evict_stale_engines() -> list[str]:
     return [worker.model for worker in stale]
 
 
+#: How often the reaper thread wakes up to evaluate `reap_idle` (AI-13). The
+#: promise is "about ten minutes", not a deadline, so a coarse tick is the
+#: right trade: worst case is one tick of overshoot, and the job row's
+#: "Unloaded after N min idle" detail is worded so an overshoot never reads as
+#: a crash. Kept well under any plausible idle window so a `1`-minute window
+#: does not wait half its own length to fire.
+_REAPER_TICK_S = 30.0
+
+_reaper_thread: threading.Thread | None = None
+
+
+#: Margin added to a call's own request timeout before a still-positive
+#: `in_flight` counter counts as LEAKED rather than busy. Generous on purpose:
+#: this only has to be bigger than the slop between "the worker replied" and
+#: "the supervisor finished decrementing", not tight.
+_LEAK_CEILING_MARGIN_S = 300.0
+
+
+def _leak_ceiling(capability: str, window: float) -> float:
+    """How stale `last_activity` must be, for a WORKER WITH `in_flight > 0`,
+    before it counts as leaked rather than busy (see `idle_workers`).
+
+    Derived from the request timeout that actually bounds a call on this
+    capability — `TRANSCRIBE_TIMEOUT_S` for `SPEECH_TO_TEXT`, `VIDEO_TIMEOUT_S`
+    for `VIDEO_GENERATION`, `GENERATE_TIMEOUT_S` for text and image otherwise —
+    plus a margin: past that bound `_worker_request` itself has already
+    raised, so a counter still reading positive cannot be a slow answer, only
+    a leaked one.
+
+    `max(window, …)` rather than the timeout alone: a hand-set idle window
+    already longer than the request timeout (someone dialling the reaper out
+    to hours) must not be SHORTENED for a busy worker by this rule — the
+    ceiling for a busy worker is never tighter than the ceiling for an idle
+    one.
+    """
+    if capability == registry.SPEECH_TO_TEXT:
+        timeout = TRANSCRIBE_TIMEOUT_S
+    elif capability == registry.VIDEO_GENERATION:
+        timeout = VIDEO_TIMEOUT_S
+    else:
+        timeout = GENERATE_TIMEOUT_S
+    return max(window, timeout + _LEAK_CEILING_MARGIN_S)
+
+
+def _is_idle(worker: Worker, now: float, window: float) -> bool:
+    """Pure predicate: is `worker` past ITS OWN idle bound at `now`, given a
+    window already resolved to seconds?
+
+    Shared by `idle_workers` (a read-only report over a locked snapshot) and
+    `reap_idle` (which must decide and remove in the SAME lock hold — see its
+    docstring) so the two can never quietly diverge on what "idle" means.
+
+    **Only `state == "ready"` is eligible.** A `starting` / `venv` /
+    `downloading` / `loading` worker is not holding a finished model yet — a
+    40-minute `uv sync` or an 8GB pull is activity, holds little memory, and
+    killing it mid-build is hostile, not a memory win. `_fetch_workers`
+    (weights-only downloads, which never enter `_workers` at all — see its
+    docstring) are untouched for the same reason, simply by never appearing
+    in what this is called over.
+
+    **`in_flight > 0` DOES exempt a worker past its own idle window, up to a
+    separate leak ceiling — this is NOT collapsible into one predicate.** The
+    tempting simplification is "every chunk re-stamps `last_activity`, so a
+    live call is never stale, so `in_flight` needs no exemption at all" — true
+    for `generate_text`, and **only** for `generate_text`. `generate_image`
+    and `generate_transcript` are single blocking `_worker_request` calls:
+    `_in_use` stamps once on entry and nothing ticks again until the reply
+    comes back, which can be up to `GENERATE_TIMEOUT_S` (900s) or
+    `TRANSCRIBE_TIMEOUT_S` (4h) later. Collapsing the predicate reaps a
+    90-minute transcription at the 10-minute mark, mid-decode — `_terminate`
+    kills the very process the request is waiting on, which is exactly the
+    failure `generate_transcript`'s lock-ordering comment is written to avoid
+    ("lost its transcript, failed its row with 'the transcription process did
+    not answer'"). So a busy worker is spared until `_leak_ceiling` — well
+    past any legitimate call's own timeout — and only THEN does a
+    still-positive `in_flight` mean a leaked stream (an abandoned
+    `generate_text` iterator) rather than a slow answer.
+    """
+    if worker.state != "ready":
+        return False
+    return now - worker.last_activity >= _idle_bound(worker, window)
+
+
+def _idle_bound(worker: Worker, window: float) -> float:
+    """How stale `worker.last_activity` must be, in seconds, before it counts
+    as idle — `_leak_ceiling` for a busy worker, the bare window otherwise.
+
+    Split out of `_is_idle` so `describe()` can compute the SAME bound for
+    `unloadsInSeconds`: a countdown computed against the bare window alone
+    would count a busy transcription down to "unloads in under a minute" and
+    then leave it sitting there, wrongly promising an unload the reaper's own
+    predicate will not perform.
+    """
+    return _leak_ceiling(worker.capability, window) if worker.in_flight > 0 else window
+
+
+def idle_workers(now: float) -> list[Worker]:
+    """Ready workers the idle window (AI-13) says to unload, evaluated against
+    `now`. A REPORT, not a decision anything acts on directly — see
+    `reap_idle` for why the reaper does not call this and then `unload()`.
+
+    Pure and side-effect-free: `now` is a caller-supplied `time.monotonic()`
+    reading, never read internally, so a test can drive it with a synthetic
+    clock and the reaper thread can drive it with the real one — no sleeping,
+    no clock freezing, none of the timing-dependent flakes this repo's
+    scheduling tests have a history of.
+
+    The preference is read fresh on every call, not cached — a window edited
+    mid-session, or an env override that comes and goes, applies on the very
+    next tick.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
+    with _lock:
+        return [w for w in _workers.values() if _is_idle(w, now, window)]
+
+
+def reap_idle(now: float) -> list[str]:
+    """Unload every worker the idle window (AI-13) names, evaluated against
+    `now`. Returns the models stopped.
+
+    **Decides and removes under ONE lock hold — deliberately NOT
+    `idle_workers(now)` followed by a separate `unload()`.** That two-call
+    shape has a real race: between `idle_workers` releasing `_lock` and
+    `unload()` re-acquiring it to pop, the table is briefly unlocked, and a
+    request can call `ready_worker()`, enter `_in_use()` and start a
+    90-minute transcription on the very worker the reaper just condemned.
+    `unload()` matches by model+capability alone and never re-checks
+    `in_flight` or a fresher `last_activity`, so it would terminate the
+    process that request is now waiting on — the exact failure the
+    `in_flight` exemption exists to prevent, arriving back through the gap
+    between deciding and acting rather than through the predicate itself.
+
+    Holding `_lock` across the read AND the pop closes that gap by
+    construction: `_in_use`'s entry also takes `_lock`, so nothing else can
+    change `in_flight` or `last_activity` while this loop is deciding — a
+    worker is either evaluated and removed atomically here, or a concurrent
+    `_in_use` call finished first (blocking this call until it releases the
+    lock) and this loop sees the fresh, post-increment state and spares it.
+    There is no window for a third outcome.
+
+    Built on the same `_claim_for_removal`/`_remove` pair `unload()` uses,
+    not on `unload()` ITSELF: `unload()` re-scans `_workers` by NAME
+    (model/capability), which would reopen a narrower version of the same
+    hole if called a second time after this loop's own decision — it could
+    match a DIFFERENT worker that has since claimed the same capability, and
+    pin "Unloaded after N min idle" on a model that was never idle at all.
+    `_claim_for_removal` takes a PREDICATE instead, evaluated once, atomically,
+    over the exact snapshot this loop already decided against — so the
+    workers reaped here are precisely the ones `_is_idle` said were idle,
+    never a re-lookup that could answer a different question by the time it
+    runs.
+    """
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    if minutes <= 0:
+        return []
+    window = minutes * 60
+    reason = f"Unloaded after {minutes} min idle"
+    targets = _claim_for_removal(lambda w: _is_idle(w, now, window))
+    _remove(targets, reason)
+    return [worker.model for worker in targets]
+
+
+def start_reaper() -> None:
+    """Start the idle-reaper thread, once per process.
+
+    Idempotent via a module-level handle rather than a lock-guarded flag: the
+    startup hook that calls this (server/app.py) can run more than once across
+    the test suite's many `create_app` calls in one process, and a second
+    thread ticking the same table is pure waste, not a correctness bug — but
+    a waste that compounds by one thread per app instance created in a long
+    test session.
+
+    The body is `sleep` then `reap_idle(time.monotonic())` — no wall clock, so
+    a laptop that sleeps mid-tick loses no window (Key decisions: the whole
+    feature is built on the monotonic clock never advancing across a suspend).
+    """
+    global _reaper_thread
+    if _reaper_thread is not None and _reaper_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            time.sleep(_REAPER_TICK_S)
+            try:
+                reap_idle(time.monotonic())
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("idle-reaper tick failed")
+
+    _reaper_thread = threading.Thread(target=run, name="ai-idle-reaper", daemon=True)
+    _reaper_thread.start()
+
+
+#: How often the background hardware-detection thread re-probes once it has
+#: probed at least once (SPEC AI-18, D519; wiring per code review — the
+#: probe had no caller in production, so `hw_detect.cached_hardware()`
+#: always answered None and `fit._select_pool`/`speed._uncalibrated` always
+#: took their no-GPU-known branch). Unlike `_REAPER_TICK_S`'s 30s (evaluating
+#: something that changes by the minute), this is generous: a machine's
+#: VRAM/GPU does not change while it is running, under ordinary use — this
+#: interval exists mainly to notice an eGPU plugged in mid-session, not to
+#: track something that moves often, and `hw_detect.detect_hardware` is a
+#: real subprocess spawn (50-500ms) that has no business running often.
+_HARDWARE_REFRESH_INTERVAL_S = 6 * 60 * 60  # 6 hours
+
+_hardware_refresh_thread: threading.Thread | None = None
+
+
+def _hardware_refresh_tick() -> None:
+    """One probe-and-cache cycle — split out of `start_hardware_refresh`'s
+    loop so a test can drive it directly with `hw_detect.refresh_hardware`
+    monkeypatched, the same way `reap_idle(now)` is tested without ever
+    starting `start_reaper`'s thread (see `tests/conftest.py`'s
+    `_no_ai_idle_reaper_thread`, which documents why no test asserts a
+    THREAD gets spawned)."""
+    hw_detect.refresh_hardware(ram_gb=fit.machine_ram_gb())
+
+
+def start_hardware_refresh() -> None:
+    """Start the background GPU/VRAM-detection thread, once per process —
+    the missing wiring `hw_detect.py`'s own docstring assumes exists:
+    `detect_hardware()`/`refresh_hardware()` are a slow subprocess probe
+    (`nvidia-smi`/`rocm-smi`/a PowerShell WMI+registry query/`sysctl`) that
+    must never run on the verdict path, so `fit.py` and `speed.py` only ever
+    read `hw_detect.cached_hardware()` — but until SOMETHING calls
+    `refresh_hardware`, that cache never gets written, and both modules
+    silently take their "no hardware known" branch forever. This is that
+    something.
+
+    Idempotent via a module-level handle, for the identical reason
+    `start_reaper` is: the startup hook that calls this (`server/app.py`)
+    can run more than once across the test suite's many `create_app` calls
+    in one process.
+
+    **One probe fires immediately**, unlike the reaper's sleep-then-tick
+    shape — a fit verdict on the very first catalog request after server
+    startup should not have to wait `_HARDWARE_REFRESH_INTERVAL_S` for a
+    number to exist at all. The thread then sleeps and re-probes on that
+    interval, forever. A failed tick (no vendor tool found, a hung spawn
+    past `hw_detect._PROBE_TIMEOUT_S`, an `OSError` writing the cache) is
+    logged and never kills the loop — the next tick tries again.
+    """
+    global _hardware_refresh_thread
+    if _hardware_refresh_thread is not None and _hardware_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hardware_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hardware-refresh tick failed")
+            time.sleep(_HARDWARE_REFRESH_INTERVAL_S)
+
+    _hardware_refresh_thread = threading.Thread(
+        target=run, name="ai-hardware-refresh", daemon=True)
+    _hardware_refresh_thread.start()
+
+
+#: How often the background Hub-metadata-warming thread re-sweeps the
+#: curated id list (code review finding 1). Deliberately much shorter than
+#: `_HARDWARE_REFRESH_INTERVAL_S`: unlike VRAM, `hub_metadata`'s own TTLs
+#: (13 days positive, `NEGATIVE_TTL_SECONDS` — 1 hour — negative) are what
+#: actually bound the network cost of a sweep, so a tight tick here costs
+#: nothing extra for an already-fresh entry (`hub_metadata.get` returns
+#: instantly without touching the network) while keeping a newly-expired
+#: negative entry from sitting un-refreshed for hours. 20 minutes: shorter
+#: than the negative TTL (so a repo that started publishing a `config.json`
+#: is noticed inside one negative-TTL window) and long enough that a sweep
+#: of the curated list is a rare event on the wire, not a busy loop.
+_HUB_METADATA_REFRESH_INTERVAL_S = 20 * 60  # 20 minutes
+
+_hub_metadata_refresh_thread: threading.Thread | None = None
+
+
+def _hub_metadata_refresh_tick() -> None:
+    """One sweep of `catalog.all_suggested_ids()` through `hub_metadata.get`
+    — split out for the same testability reason `_hardware_refresh_tick` is
+    (a test drives this directly, `hub_metadata.get` monkeypatched, without
+    ever starting the thread).
+
+    Every curated id, not only `text-generation` ones: `hub_metadata.get`
+    is cheap to call for an id whose harvest nothing currently reads (a
+    future caller — item 5's KV-cache term threading `hub_metadata` in, per
+    that module's own docstring — should not need a second sweep wired up
+    to start reading it), and the alternative (importing `registry`'s
+    capability constants here to filter) buys nothing this module needs
+    today. One repo's failure (a `get()` call that raises past its own
+    `except Exception` — should not happen, but this loop must survive it
+    regardless) is logged and does not stop the sweep for the rest.
+    """
+    for repo_id in catalog.all_suggested_ids():
+        try:
+            hub_metadata.get(repo_id)
+        except Exception:  # noqa: BLE001 - one repo's failure must not stop the sweep
+            logger.exception("hub-metadata refresh failed for %s", repo_id)
+
+
+def start_hub_metadata_refresh() -> None:
+    """Start the background Hub-metadata-warming thread, once per process —
+    the request-path half of code review finding 1's fix.
+
+    `ai_runtime._accepts_image`/`_capability_tags` used to call
+    `hub_metadata.get(model_id)` directly from `describe_catalog`, which
+    `hub_metadata.py`'s own module docstring is explicit is the wrong side
+    of exactly the split `hw_detect.py` already drew for the identical
+    reason: `get()` is a synchronous `urllib` GET with an 8-second timeout,
+    and `describe_catalog` backs a route the picker polls. This mirrors
+    `start_hardware_refresh`'s shape exactly — idempotent via a module-level
+    thread handle, one sweep fires immediately so the first catalog request
+    after startup already has warm entries rather than waiting a full
+    interval, then the thread sleeps and re-sweeps forever. `ai_runtime.py`
+    now calls `hub_metadata.cached()` only, which is a plain disk read and
+    never touches the network — this thread is the only writer.
+    """
+    global _hub_metadata_refresh_thread
+    if _hub_metadata_refresh_thread is not None and _hub_metadata_refresh_thread.is_alive():
+        return
+
+    def run() -> None:
+        while True:
+            try:
+                _hub_metadata_refresh_tick()
+            except Exception:  # noqa: BLE001 - a tick must never kill the loop
+                logger.exception("hub-metadata refresh tick failed")
+            time.sleep(_HUB_METADATA_REFRESH_INTERVAL_S)
+
+    _hub_metadata_refresh_thread = threading.Thread(
+        target=run, name="ai-hub-metadata-refresh", daemon=True)
+    _hub_metadata_refresh_thread.start()
+
+
+#: How long `unload_all` waits for an in-progress eviction's `_terminate` to
+#: clear `_draining` before giving up on it. Generous over the ~9s worst case
+#: (a 2s `/quit`, SIGTERM + 3s wait, SIGKILL + 3s wait, `proc.wait` + 1s) —
+#: this only ever fires during the narrow shutdown-during-eviction race, and a
+#: shutdown that gives up a little late is a much smaller failure than one
+#: that walks away from a worker mid-teardown.
+_DRAIN_WAIT_TIMEOUT_S = 15.0
+
+
+def _wait_for_draining(timeout: float = _DRAIN_WAIT_TIMEOUT_S) -> None:
+    """Block until no `_start_resident` eviction is mid-teardown.
+
+    An evicted worker is popped from `_workers` (so a new load for its
+    capability never joins it) before its `_terminate` call, which can take
+    ~9s, runs OUTSIDE `_lock` — so for that window it exists in neither
+    `_workers` nor anywhere else `unload_all` would find it, unless it is
+    made visible here (see `_draining`'s own comment). Polling rather than
+    re-terminating what it finds: the thread already mid-eviction is already
+    calling `_terminate` on that exact `Worker`, and a second, concurrent
+    call from here racing the first is its own hazard, not a fix.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with _lock:
+            if not _draining:
+                return
+        time.sleep(0.05)
+
+
 def unload_all() -> None:
     """Server shutdown: nothing may outlive the app.
 
@@ -1125,7 +2022,15 @@ def unload_all() -> None:
     Its thread notices `stopping` within its half-second poll and reports the
     row cancelled, but shutdown does not wait for that: `_terminate` is what
     makes the process actually go, and the row is about to be forgotten anyway.
+
+    Waits for `_draining` to clear FIRST: a worker mid-eviction is invisible to
+    `unload()`'s `_workers` walk (it was already popped so its replacement
+    could take the slot), so shutting down inside that ~9s window used to leave
+    the outgoing process running with nothing left tracking it — the same
+    orphan-holding-gigabytes failure this function's own weights-only-fetch
+    handling below exists to prevent.
     """
+    _wait_for_draining()
     unload()
     with _lock:
         fetching = list(_fetch_workers.values())
@@ -1214,20 +2119,63 @@ def generate_text(model: str, body: dict):
         started = load(model, registry.TEXT_GENERATION)
         raise ModelNotReady(f"{model} is loading now", started["jobId"])
 
+    with _in_use(worker):
+        try:
+            response = _worker_request(worker, "/generate", body=body,
+                                       timeout=GENERATE_TIMEOUT_S)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the model process did not answer: {e}") from e
+        with response:
+            for line in response:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line.decode())
+                except ValueError:
+                    continue
+                _touch(worker)
+                yield event
+
+
+def generate_embed(model: str, body: dict) -> dict:
+    """One `{vectors, dim, model}` reply from the resident embedding model.
+
+    The same fail-fast shape as `generate_text`, not the wait-inside-a-job shape
+    `generate_image` and `_wait_ready` use: an embed call answers in
+    milliseconds once the model is resident, so there is no job for a cold load
+    to hide inside the way a multi-minute render has one already. A cold model
+    therefore raises `ModelNotReady` — the load STARTS, its job id comes back on
+    the exception, and the caller is meant to watch it and ask again, exactly as
+    `/api/ai` already does for text.
+
+    Blocking, and cheap to block on: unlike an image or a transcription this is
+    one forward pass through a small tower, so holding the request open for it
+    costs nothing the caller was not already waiting on.
+    """
+    worker = ready_worker(registry.EMBEDDINGS, model)
+    if worker is None:
+        with _lock:
+            current = _workers.get(registry.EMBEDDINGS)
+        if current is not None and current.model == model:
+            raise ModelNotReady(
+                f"{model} is still loading ({current.state})", job_id_for(model))
+        started = load(model, registry.EMBEDDINGS)
+        raise ModelNotReady(f"{model} is loading now", started["jobId"])
+
     try:
         response = _worker_request(worker, "/generate", body=body,
                                    timeout=GENERATE_TIMEOUT_S)
     except (OSError, ValueError) as e:
         raise SupervisorError(f"the model process did not answer: {e}") from e
     with response:
-        for line in response:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line.decode())
-            except ValueError:
-                continue
+        try:
+            payload = json.loads(response.read().decode() or "{}")
+        except ValueError as e:
+            raise SupervisorError("the model process sent a malformed reply") from e
+    if not payload.get("ok"):
+        raise SupervisorError(str(payload.get("error") or "the embedding failed"))
+    return payload.get("result") or {}
 
 
 def _wait_ready(model: str, capability: str, job: str,
@@ -1301,37 +2249,77 @@ def _wait_ready(model: str, capability: str, job: str,
         f"{model} did not finish loading in time (watch {started['jobId']})")
 
 
-def generate_image(model: str, request: dict, job: str) -> dict:
-    """Render one image. Blocking — call it on a thread, never on the loop.
+def video_job_id(uid: str) -> str:
+    """The download-manager row for one render. See `image_job_id`."""
+    return VIDEO_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
+
+
+def start_video(model: str, request: dict, job: str) -> None:
+    """Open `job` and render a video on a thread. See `_start_render`.
+
+    Raises before starting if it cannot — a request this machine cannot
+    serve (no Apple Silicon) answers with the reason instead of opening a
+    row that immediately dies.
+    """
+    _start_render(registry.VIDEO_GENERATION, model, request, job, generate_video,
+                  noun="video", thread_name="ai-video")
+
+
+def _generate_via_worker(capability: str, model: str, request: dict, job: str,
+                          *, timeout: float, noun: str) -> dict:
+    """Render one item through the resident `capability` worker. Blocking —
+    call it on a thread, never on the loop.
+
+    Shared by `generate_image` and `generate_video`, which were near-byte-
+    copies of this body differing only in the capability, the request
+    timeout, and the noun in each error sentence.
 
     Loads the model first if it is not resident, which is the difference from
-    the text path (see `_wait_ready`). The worker writes the PNG itself and
-    reports its denoising steps straight to `job`, so nothing here polls: this
-    function's whole job is to hold the request open and turn a dead worker into
-    an error somebody can read.
+    the text path (see `_wait_ready`). The worker writes the file itself and
+    reports its own progress straight to `job`, so nothing here polls: this
+    function's whole job is to hold the request open and turn a dead worker
+    into an error somebody can read.
     """
-    worker = ready_worker(registry.IMAGE_GENERATION, model)
+    worker = ready_worker(capability, model)
     if worker is None:
-        worker = _wait_ready(model, registry.IMAGE_GENERATION, job)
+        worker = _wait_ready(model, capability, job)
 
-    try:
-        response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                   timeout=GENERATE_TIMEOUT_S)
-    except (OSError, ValueError) as e:
-        raise SupervisorError(f"the image process did not answer: {e}") from e
-    with response:
+    with _in_use(worker):
         try:
-            payload = json.loads(response.read().decode() or "{}")
-        except ValueError as e:
-            raise SupervisorError("the image process sent a malformed reply") from e
+            response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                       timeout=timeout)
+        except (OSError, ValueError) as e:
+            raise SupervisorError(f"the {noun} process did not answer: {e}") from e
+        with response:
+            try:
+                payload = json.loads(response.read().decode() or "{}")
+            except ValueError as e:
+                raise SupervisorError(f"the {noun} process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
-        raise SupervisorError(str(payload.get("error") or "the image failed to render"))
+        raise SupervisorError(str(payload.get("error") or f"the {noun} failed to render"))
     return payload.get("result") or {}
 
 
-def _await_turn(job: str, title: str) -> None:
+def generate_image(model: str, request: dict, job: str) -> dict:
+    """Render one image. See `_generate_via_worker`."""
+    return _generate_via_worker(registry.IMAGE_GENERATION, model, request, job,
+                                timeout=GENERATE_TIMEOUT_S, noun="image")
+
+
+def generate_video(model: str, request: dict, job: str) -> dict:
+    """Render one video. See `_generate_via_worker`.
+
+    `VIDEO_TIMEOUT_S` rather than `GENERATE_TIMEOUT_S`, because a
+    high-resolution video render can run for far longer than any image
+    request.
+    """
+    return _generate_via_worker(registry.VIDEO_GENERATION, model, request, job,
+                                timeout=VIDEO_TIMEOUT_S, noun="video")
+
+
+def _await_turn(job: str, title: str, model: str = "") -> None:
     """Take `_TRANSCRIBE_LOCK`, saying so on `job` for as long as it takes.
 
     Returns holding the lock — the caller releases it. Raises
@@ -1352,7 +2340,7 @@ def _await_turn(job: str, title: str) -> None:
     request. A guard an optimisation can skip is a guard in the wrong place.
     """
     if not _TRANSCRIBE_LOCK.acquire(blocking=False):
-        _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+        _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
         warned = False
         next_tick = time.monotonic() + _QUEUE_TICK_S
         # POLLED often, REPORTED rarely — and rebuilt ON DETECTION, which is
@@ -1389,7 +2377,7 @@ def _await_turn(job: str, title: str) -> None:
                         "transcription row %s was evicted while queued; rebuilt, "
                         "but a cancel requested just before that is lost", job)
                     warned = True  # once per wait; the sweep may do this often
-                _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+                _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
                 next_tick = time.monotonic() + _QUEUE_TICK_S
                 continue
             if time.monotonic() < next_tick:
@@ -1398,7 +2386,7 @@ def _await_turn(job: str, title: str) -> None:
             # is nothing to say but "still waiting" — which is exactly what a
             # heartbeat is (AI-5h). Deliberately slower than the running row so
             # the cap sheds queued rows first; see `_QUEUE_TICK_S`.
-            _report(job, **_transcribe_row(title, _QUEUED_DETAIL))
+            _report(job, **_transcribe_row(title, _QUEUED_DETAIL, model))
             next_tick = time.monotonic() + _QUEUE_TICK_S
     # Guarded, because this runs while we HOLD the lock and before any caller's
     # `finally` exists to release it: `_cancel_state` walks `jobs.list_jobs()`,
@@ -1418,7 +2406,7 @@ def _await_turn(job: str, title: str) -> None:
 
 
 @contextlib.contextmanager
-def _transcribe_turn(job: str, title: str):
+def _transcribe_turn(job: str, title: str, model: str = ""):
     """`_await_turn` as a `with`, so the acquire and the release are one thing.
 
     The release used to live in a `try/finally` the CALLER opened after
@@ -1427,7 +2415,7 @@ def _transcribe_turn(job: str, title: str):
     the shape that cannot regress: there is no way to take this turn without
     also giving it back, and a future caller cannot forget.
     """
-    _await_turn(job, title)
+    _await_turn(job, title, model)
     try:
         yield
     finally:
@@ -1455,7 +2443,7 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
     a handle to a process an unload may since have killed, so the request went
     to a dead port instead of re-resolving.
     """
-    with _transcribe_turn(job, _transcribe_title(request, model)):
+    with _transcribe_turn(job, _transcribe_title(request, model), model):
         worker = ready_worker(registry.SPEECH_TO_TEXT, model)
         if worker is None:
             # The row identity travels into the wait too — it is the longest
@@ -1463,17 +2451,18 @@ def generate_transcript(model: str, request: dict, job: str) -> dict:
             # evicted row.
             worker = _wait_ready(model, registry.SPEECH_TO_TEXT, job,
                                  row=request.get("row"))
-        try:
-            response = _worker_request(worker, "/generate", body={**request, "job": job},
-                                       timeout=TRANSCRIBE_TIMEOUT_S)
-        except (OSError, ValueError) as e:
-            raise SupervisorError(f"the transcription process did not answer: {e}") from e
-        with response:
+        with _in_use(worker):
             try:
-                payload = json.loads(response.read().decode() or "{}")
-            except ValueError as e:
-                raise SupervisorError(
-                    "the transcription process sent a malformed reply") from e
+                response = _worker_request(worker, "/generate", body={**request, "job": job},
+                                           timeout=TRANSCRIBE_TIMEOUT_S)
+            except (OSError, ValueError) as e:
+                raise SupervisorError(f"the transcription process did not answer: {e}") from e
+            with response:
+                try:
+                    payload = json.loads(response.read().decode() or "{}")
+                except ValueError as e:
+                    raise SupervisorError(
+                        "the transcription process sent a malformed reply") from e
     if payload.get("cancelled"):
         raise SupervisorError("cancelled")
     if not payload.get("ok"):
@@ -1498,6 +2487,15 @@ def refresh_memory() -> None:
     Called by the status endpoint rather than by a timer: the number is only
     interesting when someone is looking at it, and a background poll of a
     process mid-generation is a request that waits on a GPU call for no reason.
+
+    **Also writes `peak_resident_bytes` into `footprints.py`** (SPEC AI-16a,
+    D497) — this is the ONE place a load's peak becomes a durable "measured"
+    footprint `fit.py` can read back later. Written here rather than at
+    `_bring_up`'s own "ready" transition because a load's OWN peak can still
+    be climbing after that moment (a first generation is often where a
+    pipeline actually faults in the rest of its weights), and this function
+    already re-polls `/health` on the cadence the rest of the app relies on —
+    a second poll timer just to catch the peak would duplicate this one.
     """
     with _lock:
         current = list(_workers.values())
@@ -1515,6 +2513,48 @@ def refresh_memory() -> None:
         health = _health(worker)
         if health and isinstance(health.get("resident_bytes"), int):
             worker.resident_bytes = health["resident_bytes"]
+        # THE LIVE OS FOOTPRINT HAS TO BE RE-READ HERE (D599). It was assigned
+        # only in the LOAD loop, which exits the moment the worker reaches
+        # `ready` — so the value froze at whatever the last load-time poll saw,
+        # before MLX had faulted in its Metal buffers. Measured on a live FLUX
+        # worker: the row showed 436 MB against a real `phys_footprint` of
+        # 24 GB, and 436 MB was a genuine reading of a worker that had not yet
+        # allocated its GPU pool. This is the ONE function that keeps polling a
+        # ready worker, so a figure that changes after load has to be read
+        # here or it is never read again.
+        #
+        # ASSIGNED WHENEVER THE WORKER ANSWERED, including with None — unlike
+        # the two `isinstance`-gated fields around it. Those two feed
+        # `footprints.record` -> `fit.py`'s durable "measured" rung, where
+        # holding the last known number through a failed poll is right. This
+        # one is display-only and describes RIGHT NOW, so a worker that
+        # answers "I have no such counter" (the non-Darwin fallback) must
+        # clear the cell rather than leave a stale number standing next to a
+        # live one. A poll that FAILED OUTRIGHT (`health` falsy) still leaves
+        # the previous value alone, which is the transient case.
+        if health:
+            footprint_now = health.get("os_footprint_bytes")
+            worker.os_footprint_bytes = (
+                footprint_now if isinstance(footprint_now, int) else None)
+        if health and isinstance(health.get("peak_resident_bytes"), int):
+            worker.peak_resident_bytes = health["peak_resident_bytes"]
+            # Best-effort (code review): `describe()` calls this
+            # unconditionally on every `GET /api/ai/runtime`, and a footprint
+            # is a nice-to-have observation for a LATER fit verdict, not
+            # something worth 500ing a status route over. `footprints.record`
+            # writes through `storage.write_json`, which can raise `OSError`
+            # (a full disk, a permissions problem, a home directory that went
+            # away mid-session) — `worker.peak_resident_bytes` above is
+            # already set and is what this route actually exists to report,
+            # so that assignment must survive a write failure that comes
+            # after it.
+            try:
+                footprints.record(worker.capability, worker.model,
+                                  health["peak_resident_bytes"])
+            except OSError:
+                logger.exception(
+                    "failed to record the measured footprint for %r/%r",
+                    worker.capability, worker.model)
 
 
 def resident_models() -> set[str]:
@@ -1548,6 +2588,14 @@ def resident_models() -> set[str]:
 def describe() -> dict:
     """The runtime as the API reports it."""
     refresh_memory()
+    # Read once for the whole snapshot rather than per row: the reaper's own
+    # window (AI-13), so "unloads in…" on the page is the same countdown that
+    # actually fires, not a second copy of the precedence rule.
+    from fused_render.shell import prefs
+
+    minutes = prefs.effective_ai_idle_unload_minutes()
+    window = minutes * 60 if minutes > 0 else None
+    now = time.monotonic()
     with _lock:
         loaded = [
             {
@@ -1558,6 +2606,11 @@ def describe() -> dict:
                 "detail": w.detail or None,
                 "error": w.error or None,
                 "residentBytes": w.resident_bytes,
+                # The OS's "right now" figure (D597) — what a user's system
+                # monitor shows, which `residentBytes` does NOT on Apple
+                # Silicon (Metal buffers are charged to `phys_footprint`, not
+                # RSS). Null where no counter could be read; never coerced.
+                "osFootprintBytes": w.os_footprint_bytes,
                 # What the weights actually landed on. None from a runner that
                 # does not report one, which the page renders as nothing rather
                 # than as a guess.
@@ -1565,6 +2618,22 @@ def describe() -> dict:
                 "loadedAt": w.loaded_at,
                 "startedAt": w.started_at,
                 "jobId": job_id_for(w.model),
+                # How long since anything used this worker, and — when the idle
+                # window is on — how much longer it has. Null rather than a
+                # number that never counts down: a page must not draw a
+                # countdown for a window that is disabled.
+                "idleSeconds": max(0.0, now - w.last_activity),
+                # Against `_idle_bound` — the SAME bound `_is_idle` reaps
+                # by — never the bare window: a busy worker (`in_flight > 0`)
+                # is spared until `_leak_ceiling`, and counting down against
+                # `window` alone would run a 90-minute transcription's card
+                # to "unloads in under a minute" and leave it sitting there
+                # for the rest of the hour, wrongly promising an unload the
+                # reaper will not perform.
+                "unloadsInSeconds": (
+                    None if window is None
+                    else max(0.0, _idle_bound(w, window) - (now - w.last_activity))
+                ),
             }
             for w in _workers.values()
         ]
@@ -1575,12 +2644,59 @@ def describe() -> dict:
         # that is still running.
         downloading = [dict(row) for row in _downloads.values()]
     total = sum(row["residentBytes"] or 0 for row in loaded)
+    # WHAT EACH MODEL ACTUALLY COSTS, and the ceiling it has to fit under
+    # (D594). `residentBytes` above is the worker process's RSS — real, but
+    # "not the model's size" (its own field comment says so), which is why the
+    # summed version was removed from the status-bar chip. The honest per-model
+    # figure is `fit.footprint_bytes`, which already owns the whole precedence
+    # ladder (measured > declared > download) and reports WHICH rung answered.
+    # Reused rather than re-derived: a second ladder here would drift from the
+    # AI Models page's fit badge, which speaks this exact vocabulary.
+    #
+    # ONE `load_store()` for the whole response, passed into every call — the
+    # store is a disk read plus a machine-identity check, and doing it per row
+    # is the cost `footprint_bytes`' own `footprint_store` parameter exists to
+    # avoid (SPEC AI-16).
+    store = footprints.load_store()
+    for row in loaded:
+        footprint, basis = fit.footprint_bytes(
+            row["capability"], row["model"], footprint_store=store)
+        # NULL IS NOT ZERO: a model with nothing measured and nothing declared
+        # has NO cost figure, and the page must fall back to RSS alone rather
+        # than colour a guess or print 0.
+        row["footprintBytes"] = footprint
+        row["footprintBasis"] = basis
     return {
         "runners": registry.describe(),
         "loaded": loaded,
         "downloading": downloading,
         "totalResidentBytes": total or None,
+        # THE DENOMINATOR, once per payload rather than per row — it is a
+        # per-machine constant. The WIRED limit where it applies, not raw total
+        # RAM: on Apple Silicon that is the real ceiling a model has to fit
+        # under (`fit._DEFAULT_WIRED_FRACTION`), and colouring against total
+        # RAM would call a model comfortable while it is about to swap. Total
+        # RAM is the fallback off Darwin, and None when neither can be read —
+        # in which case there is no ceiling to colour against and the page
+        # shows the figure uncoloured.
+        "memoryCeilingBytes": _memory_ceiling_bytes(),
     }
+
+
+def _memory_ceiling_bytes() -> float | None:
+    """What a model has to fit under on this machine, in bytes, or None.
+
+    The wired limit first (`fit._wired_limit_bytes` — Apple Silicon's hard
+    ceiling, which is what actually bounds a model there), then total physical
+    RAM, then nothing. Both rungs come from `fit`, so this adds no new
+    measurement of its own — it only chooses between two numbers `fit` already
+    computes, and returns None rather than a guess when neither is readable.
+    """
+    ram_gb = fit.machine_ram_gb()
+    if ram_gb is None:
+        return None
+    wired = fit._wired_limit_bytes(ram_gb)
+    return wired if wired is not None else ram_gb * fit.GB_BYTES
 
 
 def reset() -> None:
@@ -1588,3 +2704,10 @@ def reset() -> None:
     with _lock:
         _workers.clear()
         _downloads.clear()
+        # A stray count would silently disable the next cancel — `_release_install`
+        # would think somebody was still waiting on a key nobody holds.
+        _install_waiters.clear()
+        # A stray entry here would make the NEXT test's `unload_all` (or any
+        # direct `_wait_for_draining` call) block for the full drain timeout
+        # waiting on a `Worker` that no longer exists.
+        _draining.clear()

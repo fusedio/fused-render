@@ -20,9 +20,11 @@ Four routes and one rule each:
   page, where the verb is "Download" and the user is not asking to run anything
   yet.
 
-Plus the two routes that make a capability DO something rather than be resident:
-`POST /api/ai/image` and `POST /api/ai/transcribe`. Both answer with a job id
-and a path, because both run for minutes and both produce a file.
+Plus the three routes that make a capability DO something rather than be
+resident: `POST /api/ai/image`, `POST /api/ai/transcribe` and
+`POST /api/ai/video`. All three answer with a job id and a path, because all
+three run for minutes (video: potentially hours — see `supervisor.
+VIDEO_TIMEOUT_S`) and all three produce a file.
 
 The POSTs mutate — they start processes and write gigabytes — so every one of
 them carries the D3 `X-Fused` guard. The reads do not, like every other read in
@@ -31,26 +33,34 @@ the app.
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
+import struct
 import time
 
 from fastapi import APIRouter, Body, Header
+from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
-from fused_render.ai import catalog, registry, supervisor
+from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
 # — which is why every heavy import inside them is deferred, and why reading a
-# rule here costs nothing.
-from fused_render.ai.runners import diarize, engine_options, partial, preview
+# rule here costs nothing. `embed_common` joins them for the same reason: its
+# request-shape check is what BOTH embedding runners' own `generate()` calls,
+# and a body this route refuses must be refused for the identical reason a
+# worker asked directly would give.
+from fused_render.ai.runners import diarize, embed_common, engine_options, formats, partial, preview
 from fused_render.server.common import _error, _require_fused
 # The AI Models page's reading of the local cache, imported rather than
 # re-derived: see `_inferred_capability` and `_catalog_with_downloads`. It imports
 # nothing from here.
-from fused_render.server.routers.ai_models import (
-    CachedModel, cached_capability, cached_models,
+from fused_render.ai.hub_cache import (
+    CachedModel, cached_capability, cached_models, embed_family, has_cached_snapshot,
+    has_vision_tower, is_downloaded,
 )
+from fused_render.ai import hub_metadata
 
 router = APIRouter()
 
@@ -64,6 +74,111 @@ _MIN_SIDE, _MAX_SIDE, _SIDE_STEP = 256, 2048, 16
 _MAX_STEPS = 100
 _MAX_SEED = 2**31 - 1
 
+# The request envelope of a job-backed AI call is closed (D413): an option
+# neither of these routes has is refused with a 400 rather than silently
+# dropped. These are the CALLER-FACING sets — the same facts `runtime.js`
+# restates as its own whitelist arrays, and `test_the_bridges_accepted_*`
+# below is what stops the two from drifting apart.
+_IMAGE_OPTIONS = frozenset({
+    "prompt", "model", "width", "height", "steps", "guidance", "seed", "image"})
+# Bounds for a video request. Narrower canvas than an image's — `w*h <=
+# 768*1344` — originally chosen against the FL2VA checkpoint of the
+# since-dropped `h3-video` runner (D468), the shape it was benchmarked at;
+# a caller asking for more gets clamped down to it rather than an OOM
+# minutes into a render. Kept unchanged on that runner's removal because it
+# is a safety rail the APP chose, not a fact about any engine's weights
+# (unlike the frame grid and the canvas/step DEFAULTS below, which are —
+# see `registry.VideoTraits`). `frames` snaps to the SERVING engine's own
+# valid grid (`_snap_frames`, given that engine's traits), because a value
+# off its grid is not a smaller or larger request, it is one that engine
+# renders differently than the reply would claim.
+_MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
+_MAX_VIDEO_PIXELS = 768 * 1344
+#: `n` ranges 1..21 on EVERY engine's own grid — an app-chosen bound, not a
+#: per-engine fact. `registry.MIN_VIDEO_FRAMES_N`/`MAX_VIDEO_FRAMES_N`, not a
+#: private pair here, because `catalog.py`'s video-traits payload for the
+#: Playground's frame slider needs the identical window — a slider computed
+#: from one and a server clamped by the other would disagree with itself
+#: exactly the way Task 5 left the client disagreeing with the engine's
+#: grid. The window was originally VERIFIED against the built `h3` binary of
+#: the since-dropped `h3-video` runner (D468), which refused `n=0` and
+#: anything aligning past its released 5..362 range outright. LTX has no
+#: compiled binary to refuse a value, so the same `[1, 21]` window is
+#: carried over as the app's own bound on its grid (1 + 8*21 = 169 frames,
+#: ~7s at 24fps), rather than inventing an unrelated ceiling with no
+#: measurement behind it.
+_MIN_FRAMES_N, _MAX_FRAMES_N = registry.MIN_VIDEO_FRAMES_N, registry.MAX_VIDEO_FRAMES_N
+#: The floor of 2 came from the since-dropped `h3-video` runner's own hard
+#: range ("denoising steps must be in [2, 1000]", D468) — for that binary 1
+#: step was not merely slow, it was refused outright. LTX has no such floor
+#: (`stage1_steps` is a plain slice of a fixed sigma schedule — see
+#: `ltx_video/worker.py`), but a value this low is not a meaningfully faster
+#: render, so the floor stays as the app's own rather than being relaxed to
+#: 1 on that runner's removal. The ceiling (50) is ours to pick either way.
+_MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
+# No `guidance` here — the shipping video engine is CFG-distilled and takes
+# no such parameter. A caller passing one hits `_reject_unknown` like any
+# other unsupported option.
+_VIDEO_OPTIONS = frozenset({
+    "prompt", "model", "width", "height", "frames", "steps", "seed"})
+_TRANSCRIBE_OPTIONS = frozenset({
+    "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
+    "speakers", "words"})
+# `base` is bridge-injected — `aiTranscribe` adds it from the page's own
+# `?path=`, never from the caller's own options object — so the SERVER's
+# accepted set is wider than the caller-facing one on purpose. Collapsing
+# these two into one set would make a caller passing `base` itself stop
+# being an error.
+_TRANSCRIBE_SERVER_OPTIONS = _TRANSCRIBE_OPTIONS | {"base"}
+# `aiImage` gained the identical asymmetry the moment `image` became an
+# option: `runtime.js` injects `body.base` from the page's own `?path=`
+# exactly as `aiTranscribe` does, so a caller passing `base` directly is
+# passing an option that does not exist from where it is standing.
+_IMAGE_SERVER_OPTIONS = _IMAGE_OPTIONS | {"base"}
+#: `/api/ai/embed`'s caller-facing option names (SPEC §40, PY-19).
+#:
+#: **Declared for the DRIFT GUARD rather than for a rejection.** Unlike the four
+#: sets above, `api_ai_embed` does not call `_reject_unknown` — its shape is
+#: `embed_common.request_kind`'s, checked in the worker's own venv too, and the
+#: route deliberately validates through that one function so the two cannot
+#: disagree. What this set exists for is `tests/test_fused_ai_client.py`'s pin
+#: against `templates/shared/fused_ai.py`'s `_EMBED_WIRE_KEYS`: the Python
+#: client mirrors this endpoint's surface and a parameter added on one side and
+#: not the other is a silent no-op, which is exactly what D413 x3 caught for
+#: `image` and `transcribe`.
+#:
+#: `kind` is the newest member and the reason the set was written down at all:
+#: it is refused per MODEL (a dual encoder has no retrieval convention), so a
+#: client that could not send it would leave every retrieval model embedding
+#: queries as documents with nothing to show it.
+_EMBED_OPTIONS = frozenset({"texts", "paths", "model", "kind"})
+#: `base` is bridge-injected — `aiEmbed` adds it from the page's own `?path=` so
+#: a relative `paths` entry resolves beside the calling page (RH-1) — so the
+#: SERVER's accepted set is wider than the caller-facing one, the same asymmetry
+#: `_TRANSCRIBE_SERVER_OPTIONS` documents.
+_EMBED_SERVER_OPTIONS = _EMBED_OPTIONS | {"base"}
+
+
+def _reject_unknown(body: dict, allowed: frozenset[str], endpoint: str):
+    """400 naming every key of `body` that is not in `allowed`, or None.
+
+    Called before any other validation in `api_ai_image`/`api_ai_transcribe`
+    so an envelope error beats a field error — a page that mistyped an
+    option AND passed a bad `steps` learns about the option it does not have
+    first, rather than about the unrelated field it also got wrong.
+
+    Reports every unknown key at once, not just the first: a page passing
+    both `image` and `strength` should learn about both in one round trip.
+    Sorted, so the message is stable and testable.
+    """
+    unknown = sorted(k for k in body if k not in allowed)
+    if not unknown:
+        return None
+    named = ", ".join(repr(k) for k in unknown)
+    verb = "is not an option" if len(unknown) == 1 else "are not options"
+    accepted = ", ".join(sorted(allowed))
+    return _error(f"{named} {verb} of {endpoint}; accepted: {accepted}", status=400)
+
 
 def _side(value, default: int) -> int:
     try:
@@ -72,6 +187,154 @@ def _side(value, default: int) -> int:
         side = default
     side = max(_MIN_SIDE, min(_MAX_SIDE, side))
     return side - (side % _SIDE_STEP)
+
+
+def _image_pixel_size(path: str) -> tuple[int, int] | None:
+    """`(width, height)` read off `path`'s own PNG/JPEG/WebP header, or None.
+
+    Decision 1: an edit's default size comes from the BASE IMAGE, and this
+    process has no Pillow — the app's own `pyproject.toml` does not carry it,
+    and `/api/ai/image` answers before the render, from the server rather
+    than from a worker that may not even be resident yet. So this is a small
+    stdlib reader rather than a new dependency: three formats, each read off
+    the handful of bytes at the front of the file that name its own
+    dimensions, never the pixels.
+
+    Fails toward None on anything this cannot parse — a truncated read, a
+    format not listed, a file that is not actually an image despite its
+    extension — which the caller reads as "fall back to the ordinary 1024²
+    default" rather than as an error: this is a convenience default, not a
+    validation the caller is trusted to have gotten right elsewhere (the
+    `/api/fs/*` existence/is-a-file checks already ran before this is called).
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(32)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                # IHDR is always the first chunk: 8-byte signature, then a
+                # 4-byte length, a 4-byte "IHDR", then width/height as two
+                # big-endian uint32s.
+                width, height = struct.unpack(">II", head[16:24])
+                return width, height
+            if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+                # All three sub-formats — not just the extended `VP8X`.
+                # `cwebp`, Pillow and a browser's own "Save as WebP" all
+                # emit plain `VP8 ` (lossy) or `VP8L` (lossless), and a
+                # reader that only understood `VP8X` would fall back to
+                # 1024x1024 for the ordinary case and stretch the render —
+                # a silent surprise exactly of the kind this feature exists
+                # to avoid, not an acceptable narrowing. Every sub-format's
+                # own payload starts at the same offset (12-byte RIFF
+                # header + 8-byte chunk header), so the three branches
+                # differ only in how many more bytes of THEIR bitstream
+                # header they read.
+                kind = head[12:16]
+                if kind == b"VP8X":
+                    # The one form that names a CANVAS size directly, not a
+                    # bitstream one: 1 byte of flags, 3 reserved, then
+                    # width-1/height-1 as two 24-bit little-endian ints.
+                    handle.seek(24)
+                    dims = handle.read(6)
+                    if len(dims) < 6:
+                        return None
+                    width = int.from_bytes(dims[0:3], "little") + 1
+                    height = int.from_bytes(dims[3:6], "little") + 1
+                    return width, height
+                if kind == b"VP8L":
+                    # Lossless: a 1-byte signature (0x2F) then a packed
+                    # 32-bit little-endian header — 14 bits width-1, 14
+                    # bits height-1, 1 bit alpha, 3 bits version.
+                    handle.seek(20)
+                    payload = handle.read(5)
+                    if len(payload) < 5 or payload[0] != 0x2F:
+                        return None
+                    bits = int.from_bytes(payload[1:5], "little")
+                    width = (bits & 0x3FFF) + 1
+                    height = ((bits >> 14) & 0x3FFF) + 1
+                    return width, height
+                if kind == b"VP8 ":
+                    # Lossy: a 3-byte frame tag, then — on a KEY frame only
+                    # — a 3-byte start code (`0x9d 0x01 0x2a`) and width/
+                    # height as two little-endian uint16s, each carrying a
+                    # 2-bit scale factor in its own top bits (RFC 6386
+                    # §9.1). A WebP's first frame is always a key frame, so
+                    # this is the frame every such file opens with.
+                    handle.seek(20)
+                    payload = handle.read(10)
+                    if len(payload) < 10 or payload[3:6] != b"\x9d\x01\x2a":
+                        return None
+                    width = int.from_bytes(payload[6:8], "little") & 0x3FFF
+                    height = int.from_bytes(payload[8:10], "little") & 0x3FFF
+                    return width, height
+                return None
+            if head[:2] == b"\xff\xd8":
+                # Walk JPEG markers until an SOFn (start of frame) segment,
+                # which carries height then width as big-endian uint16s.
+                # APPn/COM/etc. segments are skipped by their own length.
+                handle.seek(2)
+                while True:
+                    marker = handle.read(2)
+                    if len(marker) < 2 or marker[0] != 0xFF:
+                        return None
+                    kind = marker[1]
+                    if kind in (0xD8, 0x01) or 0xD0 <= kind <= 0xD9:
+                        continue  # no length field on these
+                    length_bytes = handle.read(2)
+                    if len(length_bytes) < 2:
+                        return None
+                    length = struct.unpack(">H", length_bytes)[0]
+                    if 0xC0 <= kind <= 0xCF and kind not in (0xC4, 0xC8, 0xCC):
+                        data = handle.read(5)
+                        if len(data) < 5:
+                            return None
+                        height, width = struct.unpack(">HH", data[1:5])
+                        return width, height
+                    handle.seek(length - 2, 1)
+    except (OSError, struct.error):
+        return None
+    return None
+
+
+def _edit_default_size(image_path: str) -> tuple[int, int] | None:
+    """An edit's default `(width, height)`, or None to fall back to 1024².
+
+    The prototype's own arithmetic (confirmed as written by the gate run —
+    see the flux2-edit handoff, Decision 1): fit the longest side to 1024
+    WITHOUT upscaling, snap down to a multiple of 16, floor 256, aspect
+    preserved. **The 256 floor overrides "aspect preserved" on an extreme
+    ratio** — a 4000x200 base (20:1) floors its short side to 256 and comes
+    back 1024x256 (4:1) — which is a real, accepted consequence of the
+    arithmetic as written, not an oversight; see AI-9f and the SKILL for the
+    same note.
+
+    **Integer division throughout, not `scale = min(1.0, 1024.0 / longest)`
+    followed by `int(side * scale)`.** That float form is a deliberate
+    DEVIATION from the prototype rather than a port of it: the prototype
+    carries the identical rounding accident, but it was never the stated
+    contract. Floating-point makes `1024.0 / 1122 * 1122` land on
+    `1023.9999999999999` rather than `1024.0` for roughly one width in nine,
+    and `int()` truncates that short — 1122x600 came back `1008x544`
+    instead of the intended `1024x544`, snapped a whole `_SIDE_STEP` short
+    of the longest side the docstring promises to hit. `width * 1024 //
+    longest` computes the same ratio in integers and cancels exactly when
+    `longest` divides `width * 1024`, which is the case a scale-by-float
+    silently gets wrong.
+    """
+    dims = _image_pixel_size(image_path)
+    if dims is None:
+        return None
+    width, height = dims
+    if width <= 0 or height <= 0:
+        return None
+    longest = max(width, height)
+    if longest > 1024:
+        # Downscale only — an already-small base is never blown up to fill
+        # 1024 (a 500x400 base stays 500x400-shaped, just snapped).
+        width = width * 1024 // longest
+        height = height * 1024 // longest
+    fitted_w = max(_MIN_SIDE, width // _SIDE_STEP * _SIDE_STEP)
+    fitted_h = max(_MIN_SIDE, height // _SIDE_STEP * _SIDE_STEP)
+    return fitted_w, fitted_h
 
 
 def _images_dir() -> str:
@@ -86,6 +349,85 @@ def _images_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "images")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _videos_dir() -> str:
+    """Where rendered videos land: `<home>/ai/videos`. See `_images_dir`."""
+    from fused_render.shell.storage import home_dir
+
+    directory = os.path.join(home_dir(), "ai", "videos")
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def _video_side(value, default: int) -> int:
+    """One dimension, clamped to the video range and snapped DOWN to a
+    multiple of 32 — `_side`'s rule, with video's own bounds."""
+    try:
+        side = int(value)
+    except (TypeError, ValueError):
+        side = default
+    side = max(_MIN_VIDEO_SIDE, min(_MAX_VIDEO_SIDE, side))
+    return side - (side % _VIDEO_SIDE_STEP)
+
+
+def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
+    """`(width, height)`, each already snapped by `_video_side`, brought under
+    `w*h <= 768*1344` by shaving the LARGER side down by one step at a time.
+
+    Alternating on the larger side (rather than always the same one) keeps an
+    over-asked SQUARE canvas square rather than silently favouring one axis —
+    an 1344x1344 ask should shrink toward a still-roughly-square frame, not
+    collapse to `1344 x <minimum>`.
+    """
+    while width * height > _MAX_VIDEO_PIXELS:
+        if width >= height and width > _MIN_VIDEO_SIDE:
+            width -= _VIDEO_SIDE_STEP
+        elif height > _MIN_VIDEO_SIDE:
+            height -= _VIDEO_SIDE_STEP
+        else:
+            break
+    return width, height
+
+
+def _snap_frames(value, traits: "registry.VideoTraits") -> int:
+    """The value on `traits`' own frame grid that the serving ENGINE would
+    ACTUALLY RENDER for `value` — rounded UP to the next grid point, never
+    to the nearest one.
+
+    **Per-runner since Task 5 of the LTX-2.3 plan** — this used to be the
+    since-dropped `h3-video` runner's grid, `5 + 17n`, hardcoded, because it
+    was the only video runner there was. `traits` now carries whichever
+    engine will actually serve the request (`registry.video_traits_for`,
+    resolved by the caller), and the arithmetic is unchanged: `value =
+    max(traits.frames_base, requested)`, then rounded up to the next
+    `frames_base + frames_step * n`. Matching the direction matters, not only
+    the grid: a server that rounded to NEAREST would report a smaller
+    `frames` than the render it just started for any request whose
+    distance-below its nearest grid point is shorter than its distance to the
+    one above (on `5 + 17n`, verified against that runner's own binary, 100
+    rendered as 107, not the "closer" 90). LTX has no compiled binary to
+    align against, but `8n + 1` is the grid its own upstream CLI defaults to,
+    and rounding the same direction keeps this function's one contract —
+    "the frames on the reply are the frames the engine renders" — true.
+
+    Bounded to `n` in `[_MIN_FRAMES_N, _MAX_FRAMES_N]` regardless of engine —
+    an app-chosen safety rail (unlike the grid itself, this is not a fact
+    about either engine's weights), so it stays a shared constant rather
+    than a fourth `VideoTraits` field.
+    """
+    base, step = traits.frames_base, traits.frames_step
+    try:
+        frames = int(value)
+    except (TypeError, ValueError):
+        return base + step * traits.default_frames_n
+    frames = max(base, frames)
+    remainder = (frames - base) % step
+    if remainder:
+        frames += step - remainder
+    n = (frames - base) // step
+    n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
+    return base + step * n
 
 
 #: How long a preview frame has to sit untouched before a sweep takes it.
@@ -276,6 +618,49 @@ def _cached_order(model: CachedModel):
     return (model.size <= 0, model.size, model.repo_id)
 
 
+def _unsupported_downloads() -> list[dict]:
+    """Model repos on this disk that NO capability can load, with the reason.
+
+    **The listing exists because dropping them was the wrong silence.** Every
+    picker reads `capabilities[]`, and a repo with no capability is in none of
+    those lists — so a user who downloaded a text-to-speech model, a depth
+    estimator or a symbolic-music policy watched it vanish from the Playground
+    with nothing said. "You have this, and here is why there is no button" is a
+    sentence only this side can write (`ai/tasks.py` writes it per task), and a
+    page that omits the row answers the reader's actual next question — where
+    did my download go — with nothing at all.
+
+    NOT in `capabilities[]` as a fake group, and that is deliberate: every app
+    reading this payload maps `models[]` and offers what it finds, so a row in
+    there is a row something will try to load. This is a separate key, which an
+    older client ignores and a picker has to opt into showing.
+
+    Sorted like the cached tail everywhere else — smallest first, unmeasurable
+    last. Components, datasets, Spaces and half-finished fetches never reach
+    here; `cached_models` has already dropped them, and none of them is a model
+    somebody chose.
+    """
+    return [
+        {
+            "id": model.repo_id,
+            "label": _cached_label(model.repo_id),
+            "size_gb": _cached_size_gb(model.size),
+            # What it IS, when anything said — the label a card prints beside
+            # the reason. None for a repo nothing could identify, where the
+            # reason is empty too and the row says only "on this disk,
+            # unrunnable", which is the honest whole of what we know.
+            "task": model.task,
+            # "no-runner" or "unknown" — never "supported", by construction:
+            # a supported task with a readable format has a capability and is
+            # in `capabilities[]` instead.
+            "support": model.support,
+            "reason": model.reason,
+        }
+        for model in sorted(cached_models(), key=_cached_order)
+        if model.capability is None
+    ]
+
+
 def _catalog_with_downloads() -> list[dict]:
     """`catalog.describe()`, plus the models this disk actually has.
 
@@ -300,8 +685,8 @@ def _catalog_with_downloads() -> list[dict]:
     formats (AI-11a), and a cached repo injected on its capability alone would break
     that invariant inside the very same array. `openai/whisper-large-v3` is a speech
     model that neither shipping speech runner reads; `mlx-community/Qwen3-8B-MLX-4bit`
-    is a text model that Transformers cannot open, so on a Mac switched to
-    Transformers it is an unusable download. So the test is the FORMAT's own answer —
+    is a text model that llama.cpp cannot open, so on a Mac switched to
+    llama.cpp it is an unusable download. So the test is the FORMAT's own answer —
     is the runner this row resolved among the ones that would accept this snapshot
     (`CachedModel.loaders`)? — and anything else is left out of `models[]` entirely.
 
@@ -311,8 +696,8 @@ def _catalog_with_downloads() -> list[dict]:
     failure being fixed rather than a fix. The repo is not hidden — the AI Models
     page's Local tab is the surface for "what is on my disk", it lists the repo, and
     it already prints WHICH engine reads it and what stands in the way ("text
-    generation is set to Transformers, which does not read this format — switch it on
-    the Engines tab"). A picker cannot say that; a card can.
+    generation is set to llama.cpp (CPU), which does not read this format — switch
+    it on the Engines tab"). A picker cannot say that; a card can.
 
     **Cached entries are APPENDED.** `entry.default`, `catalog.default_for()` and
     `catalog.for_capability()` keep answering over the curated list alone — read
@@ -331,10 +716,53 @@ def _catalog_with_downloads() -> list[dict]:
     downloaded and is not duplicated as a cached one. `loaded` is read live from the
     supervisor rather than from the memoised scan, because residency changes on a
     second's notice and the disk inventory does not.
+
+    `recommended` is a THIRD, and it is the curation's own second axis rather than
+    anything this join computes: True on the subset of curated entries a person
+    marked as a first thing to try, always False on a cached one — nobody wrote a
+    recommendation for a repo the user found themselves, the same reason `note` is
+    null there. Normalised to a bool on both halves so a consumer can filter on it
+    without reading absence as an answer; the Playground draws
+    recommended-or-on-disk and every other picker keeps reading the whole list
+    (D425).
+
+    **One runner's curated ids are FILENAMES, not repo ids, and this function is
+    where that stops being invisible.** `formats.GGUF_RECIPES` keys
+    `llamacpp-text`'s catalog entries by the GGUF's own filename — the module
+    docstring there explains why a repo id alone cannot address one of a
+    repo's several curated quantizations — so `entry["id"] in on_disk`
+    (a set of REPO ids) can never be true for one of those entries: a
+    downloaded `Qwen3.5-9B-Q4_K_M.gguf` showed "Download" forever, while the
+    same bytes appeared a SECOND time as a plain "cached" row keyed by
+    `unsloth/Qwen3.5-9B-GGUF`, whose Load button then failed (that repo id is
+    not itself a `GGUF_RECIPES` key). `hub_cache.is_downloaded` resolves a
+    filename-keyed entry through the recipe's `(repo, file)` pair and
+    `CachedModel.files` (the snapshot's own filenames) instead of a set of repo
+    ids alone — and it lives THERE rather than here because the Benchmark tab's
+    "is this model on this machine" guard needs the identical answer, and the
+    copy it wrote instead admitted every curated id;
+    `curated_repo_ids` then removes the SAME repo from the "cached"
+    tail below whenever any of ITS curated entries resolved as downloaded, so
+    the two halves cannot show the one download twice under two different ids.
+
+    **`repo` puts that same translation ON THE WIRE, because a client cannot
+    redo it.** Every entry carries the repo id whose cache folder holds it —
+    equal to `id` everywhere but a filename-keyed one, where it is the recipe's
+    `repo`. The Local tab has the identical duplicate to avoid and no way to
+    avoid it: its "do I already have a card for this" map is keyed by repo id
+    (`/api/ai-models`, the page's own walk), so `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`
+    never matched `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` and the row kept its
+    Download button beside its own finished disk card — the same "Download
+    forever" this docstring describes, one layer up and still open. It cannot
+    read `downloaded` instead (`mergeSections` states why: two definitions of
+    on-disk on one page are two moments they were true), so what it needs is the
+    IDENTITY, not the verdict. A field rather than a client-side table for the
+    reason `GGUF_RECIPES` is server-side at all: which repo publishes a curated
+    quantization is the curation's fact, and a second copy in TypeScript is one
+    that goes stale the next time a recipe's repo changes.
     """
     rows = catalog.describe()
     cached = cached_models()
-    on_disk = {model.repo_id for model in cached}
     resident = supervisor.resident_models()
     by_capability: dict[str, list] = {}
     for model in cached:
@@ -344,13 +772,64 @@ def _catalog_with_downloads() -> list[dict]:
             # on the AI Models page, which is the surface for "what is on my disk".
             continue
         by_capability.setdefault(model.capability, []).append(model)
+
+    def _downloaded(entry_id: str) -> bool:
+        # `hub_cache.is_downloaded`, not a local reading of the same two facts:
+        # the Benchmark tab's server side needs the identical answer, and the
+        # copy it wrote instead got the curated half wrong (see that function).
+        # `cached` is passed so a row of twenty entries pays for the scan once.
+        return is_downloaded(entry_id, cached)
+
+    def _repo_of(entry_id: str) -> str:
+        # The repo id that ADDRESSES this entry's bytes, which is the entry id
+        # itself for every runner but the filename-keyed one. One lookup in the
+        # curation's own table, so no consumer has to keep a second copy of it.
+        recipe = formats.GGUF_RECIPES.get(entry_id)
+        return recipe["repo"] if recipe else entry_id
+
+    # Loaded ONCE for the whole request — `footprints.load_store()` is a
+    # `storage.read_json` open, a JSON parse and a `benchmark.machine()`
+    # identity check, and this route computes `fit.verdict` per catalog
+    # entry below (curated plus cached, across every capability): a curated
+    # shortlist plus a machine's own cache is easily dozens of entries per
+    # `GET /api/ai/catalog`, and this is a route the AI Models page's picker
+    # polls (code review on AI-16). Passed straight through to every
+    # `fit.verdict` call so none of them repeats the load.
+    footprint_store = footprints.load_store()
+    # Same reasoning, same fix, for `hw_detect.cached_hardware()` (code
+    # review on AI-19): `fit._select_pool` used to call it itself on every
+    # `fit.verdict` invocation, re-opening and re-parsing `ai_hardware.json`
+    # once per catalog entry. Read once here and threaded through every
+    # `fit.verdict` call below — `fit.verdict`'s own docstring explains why
+    # this is a per-request reading, not a process-wide cache: `hw_detect.
+    # start_hardware_refresh()` rewrites that file on a 6-hour tick (an
+    # eGPU plugged in mid-session), and a permanently memoized reading
+    # would never see that.
+    hardware = hw_detect.cached_hardware()
     for row in rows:
         curated = [
-            dict(entry, source="curated", downloaded=entry["id"] in on_disk,
-                 loaded=entry["id"] in resident)
+            dict(entry, source="curated", downloaded=_downloaded(entry["id"]),
+                 repo=_repo_of(entry["id"]),
+                 loaded=entry["id"] in resident,
+                 # Normalised to a bool HERE rather than left absent, because
+                 # the curation writes it opt-in (`catalog.py`) and a consumer
+                 # that filters on it must not have to tell "not recommended"
+                 # from "an older server that had never heard of the field".
+                 recommended=bool(entry.get("recommended")))
             for entry in row["models"]
         ]
         curated_ids = {entry["id"] for entry in curated}
+        # Repo ids already spoken for by a DOWNLOADED filename-keyed curated
+        # entry — see the docstring. Read off `repo` (post-`_downloaded`) rather
+        # than re-checking `formats.GGUF_RECIPES` here, so this stays correct for
+        # any future runner whose ids work the same way without this function
+        # needing to know which one. `repo != id` IS "filename-keyed", by
+        # `_repo_of`'s own definition, and is why that translation is a field
+        # rather than a second lookup here.
+        curated_repo_ids = {
+            entry["repo"] for entry in curated
+            if entry["downloaded"] and entry["repo"] != entry["id"]
+        }
         extra = [
             {
                 "id": model.repo_id,
@@ -363,10 +842,23 @@ def _catalog_with_downloads() -> list[dict]:
                 "note": None,
                 "source": "cached",
                 "downloaded": True,
+                # Its own repo id, so `repo` is on EVERY entry rather than on
+                # the half that needed it: a consumer reading it only where it
+                # differs from `id` is a consumer that has to know which half it
+                # is holding, which is the distinction this field exists to
+                # remove.
+                "repo": model.repo_id,
+                # Never recommended: `recommended` is a curator's mark and
+                # nobody has made one about a repo the user found themselves.
+                # It costs the Playground nothing — a cached entry is on the
+                # disk by definition, and downloaded is the other half of what
+                # that sidebar draws.
+                "recommended": False,
                 "loaded": model.repo_id in resident,
             }
             for model in sorted(by_capability.get(row["capability"], ()), key=_cached_order)
             if model.repo_id not in curated_ids
+            and model.repo_id not in curated_repo_ids
             # The per-runner invariant, enforced: this row's list belongs to the
             # runner `describe()` resolved, and a repo whose format that runner does
             # not read has no business in it. See the docstring for both real repos
@@ -374,7 +866,271 @@ def _catalog_with_downloads() -> list[dict]:
             and row["runner"] in model.loaders
         ]
         row["models"] = curated + extra
+        for entry in row["models"]:
+            # {verdict, basis, footprintBytes, score, runMode} or None —
+            # SPEC AI-16, AI-16c, AI-19. `fit.py` owns the precedence ladder
+            # (measured > declared > download) and the headroom arithmetic;
+            # this route is a view over it, not a second copy of the
+            # judgement. `resident_gb` is a curator's optional, additive
+            # field (AI-11i/AI-11j's shape) — a cached entry never has one,
+            # `.get` answers None and the ladder falls straight through to
+            # `size_gb`. `params`/`quantization` (SPEC AI-19 item 4) are the
+            # same shape: a curated entry's own free-text `catalog.py`
+            # fields, passed straight through — `fit.parse_params`/
+            # `fit._quant_key` are what turn them into a weight-size
+            # estimate, and a cached entry (neither field) falls straight
+            # through to `size_gb` exactly as it always has.
+            entry["fit"] = fit.verdict(row["capability"], entry["id"],
+                                       entry.get("size_gb"), entry.get("resident_gb"),
+                                       footprint_store=footprint_store,
+                                       hardware=hardware,
+                                       params=entry.get("params"),
+                                       quantization=entry.get("quantization"),
+                                       **_kv_geometry_kwargs(entry["id"]))
+            # {tokensPerSecond, method, backend, bandwidthGbS, contextTokens,
+            # calibrated, calibrationFactor} or None — SPEC AI-21. Text
+            # generation only: `speed.py`'s formula is a tok/s figure, and
+            # that unit means nothing for `secondsPerStep`/`realtimeFactor`/
+            # `textsPerSecond`, the metrics the other three capabilities
+            # actually report (`benchmark.WORKLOADS`) — offering a bare
+            # number under a name that reads as tokens/second on an image or
+            # speech row would be actively misleading, not merely
+            # unavailable. Reads `hw_detect.cached_hardware()` only (by way
+            # of `speed.py`), the same verdict-path-safe boundary `fit.
+            # verdict` above already keeps — and, like `fit.verdict` above,
+            # is handed the SAME per-request `hardware` reading rather than
+            # doing its own (code review: `speed.estimate_tok_s` had the
+            # identical N-reads-per-row bug `fit.verdict` was already fixed
+            # for, on a call path that got missed the first time round).
+            entry["speedEstimate"] = (
+                speed.estimate_tok_s(entry.get("size_gb"), params=entry.get("params"),
+                                     quantization=entry.get("quantization"),
+                                     hardware=hardware)
+                if row["capability"] == registry.TEXT_GENERATION else None)
+            # Whether this one can be handed a base image to EDIT (AI-9f) —
+            # computed per entry on BOTH halves, because a cached mflux repo
+            # with no edit variant is as unable to edit as a diffusers one and
+            # a picker filtering on absence would offer it anyway.
+            entry["acceptsImage"] = _accepts_image(
+                row["capability"], row["runner"], entry["id"])
+            # Orthogonal tags (SPEC AI-28) — `tool-use`/`vision`, ON TOP OF
+            # the capability this row already dispatches by, never a
+            # replacement for it. Text generation only: tool-use is a
+            # chat-format property no other capability has, and the vision
+            # tag restates the same fact `acceptsImage` already gates on for
+            # this capability.
+            entry["tags"] = _capability_tags(row["capability"], entry["id"])
+            # The embeddings pair (SPEC §40): whether this entry may be handed
+            # image PATHS, and which retrieval prompt scheme its texts get.
+            # Computed per entry on BOTH halves for `acceptsImage`'s reason — a
+            # cached prose encoder is as unable to read an image as a curated
+            # one, and a picker filtering on absence would offer it anyway.
+            entry["acceptsPaths"] = _accepts_paths(row["capability"],
+                                                   entry["id"])
+            entry["promptScheme"] = _prompt_scheme(row["capability"],
+                                                   entry["id"])
     return rows
+
+
+#: `_machine_ram_gb` and `_fit_verdict` moved to `fused_render/ai/fit.py`
+#: (SPEC AI-16, AI-16b, D497) — the verdict is now computed over a
+#: FOOTPRINT, not `size_gb` alone, on a precedence ladder this router does
+#: not own. `fit.machine_ram_gb()` is the same stdlib RAM reading, cached
+#: forever, moved rather than duplicated.
+
+
+#: `hub_metadata.cached()`'s camelCase field names, mapped to the snake_case
+#: keyword `fit.footprint_bytes`'s KV-cache term reads (its own docstring:
+#: "the same field NAMES `hub_metadata` returns (minus its
+#: `numHiddenLayers`-style camelCase)"). `kv_dtype` has no harvested
+#: counterpart — nothing in `hub_metadata._FIELDS` captures a KV dtype — so
+#: it is left for `fit.py`'s own quantization-based default.
+_KV_GEOMETRY_FIELDS = {
+    "numHiddenLayers": "num_hidden_layers",
+    "numKeyValueHeads": "num_key_value_heads",
+    "numAttentionHeads": "num_attention_heads",
+    "headDim": "head_dim",
+    "hiddenSize": "hidden_size",
+    "layerTypes": "layer_types",
+}
+
+
+def _kv_geometry_kwargs(model_id: str) -> dict:
+    """`fit.footprint_bytes`'s `num_hidden_layers`.../`layer_types` kwargs for
+    `model_id`, read straight off `hub_metadata.cached()` — NO network call
+    (code review finding 1's same constraint `_accepts_image`/
+    `_capability_tags` already keep on this polled route). Without this, the
+    KV-cache term in `fit.footprint_bytes` is silently 0 for every catalog
+    row: the geometry `hub_metadata.cached()` already holds on disk (and
+    that this same request already reads for the vision/tool-use tags) was
+    never forwarded to `fit.verdict`.
+
+    Absent for an uncached repo, same as every other optional geometry
+    kwarg — the ladder just falls through to the params-only weight
+    estimate, exactly as before this existed.
+    """
+    meta = hub_metadata.cached(model_id)
+    if not meta:
+        return {}
+    return {
+        snake: meta[camel]
+        for camel, snake in _KV_GEOMETRY_FIELDS.items()
+        if meta.get(camel) is not None
+    }
+
+
+def _accepts_image(capability: str, runner_code: str | None, model_id: str) -> bool:
+    """Can `model_id` be handed an image on this machine — to EDIT (AI-9f) or,
+    since the mlx_text runner switched to mlx-vlm, to be ASKED ABOUT (AI-11j)?
+
+    **No longer image-capability-only.** SPEC AI-11j originally read this
+    field as True only where the model could be an EDIT base, because mlx-lm
+    loaded only a checkpoint's language tower and the vision half of every MLX
+    text model was dead weight it never touched. `mlx_text/worker.py` now
+    loads through mlx-vlm instead (`lazy=True`), which CAN read that tower —
+    on demand, only when a request actually attaches an image — so a
+    TEXT_GENERATION entry is a real candidate here too, provided the
+    checkpoint it names actually has a tower to feed one to.
+
+    Two branches, one principle kept from before: **computed, never curated,
+    and False rather than True-by-vacancy.**
+
+    - IMAGE_GENERATION — unchanged, and still a mirror of `api_ai_image`'s own
+      two refusals in the same order, so a picker's attach button and the
+      route that would 400 the resulting request cannot disagree: the ENGINE
+      (`engine_options` is the one place that says which backends honour
+      `image`) and then the MODEL (mflux additionally needs an edit variant
+      class named for the repo, `formats.mflux_edit_recipe`, since a repo can
+      render and not edit).
+    - TEXT_GENERATION — True only when the resolved runner is `mlx-text` (the
+      one runner here that reads a checkpoint through mlx-vlm at all — a
+      llama.cpp GGUF text model has no vision tower to speak of and must come
+      back False the same as before) AND the checkpoint has a vision tower.
+      **Two sources, in precedence order (SPEC AI-17 item 17):**
+      `hub_cache.has_vision_tower` first, reading straight off an already-
+      cached snapshot's own `config.json` with no model load involved — the
+      MEASURED answer, when there is a snapshot to measure. Only when
+      `hub_cache.has_cached_snapshot` says there is NOTHING on disk yet does
+      this fall back to `hub_metadata.cached(model_id)`'s `hasVisionTower` —
+      the Hub's OWN `config.json`, harvested ahead of any download (AI-17)
+      — so a search result still classifies before the user fetches a
+      single byte. `cached()`, never `get()` (code review finding 1): this
+      is a route the picker polls, and `get()` is a synchronous `urllib`
+      fetch with an 8-second timeout — `supervisor.start_hub_metadata_
+      refresh`'s background sweep is the only thing that ever calls `get()`
+      now, so this route only ever reads what that sweep already wrote,
+      with no network access of its own. A cached snapshot that genuinely
+      has no tower is never second-guessed by a stale Hub reading: "cannot
+      tell" (no snapshot, no harvested metadata either) answers False
+      rather than guessing True, same as before.
+    - Every other capability: False. `engine_options` is an exception list
+      for the image route alone, so treating "refuses nothing" as evidence
+      would have every non-image, non-mlx-text model in the payload claiming
+      it takes a photo.
+    """
+    if runner_code is None:
+        return False
+    if capability == registry.IMAGE_GENERATION:
+        try:
+            engine_options.unsupported_or_raise(runner_code, image="probe")
+        except ValueError:
+            return False
+        if runner_code == "mflux-image":
+            return formats.mflux_edit_recipe(model_id) is not None
+        return True
+    if capability == registry.TEXT_GENERATION and runner_code == "mlx-text":
+        if has_cached_snapshot(model_id):
+            return has_vision_tower(model_id)
+        meta = hub_metadata.cached(model_id)
+        return bool(meta and meta.get("hasVisionTower"))
+    return False
+
+
+def _capability_tags(capability: str, model_id: str) -> tuple[str, ...]:
+    """`registry.capability_tags` for `model_id` — `tool-use`/`vision`, per
+    SPEC AI-28, ON TOP OF the capability dispatch `row["capability"]` already
+    is. Text generation only, for the same reason `_accepts_image`'s own
+    TEXT_GENERATION branch is the one place a vision fact is meaningful here:
+    the other three capabilities (image, speech, embeddings) have no chat
+    format to call a tool in, and their own vision-alike question (whether an
+    embedding model reads image paths) is already answered by `_accepts_paths`
+    in this app's existing vocabulary rather than this tag.
+
+    Reuses the SAME cached-vs-pre-download precedence `_accepts_image` keeps
+    (`has_cached_snapshot` gates whether `has_vision_tower`'s on-disk reading
+    or `hub_metadata`'s Hub-harvested one applies), and the harvested
+    `modelType`/`architecture` back `registry.supports_tool_use`'s
+    known-family allowlist for an uncached repo whose id alone is
+    uninformative (a private fork, a renamed mirror).
+    """
+    if capability != registry.TEXT_GENERATION:
+        return ()
+    model_type = architecture = None
+    if has_cached_snapshot(model_id):
+        vision = has_vision_tower(model_id)
+    else:
+        meta = hub_metadata.cached(model_id)
+        vision = bool(meta and meta.get("hasVisionTower"))
+        if meta:
+            model_type = meta.get("modelType")
+            architecture = meta.get("architecture")
+    return registry.capability_tags(model_id, model_type=model_type,
+                                    architecture=architecture, has_vision=vision)
+
+
+def _accepts_paths(capability: str, model_id: str) -> bool:
+    """Can `model_id` be handed image PATHS to embed (SPEC §40)?
+
+    `_accepts_image`'s sibling for the embeddings capability, and it keeps that
+    function's two rules: **computed, never curated, and False rather than
+    True-by-vacancy.** A dual encoder (SigLIP, CLIP) has a vision tower and a
+    joint space, so a photo and a sentence are comparable; a prose encoder has
+    one tower and handing it pixel values embeds nothing.
+
+    Fails CLOSED — `hub_cache.embed_family` is three-valued and only `"dual"`
+    answers True, so a model with no snapshot on disk yet reports False and the
+    Playground draws no image mode for it. An affordance whose request then 400s
+    is exactly the failure this field exists to prevent, and that is the same
+    trade `_accepts_image` makes for the TEXT_GENERATION half.
+
+    The ROUTE deliberately does NOT mirror this reading — see
+    `hub_cache.embed_family`'s own docstring for the asymmetry and why it is the
+    safe direction: the route refuses only on positive evidence of a text
+    encoder, so a `paths` call on a cold dual encoder still answers
+    `model_loading` and starts the download rather than being refused for a
+    config file that is not there yet.
+
+    False for every capability but embeddings, for `_accepts_image`'s reason:
+    treating "no evidence against" as evidence would have every text and speech
+    entry in the payload claiming it takes a photo.
+    """
+    if capability != registry.EMBEDDINGS:
+        return False
+    return embed_family(model_id) == "dual"
+
+
+def _prompt_scheme(capability: str, model_id: str) -> str | None:
+    """Which retrieval prompt scheme `model_id` wants, or None where the
+    question does not apply (SPEC §40).
+
+    `formats.text_embed_scheme`'s answer, published so the Playground can draw
+    a query/document toggle only for a model the route will actually accept
+    `kind` for — and so a reader can SEE which convention was applied, since a
+    prefix is invisible in the vectors that come back.
+
+    **`"none"` comes back as None on the wire**, not as the string. `"none"` is
+    a real scheme internally (embed verbatim, both sides) but on the wire it
+    means "this model has no convention, so `kind` is a parameter with nothing
+    to do" — and a frontend testing `promptScheme` for truthiness must get the
+    same answer as the route's own refusal, which is keyed on exactly this.
+
+    None for every capability but embeddings: a chat model has prompts too, and
+    they are nothing to do with this table.
+    """
+    if capability != registry.EMBEDDINGS:
+        return None
+    scheme = formats.text_embed_scheme(model_id)
+    return scheme if scheme != "none" else None
 
 
 @router.get("/api/ai/catalog")
@@ -384,7 +1140,31 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
-    return {"capabilities": _catalog_with_downloads()}
+    return {"capabilities": _catalog_with_downloads(),
+            # Everything else on this disk, with the reason it is not above.
+            "unsupported": _unsupported_downloads(),
+            "ramGb": fit.machine_ram_gb()}
+
+
+def _engine_gap_refusal(model: str):
+    """A 409 when no engine available here can serve `model`, else None.
+
+    **The earlier, honest half of a refusal the runner already makes.** A worker
+    handed a model whose files it cannot read raises — `onnx_embed.download`'s
+    "has no ONNX export this runner can open" is correct and stays exactly where
+    it is — but by then a job row has opened, a venv may have been built and the
+    user is reading a traceback. This says the same thing before any of that,
+    in a sentence naming the engine that DOES read it and the model to fetch
+    instead (`catalog.engine_gap`).
+
+    409 rather than 400, matching the two `supervisor.SupervisorError` handlers
+    around it: the request is well formed and the answer is a fact about this
+    machine, which is what a 409 means everywhere else on this router.
+    """
+    gap = catalog.engine_gap(model)
+    if gap is None:
+        return None
+    return _error(gap["reason"], status=409)
 
 
 @router.post("/api/ai/runtime/load")
@@ -396,6 +1176,9 @@ def api_ai_load(body: dict = Body(...), x_fused: str | None = Header(default=Non
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -415,6 +1198,15 @@ def api_ai_unload(body: dict = Body(...), x_fused: str | None = Header(default=N
     capability = body.get("capability") if isinstance(body.get("capability"), str) else None
     if model is None and capability is None:
         return _error("name a 'model' or a 'capability' to unload", status=400)
+    # Matching `cancel`, 45 lines below: an unrecognised capability is a 400,
+    # not a no-op. Without this, a typo went straight to `supervisor.unload()`,
+    # which filters workers by equality and answers `bool(targets)` — so
+    # `{"stopped": false}` is exactly what a correct request against an idle
+    # machine also answers, and the caller cannot tell the two apart. Only
+    # checked when `capability` is not None, so the `model`-only form is
+    # unaffected.
+    if capability is not None and capability not in registry.capabilities():
+        return _error(f"unknown capability {capability!r}", status=400)
     stopped = supervisor.unload(model=model, capability=capability)
     return {"stopped": stopped, **supervisor.describe()}
 
@@ -436,6 +1228,13 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
     capability, refusal = _resolve_capability(body, model)
+    if refusal is not None:
+        return refusal
+    # Checked on a DOWNLOAD too, and this is the one that matters most: fetching
+    # the files is the operation a format gate structurally cannot guard, since
+    # there are no files to judge until it has run. The Local tab's resume is
+    # this exact request.
+    refusal = _engine_gap_refusal(model)
     if refusal is not None:
         return refusal
     try:
@@ -486,6 +1285,13 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     if guard is not None:
         return guard
 
+    # Checked first, so an unknown option is reported even when another field
+    # is also wrong — see `_reject_unknown`. The wider, SERVER set: `base` is
+    # bridge-injected, same asymmetry as `/api/ai/transcribe`.
+    rejection = _reject_unknown(body, _IMAGE_SERVER_OPTIONS, "/api/ai/image")
+    if rejection is not None:
+        return rejection
+
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("'prompt' must be a non-empty string", status=400)
@@ -499,12 +1305,123 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         return _error(registry.unavailable_reason(registry.IMAGE_GENERATION)
                       or "no image model is configured", status=409)
 
+    # `image` (SPEC AI-9f): edit a base image instead of rendering from the
+    # prompt alone. mflux-only — every diffusers image code refuses it, since
+    # that pipeline's SIGNATURE is known (`Flux2KleinPipeline.__call__` takes
+    # `image` first, defaulting to None for a plain render) but whether it
+    # RENDERS a correct edit is not, on any machine this app has run on
+    # (D413's own failure mode, reproduced inside mflux itself during the
+    # gate run: an image argument accepted and silently ignored).
+    image = body.get("image")
+    image_path = None
+    if image is not None:
+        # Decision 4: one image, a single string. An array or any other type
+        # is a 400 rather than a guess at what the first (or last) element
+        # was meant to mean — multi-reference conditioning is unverified.
+        if not isinstance(image, str) or not image.strip():
+            return _error(
+                "'image' must be the path to one base image, as a single "
+                "string — fused.ai.image({image}) edits exactly one image, "
+                "so an array or any other type is rejected rather than "
+                "guessed at", status=400)
+        # Refused HERE, before a job row opens: `engine_options.py`'s own
+        # rule is to refuse at the endpoint AND again in the worker, and the
+        # endpoint is where the RESOLVED runner is already known — the one
+        # that will actually serve this request regardless of which model id
+        # was named, since mflux/diffusers is an Engines-tab choice, not a
+        # per-model one.
+        active_runner = registry.for_capability(registry.IMAGE_GENERATION)
+        if active_runner is not None:
+            try:
+                engine_options.unsupported_or_raise(active_runner.code, image=image)
+            except ValueError as e:
+                return _error(str(e), status=400)
+            # The ENGINE can edit (mflux), but this specific MODEL may not
+            # have an edit variant class named for it — `formats.
+            # MFLUX_VARIANTS` accepts a repo for plain generation with no
+            # promise it also appears in `MFLUX_EDIT_VARIANTS`. Checked here,
+            # before a job row opens, for the identical reason the engine
+            # refusal two lines up is: without it, a repo this runner cannot
+            # edit with would still pass `_require_fused`, open a job, and
+            # potentially trigger a venv build and a multi-GB download
+            # before the worker's own `_build_variant` finally raises — the
+            # exact cost this whole block exists to avoid paying first.
+            if (active_runner.code == "mflux-image"
+                    and formats.mflux_edit_recipe(model) is None):
+                return _error(
+                    f"{model} has no edit variant this runner knows how to "
+                    "build — it can render from a prompt with this model "
+                    "but not edit an existing image with it. Try "
+                    "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
+        # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
+        # (RH-1): a relative `image` resolves against the directory of
+        # `base`, the calling page's own absolute path. An absolute `image`
+        # ignores `base`, as it does there. No allowlist, for the identical
+        # reason `api_ai_transcribe` gives: `/api/fs/raw` already serves any
+        # absolute path on this machine, so the only checks are the ones a
+        # typo deserves.
+        image_path = os.path.expanduser(image.strip())
+        base = body.get("base")
+        if not os.path.isabs(image_path):
+            if not isinstance(base, str) or not os.path.isabs(base):
+                return _error(
+                    "'image' must be absolute, or relative to a page named "
+                    "by 'base'", status=400)
+            image_path = os.path.join(os.path.dirname(base), image_path)
+        image_path = os.path.abspath(image_path)
+        if not os.path.exists(image_path):
+            return _error(f"no such file: {image_path}", status=400)
+        if not os.path.isfile(image_path):
+            return _error(f"not a file: {image_path}", status=400)
+
+    # Decision 1: an edit's default size comes from the BASE IMAGE, using the
+    # prototype's own arithmetic (confirmed as written by the gate run). Any
+    # explicit `width`/`height` still wins — this only changes the DEFAULT.
+    default_width = default_height = 1024
+    if image_path is not None:
+        edit_size = _edit_default_size(image_path)
+        if edit_size is not None:
+            default_width, default_height = edit_size
+
+    # An edit's defaults are the PROTOTYPE's own (4 steps, guidance 1.0), not
+    # the 28/4.0 shared between the generate paths of both image engines
+    # (`mflux_image/worker.py:generate`'s own comment) — applying the
+    # generate defaults to an edit silently would be a real quality
+    # regression (mflux's own denoising mechanism for editing wants far
+    # fewer steps and far less guidance than a from-scratch render), and
+    # changing them for this one mode is a documented choice rather than an
+    # unnoticed one.
+    default_steps = 4 if image_path is not None else 28
+    default_guidance = 1.0 if image_path is not None else 4.0
+    # `is None or == ""`, NOT `body.get(...) or default` — the falsy-`or`
+    # form silently replaced an explicit `steps: 0` or `guidance: 0` with
+    # the default, clamping never got a chance to run on the caller's own
+    # 0 at all. This predates this PR (the base commit already read `body.
+    # get("steps") or 28`) — it is fixed here because two DIFFERENT
+    # defaults depending on mode is what makes the silent substitution
+    # obvious rather than a one-in-a-million edge case: an edit whose
+    # caller typed `steps: 0` meaning "clamp me to the floor" got a 4- or
+    # 28-step render instead, depending on which mode the same bug fired
+    # under. `None`/`""` are the two spellings of "I did not say" this
+    # endpoint already reads that way for other fields (`diarize.speakers`,
+    # D318) — a JSON `null` and an empty form field, not a value someone
+    # meant.
+    steps_in = body.get("steps")
+    if steps_in is None or steps_in == "":
+        steps_in = default_steps
     try:
-        steps = max(1, min(_MAX_STEPS, int(body.get("steps") or 28)))
+        steps = max(1, min(_MAX_STEPS, int(steps_in)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
+    # (#732's own independent fix for this exact `guidance` case merged
+    # while this branch was in flight — `is None` only, no `""` and no
+    # per-mode default; superseded here by the fuller fix above, which
+    # both bugs needed anyway.)
+    guidance_in = body.get("guidance")
+    if guidance_in is None or guidance_in == "":
+        guidance_in = default_guidance
     try:
-        guidance = max(0.0, min(20.0, float(body.get("guidance") or 4.0)))
+        guidance = max(0.0, min(20.0, float(guidance_in)))
     except (TypeError, ValueError):
         return _error("'guidance' must be a number", status=400)
     # A seed the caller did not choose is chosen HERE and reported back, so
@@ -529,8 +1446,8 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
 
     request = {
         "prompt": prompt.strip(),
-        "width": _side(body.get("width"), 1024),
-        "height": _side(body.get("height"), 1024),
+        "width": _side(body.get("width"), default_width),
+        "height": _side(body.get("height"), default_height),
         "steps": steps,
         "guidance": guidance,
         "seed": seed,
@@ -550,6 +1467,14 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         # runner venv it cannot import has a matrix for.
         "outPreview": preview.preview_path(path),
     }
+    if image_path is not None:
+        # Absent entirely rather than `None` when there is no base image —
+        # `mflux_image/worker.py`'s `generate()` reads its presence to decide
+        # the MODE (edit vs. plain generate), and `body.get("image")` answers
+        # that identically for "the key is missing" and "the key is None",
+        # but a worker that ever grew a stricter check should not have to
+        # tell those two apart because this route always sent one.
+        request["image"] = image_path
     try:
         supervisor.start_image(model, request, job)
     except supervisor.SupervisorError as e:
@@ -560,15 +1485,18 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     # snapped, `steps` clamped, `seed` invented. A caller that echoes these back
     # gets the render it actually got, not the one it asked for. `out` is the
     # worker's field name for the same thing `path` is, so it is not repeated.
-    return {
+    reply = {
         "jobId": job,
-        "path": path,
-        # Canonical, because this goes back to a page that will put it in a
-        # `/api/fs/raw` URL — a Windows path that reached it backslashed would
-        # not match what the shell stored for the same file. It is a promise
-        # about a PATH, not about a file: a model with no fitted projection
-        # writes nothing there, and `fused.ai.image` treats a missing preview
-        # as the ordinary case rather than as an error.
+        # Canonical, like every other path this API hands back (`previewPath`
+        # below, and `/api/ai/transcribe`'s own `path`) — this goes back to a
+        # page that will put it in a `/api/fs/raw` URL, and a Windows path that
+        # reached it backslashed would not match what the shell stored for the
+        # same file.
+        "path": canonical_fs_path(path),
+        # Canonical for the same reason. It is a promise about a PATH, not
+        # about a file: a model with no fitted projection writes nothing there,
+        # and `fused.ai.image` treats a missing preview as the ordinary case
+        # rather than as an error.
         "previewPath": canonical_fs_path(request["outPreview"]),
         "model": model,
         "prompt": request["prompt"],
@@ -576,6 +1504,170 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
         "height": request["height"],
         "steps": steps,
         "guidance": guidance,
+        "seed": seed,
+    }
+    if image_path is not None:
+        # Echoed beside `path`, canonical for the identical reason: a caller
+        # that passed a relative `image` can see which file it actually
+        # resolved to.
+        reply["image"] = canonical_fs_path(image_path)
+    return reply
+
+
+@router.post("/api/ai/video")
+def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Render one video (with audio). Returns everything about it except the
+    bytes. `api_ai_image`'s twin — job-backed for the same reason, minus
+    `guidance` (the engine is CFG-distilled) and `previewPath` (no live
+    preview in this build), plus `frames`.
+
+    The 409 case is the one this route has that the image route does not:
+    video generation is the first capability with no "everywhere" row, so on
+    anything but Apple Silicon this always answers with
+    `registry.unavailable_reason` rather than ever reaching a default model.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Checked first, so an unknown option (`guidance`, say) is reported even
+    # when another field is also wrong — see `_reject_unknown`.
+    rejection = _reject_unknown(body, _VIDEO_OPTIONS, "/api/ai/video")
+    if rejection is not None:
+        return rejection
+
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _error("'prompt' must be a non-empty string", status=400)
+
+    model = _model_of(body) or catalog.default_for(registry.VIDEO_GENERATION)
+    if not model:
+        # CORRECTED: this branch is dead in practice, exactly like the same
+        # branch in `api_ai_image` above (`catalog.default_for` never gates
+        # on availability -- only `catalog.describe`'s own `default` field
+        # does that, a different function entirely -- and `SUGGESTIONS
+        # ["ltx-video"]` is a hardcoded non-empty list, so `default_for`
+        # always returns an id here whether or not this machine can run it).
+        # Kept anyway, matching `api_ai_image`'s own choice: cheap
+        # defensive code against a catalog that someday ships an empty
+        # shortlist, not the mechanism this route actually relies on for
+        # the 409. The REAL "needs Apple Silicon" answer, on a machine that
+        # cannot serve this capability, comes from `start_video`'s own
+        # `_runner_or_raise` below -- caught and turned into the same 409 a
+        # few lines down.
+        return _error(registry.unavailable_reason(registry.VIDEO_GENERATION)
+                      or "no video model is configured", status=409)
+
+    # The runner that will actually SERVE this request — resolution is by
+    # CAPABILITY, not by `model` (`registry.py`'s own module docstring), so
+    # this is the same call `start_video`'s `_runner_or_raise` makes a few
+    # lines down, made here too because the request SHAPE (frame grid,
+    # canvas/step defaults) is that runner's fact, not the route's own.
+    # `None` when nothing can serve the capability at all — already answered
+    # with a 409 above via `catalog.default_for`'s dead branch, or about to
+    # be via `start_video`'s own error below; `video_traits_for` handles
+    # `None` by falling back to the shipping runner's own numbers.
+    serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
+    traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
+
+    # **Naming a model explicitly does NOT pick its runner.** Resolution is
+    # by CAPABILITY plus stored preference (`registry.resolve`), never by
+    # `model` — `start_video`'s own `_runner_or_raise` never reads it either.
+    # So naming a repo that some OTHER video runner reads would build and
+    # start the resolved worker against it anyway, raising deep inside
+    # `load()` after a (cheap, listing-only) Hub round trip — a confusing
+    # failure for someone who deliberately named the model they already have
+    # on disk. Refused here instead, naming the place a different engine IS
+    # reachable: the Engines tab, which is exactly the switch
+    # `registry.resolve` already honours (see that module's own docstring).
+    #
+    # **CURRENTLY UNREACHABLE, and kept deliberately.** D468 dropped
+    # `h3-video`, leaving one video runner, and `formats.loaders` no longer
+    # names any video runner but `ltx-video` — so `runner_code !=
+    # serving_runner.code` cannot hold today. The guard is generic over
+    # runners rather than about those two specifically, and it is what a
+    # second video engine's own arrival would otherwise have to remember to
+    # add back; the same argument `formats.py`'s withdrawn-runner early
+    # returns make for themselves. Silent for anything not already cached —
+    # there is no
+    # format evidence to refuse on without a network call this route has
+    # never made, and an uncached id is the ordinary "let the runner's own
+    # `load()` refusal explain it" path every other capability already
+    # relies on.
+    if serving_runner is not None:
+        reading = cached_capability(model)
+        if (reading.cached and reading.capability == registry.VIDEO_GENERATION
+                and reading.runner_code is not None
+                and reading.runner_code != serving_runner.code):
+            other = registry.by_code(reading.runner_code)
+            other_name = other.short if other is not None else reading.runner_code
+            return _error(
+                f"{model} is an {other_name} model, and video generation is "
+                f"set to {serving_runner.short}, which does not read this "
+                f"format — switch the video engine to {other_name} on the "
+                f"Engines tab, or name a model {serving_runner.short} reads.",
+                status=409)
+
+    try:
+        steps = max(_MIN_VIDEO_STEPS,
+                    min(_MAX_VIDEO_STEPS, int(body.get("steps") or traits.default_steps)))
+    except (TypeError, ValueError):
+        return _error("'steps' must be a number", status=400)
+    frames = _snap_frames(body.get("frames"), traits)
+    # A seed the caller did not choose is chosen HERE and reported back, so
+    # "make that one again" is always possible — same rule `/api/ai/image` uses.
+    try:
+        seed = int(body["seed"]) if body.get("seed") is not None else secrets.randbelow(_MAX_SEED)
+    except (TypeError, ValueError):
+        return _error("'seed' must be a whole number", status=400)
+    seed = max(0, min(_MAX_SEED, seed))
+
+    # The serving engine's own default canvas (`traits.default_width/height`
+    # — VERIFIED per-engine: LTX's own CLI `--width`/`--height` for
+    # `ltx-video`). A bare call renders at the
+    # shape the ENGINE is tuned for, the same way the image route's
+    # 1024x1024 default matches its own pipelines' square default rather
+    # than an arbitrary size. The side snap and pixel clamp below stay
+    # shared across every engine — see `_MIN_VIDEO_SIDE` and friends above.
+    width = _video_side(body.get("width"), traits.default_width)
+    height = _video_side(body.get("height"), traits.default_height)
+    width, height = _clamp_video_canvas(width, height)
+
+    uid = secrets.token_hex(6)
+    job = supervisor.video_job_id(uid)
+    videos = _videos_dir()
+    # Time-ordered and unique, like the image route's filename.
+    path = os.path.join(videos, f"{time.strftime('%Y%m%d-%H%M%S')}-{uid}.mp4")
+
+    request = {
+        "prompt": prompt.strip(),
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
+        "seed": seed,
+        "out": path,
+    }
+    try:
+        supervisor.start_video(model, request, job)
+    except supervisor.SupervisorError as e:
+        # 409 for the same reason a load does: the request was well-formed and
+        # the answer is a fact about this machine, not a server fault.
+        return _error(str(e), status=409)
+    # The settled request, not the one that came in: `width`/`height` may have
+    # been snapped, `frames` rounded to the engine's grid, `steps` clamped, `seed`
+    # invented. A caller that echoes these back gets the render it actually
+    # got, not the one it asked for.
+    return {
+        "jobId": job,
+        # Canonical, like every other path this API hands back.
+        "path": canonical_fs_path(path),
+        "model": model,
+        "prompt": request["prompt"],
+        "width": width,
+        "height": height,
+        "frames": frames,
+        "steps": steps,
         "seed": seed,
     }
 
@@ -607,6 +1699,13 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+
+    # Checked first, same as `api_ai_image` — see `_reject_unknown`. `base` is
+    # in the server's accepted set (the bridge injects it) but not the
+    # caller-facing one the bridge itself validates against.
+    rejection = _reject_unknown(body, _TRANSCRIBE_SERVER_OPTIONS, "/api/ai/transcribe")
+    if rejection is not None:
+        return rejection
 
     source = body.get("path")
     if not isinstance(source, str) or not source.strip():
@@ -662,9 +1761,15 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         except ValueError as e:
             return _error(str(e), status=400)
 
-    # …and what the ENGINE that will serve this cannot do at all (D319). Three
-    # engines share this capability now and one of them — Parakeet — has no
-    # translate task, no `language` argument and no text conditioning.
+    # …and what the ENGINE that will serve this cannot do at all. D319 added a
+    # third engine, Parakeet, that had no translate task, no `language`
+    # argument and no text conditioning; D406 withdrew it, so the two engines
+    # sharing THIS capability today (MLX Whisper, Faster Whisper) both answer
+    # everything below and neither carries a row in `engine_options.
+    # UNSUPPORTED` — that table is no longer empty overall (D432 gave the
+    # diffusers image engines their own `image` refusal), just still empty
+    # for transcribe — but the check stays, for the next transcribe engine
+    # that needs one.
     #
     # Asked HERE, beside the other arguments a typo deserves an answer about,
     # because the answer is already available: `for_capability` is the same
@@ -676,6 +1781,18 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     #
     # No runner at all is NOT a 400 here: that is the 409 below, which names
     # the machine's reason rather than the request's.
+    # Per-word timings inside each segment (D392). `bool(...)` and not `is None`
+    # for `diarize`'s reason: it has no true default to invert, it is off unless
+    # asked for, so a JSON null and an absent key mean the same thing.
+    #
+    # **NOT refused when the engine has none, unlike everything below** (D392):
+    # an engine without word timings leaves the `words` key off its segments,
+    # which a caller reads directly, so the option is answered best-effort
+    # instead of turning a page that runs on two machines into a page that has to
+    # ask which one it is on. It is forwarded either way, and the worker honours
+    # it or does not.
+    wants_words = bool(body.get("words"))
+
     engine = registry.for_capability(registry.SPEECH_TO_TEXT)
     if engine is not None:
         try:
@@ -727,6 +1844,11 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # is byte-identical — and `speakers` is only sent when it is meaningful,
         # rather than as a null the worker would have to re-validate as absent.
         "diarize": diarizing,
+        # Per-word timings inside each segment. Off unless asked for, so an
+        # existing caller's transcript is byte-identical — it costs an extra
+        # forward pass per decoded window and changes the decode path, which is
+        # why it is asked for rather than always on (D392).
+        "words": wants_words,
         # `speakers is not None`, not `diarizing`: a diarized run whose count
         # was left out sends no key at all rather than a null the worker would
         # have to re-read as absence. Same rule as before D318 made the count
@@ -762,4 +1884,179 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         "outputPartial": canonical_fs_path(request["outPartial"]),
         "model": model,
         "task": task,
+    }
+
+
+def _embed_error(type_: str, message: str, status: int,
+                 job_id: str | None = None) -> JSONResponse:
+    """The `/api/ai/embed` wire shape: `{ok:false, error:{type, message}}`.
+
+    **Not `_error`'s plain `{error: message}`** — the shape `/api/ai/image` and
+    `/api/ai/transcribe` use, and reasonably so: their 409 is always
+    "unavailable", nothing more to say. This route's 409 can instead mean the
+    model is loading NOW, exactly like `/api/ai`'s own local-model path (see
+    `_ai_error`/`ModelNotReady` there), and that means a job id the page should
+    watch — a field `_error`'s shape has nowhere to carry. Matching `/api/ai`'s
+    contract rather than inventing a third one is what lets `fused.ai.embed`
+    read errors the same way `fused.ai` already does.
+    """
+    payload = {"ok": False, "error": {"type": type_, "message": message}}
+    if job_id is not None:
+        payload["error"]["jobId"] = job_id
+    return JSONResponse(payload, status_code=status)
+
+
+@router.post("/api/ai/embed")
+def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Embed text or an image into the resident dual encoder's vector space.
+
+    **Not job-backed, unlike `/api/ai/image` and `/api/ai/transcribe`.** Both
+    of those run for minutes and produce a file; this is one forward pass over
+    a batch of at most `embed_common.MAX_ITEMS` short items, over before a
+    progress row would ever have drawn — so the reply IS the result, the way
+    `/api/ai`'s non-streaming reply is.
+
+    **A cold model is `model_loading`, not `unavailable`** — the same fork
+    `/api/ai`'s local-model path takes (`supervisor.generate_text` /
+    `ModelNotReady`) rather than the one `/api/ai/image` takes (load inside the
+    render's own job): an embed call has no job of its own for a multi-GB
+    fetch to hide inside, so the load starts and its id comes back on a 409 for
+    the caller to watch, exactly as the first `fused.ai(...)` on a cold local
+    model already does.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+
+    # Checked first, same as `api_ai_image`/`api_ai_transcribe` — see
+    # `_reject_unknown`. `request_kind` below only ever READS `body.get("kind")`,
+    # so a misspelled key (`kimd`) is invisible to it and `kind` silently
+    # defaults to `DEFAULT_KIND` rather than raising — exactly the failure
+    # this endpoint's own `kind` argues hardest about. The envelope check has
+    # to catch the typo before `request_kind` gets a chance to default it away.
+    #
+    # `_reject_unknown` returns the OTHER three endpoints' bare `{"error": ...}`
+    # shape, not this endpoint's `{ok, error: {type, message}}` one, so its
+    # message is unwrapped and re-wrapped through `_embed_error` rather than
+    # returned as-is.
+    rejection = _reject_unknown(body, _EMBED_SERVER_OPTIONS, "/api/ai/embed")
+    if rejection is not None:
+        message = json.loads(bytes(rejection.body))["error"]
+        return _embed_error("bad_request", message, status=400)
+
+    # Same rule `generate()` enforces inside each worker's own venv
+    # (`embed_common.request_kind`) — refused HERE too, before a model is even
+    # resolved, so a malformed request costs nothing rather than a 409 that
+    # implies the fix is to wait.
+    try:
+        # The retrieval `kind` is validated here and forwarded RESOLVED in the
+        # body below, so the route's reading is the one that counts — the worker
+        # validates the same field again through the same function, exactly as
+        # it does the batch ceiling.
+        source, items, kind = embed_common.request_kind(body)
+    except ValueError as e:
+        return _embed_error("bad_request", str(e), status=400)
+
+    if source == "paths":
+        # Page-relative, exactly the rule `/api/ai/transcribe`'s `path` follows
+        # (RH-1): the worker is a separate process with its own cwd, so an
+        # unresolved relative path would mean "beside wherever the server was
+        # launched from" rather than "beside this page" — a trap whatever the
+        # error message says. An absolute path passes through untouched, as it
+        # does there.
+        base = body.get("base")
+        resolved = []
+        for path in items:
+            path = os.path.expanduser(path)
+            if not os.path.isabs(path):
+                if not isinstance(base, str) or not os.path.isabs(base):
+                    return _embed_error(
+                        "bad_request",
+                        "'paths' must be absolute, or relative to a page "
+                        "named by 'base'", status=400)
+                path = os.path.join(os.path.dirname(base), path)
+            resolved.append(os.path.abspath(path))
+        items = resolved
+
+    model = _model_of(body) or catalog.default_for(registry.EMBEDDINGS)
+    if not model:
+        # See `api_ai_image`'s identical comment: no runner and no curated
+        # default are different facts, and only the runner's own reason tells
+        # the user what to do about it.
+        return _embed_error(
+            "unavailable",
+            registry.unavailable_reason(registry.EMBEDDINGS)
+            or "no embedding model is configured",
+            status=409)
+
+    # **Two per-model refusals, in this order** (SPEC §40) — `paths` then
+    # `kind`, mirroring `api_ai_image`'s ENGINE-then-MODEL ordering so the
+    # picker's affordances and this route cannot come to disagree about which
+    # request is legal. Both fire AFTER the model is resolved, because both are
+    # facts about the model rather than about the request, and neither can be
+    # asked before `default_for` has answered.
+    #
+    # Refused rather than IGNORED, which is the whole point: a `paths` request a
+    # text encoder accepted would embed noise, and a `kind` a dual encoder
+    # accepted would be a parameter with no effect — and neither failure is
+    # detectable downstream, since both return unit-length vectors of the right
+    # dimension.
+    if source == "paths" and embed_family(model) == "text":
+        # `== "text"`, POSITIVE evidence, not `not _accepts_paths(...)` — see
+        # `hub_cache.embed_family`'s docstring. A cold dual encoder has no
+        # config on disk to read, and it must still fall through to the
+        # `model_loading` reply below and start its download rather than being
+        # refused for a file that is not there yet.
+        return _embed_error(
+            "bad_request",
+            f"{model} is a text encoder — it has no vision tower, so 'paths' "
+            f"is not something it can read. Pass 'texts' instead, or name a "
+            f"dual encoder (a SigLIP or CLIP model) to embed images.",
+            status=400)
+    if "kind" in body and body.get("kind") is not None:
+        scheme = formats.text_embed_scheme(model)
+        if scheme == "none":
+            return _embed_error(
+                "bad_request",
+                f"{model} has no retrieval prompt convention, so 'kind' would "
+                f"change nothing about the vectors it returns — leave it out. "
+                f"It applies to a retrieval encoder that instructs a question "
+                f"and a passage differently; this model embeds both the same "
+                f"way.",
+                status=400)
+
+    forwarded = {source: items}
+    # `kind` on a `texts` request only, and only as the RESOLVED value: the
+    # worker refuses `kind` beside `paths` outright (a prompt scheme has nothing
+    # to prefix on an image), so sending it there would turn a legal request
+    # into a 500 from inside the worker.
+    if source == "texts":
+        forwarded["kind"] = kind
+    # The same refusal the load and download routes make, in this route's own
+    # error vocabulary: a page that named a model in `fused.ai.embed({model})`
+    # — or an exported app whose seeded id no longer resolves on the machine
+    # opening it — must get a sentence rather than a traceback out of the worker.
+    # `unavailable` is the type this route already uses for "cannot run here"
+    # (see the no-runner branch above), so it is the type here too.
+    gap = catalog.engine_gap(model)
+    if gap is not None:
+        return _embed_error("unavailable", gap["reason"], status=409)
+
+    try:
+        result = supervisor.generate_embed(model, forwarded)
+    except supervisor.ModelNotReady as e:
+        # NOT a failure (see `_ai_failed`'s own comment on the same fork in
+        # `server/ai.py`): the load already started, and its job id is what
+        # lets the caller show that download rather than just a rejection.
+        return _embed_error("model_loading", str(e), status=409, job_id=e.job_id)
+    except supervisor.SupervisorError as e:
+        return _embed_error("ai_error", str(e), status=502)
+
+    return {
+        "ok": True,
+        "result": {
+            "vectors": result.get("vectors") or [],
+            "dim": result.get("dim") or 0,
+            "model": model,
+        },
     }

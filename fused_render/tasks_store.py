@@ -91,6 +91,7 @@ import json
 import os
 import re
 import time
+import urllib.parse
 from datetime import datetime, timezone
 
 try:
@@ -539,9 +540,9 @@ def mark_deleted(key: str, now: float | None = None) -> None:
 # is what makes `backfill()` cheap enough to run at startup on a machine with a
 # few thousand sessions.
 
-# path -> (size_at_parse, cwd, first_ts, first_prompt). Same cache shape, and
-# the same append-only reasoning, as claude_sessions._HEAD_CACHE.
-_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str]] = {}
+# path -> (size_at_parse, cwd, first_ts, first_prompt, pane_file). Same cache
+# shape, and the same append-only reasoning, as claude_sessions._HEAD_CACHE.
+_HEAD_CACHE: dict[str, tuple[int, str | None, float | None, str, str]] = {}
 
 _HEAD_CHARS = 256 * 1024
 _HEAD_LINES = 2000
@@ -640,7 +641,7 @@ _MACHINERY_DROP = (
     "user-prompt-submit-hook", "system-reminder",
 )
 
-_MACHINERY_STRIP = ("live-app-state", "pane-shot")
+_MACHINERY_STRIP = ("live-app-state", "pane-shot", "annotations")
 
 _MACHINERY_TAGS = _MACHINERY_DROP + _MACHINERY_STRIP
 
@@ -662,14 +663,60 @@ _LEADING_BLOCK = re.compile(
 # the second pass template.html's `BLOCK_OPENERS` makes over a cut preview.
 _LEADING_OPEN = re.compile(r"<(%s)>" % "|".join(_MACHINERY_TAGS))
 
-# The annotation notes, which have NO TAG at all: `formatAnnotations` writes one
-# opening sentence, a paragraph of field notes for the model, and a fenced json
-# block. A port of template.html's `stripAnnBlock`, matched at position zero for
-# the same reason it is — anything wedged in front turns the strip into a silent
-# no-op and leaks raw json as the title.
+# The annotation notes as they are written TODAY: an `<annotations>` block of
+# markdown stanzas, one per pin. It needs no strip code of its own — the tag is
+# in `_MACHINERY_STRIP` above and `_LEADING_BLOCK` peels it like the other two —
+# but `ann_notes` still has to read the user's words back out of it, and prose
+# has no `content` key to ask for. Hence the shape rules below, which are the
+# ones `formatAnnotations` writes and nothing else:
+#
+#   * stanzas are separated by a blank line, and the writer collapses any blank
+#     line INSIDE a note so that boundary is unambiguous (the composer commits
+#     on Enter and takes a newline on Shift+Enter, so a note really can hold
+#     one);
+#   * the FIRST paragraph is the block's own preamble, and it is the only one
+#     that does not open with `**A** — ` (every stanza opens with its label);
+#   * inside a stanza the first line is that heading, the no-badge caveat and
+#     the no-words placeholder are OURS, and what is left is what the user said.
+#
+# The two machine lines are matched EXACTLY rather than as "any wholly-italic
+# line": a note that is one emphasised word is a note, and dropping it as prose
+# of ours loses the row's whole name.
+#
+# Anything that does not match is answered "" rather than guessed at — a row
+# named with a fragment of our own preamble is worse than one named by its id.
+_ANN_TAG = "annotations"
+_ANN_BLOCK = re.compile(r"<%s>(.*?)</%s>" % (_ANN_TAG, _ANN_TAG), re.DOTALL)
+_ANN_STANZA_HEAD = re.compile(r"^\*\*(.+?)\*\* — ")
+_ANN_NO_WORDS = "_(no words for this spot)_"
+_ANN_OFFSCREEN = re.compile(r"^_no badge on the overview: .+_$", re.DOTALL)
+
+# The annotation notes as they were written BEFORE that tag existed: one opening
+# sentence, a paragraph of field notes for the model, and a fenced json payload.
+# No tag at all, so it is recognised by its prose at position ZERO — which is
+# exactly the fragility the tag was added to end. Sessions already on disk carry
+# this shape forever, so both readers stay (the same permanent obligation
+# `pane_shot`'s bare-object form carries).
 _ANN_PREAMBLE = "The user annotated "
 _ANN_FENCE_OPEN = "\n```json\n"
 _ANN_FENCE_CLOSE = "\n```"
+
+
+def _ann_notes_md(block: str) -> str:
+    """The user's words from one `<annotations>` block's stanzas, joined.
+
+    Flattened with spaces, unlike the page's own reader (which rejoins with
+    newlines): this builds a row TITLE, and a title is one line."""
+    notes = []
+    for para in re.split(r"\n\s*\n", block.strip()):
+        lines = [ln.strip() for ln in para.strip().splitlines() if ln.strip()]
+        if not lines or not _ANN_STANZA_HEAD.match(lines[0]):
+            continue            # the preamble paragraph, or something we did not write
+        said = [ln for ln in lines[1:]
+                if ln != _ANN_NO_WORDS and not _ANN_OFFSCREEN.match(ln)]
+        if said:
+            notes.append(" ".join(said))
+    return " · ".join(notes)
 
 
 def _strip_ann_block(text: str) -> str:
@@ -712,6 +759,60 @@ def strip_machinery(text: str) -> str:
     return "" if _LEADING_OPEN.match(out) else out
 
 
+def ann_notes(text: str) -> str:
+    """The words the user typed INSIDE their annotations, for a send that
+    carried no free text at all — or "" when there are none.
+
+    THE THIRD COPY of an annotation rule (`template.html`'s `stripAnnBlock`,
+    `agent.py`'s `_ann_notes`, this) and pinned to the second one over the
+    shared corpus by `test_claude_sessions_merged.py`, for the reason D166
+    forces on every one of these: a template may not import `fused_render`, and
+    four readers that stopped agreeing about machinery is the bug this whole
+    family of functions was written to end.
+
+    Deliberately NOT part of `strip_machinery`, which answers a different
+    question — "what did the human type in the composer" — and is asked by
+    `is_machinery` to decide whether a record is worth keeping at all. This is a
+    SECOND source, consulted only where an empty answer costs a row its name:
+    since annotations became sendable with an empty message, the notes on the
+    pins ARE what the user wrote, and no reader was showing them.
+    """
+    out = (text or "").strip()
+    # TODAY'S shape first, and searched rather than anchored: the tag made this
+    # block position-independent, so it is found wherever the send put it — no
+    # peeling loop needed to expose it, unlike the untagged form below.
+    found = _ANN_BLOCK.search(out)
+    if found:
+        return _ann_notes_md(found.group(1))
+    while True:
+        match = _LEADING_BLOCK.match(out)
+        if not match:
+            break
+        out = out[match.end():].strip()
+    if not out.startswith(_ANN_PREAMBLE):
+        return ""
+    open_at = out.find(_ANN_FENCE_OPEN)
+    if open_at == -1:
+        return ""
+    close_at = out.find(_ANN_FENCE_CLOSE, open_at + len(_ANN_FENCE_OPEN))
+    if close_at == -1:
+        return ""
+    try:
+        pins = json.loads(out[open_at + len(_ANN_FENCE_OPEN):close_at])
+    except ValueError:
+        return ""
+    if not isinstance(pins, list):
+        return ""
+    notes = []
+    for pin in pins:
+        if not isinstance(pin, dict):
+            continue
+        note = pin.get("content")
+        if isinstance(note, str) and note.strip():
+            notes.append(note.strip())
+    return " · ".join(notes)
+
+
 def is_machinery(text: str) -> bool:
     """Is this record machinery WHOLE — nothing a human contributed to it?
 
@@ -748,10 +849,68 @@ def slash_command(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _parse_head(path: str) -> tuple[str | None, float | None, str]:
+# ------------------------------------------------ pane file on a user record
+#
+# The `<live-app-state>` block the Claude page prepends to a send carries the
+# pane's own URL (`"url": "/render?path=<file>"`), and that URL is the only
+# durable record of WHICH FILE a chat was opened on: the transcript's `cwd` is
+# always a folder (agent.py:_workdir resolves a file target to its directory
+# before Claude Code ever sees it), and the per-file sidecar is on its way out
+# (D335). Reading the path back out of the block is what lets "open this task"
+# land on the file the user was actually looking at instead of its folder. A
+# chat with no block ever — a folder chat, a terminal session — has no pane,
+# and for those the folder IS the right answer, so "" here is not a failure.
+_APP_STATE_LEAD = re.compile(r"<live-app-state>(.*?)</live-app-state>",
+                             re.DOTALL)
+
+
+def pane_file(text: str) -> str:
+    """The file the LEADING `<live-app-state>` block says the pane was on,
+    or "". Anchored like every machinery matcher here (`_LEADING_BLOCK`),
+    because only a leading block is machinery — the tag further in may be
+    something a human typed. The state is prose followed by one JSON object,
+    so the object is cut from first `{` to last `}` and parsed properly
+    rather than regexed; a title containing `"url":` must not win.
+
+    Three answers, in order of honesty. `entry` is the state's own name for
+    the document the pane is about (template.html `appEntry`) and wins
+    outright. The url is the fallback for older blocks — and there the
+    `_file` param must beat `path`, because a templated preview's url is
+    `/render?path=<template>&_file=<file>`: `path` names OUR template, which
+    exists on disk and would sail through the caller's isfile check as the
+    target of somebody's chat about their own parquet file."""
+    match = _APP_STATE_LEAD.match((text or "").lstrip())
+    if not match:
+        return ""
+    blob = match.group(1)
+    start, end = blob.find("{"), blob.rfind("}")
+    if start == -1 or end <= start:
+        return ""
+    try:
+        state = json.loads(blob[start:end + 1])
+    except ValueError:
+        return ""
+    if not isinstance(state, dict):
+        return ""
+    entry = state.get("entry")
+    if isinstance(entry, str) and entry:
+        return entry
+    url = state.get("url")
+    if not isinstance(url, str):
+        return ""
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    for key in ("_file", "path"):
+        values = query.get(key)
+        if values and values[0]:
+            return values[0]
+    return ""
+
+
+def _parse_head(path: str) -> tuple[str | None, float | None, str, str]:
     cwd: str | None = None
     first_ts: float | None = None
     prompt = ""
+    pane = ""
     chars = 0
     count = 0
     try:
@@ -786,6 +945,15 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str]:
                         and not obj.get("isMeta") and not obj.get("isSidechain")):
                     msg = obj.get("message")
                     if isinstance(msg, dict) and msg.get("role") == "user":
+                        raw = first_text(msg.get("content"))
+                        # The pane file rides the same records the prompt is
+                        # searched in, and stops with it: the first send from
+                        # a pane carries both the block and the words, so by
+                        # the time the prompt resolves the pane has had its
+                        # chance. Scanning on after that would trade a bounded
+                        # head read for a full one on every pane-less chat.
+                        if not pane:
+                            pane = pane_file(raw)
                         # STRIPPED, not raw: the fused-render Claude page
                         # prepends its own blocks to what the user typed, and
                         # the raw text is how rows came to be titled
@@ -794,37 +962,46 @@ def _parse_head(path: str) -> tuple[str | None, float | None, str]:
                         # user record, because a blank title while the message
                         # that could have named the row sits two lines further
                         # down is the same bug from the other side.
-                        prompt = strip_machinery(first_text(msg.get("content")))
+                        # The pins are the FALLBACK: a send with both words and
+                        # annotations is named by the words. A send with only
+                        # annotations is named by the notes on them, which is
+                        # the only text in the record a human wrote (`ann_notes`).
+                        prompt = strip_machinery(raw) or ann_notes(raw)
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
-        return None, None, ""
-    return cwd, first_ts, prompt
+        return None, None, "", ""
+    return cwd, first_ts, prompt, pane
 
 
-def head(path: str, size: int | None = None) -> tuple[str | None, float | None, str]:
-    """(cwd, first timestamp, first user prompt) for one transcript, cached per
-    path. Transcripts are append-only, so a head that resolved fully stays
-    valid however much the file grows; an incomplete one is retried once the
-    file has more to offer, and a file that shrank was replaced."""
+def head(path: str, size: int | None = None,
+         ) -> tuple[str | None, float | None, str, str]:
+    """(cwd, first timestamp, first user prompt, pane file) for one
+    transcript, cached per path. Transcripts are append-only, so a head that
+    resolved fully stays valid however much the file grows; an incomplete one
+    is retried once the file has more to offer, and a file that shrank was
+    replaced. The pane file is deliberately absent from the completeness
+    test: a chat with no `<live-app-state>` block has none to find, and
+    re-reading it on every append to keep looking would never pay for
+    itself."""
     if size is None:
         try:
             size = os.path.getsize(path)
         except OSError:
-            return None, None, ""
+            return None, None, "", ""
     cached = _HEAD_CACHE.get(path)
     if cached is not None:
-        cached_size, cwd, first_ts, prompt = cached
+        cached_size, cwd, first_ts, prompt, pane = cached
         complete = bool(prompt) and first_ts is not None and cwd is not None
         if cached_size == size or (size > cached_size and complete):
             if size != cached_size:
-                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
-            return cwd, first_ts, prompt
+                _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+            return cwd, first_ts, prompt, pane
     if len(_HEAD_CACHE) > 20000:  # unbounded only if the user has 20k sessions
         _HEAD_CACHE.clear()
-    cwd, first_ts, prompt = _parse_head(path)
-    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt)
-    return cwd, first_ts, prompt
+    cwd, first_ts, prompt, pane = _parse_head(path)
+    _HEAD_CACHE[path] = (size, cwd, first_ts, prompt, pane)
+    return cwd, first_ts, prompt, pane
 
 
 def project_of(cwd: str) -> str:
@@ -867,7 +1044,7 @@ def backfill(projects_dir: str | None = None) -> dict[str, str]:
             size = os.path.getsize(path)
         except OSError:
             continue  # vanished mid-walk: costs that one session, not the walk
-        cwd, first_ts, _prompt = head(path, size)
+        cwd, first_ts, _prompt, _pane = head(path, size)
         if not cwd:
             continue
         session_id = os.path.splitext(os.path.basename(path))[0]

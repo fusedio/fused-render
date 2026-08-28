@@ -170,7 +170,7 @@ def test_a_leftover_script_header_is_an_ordinary_comment(monkeypatch, tmp_path):
     )
     # Stubbed rather than run for real: the assertion is about what run_python
     # DECIDES, and a real backend would make this test require the `[fused]`
-    # extra — which the 3.10-3.13 matrix does not install, so it would fail
+    # extra — which the 3.11-3.13 matrix does not install, so it would fail
     # there rather than skip. `_FakeBackend` carries both halves of the
     # contract, so `via` below proves which path was taken.
     backend = _FakeBackend(_FakeResult(return_value="7"))
@@ -793,6 +793,16 @@ def test_an_explicit_override_is_probed_even_with_an_odd_name(monkeypatch, tmp_p
     It still has to pass the probe — the escape hatch relaxes the name guard,
     not the verification.
     """
+    if os.name == "nt":
+        # The wrapper below IS a shebang script (`#!/bin/sh\nexec ...`), made
+        # runnable with chmod +x — a POSIX exec mechanism Windows has none of.
+        # CreateProcess cannot launch it at all (no interpreter association,
+        # no shebang support), so the probe would fail for a reason that has
+        # nothing to do with what this test is actually pinning: that an
+        # explicit override skips the NAME guard. A `.bat`/`.cmd` stand-in
+        # would exercise a different, shell-mediated spawn path instead of
+        # the direct one under test, so this is skipped rather than faked.
+        pytest.skip("the wrapper is a POSIX shebang script by construction")
     wrapper = tmp_path / "app-python-wrapper"
     wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} \"$@\"\n")
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IEXEC)
@@ -1514,6 +1524,14 @@ def test_a_wrapper_that_does_not_work_is_rejected(bundle_like, monkeypatch):
 
 def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
     """A DMG can be mounted at `/Volumes/Fused Render`; nothing may split on it."""
+    if os.name == "nt":
+        # Same gate `_wrapper_interpreter` itself documents: "Windows
+        # interpreters self-locate; there is no PYTHONHOME to restore and no
+        # POSIX shell to do it with." It returns None before ever generating
+        # a body to inspect, regardless of PYTHONHOME below — this is the
+        # `bundle_like` fixture's own skip, just reached directly instead of
+        # through that fixture.
+        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "a state dir"))
     home = tmp_path / "home with spaces"
     (home / "lib").mkdir(parents=True)
@@ -1535,6 +1553,11 @@ def test_the_wrapper_quotes_paths_with_spaces(tmp_path, monkeypatch):
 def test_the_wrapper_is_private_and_regenerated_only_when_it_changes(
     tmp_path, monkeypatch
 ):
+    if os.name == "nt":
+        # Same gate as test_the_wrapper_quotes_paths_with_spaces above: no
+        # wrapper is ever generated on Windows, so there is no 0700 mode or
+        # regenerated body to assert on.
+        pytest.skip("the wrapper is POSIX-only by design")
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "state"))
     home = tmp_path / "home"
     (home / "lib").mkdir(parents=True)
@@ -1907,3 +1930,30 @@ def test_app_packages_does_not_cache_an_unresolved_interpreter(monkeypatch):
         )
     finally:
         engine.reset_app_packages_cache()
+
+
+# --- shared-template path seeding (SPEC PY-19): both engines, in lockstep ----
+
+
+def test_build_code_appends_the_shared_templates_dir_to_sys_path(tmp_path):
+    """`import fused_ai` must work under the fused engine too — the generated
+    wrapper appends `templates/shared` (not inserts it at 0, so a user module
+    of the same name still wins), the identical precedence `_child.py`'s
+    worker uses for the built-in engine. See that file's own module docstring
+    for the trap of only fixing one engine."""
+    code = engine.build_code("result = 1\n", str(tmp_path))
+    shared_dir = os.path.join(
+        os.path.dirname(os.path.abspath(engine.__file__)), "templates", "shared")
+    assert os.path.isdir(shared_dir), "fused_render/templates/shared must exist"
+    assert f"_fused_sys.path.append({shared_dir!r})" in code
+    # Appended, not inserted at [0] — the script dir keeps first-hit precedence.
+    insert_at = code.index(f"_fused_sys.path.insert(0, {str(tmp_path)!r})")
+    append_at = code.index(f"_fused_sys.path.append({shared_dir!r})")
+    assert insert_at < append_at
+
+
+def test_a_script_under_the_fused_engine_can_import_fused_ai(tmp_path):
+    """Exec the wrapped code the way the backend's runner does (`_run_wrapped`
+    pattern above) and prove `import fused_ai` actually resolves."""
+    g = _run_wrapped(tmp_path, "import fused_ai\nresult = callable(fused_ai.text)\n", {})
+    assert g["result"] is True

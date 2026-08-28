@@ -9,32 +9,36 @@ two behaviours — which is the one thing a second runner for a capability is no
 allowed to be (SPEC AI-10c).
 
 **It sits at the runners ROOT**, beside `worker_base.py`, `formats.py`,
-`diarize.py` and `partial.py`, and it moved here the moment a SECOND engine
-needed it (D319 — the Parakeet runner). It began inside `mlx_whisper/` because
-one runner used it and the CT2 engine had faster-whisper's own copy; that was
-the right home for exactly as long as there was one caller. Two callers of one
-promise is what the root is for: a copy under `parakeet_mlx/` would be two
-implementations of "what `vad: true` means", free to drift on the threshold, the
-minimum silence and the padding, and neither copy would fail a test — each would
-pass its own. Its readers reach it through the same `sys.path` insert that
-reaches `worker_base`.
+`diarize.py` and `partial.py`, having moved here the moment a SECOND engine
+needed it (D319 — the Parakeet runner, since withdrawn by D406). It began
+inside `mlx_whisper/` because one runner used it and the CT2 engine had
+faster-whisper's own copy; that was the right home for exactly as long as
+there was one caller. Two callers of one promise is what the root is for: a
+copy under a second runner's own folder would be two implementations of "what
+`vad: true` means", free to drift on the threshold, the minimum silence and
+the padding, and neither copy would fail a test — each would pass its own.
+`mlx_whisper/worker.py` is the sole caller again since D406, and the module
+stays at the root rather than moving back — the shared location costs nothing
+with one caller and saves a second move the day another one arrives. Its
+readers reach it through the same `sys.path` insert that reaches `worker_base`.
 
-**Its readers are the two MLX engines, not all three.** `faster_whisper/`
+**Its reader is the MLX engine, not `faster_whisper`.** `faster_whisper/`
 neither imports this nor should: faster-whisper ships the same Silero inside
 itself and takes `vad_filter=True`, so asking for it there is one argument to a
-library that already has the model. This file exists because the MLX engines
-have no such library — which is the whole of AI-10f's argument, one engine
+library that already has the model. This file exists because the MLX engine
+has no such library — which is the whole of AI-10f's argument, one engine
 further on.
 
 **It owns the PACKING too, not just the detection** (`pack_regions`,
 `packed_samples` and the inverses `original_start`/`original_end`, at the foot of
 this file). Deciding what the decoder is actually HANDED — one clip per region,
 or the speech concatenated into as few clips as fit — is part of what `vad: true`
-means, and this module is the one place allowed to define that for both MLX
-engines; `mlx_whisper/worker.py` is the only caller today only because Parakeet
-has no fixed window to pack into, which is a fact about that engine rather than
-a different reading of the flag. The arithmetic is stdlib and numpy, so a
-caller that wants it does not need onnxruntime to be installed.
+means, and this module is the one place allowed to define that. `parakeet_mlx`
+never called into the packing before it was withdrawn: it had no fixed window
+to pack into, a fact about that engine rather than a different reading of the
+flag, and `mlx_whisper/worker.py` remains the only caller. The arithmetic is
+stdlib and numpy, so a caller that wants it does not need onnxruntime to be
+installed.
 
 Three constraints shaped it, and each one closed off the obvious route:
 
@@ -291,9 +295,9 @@ def pack_regions(regions, budget=BUDGET_S):
     took 8.32s for the whole file, 23.30s for the 31 raw regions and 9.31s
     packed. faster-whisper never had this defect — its own `vad_filter` calls
     `collect_chunks`, which concatenates speech to a maximum duration and remaps
-    the timestamps afterwards — and since this module exists so both MLX engines
-    mean the SAME thing by the flag (AI-10f), the two engines sitting 2.8x apart
-    on it was the parity problem, not a missed optimisation.
+    the timestamps afterwards — and since this module exists so the MLX and CT2
+    engines mean the SAME thing by the flag (AI-10f), the two engines sitting
+    2.8x apart on it was the parity problem, not a missed optimisation.
 
     **A region longer than the budget passes through ALONE and is never split.**
     Cutting mid-speech loses the words at the cut, and Whisper already chunks a
@@ -410,13 +414,85 @@ def _at_original(pack, at, join_ends_region):
     for `slice_samples`' reason: a negative time must not wrap round to
     somewhere else in the recording.
     """
+    index, offset = _region_of(pack, at, join_ends_region)
+    if index is None:
+        return pack[-1][1]
+    start, _end = pack[index]
+    # `max(start, …)` is the low clamp.
+    return max(start, start + (at - offset))
+
+
+def _region_of(pack, at, join_ends_region):
+    """Which region a PACKED time falls in, as `(index, offset)` — `offset`
+    being where that region begins in packed time, so `at - offset` is how far
+    into it the time lands. `(None, total)` for a time past the packed clip,
+    which is Whisper timing into its 30-second padding and is the caller's to
+    clamp.
+
+    `join_ends_region` is the asymmetry the two public functions carry: an END
+    landing exactly on a join stops in the region that ends there, a START falls
+    through to the one that begins there. One walk, so the endpoint mapping and
+    `original_word_span` cannot drift on which side of a join a time belongs to.
+    """
     offset = 0.0
-    for start, end in pack:
+    for index, (start, end) in enumerate(pack):
         span = end - start
         if at < offset + span or (join_ends_region and at <= offset + span):
-            # `max(start, …)` is the low clamp. The `or` is the asymmetry: an
-            # END on the boundary stops here, at this region's last moment,
-            # while a START falls through to the region that begins there.
-            return max(start, start + (at - offset))
+            return index, offset
         offset += span
-    return pack[-1][1]
+    return None, offset
+
+
+def original_word_span(pack, at, until):
+    """A WORD's packed interval → `(start, end)` in RECORDING time, never
+    STRETCHED across a join.
+
+    **The invariant a word has and a segment does not:** packing only REMOVES
+    time, so a word's recording span must be no longer than its packed one. A
+    SEGMENT is exempt on purpose — Whisper hears continuous speech across a join
+    because the silence is not in the clip it was given, and both sides of that
+    join carry real words, so a segment mapped endpoint by endpoint (each end
+    through its own region, which is what `original_start`/`original_end` are
+    for) is honest. One WORD cannot be spoken across silence this runner cut
+    out, and mapping its two ends independently is what made a 0.2s word
+    strictly containing a join come back as `4.9-30.1`: a 25-second token that
+    freezes a karaoke highlight for the whole dropped pause. Clamping into the
+    parent segment does not catch it, because the segment is allowed to straddle
+    the same join.
+
+    So a word is placed in ONE region — the one holding its packed MIDPOINT —
+    with its interval clamped into that region's packed window. Midpoint rather
+    than start, because it puts the word where most of it was actually heard; a
+    midpoint landing exactly on a join takes `original_start`'s side (the region
+    that BEGINS there), the same tie-break as everywhere else here. For a word
+    lying inside one region — every word in a clip with no joins, and the
+    overwhelming majority in one with them — this returns the endpoint mapping's
+    answer unchanged, a word merely TOUCHING a join at either end included. A
+    midpoint past the packed clip (a hallucination timed into the padding)
+    resolves to the LAST region and collapses at its bound, which is what the
+    endpoint clamp does with the same input.
+
+    A straddling word therefore comes back SHORTER than it was timed — it keeps
+    only the part heard inside the region it was placed in — and that is the
+    honest answer rather than a shortcoming: the rest of it was timed against
+    audio on the other side of a pause the file no longer contains. A highlight
+    lets go of the word early; it does not sit on it through the silence.
+
+    *Rejected: keeping both ends and shifting the later one back —
+    `end = start + packed duration`.* It preserves the length but asserts the
+    tail of the word was spoken inside silence the file no longer contains,
+    which is what `original_end`'s asymmetry exists to refuse.
+    """
+    index, _mid_offset = _region_of(pack, (at + until) / 2.0, join_ends_region=False)
+    if index is None:
+        index = len(pack) - 1
+    start, end = pack[index]
+    span = end - start
+    # Where the region BEGINS in packed time. Re-summed rather than carried out
+    # of `_region_of`, whose offset is the midpoint's own and is the same number
+    # only because the walk stopped there — the interval is clamped against the
+    # region as a whole, so the region's offset is what this needs.
+    offset = sum(e - s for s, e in pack[:index])
+    low = min(max(at - offset, 0.0), span)
+    high = min(max(until - offset, 0.0), span)
+    return start + low, start + max(high, low)

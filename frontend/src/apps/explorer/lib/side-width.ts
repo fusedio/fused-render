@@ -16,7 +16,19 @@
 // composer and a message column, whose legibility is a width in pixels and not
 // a share of the window. The content pane keeps whatever is left, with its own
 // floor so neither the default nor a drag can swallow it.
-export const MIN_W = 280;
+//
+// MIN_W WAS 280, AND 280 WAS BROKEN — not narrow-but-usable, actually broken:
+// screenshotted live (a claude template chat in the column, cmux at 1500x950),
+// the composer's control row (`fable` / `medium` / `ask every time`, then the
+// screenshot and calendar buttons, then Send) wrapped onto two cramped lines at
+// every width from 280 up through 360, and the folder/file title above it
+// wrapped too. 380 is the first width, measured the same way, where that whole
+// row sits on one line with room to breathe — so the floor moved to meet the
+// content instead of the content being asked to fit a floor picked before this
+// template existed. `closeOverdrag` (platform/lib/panel-drag.ts) reads this
+// constant rather than a copy, so the drag-to-close threshold widens with it
+// automatically.
+export const MIN_W = 380;
 export const CONTENT_MIN_W = 320;
 
 // **THE COMPANION COLUMN'S SHARE — one rule, both surfaces** (D283, amending

@@ -7,12 +7,54 @@
  *     stale slider scrubs with no author effort. opts.key regroups the channel;
  *     opts.key:null opts out (fully concurrent); opts.signal is a caller
  *     AbortSignal that composes.
+ *   fused.daemon.status() / start() / stop() / restart() / setAutostart(bool) -> Promise
+ *     Control surface for a FOLDER's declared background daemon
+ *     (server/routers/background_apps.py), not this page's own script — a
+ *     folder opts in with a `[tool.fused-render.app]` manifest in its
+ *     `pyproject.toml` naming a `daemon` file. Every method sends this page's
+ *     own path so the server resolves which app folder it belongs to; none
+ *     take a folder path. Run state and autostart are independent (D511):
+ *     `status()` resolves {running, autostart, pid, version, engine_id} as
+ *     two separate facts. `start()` spawns the daemon now and does NOT touch
+ *     autostart (409 if its project venv isn't built yet — open the page
+ *     once, or `fused.runPython`, to install it first). `stop()` kills the
+ *     running daemon, also without touching autostart — if autostart is on
+ *     the server's startup resurrection hook still brings it back next
+ *     launch; if it's off (the default) it stays down until an explicit
+ *     `start()`. `restart()` respawns it, autostart untouched either way.
+ *     `setAutostart(bool)` is the ONLY thing that persists the "bring this
+ *     back at every launch" flag — opt-in, never a side effect of `start()`.
+ *   fused.daemon.call(path, body?) -> Promise<any>
+ *     Reach the running daemon directly, proxied through the same
+ *     stable-origin /api/engines/<id>/proxy a template daemon's traffic
+ *     already rides. Resolves the engine_id from a cached status() first
+ *     (calling status() itself if none is cached yet) — rejects if the app
+ *     isn't running. Local-only, like the rest of fused.daemon — not
+ *     available on hosted/exported pages (see the file header below).
+ *   fused.daemon.watch(callback) -> unsubscribe()
+ *     Learn that the daemon's state changed WITHOUT the page having caused
+ *     it itself — the case a page's own start()/stop()/restart() calls
+ *     cannot cover: another surface (the OpenWhisper tray's Quit, a second
+ *     tab, the server's own startup resurrection) changed it instead.
+ *     Polls status() only while document.visibilityState is "visible" (a
+ *     hidden tab costs nothing), refreshes immediately on visibilitychange
+ *     (becoming visible) and on window focus — the case that matters most,
+ *     since reaching for the tray implies the page was NOT focused — and
+ *     calls `callback(status)` only when {running, autostart, pid, version}
+ *     differs from the last-seen status (never on an unchanged tick).
+ *     Returns an unsubscribe function. In a preview thumbnail this does one
+ *     status() read and returns a no-op unsubscribe — no timer, no
+ *     listeners (see the preview note on start()/stop() below; watch()
+ *     itself is read-only like status(), so it is not rejected, just kept
+ *     inert).
  *   fused.ai(prompt, opts?) -> Promise<{text, model, usage}>
  *     opts.history: prior [{role:"user"|"assistant", content}] turns, for a
  *     caller holding a conversation rather than asking one question.
  *     opts.raw: send the prompt verbatim, with no chat template around it.
+ *     opts.images: absolute paths to base images for a vision-language model,
+ *     on THIS turn only.
  *     opts.temperature / opts.maxTokens / opts.topP: sampling.
- *     All four are LOCAL-MODEL ONLY and are refused (400) rather than dropped
+ *     All five are LOCAL-MODEL ONLY and are refused (400) rather than dropped
  *     on the Claude path. fused.ai.cancel() stops a local generation mid-flight
  *     without unloading the model.
  *     Ask an AI model via the shell's /api/ai, which runs the local claude
@@ -40,7 +82,7 @@
  *     it is null on the last tick and on resolve, because the preview file is
  *     deleted then — end on url. Rejects with .type "cancelled" | "ai_error" |
  *     "unavailable" (no image runner on this machine — reason in the message).
- *   fused.ai.transcribe({path, model, language, task, diarize, speakers,
+ *   fused.ai.transcribe({path, model, language, task, diarize, speakers, words,
  *                        onProgress, onSegment})
  *                  -> Promise<{output, url, text, segments, language, ...}>
  *     Speech to text, locally (SPEC §40). Takes a path to an audio or video
@@ -62,19 +104,14 @@
  *     `segments` has, `speaker` included when diarizing.
  *     Which engine transcribes depends on the machine and on the user's
  *     preference (SPEC AI-10e) — MLX Whisper on Apple Silicon, CTranslate2
- *     elsewhere, and Parakeet TDT if a Mac's owner chose it on the Engines tab
- *     — and the reply is the same shape whichever ran, so a page never has to
- *     ask. `vad` (default true) runs the same Silero speech detector on all
- *     three, and timestamps are always positions in the ORIGINAL file even
- *     though the silence between them was never transcribed. Two things do
- *     differ. The RESOLUTION of the progress: MLX Whisper reports once per
- *     decoded window (up to 30s of audio) and Parakeet once per 60s chunk
- *     rather than per segment, so `done` can sit still and then jump — it is
- *     always a real position in the recording and never ahead of one. And
- *     Parakeet REFUSES three options rather than ignoring them —
- *     task: "translate", `language` (it detects its own, among 25 European
- *     languages) and `initialPrompt` — each rejecting .type "bad_request"
- *     BEFORE a job opens, with a message naming the engine and the way out.
+ *     elsewhere — and the reply is the same shape whichever ran, so a page
+ *     never has to ask. `vad` (default true) runs the same Silero speech
+ *     detector on both, and timestamps are always positions in the ORIGINAL
+ *     file even though the silence between them was never transcribed. The
+ *     RESOLUTION of the progress does differ: MLX Whisper reports once per
+ *     decoded window (up to 30s of audio) rather than per segment, so `done`
+ *     can sit still and then jump — it is always a real position in the
+ *     recording and never ahead of one.
  *     The MODEL is not interchangeable between them — each engine loads its own
  *     format — so pick a repo from fused.ai.models.catalog() rather than
  *     hardcoding one.
@@ -96,6 +133,104 @@
  *     audio of the transcript, and diarization reports as its own stage on the
  *     row instead. First use on a machine downloads ~33MB, so it needs a
  *     network that once; after that it works offline.
+ *     `words: true` times each WORD inside a segment, which is what a karaoke
+ *     highlight or a click-a-word-to-seek player needs — a segment is a whole
+ *     sentence or several. Every segment gains `words`, a list of
+ *     {start, end, word} in order; `word` keeps its leading space, so the
+ *     segment's text is the words concatenated. Timings are positions in the
+ *     ORIGINAL file, like a segment's, and always inside their own segment.
+ *     Default false, and unlike `diarize` this one is NOT free: an extra pass
+ *     per decoded window (+40% on a short clip), a one-time ~1.3s on the first
+ *     worded run in a worker, and it changes the decode itself — the library's
+ *     hallucination pruning only runs with word timings on — so the SAME file
+ *     can come back with a different number of segments than a call without it.
+ *     Ask for it when a page needs it, not by default.
+ *     BEST-EFFORT, and the only option here that is: asking never fails, and an
+ *     engine without word timings simply leaves `words` off its segments. Only
+ *     MLX Whisper produces them today, so write `segment.words || []` and a
+ *     page works unchanged on every machine — rather than asking which engine
+ *     it landed on before it asks for anything. `task: "translate"` also comes
+ *     back without them on every engine: a translation's words were never
+ *     spoken in the audio, so there is nothing to align them to.
+ *     There is no per-word confidence, deliberately — it is a number only some
+ *     engines have, and a page must not come to depend on which one ran.
+ *   fused.ai.video({prompt, model, width, height, frames, steps, seed,
+ *                   onProgress}) -> Promise<{path, url, model, prompt, width,
+ *                                            height, frames, steps, seed}>
+ *     Text to video, with audio, locally (SPEC §40) — MiniMax H3, Apple
+ *     Silicon only (no fallback on other platforms: the first capability
+ *     with no "everywhere" runner). Same shape as fused.ai.image minus
+ *     guidance (H3 is CFG-distilled and takes no such parameter) and
+ *     previewUrl (no live preview in this build), plus frames — snapped
+ *     server-side to h3's own valid grid, so the resolved object may not
+ *     echo the number you asked for. Minutes to hours long
+ *     (VIDEO_TIMEOUT_S is 2h): onProgress fires per denoising step with the
+ *     download-manager record, and that row's ✕ really stops the render —
+ *     a real process kill, not merely an abandoned request. The seed comes
+ *     back whether or not one was passed. Rejects with .type "cancelled" |
+ *     "ai_error" | "unavailable" (no Apple Silicon, or the h3 binary is not
+ *     staged — reason in the message, checked BEFORE any Apple-Silicon-only
+ *     capability could otherwise look merely broken).
+ *   fused.ai.embed({texts, paths, model}) -> Promise<{vectors, dim, model}>
+ *     Text OR images into one vector space, locally (SPEC §40) — a dual
+ *     encoder, not a chat model. Exactly ONE of `texts` (a list of strings) or
+ *     `paths` (files on this machine, resolved beside this page when
+ *     relative, like readFile/rawUrl) — up to 64 items. Every vector is
+ *     UNIT-NORMALIZED, so cosine similarity between two of them is a plain dot
+ *     product. Not job-backed: a batch this size is one forward pass, over
+ *     before a progress row would have drawn, so the reply IS the result —
+ *     no onProgress, no jobId on success. Rejects .type "bad_request" |
+ *     "model_loading" (the model is not resident; .jobId is the load this
+ *     call just started — watch it and retry, exactly like the first
+ *     fused.ai(...) on a cold local model) | "ai_error" | "unavailable" (no
+ *     embedding runner on this machine).
+ *   fused.capture.* -> record the screen, record the mic, grab a still
+ *     screen({display, rect, audio, device, cursor, path, maxSeconds, title})
+ *     -> Promise<handle> and audio({source, path, maxSeconds, title})
+ *     -> Promise<handle> both RESOLVE WHEN THE
+ *     RECORDING IS RUNNING, not when it ends — a recording is a session of
+ *     unknown length, so what comes back is a handle: {id, path, url, mode,
+ *     jobId, state, stop(), cancel()}. `stop()` resolves with the finished file
+ *     ({path, url, mime, seconds, bytes}); `cancel()` stops AND DELETES it,
+ *     which is also what the download manager's ✕ does to that row. The path is
+ *     decided before the first frame exists, so it is on the handle immediately
+ *     — which is what makes `fused.ai.transcribe({path})` the next line rather
+ *     than a blob round-trip through JS.
+ *     `audio` on a screen recording is false, "mic", "system" or "both", named
+ *     rather than boolean and refused rather than coerced. `device` picks a
+ *     microphone THERE; system audio is a property of a screen stream, so
+ *     `audio()` records the microphone only, from the system's current input —
+ *     it refuses a `device` rather than ignoring one.
+ *     A recording is a JOB ROW, so it survives the page that started it:
+ *     `list()` finds live ones (including another page's) and `attach(id)`
+ *     hands the handle back. For elapsed seconds read that row —
+ *     `fused.watchJob(rec.jobId)` — rather than looking for a callback here.
+ *     Nothing ends by itself except `maxSeconds` (default 30 min), and hitting
+ *     it is a STOP, not a cancel: the file is kept. That matters because a page
+ *     can be closed mid-recording, and then the ✕ is the only control left.
+ *     screenshot({display, rect, cursor, path}) -> Promise<{path, url,
+ *     width, height, bytes, mime}> is the one call with no handle and no job
+ *     row: it is milliseconds. The FILE'S EXTENSION picks png or jpeg (there is
+ *     no `format`, so a path and a format cannot disagree). Native on every
+ *     platform, so it needs no readable document and raises no share prompt —
+ *     a cross-origin pane is shootable.
+ *     sources() -> what this machine can capture and what it is waiting for
+ *     ({video, audio, systemAudio, screenshot} each {available, granted,
+ *     reason}, plus `displays` and `microphones`). It NEVER prompts — the
+ *     permission dialog rides the first real capture — so it is safe to call
+ *     while drawing a record button. `available: false` always carries a
+ *     `reason`, and a start rejects .type "unavailable" with the same sentence.
+ *     Local only — not available on hosted/exported pages.
+ *     WHAT DIFFERS BY PLATFORM, since one API serves three: on macOS the app
+ *     records natively (macOS 15+, 14 for the still) with no picker, and a
+ *     recording outlives the page that started it. On Windows and Linux the
+ *     browser records and the server writes the file, so the share picker opens
+ *     when a screen recording starts, `display`/`rect`/`cursor` are REFUSED on
+ *     screen() with a sentence saying why (screenshot() still takes all three
+ *     on Windows), and a full page reload ends a recording — the file is kept
+ *     and its row says so. `device` works on audio() there, and does not on
+ *     macOS. Ask sources() and read the `reason`s rather than sniffing the
+ *     platform: there is deliberately no field naming which one served you.
  *   fused.watchJob(id) -> {get, watch, stop, cancel}
  *     Observe a job this page did NOT create — the server-owned work that
  *     fused.ai.models.load() and image generation start. The read side of the
@@ -283,37 +418,78 @@
   // was not special, and the next one with an input would have re-broken it.
   // The shell marks the frame's URL and every page gets the behaviour for free:
   //
-  //   • `autofocus` attributes are stripped as the document parses, before the
-  //     browser has finished parsing (and so before it applies the last one);
-  //   • el.focus() calls are DROPPED until the reader actually interacts with
-  //     the page — the whole boot path, however long its async tail, rather
-  //     than some guessed settle window;
-  //   • the first real user gesture in the document lifts both, permanently:
-  //     from then on focus() works exactly as written. Clicking into the pane
-  //     is a deliberate act and the page owns the keyboard after it.
+  //   • a focus that lands anyway is bounced straight back out — the case
+  //     `autofocus` falls into, since the browser queues its candidate when the
+  //     element is inserted and no cooperation in here can dequeue it;
+  //   • el.focus() and select() are DROPPED until the reader actually interacts
+  //     with the page — the whole boot path, however long its async tail,
+  //     rather than some guessed settle window;
+  //   • scrollIntoView keeps its scroll inside this document;
+  //   • the first real user gesture in the document lifts all of it,
+  //     permanently: from then on everything works exactly as written. Clicking
+  //     into the pane is a deliberate act and the page owns itself after it.
   //
-  // `window.__fusedNoAutofocus` is published for pages that would rather ask
-  // than be corrected (the claude template gates its own boot focus on it).
-  // Deliberately not on `window.fused`: that is the documented portable bridge
-  // mirrored by the hosted runtime, and this is local-shell plumbing — same
-  // reason the other `_fused*` globals are bare.
+  // NOTHING IS PUBLISHED FOR PAGES TO CONSULT. A `window.__fusedNoAutofocus`
+  // flag used to be, so a page could gate its own boot focus instead of being
+  // corrected — and the claude template was its only reader, gating a focus()
+  // the patch below was already dropping. One mechanism, applied to every page
+  // including the ones nobody has written yet, beats two that have to agree.
   //
   // The param name is mirrored in frontend/src/platform/lib/frame-focus.ts,
   // which is where the contract is written down; the shell-side guard there is
   // what covers frames this suppression cannot reach.
   var NO_FOCUS_PARAM = "_nofocus";
+  // The other half of what a shell-mounted frame is told: this render is a
+  // PICTURE of a page, not a use of one (D301 records opens off its absence).
+  // Read here as well as by the shell, because two of the containments below
+  // are about being a thumbnail rather than about focus.
+  var PREVIEW_PARAM = "_preview";
 
-  function noFocusRequested(search) {
+  // One reader for both: an affirmative `=1` and nothing else, so a `_nofocus=0`
+  // is a "no" rather than "the key is present, therefore yes".
+  function flagRequested(search, param) {
     try {
-      return new URLSearchParams(String(search).replace(/^\?/, "")).get(NO_FOCUS_PARAM) === "1";
+      return new URLSearchParams(String(search).replace(/^\?/, "")).get(param) === "1";
     } catch (e) {
       return false;
     }
   }
 
+  function noFocusRequested(search) {
+    return flagRequested(search, NO_FOCUS_PARAM);
+  }
+
+  // INHERITED, not just requested. A page the shell mounts as a picture may
+  // frame a page of its own, and that inner URL is the app author's — it carries
+  // none of the shell's stamps, so asking only about `location.search` left
+  // every nested frame free to take focus (and to write the shell's URL) while
+  // its scroll chain still reached the card grid. The thumbnail flag has had
+  // this inheritance on the shell side all along (router.ancestorIsPreview);
+  // this is the same climb, for either flag: up while same-origin, stopping
+  // where a cross-origin read throws, since nothing above that boundary is ours
+  // to read anyway.
+  function selfOrAncestorHasFlag(param) {
+    if (flagRequested(location.search, param)) return true;
+    try {
+      var w = window;
+      while (w.parent && w.parent !== w) {
+        w = w.parent;
+        if (flagRequested(w.location.search, param)) return true;
+      }
+    } catch (e) {
+      /* cross-origin ancestor: the climb ends here */
+    }
+    return false;
+  }
+
+  // --- end of the flag readers ---
+
+  // Is this render a card thumbnail — mine or an ancestor's? One containment
+  // hangs off it: a thumbnail writes no URL but its own (findTarget below).
+  var IS_THUMBNAIL = selfOrAncestorHasFlag(PREVIEW_PARAM);
+
   function startNoFocus() {
-    if (!noFocusRequested(location.search)) return;
-    window.__fusedNoAutofocus = true;
+    if (!selfOrAncestorHasFlag(NO_FOCUS_PARAM)) return;
 
     // Anything that manages to take focus anyway gives it straight back. This
     // is the one that catches `autofocus`, which cannot be beaten by stripping
@@ -332,27 +508,105 @@
     };
     document.addEventListener("focusin", bounceFocus, true);
 
-    // Strip `autofocus` from anything already parsed and anything that arrives
-    // while the document streams. Belt and braces beside the blur above — an
-    // attribute that never applies is one fewer focus flicker. The observer is
-    // disconnected at DOMContentLoaded: after that the attribute has no effect
-    // on its own, and the focus() suppression below covers a script that adds
-    // one and focuses.
-    var strip = function (root) {
-      var nodes = root.querySelectorAll ? root.querySelectorAll("[autofocus]") : [];
-      for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute("autofocus");
-    };
-    strip(document);
-    var observer = null;
-    try {
-      observer = new MutationObserver(function () {
-        strip(document);
-      });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    } catch (e) {
-      /* no MutationObserver — the initial strip and the guard below still hold */
+    // `select()` joins the focus gate. It is the escape nobody expects, because
+    // it reads as a selection call: `input.select()` FOCUSES the input on the
+    // way (Blink, WebKit), and it does it natively — so the patched
+    // `HTMLElement.prototype.focus` below never sees it and the suppression it
+    // is under does not apply. Suppressed outright rather than reduced to
+    // "select without focusing": a thumbnail is a picture, and a selection
+    // highlight on a control nobody clicked says nothing about the app.
+    var selectOwners = [window.HTMLInputElement, window.HTMLTextAreaElement];
+    var realSelects = [];
+    for (var si = 0; si < selectOwners.length; si++) {
+      if (!selectOwners[si]) continue;
+      realSelects.push([selectOwners[si], selectOwners[si].prototype.select]);
+      selectOwners[si].prototype.select = function () {
+        /* embedded and unasked: no selection, and so no focus with it */
+      };
     }
 
+    // scrollIntoView, CONTAINED. Same jump as a stolen focus with no focus in
+    // it at all: the native call scrolls every scroll container up the chain,
+    // and the chain does not stop at this frame — it walks out into the
+    // embedder's own scroller, so a thumbnail whose app scrolls a chat log to
+    // the bottom on boot drags the card grid to its own row. There is no native
+    // way to stop that from either side (w3c/csswg-drafts#7134 is the open
+    // request for one; WebKit blocks cross-origin bubbling, Blink does not), and
+    // a thumbnail is same-origin with the shell by design (THUMB_SEAL).
+    //
+    // So the native call is not made. What the author meant — bring this element
+    // into view INSIDE this page — is done here instead, walking this document's
+    // own scrollable ancestors and stopping at its own viewport. Nothing crosses
+    // the frame boundary, and the shell needs to know nothing about it: an app
+    // that scrolls its own log to the bottom still shows its bottom in the
+    // thumbnail.
+    //
+    // Instant, always: an animated scroll inside a picture is frames of work for
+    // something nobody is watching, and it is the reason this cannot be done by
+    // measuring afterwards.
+    var realScrollIntoView = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (arg) {
+      // The three argument shapes, kept faithful: `false` aligns to the end,
+      // `true`/nothing to the start, an options object keeps its own alignment.
+      var block = arg === false ? "end" : "start";
+      var inline = "nearest";
+      if (arg && typeof arg === "object") {
+        if (arg.block) block = arg.block;
+        if (arg.inline) inline = arg.inline;
+      }
+      containScroll(this, block, inline);
+    };
+
+    // How far a container must move to satisfy one axis of an alignment. Reads
+    // as the spec does: start/end/center are absolute, `nearest` is the smallest
+    // move that makes the element visible and nothing at all if it already is.
+    function alignDelta(tStart, tEnd, cStart, cEnd, mode) {
+      if (mode === "start") return tStart - cStart;
+      if (mode === "end") return tEnd - cEnd;
+      if (mode === "center") return (tStart + tEnd) / 2 - (cStart + cEnd) / 2;
+      if (tStart >= cStart && tEnd <= cEnd) return 0; // already in view
+      if (tEnd - tStart > cEnd - cStart) return tStart - cStart; // taller than the box
+      return Math.abs(tStart - cStart) < Math.abs(tEnd - cEnd) ? tStart - cStart : tEnd - cEnd;
+    }
+
+    function containScroll(el, block, inline) {
+      if (!el || typeof el.getBoundingClientRect !== "function") return;
+      var node = el.parentElement;
+      var guard = 0;
+      while (node && guard++ < 100) {
+        var canY = node.scrollHeight > node.clientHeight;
+        var canX = node.scrollWidth > node.clientWidth;
+        if (canY || canX) {
+          // Re-measured per container: moving an outer one moves the element.
+          var t = el.getBoundingClientRect();
+          var box = node.getBoundingClientRect();
+          if (canY) node.scrollTop += alignDelta(t.top, t.bottom, box.top, box.bottom, block);
+          if (canX) node.scrollLeft += alignDelta(t.left, t.right, box.left, box.right, inline);
+        }
+        node = node.parentElement;
+      }
+      // This frame's own viewport, and the walk ENDS here — scrolling it moves
+      // nothing outside the frame, which is the whole point.
+      try {
+        var f = el.getBoundingClientRect();
+        var dy = alignDelta(f.top, f.bottom, 0, window.innerHeight, block);
+        var dx = alignDelta(f.left, f.right, 0, window.innerWidth, inline);
+        if (dx || dy) window.scrollBy(dx, dy);
+      } catch (e) {
+        /* no layout to scroll (a detached element): nothing to do */
+      }
+    }
+
+    // `autofocus` IS NOT TOUCHED HERE, and used to be: an attribute strip plus a
+    // MutationObserver re-stripping as the document streamed. It never worked on
+    // its own — the browser queues the candidate when the element is inserted
+    // and removing the attribute afterwards does not dequeue it — so the blur
+    // above was already carrying that case, and for a card thumbnail the
+    // attribute no longer applies at all (`sandbox` sets the sandboxed automatic
+    // features flag, which has no re-enabling token — THUMB_SEAL). What is left
+    // is one focus flicker in a pane preview before the bounce lands, against
+    // an observer running over every mutation of every previewed document.
+    //
     // Suppress programmatic focus until the reader touches the page. Patched on
     // the prototype rather than per element because the point is to cover code
     // that has not been written yet; restored — not left wrapped — on the first
@@ -366,8 +620,14 @@
       if (released) return;
       released = true;
       HTMLElement.prototype.focus = realFocus;
-      window.__fusedNoAutofocus = false;
-      if (observer) observer.disconnect();
+      // Restored with the rest of it: after a deliberate gesture the page owns
+      // itself, and a reader who has clicked into a preview is entitled to have
+      // `select()` select and `scrollIntoView` scroll exactly as written —
+      // including out into the pane, which is now their scroll to ask for.
+      Element.prototype.scrollIntoView = realScrollIntoView;
+      for (var ri = 0; ri < realSelects.length; ri++) {
+        realSelects[ri][0].prototype.select = realSelects[ri][1];
+      }
       // Every part of the suppression lifts at once, this one included — a
       // focusin bounce left installed would make the page permanently
       // unfocusable for the reader who just clicked into it.
@@ -389,9 +649,6 @@
     // such an act (see usePaneFocusGuard). An app-internal global, not part of
     // `fused`, for the same reason `__fusedFlushEdits` is.
     window.__fusedReleaseNoFocus = release;
-    document.addEventListener("DOMContentLoaded", function () {
-      if (observer) observer.disconnect();
-    });
   }
 
   startNoFocus();
@@ -400,6 +657,16 @@
   // a cross-origin window throws, so a try/catch marks the boundary.
   function findTarget() {
     let t = window;
+    // A THUMBNAIL DOES NOT CLIMB. Params reaching the ancestor URL is the point
+    // of D46 for a pane preview — the reader's state belongs in the address bar
+    // — and it is a leak for a card: `fused.params.set` in an app that scrubs a
+    // slider on boot was rewriting the /apps URL from inside a picture, one
+    // `history.replaceState` on the shell per card. Its own window instead, so
+    // the page's own reads still answer (`standalone` below) and nothing outside
+    // the frame moves. Only replaceState can be reached from in here anyway: the
+    // push path needs a gesture, and a thumbnail's pointer shield means it never
+    // sees one — so this cannot add joint history entries and break Back either.
+    if (IS_THUMBNAIL) return t;
     try {
       while (t.parent && t.parent !== t) {
         // Probe: throws if t.parent is cross-origin — stop at the last
@@ -1201,6 +1468,99 @@
     }
   }
 
+  // Tell the NEAREST same-origin ancestor that owns a Claude sidebar that a
+  // prompt is waiting for it, and switch it to Claude. The climbing/try-catch
+  // discipline is noteRevSelected's (D3/D4: a global on the ancestor, not a
+  // postMessage) — underscore-prefixed for the same reason too, plumbing
+  // between the built-in git template and the shell that ships with it, NOT a
+  // documented `fused.*` contract — but the DELIVERY is deliberately NOT the
+  // same: noteRevSelected calls the hook on EVERY same-origin ancestor that has
+  // it, because "which commit is previewed" is idempotent to repeat — two
+  // listeners agreeing is harmless. Sending a prompt is not that: each
+  // delivery STARTS A REAL AGENT RUN with write access to the repository, so
+  // two listeners in one chain would mean one click launches two concurrent,
+  // uncoordinated sessions against the same working tree. So this STOPS at the
+  // first match, and RETURNS WHATEVER THAT ANCESTOR'S OWN CALLBACK RETURNS —
+  // NOT a hardcoded `true` the instant one is found. A callback existing is
+  // not the same fact as "claude will actually be shown": the host's own
+  // `_fusedClaudeAsk` (Preview.tsx/Listing.tsx) can find claude gate-denied or
+  // still pending for this exact file/folder and answer `false` — this
+  // function is a transparent conduit for that answer, not a source of its
+  // own opinion. The caller (the git template's `askClaudeOnError`) uses the
+  // result to tell "delivered, and about to be shown" from "nobody is
+  // listening OR nobody can show it right now" — a distinction that whether
+  // this export merely EXISTS could never make (it always does — every framed
+  // template gets it, whether or not any ancestor is around to act on it, or
+  // able to).
+  //
+  // THE PROMPT ITSELF DOES NOT RIDE THE ANCESTOR'S IFRAME SRC, unlike `_rev`.
+  // It used to (a `_fused_ask` query param baked into the claude iframe's URL,
+  // one-shot by construction) and that shape had a hole no amount of caching
+  // fixed: ANY remount of that iframe for ANY reason — toggling the sidebar
+  // away and back, closing and reopening the folder pane, a panel/tab
+  // reattaching — rebuilds the src from the same cached value and replays the
+  // ask into a brand new conversation. A src is not a message; it is a
+  // document's ADDRESS, and an address that is only supposed to be visited
+  // once is a contradiction; nothing about "build a URL" can express
+  // "and only follow it the first time." So the prompt is handed to the host
+  // as plain in-memory state (see `_fusedClaudeAsk` below) and PULLED by the
+  // claude template itself at its own boot, through `pullClaudeAsk` below —
+  // consumption happens in the one frame that actually uses the text, at the
+  // one moment (its own boot) that can matter, which is a property of WHEN a
+  // pull happens rather than something a cache has to reconstruct.
+  //
+  // Deliberately not a param either way: the git view has no chat of its own,
+  // only a working tree, so fixing an error it hit means handing the ask to
+  // whichever ancestor is showing (or can show) the Claude sidebar — a
+  // different iframe entirely, on a different template, with its own
+  // transcript and its own file/shell access. `fused.params.set` would write
+  // the ancestor's URL, and the address bar is the one place this text must
+  // never appear: it is one failed command's error message, not a page's
+  // identity, and a bookmark of it would replay a stale error at whoever
+  // opened it later.
+  function noteAskClaude(text) {
+    const value = typeof text === "string" && text ? text : null;
+    if (!value) return false;
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedClaudeAsk === "function") { return !!t._fusedClaudeAsk(value); }
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href; // throws when cross-origin — chain ends
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+    return false;
+  }
+
+  // The other half of the hop: the claude template calls this at its OWN
+  // boot to ask the nearest same-origin ancestor "is a prompt waiting for me",
+  // and get back the text — or `null`, plainly, if there is none (no ancestor
+  // installed the hook, or one did but has nothing pending). A QUERY, not a
+  // notify, so it climbs to the first ancestor that answers and returns
+  // WHATEVER that ancestor's `_fusedClaudeAskTake` returns, rather than
+  // broadcasting: the host's `_fusedClaudeAskTake` (Preview.tsx/Listing.tsx)
+  // reads its pending-ask ref and CLEARS it in the same step, so calling this
+  // is itself the consumption — there is no separate "and now mark it used"
+  // step to forget, and calling it twice in a row (which nothing here does,
+  // but a future caller might) safely gets the text once and `null` after.
+  function pullClaudeAsk() {
+    let t = window;
+    try {
+      for (;;) {
+        if (typeof t._fusedClaudeAskTake === "function") return t._fusedClaudeAskTake();
+        if (!t.parent || t.parent === t) break;
+        void t.parent.location.href;
+        t = t.parent;
+      }
+    } catch (e) {
+      /* hit a cross-origin ancestor; the same-origin chain is done */
+    }
+    return null;
+  }
+
   // ---- the project-venv install loader (SPEC PY-16, PY-18) ------------------
   //
   // Most .py files run on the app's own interpreter and install nothing. A file
@@ -1839,6 +2199,395 @@
       );
   }
 
+  // ---- warm workers (fused.engine, docs/ENGINE_HOST_APPS_DESIGN.md) ---------
+  // fused.engine(py) is the warm variant of runPython: the server keeps the
+  // script's worker alive between calls. Same wire body and result/error shape,
+  // and it shares runPython's latest-wins stale-cancel channel (keyed by the .py
+  // path), headers, and never-settle-on-supersede semantics. The hosted runtime
+  // aliases fused.engine to runPython; this local one falls back on a network
+  // error (see below), since a warm worker is only an optimization.
+  function engineCall(pyPath, params, opts) {
+    opts = opts || {};
+    const key = opts.key === undefined ? pyPath : opts.key;
+    const keyed = key !== null;
+    const controller = new AbortController();
+    controller._callId = newCallId();
+    if (keyed) {
+      const prev = inflightByKey.get(key);
+      if (prev) {
+        prev._supersededByKey = true;
+        reportSuperseded(prev._callId);
+        prev.abort();
+      }
+      inflightByKey.set(key, controller);
+    }
+    let detachSignal = null;
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else {
+        const onAbort = () => controller.abort();
+        opts.signal.addEventListener("abort", onAbort);
+        detachSignal = () => opts.signal.removeEventListener("abort", onAbort);
+      }
+    }
+    const cleanup = () => {
+      if (detachSignal) detachSignal();
+      if (keyed && inflightByKey.get(key) === controller) inflightByKey.delete(key);
+    };
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+
+    const attempt = () =>
+      fetch("/api/engine", {
+        method: "POST",
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" },
+                             controller._callId),
+        body: JSON.stringify({ py: pyPath, html: ownPath, params: params || {} }),
+        signal: controller.signal,
+      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
+
+    const run = attempt().then(({ data, httpOk }) => {
+      // The script may have written anything; tell the shell even on failure.
+      noteFsChanged();
+      if (data && data.stdout) console.log("[python]", data.stdout);
+      // Watch the executed file for auto-reload, even on failure (LR-2).
+      if (data && data.resolved_py) watchPath(data.resolved_py);
+      if (!httpOk) {
+        // A server-level error ({"error": "..."}), not a script error envelope.
+        const err = new Error(
+          (data && typeof data.error === "string" && data.error) ||
+          "engine request failed");
+        err.type = "engine_error";
+        throw err;
+      }
+      if (!data.ok) {
+        const err = new Error(data.error && data.error.message);
+        err.type = data.error && data.error.type;
+        err.traceback = data.error && data.error.traceback;
+        err.stdout = data.stdout;
+        throw err;
+      }
+      return data.result;
+    });
+
+    return run.then(
+      (result) => {
+        cleanup();
+        if (controller._supersededByKey) return new Promise(() => {});
+        return result;
+      },
+      (err) => {
+        cleanup();
+        if (opts.signal && opts.signal.aborted) throw err;
+        if (controller._supersededByKey) return new Promise(() => {});
+        // Degrade to per-call runPython ONLY when the local server is
+        // unreachable — a fetch TypeError, never an HTTP status (a warm worker
+        // is pure optimization; the page must keep working). An HTTP-status
+        // failure means the server answered: the proxy may already have run
+        // main() (a post-heal 502) or the venv needs building (409), so
+        // re-running here could double-execute a side-effecting main(). Surface
+        // it instead. A script error carries the Python exception type and
+        // propagates the same way.
+        if (err && err.name === "TypeError")
+          return runPython(pyPath, params, opts);
+        throw err;
+      }
+    );
+  }
+
+  function engineForget(pyPath) {
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    return fetch("/api/engine/forget", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify({ py: pyPath, html: ownPath }),
+    })
+      .then((res) => res.json())
+      .catch(() => ({ ok: true })); // best-effort teardown; never reject the page
+  }
+
+  function engine(pyPath, opts) {
+    opts = opts || {};
+    return {
+      call: (params, callOpts) =>
+        engineCall(pyPath, params, Object.assign({}, opts, callOpts || {})),
+      forget: () => engineForget(pyPath),
+    };
+  }
+
+  // ---- background apps (fused.daemon, server/routers/background_apps.py) ---
+  // fused.daemon is the browser control surface for a FOLDER's declared
+  // long-running daemon, not this page's own script — every method sends the
+  // page's own path as `html` (same derivation as fused.engine above), and the
+  // server resolves which app folder that page belongs to, exactly like
+  // resolve_py does for runPython/fused.engine. `call` is the one that reaches
+  // the daemon itself: it proxies through the SAME stable-origin
+  // /api/engines/<id>/proxy path a template daemon's traffic already rides
+  // (engine_forward is engine-kind-agnostic), using the engine_id a `status()`
+  // call cached — a page never computes that id itself.
+  //
+  // Run state and autostart are deliberately independent (D511): `stop`
+  // kills the running daemon but never touches the persisted autostart flag
+  // — if it's on, the server's startup hook (or a later `start`/`restart`)
+  // brings it back; if it's off (the default), it stays down until an
+  // explicit `start`. `setAutostart` is the ONLY thing that flips that flag,
+  // and it never starts or stops anything itself.
+  // `_daemonEngineId` is a hash of the FOLDER, so `status()` always resolves one
+  // whether or not the app is running — it names WHICH app, not whether one is
+  // running. `_daemonKnownRunning` is the separate, actually-gating fact
+  // (`call()`'s guard reads this, never engine_id's presence, which is always
+  // truthy and so cannot tell "not running" from "running").
+  let _daemonEngineId = null;
+  let _daemonKnownRunning = false;
+
+  function _noteDaemonPayload(data, marksRunning) {
+    if (data && data.engine_id) _daemonEngineId = data.engine_id;
+    if (marksRunning !== undefined) {
+      // start()/restart() succeeding means ensure_background returned a live
+      // child (both 502 on any spawn failure, so a 200 here IS "running");
+      // stop() succeeding means the daemon is now definitely down.
+      _daemonKnownRunning = marksRunning;
+    } else if (data && typeof data.running === "boolean") {
+      // status()'s own report of the live-child boolean.
+      _daemonKnownRunning = data.running;
+    }
+  }
+
+  // A page must not START a background daemon merely by being rendered
+  // (D507, SPEC.md §46) — a card thumbnail or hover peek mounts `entry_html`
+  // live in a sandboxed iframe with scripts running (AppPreviewCard.tsx), and
+  // a `start()` in a page's boot path would install a live daemon on a
+  // scroll-by or a hover, no click required. This is checkable HERE because
+  // the flag reaches this exact frame reliably: `thumbFrame`/`withPreviewFlag`
+  // stamp `_preview=1` onto the `/render?path=...` URL that IS this frame's
+  // own `src` (fused_render/server/routers/render.py echoes it straight back
+  // as the served document's own location), and `IS_THUMBNAIL` above already
+  // climbs same-origin ancestors for the nested case. `start()`/`restart()`
+  // obviously spawn; `call()` is in scope too — engine_forward.py's
+  // `_forward` heals a dead-but-running child back to life on ANY proxied
+  // call, so a preview render that calls `call()` against an app some other
+  // session already started can resurrect its daemon exactly like `start()`
+  // would. `stop()` and `setAutostart()` are gated the same way, NOT left
+  // open (D508): a card thumbnail mounts `entry_html` live in a sandboxed
+  // iframe with `allow-scripts`, so an app whose init path calls
+  // `fused.daemon.stop()` (or flips autostart) would change a real user's
+  // daemon state just because its card scrolled past or was hovered —
+  // `setAutostart(true)` is worse than the old enable bug this guard exists
+  // for in the first place, because it survives a server restart. `status()`
+  // is the one method deliberately left open (read-only — and the pattern
+  // the rejection below points authors at).
+  function _daemonRejectPreview(method) {
+    return Promise.reject(new Error(
+      `fused.daemon.${method}: refused — this page is rendering as a preview ` +
+      "thumbnail (a card peek or hover, not a real open), and a page must " +
+      "never start a background daemon just by being displayed or hovered. " +
+      "Call fused.daemon.status() on load to read state, and call " +
+      "start()/restart() only from an explicit user action, e.g. a " +
+      "button's click handler."
+    ));
+  }
+
+  function _daemonPost(path, marksRunning, extraBody) {
+    return fetch(path, {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(Object.assign({ html: ownQuery("path") }, extraBody || {})),
+    }).then((res) =>
+      res.json().then((data) => {
+        if (!res.ok) {
+          // A failed start/restart/setAutostart is not a state change either
+          // way — the daemon's actual state is whatever it already was, so
+          // only note the engine_id (still useful for status()), never
+          // marksRunning.
+          _noteDaemonPayload(data, undefined);
+          const err = new Error((data && data.error) || `${path} failed`);
+          throw err;
+        }
+        _noteDaemonPayload(data, marksRunning);
+        return data;
+      })
+    );
+  }
+
+  function daemonStatus() {
+    const html = encodeURIComponent(ownQuery("path") || "");
+    return fetch(`/api/apps/background/status?html=${html}`).then((res) =>
+      res.json().then((data) => {
+        if (!res.ok) {
+          const err = new Error((data && data.error) || "app status failed");
+          throw err;
+        }
+        _noteDaemonPayload(data);
+        return data;
+      })
+    );
+  }
+
+  function daemonStart() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("start");
+    return _daemonPost("/api/apps/background/start", true);
+  }
+
+  function daemonStop() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("stop");
+    return _daemonPost("/api/apps/background/stop", false);
+  }
+
+  function daemonRestart() {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("restart");
+    return _daemonPost("/api/apps/background/restart", true);
+  }
+
+  function daemonSetAutostart(autostart) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("setAutostart");
+    return _daemonPost("/api/apps/background/autostart", undefined,
+                       { autostart: !!autostart });
+  }
+
+  function daemonCall(path, body) {
+    if (IS_THUMBNAIL) return _daemonRejectPreview("call");
+    const doCall = () =>
+      fetch(`/api/engines/${_daemonEngineId}/proxy/${String(path).replace(/^\/+/, "")}`, {
+        method: "POST",
+        headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+        body: JSON.stringify(body || {}),
+      }).then((res) => res.json().then((data) => ({ data, httpOk: res.ok })));
+
+    // Nothing cached yet (no status()/start()/etc. call this page has made)
+    // — learn engine_id AND whether it's actually running from one status()
+    // fetch before deciding. Once something is cached, trust it rather than
+    // re-fetching on every call.
+    const ready = _daemonEngineId !== null ? Promise.resolve() : daemonStatus();
+    return ready.then(() => {
+      if (!_daemonKnownRunning) {
+        // Gated on the payload's own running fact, not on _daemonEngineId's
+        // presence — engine_id is a hash of the folder and is always
+        // populated by status(), running or not, so checking it alone can
+        // never catch "not running" (the proxy's own 409 in that case is a
+        // "start it first" message meaningless to an app author).
+        return Promise.reject(
+          new Error("fused.daemon.call: no running background app for this page " +
+                    "(call start() first)")
+        );
+      }
+      return doCall().then(({ data, httpOk }) => {
+        if (!httpOk) {
+          const err = new Error((data && data.error) || "fused.daemon.call failed");
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  // Fields that count as "the daemon's state changed" for watch()'s diff.
+  // `running`/`autostart` are the two facts a page's UI actually reflects
+  // (a switch, a checkbox); `pid`/`version` catch a restart that leaves
+  // `running` true throughout (a crash-and-resurrect, or an explicit
+  // restart() from elsewhere) — a page that cached a stale engine call
+  // target wants to know that happened too. `engine_id` is deliberately
+  // excluded: it is a hash of the FOLDER, stable for the page's whole
+  // lifetime, and would never fire on its own.
+  const DAEMON_WATCH_FIELDS = ["running", "autostart", "pid", "version"];
+
+  function _daemonStatusChanged(a, b) {
+    if (!a || !b) return true;
+    for (let i = 0; i < DAEMON_WATCH_FIELDS.length; i++) {
+      const f = DAEMON_WATCH_FIELDS[i];
+      if (a[f] !== b[f]) return true;
+    }
+    return false;
+  }
+
+  function daemonWatch(callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError("fused.daemon.watch: callback must be a function");
+    }
+
+    // Preview guard (D507/D508's rationale, applied to a READ-only method):
+    // watch() is status() underneath, and status() is the one fused.daemon
+    // method a thumbnail may legitimately call — but a live poll loop plus
+    // two page-level listeners have no business running in a sandboxed
+    // preview iframe that gets mounted and unmounted on every hover. Do the
+    // one status() read a thumbnail is allowed, hand it to the caller, and
+    // return an unsubscribe that has nothing to clean up.
+    if (IS_THUMBNAIL) {
+      daemonStatus().then(callback).catch(function () {});
+      return function unsubscribe() {};
+    }
+
+    let last = null;
+    let timer = null;
+
+    function poll() {
+      return daemonStatus().then(function (data) {
+        if (_daemonStatusChanged(last, data)) {
+          last = data;
+          callback(data);
+        } else {
+          last = data;
+        }
+      }).catch(function () {
+        // A failed status() read (offline, server restarting) must not kill
+        // the watch loop or spam the callback with an error it didn't ask
+        // for — skip this tick, the next poll or focus/visibility event
+        // tries again.
+      });
+    }
+
+    // 5s: fast enough that quitting from the tray reads as "immediate" to a
+    // human glancing at a foregrounded tab, slow enough to be free — status()
+    // is a single in-memory dict read plus one Popen.poll() server-side (no
+    // folder walk, no toml parse, see the endpoint's own docstring), and this
+    // only ever runs while the tab is visible in the first place.
+    const POLL_MS = 5000;
+
+    function stopTimer() {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }
+
+    function startTimerIfVisible() {
+      stopTimer();
+      if (document.visibilityState === "visible") {
+        timer = setInterval(poll, POLL_MS);
+      }
+    }
+
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        poll();
+      }
+      startTimerIfVisible();
+    }
+
+    function onFocus() {
+      poll();
+    }
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onFocus);
+    poll();
+    startTimerIfVisible();
+
+    return function unsubscribe() {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onFocus);
+      stopTimer();
+    };
+  }
+
+  const daemon = {
+    status: daemonStatus,
+    start: daemonStart,
+    stop: daemonStop,
+    restart: daemonRestart,
+    setAutostart: daemonSetAutostart,
+    call: daemonCall,
+    watch: daemonWatch,
+  };
+
   // Synchronous URL of the raw-bytes endpoint for a file — for <img>/<embed>
   // src, "open raw" links, etc. A RELATIVE path is resolved page-relative
   // (SPEC RH-1): we pass the page's own absolute path as `base` and the server
@@ -2077,6 +2826,13 @@
     // history: only something that OWNS the chat template can decline to apply
     // one, so the Claude path refuses this rather than quietly ignoring it.
     if (opts.raw !== undefined) body.raw = opts.raw;
+    // A base image (or several) for a vision-language local model, on THIS
+    // turn only — absolute paths, never bytes (fused-render's own rule: an
+    // image travels as a path on the wire). Local models only, for the same
+    // reason as history and raw: the Claude CLI has no notion of an
+    // attachment, so it refuses this rather than silently answering as if
+    // nothing had been sent.
+    if (opts.images !== undefined) body.images = opts.images;
     // Sampling. Local models only, like history and raw — the Claude CLI
     // exposes no sampling knobs, so these are refused there rather than
     // dropped. camelCase in, snake_case on the wire, because the wire shape is
@@ -2557,8 +3313,41 @@
   // a rule that lives in `runners/preview.py`, and being wrong about it on some
   // future model — whereas "the file is gone once the row is terminal" is this
   // bridge's own fact, and it is the one that would be seen every render.
+  // The request envelope of a job-backed AI call is closed (D413): an option
+  // this API does not have is refused, not dropped. Checked before the POST
+  // — and before the field checks below it, matching the server's own
+  // ordering — so the caller learns it in one round trip and with a message
+  // naming the API rather than the endpoint. `allowedKeys` is exactly the
+  // whitelist array `aiImage`/`aiTranscribe` already loop over to build the
+  // body; `extra` is the callbacks consumed above that loop (`onProgress`,
+  // `onSegment`) — real options, just not body fields, so they must not
+  // trip this check or every existing caller that passes one breaks.
+  function rejectUnknownOptions(opts, allowedKeys, extra, apiName) {
+    const allowed = new Set(allowedKeys.concat(extra));
+    // Sorted, matching the server's `_reject_unknown` — otherwise the same
+    // two-key mistake reads differently depending on which order the caller
+    // happened to write its object literal in, and the two layers' messages
+    // stop being comparable.
+    const unknown = Object.keys(opts).filter((key) => !allowed.has(key)).sort();
+    if (!unknown.length) return null;
+    const named = unknown.map((key) => "'" + key + "'").join(", ");
+    const verb = unknown.length === 1 ? "is not an option" : "are not options";
+    const accepted = allowedKeys.concat(extra).slice().sort().join(", ");
+    const err = new Error(`${named} ${verb} of ${apiName}; accepted: ${accepted}`);
+    err.type = "bad_request";
+    return err;
+  }
+
   function aiImage(opts) {
     opts = opts || {};
+    // Checked BEFORE `prompt`, matching the server's own ordering: a call
+    // with both an unknown option and a missing `prompt` must learn about
+    // the option it does not have, not about the field it also got wrong —
+    // "add a prompt" would "fix" the error and land the caller right back
+    // in the silent-drop illusion this whole change exists to end.
+    const imageKeys = ["prompt", "model", "width", "height", "steps", "guidance", "seed", "image"];
+    const unknownErr = rejectUnknownOptions(opts, imageKeys, ["onProgress"], "fused.ai.image");
+    if (unknownErr) return Promise.reject(unknownErr);
     if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
       const err = new Error("fused.ai.image({prompt}): prompt must be a non-empty string");
       err.type = "bad_request";
@@ -2566,9 +3355,19 @@
     }
     const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
     const body = {};
-    for (const key of ["prompt", "model", "width", "height", "steps", "guidance", "seed"]) {
+    for (const key of imageKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
+    // `image`, when given, is page-relative exactly as `aiTranscribe`'s `path`
+    // is (RH-1): the page's own `?path=` becomes `body.base`, so
+    // "photo.png" means "beside this page" rather than "beside wherever the
+    // server was launched from". Sent unconditionally, same as there — a
+    // call with no `image` sends an unused `base` the server simply never
+    // reads, rather than this bridge having to know which calls need it.
+    // Decision 4: `image` is a single string here already, forwarded as-is —
+    // there is no array to normalise, on purpose.
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
     return aiPost("/api/ai/image", body).then((started) => {
       const watcher = watchJob(started.jobId);
       // `step` is the cache-buster and nothing more: the preview file is ONE
@@ -2621,6 +3420,58 @@
     });
   }
 
+  // fused.ai.video({prompt, ...}) -> Promise<{path, url, seed, ...}>
+  //
+  // `aiImage`'s twin, minus `guidance` (H3 is CFG-distilled) and previewUrl
+  // (no live preview in this build), plus `frames`. Everything else about the
+  // waiting — onProgress per denoising step, the row's ✕ really stopping the
+  // render, the seed always coming back, resolving off the FILE when the row
+  // aged out from under a backgrounded tab — is the identical mechanism, so it
+  // is not restated here; see `aiImage`'s own comment for the reasoning.
+  function aiVideo(opts) {
+    opts = opts || {};
+    const videoKeys = ["prompt", "model", "width", "height", "frames", "steps", "seed"];
+    const unknownErr = rejectUnknownOptions(opts, videoKeys, ["onProgress"], "fused.ai.video");
+    if (unknownErr) return Promise.reject(unknownErr);
+    if (typeof opts.prompt !== "string" || !opts.prompt.trim()) {
+      const err = new Error("fused.ai.video({prompt}): prompt must be a non-empty string");
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const onProgress = typeof opts.onProgress === "function" ? opts.onProgress : null;
+    const body = {};
+    for (const key of videoKeys) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return aiPost("/api/ai/video", body).then((started) => {
+      const watcher = watchJob(started.jobId);
+      const done = () => ({ ...started, url: rawUrl(started.path) });
+      const tick = onProgress ? (job) => onProgress({ ...job }) : null;
+      return watcher.watch(tick).then((record) => {
+        if (!record) {
+          // The row aged out from under us — the same backgrounded-tab race
+          // `aiImage` guards against, and more likely here: a video render can
+          // run for hours (VIDEO_TIMEOUT_S). The FILE is the other witness.
+          return stat(started.path).then(done, () => {
+            const err = new Error("the video job is no longer being reported");
+            err.type = "ai_error";
+            err.jobId = started.jobId;
+            throw err;
+          });
+        }
+        if (record.state === "done") return done();
+        const err = new Error(
+          record.state === "cancelled"
+            ? "the video was cancelled"
+            : record.message || "the video failed to render",
+        );
+        err.type = record.state === "cancelled" ? "cancelled" : "ai_error";
+        err.jobId = started.jobId;
+        throw err;
+      });
+    });
+  }
+
   // fused.ai.transcribe({path, ...}) -> Promise<{output, url, text, segments, ...}>
   //
   // The other call that resolves with a FILE, and the same waiting as
@@ -2636,6 +3487,20 @@
   // watching a 90-minute recording is actually thinking in.
   function aiTranscribe(opts) {
     opts = opts || {};
+    // The envelope check, same as `aiImage` and for the same reason (D413),
+    // and checked BEFORE `path` for the same reason too: a call with both an
+    // unknown option and no `path` must learn about the option it does not
+    // have, not about the missing field, or "fixing" the field reported
+    // sends the caller right back into the silent-drop illusion. `base` is
+    // deliberately NOT in this caller-facing list, even though the server
+    // accepts it — it is injected below from the page's own `?path=`, never
+    // from the caller's own options object, so a caller passing it directly
+    // is passing an option that does not exist from here.
+    const transcribeKeys = ["path", "model", "language", "task", "initialPrompt",
+                            "vad", "diarize", "speakers", "words"];
+    const transcribeUnknownErr = rejectUnknownOptions(
+      opts, transcribeKeys, ["onProgress", "onSegment"], "fused.ai.transcribe");
+    if (transcribeUnknownErr) return Promise.reject(transcribeUnknownErr);
     if (typeof opts.path !== "string" || !opts.path.trim()) {
       const err = new Error("fused.ai.transcribe({path}): path must be a non-empty string");
       err.type = "bad_request";
@@ -2704,8 +3569,7 @@
     // nobody is reading.
     const onSegment = typeof opts.onSegment === "function" ? opts.onSegment : null;
     const body = {};
-    for (const key of ["path", "model", "language", "task", "initialPrompt", "vad",
-                       "diarize", "speakers"]) {
+    for (const key of transcribeKeys) {
       if (opts[key] !== undefined) body[key] = opts[key];
     }
     // The page's own path, so a RELATIVE `path` resolves beside this page —
@@ -3001,11 +3865,122 @@
     });
   }
 
+  // fused.ai.embed({texts|paths, model, kind}) -> Promise<{vectors, dim, model}>
+  //
+  // Text — or, on a model with a vision tower, an image — into one vector
+  // space, locally. Not a chat model, so there is nothing to stream and nothing
+  // to watch a job for: a batch of at most 64 short items is one forward pass,
+  // over before a progress row would have drawn. The reply IS the result, the
+  // way `fused.ai`'s non-streaming reply is — this is that same shape's
+  // sibling, not `aiImage`/`aiTranscribe`'s (no `jobId` in the resolved object,
+  // because there is no file and no run outliving this call).
+  //
+  // **TWO OF THE THREE OPTIONS ARE REFUSED PER MODEL, not per endpoint** (SPEC
+  // §40), and both refusals are a 400 naming the model:
+  //
+  // * `paths` needs a VISION TOWER. A dual encoder (SigLIP, CLIP) has one and
+  //   embeds pictures into the same space as its text, which is what lets a
+  //   typed phrase rank photographs; a prose encoder has one tower and refuses.
+  // * `kind` — `"query"` or `"document"` — needs a RETRIEVAL CONVENTION. Such a
+  //   model instructs a question differently from a passage, and it is not a
+  //   nicety: passing the wrong side is measurably worse than passing neither.
+  //   A dual encoder has no convention and refuses the field rather than
+  //   accepting a parameter that would change nothing about the vectors.
+  //
+  // Leaving `kind` out means `"document"` — the internally consistent default,
+  // where corpus and query alike carry one prefix, which is the symmetric
+  // behaviour every one of these models supports. Embed a corpus once as
+  // documents and each search as a query to get the asymmetric pair's benefit.
+  // `fused.ai.models.catalog()` reports `acceptsPaths` and `promptScheme` per
+  // model, so a page can ask before it sends rather than after a 400.
+  //
+  // Vectors are UNIT-NORMALIZED, so a cosine similarity between two of them is
+  // a plain dot product — `a[i]*b[i]` summed, no separate magnitude to divide
+  // by.
+  //
+  // Exactly one of `texts`/`paths`, never both — refused here, before the
+  // request even reaches the server, for the same reason `aiTranscribe`'s
+  // `speakers` check is: a call that will certainly be refused should not pay
+  // for the trip first. `paths` are page-relative, exactly like
+  // `aiTranscribe`'s `path` (RH-1).
+  //
+  // The 409 here can mean the model is LOADING RATHER THAN UNAVAILABLE —
+  // unlike `aiImage`/`aiTranscribe`, which load inside their own job and never
+  // surface this — so this does not go through the generic `aiPost` (whose
+  // blanket "409 -> unavailable" would drop the job id on the floor). It reads
+  // the same `{ok, result|error:{type,message,jobId}}` wire shape `fused.ai`
+  // itself does, and `fail()` below is that function's own error mapping,
+  // copied rather than shared for the reason `mlx_embed/worker.py`'s
+  // `_pin_stream` is: the two live in different modules with no import between
+  // them, HTTP is the only contract, and duplicating five lines is cheaper
+  // than inventing one.
+  function aiEmbed(opts) {
+    opts = opts || {};
+    const hasTexts = Array.isArray(opts.texts) && opts.texts.length > 0;
+    const hasPaths = Array.isArray(opts.paths) && opts.paths.length > 0;
+    if (hasTexts === hasPaths) {
+      const err = new Error(
+        "fused.ai.embed({texts|paths}): pass exactly one of 'texts' or "
+          + "'paths' — a non-empty array of strings",
+      );
+      err.type = "bad_request";
+      return Promise.reject(err);
+    }
+    const body = {};
+    if (hasTexts) body.texts = opts.texts;
+    if (hasPaths) body.paths = opts.paths;
+    if (opts.model !== undefined) body.model = opts.model;
+    // Forwarded only when the caller set it, exactly like `model` above: the
+    // server reads an absent key as "I did not say" and applies its own
+    // default, while an explicit value on a model with no retrieval convention
+    // is a 400. Sending a default from here would turn every legal dual-encoder
+    // call into a refused one. Not validated here either — `"queries"` is the
+    // server's 400 to raise, per D413's closed-envelope rule; the exactly-one-of
+    // check above is the exception, and it exists because that one is knowable
+    // without a round trip.
+    if (opts.kind !== undefined) body.kind = opts.kind;
+    // Page-relative paths resolve beside THIS page, exactly like
+    // `aiTranscribe`'s `path` and for the same reason (RH-1): "beside wherever
+    // the server was launched from" is a trap for a relative path a page
+    // author wrote meaning "beside this page".
+    if (hasPaths) {
+      const ownPath = new URLSearchParams(window.location.search).get("path");
+      if (ownPath) body.base = ownPath;
+    }
+    return fetch("/api/ai/embed", {
+      method: "POST",
+      headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
+      body: JSON.stringify(body),
+    })
+      // `.catch(() => ({}))` on the parse, and the status carried past it, for
+      // `aiPost`'s reason: a reply that never reached this route's own handler
+      // — a proxy's 502, a framework 500, an HTML error page — is not JSON, and
+      // a raw SyntaxError with no `.type` is the one rejection a page written
+      // against the table above cannot read.
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ res, data })))
+      .then(({ res, data }) => {
+        if (!res.ok || !data.ok) {
+          const error = data.error || {};
+          const err = new Error(
+            error.message || res.statusText || "the embedding failed");
+          err.type = error.type
+            || (res.status === 409 ? "unavailable" : "ai_error");
+          // A local model that is not resident yet answers 409 with the id of
+          // the load this call just started — the same field `fused.ai`'s own
+          // `fail()` carries through for exactly the same reason (SPEC AI-5).
+          if (error.jobId) err.jobId = error.jobId;
+          throw err;
+        }
+        return data.result;
+      });
+  }
+
   const aiModels = {
     list: () => fetch("/api/ai/runtime", { headers: callHeaders({}) }).then((r) => r.json()),
     catalog: () => fetch("/api/ai/catalog", { headers: callHeaders({}) }).then((r) => r.json()),
     // `opts.capability` says WHICH RUNNER gets the repo ("text-generation",
-    // "text-to-image", "automatic-speech-recognition"). Left out, the server
+    // "text-to-image", "automatic-speech-recognition", "text-to-video"). Left
+    // out, the server
     // infers it from what the repo is — the cached snapshot's format first, then
     // the catalog, then text generation for a cold unknown id (D321). Pass it
     // whenever the page already knows: inference cannot read a repo that is not
@@ -3028,7 +4003,9 @@
   };
   ai.models = aiModels;
   ai.image = aiImage;
+  ai.video = aiVideo;
   ai.transcribe = aiTranscribe;
+  ai.embed = aiEmbed;
   // Stop the generation in flight on a local model, keeping it loaded — the
   // next message answers straight away. Resolves false when there was nothing
   // to stop, which is not an error: a Stop pressed as the last token lands
@@ -3295,11 +4272,582 @@
   const fileIndex = { search: fileIndexSearch, query: fileIndexQuery };
   // fused-file-index:end
 
+  // ----------------------------------------------------------- fused.capture
+  //
+  // Native screen / microphone / still capture (SPEC §45). Named `capture` and
+  // not `record` because a screenshot is an instant, not a session: all three
+  // calls share one TCC grant, one display list and one output-path rule, so
+  // they belong behind one door, and `record.screenshot` would have been a
+  // category error. The doc line a reader greps for is here instead — RECORD
+  // THE SCREEN, RECORD THE MIC, GRAB A STILL.
+  //
+  // What this buys over `getDisplayMedia`/`getUserMedia`, which a page can
+  // already call: system audio (a browser cannot, on macOS), no picker per
+  // recording, and — the one that pays for the rest — the result is a FILE whose
+  // path is known BEFORE the recording stops, so `fused.ai.transcribe({path})`
+  // is the next line rather than a blob round-trip. A recording is also a job
+  // row, so it survives the page being navigated away from.
+  //
+  // LOCAL AND macOS ONLY today, and it says so rather than throwing something
+  // opaque: `sources()` answers `{available: false, reason}` and a start rejects
+  // `.type "unavailable"` with the same sentence. Ask `sources()` before drawing
+  // a record button.
+  function captureFetch(path, body, method) {
+    return fetch(path, {
+      method: method || "POST",
+      headers: callHeaders(
+        body === undefined
+          ? { "X-Fused": "1" }
+          : { "Content-Type": "application/json", "X-Fused": "1" }),
+      body: body === undefined ? undefined : JSON.stringify(body || {}),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error((data && data.error) || res.statusText);
+        // 409 is "this machine cannot", 400 is "you asked wrong" — the same
+        // split /api/ai/* makes, so one `catch` can branch on `.type` the way
+        // pages already do for the AI calls.
+        err.type = res.status === 409 ? "unavailable" : "bad_request";
+        throw err;
+      }
+      return data;
+    });
+  }
+
+  // The page's own path, so a RELATIVE `path` lands beside THIS PAGE — the rule
+  // readFile/rawUrl/ai.transcribe already follow (RH-1). Without it "demo.mov"
+  // would mean "beside wherever the server was launched from".
+  function captureBase(body) {
+    const ownPath = new URLSearchParams(window.location.search).get("path");
+    if (ownPath) body.base = ownPath;
+    return body;
+  }
+
+  // -------------------------------------------- the page-side recorder
+  //
+  // Windows and Linux record through the BROWSER, and this server writes the
+  // file. `fused_render/capture/_sink.py` carries the argument; the short form
+  // is that on Windows no OS API a non-packaged process can reach will write a
+  // movie with system audio in it, while Chromium already does exactly that,
+  // hardware-encoded, through the same WGC/WASAPI and PipeWire paths a native
+  // recorder would use. macOS records natively and never comes through here.
+  //
+  // A PAGE NEVER LEARNS WHICH IT GOT. Both resolve with the same handle, and
+  // the two wire-only fields that steer this (`transport`, `streamToken`) are
+  // deleted before the handle is built — CP-8, no `via` field, ever.
+
+  const CAPTURE_SLICE_MS = 1000;
+
+  // mp4 before webm: a fragmented mp4 is what everything else on the machine
+  // reads without a remux. Both are playable AS WRITTEN, which is why a
+  // recording whose page dies still leaves a valid, shorter file rather than a
+  // movie with no index in it.
+  const CAPTURE_TYPES = {
+    screen: [
+      ["mp4", 'video/mp4;codecs="avc1.42E01E,mp4a.40.2"'],
+      ["mp4", "video/mp4"],
+      ["webm", 'video/webm;codecs="vp9,opus"'],
+      ["webm", "video/webm"],
+    ],
+    audio: [
+      ["mp4", 'audio/mp4;codecs="mp4a.40.2"'],
+      ["mp4", "audio/mp4"],
+      ["webm", "audio/webm;codecs=opus"],
+      ["webm", "audio/webm"],
+    ],
+  };
+
+  // The recorder, its stream and its socket live in the TOPMOST same-origin
+  // window, not in this frame. A MediaRecorder belongs to the realm that made
+  // it, so one created here ends when this iframe navigates — and a recording
+  // that stops because the user clicked another file is not a recording. Param
+  // boundaries (D72) decide which URL owns a param and are deliberately NOT
+  // honoured here: this is about object lifetime, not about params.
+  function captureHost() {
+    let host = window;
+    try {
+      while (host.parent && host.parent !== host) {
+        void host.parent.location.href;
+        host = host.parent;
+      }
+    } catch (e) {
+      /* reached a cross-origin ancestor; host is the topmost same-origin one */
+    }
+    return host;
+  }
+
+  function captureType(host, mode) {
+    const Recorder = host.MediaRecorder;
+    if (!Recorder || !Recorder.isTypeSupported) return null;
+    for (const [container, mimeType] of CAPTURE_TYPES[mode] || []) {
+      if (Recorder.isTypeSupported(mimeType)) return { container, mimeType };
+    }
+    return null;
+  }
+
+  function captureMediaOk(host) {
+    const devices = host.navigator && host.navigator.mediaDevices;
+    return !!(host.MediaRecorder && devices && devices.getDisplayMedia
+              && devices.getUserMedia);
+  }
+
+  function captureTracksOff(streams) {
+    for (const stream of streams) {
+      if (!stream) continue;
+      for (const track of stream.getTracks()) {
+        try { track.stop(); } catch (e) { /* already ended */ }
+      }
+    }
+  }
+
+  // Ask for the media BEFORE the server allocates anything: the share picker is
+  // a human decision that can end in "cancel", and a cancelled picker must
+  // leave no job row and no empty file behind. The path is still decided before
+  // the first frame exists, which is what CP-2 actually promises.
+  async function captureOpenMedia(host, body) {
+    const devices = host.navigator.mediaDevices;
+    const wantsSystem = body.audio === "system" || body.audio === "both";
+    const wantsMic = body.mode === "audio"
+      || body.audio === "mic" || body.audio === "both" || body.audio === true;
+    let display = null;
+    let mic = null;
+    try {
+      if (body.mode === "screen") {
+        display = await devices.getDisplayMedia({
+          video: true,
+          audio: wantsSystem,
+          // The standard hint for "put system audio in the choices". Without it
+          // Chromium may offer tab audio only, which is not what `"system"`
+          // asked for.
+          systemAudio: wantsSystem ? "include" : "exclude",
+        });
+      }
+      if (wantsMic) {
+        mic = await devices.getUserMedia({
+          audio: body.device ? { deviceId: { exact: body.device } } : true,
+        });
+      }
+    } catch (err) {
+      captureTracksOff([display, mic]);
+      const wrapped = new Error(
+        err && err.name === "NotAllowedError"
+          ? "the capture was not allowed — the share dialog was dismissed or "
+            + "the permission was denied"
+          : (err && err.message) || "could not open the capture stream");
+      wrapped.type = "bad_request";
+      throw wrapped;
+    }
+
+    const video = display ? display.getVideoTracks() : [];
+    const sound = [];
+    if (display) sound.push(...display.getAudioTracks());
+    if (mic) sound.push(...mic.getAudioTracks());
+    if (body.mode === "audio" && !sound.length) {
+      captureTracksOff([display, mic]);
+      const err = new Error("no microphone track was produced");
+      err.type = "bad_request";
+      throw err;
+    }
+
+    // `audio: "both"` is the one case needing a mixer: MediaRecorder takes ONE
+    // audio track, and system audio and the microphone arrive as two. WebAudio
+    // sums them into a single destination track.
+    let context = null;
+    let track = sound[0] || null;
+    if (sound.length > 1) {
+      const Ctx = host.AudioContext || host.webkitAudioContext;
+      context = new Ctx();
+      const mixed = context.createMediaStreamDestination();
+      for (const one of sound) {
+        const holder = new host.MediaStream([one]);
+        context.createMediaStreamSource(holder).connect(mixed);
+      }
+      track = mixed.stream.getAudioTracks()[0];
+    }
+
+    const stream = new host.MediaStream(
+      [...video, ...(track ? [track] : [])]);
+    return { stream, sources: [display, mic], context };
+  }
+
+  // The socket. Opened before the recorder starts, because a chunk produced
+  // before it is open is a chunk missing from the middle of the file.
+  function captureSocket(host, started) {
+    const where = host.location;
+    const scheme = where.protocol === "https:" ? "wss:" : "ws:";
+    const url = scheme + "//" + where.host + "/api/capture/"
+      + encodeURIComponent(started.id) + "/stream?token="
+      + encodeURIComponent(started.streamToken || "");
+    const ws = new host.WebSocket(url);
+    ws.binaryType = "arraybuffer";
+    return new Promise((resolve, reject) => {
+      ws.onopen = () => resolve(ws);
+      // The server closes with 1008 and a reason when it refuses — a token that
+      // does not match, a recording already streaming. That sentence is the
+      // only thing a page would ever see, so it becomes the error.
+      ws.onclose = (event) => {
+        const why = (event && event.reason)
+          || "the capture stream closed before it opened";
+        const err = new Error(why);
+        err.type = "bad_request";
+        reject(err);
+      };
+      ws.onerror = () => {
+        const err = new Error("could not open the capture stream");
+        err.type = "bad_request";
+        reject(err);
+      };
+    });
+  }
+
+  function captureRecorder(host, started, media) {
+    const recorder = new host.MediaRecorder(media.stream,
+                                            { mimeType: media.mimeType });
+    let closed = false;
+    let ws = null;
+    // ONE chain, not one promise per chunk: `Blob.arrayBuffer()` is async, so
+    // two chunks read in parallel can be sent out of order — and two swapped
+    // clusters are a corrupt container, not a glitch.
+    let queue = Promise.resolve();
+
+    recorder.ondataavailable = (event) => {
+      if (!event.data || !event.data.size) return;
+      queue = queue
+        .then(() => event.data.arrayBuffer())
+        .then((bytes) => {
+          if (ws && ws.readyState === 1) ws.send(bytes);
+        })
+        .catch(() => { /* a closed socket is an ending, not a chunk error */ });
+    };
+
+    return {
+      async begin() {
+        ws = await captureSocket(host, started);
+        ws.onclose = () => {
+          // The server ended it: the cap, the manager's ✕, or a write that
+          // could not continue. Stop producing bytes nothing will read.
+          closed = true;
+          try { recorder.stop(); } catch (e) { /* already stopped */ }
+          captureTracksOff(media.sources);
+        };
+        recorder.start(CAPTURE_SLICE_MS);
+        return this;
+      },
+      // Everything the server must have BEFORE the stop request lands. The
+      // `eos` round-trip is the only thing that actually proves it: frames are
+      // ordered on the socket, so a reply to `eos` means every chunk before it
+      // was already appended — whereas the stop request travels on a different
+      // connection and could otherwise close the file first and lose the tail.
+      async flush() {
+        if (recorder.state !== "inactive") {
+          await new Promise((done) => {
+            recorder.onstop = done;
+            try { recorder.stop(); } catch (e) { done(); }
+          });
+        }
+        await queue;
+        if (closed || !ws || ws.readyState !== 1) return;
+        await new Promise((done) => {
+          const timer = setTimeout(done, 5000);
+          ws.onmessage = (event) => {
+            if (event.data === "flushed") { clearTimeout(timer); done(); }
+          };
+          try { ws.send("eos"); } catch (e) { clearTimeout(timer); done(); }
+        });
+      },
+      dispose() {
+        captureTracksOff(media.sources);
+        if (media.context) {
+          try { media.context.close(); } catch (e) { /* already closed */ }
+        }
+        if (ws) {
+          ws.onclose = null;
+          try { ws.close(); } catch (e) { /* already closed */ }
+        }
+      },
+    };
+  }
+
+  // The streamed half of `screen()`/`audio()`. Media first, then the row, then
+  // the socket, then the encoder — each step undoing the ones before it if it
+  // fails, so a failure never leaves a recording nobody can stop.
+  async function captureStreamed(host, body) {
+    const type = captureType(host, body.mode);
+    if (!captureMediaOk(host) || !type) {
+      const err = new Error(
+        "this browser cannot record: it has no MediaRecorder with a container "
+        + "this app can store. Chrome, Edge or a recent Firefox can");
+      err.type = "unavailable";
+      throw err;
+    }
+    const media = await captureOpenMedia(host, body);
+    media.mimeType = type.mimeType;
+    let started;
+    try {
+      started = await captureFetch(
+        "/api/capture/start",
+        captureBase(Object.assign({}, body, { container: type.container })));
+    } catch (err) {
+      captureTracksOff(media.sources);
+      throw err;
+    }
+    const streamer = captureRecorder(host, started, media);
+    try {
+      await streamer.begin();
+    } catch (err) {
+      streamer.dispose();
+      // The row exists and the file is open, so this cancels rather than
+      // leaking a recording the page has no handle for.
+      captureFetch("/api/capture/" + encodeURIComponent(started.id) + "/cancel")
+        .catch(() => {});
+      throw err;
+    }
+    return captureHandle(started, streamer);
+  }
+
+  // A handle, not a promise that resolves at the end: a recording is a session
+  // of unknown length under the user's control, so the same shape trackJob and
+  // watchJob use. `state` and `seconds` are GETTERS — a page polling them in a
+  // rAF loop must not read a copy that went stale.
+  // There is deliberately NO `onTick` here. Elapsed seconds are on the job row
+  // this recording already publishes, and `fused.watchJob(rec.jobId)` is the
+  // documented way to read a row — a second, private spelling of it would be a
+  // forever contract that only wrapped a public one.
+  function captureHandle(started, streamer) {
+    let state = "recording";
+    let result = null;
+    // The PROMISE is memoized, not the settled value: a double-clicked stop
+    // button fired the request twice and the second one 404s (the registry
+    // entry is already gone) as an unhandled rejection. Both callers now await
+    // the same in-flight request. Cleared on failure, so a stop that really
+    // failed — a dropped connection — can be retried.
+    let ending = null;
+    function end(action) {
+      if (ending) return ending;
+      // A streamed recording has to be FLUSHED first: the encoder is in this
+      // browser, and the last timeslice is still in flight when the button is
+      // clicked. `flush()` also waits for the server to acknowledge it, so the
+      // stop request cannot close the file ahead of the tail (see
+      // `captureRecorder`). Native recordings have no streamer and go straight
+      // to the request.
+      ending = (streamer ? streamer.flush() : Promise.resolve())
+        .catch(() => {})
+        .then(() => captureFetch(
+          "/api/capture/" + encodeURIComponent(started.id) + "/" + action))
+        .then((done) => {
+          // AFTER the request, not before: disposing closes the socket, and a
+          // socket closing is itself an ending (`_sink.detach`) — one that
+          // KEEPS the file. Racing it ahead of a `cancel` would answer from the
+          // finished-record cache and leave the file the caller asked to
+          // delete.
+          if (streamer) streamer.dispose();
+          state = done.state
+            || (action === "cancel" ? "cancelled" : "stopped");
+          // A stop whose file failed to write reports the failure rather than
+          // handing back a path to something unplayable.
+          if (done.error) {
+            const err = new Error(done.error);
+            err.type = "capture_error";
+            throw err;
+          }
+          result = done;
+          return done;
+        })
+        .catch((err) => {
+          if (streamer) streamer.dispose();
+          ending = null;
+          throw err;
+        });
+      return ending;
+    }
+    const handle = {
+      id: started.id,
+      mode: started.mode,
+      path: started.path,
+      jobId: started.jobId,
+      maxSeconds: started.maxSeconds,
+      // Keeps the file. This is the ending a page asks for.
+      stop: () => end("stop"),
+      // Stops AND DELETES — the same meaning the manager's ✕ has, spelled out
+      // here so nobody has to discover it from a row.
+      cancel: () => end("cancel"),
+    };
+    Object.defineProperty(handle, "state", { get: () => state });
+    Object.defineProperty(handle, "url", {
+      get: () => (result ? result.url : rawUrl(started.path)),
+    });
+    return handle;
+  }
+
+  // fused.capture.screen({display, rect, audio, device, cursor, path,
+  //                       maxSeconds, title}) -> Promise<handle>
+  //
+  // `audio` is false (silent), "mic", "system" or "both" — NAMED, and refused
+  // rather than coerced: "microphone" would otherwise record silence and read as
+  // the app ignoring the request. `rect` is [x, y, w, h] in points on the chosen
+  // display; the movie is written at that display's real pixel scale, so a
+  // Retina recording is not half-size.
+  function captureScreen(opts) {
+    opts = opts || {};
+    const body = { mode: "screen" };
+    for (const key of ["display", "rect", "audio", "device", "cursor", "path",
+                       "maxSeconds", "title"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return captureStart(body);
+  }
+
+  // WHERE THE TWO PATHS FORK, and the only place they do. `sources().client`
+  // says the recording is the browser's to make on this platform — the same
+  // flag `captureSources` strips before a page can read it — so the decision is
+  // made once, from the server's own answer, rather than by sniffing a user
+  // agent. A page calls `screen()`; what happens under it is not its business
+  // (CP-8).
+  function captureStart(body) {
+    return captureFetch("/api/capture", undefined, "GET").then((data) => {
+      const sources = (data && data.sources) || {};
+      if (!sources.client) {
+        return captureFetch("/api/capture/start", captureBase(body))
+          .then((started) => captureHandle(started));
+      }
+      // An unavailable machine must reject with the server's own sentence
+      // rather than opening a share dialog that cannot lead anywhere.
+      const gate = body.mode === "audio" ? sources.audio : sources.video;
+      if (gate && gate.available === false) {
+        const err = new Error(gate.reason || "capture is unavailable here");
+        err.type = "unavailable";
+        return Promise.reject(err);
+      }
+      return captureStreamed(captureHost(), body);
+    });
+  }
+
+  // fused.capture.audio({source, path, maxSeconds, title})
+  //
+  // The microphone to an .m4a. `source` is "mic" — system audio is a property of
+  // a SCREEN recording (it is captured off the display stream), so asking for it
+  // here is refused with the sentence that says where to ask instead.
+  //
+  // NO `device` here: audio-only records the system's current input, and a
+  // `device` is REFUSED rather than ignored (the server's error names the way
+  // to pick one — a screen recording's `audio: "mic"`). It is still forwarded,
+  // so that refusal is the server's one good sentence rather than two.
+  function captureAudio(opts) {
+    opts = opts || {};
+    const body = { mode: "audio" };
+    for (const key of ["source", "device", "path", "maxSeconds", "title"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return captureStart(body);
+  }
+
+  // fused.capture.screenshot({display, rect, cursor, path})
+  //   -> Promise<{path, url, width, height, bytes, mime}>
+  //
+  // The one call here with no handle and no job row: it is milliseconds, so a
+  // promise resolving with the file is the whole contract. Native, so unlike a
+  // tab capture it needs no readable document and no share prompt — which is
+  // what makes a cross-origin pane shootable at all.
+  function captureScreenshot(opts) {
+    opts = opts || {};
+    const body = {};
+    // No `format`: the file's own extension decides png vs jpeg, so a `path`
+    // and a `format` can never disagree about what was written.
+    for (const key of ["display", "rect", "cursor", "path"]) {
+      if (opts[key] !== undefined) body[key] = opts[key];
+    }
+    return captureFetch("/api/capture/screenshot", captureBase(body));
+  }
+
+  // What can be captured, and what it is waiting for — permission included, and
+  // WITHOUT prompting for it (the prompt rides the first real capture). Carries
+  // the display and microphone lists in the same payload, because a page opening
+  // a recorder UI reads all of it in one paint.
+  function captureSources() {
+    return captureFetch("/api/capture", undefined, "GET")
+      .then((data) => captureMerge(data.sources));
+  }
+
+  // On the platforms where the BROWSER records, whether a recording is possible
+  // is a fact about this browser and not about the machine — and a server route
+  // cannot know which browser is asking. So the server answers `client: true`
+  // and the three recording keys get replaced here, from what this window can
+  // actually do. The flag is DELETED on the way out: a page reads
+  // `{available, reason}` exactly as it does on macOS and has nothing to branch
+  // on (CP-8).
+  async function captureMerge(sources) {
+    if (!sources || !sources.client) return sources;
+    delete sources.client;
+    const host = captureHost();
+    const type = captureType(host, "screen");
+    const ok = captureMediaOk(host) && !!type;
+    const why = ok ? null
+      : "this browser cannot record — it has no MediaRecorder with a container "
+        + "this app can store. Chrome, Edge or a recent Firefox can";
+    sources.video = { available: ok, granted: ok, reason: why };
+    sources.audio = {
+      available: ok && !!captureType(host, "audio"),
+      granted: ok,
+      reason: why,
+    };
+    sources.systemAudio = { available: ok, reason: why };
+    if (ok) {
+      try {
+        const devices = await host.navigator.mediaDevices.enumerateDevices();
+        // `label` is EMPTY until the microphone permission has been granted
+        // once — a browser rule, not a bug here. A page shows what it gets and
+        // the names appear after the first recording.
+        sources.microphones = devices
+          .filter((device) => device.kind === "audioinput")
+          .map((device, index) => ({
+            id: device.deviceId,
+            name: device.label || "Microphone " + (index + 1),
+            default: device.deviceId === "default" || index === 0,
+          }));
+      } catch (e) {
+        sources.microphones = [];
+      }
+    }
+    return sources;
+  }
+
+  // Live recordings on this machine — including ones ANOTHER page started, which
+  // is the point: a recording outlives the tab that began it, so a page that
+  // reloads mid-recording finds it here and `attach`es rather than starting a
+  // second one.
+  function captureList() {
+    return captureFetch("/api/capture", undefined, "GET")
+      .then((data) => data.active || []);
+  }
+
+  function captureAttach(id) {
+    return captureList().then((rows) => {
+      const found = rows.find((row) => row.id === id);
+      if (!found) {
+        const err = new Error("no live capture with id " + id);
+        err.type = "bad_request";
+        throw err;
+      }
+      return captureHandle(found);
+    });
+  }
+
+  const capture = {
+    screen: captureScreen,
+    audio: captureAudio,
+    screenshot: captureScreenshot,
+    sources: captureSources,
+    list: captureList,
+    attach: captureAttach,
+  };
+
   window.fused = {
     // Runtime identity: "local" here (the fused-render app). The hosted/exported
     // runtime sets "hosted", so a page can branch on where it runs (EXPORT.md).
     env: "local",
     runPython,
+    engine,
+    daemon,
     rawUrl,
     stat,
     readFile,
@@ -3307,6 +4855,7 @@
     uploadFile,
     mkdir,
     ai,
+    capture,
     fileIndex,
     trackJob,
     watchJob,
@@ -3322,6 +4871,24 @@
   // `_fusedRevSelected` hook is simply not a shell that can show one, and the call
   // does nothing.
   window._fusedSelectRev = noteRevSelected;
+
+  // The git sidebar's "fix this error" hop, the same internal plumbing as
+  // `_fusedSelectRev` just above and for the same reason it is not on
+  // `window.fused`: the built-in git template calls this with the prompt it
+  // built for a failed operation, and the shell (if it has a Claude sidebar to
+  // drive) switches to it and remembers the text. Not present in the hosted
+  // runtime, same as `_fusedSelectRev` — a window with no `_fusedClaudeAsk`
+  // hook is simply not a shell that can open one, and the call returns `false`
+  // rather than doing nothing quietly: the git template uses that to show a
+  // real failure instead of a button that looked like it worked.
+  window._fusedAskClaude = noteAskClaude;
+
+  // The claude template's own half: called at ITS boot to collect whatever
+  // prompt is waiting for it (see `pullClaudeAsk` above for why this is a pull
+  // rather than a param on the src). Not present in the hosted runtime, same
+  // as the two above — a window with no `_fusedClaudeAskTake` hook simply has
+  // nothing to pull, and this answers `null`.
+  window._fusedTakeClaudeAsk = pullClaudeAsk;
 
   // Error overlay: shows for unhandled runPython rejections the page didn't
   // catch itself (identified by carrying a `.traceback`).

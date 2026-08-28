@@ -14,6 +14,8 @@ machine and the disk-measured download behaves the way the supervisor assumes.
 import importlib.util
 import json
 import os
+import re
+import socket
 import sys
 import threading
 import time
@@ -67,6 +69,25 @@ def _call(server, path, body=None, token="secret", method=None):
     return urllib.request.urlopen(request, timeout=5)
 
 
+def _settle(base):
+    """Block until the server-side request handler has FULLY finished —
+    including its `finally` — after a `_call(...)` the test already read the
+    response of.
+
+    A client that has received its response has no guarantee the SERVER
+    thread has finished running code AFTER it wrote those bytes: the network
+    is the only synchronisation point, and `_single`/`_stream` still have
+    their `finally` (arming or clearing the release timer) to run once
+    `self._json`/the last `write` returns. `GENERATE_LOCK` is held for the
+    whole handler, finally included, so acquiring and immediately releasing
+    it here is a barrier for exactly that gap — needed by every test in the
+    idle-release section below that inspects `base._release_timer` or
+    `manual_timers` right after a `_call(...).close()`.
+    """
+    with base.GENERATE_LOCK:
+        pass
+
+
 # -- the auth header ------------------------------------------------------------
 
 
@@ -84,6 +105,251 @@ def test_every_route_refuses_a_wrong_token(base):
             assert caught.value.code == 403, path
     finally:
         server.shutdown()
+
+
+def test_a_refused_post_does_not_desync_the_keep_alive_connection(base):
+    """The 403 path has to READ the body it is refusing.
+
+    This handler is HTTP/1.1, so the connection is kept alive and the NEXT
+    request is parsed off the same socket. Leave the refused request's body
+    unread and those bytes are consumed as that next request's request-line,
+    which is what this asserts. The same omission also made the eventual close
+    send an RST rather than a FIN on Windows, so the client got
+    ConnectionAbortedError ([WinError 10053]) instead of the 403 — that half is
+    not observable off-Windows, but it is the same missing read, and it flaked
+    this file on the runner.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        body = b'{"prompt": "x"}'
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST, WITH a body.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"\r\n" + body)
+            # (2) a VALID request down the same connection.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            s.settimeout(3.0)
+            data = b""
+            try:
+                while len(data) < 65536:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+            except (TimeoutError, socket.timeout):
+                pass
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    # The refusal, then the second request UNDERSTOOD — not a 400 off the
+    # leftover body, and not a dropped connection.
+    assert statuses[:1] == [b"403"], data
+    assert b"200" in statuses[1:], data
+
+
+def _read_all(s, timeout=5.0):
+    s.settimeout(timeout)
+    data = b""
+    try:
+        while len(data) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    except (TimeoutError, socket.timeout):
+        pass
+    return data
+
+
+def test_an_oversized_preauth_body_is_refused_without_reading_it(base):
+    """The drain runs BEFORE auth on a length the caller chose, so it is
+    capped. Unbounded, this request — 100 MB announced, not one byte sent —
+    parks one of the ThreadingTCPServer's threads forever (`_Server` sets no
+    socket timeout), and enough of them stop the worker answering /health,
+    which is how the supervisor decides it is alive.
+
+    The refusal still goes out; the connection just ends with it, since those
+    unsent bytes would otherwise be read as the next request's request-line.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 100000000\r\n"
+                b"\r\n")
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+@pytest.mark.parametrize("framing", [
+    # The plain case: chunked, no Content-Length at all.
+    pytest.param(b"Transfer-Encoding: chunked\r\n", id="chunked"),
+    # Malformed-but-present, which a truthiness check on the header would read
+    # as absent and then drain zero bytes of.
+    pytest.param(b"Transfer-Encoding:\r\n", id="empty-transfer-encoding"),
+    # Both framings at once — the smuggling shape. Transfer-Encoding wins, so
+    # a Content-Length read would stop 4 bytes in and leave the rest queued.
+    pytest.param(b"Transfer-Encoding: chunked\r\nContent-Length: 4\r\n",
+                 id="transfer-encoding-and-content-length"),
+])
+def test_a_refused_body_this_cannot_frame_ends_the_connection(base, framing):
+    """A chunked body sends NO Content-Length, so "nothing to drain" is the
+    wrong reading of its absence.
+
+    BaseHTTPRequestHandler hands us the raw socket; it does not decode chunked
+    request bodies. So the chunk framing is still queued after the 403, and on
+    a kept-alive connection the next request-line read off that socket is the
+    chunk-size line — `2` — which answers the client's real request with a 400.
+    The drain cannot follow that framing, so it must not claim it did: the
+    refusal goes out with Connection: close and the client reconnects.
+    """
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            # (1) refused POST. `hi` in one chunk, then the terminator.
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Type: application/json\r\n"
+                + framing +
+                b"\r\n"
+                b"2\r\nhi\r\n"
+                b"0\r\n\r\n")
+            # (2) a VALID request behind it, as a keep-alive client would send.
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"\r\n")
+            data = _read_all(s)
+
+        # ...and the worker is still serving: the close is this connection
+        # ending, not the handler thread wedged on a body it cannot read.
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"GET /health HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: secret\r\n"
+                b"Connection: close\r\n"
+                b"\r\n")
+            again = _read_all(s)
+    finally:
+        server.shutdown()
+
+    statuses = re.findall(rb"HTTP/1\.[01] (\d{3})", data)
+    assert statuses[:1] == [b"403"], data
+    assert b"close" in data.lower(), data
+    # The bug, named: `2` read as the next request-line. That reply carries no
+    # status line of its own — a request-line this malformed leaves
+    # request_version unset, so BaseHTTPRequestHandler answers HTTP/0.9-style
+    # with the error page alone — which is why it has to be matched on text.
+    assert b"Bad request syntax" not in data, data
+    # And the request the client actually sent went unanswered: one response on
+    # this connection, not two.
+    assert len(statuses) == 1, data
+    assert b"200" in re.findall(rb"HTTP/1\.[01] (\d{3})", again), again
+
+
+def test_a_preauth_body_that_stops_early_does_not_park_the_thread(
+        base, monkeypatch):
+    """The other axis: a length UNDER the cap, so it is read — but the client
+    sends less than it promised and then goes quiet. Without a read timeout
+    that wait is unbounded too."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 0.3)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)     # promised 4096, sent 10
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # Bounded by the drain timeout, not by the client's silence.
+    assert waited < 3.0, waited
+
+
+def test_an_unparseable_preauth_content_length_is_not_guessed_at(base):
+    """A length that is not a number leaves no way to know where the body
+    stops, so the drain cannot claim it read one. Refuse and close rather than
+    fall through to a zero-length read and keep the connection."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: twelve\r\n"
+                b"\r\n" + b"x" * 12)
+            data = _read_all(s)
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+
+
+def test_a_preauth_body_cut_short_by_a_close_is_not_waited_out(base, monkeypatch):
+    """The client half-closes instead of going quiet, so the read hits EOF
+    rather than the timeout. That is the same verdict — the promised bytes are
+    not there — and it must not cost the full DRAIN_TIMEOUT_S to reach, which
+    is what the generous timeout here would expose."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    monkeypatch.setattr(base, "DRAIN_TIMEOUT_S", 30.0)
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with socket.create_connection(server.server_address, timeout=5) as s:
+            s.sendall(
+                b"POST /generate HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"X-Fused-Worker: wrong\r\n"
+                b"Content-Length: 4096\r\n"
+                b"\r\n" + b"x" * 10)   # promised 4096, sent 10...
+            s.shutdown(socket.SHUT_WR)   # ...and there will be no more
+            started = time.monotonic()
+            data = _read_all(s)
+            waited = time.monotonic() - started
+    finally:
+        server.shutdown()
+    assert b"403" in data, data
+    assert b"close" in data.lower(), data
+    # EOF, not the 30s timeout.
+    assert waited < 5.0, waited
 
 
 def test_a_missing_token_is_refused_too(base):
@@ -110,6 +376,27 @@ def test_health_reports_the_state_the_supervisor_polls_for(base):
         assert health["state"] == "loading"
         assert health["model"] == "org/m"
         assert health["detail"] == "Loading weights…"
+    finally:
+        server.shutdown()
+
+
+def test_health_reports_peak_resident_bytes_only_once_ready(base):
+    """SPEC AI-8c: `peak_resident_bytes` rides beside `resident_bytes`, and
+    only once the model can answer — the same rule `resident_bytes` already
+    follows, for the same reason: a loading model has nothing settled to
+    report a high-water mark OF."""
+    base.TOKEN = "secret"
+    base.set_state(state="loading")
+    server = _serve(base, lambda body: {})
+    try:
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" not in health
+
+        base.set_state(state="ready")
+        with _call(server, "/health") as response:
+            health = json.loads(response.read())
+        assert "peak_resident_bytes" in health
     finally:
         server.shutdown()
 
@@ -323,6 +610,403 @@ def test_one_generation_at_a_time(base):
         server.shutdown()
 
 
+def test_generate_never_runs_on_the_connection_thread(base):
+    """The actual regression: MLX keeps a per-thread compiled-graph cache (a
+    C++ `thread_local`), and `_Server` is a `ThreadingTCPServer` — a BRAND NEW
+    thread per connection, which exits the moment the response finishes.
+    Reproduced directly against a real MLX-vlm checkpoint: `stream_generate`
+    called from two different threads in a row (never the SAME thread twice)
+    segfaults the process on the second call, deep inside
+    `CompileCache::CacheEntry::~CacheEntry()`, with no Python traceback —
+    which on this worker's transport reaches the caller as nothing more
+    specific than a bare connection reset.
+
+    A fake `generate` cannot reproduce the segfault itself (it is native code
+    a stub never touches), but it CAN pin the architectural contract that
+    prevents it: every call must land on the SAME thread, and that thread must
+    never be the one `BaseHTTPRequestHandler` is running on. This is exactly
+    what `run_on_generate_thread` buys — see its docstring."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    threads_seen = []
+    connection_threads = []
+
+    def generate(body):
+        threads_seen.append(threading.current_thread())
+        return {}
+
+    server = _serve(base, generate)
+    try:
+        for _ in range(3):
+            connection_threads.append(threading.current_thread())
+            _call(server, "/generate", {}).close()
+        assert len(threads_seen) == 3
+        assert len(set(threads_seen)) == 1, (
+            "generate() ran on more than one thread: " + repr(threads_seen))
+        # `_call` runs synchronously on THIS (the test's) thread, and
+        # `ThreadingTCPServer` hands each connection its own fresh thread — so
+        # the generate thread must be neither this thread nor any recorded
+        # "connection" stand-in, confirming it is the dedicated thread, not
+        # whatever thread happened to accept the socket.
+        assert threads_seen[0] not in connection_threads
+    finally:
+        server.shutdown()
+
+
+def test_a_streaming_generates_writes_also_stay_off_the_connection_thread(base):
+    """The streaming half of the same contract — `_stream` passes `write`
+    itself into the generate-thread call, so every chunk is written to
+    `self.wfile` from that ONE thread too, never per-request."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    threads_seen = []
+
+    def generate(body, write):
+        threads_seen.append(threading.current_thread())
+        write({"type": "chunk", "text": "hi"})
+        write({"type": "done", "ok": True})
+
+    server = _serve(base, generate, streaming=True)
+    try:
+        for _ in range(3):
+            with _call(server, "/generate", {}) as response:
+                response.read()
+        assert len(threads_seen) == 3
+        assert len(set(threads_seen)) == 1, (
+            "streaming generate() ran on more than one thread: " + repr(threads_seen))
+    finally:
+        server.shutdown()
+
+
+# -- releasing the allocator cache on a 30s IDLE TIMER (D597) -------------------
+#
+# `serve(release=...)` is the third optional hook beside `memory=`/`peak_
+# memory=` — an ACTION, not a measurement. Motivating numbers are on
+# `_release`'s docstring: a FLUX.2-Klein-4B-4bit render needs ~24 GB at its
+# peak but MLX never hands the idle pool back to the OS on its own, so the
+# status bar kept reading "1.7 GB now (21 GB held)" long after the render
+# finished.
+#
+# It does NOT fire in the request's own `finally` — this change's first cut
+# did that, and re-faulting a 24 GB working set on every single call would
+# make a burst of five renders pay that cost five times. Instead each completed
+# execution arms a `_RELEASE_IDLE_S`-second timer; a new execution inside
+# that window cancels the pending one and arms a fresh one, so only a
+# genuinely idle worker ever actually clears. These tests set `base._release`
+# directly (mirroring how `_measure_peak` is set on `base` above) because
+# `_serve` here calls `build_server` directly, the same seam `serve()` itself
+# assigns through — and they swap in `_ManualTimer` below for
+# `worker_base._new_timer` so the 30s window is crossed by calling `.fire()`,
+# never by sleeping.
+
+
+class _ManualTimer:
+    """Stands in for `threading.Timer`, fired by hand instead of by a real
+    30-second wait. `_arm_release_timer` calls `worker_base._new_timer(...)`
+    — a local indirection to `threading.Timer` that exists FOR this seam —
+    rather than `threading.Timer` directly: patching the real stdlib class
+    would affect every `threading.Timer` created ANYWHERE in the process for
+    the duration of the test, including by daemon threads leaked from an
+    earlier test in the same xdist worker (a real cross-file flake shape in
+    this repo, not a hypothetical one), silently turning them into timers
+    that are never scheduled and never fire. Patching `base._new_timer`
+    instead only ever affects timers `_arm_release_timer` itself creates, in
+    THIS one fresh module.
+
+    `cancel()` matches real `Timer` semantics: a cancelled timer's function
+    never runs, even if `.fire()` is called on it afterwards — which is what
+    lets a test tell "the pending release was deferred" from "it fired
+    anyway" without needing two clocks in flight at once.
+    """
+
+    instances = []
+
+    def __init__(self, interval, function, args=()):
+        self.interval = interval
+        self.function = function
+        self.args = args
+        self.daemon = None
+        self.cancelled = False
+        self.started = False
+        _ManualTimer.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        if self.started and not self.cancelled:
+            self.function(*self.args)
+
+
+@pytest.fixture()
+def manual_timers(base, monkeypatch):
+    """Every `_ManualTimer` `_arm_release_timer` creates during this test, in
+    order — `instances[-1]` is always the CURRENTLY pending one."""
+    _ManualTimer.instances = []
+    monkeypatch.setattr(base, "_new_timer", _ManualTimer)
+    return _ManualTimer.instances
+
+
+def test_a_completed_generate_arms_a_daemon_timer_for_the_idle_window(base, manual_timers):
+    """Armed with the named constant, not a bare literal, and marked daemon
+    so a pending release is never what keeps the worker process alive at
+    exit — `os._exit(0)` in `/quit` does not wait on it, and neither would a
+    normal interpreter shutdown."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: None
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert len(manual_timers) == 1
+        assert manual_timers[0].interval == base._RELEASE_IDLE_S
+        assert manual_timers[0].daemon is True
+        assert manual_timers[0].started is True
+    finally:
+        server.shutdown()
+
+
+def test_release_fires_after_the_idle_window_with_no_further_execution(base, manual_timers):
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert calls == []  # not yet — only arming happens synchronously
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
+def test_a_second_execution_inside_the_window_defers_the_pending_release(base, manual_timers):
+    """The core of the redesign: a burst of renders must not clear between
+    each one. The FIRST timer is cancelled outright rather than left to fire
+    later — `fire()`'d directly here to prove it really is inert, not just
+    superseded."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        first_timer = manual_timers[-1]
+        assert not first_timer.cancelled
+
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert first_timer.cancelled, "a second execution must cancel the first timer"
+        assert len(manual_timers) == 2, "the second execution must arm its own timer"
+
+        first_timer.fire()  # inert: cancelled timers never call their function
+        assert calls == []
+
+        manual_timers[-1].fire()
+        assert calls == ["released"]
+    finally:
+        server.shutdown()
+
+
+def test_a_stale_timer_that_already_escaped_cancel_still_checks_its_token(base, manual_timers):
+    """Belt-and-braces beside `cancel()`: the window between a real `Timer`'s
+    wait elapsing and its callback actually acquiring `GENERATE_LOCK` is where
+    a rearm can land AFTER `cancel()` was already too late to help. Exercised
+    directly here — `_ManualTimer.fire()` alone cannot reach this branch,
+    since it always honours `cancelled` — by calling `_fire_release` with a
+    token this test manufactures as already stale."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        stale_token = base._release_generation
+        _call(server, "/generate", {}).close()  # bumps _release_generation past stale_token
+        _settle(base)
+        base._fire_release(stale_token)
+        assert calls == [], "a stale token must not clear the cache out from under a newer run"
+    finally:
+        server.shutdown()
+
+
+def test_a_streaming_execution_counts_as_active_for_its_whole_duration(base, manual_timers):
+    """The timer must only be armed once the STREAM ENDS, not once it starts
+    — a long token stream or transcription is exactly the case this matters
+    for, since `GENERATE_LOCK` is held throughout and arming happens in
+    `_stream`'s `finally`, after `run_on_generate_thread` returns."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: None
+    started = threading.Event()
+    finish = threading.Event()
+
+    def generate(body, write):
+        started.set()
+        finish.wait(timeout=5)
+        write({"type": "done", "ok": True})
+
+    server = _serve(base, generate, streaming=True)
+    try:
+        caller = threading.Thread(
+            target=lambda: _call(server, "/generate", {}).read())
+        caller.start()
+        assert started.wait(timeout=5)
+        # Mid-stream: nothing has been armed yet, because the execution has
+        # not finished — this is the assertion a per-call design could not
+        # make at all, since there IS no "mid-call" for it.
+        assert manual_timers == []
+        finish.set()
+        caller.join(timeout=5)
+        _settle(base)
+        assert len(manual_timers) == 1, "the timer arms once the stream actually ends"
+    finally:
+        finish.set()
+        server.shutdown()
+
+
+def test_no_release_hook_is_a_silent_no_op(base, manual_timers):
+    """Every runner that never calls `serve(release=...)` — `llamacpp_text`,
+    `faster_whisper`, `onnx_embed` and its shells — leaves `_release` at its
+    default `None`. Nothing is ever armed for them, and `/generate` behaves
+    exactly as it did before this hook existed."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    assert base._release is None
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        with _call(server, "/generate", {}) as response:
+            assert json.loads(response.read())["ok"] is True
+        _settle(base)
+        assert manual_timers == []
+    finally:
+        server.shutdown()
+
+
+def test_a_raising_release_does_not_crash_the_timer_or_break_the_next_execution(base, manual_timers):
+    """The response this timer eventually fires for is long gone by the time
+    it runs — there is nobody left to hand a 500 to — so a `release` that
+    throws must be swallowed, and must not leave the timer machinery wedged
+    for the NEXT execution."""
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def boom():
+        raise RuntimeError("mlx.core has no attribute 'clear_cache'")
+
+    base._release = boom
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()  # must not raise out of this call
+        assert base._release_timer is None
+
+        # And a subsequent execution still arms cleanly.
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        assert len(manual_timers) == 2
+    finally:
+        server.shutdown()
+
+
+def test_release_runs_on_the_generate_thread_not_the_connection_thread(base, manual_timers):
+    """Routed through `run_on_generate_thread` like `generate` itself: the
+    hook this exists for is `mx.clear_cache()`, an MLX call, and that
+    function's docstring is the whole reason no MLX call is made from a
+    thread other than the one dedicated to them — a fired timer runs on yet
+    another thread of its own, no different in kind."""
+    generate_threads = []
+    release_threads = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+
+    def generate(body):
+        generate_threads.append(threading.current_thread())
+        return {}
+
+    base._release = lambda: release_threads.append(threading.current_thread())
+    server = _serve(base, generate)
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        manual_timers[-1].fire()
+        assert release_threads == generate_threads
+        assert release_threads[0] is not threading.current_thread()
+    finally:
+        server.shutdown()
+
+
+def test_a_fired_release_cannot_run_while_a_generation_holds_the_lock(base, manual_timers):
+    """The safety-critical half of `_fire_release` that nothing above actually
+    exercises: acquiring `GENERATE_LOCK` FIRST is what makes firing mid-render
+    impossible, not just an assumption. `GENERATE_LOCK` is held here directly
+    from this thread, standing in for "a generation is in flight" without the
+    generation-token machinery (a real second execution would also CANCEL and
+    supersede this timer once it finishes, which is a different behaviour —
+    covered by `test_a_second_execution_inside_the_window_defers_the_pending_
+    release` above — and would make "does it fire" ambiguous here for the
+    wrong reason)."""
+    calls = []
+    base.TOKEN = "secret"
+    base.set_state(state="ready")
+    base._release = lambda: calls.append("released")
+    server = _serve(base, lambda body: {"ok": True})
+    try:
+        _call(server, "/generate", {}).close()
+        _settle(base)
+        timer = manual_timers[-1]
+    finally:
+        server.shutdown()
+
+    base.GENERATE_LOCK.acquire()
+    try:
+        firer = threading.Thread(target=timer.fire)
+        firer.start()
+        firer.join(timeout=0.2)
+        assert firer.is_alive(), (
+            "the release ran while GENERATE_LOCK was held by an in-flight "
+            "generation — the whole point of acquiring it first")
+        assert calls == []
+    finally:
+        base.GENERATE_LOCK.release()
+    firer.join(timeout=5)
+    assert not firer.is_alive()
+    assert calls == ["released"], (
+        "the pending release must still run once the lock is free again"
+    )
+
+
+def test_serve_wires_release_into_the_module_global(base, monkeypatch, tmp_path):
+    """`serve(release=...)` has to actually reach the module global that
+    `_arm_release_timer` reads — the same wiring `memory=`/`peak_memory=`
+    already get, pinned by `test_serve_wires_peak_memory_into_the_peak_probe`
+    above."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    sentinel = lambda: None  # noqa: E731 - identity is what's under test
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, release=sentinel,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._release is sentinel
+
+
 # -- reporting ------------------------------------------------------------------
 
 
@@ -343,6 +1027,102 @@ def test_report_or_cancel_raises_on_a_requested_cancel(base, monkeypatch):
 
     monkeypatch.setattr(base, "report", lambda job=None, **f: {"cancel_requested": False})
     assert base.report_or_cancel(job="sys:ai-image:x") == {"cancel_requested": False}
+
+
+# -- a runner's own PEAK-memory probe (SPEC AI-8c, D497) -------------------------
+
+
+def test_peak_resident_bytes_is_none_before_anything_has_been_measured(base):
+    assert base.peak_resident_bytes() is None
+
+
+def test_peak_resident_bytes_takes_the_LARGER_of_probe_and_rss_high_water(base):
+    """MLX's `mx.get_peak_memory()` is a TRUE peak of the ALLOCATOR only — it
+    does not count the interpreter/framework baseline `resident_bytes`
+    corrects for (379 MB for a 6GB model). So this is `max`, the same
+    correction `resident_bytes` already makes between `own` and `rss`, not
+    the probe winning outright: a probe smaller than the RSS high-water mark
+    must not UNDERSTATE what the process actually occupied — code review
+    caught a version of this function that returned the probe alone and would
+    have let a `measured` footprint (AI-16a) badge understate a real load."""
+    base._measure_peak = lambda: 9_000_000_000
+    base._rss_peak = 1_000_000_000
+    assert base.peak_resident_bytes() == 9_000_000_000  # probe is larger here
+
+    base._measure_peak = lambda: 2_000_000_000
+    base._rss_peak = 12_000_000_000
+    assert base.peak_resident_bytes() == 12_000_000_000  # RSS is larger here
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_the_probe_answers_nothing(base):
+    """A probe that raises, or a wheel shipping neither `get_peak_memory`
+    spelling (`_measure_peak` returning None): the RSS high-water mark is what
+    is left, never an invented estimate."""
+    base._measure_peak = lambda: None
+    base._rss_peak = 3_000_000_000
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+    def boom():
+        raise RuntimeError("mlx not built with metal")
+
+    base._measure_peak = boom
+    assert base.peak_resident_bytes() == 3_000_000_000
+
+
+def test_peak_resident_bytes_falls_back_to_rss_high_water_when_no_probe_was_supplied(base):
+    """`faster_whisper` and every torch-on-CPU runner never call
+    `serve(peak_memory=...)` at all — `_measure_peak` stays `None`, and the
+    RSS high-water mark is the only answer there ever is."""
+    assert base._measure_peak is None
+    base._rss_peak = 2_000_000_000
+    assert base.peak_resident_bytes() == 2_000_000_000
+
+
+def test_resident_bytes_grows_the_rss_high_water_mark_but_never_shrinks_it(base, monkeypatch):
+    """`resident_bytes()` is called on every `/health` poll — this is what
+    turns that sparse sampling into a MONOTONE bound, at the cost of one
+    module-level integer kept by the worker rather than by the supervisor."""
+    import types
+
+    readings = iter([1_000, 5_000, 2_000])  # a real dip: RSS can shrink, GC runs
+
+    class _FakeProcess:
+        def memory_info(self):
+            return types.SimpleNamespace(rss=next(readings))
+
+    monkeypatch.setitem(
+        __import__("sys").modules, "psutil",
+        types.SimpleNamespace(Process=lambda pid: _FakeProcess()))
+
+    assert base.resident_bytes() == 1_000
+    assert base._rss_peak == 1_000
+    assert base.resident_bytes() == 5_000
+    assert base._rss_peak == 5_000
+    # The THIRD reading is a real dip — resident_bytes() itself still reports
+    # it honestly (it is not the peak function) — but the high-water mark it
+    # is feeding must not go backwards with it.
+    assert base.resident_bytes() == 2_000
+    assert base._rss_peak == 5_000
+
+
+def test_serve_wires_peak_memory_into_the_peak_probe(base, monkeypatch, tmp_path):
+    """`serve(peak_memory=...)` has to actually reach `peak_resident_bytes()`,
+    not just be accepted and dropped — the same wiring `memory=` already gets
+    for `_measure`. `serve_forever` never returns on a real server, so this
+    stubs `build_server` to hand back a server that never actually blocks —
+    the assignment under test happens before that call either way."""
+    class _FakeServer:
+        server_address = ("127.0.0.1", 0)
+
+        def serve_forever(self):
+            pass
+
+    monkeypatch.setattr(base, "build_server", lambda *a, **kw: _FakeServer())
+    status = tmp_path / "status.json"
+    base.serve(download=lambda m: None, load=lambda m, f: None,
+              generate=lambda body: {}, peak_memory=lambda: 7,
+              argv=["--model", "org/m", "--status", str(status)])
+    assert base._measure_peak is not None and base._measure_peak() == 7
 
 
 # -- download progress, measured from the disk (AI-5b) --------------------------
@@ -400,6 +1180,184 @@ def test_fetch_with_progress_re_raises_on_the_calling_thread(base, monkeypatch):
 
     with pytest.raises(OSError, match="connection reset"):
         base.fetch_with_progress("org/m", boom, total=None)
+
+
+# -- driving the fallback bar from hf's OWN byte counters (AI-5b, xet bursts) ----
+#
+# `snapshot_download`/`hf_hub_download` on the fallback path used to be measured
+# purely by the disk walk, and `hf_xet` (installed in every runner venv; every
+# mlx-community repo is Xet-backed) delivers bytes in BURSTS — the walk sees one
+# number for many seconds and then a huge jump, which on a multi-GB model reads
+# as "stuck at 98%" even though the download is healthy. `_HubByteTicker` is the
+# `tqdm_class` that reads hf's own counters instead.
+
+
+def _bytes_bar(ticker, desc, **extra):
+    """One instance of `ticker.bar()`, shaped like what hf's own downloader
+    would construct — `unit="B"` is the whole of what marks a byte bar."""
+    return ticker.bar()(desc=desc, total=extra.pop("total", 0), unit="B", **extra)
+
+
+def test_a_hub_byte_counter_drives_done_while_the_disk_walk_is_stuck(
+        base, monkeypatch):
+    """The exact shape of the bug: `bytes_on_disk` frozen (the xet burst gap)
+    while hf's own reconstruction bar is moving underneath it."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)  # frozen
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()
+
+    def call():
+        bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1024)
+        bar.update(400)
+        time.sleep(1.2)  # past the one-second tick, so a mid-flight poll sees it
+        return "/snap"
+
+    result = base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    assert result == "/snap"
+    assert any(tick["done"] == 400 for tick in ticks), ticks
+    assert ticker.seen is True
+
+
+def test_the_outer_FILE_counter_is_never_read_as_bytes(base, monkeypatch):
+    """The trap this whole class exists to avoid one level further in: the
+    "Fetching N files" bar has no `unit`, and reporting its `.update(1)` per
+    file as bytes is how a 4.6GB pull once read "10 / 11 B"."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+    ticker = base._HubByteTicker()
+
+    Bar = ticker.bar()
+    file_counter = Bar(desc="Fetching 11 files", total=11)  # no `unit` at all
+    for _ in range(11):
+        file_counter.update(1)
+
+    assert ticker.seen is False, "the file counter was read as a byte counter"
+    assert ticker.value == 0
+
+
+def test_transfer_and_reconstruct_bars_are_not_summed(base, monkeypatch):
+    """hf's Xet path hands back TWO byte bars covering close to the same total
+    — network transfer and disk reconstruction. Summing them can read past
+    100% of a file that has not finished; the counter reports whichever
+    stream is FURTHER ALONG instead."""
+    ticker = base._HubByteTicker()
+    transfer = _bytes_bar(ticker, "Downloading bytes", total=1000)
+    reconstruct = _bytes_bar(ticker, "Reconstructing (incomplete total...)",
+                             total=1000)
+
+    transfer.update(600)
+    reconstruct.update(200)
+
+    assert ticker.value == 600, "the two streams were added instead of maxed"
+
+    reconstruct.update(500)
+    assert ticker.value == 700
+
+
+def _set_aggregate_rate_postfix(bar):
+    """The exact call shape hf's `_xet_progress_reporting._set_aggregate_rate_postfix`
+    makes against a bar it was handed — verified against the real
+    huggingface_hub installed in the runner venvs (1.27.0, 1.28.0). Not a
+    stand-in for that function: this IS what it does, reduced to the one
+    line that crashed, so a future signature drift on hf's side is caught
+    here rather than by a user's first Xet-backed download."""
+    bar.set_postfix_str(str(bar.format_dict.get("rate")), refresh=False)
+
+
+def test_a_bar_survives_the_rate_postfix_call_hf_makes_on_it(base, monkeypatch):
+    """The HIGH finding: `XetDownloadProgressReporter.update_progress` calls
+    `_AggregatedTqdm.set_postfix_str`, which forwards to
+    `_set_aggregate_rate_postfix(transfer_progress_or_reconstruct_progress)`
+    — and those bars are OUR `_Bar` instances, made through
+    `_create_progress_bar(cls=tqdm_class)`. That function does
+    `bar.format_dict.get("rate")`, which raised `AttributeError` on the
+    first non-zero byte of every Xet-backed download (every mlx-community
+    repo) before `_Bar` grew a `format_dict`. The existing tests never
+    caught it because they only ever call `.update()` on a fake bar, never
+    one of hf's own helper functions — this one does, deliberately.
+    """
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1000)
+    bar.update(100)
+
+    _set_aggregate_rate_postfix(bar)  # must not raise AttributeError
+
+    assert bar.format_dict["rate"] is None
+    assert bar.format_dict["n"] == 100
+    assert bar.format_dict["total"] == 1000
+
+
+def test_a_bars_own_n_is_updated_under_the_same_lock_as_the_ticker(base):
+    """`self.n += n` used to run OUTSIDE `ticker._lock`, racing the read
+    `format_dict` (and hf's own `_update_transfer_bar`/`_finish_transfer_bar`,
+    which read `.n` back to size hf's display) does on the same attribute.
+    Concurrent per-file threads funnel into ONE shared bar via
+    `_AggregatedTqdm`, exactly like `ticker._transfer`/`ticker._reconstruct`
+    do — so `.n` needs the same protection those already have, not a
+    separate unlocked increment beside them."""
+    ticker = base._HubByteTicker()
+    bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=100_000)
+    threads = [threading.Thread(target=bar.update, args=(1,)) for _ in range(500)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert bar.n == 500, "a concurrent update to .n was lost outside the lock"
+    assert ticker.value == 500
+
+
+def test_a_missing_or_ignored_counter_falls_back_to_the_disk_walk(base, monkeypatch):
+    """An hf version that reports differently, or ignores `tqdm_class`
+    outright, must degrade SILENTLY to exactly today's behaviour — a progress
+    refinement must never be able to fail or freeze a download."""
+    ticks = []
+    disk = {"value": 0}
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: disk["value"])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()  # never touched by `call`
+
+    def call():
+        disk["value"] = 512
+        time.sleep(1.2)
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    assert ticker.seen is False
+    assert any(tick["done"] == 512 for tick in ticks), ticks
+
+
+def test_reported_progress_never_goes_backwards(base, monkeypatch):
+    """`done` is `max(counter, disk)` at every tick, specifically so a counter
+    that stalls while the disk keeps moving — or the reverse — cannot make an
+    already-reported number look like it un-happened."""
+    ticks = []
+    disk = {"value": 900}  # AHEAD of the counter from the very first tick
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: disk["value"])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+    ticker = base._HubByteTicker()
+
+    def call():
+        bar = _bytes_bar(ticker, "Reconstructing (incomplete total...)", total=1024)
+        bar.update(100)  # behind the disk walk's 900
+        time.sleep(1.2)
+        return "/snap"
+
+    base.fetch_with_progress("org/m", call, total=1024, counter=ticker)
+
+    dones = [tick["done"] for tick in ticks]
+    assert dones == sorted(dones), dones
+    assert 900 in dones, "the disk walk's lead was thrown away for the counter's number"
 
 
 # -- a fetch that happens inside a REQUEST, on a row with a live ✕ ---------------
@@ -531,6 +1489,38 @@ def test_every_registered_runner_ships_both_of_its_files():
         assert os.path.isfile(runner.pyproject), f"{runner.code}: no pyproject.toml"
 
 
+def _runner_source(runner):
+    """The module that actually IMPLEMENTS a runner, following a shell.
+
+    Five of the runner folders — the CPU/CUDA/ROCm Diffusers variants and both
+    llama.cpp builds — hold a five-line `worker.py` that inserts `runners/` on
+    the path and calls `torch_image.main()` or `llama_text.main()`. The behaviour
+    lives one level up, so a source assertion made against the folder's file
+    would read a shell and pass on anything: the two tests below would have
+    stopped checking those runners entirely, silently, on the commit that
+    hoisted them. (It was six folders and two shared modules until D416 removed
+    the three transformers variants and `torch_text.py` with them; the
+    RECOGNITION rule below never named any of them, which is why nothing here
+    had to change.)
+
+    The shell is recognised by what makes it one — it imports a module from the
+    runners root and CALLS ITS `main()`, which is the whole of its body — rather
+    than by a list of runner codes, so a future hoisted runner is covered without
+    an edit here. Recognising it by the import alone would follow every worker's
+    `import worker_base` into the base module instead.
+    """
+    with open(runner.worker, encoding="utf-8") as handle:
+        source = handle.read()
+    root = os.path.dirname(runner.folder)
+    for match in re.finditer(r"^import (\w+)", source, re.MULTILINE):
+        name = match.group(1)
+        hoisted = os.path.join(root, name + ".py")
+        if f"{name}.main()" in source and os.path.isfile(hoisted):
+            with open(hoisted, encoding="utf-8") as handle:
+                return handle.read()
+    return source
+
+
 def test_no_runner_reimplements_the_contract():
     """The whole point of the extraction (AI-9a).
 
@@ -542,7 +1532,7 @@ def test_no_runner_reimplements_the_contract():
     from fused_render.ai import registry
 
     for runner in registry.all_runners():
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "import worker_base" in source, f"{runner.code} does not use the base"
         assert "worker_base.serve(" in source, f"{runner.code} does not serve through the base"
         for reimplemented in ("BaseHTTPRequestHandler", "X-Fused-Worker",
@@ -574,10 +1564,79 @@ def test_every_runner_that_needs_a_memory_probe_supplies_one():
     ):
         runner = registry.by_code(code)
         assert runner is not None, code
-        source = open(runner.worker, encoding="utf-8").read()
+        source = _runner_source(runner)
         assert "def memory(" in source, f"{code} has no memory probe — {why}"
         assert "memory=memory" in source, (
             f"{code} does not pass its probe to serve(), so /health reports RSS: {why}"
+        )
+
+
+def test_every_MLX_runner_supplies_a_true_peak_probe():
+    """SPEC AI-8c, D497: the MLX runners get a true peak "for free" —
+    `mx.get_peak_memory()` is maintained by the allocator across the whole
+    process life, so every runner that already has an active-memory probe
+    gets a peak one beside it. A `peak_memory=` nobody passes leaves `fit`
+    (AI-16) with only the weaker RSS-high-water fallback for a model whose
+    peak is otherwise measurable directly."""
+    from fused_render.ai import registry
+
+    for code in ("mlx-text", "mflux-image", "mlx-whisper", "mlx-embed", "ltx-video"):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = _runner_source(runner)
+        assert "def peak_memory(" in source, f"{code} has no peak_memory probe"
+        assert "get_peak_memory" in source, (
+            f"{code}'s peak_memory does not read mx.get_peak_memory"
+        )
+        assert "peak_memory=peak_memory" in source, (
+            f"{code} does not pass its peak probe to serve(), so /health "
+            "reports no peak_resident_bytes at all"
+        )
+
+
+def test_every_runner_with_a_reclaimable_allocator_wires_the_idle_release():
+    """D597/the idle-release feature: every runner whose backend actually
+    exposes a cache-release call wires it to `serve(release=...)`, so
+    `worker_base._arm_release_timer` has something to arm after every one of
+    their executions. Source again, for the same reason as the peak-probe
+    test above — mlx and a GPU-built torch do not import on this CI host.
+
+    The strings checked below are CODE, not prose: every one of these
+    `release()` docstrings also mentions `mx.clear_cache()`/`empty_cache()`
+    in its own explanation of what it does, so a naive `"clear_cache" in
+    source` (an earlier version of this test) would keep passing even with
+    the actual call deleted from the function body — a guard that cannot
+    fail is not a guard. `getattr(mx, "clear_cache", None)` and
+    `torch.{mps,cuda}.empty_cache()` are each the exact statement `release()`
+    executes, and each appears in these files exactly once, in the body, not
+    in a docstring — verified by hand: deleting the real call and re-running
+    this test does turn it red.
+
+    `llamacpp_text`, `faster_whisper` and `onnx_embed` are deliberately
+    absent from this list — see the comment beside each of their own
+    `worker_base.serve(...)` calls for why each one has nothing here to
+    release."""
+    from fused_render.ai import registry
+
+    for code, clear_calls in (
+        ("mlx-text", ('getattr(mx, "clear_cache", None)',)),
+        ("mflux-image", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-whisper", ('getattr(mx, "clear_cache", None)',)),
+        ("mlx-embed", ('getattr(mx, "clear_cache", None)',)),
+        ("ltx-video", ('getattr(mx, "clear_cache", None)',)),
+        ("diffusers-image", ("torch.mps.empty_cache()", "torch.cuda.empty_cache()")),
+    ):
+        runner = registry.by_code(code)
+        assert runner is not None, code
+        source = _runner_source(runner)
+        assert "def release(" in source, f"{code} has no release hook"
+        for clear_call in clear_calls:
+            assert clear_call in source, (
+                f"{code}'s release() does not actually call {clear_call!r}"
+            )
+        assert "release=release" in source, (
+            f"{code} does not pass its release hook to serve(), so an idle "
+            "worker here never hands its allocator pool back"
         )
 
 
@@ -655,12 +1714,280 @@ def test_progress_never_exceeds_a_scoped_total(base, monkeypatch):
     assert all(t.get("done", 0) <= 2_600_000_000 for t in ticks if "done" in t), ticks
 
 
+def test_fetch_with_progress_declares_its_own_total_scope_every_tick(base, monkeypatch):
+    """Code review on AI-5n/D498: `total_scope` is STICKY on the job row
+    (`jobs.py` only updates it when a tick's body carries the field) —
+    written once by whichever tick last mentioned it. `download_plan` wraps a
+    multi-phase download with its OWN ticker beating `total_scope="download"`
+    on `_PLAN_TICK_S`, while each PHASE runs through this function's own
+    one-second ticks, reporting that phase's own (smaller) total. If this
+    function's ticks left `total_scope` unset, one of them landing right
+    after a `download_plan` beat would leave the row saying
+    `total_scope="download"` with a PHASE total sitting under it — exactly
+    the 19.1GB-shown-for-a-28.5GB-download defect `modelSize.ts` was built to
+    avoid. So every tick this function sends must say `total_scope="phase"`
+    explicitly, regardless of what a caller a level up last claimed."""
+    ticks = []
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/repo")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.fetch_with_progress("u/x", lambda: "/f", total=2_600_000_000)
+
+    assert ticks, "expected at least the initial and closing ticks"
+    assert all(t.get("total_scope") == "phase" for t in ticks), ticks
+
+
 # The image recipe's own patterns moved to tests/test_ai_diffusers_worker.py,
 # where they are asserted against a frozen listing of the real repo instead of
 # by grepping the source for a pattern string. That grep was the reason a recipe
 # whose deny-list saved nothing still passed: the string it looked for was
 # present and the 7.75GB root bundle beside it was not something a substring
 # check could see.
+
+# -- a multi-repo download is priced as ONE (SPEC AI-5n, D498) ------------------
+
+
+def test_download_plan_sums_every_phases_total_and_claims_the_whole(base, monkeypatch):
+    """`ltx-video` fetches two repos as two sequential `download_snapshot`
+    calls; the bar has to be priced at their SUM, not at whichever phase
+    happened to be running, and has to say so (`total_scope`) so
+    `modelSize.ts` can let it win outright over the catalog's constant."""
+    totals = {"weights/repo": 19_100_000_000, "gemma/repo": 8_070_000_000}
+    folders = {"weights/repo": "/w", "gemma/repo": "/g"}
+    done = {"/w": 19_100_000_000, "/g": 8_070_000_000}  # both phases complete
+    snapshots = {"weights/repo": "/snap/w", "gemma/repo": "/snap/g"}
+    ticks = []
+
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder",
+                        lambda model_id, repo_type="model": folders[model_id])
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: done[folder])
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None:
+                        snapshots[model_id])
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    result = base.download_plan([
+        ("weights/repo", ["*.safetensors"], None),
+        ("gemma/repo", None, None),
+    ])
+
+    assert result == ["/snap/w", "/snap/g"]
+    final = ticks[-1]
+    assert final["total"] == 19_100_000_000 + 8_070_000_000
+    assert final["done"] == 19_100_000_000 + 8_070_000_000
+    assert final["total_scope"] == "download"
+    assert final["kind"] == "download" and final["unit"] == "bytes"
+    # Every tick this function sent claims the whole download, not just the
+    # ticks that happened to land after every phase completed.
+    assert all(t["total_scope"] == "download" for t in ticks)
+
+
+def test_download_plan_costs_the_whole_total_when_one_phase_is_indeterminate(base, monkeypatch):
+    """A phase whose size the Hub cannot answer must not be silently dropped
+    from the sum — that would price the bar at a fraction of the download and
+    then jump the moment the indeterminate phase's bytes start landing, which
+    is AI-5b's original defect rebuilt one level up."""
+    totals = {"a/known": 10_000_000_000, "b/unknown": None}
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None: totals[model_id])
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("a/known", None, None), ("b/unknown", None, None)])
+
+    assert all(t["total"] is None for t in ticks)
+
+
+def test_download_plan_names_the_CURRENT_phase_in_detail(base, monkeypatch):
+    """"Fetching weights… (2 of 2)" — not just a moving number, a reader has to
+    be able to tell WHICH repo is downloading right now."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+
+    details_during_second_phase = []
+
+    def fake_download_snapshot(model_id, allow_patterns=None, ignore_patterns=None):
+        if model_id == "second":
+            # A real ticker beat may or may not have landed yet by the time
+            # this phase starts; sleep past `_PLAN_TICK_S` so at least one has.
+            time.sleep(base._PLAN_TICK_S * 2)
+        return model_id
+
+    def spy_report(job=None, **fields):
+        if "detail" in fields:
+            details_during_second_phase.append(fields["detail"])
+
+    monkeypatch.setattr(base, "download_snapshot", fake_download_snapshot)
+    monkeypatch.setattr(base, "report", spy_report)
+
+    base.download_plan([("first", None, None), ("second", None, None)])
+
+    assert any("(2 of 2)" in d for d in details_during_second_phase)
+
+
+def test_download_plan_of_one_phase_still_claims_the_whole_download(base, monkeypatch):
+    """A single-repo runner that adopts `download_plan` gets `total_scope`
+    correct without any special-casing — one phase is trivially the whole
+    download, and the detail carries no "(1 of 1)" clutter nobody asked for."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 4_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 4_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert ticks[-1]["total_scope"] == "download"
+    assert all("of 1" not in t.get("detail", "") for t in ticks)
+
+
+def test_download_plan_of_no_phases_is_a_no_op(base, monkeypatch):
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: pytest.fail("nothing to report"))
+    assert base.download_plan([]) == []
+
+
+def test_download_plan_prices_an_already_cached_phase_with_NO_network(base, monkeypatch):
+    """Code review: pricing every phase up front via a bare `repo_total_bytes`
+    call meant an LTX bring-up with `mlx-community/gemma-3-12b-it-4bit`
+    already cached contacted the Hub anyway, purely to price a phase that
+    needed no network at all — silently defeating `download_snapshot`'s own
+    "no metadata call" fast path (AI-5l) one level up."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/w"
+                        if model_id == "weights/repo" else "/g")
+    monkeypatch.setattr(base, "bytes_on_disk",
+                        lambda folder: 19_100_000_000 if folder == "/w" else 8_070_000_000)
+    # "gemma/repo" is already fully cached; "weights/repo" is not.
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None:
+                        "/g/snapshots/c0ffee" if model_id == "gemma/repo" else None)
+    priced_over_network = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced_over_network.append(model_id) or 19_100_000_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("weights/repo", None, None), ("gemma/repo", None, None)])
+
+    # Only the NOT-already-cached phase paid for a listing.
+    assert priced_over_network == ["weights/repo"]
+
+
+def test_download_plan_prices_every_uncached_phase_over_the_network(base, monkeypatch):
+    """The inverse: nothing here should ever price the WRONG phase, or skip a
+    phase that genuinely needs the network to answer."""
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    priced = []
+    monkeypatch.setattr(base, "repo_total_bytes",
+                        lambda model_id, allow=None, ignore=None:
+                        priced.append(model_id) or 1_000)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: model_id)
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("a", None, None), ("b", None, None)])
+
+    assert priced == ["a", "b"]
+
+
+def test_download_plans_ticker_join_uses_the_job_timeout_bound(base, monkeypatch):
+    """Code review: `ticker.join(timeout=2.0)` was SHORTER than
+    `JOB_TIMEOUT_S` (3.0) — the socket timeout a beat's own `report` POST can
+    still be waiting on — so a beat that entered its POST just before the
+    plan finished could still be in flight when the join gave up, and land
+    AFTER the function returned. `heartbeat()` already guards this with
+    `JOB_TIMEOUT_S + 1.0`; this asserts `download_plan` joins on the same
+    bound rather than its own shorter one."""
+    import threading
+
+    joins = []
+    real_join = threading.Thread.join
+
+    def spy_join(self, timeout=None):
+        if self.name == "download-plan":
+            joins.append(timeout)
+        return real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", spy_join)
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 1_000)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+    monkeypatch.setattr(base, "download_snapshot",
+                        lambda model_id, allow_patterns=None, ignore_patterns=None: "/snap")
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_plan([("only/repo", None, None)])
+
+    assert joins == [base.JOB_TIMEOUT_S + 1.0]
+
+
+def test_a_failed_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    """Code review: the closing tick used to run in a `finally`, so a phase
+    that raised (a network failure) was followed by a tick claiming
+    `done=<the grand total>` — a finished-download shape for a download that
+    did not finish."""
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def boom(model_id, allow_patterns=None, ignore_patterns=None):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(base, "download_snapshot", boom)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks), (
+        "a failed phase must not be followed by a tick landing on the total")
+
+
+def test_a_cancelled_phase_does_not_report_the_grand_total_as_done(base, monkeypatch):
+    monkeypatch.setattr(base, "repo_total_bytes", lambda *a, **kw: 1_000)
+    monkeypatch.setattr(base, "repo_folder", lambda model_id, repo_type="model": "/x")
+    monkeypatch.setattr(base, "bytes_on_disk", lambda folder: 0)
+    monkeypatch.setattr(base, "_cached_path",
+                        lambda model_id, resolve, allow=None, ignore=None: None)
+
+    def cancelled(model_id, allow_patterns=None, ignore_patterns=None):
+        raise base.Cancelled()
+
+    monkeypatch.setattr(base, "download_snapshot", cancelled)
+    ticks = []
+    monkeypatch.setattr(base, "report",
+                        lambda job=None, **fields: ticks.append(fields) or None)
+
+    with pytest.raises(base.Cancelled):
+        base.download_plan([("only/repo", None, None)])
+
+    assert not any(t.get("done") == 1_000 for t in ticks)
+
 
 # -- the cached path does not touch the network ---------------------------------
 #
@@ -1070,6 +2397,36 @@ def test_the_FALLBACK_records_the_commit_hf_actually_landed(base, monkeypatch,
     base.download_snapshot("u/x")
 
     assert asked == {"revision": COMMIT}, asked
+
+
+def test_download_snapshots_fallback_wires_a_byte_counter_through(
+        base, monkeypatch, tmp_path):
+    """The fallback call site — not just `fetch_with_progress` in isolation —
+    has to actually HAND hf's downloader the `tqdm_class` that drives it."""
+    folder = _cache_folder(tmp_path)
+    snapshot = _snapshot_dir(tmp_path, "config.json")
+    hub = _LocalHub(cached=[], snapshot=snapshot)
+    seen_bars = []
+
+    def spy(model_id, allow_patterns=None, ignore_patterns=None,
+            local_files_only=False, revision=None, tqdm_class=None, **kw):
+        if not local_files_only and tqdm_class is not None:
+            bar = tqdm_class(desc="Reconstructing (incomplete total...)",
+                             total=7, unit="B")
+            bar.update(7)
+            seen_bars.append(bar)
+        return snapshot
+
+    hub.snapshot_download = spy
+    _local_hub(monkeypatch, base, hub, folder=folder)
+    monkeypatch.setattr(base, "_repo_files",
+                        lambda *a, **kw: (COMMIT, [("config.json", 7)]))
+    monkeypatch.setattr(base, "_segmented_fetch", _raiser(RuntimeError("no ranges")))
+    monkeypatch.setattr(base, "report", lambda job=None, **fields: None)
+
+    base.download_snapshot("u/x")
+
+    assert len(seen_bars) == 1, "the fallback did not pass its own tqdm_class through"
 
 
 def test_a_TORN_record_left_by_a_crashed_write_is_not_read_as_a_record(
@@ -1724,3 +3081,73 @@ def test_a_missing_stdlib_SUBMODULE_is_still_named(base):
 
     assert "email.mime" in error
     assert "STANDARD LIBRARY" in error
+
+
+def test_worker_base_imports_nothing_but_the_stdlib():
+    """`worker_base` is stdlib-only at module scope, and this is what enforces it.
+
+    Absence does not enforce it: `huggingface_hub` ships with the app (D402), so
+    an accidental module-scope import of it would resolve here and in CI and the
+    rule would rot silently. And the rule has not changed — every runner's
+    interpreter imports this module, so anything imported here becomes a
+    dependency of every backend forever, and the contract has to stay importable
+    by tests that cannot install mlx or torch.
+
+    Read out of the SOURCE rather than by importing under a blocked meta-path
+    hook: the question is what the file declares at module scope, and the lazy
+    `from huggingface_hub import ...` calls inside functions are correct and must
+    keep working.
+    """
+    import ast
+
+    tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
+    imported = set()
+    for node in tree.body:  # module scope ONLY — function-level imports are the design
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    assert imported, "the file surely imports something — did BASE_PATH stop resolving?"
+    outside = sorted(name for name in imported if name not in sys.stdlib_module_names)
+    assert outside == [], f"worker_base gained a non-stdlib module-scope import: {outside}"
+
+
+def test_every_os_open_in_worker_base_asks_for_BINARY_mode():
+    """Every `os.open` in the module carries `_BINARY`, checked by READING it.
+
+    A rule POSIX cannot check by running it. Windows opens an `os.open` fd in the
+    CRT's default TEXT mode, so a blob written through one has every `0x0a`
+    turned into `0x0d 0x0a`: a part file longer than the file it describes and
+    wrong in content, while the cursors — which count what was handed to
+    `os.write` — still report the download complete. On POSIX there is no such
+    mode, `_BINARY` is 0, and a correct call is indistinguishable from one
+    missing the flag no matter how many bytes a test moves.
+
+    That is not hypothetical. The append-only fetch route (`_appends_only`) is
+    the first code here ever to write bytes through `os.open` on win32, it
+    shipped without the flag, the local suite was green, and the Windows lane
+    corrupted every blob it fetched — the mirror declining its own sha256 and a
+    28-minute hang in pytest's diff of the result.
+
+    Read out of the SOURCE, like the stdlib rule above, and for the same reason:
+    the question is what the file DECLARES at each call site, and no runtime
+    observation on this platform can answer it.
+    """
+    import ast
+
+    tree = ast.parse(open(BASE_PATH, encoding="utf-8").read())
+    calls = [node for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Attribute) and node.func.attr == "open"
+             and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"]
+    assert calls, "no os.open call found — did BASE_PATH or the pattern stop resolving?"
+    missing = []
+    for call in calls:
+        flags = call.args[1] if len(call.args) > 1 else None
+        names = {node.id for node in ast.walk(flags) if isinstance(node, ast.Name)} \
+            if flags is not None else set()
+        if "_BINARY" not in names:
+            missing.append(f"line {call.lineno}")
+    assert missing == [], (
+        f"os.open without _BINARY at {missing}: on Windows that fd translates "
+        f"every 0x0a it writes, and no test on this platform can see it")

@@ -65,6 +65,13 @@ const paths = [
   // path compare (and by case alone, which is what makes it case-INsensitive).
   "notes/Alpha.txt",
   "notes/alpha.txt",
+  // The reported depth-penalty regression: a vague query ("cccm") where
+  // NEITHER candidate's own name matches at all (tier 3 for both), so before
+  // DEPTH_PENALTY the sort fell through to raw score — where the long
+  // ancestor chain's extra +5 segment-start bonuses made it win purely for
+  // being deep. Same tier, same longestRun; pins that the shallower one wins.
+  "src/chat/ChatInterface/components/MessageList/components/MessageScrollbackRail/index.ts",
+  "cache-config/comp/widget.ts",
 ];
 
 const dirs = new Set([
@@ -85,6 +92,9 @@ const queries = [
   // Ancestor-only (tier 3), a hidden query with a mid-path dot segment,
   // an alpha tie-break, a case-only difference, and a camel-hump name.
   "specs/", "frontend/.", "alpha", "FILE.TXT", "downloadstage",
+  // The depth-penalty regression (see the path pair added above): tier 3 for
+  // every candidate, so this is decided by score/depth alone.
+  "cccm",
 ];
 
 const expected: Record<string, string[]> = {};

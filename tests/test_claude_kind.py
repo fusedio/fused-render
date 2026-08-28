@@ -205,9 +205,16 @@ def test_the_pane_renders_a_page_target_as_itself():
     """`_render` is a shell sentinel (PT-12), not a template folder: for an
     `.html` target the file IS the document, so a bare /render on the file is
     the only correct src — routing it through a template would frame the source
-    view of a page the user expects to see rendered."""
+    view of a page the user expects to see rendered.
+
+    `target` and not `FILE` since D616: the shot viewer frames a template for an
+    ATTACHMENT, which is a file that is not the chat's target, through this one
+    builder — so the target defaults to `FILE` and is a parameter otherwise. One
+    builder, because a preview that works in the pane must not be subtly different
+    in the viewer."""
     page = _pane_source()
-    assert 'if (t.mode === "_render") return "/render?path=" + encodeURIComponent(FILE);' in page
+    assert 'if (t.mode === "_render") return "/render?path=" + encodeURIComponent(target);' in page
+    assert 'const target = file === undefined ? FILE : file;' in page
 
 
 def test_a_folder_target_still_resolves_its_app_entry():
@@ -314,8 +321,8 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["annbtn", "annrec", "anntool", "viewshot", "hviewshot", '
-            '"leftmode",\n                    "viewbtn", "left", "divider"]) {') in body
+    assert ('for (const id of ["annbtn", "annrec", "anntool", "viewshot", "leftmode",\n'
+            '                    "viewbtn", "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
     assert 'document.body.classList.add("nopane");' in body
@@ -645,9 +652,19 @@ def test_the_re_render_observer_follows_the_target_document():
     assert "hasAttribute(ANN_LAYER_MARK)" in obs, \
         "our own layer's arrival must not re-trigger the render that drew it"
 
-    # Nothing installs an observer anywhere else, and in particular not inside
-    # the run-once wiring block that started this bug.
-    assert code.count("new MutationObserver") == 1
+    # Nothing installs a PANE observer anywhere else, and in particular not
+    # inside the run-once wiring block that started this bug. The other two
+    # MutationObservers in the file are both FIT verdicts about THIS document's
+    # own chrome, and neither can re-trigger a pane render: annFitStrip's
+    # (2026-08-19) watches the #anntools clusters for the strip's word-fit, and
+    # fitComposerChrome's (2026-08-20) watches the composer rows and the landing
+    # title for the control row's compact/stack verdict. Both stay in the PARENT
+    # document and never look at the target's.
+    assert code.count("new MutationObserver") == 3
+    fit = code[code.index("const mo = new MutationObserver(annFitStrip);"):]
+    fit = fit[:fit.index("\n}")]
+    assert "[annToolEl, annCta]" in fit, \
+        "the second observer is the strip's own, not a pane watcher"
     wire = code[code.index("function annWireTarget() {"):]
     wire = wire[:wire.index("\n}\n")]
     assert wire.index("annObserveTarget(doc);") < wire.index("if (doc.__fusedAnnWired)"), \
@@ -1066,10 +1083,16 @@ def test_every_run_write_is_a_replace_write():
     putting a rediscovered run back on the URL after the server was asked whether
     this chat still has one — the same bookkeeping, arrived at by a question
     instead of by starting the run, and the reader took no step to be recorded.
+    The eighth is the "Fix with AI" boot branch (`if (ASK) {`) disowning a
+    LEFTOVER `run` before starting a fresh conversation — a stale id left on the
+    shell's address bar by a past chat this frame never had a hand in, so
+    clearing it here is exactly the "New chat" cleanup (the `back` button's own
+    write, above) done automatically instead of by a click, and never a step the
+    reader took either.
     """
     code = _pane_code()
     writes = re.findall(r'fused\.params\.set\("run",[^;]*;', code)
-    assert len(writes) == 7, writes
+    assert len(writes) == 8, writes
     for w in writes:
         assert 'history: "replace"' in w, w
 
@@ -1100,7 +1123,17 @@ def test_the_picker_is_sourced_from_the_stat_call_the_pane_already_makes():
     (CT-12 — unresolved reads as "not offered").
     """
     page = _pane_source()
-    assert page.count("/api/fs/stat?path=") == 1
+    # TWO in the file since D616, and the second one is not the pane's: the shot
+    # viewer stats an ATTACHMENT to find ITS template. The rule that matters is
+    # still one stat per pane open, which is what `paneURL` holds.
+    assert page.count("/api/fs/stat?path=") == 2
+    def body(head):
+        start = page.index(head)
+        return page[start:page.index("\n}\n", start)]
+    assert body("async function paneURL()").count("/api/fs/stat?path=") == 1, \
+        "the pane still pays the round trip once"
+    assert body("async function shotPreviewSrc(path)").count(
+        "/api/fs/stat?path=") == 1
     assert "paneEntries = paneOfferable(st.templates);" in page
     assert "!e.conditional && !PANE_SKIP_MODES.has(e.mode)" in page
     # Named in a comment (that is where the reasoning lives), never fetched.

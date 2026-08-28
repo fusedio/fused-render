@@ -36,10 +36,11 @@
 // the server), and every key is a time the server itself sent.
 import type { Task, TaskMessage, TaskPulseTask } from "@platform/lib/api";
 import {
+  addDays,
   BOARD_COLUMNS,
   explorerUrl,
   isProjected,
-  runStatus,
+  startOfDay,
   taskStatus,
   turnPhase,
 } from "./schedule-lib";
@@ -301,7 +302,17 @@ export function messageTone(m: TaskMessage): MessageTone {
           return { column: "in_progress", failed: false, label: "Running…" };
         // "done", "idle", or whatever a newer server writes — the turn ended.
         default:
-          return { column: "done", failed: false, label: "Ran" };
+          // A run the USER stopped (the queue card's ✕, which really kills the
+          // process — schedule.py `_turn_tick`). It is a settled outcome and
+          // therefore Done, not a fault: the stop was asked for, so flying a
+          // red mark would ask the reader to deal with their own decision. What
+          // it is not is indistinguishable from a run that finished — the dock
+          // and the schedule list both say "Stopped", and a board saying "Ran"
+          // for the same run is two surfaces describing one outcome with
+          // opposite words. Same word, same lane, one fact.
+          return m.turn === "cancelled"
+            ? { column: "done", failed: false, label: "Stopped" }
+            : { column: "done", failed: false, label: "Ran" };
       }
   }
 }
@@ -1141,6 +1152,21 @@ export function parseListMemory(raw: string | null): ListMemory {
 
 /** The query key the Claude pane reads to scroll a resumed chat to one turn. */
 export const MESSAGE_ANCHOR_PARAM = "msg";
+
+/** The FILE this task is about, or "" when it is about the folder.
+ *
+ * The server resolves `target` to the scheduled entry's own target, else the
+ * file the chat pane was on, else the project folder (routers/tasks.py
+ * `_place`), so "the target is not the project" IS the test for a file — that
+ * fallback is the only way the two are ever equal. Compared with trailing
+ * slashes off both, because a folder target can arrive spelled either way and
+ * a task about a folder must not grow a file mark over a slash. */
+export function taskFile(task: Task): string {
+  const trim = (p: string) => p.replace(/\/+$/, "");
+  const target = trim(task.target || "");
+  if (!target) return "";
+  return target === trim(task.project || "") ? "" : task.target;
+}
 
 /** The task's thread, top of the chat. Null when the task has never run —
  * there is no session to open yet. */
@@ -2027,6 +2053,32 @@ export function hasActiveFilters(f: TaskFilters): boolean {
   return f.statuses.length > 0 || f.projects.length > 0 || f.search.trim() !== "";
 }
 
+// THE ARCHIVE FACET, SCOPED TO THE VIEW (Akshil, 2026-08-20). The calendar
+// draws nothing for an archived task (ScheduleCalendar's header comment: "AN
+// ARCHIVED TASK DRAWS NOTHING") — so the Status filter's Archive option, which
+// the List and the Board both honour, is a dead control there: picking it
+// alone always redraws an empty grid, and it is not obvious WHY a grid a
+// person just filtered stopped answering their calendar question.
+//
+// The filter's VALUE is still one shared `TaskFilters` (Scheduled.tsx keeps
+// one control for all three views — a person filtering List to one project
+// and switching to Calendar means to keep looking at that project), so this
+// does not touch the value the popover reads or writes. It only asks: for the
+// query this VIEW is about to run, does "archived" belong in the status list
+// it hands to `filterTasks`? On the calendar the answer is always no — a
+// hidden facet must never silently filter the grid to nothing — and on List
+// or Board (where Archive is a real, renderable lane) the value passes
+// through unchanged.
+//
+// Because this touches only the EFFECTIVE query and not the stored filters, a
+// person who ticks Archive on Calendar and then switches to List sees Archive
+// still ticked and the archived tasks it was always going to show — the
+// facet was ignored, never cleared.
+export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
+  if (view !== "calendar" || !f.statuses.includes("archived")) return f;
+  return { ...f, statuses: f.statuses.filter((s) => s !== "archived") };
+}
+
 /**
  * Does the list a view is DRAWING span more than one project?
  *
@@ -2061,7 +2113,19 @@ export function spansProjects(tasks: Task[]): boolean {
 export function projectOptions(tasks: Task[]): string[] {
   const seen = new Set<string>();
   for (const t of tasks) if (t.project) seen.add(t.project);
-  return [...seen].sort((a, b) => a.localeCompare(b));
+  // **Sorted by the NAME the menu prints, not by the path it carries** (D448).
+  // The menu draws `basename(path)` and this sorted the whole path, so a list
+  // that is alphabetical by `/Users/me/Desktop/fused/…` then `/Users/me/Fused/
+  // local/…` arrives on screen as "fused-render, aviary, lens, canvas" — no
+  // order at all as far as the reader is concerned ("check order of the filter
+  // folder as well, it appears random to me").
+  //
+  // The full path is the TIE-BREAK, not the key: two checkouts of one repo in
+  // different parents share a basename, and a sort with no stable second key
+  // would let them swap places between renders.
+  return [...seen].sort(
+    (a, b) => basename(a).localeCompare(basename(b)) || a.localeCompare(b),
+  );
 }
 
 export function taskMatches(task: Task, filters: TaskFilters): boolean {
@@ -2606,12 +2670,24 @@ export function laneRolledUp(
 // The test holds this array and BOARD_COLUMNS to the same sequence, so the two
 // cannot quietly drift apart again.
 //
-// WITHIN a rank nothing is re-sorted: the server's order is the list's order and
-// always has been (TaskList takes `tasks` "in the SERVER's order"). A stable
-// bucketing keeps it, which is why this is a bucket-and-concat rather than a
-// comparator — `Array.prototype.sort` is stable in every engine this ships to,
-// but a comparator would also invite a second sort key later, and there is not
-// one: rank, then whatever the server said.
+// WITHIN a rank the rows run by the time each row PRINTS — `taskWhen`, the very
+// stamp sitting at the end of the line. It was the server's order for a while
+// ("rank, then whatever the server said"), and that read as principled and
+// looked random on screen: the server sorts the FULL list by `last_active`, but
+// a row does not print `last_active` — it prints its next or last run — so two
+// adjacent Done rows could read "2h ago" above "10m ago" for no reason the
+// screen could show. The list's one honest question inside a rank is recency,
+// and the key that answers it must be the key the reader can see.
+//
+// The DIRECTION is the board's, read off the same map taskWhen reads (LANE_SORTS):
+// the rank whose rows print the run ahead (Upcoming) runs soonest first —
+// ascending, which puts an overdue run at the very top, same spirit as the
+// board's lane — and every other rank runs most recent first. A row with no
+// time at all (`kind: "none"`, the em-dash row) goes LAST in its rank, in both
+// directions: it cannot claim a place among rows sorted by a fact it does not
+// have. Ties keep the server's order, by comparing the incoming index
+// explicitly (sortLane's rule 1, for sortLane's reason: two rows that ran in
+// the same second must not trade places between polls).
 
 /** Rank order, top to bottom. Every BoardColumn appears exactly once — the test
  * holds it to that, so a sixth lane cannot be silently unsortable. */
@@ -2623,15 +2699,42 @@ export const LIST_ORDER: BoardColumn[] = [
   "archived",
 ];
 
-/** The list's rows, in rank order, server order preserved inside each rank. A
- * new array; the input is never mutated (it is the polled list, which React is
- * still holding). */
-export function sortByLane(tasks: Task[]): Task[] {
+/** One rank's rows, by the time each row prints. `null` is "this row prints no
+ * time at all" and is kept apart from a real `at` for laneTime's reason: 0 is
+ * 1970 and would sort to an end of the rank by accident rather than by
+ * decision. */
+function sortRank(tasks: Task[], rank: BoardColumn, now: number): Task[] {
+  const asc = rank === "upcoming";
+  const rows = tasks.map((task, index) => {
+    const when = taskWhen(task, now);
+    return { task, index, at: when.kind === "none" ? null : when.at };
+  });
+  rows.sort((a, b) => {
+    if (a.at === null || b.at === null) {
+      // Exactly one of them prints a time: the one that does comes first.
+      if (a.at !== b.at) return a.at === null ? 1 : -1;
+    } else if (a.at !== b.at) {
+      return asc ? a.at - b.at : b.at - a.at;
+    }
+    return a.index - b.index;
+  });
+  return rows.map((r) => r.task);
+}
+
+/** The list's rows: rank order, and by printed time inside each rank (the
+ * comment above says which way and why). A new array; the input is never
+ * mutated (it is the polled list, which React is still holding).
+ *
+ * `now` is read ONCE for the whole list and handed to every rank, so every row
+ * is placed against one instant — a comparator that changes its mind halfway
+ * through a sort straddling a second is a comparator with no defined output
+ * (sortLane, rule 2). */
+export function sortByLane(tasks: Task[], now: number = Date.now()): Task[] {
   const buckets = new Map<BoardColumn, Task[]>(
     LIST_ORDER.map((key) => [key, [] as Task[]]),
   );
   for (const task of tasks) buckets.get(taskColumn(task))?.push(task);
-  return LIST_ORDER.flatMap((key) => buckets.get(key) ?? []);
+  return LIST_ORDER.flatMap((key) => sortRank(buckets.get(key) ?? [], key, now));
 }
 
 // ---- "and it runs again on Tuesday" ------------------------------------------
@@ -2674,6 +2777,54 @@ export function nextRunChip(task: Task, now: number = Date.now()): NextRunChip |
     at,
     text: `next ${relativeWhen(at, now)}`,
     title: `Next run ${messageStamp(at)}`,
+  };
+}
+
+// ---- "and that one was stopped" ----------------------------------------------
+// A run the user STOPPED settles in Done, which is the right lane — the stop was
+// asked for, so it is an outcome and not a fault, and a red mark would ask the
+// reader to deal with their own decision. What that lane cannot say is that the
+// work did not finish, and the ring cannot either: it is the same green ring a
+// completed run wears (Akshil, 2026-08-21 — "in done lane there is no tag").
+//
+// So the row and the card say the word. A TAG and not a status of its own: the
+// lane is still Done, the sort is unchanged, and nothing else about the task
+// moves — this is one fact added to a line that was missing it, in the same
+// quiet register as `nextRunChip` beside it.
+//
+// Deliberately NOT a new ring colour or a fourth glyph. Three arrangements of an
+// unread mark have already been through the card's title slot and the head, and
+// the conclusion each time was that a card is three short lines with no room for
+// another symbol to decode. A word costs nothing to read and is the one thing a
+// screen reader gets for free.
+
+export interface OutcomeTag {
+  /** What the tag prints. */
+  text: string;
+  /** The tooltip: the same fact, said in full. */
+  title: string;
+}
+
+/**
+ * The word a settled task's last run needs beside it, or null when the lane
+ * already says everything.
+ *
+ * Read off the ACTIVE message — the newest one that actually started
+ * (`activeMessage`) — because that is the run the task's status is about; an
+ * older stopped run under a newer completed one is history, and the lane is
+ * describing the newer one.
+ *
+ * `cancelled` is currently the only word: every other outcome is either already
+ * in the lane (done, upcoming, in progress) or already on the ring (failed,
+ * stopped reporting). The shape is a tag rather than a boolean so the next
+ * outcome that needs a word does not need a second mechanism.
+ */
+export function outcomeTag(task: Task): OutcomeTag | null {
+  const active = activeMessage(task);
+  if (!active || active.turn !== "cancelled") return null;
+  return {
+    text: "Stopped",
+    title: "You stopped this run before it finished",
   };
 }
 
@@ -2775,48 +2926,132 @@ export function isRunningIn(task: Task, messages: TaskMessage[]): boolean {
 }
 
 /**
+ * ONE DAY OF A REPEATING TASK, as one of the app's five words (Akshil,
+ * 2026-08-20, raised twice).
+ *
+ * A repeating task has NO SINGLE TRUTHFUL STATUS, and that is the whole reason
+ * this function exists rather than some reading of the task. An hourly rule is
+ * simultaneously finished (09:00), working (10:00) and promised (11:00 through
+ * 23:00), so any one word about the RULE is wrong about most of it — which is
+ * how the popover came to say "Upcoming" over a day whose runs had all already
+ * happened. The clicked chip is not the rule: it is the rule ON ONE DAY, and a
+ * day IS a thing a single word can be true of. So the pill answers for the day.
+ *
+ * THE RULE, and it is deliberately three cases about TIME before it is anything
+ * about messages, because the day's position relative to now is what decides
+ * which question is even askable:
+ *
+ *   - A DAY STILL AHEAD -> Upcoming. Nothing on it has happened by definition;
+ *     whatever rows it holds are cron arithmetic or promises, and both are the
+ *     same word.
+ *   - TODAY, with runs still owed -> Upcoming (or In Progress if one is
+ *     actually going). This is the case the old newest-run reading got wrong in
+ *     the other direction too: the newest row on today is the 23:00 slot, so a
+ *     day that had already run nine times read as a pure promise. "Owed" is
+ *     asked of the slot's TIME, not of its row's kind, so a materialized
+ *     pending and a ghost count the same — they are both the day saying it is
+ *     not finished.
+ *   - A DAY THAT IS OVER, or today after its last slot -> the day's OUTCOME,
+ *     rolled up: any failure makes the day Failed (one broken run is the thing
+ *     you need to see, and burying it under nine green ones is how a rule
+ *     silently rots), otherwise anything that ran makes it Done.
+ *
+ * IN PROGRESS OUTRANKS ALL OF IT. `live` is the caller's isRunningIn reading of
+ * this same day — the exact list the grid chip shimmers by — and a run in
+ * flight is a fact about right now that no rollup should be allowed to
+ * overwrite. A row whose own tone is `in_progress` (a `sending` message the
+ * task-level reading has not caught up with) counts the same way.
+ *
+ * THE FALLBACK IS "ARCHIVE", NOT "UPCOMING", and it is the case worth being
+ * explicit about: a past day can hold nothing but slots that went by unrun —
+ * past ghosts (`missed` + template_id) that the rule skipped while the app was
+ * closed, or pendings nobody ever marked. Those are not outcomes, so the two
+ * rollup arms above pass over them; calling the day Upcoming afterwards is the
+ * original bug wearing a different hat. `archived` is already this app's word
+ * for a recurring slot that was due and did not run — it is what
+ * `messageTone` files those rows under and what greys their rings in the
+ * thread right below the pill — so the day inherits it rather than inventing a
+ * sixth state.
+ *
+ * Pure, and every input is an argument (`now` included) so the six cases above
+ * are six unit tests rather than six clock settings.
+ */
+export function dayPill(
+  occurrences: TaskMessage[],
+  day: Date,
+  now: Date,
+  live: boolean,
+): RunStatus {
+  if (live) return taskStatus("in_progress", false);
+
+  const start = startOfDay(day).getTime();
+  const end = startOfDay(addDays(day, 1)).getTime();
+  const at = now.getTime();
+  if (at < start) return taskStatus("upcoming", false);
+
+  const tones = occurrences.map((m) => messageTone(m));
+  if (tones.some((t) => t.column === "in_progress")) {
+    return taskStatus("in_progress", false);
+  }
+
+  // Does the day still owe a run? Only askable while the day is running; after
+  // midnight every slot is behind us and an unrun one is a fact, not a promise.
+  const nowSec = Math.floor(at / 1000);
+  const owed =
+    at < end &&
+    occurrences.some((m, i) => m.at > nowSec && tones[i].column === "upcoming");
+  if (owed) return taskStatus("upcoming", false);
+
+  if (tones.some((t) => t.failed)) return taskStatus("done", true);
+  if (tones.some((t) => t.column === "done")) return taskStatus("done", false);
+  if (tones.some((t) => t.column === "archived")) return taskStatus("archived", false);
+  // Nothing written down and nothing owed: an empty day, which in practice only
+  // happens before the rule's first slot. Upcoming is the honest word for it.
+  return taskStatus("upcoming", false);
+}
+
+/**
  * The calendar popover header's PILL, in the app's five words (Akshil,
- * 2026-08-19).
+ * 2026-08-19; day-scoped since 2026-08-20).
  *
  * Two different nouns, depending on what kind of task was clicked:
  *
  * A ONE-OFF is its task — one run, so "the task's status" and "this
  * occurrence's status" are the same fact, and the pill keeps saying exactly
  * what the List's row and the Board's card say: `taskStatus(taskColumn, failed)`.
+ * Untouched by the day rule below, and it should be: a one-off has exactly one
+ * day, so rolling it up could only ever restate the task.
  *
  * A REPEATING task is a rule, and a rule's task-level column is nearly always
  * `upcoming` — the next run is always scheduled — which made the pill useless
  * on the one grid that is ABOUT individual days: click last Tuesday's failed
- * run and the pill said "Upcoming". So for a recurring task the pill answers
- * for the clicked OCCURRENCE instead:
+ * run and the pill said "Upcoming". So a recurring task's pill is `dayPill`
+ * over THE CLICKED CHIP'S OWN DAY, whose reasoning lives on that function.
  *
- *   - actually working right now  -> In Progress (`live`, the isRunningIn
- *     reading the chip's own shimmer uses — same rule, same moment);
- *   - a projected/future day      -> Upcoming (cron arithmetic, or a
- *     materialized run that has not gone yet — runStatus says Upcoming for
- *     those too, so both future arms land on the same word);
- *   - a past day                  -> that day's outcome, from the NEWEST real
- *     run on the day (`runStatus` + `messageTone`, the exact pair the thread
- *     rows under the pill are painted with, so the pill can never disagree
- *     with the top row it summarizes). Ghost rows are cron math, never an
- *     outcome, and are filtered before "newest" is asked.
+ * WHY THIS GREW A `day` AND A `now`. The first cut of this (PR #645) answered
+ * from the NEWEST real row on the day, which is right for a day that is over
+ * and wrong for every day that is not: the newest row on today is tonight's
+ * 23:00 promise, so a rule that had already run nine times today wore
+ * "Upcoming", and a past day whose rows were never marked wore it too. "Newest"
+ * was standing in for a verdict; the verdict needed to know where the day sits
+ * relative to now, so now it is told.
  *
  * Always SOLID: whatever the word, the pill never inherits the projected
- * chip's dashes — a status is a word, not a drawing of a day.
+ * chip's dashes — a status is a word, not a drawing of a day. `projected` is
+ * therefore not an argument any more either: it was the last thing reaching in
+ * from the chip's DRAWING, and dayPill decides future-ness from the calendar
+ * rather than from whether anything was written down.
  */
 export function popoverPill(
   task: Task,
   recurring: boolean,
-  projected: boolean,
   live: boolean,
   dayMessages: TaskMessage[],
+  day: Date,
+  now: Date,
 ): RunStatus {
   if (!recurring) return taskStatus(taskColumn(task), task.failed);
-  if (live) return taskStatus("in_progress", false);
-  const real = dayMessages.filter((m) => !isProjected(m));
-  if (projected || real.length === 0) return taskStatus("upcoming", false);
-  const newest = real.reduce((a, b) => (b.at > a.at ? b : a));
-  return runStatus(newest, messageTone(newest));
+  return dayPill(dayMessages, day, now, live);
 }
 
 // ---- the sidebar's two-number summary of this page ----------------------------
@@ -2984,4 +3219,19 @@ export function pulseTitle(pulse: TasksPulse): string {
   if (pulse.running > 0) parts.push(runningLabel(pulse.running));
   if (pulse.doneUnread > 0) parts.push(`${pulse.doneUnread} finished, not read`);
   return parts.join(" · ");
+}
+
+/**
+ * Fold a `/api/tasks/changes` answer into the rows on screen: rows in `upserts`
+ * replace (or join) the row with the same key, keys in `gone` leave, and the
+ * result keeps the one ordering promise this client makes — the server's
+ * `last_active` descending — so a session that just woke up rises to the top
+ * the same way it would on the next full poll.
+ */
+export function mergeTaskChanges(tasks: Task[], upserts: Task[], gone: string[]): Task[] {
+  const drop = new Set(gone);
+  const byKey = new Map<string, Task>();
+  for (const t of tasks) if (!drop.has(t.key)) byKey.set(t.key, t);
+  for (const t of upserts) if (!drop.has(t.key)) byKey.set(t.key, t);
+  return [...byKey.values()].sort((a, b) => b.last_active - a.last_active);
 }

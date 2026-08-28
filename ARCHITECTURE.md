@@ -57,14 +57,14 @@ fused-render/
 │   │       ├── run.py          # /api/run
 │   │       ├── env.py          # script-venv install loader: /api/env/install|progress|cancel (PY-18/D173)
 │   │       ├── jobs.py         # background-job registry: /api/jobs report|list|cancel|dismiss|clear (SPEC §36/D244)
-│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §43/D365)
+│   │       ├── selffix.py      # self-fix: /api/selffix start|read|clear — a Claude session on THIS install (SPEC §48/D621)
 │   │       └── export.py       # /api/export
 │   ├── executor.py             # runner: in-process for first-party helpers, subprocess for user code (D72)
 │   ├── _child.py               # worker-process entry (subprocess path)
 │   ├── _binding.py             # param coercion shared by both execution paths
 │   ├── logs.py                 # rotating app log for 500 / right-click-open diagnostics (D68)
 │   ├── jobs.py                 # the background-job registry itself (in-memory, swept) — the download manager's model
-│   ├── selffix.py              # the modified-install mark: digest, marker under <install>/.fused-render-selffix, fix prompt (SPEC §43)
+│   ├── selffix.py              # the modified-install mark: digest, marker under <install>/.fused-render-selffix, fix prompt (SPEC §48)
 │   ├── static/
 │   │   ├── shell-dist/         # Vite build of frontend/ (gitignored, D54; built by dev / packaging hook)
 │   │   └── runtime.js          # injected into every rendered HTML (plain JS, NOT part of the React app)
@@ -257,11 +257,17 @@ empty grid.
 `hub_models.py` is the only outbound request this feature makes. The host is
 fixed (`HF_ENDPOINT` honoured but validated as http(s)), the query string is
 `urlencode`d, the sort is a fixed map so no raw field reaches the Hub, and the
-token (`HF_TOKEN`/`HUGGING_FACE_HUB_TOKEN`/`$HF_HOME/token`) is sent and never
-returned. An unfiltered query **over-fetches 4x (capped at 200) and truncates
-after the supported-tag pass**, so `limit` means rows shown rather than rows
-requested; a filtered one asks for exactly what it shows, since the Hub has
-already constrained it. Answers are memoised for a short TTL — search-as-you-type
+token is sent and never returned. That token is `huggingface_hub.get_token()`,
+reached through `hf_auth.token()` and derived nowhere else in this app (D402):
+hf's own resolution — the environment variables first, then its own store —
+which is also the resolution a worker gets by calling hf inside its own
+interpreter. So this search and the download it leads to cannot disagree about
+which credential the machine holds, and no second copy of a precedence rule
+exists to drift. Nothing is cached, because hf refreshes an OAuth token in
+place as it nears expiry. An unfiltered query **over-fetches 4x (capped at 200)
+and truncates after the supported-tag pass**, so `limit` means rows shown rather
+than rows requested; a filtered one asks for exactly what it shows, since the Hub
+has already constrained it. Answers are memoised for a short TTL — search-as-you-type
 would otherwise be one request per keystroke — but **errors are not cached** and
 the **local join runs on every request**, outside the cache, so a model deleted a
 second ago stops claiming to be downloaded. That join is scoped to the rows
@@ -340,7 +346,13 @@ imports mlx or torch — they are named only in a runner's declaration. Those
 declarations are **wheels only** (SPEC AI-2a, D266): a source build runs a build
 backend in an interpreter uv creates, and `_env_install_worker._uv_env` scrubs
 `PYTHON*`/`VIRTUAL_ENV` off every uv call so that interpreter cannot inherit the
-macOS bundle's `PYTHONHOME`. A test enforces both halves.
+macOS bundle's `PYTHONHOME`. A test enforces both halves. **No Hub token is
+placed in that environment** (D402): a worker imports `huggingface_hub` and so
+finds the machine's token where every other hf caller finds it — hf's own store,
+written by the Preferences login button (`server/routers/hf_auth.py`) — while an
+`HF_TOKEN` this process inherited is passed through untouched. An earlier version
+of that feature kept a pasted token in prefs.json and wrote it in here; letting
+hf own the storage deleted the plumbing instead of adding to it.
 
 `POST /api/ai` routes on the model id: one containing a **slash** is a Hub repo id
 and goes to the local runner, one without is a Claude alias and goes to the CLI as
@@ -396,7 +408,7 @@ Top-level `path` handling in shell URL vs iframe URL:
 
 ## 6. Shell (`frontend/` → `static/shell-dist/`)
 
-SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/` is layered into four aliased areas — the super-app structure: **`@platform`** (shared foundations: `platform/lib/` non-React modules ported ~verbatim from the vanilla shell — router/api/format/bookmarks/layout-codec, same contracts as before — plus `platform/ui/` shared components used by more than one app — `platform/cloud/` (app-cloning's `CloneModal`/`CloneAppHost` and the sibling `Deploy*` components) is gone entirely, SPEC §19/§35), **`@apps/explorer`** (Listing/Preview/Panel/Tabs/Breadcrumb + fs-actions/fs-clipboard), **`@apps/builder`** (Apps hub, NewAppPanel, AppPreviewCard), **`@apps/learn`** (the doorway into the mounted learn content — the experience itself is html+py rendered by the engine), and **`@shell`** (App, Home, Sidebar, Preferences/Mounts/Templates — the chrome that composes the apps; the sibling `Account` panel that used to live here is removed, SPEC §27). Import direction is enforced by `frontend/scripts/check-boundaries.mjs` (runs first in `npm run build`): platform imports only platform; an app imports only platform and itself — never shell, never another app; shell may import anything. Within that: the router never imports UI (it dispatches a `fused:navigate` event; `platform/lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), and the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `Panel.tsx` (`panelUrl`) — both explorer — and shell's `Sidebar.tsx` may import `@apps/explorer/Tabs` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
+SPA, React 18 + Vite (D52/D53; TypeScript, strict). `src/` is layered into aliased areas — the super-app structure: **`@platform`** (shared foundations: `platform/lib/` non-React modules ported ~verbatim from the vanilla shell — router/api/format/bookmarks/layout-codec, same contracts as before — plus `platform/ui/` shared components used by more than one app — `platform/cloud/` (app-cloning's `CloneModal`/`CloneAppHost` and the sibling `Deploy*` components) is gone entirely, SPEC §19/§35), **`@apps/explorer`** (Listing/Preview/Panel/Tabs/Breadcrumb + fs-actions/fs-clipboard), **`@apps/builder`** (Apps hub, NewAppPanel, AppPreviewCard), and **`@shell`** (App, Home, Sidebar, Preferences/Mounts/Templates — the chrome that composes the apps; the sibling `Account` panel that used to live here is removed, SPEC §27). Import direction is enforced by `frontend/scripts/check-boundaries.mjs` (runs first in `npm run build`): platform imports only platform; an app imports only platform and itself — never shell, never another app; shell may import anything. Within that: the router never imports UI (it dispatches a `fused:navigate` event; `platform/lib/hooks.ts` turns it plus `popstate` into a **nav epoch** that keys — i.e. remounts — the active view, the React equivalent of the vanilla per-route DOM rebuild), and the bookmark store never touches the DOM (mutations signal via `notifyBookmarksChanged()`). `Breadcrumb.tsx` may import `Panel.tsx` (`panelUrl`) — both explorer — and shell's `Sidebar.tsx` may import `@apps/explorer/Tabs` (`composeFolderTabsUrl`), since no view imports back — no cycles. The history replaceState/pushState wrapping (→ `fused:urlchange`) lives in `main.tsx` and is load-bearing for the iframe runtimes (D46), not just for the shell's own re-renders; chrome (bookmark buttons, active highlight) re-renders on a **url version** signal that also counts `fused:urlchange`, without remounting views. Layout-mode iframes freeze their `src` at mount — React never rewrites it (a src write reloads an iframe); pane crumb clicks write it imperatively via a ref, and tab frames render as a flat keyed list that only appends/removes (never re-parents/reorders). Routing from `location.pathname`:
 - `/` → redirect (replaceState) to `/apps` (the app home; super-app step 2) (start dir from `GET /api/config` → `{"start_dir": "/Users/you", "home": …}` — `source_template` was dropped with the html sentinel modes (D62); the code-view path arrives via `stat.templates` like everything else, and the shell `Config` type dropped it too).
 - `/view/<path>` → `stat` it:
   - a target with a non-empty `stat.templates` → preview view — **including a directory** (every directory resolves at least the universal `/` key → `["_listing"]`, SPEC PT-13/D81; the built-in listing is the `_listing` sentinel mode)

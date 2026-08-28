@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover
 
 router = APIRouter()
 
-# CLAUDE_CONFIG_DIR wins where set (same rule as user_skills.py, the claude
+# CLAUDE_CONFIG_DIR wins where set (same rule as user_plugin.py, the claude
 # template agent's CLAUDE_DIR, and templates/shared/file_history.py's
 # config_dir()) — duplicated locally rather than imported cross-package, same
 # posture as those sites.
@@ -357,9 +357,14 @@ def _parse_head(path: str) -> tuple[str | None, str | None, str]:
                     if isinstance(msg, dict) and msg.get("role") == "user":
                         # Stripped, and an empty remainder keeps the scan going
                         # to the next user record rather than settling for a
-                        # nameless row — see tasks_store.strip_machinery.
-                        prompt = tasks_store.strip_machinery(
-                            _first_text(msg.get("content")))
+                        # nameless row — see tasks_store.strip_machinery. The
+                        # notes on the annotations are the fallback (and the
+                        # same one the Tasks list takes): since an annotation
+                        # send needs no message, they can be the only words in
+                        # the record a human wrote.
+                        raw = _first_text(msg.get("content"))
+                        prompt = (tasks_store.strip_machinery(raw)
+                                  or tasks_store.ann_notes(raw))
                 if cwd is not None and first_ts is not None and prompt:
                     break
     except OSError:
@@ -473,6 +478,62 @@ def api_claude_session_summaries():
     # string sort is a time sort.
     sessions.sort(key=lambda s: s["last_active"], reverse=True)
     return {"sessions": sessions}
+
+
+@router.get("/api/claude-sessions/liveness")
+def api_claude_session_liveness(path: str):
+    """`(mtime, size, running)` for ONE transcript file — the cheapest possible
+    "has this conversation moved, and is it moving right now?" (D415).
+
+    **Who asks.** The claude chat template, on the lap of its live watch, for a
+    session it is showing but has no run of. A turn driven from OUTSIDE this app
+    — an interactive `claude` in a terminal, a `claude --resume`, an agent
+    someone else is running against the same session — creates no run dir, so
+    `live_run` is blind to it by construction, and the chat sat showing a
+    conversation that had moved on until the reader reloaded the page by hand.
+
+    **Why a stat and not a read.** The page does not need the rows: it already
+    has a renderer for the whole transcript (`history`), and re-rendering that is
+    both correct and cheap. What it lacked was a reason to. `(mtime, size)` is
+    that reason, at one `os.stat` per lap — the PAIR rather than mtime alone,
+    because a coarse filesystem clock can put two appends in one tick where the
+    size cannot repeat.
+
+    **Why the PATH is the parameter.** Resolving a session id to a transcript is
+    the one thing this endpoint must not decide: with copied files the same id
+    exists in several project dirs with divergent content, and the chat resolves
+    it against the folder it is open on (`agent.py`'s `_history`, which now hands
+    the page the path it actually read). Globbing for the id here — what
+    `session_liveness.transcript_path` does for the scheduler, which has no
+    folder to go on — could answer about a different copy of the conversation
+    than the one on screen. So the page passes back the path it was given, and
+    this refuses anything outside the projects tree: it is a read of an arbitrary
+    path otherwise, and "it is only a stat" is not an argument worth making.
+
+    `running` is `session_liveness.transcript_turn_open` — the LAST MESSAGE in
+    the file, not the 45s activity window the Inbox badge uses. The window is
+    right for a badge and wrong here, and the measurement is the argument: a
+    `claude --resume` driven from a terminal writes no `turn_duration` record
+    when it finishes, so the window kept a shimmering "running" line under a
+    reply that had already landed, for the balance of its 45 seconds. A chat
+    showing the conversation is close enough to see that; a list of sessions is
+    not. See that function for why two rules is the honest answer rather than a
+    split brain.
+
+    A transcript that is not there yet answers `exists: false` rather than 404:
+    a chat can be open on a session whose first turn is still being written, and
+    the watch's next lap is the natural place to notice that it now is."""
+    resolved = os.path.realpath(path or "")
+    root = os.path.realpath(PROJECTS_DIR)
+    if not resolved.startswith(root + os.sep) or not resolved.endswith(".jsonl"):
+        raise HTTPException(status_code=400, detail="not a session transcript")
+    try:
+        stat = os.stat(resolved)
+    except OSError:
+        return {"exists": False, "mtime": 0.0, "size": 0, "running": False}
+    now = datetime.now(timezone.utc).timestamp()
+    return {"exists": True, "mtime": stat.st_mtime, "size": stat.st_size,
+            "running": session_liveness.transcript_turn_open(resolved, now)}
 
 
 class TriagePatch(BaseModel):

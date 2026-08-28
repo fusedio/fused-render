@@ -135,6 +135,82 @@ def _result_payload(response):
 # claim and it is no longer true of any shipping server.
 
 
+def test_a_windows_locale_stdio_still_parks_a_non_ascii_write(tmp_path, agent):
+    """A payload with typographic characters must survive a NON-UTF-8 locale.
+
+    The Windows bug, reproduced on any platform by giving the child the stdio
+    encoding Windows gives it. The CLI's client is Node — raw UTF-8 on the wire,
+    non-ASCII unescaped — while Python decodes a pipe at the locale encoding,
+    which on Windows is the ANSI code page. cp1252 leaves 0x9D undefined, and
+    0x9D is the third byte of U+201D, so `Write`-ing an index.html with a curly
+    quote in it raised UnicodeDecodeError in the read loop: the server died
+    BEFORE parking the request, so no card ever reached the chat, the CLI's
+    pending `approve` call went down with the transport, and the turn stopped
+    with nothing to answer. Model-written HTML has curly quotes in it as a
+    matter of course, which is why this read as "it gets stuck writing
+    index.html".
+
+    Asserts the whole round trip, not just that the process survived: the parked
+    request has to carry the content the CLI sent, character for character, and
+    the allow has to hand that same content back — `updatedInput` is what the
+    tool then writes to disk, so a mojibake'd or replacement-charactered payload
+    here would silently corrupt the user's file instead of hanging their turn.
+    """
+    perm_dir = tmp_path / "perm"
+    # PYTHONIOENCODING rather than a real Windows box: it sets exactly what is
+    # wrong there (the std streams' codec) and nothing else, and it also OUTRANKS
+    # UTF-8 mode — so this pins the in-process reconfigure on its own, without
+    # the PYTHONUTF8 that agent.py stamps into the server's env.
+    s = _Server(perm_dir, env={"PYTHONIOENCODING": "cp1252"})
+    try:
+        s.call("initialize", {"protocolVersion": "2025-06-18",
+                              "capabilities": {}, "clientInfo": {"name": "test"}})
+        content = ('<h1>Caf\u00e9 \u2014 \u201cwelcome\u201d</h1>\n'
+                   '<p>na\u00efve \u2192 r\u00e9sum\u00e9 \U0001f600</p>\n')
+        tool_input = {"file_path": "C:/Users/x/app/index.html", "content": content}
+        pending = s.send_async("tools/call", {
+            "name": "approve",
+            "arguments": {"tool_name": "Write", "input": tool_input,
+                          "tool_use_id": "toolu_utf8"}})
+
+        req = _wait_for_request(perm_dir)
+        assert req["input"]["content"] == content
+        assert agent._write_decision(str(perm_dir), req["id"],
+                                     {"decision": "allow", "scope": "once"})
+        payload = _result_payload(pending.result(10))
+        assert payload["behavior"] == "allow"
+        assert payload["updatedInput"] == tool_input
+    finally:
+        s.close()
+
+
+def test_forcing_utf8_stdio_never_refuses_to_serve(monkeypatch, capsys):
+    """`_utf8_stdio` degrades to a stderr line, and never raises.
+
+    Both of its real failure modes, in-process, because neither is reachable
+    from the subprocess tests: a stream that has already been read (a
+    TextIOWrapper cannot be reconfigured after the first read, which is why the
+    call sits at the top of `main`) and no stdio object at all (`sys.stdout is
+    None`, which a windowless interpreter can produce). This server exists to
+    answer a tool call the model is BLOCKED on, so an unsettable encoding has to
+    cost a diagnostic and not the whole session — the wire is ASCII often enough
+    that a mis-encoded stream may never matter on that run.
+    """
+    srv = _load("permission_server")
+
+    class _Read:
+        def reconfigure(self, **kw):
+            raise ValueError("can't set encoding after the first read")
+
+    monkeypatch.setattr(srv.sys, "stdin", _Read())
+    # Something with no `reconfigure` at all — what `sys.stdout is None` reaches
+    # (AttributeError), without nulling the stream pytest is capturing through.
+    monkeypatch.setattr(srv.sys, "stdout", object())
+    srv._utf8_stdio()                              # the assertion: it returns
+    err = capsys.readouterr().err
+    assert err.count("could not force UTF-8 stdio") == 2, err
+
+
 def test_allow_round_trip_returns_the_tool_input_unchanged(tmp_path, agent, server):
     perm_dir = tmp_path / "perm"
     tool_input = {"command": "ls -la", "description": "list"}
@@ -479,6 +555,89 @@ def test_a_multi_select_answer_rides_back_as_the_joined_labels(tmp_path, server)
     assert payload["updatedInput"]["answers"] == {"Which libraries?": "Alpha, Gamma"}
 
 
+def test_a_typed_answer_rides_back_as_the_answer_and_as_a_new_option(tmp_path,
+                                                                     server):
+    """D407: the card always offers "Other", so an answer the model never listed
+    has to reach it as a real answer rather than as a near-miss.
+
+    Two halves, and both are load-bearing. `answers` carries what the user wrote,
+    verbatim — that is the thing the model acts on. And `questions` grows the
+    option the window offered on the user's behalf, because the CLI checks each
+    answer against the option list it is handed and one it cannot find there
+    downgrades the tool_result to the weaker "follow what they actually say"
+    (measured, the same finding as the multi-select join).
+    """
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir)
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Alpha or Beta?": "Neither — use Delta"},
+            custom={"Alpha or Beta?": "Neither — use Delta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow", payload
+    assert payload["updatedInput"]["answers"] == {
+        "Alpha or Beta?": "Neither — use Delta"}
+    labels = [o["label"] for o in payload["updatedInput"]["questions"][0]["options"]]
+    assert labels == ["Alpha", "Beta", "Neither — use Delta"], labels
+    # …and the model is told which of those it did not write.
+    srv = _load("permission_server")
+    assert payload["updatedInput"]["questions"][0]["options"][-1]["description"] \
+        == srv.TYPED_OPTION_NOTE
+
+
+def test_the_typed_option_is_added_to_a_copy_not_to_the_parked_request(tmp_path):
+    """The parked input is handed back whole on every other branch, so growing
+    an option list must build a new one rather than reach into it."""
+    srv = _load("permission_server")
+    parked = _QUESTION_INPUT["questions"]
+    grown = srv._with_typed_options(parked, {"Alpha or Beta?": "Delta"})
+    assert [o["label"] for o in grown[0]["options"]] == ["Alpha", "Beta", "Delta"]
+    assert [o["label"] for o in parked[0]["options"]] == ["Alpha", "Beta"]
+    # A question nobody typed into is passed through by identity, not rebuilt.
+    assert srv._with_typed_options(parked, {})[0] is parked[0]
+    # Typing an option's own wording adds nothing — the same rule the validator
+    # applies when it folds the text in as a label, so the two cannot disagree
+    # about what the option list is.
+    same = srv._with_typed_options(parked, {"Alpha or Beta?": "Alpha"})
+    assert [o["label"] for o in same[0]["options"]] == ["Alpha", "Beta"]
+
+
+def test_a_multi_select_carries_the_typed_answer_alongside_the_ticked_ones(
+        tmp_path, server):
+    """Parity: "Other" is offered on a multi-select too, and what is typed there
+    joins the ticks rather than replacing them."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir, _multi_input())
+    _answer(perm_dir, req, decision="allow",
+            answers={"Which libraries?": "Alpha, Gamma, Delta"},
+            custom={"Which libraries?": "Delta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow", payload
+    assert payload["updatedInput"]["answers"] == {
+        "Which libraries?": "Alpha, Gamma, Delta"}
+    assert [o["label"] for o in payload["updatedInput"]["questions"][0]["options"]] \
+        == ["Alpha", "Beta", "Gamma", "Delta"]
+
+
+def test_free_text_does_not_unlock_a_question_it_was_not_typed_into(tmp_path,
+                                                                    server):
+    """`custom` is one extra option for ONE question, never a general amnesty on
+    the label check — otherwise the answer channel would be free text with extra
+    steps, and the model could be handed a choice nobody made."""
+    perm_dir = tmp_path / "perm"
+    two = {"questions": [_QUESTION_INPUT["questions"][0],
+                         _multi_input()["questions"][0]]}
+    pending, req = _park_question(server, perm_dir, two)
+    _answer(perm_dir, req, decision="allow",
+            answers={"Which libraries?": "Delta"},
+            custom={"Alpha or Beta?": "Delta"})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "deny", payload
+    assert payload["message"]
+
+
 def test_a_question_allow_with_no_answers_is_not_passed_off_as_an_answer(
         tmp_path, server):
     """An answerless allow reaches the model as "The user did not answer the
@@ -654,6 +813,72 @@ _ANSWER_CASES = [
 ] + [(_QUESTION_INPUT["questions"], bad, None) for bad in _MALFORMED_ANSWERS]
 
 
+# The same table for the "Other" box (D407): (questions, answers, custom,
+# expected). Free text is not a loophole in the label check — it is a SECOND
+# channel, validated as what it is, and folded in as one extra option for the one
+# question it was typed into.
+_CUSTOM_CASES = [
+    # The whole point: an answer no option offered, because the user wrote it.
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Neither, use Delta"},
+     {"Alpha or Beta?": "Neither, use Delta"},
+     {"Alpha or Beta?": "Neither, use Delta"}),
+    # Multi-select parity: ticked options AND the typed one, joined last.
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Gamma, Delta"},
+     {"Which libraries?": "Delta"}, {"Which libraries?": "Alpha, Gamma, Delta"}),
+    (_multi_input()["questions"], {"Which libraries?": "Delta"},
+     {"Which libraries?": "Delta"}, {"Which libraries?": "Delta"}),
+    # …last, and only last. The card appends it after the ticks, so a join that
+    # puts it anywhere else is a shape nothing here authors.
+    (_multi_input()["questions"], {"Which libraries?": "Delta, Alpha"},
+     {"Which libraries?": "Delta"}, None),
+    # Typing an option's own wording is not a second option — otherwise the
+    # extra copy would let a label match twice in one join.
+    (_multi_input()["questions"], {"Which libraries?": "Alpha, Alpha"},
+     {"Which libraries?": "Alpha"}, None),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Alpha or Beta?": "Beta"}, {"Alpha or Beta?": "Beta"}),
+    # An empty record is the ordinary case: the page always sends the key.
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"}, {},
+     {"Alpha or Beta?": "Beta"}),
+    # Typed for one question, picked for the other.
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Alpha or Beta?": "Something else", "Which libraries?": "Beta"},
+     {"Alpha or Beta?": "Something else"},
+     {"Alpha or Beta?": "Something else", "Which libraries?": "Beta"}),
+    # The free text unlocks its OWN question and nothing else.
+    ([_QUESTION_INPUT["questions"][0], _multi_input()["questions"][0]],
+     {"Which libraries?": "Delta"}, {"Alpha or Beta?": "Delta"}, None),
+    # …and only what was actually typed: the answer still has to match.
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Delta"},
+     {"Alpha or Beta?": "Epsilon"}, None),
+    # Free text for a question nobody asked is the same fabrication as an
+    # invented label, whether or not the rest of the record is answerable.
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Never asked?": "x"}, None),
+    # Shape: not a record, and not an empty box.
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"}, "Beta", None),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     ["Beta"], None),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Alpha or Beta?": ""}, None),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"},
+     {"Alpha or Beta?": 7}, None),
+    (_QUESTION_INPUT["questions"], {"Alpha or Beta?": "Beta"}, {7: "x"}, None),
+]
+
+
+@pytest.mark.parametrize("questions,answers,custom,expected", _CUSTOM_CASES,
+                         ids=range(len(_CUSTOM_CASES)))
+def test_the_two_validators_agree_on_a_typed_answer(agent, questions, answers,
+                                                    custom, expected):
+    """D407: "Other" is always offered, so both copies have to treat what the
+    user typed identically — and treat it as free text, not as a hole in the
+    label check."""
+    srv = _load("permission_server")
+    assert agent._answers_from(questions, answers, custom) == expected
+    assert srv._answers_from(questions, answers, custom) == expected
+
+
 @pytest.mark.parametrize("questions,answers,expected", _ANSWER_CASES,
                          ids=range(len(_ANSWER_CASES)))
 def test_the_two_answer_validators_agree(agent, questions, answers, expected):
@@ -740,6 +965,74 @@ def test_decide_denies_a_question_it_cannot_validate(agent, tmp_path, answers):
     out = agent._decide("run", "req-q", "allow", "once", answers=answers)
     assert out["decision"] == "deny", out
     assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["message"]
+
+
+def test_decide_latches_a_typed_answer_and_says_which_part_was_typed(agent,
+                                                                     tmp_path):
+    """D407: the answer is one string per question either way, so what the user
+    TYPED is latched beside it — permission_server re-validates from scratch and
+    must not have to split a join back apart to work out where it came from."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Use Delta"}),
+                        custom=json.dumps({"Alpha or Beta?": "Use Delta"}))
+    assert out["decision"] == "allow", out
+    assert out["answers"] == {"Alpha or Beta?": "Use Delta"}
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["answers"] == {"Alpha or Beta?": "Use Delta"}
+    assert on_disk["custom"] == {"Alpha or Beta?": "Use Delta"}
+
+
+def test_decide_does_not_record_a_custom_key_when_nothing_was_typed(agent,
+                                                                    tmp_path):
+    """The page always sends the param, so the ordinary picked-an-option
+    decision must still land on disk exactly as it always has."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}),
+                        custom="{}")
+    assert out["decision"] == "allow", out
+    assert "custom" not in agent._read_decision(agent._perm_dir(run_dir), "req-q")
+
+
+@pytest.mark.parametrize("custom", [
+    "[]", '"Beta"',                            # not a record
+    json.dumps({"Nope?": "x"}),                # a question never asked
+    json.dumps({"Alpha or Beta?": ""}),        # an empty box is not an answer
+])
+def test_decide_denies_a_typed_answer_it_cannot_validate(agent, tmp_path, custom):
+    """Free text fails closed on this side too — it is a second channel, not a
+    way past the check on the first one."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent._decide("run", "req-q", "allow", "once",
+                        answers=json.dumps({"Alpha or Beta?": "Beta"}),
+                        custom=custom)
+    assert out["decision"] == "deny", out
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["message"]
+
+
+def test_the_custom_param_reaches_decide_as_a_json_string(agent, tmp_path):
+    """Same binder, same shape as `answers` and `state`: a JSON string."""
+    run_dir = _park_a_question(agent, tmp_path)
+    out = agent.main(action="decide", run_id="run", request_id="req-q",
+                     decision="allow", scope="once",
+                     answers=json.dumps({"Alpha or Beta?": "Delta please"}),
+                     custom=json.dumps({"Alpha or Beta?": "Delta please"}))
+    assert out["decision"] == "allow", out
+    assert agent._read_decision(agent._perm_dir(run_dir), "req-q")["custom"] == {
+        "Alpha or Beta?": "Delta please"}
+
+
+def test_decide_drops_a_typed_answer_meant_for_another_tool(agent, tmp_path):
+    """`custom` rides the answer channel, and that channel exists for one tool."""
+    run_dir = _park_a_question(agent, tmp_path, tool="Bash",
+                               tool_input={"command": "ls"})
+    agent._decide("run", "req-q", "allow", "once",
+                  answers=json.dumps({"Alpha or Beta?": "Beta"}),
+                  custom=json.dumps({"Alpha or Beta?": "Beta"}))
+    on_disk = agent._read_decision(agent._perm_dir(run_dir), "req-q")
+    assert on_disk["decision"] == "allow"
+    assert "custom" not in on_disk and "answers" not in on_disk
 
 
 def test_decide_never_records_a_grant_or_a_mode_switch_for_a_question(agent, tmp_path):
@@ -1530,6 +1823,24 @@ def test_start_asks_the_cli_to_route_permissions_here(agent, tmp_path, monkeypat
     assert entry["env"]["FUSED_RENDER_PERMISSION_TIMEOUT"] == str(agent.PERMISSION_WAIT)
 
 
+def test_the_mcp_config_forces_utf8_stdio_on_the_server(agent, tmp_path):
+    """The spawn's half of the encoding fix.
+
+    permission_server reconfigures its own streams, but the config is where the
+    variable has to be NAMED: the CLI's MCP client hands the child an allowlist
+    of env vars plus this dict and nothing else, so an ambient PYTHONUTF8 (or
+    a UTF-8 mode the server itself was started in) does not reach it. Belt and
+    braces with the reconfigure — either alone is enough, and the failure they
+    prevent is a dead permission bridge on Windows the moment a payload carries
+    a curly quote.
+    """
+    run_dir = tmp_path / "run"
+    os.makedirs(run_dir / "perm")
+    config = json.loads(open(agent._write_mcp_config(str(run_dir))).read())
+    env = config["mcpServers"][agent.PERMISSION_SERVER]["env"]
+    assert env["PYTHONUTF8"] == "1"
+
+
 def test_the_server_path_resolves_when_the_engine_execs_us_without_dunder_file(tmp_path):
     """The optional fused engine (D69) `exec`s this module into a namespace
     with no `__file__` — it only puts the script's dir first on sys.path. A
@@ -2312,6 +2623,72 @@ def test_template_wires_the_decide_action(agent):
     region = html.split("function buildPermCard")[1] \
         .split("function syncPermissions")[0]
     assert re.findall(r"\.innerHTML\s*=\s*([^;]+);", region) == ["renderMd(plan)"]
+
+
+def test_the_question_card_always_offers_an_other_box(agent):
+    """D407. Claude Code's own prompt appends "Other" to every AskUserQuestion,
+    and a card that can only echo the model's two-to-four options back forces
+    the user to pick the nearest wrong answer — which the model then acts on.
+    The row is not conditional on anything the model sent, so this asserts it is
+    built unconditionally inside the per-question loop, and that what it
+    produces leaves on the SEPARATE `custom` param rather than being passed off
+    as one of the labels.
+    """
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    card = html.split("function buildQuestionCard")[1] \
+        .split("function buildPlanCard")[0]
+    assert "qother" in card and "Other…" in card
+    # Both shapes of the card: the click-to-answer button and the tickable row.
+    assert "oneShot" in card and "multiSelect" in card
+    # The typed text leaves as its own param, keyed the same way as `answers`.
+    assert "custom: JSON.stringify(custom" in card
+
+
+def test_the_drawn_tick_never_paints_the_other_rows_text_field():
+    """The bug this card shipped with, asserted as the rule that prevents it.
+
+    The option rows draw their own checkbox/radio (`appearance: none`, a 14px
+    box, a drawn border and background) because Chrome's native one is unreadable
+    on a dark card. That rule was written as `.perm .qopt input` — "any input in
+    an option row" — which was true of exactly one thing until the "Other" row
+    put a TEXT field in one. At (0,2,1) it out-specifies `.perm .qtype` (0,2,0),
+    so the field inherited the 14px square, the tick border and the background:
+    what reached the user was an empty grey row with a tiny white box in it and
+    nowhere visible to type.
+
+    A DOM probe cannot see this — the tree was always right, only the paint was
+    wrong — so the guard is on the stylesheet: every rule that dresses a tick
+    says which input types it means, and the field's own rules sit under `.qopt`
+    so they cannot lose the race again.
+    """
+    html = open(os.path.join(TEMPLATE_DIR, "template.html"), encoding="utf-8").read()
+    # Comments out first: this file's CSS narrates itself, and the prose talks
+    # about the very selectors being scanned for.
+    naked = re.sub(r"/\*.*?\*/", "", html, flags=re.S)
+    selectors = re.findall(r"^\s*([^{}\n][^{}]*?)\s*\{", naked, re.M)
+    dressing = [s for s in selectors if re.search(r"\.qopt\s+input", s)]
+    assert dressing, "the drawn-tick rules moved; this guard is asserting nothing"
+    for sel in dressing:
+        for part in sel.split(","):
+            if ".qopt" not in part:
+                continue
+            assert 'input[type="checkbox"]' in part or 'input[type="radio"]' in part, (
+                "%r dresses every input inside an option row, including the "
+                "\"Other\" row's text field" % part.strip())
+    # …and the field is selected through the row, so it outranks anything that
+    # reaches it by way of `.qopt`.
+    assert ".perm .qopt .qtype {" in html
+    assert not re.search(r"^\s*\.perm \.qtype\s*[,{]", html, re.M)
+    # By CLASS, never by element type. The field started as an <input> and is a
+    # <textarea> now (so a long answer wraps instead of scrolling off the side);
+    # a `textarea.qtype` or `input.qtype` anywhere would mean the next such
+    # change silently drops the styling rather than failing loudly.
+    for sel in selectors:
+        for part in sel.split(","):
+            if ".qtype" not in part:
+                continue
+            assert not re.search(r"(input|textarea)\s*(\[|\.qtype)", part), (
+                "%r ties the Other row's field to one element type" % part.strip())
 
 
 def monkey_runs(agent, tmp_path):

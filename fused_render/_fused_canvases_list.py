@@ -34,6 +34,36 @@ from fused._global_api import get_api
 # The workbench's marker for "preview stored in the private image bucket".
 _SENTINEL = "fused_uploaded_preview"
 
+# The workbench counts a canvas's UDFs with these exclusions (client's
+# `getCodeUdfCount`): sticky notes and widgets are nodes but not code, and an
+# `app` node is a published app rather than a UDF. Mirrored here so the card's
+# count matches what the hosted gallery prints for the same canvas.
+_NON_UDF_PREFIXES = ("note_", "widget_")
+_NON_UDF_TYPE = "app"
+
+
+def _code_udf_count(collection: dict) -> int | None:
+    """Count the collection's code UDFs, or None if the payload has no node list.
+
+    `lite=True` already carries `udf_ids` (id, slug, udf_type per node), so this
+    costs no extra control-plane call — it must not, since the whole point of
+    D364 was getting round trips off the listing's critical path.
+    """
+    nodes = collection.get("udf_ids")
+    if not isinstance(nodes, list):
+        return None
+    count = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        slug = node.get("slug")
+        if isinstance(slug, str) and slug.startswith(_NON_UDF_PREFIXES):
+            continue
+        if node.get("udf_type") == _NON_UDF_TYPE:
+            continue
+        count += 1
+    return count
+
 
 def main() -> None:
     api = get_api()
@@ -61,6 +91,7 @@ def main() -> None:
                 "id": collection_id,
                 "preview_url": preview_url,
                 "preview_pending": preview_pending,
+                "n_code_udfs": _code_udf_count(collection),
                 "last_updated": collection.get("last_updated"),
             }
         )

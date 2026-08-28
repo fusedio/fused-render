@@ -93,7 +93,15 @@ def _front_matter(path):
     raw = _read(path, 128 * 1024)
     if raw is None:
         return {}, [], ""
-    text = raw.decode("utf-8", errors="replace")
+    # _read is deliberately binary (see its docstring), so a CRLF card — common
+    # enough on its own (an author's editor, or a repo checked out with
+    # core.autocrlf) — reaches here with the "\r\n" intact. The scalar/tag loop
+    # below tolerates a stray "\r" because every value already goes through
+    # .strip(), but the paragraph splitter looks for a literal "\n\n" blank
+    # line, which a CRLF file never contains (each blank line is "\r\n\r\n", not
+    # "\n\n") — so an un-normalized CRLF card silently loses its summary
+    # instead of merely misreading a field. Normalize once, up front.
+    text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
     if not text.startswith("---"):
         return {}, [], text.strip().split("\n\n")[0].strip()
     lines = text.split("\n")[1:]

@@ -5,6 +5,10 @@ import sys
 import tempfile
 import threading
 import time
+from collections import OrderedDict
+
+if sys.platform != "win32":
+    import select
 
 logger = logging.getLogger(__name__)
 
@@ -267,11 +271,43 @@ class _IgnoreOracle:
     oracle broken and it answers "nothing ignored" from then on — gitignore
     pruning is an optimization, never a hard dependency (same posture as
     _git_ignored's dimming).
+
+    A stalled child (an `index.lock` another process is holding, `gc --auto`,
+    a degraded filesystem) is the same shape of failure, just slower to show
+    up: every read that comes back with bytes pushes a rolling deadline
+    forward by `DEADLINE_S`, so `ignored()` gives up only when NOTHING has
+    arrived for that long, marks the oracle broken, and returns the same
+    "nothing ignored" rather than hanging the request thread forever. POSIX
+    only (`select` on a pipe) — see `_read_chunk` for why Windows is left
+    unbounded, same as before this existed.
     """
 
     # Queries per write/read cycle: bounded so git's stdout can't fill the
     # pipe while we are still writing stdin (classic co-process deadlock).
     CHUNK = 200
+
+    # The `os.read` request size — arbitrary beyond "large enough that a
+    # normal batch needs few calls"; unlike `read1`, this number bounds
+    # nothing about correctness (see `_read_chunk`).
+    _READ_SIZE = 65536
+
+    # How long `ignored()` may go with NO PROGRESS before it gives up on the
+    # co-process.
+    #
+    # This is a PER-READ deadline that gets pushed forward by every read that
+    # returns bytes, not a budget for the whole call: a big batch is
+    # genuinely slow-but-fine (index_gitignore.py's own docstring puts a
+    # home-sized sweep at ~1.5s, scaling past 4s on a 571k-entry corpus) and
+    # must not be killed just for taking a while while it keeps making
+    # progress — the earlier version of this bound was a flat per-call
+    # timeout, and a big sweep tripping it would have silently turned OFF
+    # gitignore filtering for the whole batch, which is exactly the failure
+    # index_gitignore.py's header calls unacceptable (a gitignored `dist/` of
+    # 100k files flooding search). A STALLED child, by contrast, produces
+    # nothing at all on its very first read and trips this immediately.
+    # Matches the one-shot calls' `timeout=5` elsewhere in this file for the
+    # same git-is-hung shape of failure.
+    DEADLINE_S = 5.0
 
     def __init__(self, repo_root):
         self.root = repo_root
@@ -315,15 +351,62 @@ class _IgnoreOracle:
                 field = self._buf[:cut]
                 self._buf = self._buf[cut + 1:]
                 return field
-            chunk = self.proc.stdout.read1(65536)
+            chunk = self._read_chunk()
             if not chunk:
                 raise OSError("check-ignore stream closed")
             self._buf += chunk
+
+    def _read_chunk(self):
+        """Up to `_READ_SIZE` bytes from the co-process, bounded by
+        `self._deadline` (a `time.monotonic()` timestamp, pushed forward by
+        every read that returns bytes — see `DEADLINE_S`).
+
+        Reads the fd directly with `os.read`, NOT `self.proc.stdout.read1` —
+        `stdout` is a `BufferedReader` (`Popen` is created with no `bufsize`),
+        and `select()` only sees the underlying fd, not that object's own
+        internal buffer. If anything ever pulled bytes through the
+        `BufferedReader` into its buffer, `select` reporting the fd "not
+        ready" would stop meaning "no bytes available" — it would mean "no
+        bytes available AND none already sitting in a buffer select can't
+        see", and a read landing on that residue would wait out the whole
+        deadline for bytes already in hand. `os.read` never populates such a
+        buffer because nothing here ever asks `self.proc.stdout` to buffer
+        anything, which is what makes `select` on this fd authoritative BY
+        CONSTRUCTION rather than by inference from read sizes. (An earlier
+        version of this method tried the latter — skip `select` after a
+        full-size `read1` — but a full-size read does not prove the buffer
+        still holds more; it can just as well mean the buffer held exactly
+        that many bytes and is now empty, which brings back the exact
+        unbounded wait this exists to remove.)
+
+        POSIX only: `select.select` is the portable way to put a timeout on a
+        blocking pipe read, but it does not work on pipes on Windows at all
+        (only sockets). This repo ships on Windows (`_spawn_kwargs`'s
+        `CREATE_NO_WINDOW`), so on that platform this falls back to the old,
+        unbounded `read1` (`os.read` on the fd would work there too, but
+        without `select` there is nothing to bound it with) — a stalled git
+        still hangs the request thread there, same as before this existed.
+        Fixing that would need a reader thread or overlapped I/O, which is a
+        bigger change than this bug fix; POSIX is where the reported hang
+        actually happened.
+        """
+        if sys.platform == "win32":
+            return self.proc.stdout.read1(self._READ_SIZE)
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0 or not select.select(
+                [self.proc.stdout], [], [], remaining)[0]:
+            raise TimeoutError(
+                f"check-ignore made no progress for {self.DEADLINE_S}s")
+        chunk = os.read(self.proc.stdout.fileno(), self._READ_SIZE)
+        if chunk:
+            self._deadline = time.monotonic() + self.DEADLINE_S
+        return chunk
 
     def ignored(self, rel_paths):
         """Subset of `rel_paths` (POSIX, relative to repo root) git ignores."""
         if self.broken or not rel_paths:
             return set()
+        self._deadline = time.monotonic() + self.DEADLINE_S
         out = set()
         try:
             for i in range(0, len(rel_paths), self.CHUNK):
@@ -345,6 +428,11 @@ class _IgnoreOracle:
                         out.add(r)
             return out
         except OSError:
+            # TimeoutError is an OSError subclass, so a stalled stream lands
+            # here exactly like a broken pipe: the whole batch this call was
+            # answering is discarded (the buffer's field boundaries are no
+            # longer trustworthy once a read is abandoned mid-stream) rather
+            # than returned partial, and the oracle stops trying git at all.
             self.broken = True
             self.close()
             return set()
@@ -359,10 +447,100 @@ class _IgnoreOracle:
             self.proc = None
 
 
+# Memoizes `_repo_toplevel`'s answer, keyed on the exact path a caller passed
+# (the same convention `index_gitignore._cache` uses — callers already hand in
+# a canonical form, so a second canonicalization pass here would just be
+# redundant `os.path` work on every call). Every rank request calls
+# `_repo_toplevel` at least once, and TWICE when a query escalates to the
+# subsequence pass (`index/query.py`'s `pass_over` re-runs the whole gitignore
+# filter per pass) — and unmemoized, each of those is an uncached
+# `git rev-parse` spawn, the one unamortized subprocess cost left on the
+# keystroke path.
+#
+# Bounded like `index_gitignore._cache`, but larger: that cache is keyed on a
+# handful of configured INDEX roots, while this one is keyed on whatever path
+# a caller happens to ask about (a right-click target, a walk's start
+# directory) — plausibly every folder a user opens in one session. 256 keeps
+# that bounded without evicting the roots actually in active use; an eviction
+# only costs one repeated `rev-parse`, never a wrong answer.
+_TOPLEVEL_CACHE_SIZE = 256
+_toplevel_cache: "OrderedDict[str, tuple[float, str | None]]" = OrderedDict()
+_toplevel_lock = threading.Lock()
+
+# How long a `_repo_toplevel` answer may be trusted before git is asked again.
+#
+# Both shapes of cached answer can go stale in a way nothing here observes: a
+# `None` ("not a repo") goes stale the instant someone runs `git init`; a real
+# toplevel goes stale if the repository is moved or removed out from under it.
+# Time is the only thing that can bound either, which is the same posture
+# `index_gitignore.VERDICT_MAX_AGE_S` takes for an identical shape of problem
+# (an edited `.gitignore` no verdict pool can observe) — and the same value:
+# a few minutes of a stale answer costs far less than paying for a `rev-parse`
+# on every keystroke, and it is bounded rather than cached forever.
+_TOPLEVEL_MAX_AGE_S = 300.0
+
+
+def _reset_toplevel_cache() -> None:
+    """Drop every memoized `_repo_toplevel` answer. For tests."""
+    with _toplevel_lock:
+        _toplevel_cache.clear()
+
+
 def _repo_toplevel(path):
-    """The git work-tree root containing `path`, or None. One call per walk —
-    covers walking a SUBDIRECTORY of a repo, where no `.git` marker is ever
-    seen during the walk itself."""
+    """The git work-tree root containing `path`, or None. Memoized — see
+    `_TOPLEVEL_CACHE_SIZE` / `_TOPLEVEL_MAX_AGE_S` above — because callers
+    (the walk, `_is_repo_root`, the index's gitignore filter) ask about the
+    same handful of paths over and over on a single browsing session or a
+    single rank request escalated across both search passes."""
+    with _toplevel_lock:
+        cached = _toplevel_cache.get(path)
+        if cached is not None and \
+                (time.monotonic() - cached[0]) < _TOPLEVEL_MAX_AGE_S:
+            _toplevel_cache.move_to_end(path)
+            return cached[1]
+
+    # The actual spawn happens OUTSIDE the lock — it can take up to the 5s
+    # timeout under contention, and holding a module-global lock across that
+    # would serialize every caller in the app behind whichever one is
+    # currently blocked on git (the same reason `index_gitignore._pooled_verdicts`
+    # never holds its lock across a git call).
+    cacheable, top = _repo_toplevel_uncached(path)
+
+    if cacheable:
+        # Stamped with the time AFTER the spawn returns, not before it
+        # started: `_repo_toplevel_uncached` can take up to its own 5s
+        # timeout, and stamping on entry would insert the entry already
+        # partway aged — under contention, by as much as the TTL's own
+        # ceiling.
+        with _toplevel_lock:
+            _toplevel_cache[path] = (time.monotonic(), top)
+            _toplevel_cache.move_to_end(path)
+            while len(_toplevel_cache) > _TOPLEVEL_CACHE_SIZE:
+                _toplevel_cache.popitem(last=False)
+    return top
+
+
+def _repo_toplevel_uncached(path) -> "tuple[bool, str | None]":
+    """The uncached `rev-parse --show-toplevel`, one call per walk — covers
+    walking a SUBDIRECTORY of a repo, where no `.git` marker is ever seen
+    during the walk itself.
+
+    Returns `(cacheable, answer)`. Only two shapes are durable facts about
+    `path` and therefore safe to memoize: a successful toplevel, and the
+    ORDINARY negative (exit 128, "not a git repository"). Everything else is a
+    fact about git's current ability to answer, not about `path`, so it must
+    never be cached:
+
+    * `OSError` / `TimeoutExpired` — git could not be run RIGHT NOW (no
+      binary, an fd/process shortage, a slow disk tripping the timeout).
+      Caching that would let one blip freeze a wrong answer for the whole TTL.
+    * an ABNORMAL refusal (dubious ownership, a bad config, a deleted cwd) —
+      also transient in the sense that matters here: the environment can be
+      fixed (a `safe.directory` entry added, the config repaired) without
+      `path` itself changing at all, and a cached refusal would hide that fix
+      until the TTL expired. So this branch is treated the same as a spawn
+      failure, not as an answer about the path.
+    """
     try:
         proc = subprocess.run(
             [git_bin(), "-C", path, "rev-parse", "--show-toplevel"],
@@ -378,7 +556,7 @@ def _repo_toplevel(path):
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         _warn_git_unusable("rev-parse --show-toplevel", e)
-        return None
+        return False, None
     if proc.returncode != 0:
         # Exit 128 is BOTH "not a git repository" (ordinary, silent, and the
         # answer for most folders) and "detected dubious ownership" / "bad
@@ -388,9 +566,10 @@ def _repo_toplevel(path):
         if not _is_ordinary_negative(proc.stderr):
             _warn_git_refused("rev-parse --show-toplevel", path,
                               proc.returncode, proc.stderr)
-        return None
+            return False, None
+        return True, None
     top = os.fsdecode(proc.stdout.strip())
-    return top or None
+    return True, (top or None)
 
 
 def _canonical(path: str) -> str:

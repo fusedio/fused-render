@@ -42,6 +42,19 @@
 
   /* Elevation. Dark-tuned: a near-opaque black drop reads as depth against a
      dark page but as dirt against a light one, hence the light overrides. */
+  /* -- the ink shadcn's shadow scale is drawn in (styles/tailwind.css) -------
+     Tailwind ships whole box-shadow VALUES (geometry and colour in one token)
+     and this app's own `--shadow-*` are bare colours its rules position
+     themselves. The two vocabularies collide on the same four names, so
+     `tailwind.css` re-declares Tailwind's set on `[data-slot]`; what it must
+     not do is hardcode the colour, which is how the shadcn subtree ended up
+     wearing LIGHT-mode shadows on the dark page. These three alphas are that
+     colour, per palette — deeper here for the same reason `--shadow-md` is
+     0.4 in dark and 0.14 in light: a shadow on a dark ground has to work
+     harder to read as lift. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.2);
+  --shadow-ink: rgba(0, 0, 0, 0.4);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.6);
   --shadow-sm: rgba(0, 0, 0, 0.25);
   --shadow-md: rgba(0, 0, 0, 0.4);
   --shadow-lg: rgba(0, 0, 0, 0.5);
@@ -55,6 +68,27 @@
      translucent wash over its own background, so the flat result is a token. */
   --row-bg-hover: #26282c; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #353a25; /* --bg-alt under the accent 0.13 wash */
+
+  /* Status-bar item states (D576, matching VS Code's own
+     `statusBarItem.hoverBackground` / `statusBarItem.activeBackground`).
+     ALPHA OVERLAYS, not opaque mixes like the two `--row-bg-*` above: a
+     status-bar item is a full-height rectangle sitting directly on the bar,
+     and an overlay reads correctly whatever the bar is painted, which is why
+     VS Code specifies them this way. Active is deliberately well clear of
+     hover — an open panel has to be tellable from a pointer merely passing
+     over its neighbour, all the more so since a panel can now auto-open with
+     the user having touched nothing (D574). */
+  --status-item-hover: rgba(255, 255, 255, 0.12);
+  --status-item-active: rgba(255, 255, 255, 0.18);
+
+  /* -- the AI models grid's have / not-have axis (ai-models.css) -------------
+     One model, at two ends of one question: this machine HAS it, or it does
+     not. Declared per palette rather than as a `color-mix` against --fg-muted
+     and --bg, because a mix states a DIRECTION and the two themes need
+     different distances along it — the dark values below are the mixes they
+     replace, to the byte; the light ones are not (see the light block). */
+  --am-surface-have: #24262b;
+  --am-surface-none: #17191d;
 
   /* Quiet control chrome — the bars' two bordered controls (the labelled mode
      trigger and .bar-ctl-bordered). These are TOKENS
@@ -87,6 +121,26 @@
   --success-soft: #86d786;
   --warning-soft: #dfb054;
   --warning-strong: #e0a33e;
+
+  /* Categorical series colours, for a chart that plots several things at once
+     (the AI Models Benchmark tab's one line per model, AI-14). The first
+     palette here that is not a STATUS: --success/--warning/--error say what
+     something means, and a chart line means nothing but "this one, not that
+     one". So these are chosen for hue separation at hairline width rather than
+     for sentiment — blue/orange before red/green, so the two commonest lines
+     stay distinguishable under the commonest colour-vision deficiencies — and
+     a consumer must never read meaning into which index a series got.
+
+     Six is the count, and it is a judgement rather than a limit of the palette:
+     past about six a reader stops matching a line to a legend by colour, so a
+     seventh series is better served by reusing a hue (the legend still names
+     it) than by a hue nobody can tell from its neighbour. */
+  --series-1: #6aa8ff;
+  --series-2: #e0a33e;
+  --series-3: #3fca6b;
+  --series-4: #cf8bf3;
+  --series-5: #4fd1c5;
+  --series-6: #ff8f8f;
 
   /* Full-page failure card (.status-message.error). */
   --error-page-bg: rgba(30, 5, 5, 0.9);
@@ -157,6 +211,13 @@
        palette gains a role rather than a colour. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #facc15;
+
+  /* The Playground sidebar's model-card fills. A step DARKER than the usual
+     raised surface, which no single wash can do in both themes (--tint
+     lightens in dark and darkens in light), so each palette names its own
+     pre-composited pair rather than the stylesheet naming a literal. */
+  --pg-card-bg: #16181c;
+  --pg-card-bg-hover: #1d2025;
   --status-done: #4ade80;
   --status-failed: #f87171;
   --status-archived: #cd93b6;
@@ -200,6 +261,32 @@
   --task-c4: #fbbf24;
   --task-c5: #fb923c;
   --task-c6: #f472b6;
+  /* THE SCRIM SET, and the one set that is deliberately identical in both
+     palettes: these paint controls that sit on ARBITRARY PIXELS — a generated
+     image, a photo, a map tile — where the surface underneath is not ours and
+     the app's theme says nothing about it. White-on-dark-wash is legible over
+     anything; a token that flipped with the theme would put light ink on a
+     light photo half the time. Named tokens rather than literals so the rule
+     "every colour comes from the palette" stays a rule with no exceptions to
+     remember (they are what test_theme.py checks for). */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
+  /* The lightbox: a veil over the whole viewport, the picture lifted off it,
+     and a glass chip for the ✕. The veil is heavier than --scrim (a modal
+     dims the page; this one has to make a photograph the only thing in the
+     room), and the lift stays at full strength in light mode where
+     --shadow-lg would go nearly invisible against the veil. */
+  --scrim-veil: rgba(0, 0, 0, 0.72);
+  --scrim-lift: rgba(0, 0, 0, 0.5);
+  --scrim-chip-bg: rgba(255, 255, 255, 0.12);
+  --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
+  /* Behind a <video>, filling whatever the frame's aspect ratio does not.
+     Black in both modes because it reads as the letterbox of the picture
+     rather than a surface of the page. */
+  --scrim-letterbox: #000000;
   --task-c7: #a78bfa;
 }
 
@@ -226,6 +313,11 @@
   --fg-muted-rgb: 97, 101, 108;
   --warning-rgb: 143, 106, 16;
 
+  /* Tailwind's own published alphas, which are written for a white page — see
+     the dark block for what these are and why they are a token at all. */
+  --shadow-ink-soft: rgba(0, 0, 0, 0.05);
+  --shadow-ink: rgba(0, 0, 0, 0.1);
+  --shadow-ink-deep: rgba(0, 0, 0, 0.25);
   --shadow-sm: rgba(0, 0, 0, 0.1);
   --shadow-md: rgba(0, 0, 0, 0.14);
   --shadow-lg: rgba(0, 0, 0, 0.18);
@@ -237,6 +329,22 @@
   --bg-popover: #ffffff;
   --row-bg-hover: #e5e6e8; /* --bg-alt under the neutral 0.06 wash */
   --row-bg-active: #e1e4d7; /* --bg-alt under the accent 0.13 wash */
+
+  /* Black-alpha here, not white — the same inversion VS Code applies to these
+     two tokens in a light theme. A white overlay on a light bar is invisible. */
+  --status-item-hover: rgba(0, 0, 0, 0.1);
+  --status-item-active: rgba(0, 0, 0, 0.16);
+
+  /* The same axis, and the reason it is a token at all. The mix these replace
+     was 14% of --fg-muted over --bg-alt, which on this palette is a warm
+     #dcdde0 — darker and greyer than the page, so a downloaded model read as a
+     DISABLED card rather than a present one, and the axis ran the wrong way
+     against a white page. Here "present" goes the other direction: `have` sits
+     just off the card's own --bg-alt, and `none` recedes to nearly the page
+     white. Both stay lighter than --border (#d8dade), so a card's own outline
+     still reads at either end. */
+  --am-surface-have: #eceef2;
+  --am-surface-none: #fbfbfc;
 
   /* Quiet control chrome (see the dark block). These four are the values the
      component rules carried inline before the group existed, so light mode is
@@ -254,6 +362,17 @@
   --success-soft: #1f7a3a;
   --warning-soft: #8a6410;
   --warning-strong: #9a6a10;
+
+  /* The same six hues, darkened to clear contrast against white as a 2px
+     hairline and as a 10px legend label. Same hue ORDER, so a chart does not
+     re-colour its lines when the theme flips — a reader who learned "the blue
+     one is the 4-bit model" keeps that. */
+  --series-1: #1f5fbf;
+  --series-2: #8a5a00;
+  --series-3: #1a7f37;
+  --series-4: #7a3fa8;
+  --series-5: #0f7c74;
+  --series-6: #b03030;
 
   --error-page-bg: rgba(255, 236, 236, 0.95);
   --error-page-border: #c0392b;
@@ -275,6 +394,8 @@
      expression, restated because the light palette must redefine every token. */
   --status-upcoming: var(--fg-muted);
   --status-progress: #ca8a04;
+  --pg-card-bg: #eaebee;
+  --pg-card-bg-hover: #e1e2e6;
   --status-done: #16a34a;
   --status-failed: #dc2626;
   /* The rose deepened for white (see the dark block). Still warm, still low
@@ -305,5 +426,17 @@
   --task-c5: #c2410c;
   --task-c6: #be185d;
   --task-c7: #6d28d9;
+  /* Identical to the dark palette on purpose — see the scrim set above. The
+     surface under these is a photograph, not the page. */
+  --scrim-fg: #ffffff;
+  --scrim-bg: rgba(0, 0, 0, 0.55);
+  --scrim-bg-hover: rgba(0, 0, 0, 0.75);
+  --scrim-border: rgba(255, 255, 255, 0.25);
+  --scrim-border-hover: rgba(255, 255, 255, 0.5);
+  --scrim-veil: rgba(0, 0, 0, 0.72);
+  --scrim-lift: rgba(0, 0, 0, 0.5);
+  --scrim-chip-bg: rgba(255, 255, 255, 0.12);
+  --scrim-chip-bg-hover: rgba(255, 255, 255, 0.22);
+  --scrim-letterbox: #000000;
 }
 

@@ -7,6 +7,8 @@ two ways to say *when*, and ValueError arriving as a 400.
 
 Nothing here spawns a real claude — no test lets a message come due.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -112,7 +114,11 @@ def test_an_explicit_due_time_is_accepted(client, target):
     # is testing exactly that omission.
     ({"message": "hi", "delay_seconds": 60}, "target"),
     ({"target": "  ", "message": "hi", "delay_seconds": 60}, "target"),
-    ({"target": "/nope/nope", "message": "hi", "delay_seconds": 60}, "no such file"),
+    # TWO missing levels. One missing leaf under an existing parent is legal on
+    # this endpoint now — it creates the folder, see the tests below — so the
+    # refusal a junk path earns is about the parent rather than the leaf.
+    ({"target": "/nope/nope", "message": "hi", "delay_seconds": 60},
+     "only one new folder"),
     ({"target": "TARGET", "message": "   ", "delay_seconds": 60}, "message"),
     ({"target": "TARGET", "delay_seconds": 60}, "message"),
     ({"target": "TARGET", "message": "hi", "delay_seconds": -5}, "positive"),
@@ -125,6 +131,55 @@ def test_bad_requests_are_400s_that_say_why(client, target, body, expect):
     assert res.status_code == 400
     assert expect in res.json()["error"]
     assert schedule.list_entries() == []  # a refused request stores nothing
+
+
+def test_one_new_folder_is_created(client, target):
+    """The New task form lets you name a folder that does not exist yet — you
+    stand in a folder, type `ABC1`, and the task runs in a new `ABC1`. This
+    endpoint is where that promise is kept, because nothing downstream makes
+    directories: the agent's own `_start` refuses a target that is not there."""
+    fresh = target / "ABC1"
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(fresh), "message": "hi",
+                            "delay_seconds": 60})
+    assert res.status_code == 200
+    assert fresh.is_dir()
+    # Stored against the folder it just made, not against some resolved parent.
+    assert schedule.list_entries()[0]["target"] == str(fresh)
+
+
+def test_two_missing_levels_is_refused_and_makes_nothing(client, target):
+    """`.../new1/new2` with no `new1` is not "name me a folder", it is "build me
+    a tree I typed" — the ask a typo makes by accident. Refused, and the first
+    level must not be left behind as a souvenir of the attempt."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "new1" / "new2"),
+                            "message": "hi", "delay_seconds": 60})
+    assert res.status_code == 400
+    assert "only one new folder" in res.json()["error"]
+    assert not (target / "new1").exists()
+    assert schedule.list_entries() == []
+
+
+def test_a_new_folder_is_not_created_for_a_request_that_is_refused_later(client, target):
+    """Order matters: the mount gate runs before anything is made, and a body
+    that fails a LATER check must not leave a directory behind. `delay_seconds`
+    is validated after the target, which is the case to prove."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "ABC1"), "message": "hi",
+                            "delay_seconds": -5})
+    assert res.status_code == 400
+    assert not (target / "ABC1").exists()
+
+    # And the same holds for the checks INSIDE `schedule.create`, which run
+    # after the target is resolved: an unparseable cron line 400s, and the leaf
+    # must not survive it. This is the one the mkdir used to run ahead of.
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target / "ABC1"), "message": "hi",
+                            "repeats": "every morning"})
+    assert res.status_code == 400
+    assert not (target / "ABC1").exists()
+    assert schedule.list_entries() == []
 
 
 def test_a_mount_backed_target_is_refused(client, target, monkeypatch):
@@ -417,3 +472,55 @@ def test_replaces_is_a_no_op_when_there_is_nothing_to_move(client, target, task_
                                 "due": "2030-02-01T09:00:00Z", **body})
         assert res.status_code == 200
         assert _number_for(res.json()["entry"]["id"]) == ""
+
+
+def test_immediate_rides_the_round_trip_and_never_touches_when_it_runs(
+        client, target):
+    """"Run this now" and "run this at a time I chose" are the same `due` and
+    two different intentions (Akshil, 2026-08-23).
+
+    The New task form sends `immediate` when the card was opened from the List
+    or the Board and the when-row — which is folded into More options there —
+    was never touched. Nothing about the SCHEDULE changes: the entry is due when
+    it says it is due, and the scheduler reads that and only that. The flag
+    exists so the calendar can stay a plan instead of becoming a log of
+    everything anyone ever typed into the Tasks page.
+
+    It has to survive the round trip because the reading must survive a reload:
+    a due date that says "now" reads identically for both kinds, so the fact
+    cannot be re-derived once the moment has passed."""
+    due = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "do it now",
+                            "due": due, "immediate": True})
+    assert res.status_code == 200
+    entry = res.json()["entry"]
+    assert entry["immediate"] is True
+    # Still a perfectly ordinary pending message, due exactly when it said.
+    assert entry["state"] == "pending"
+    listed = client.get("/api/schedule").json()["entries"]
+    assert next(e for e in listed if e["id"] == entry["id"])["immediate"] is True
+
+
+def test_immediate_is_false_by_default_and_never_a_400(client, target):
+    """Absent, null and a planned task all read the same way: this was put on a
+    calendar. That is the right default for every caller that is not the New
+    task form, and for every entry stored before the flag existed."""
+    for body in ({}, {"immediate": None}, {"immediate": False}):
+        res = client.post("/api/schedule", headers=WRITE,
+                          json={"target": str(target), "message": "hi",
+                                "delay_seconds": 600, **body})
+        assert res.status_code == 200
+        assert res.json()["entry"]["immediate"] is False
+
+
+def test_a_repeating_message_is_never_immediate(client, target):
+    """A rule's anchor is a chosen time by construction — it is the pattern's
+    starting point — so the two cannot be true at once. The form never sends the
+    pairing (ticking Repeat marks the time as picked); the model refuses it
+    anyway rather than storing a template that claims nobody planned it."""
+    res = client.post("/api/schedule", headers=WRITE,
+                      json={"target": str(target), "message": "every morning",
+                            "repeats": "0 9 * * *", "immediate": True})
+    assert res.status_code == 200
+    assert res.json()["entry"]["immediate"] is False

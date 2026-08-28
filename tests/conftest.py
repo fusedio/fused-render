@@ -10,9 +10,12 @@ copy would land in the real ~/.fused-render.
 FUSED_RENDER_DIR is redirected for the same reason: /api/config reads it (D81)
 and the seed tests write into it, so no test may see the real ~/Fused.
 
-CLAUDE_CONFIG_DIR likewise: the user-level skill sync (user_skills.py, D185)
-writes into <config dir>/skills/ and POST /api/apps/new triggers it, so no
-test may touch the real ~/.claude.
+CLAUDE_CONFIG_DIR likewise: several modules read Claude Code's config dir
+(transcripts, settings, file history) and a test that wrote into the real
+~/.claude would edit the developer's own Claude Code. Nothing syncs into it any
+more — the user-level skill COPY is gone (D492 replaced it with the published
+plugin, installed on a thread at startup and never from a request) — but the
+redirect stays, because reading the real one is its own kind of wrong.
 
 FUSED_RENDER_ENGINE is pinned to `builtin` for the same class of reason. D204
 flipped the engine PREF's default to fused-when-available, so from then on the
@@ -291,7 +294,7 @@ def _pin_the_script_interpreter_resolution():
     built from, and its answer depends on TWO things a test has no business
     depending on: the version of Python running the suite, and whether uv's managed
     registry happens to hold a 3.12 on this machine. Left alone, the whole suite
-    would behave differently per interpreter — CI runs the matrix on 3.10/3.11/3.13,
+    would behave differently per interpreter — CI runs the matrix on 3.11/3.13,
     where the resolution goes to "no 3.12 yet", and `is_installed` then answers False
     for every requirement set, so tests about markers, probes and rebuild budgets
     would fail for a reason unrelated to what they assert.
@@ -365,6 +368,101 @@ def _no_schedule_loop_thread(monkeypatch):
     from fused_render import schedule
 
     monkeypatch.setattr(schedule, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_tasks_watch_thread(monkeypatch):
+    """No test may start the Tasks change-watcher thread.
+
+    `tasks_watch.start()` runs from the app's STARTUP event like the schedule
+    loop above, and would likewise outlive the test: a daemon that stats the
+    DEVELOPER'S real ~/.claude/sessions every second and pushes their live
+    sessions into a registry the tasks router then consults — so a test's
+    transcript-only fixture could be told a session is `busy` by a claude the
+    developer happens to be running. Tests that are about the watcher call
+    `tasks_watch.tick()` themselves against a tmp dir."""
+    from fused_render import tasks_watch
+
+    monkeypatch.setattr(tasks_watch, "start", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_claude_config_writes(tmp_path_factory, monkeypatch):
+    """No test may read or write the DEVELOPER's own ~/.claude.
+
+    Sibling of `_no_real_workbench_skills_clone` above and reachable the same
+    way: the canvas kick now also calls `skill_plugin.retire_legacy_fused_plugin`,
+    which rewrites `enabledPlugins` in settings.json, and several tests POST
+    /api/canvases/clone or /api/canvases/sync/start. Unredirected, a test run
+    would silently disable a plugin in the config of whoever ran it — the suite
+    reaching out and changing the machine, which is worse than the network clone
+    this fixture is modelled on.
+
+    `claude_config.lib` resolves these from the env ONCE at import (deliberately:
+    they are process constants), so setting CLAUDE_DIR here would be too late.
+    Every path derived at import is repointed instead — miss one and that one
+    file is still the real one.
+
+    Session-scoped tmp dir, function-scoped patch: the point is "not the real
+    home", not isolation between tests, and the tests that actually care about
+    the contents bring their own dir (this file's `claude_home`,
+    test_claude_config_api's `claude_dir`), whose patch is applied after this one
+    and therefore wins.
+    """
+    from fused_render.claude_config import lib
+
+    root = tmp_path_factory.mktemp("claude-home-guard")
+    monkeypatch.setattr(lib, "CLAUDE_DIR", str(root))
+    monkeypatch.setattr(lib, "SETTINGS_PATH", str(root / "settings.json"))
+    monkeypatch.setattr(lib, "INSTALLED_PLUGINS_PATH",
+                        str(root / "plugins" / "installed_plugins.json"))
+    monkeypatch.setattr(lib, "KNOWN_MARKETPLACES_PATH",
+                        str(root / "plugins" / "known_marketplaces.json"))
+    monkeypatch.setattr(lib, "MARKETPLACES_DIR", str(root / "plugins" / "marketplaces"))
+    monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_user_plugin_sync(monkeypatch):
+    """No test may run `user_plugin.start()` for real.
+
+    `create_app` kicks it off the STARTUP event (server/app.py), so every
+    `with TestClient(create_app(...))` in the suite reaches it — and nothing in
+    the suite blocks it: the per-run FUSED_RENDER_HOME has no `user-plugin.json`
+    stamp, so the rate limit says "go". Left alone this runs the REAL `claude`
+    CLI on a daemon thread: `plugin marketplace add fusedio/fused-render` then
+    `plugin install`, each with a 120s timeout, cloning this repo for a ~152MB
+    footprint — the network-dependence and slowdown are the same class of harm
+    as `_no_real_workbench_skills_clone` above, on the same trigger.
+
+    The redirect fixtures (`_no_real_claude_config_writes`,
+    `_isolate_appenv_contract_vars`) are not enough by themselves: they move
+    WHERE the config lives, but the thread they'd redirect is never joined —
+    `start()` fires it and returns immediately, so it outlives this fixture's
+    own `monkeypatch` teardown just as easily as it outlives theirs. Once
+    `_no_real_claude_config_writes` restores `lib.SETTINGS_PATH` to the next
+    test's throwaway dir (or, worse, once the whole session ends and nothing
+    restores it at all), a still-running thread from THIS test resolves
+    `lib.CLAUDE_DIR` fresh and can land on the DEVELOPER'S REAL `~/.claude`. The
+    only sound boundary is stopping the spawn itself, same reasoning as
+    `_no_schedule_loop_thread`/`_no_background_mount_threads` above.
+
+    Flips the module's OWN once-per-process flag rather than stubbing `start`
+    itself: `start()` already refuses to spawn a second time once `_started` is
+    True, so presetting it makes every call in this suite a no-op through the
+    function's real guard, not a patched-around one. That distinction matters
+    because `tests/test_user_plugin.py::test_start_runs_once_per_process` is
+    the one place ABOUT `start()` — it calls the REAL function and only fakes
+    `sync_user_plugin`, and it flips `_started` back to False itself as its
+    first line. That later `monkeypatch.setattr` wins over this fixture's
+    earlier one on the very same attribute, the identical escape hatch
+    `_no_real_workbench_skills_clone` and friends rely on ("the test body wins
+    over the fixture") — so that one test still exercises the real dedup logic,
+    while every other test in the suite, which never touches `_started`, gets
+    the no-op."""
+    from fused_render import user_plugin
+
+    monkeypatch.setattr(user_plugin, "_started", True)
 
 
 @pytest.fixture(autouse=True)
@@ -461,6 +559,92 @@ def _no_startup_engine_warm(monkeypatch):
     engine._available_cached = None
 
 
+@pytest.fixture(autouse=True)
+def _no_ai_idle_reaper_thread(monkeypatch):
+    """`create_app` starts the AI idle-unload reaper thread (SPEC AI-13, D414);
+    no test may let it run.
+
+    Same hazard as `_no_schedule_loop_thread`/`_no_background_mount_threads`/
+    `_no_startup_index_scan` above, same root cause: `supervisor.start_reaper()`
+    runs from the app's STARTUP event, so any test that enters
+    `with TestClient(create_app(...))` spawns a daemon that is never joined and
+    ticks every `_REAPER_TICK_S` for the REST OF THE WORKER PROCESS, calling
+    `prefs.effective_ai_idle_unload_minutes()` -> `read_prefs()`, which reads
+    `FUSED_RENDER_HOME` AFRESH on every tick. A later test's tmp home is
+    whatever is current when a tick lands, not the one that started the
+    thread — confirmed directly (a standalone repro before this fixture
+    existed: a thread started against one `FUSED_RENDER_HOME` keeps opening
+    `prefs.json` under whatever a LATER, unrelated `FUSED_RENDER_HOME` has
+    moved on to, for as long as the process lives).
+
+    In real usage this is exactly right — `create_app()` runs once per process,
+    so the reaper SHOULD outlive the app for the process's whole life — and
+    that is also why this is fixed the same way as its three siblings, at the
+    test boundary, rather than by giving the thread a shutdown-time stop: there
+    is nothing to stop in production, only a thread this SUITE spawns hundreds
+    of times in one process.
+
+    No test asserts `start_reaper` spawns a thread; the tests that are ABOUT
+    the reaper (`tests/test_ai_runtime.py`) drive `reap_idle(now)` /
+    `idle_workers(now)` directly with a synthetic clock, never the thread."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_reaper", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hardware_refresh_thread(monkeypatch):
+    """`create_app` starts the background GPU/VRAM-detection thread
+    (`supervisor.start_hardware_refresh`, SPEC AI-18, D519); no test may let
+    it run.
+
+    Same hazard, same fix, as `_no_ai_idle_reaper_thread` immediately above:
+    the thread fires one probe immediately and then sleeps
+    `_HARDWARE_REFRESH_INTERVAL_S` (hours) — the immediate probe alone is
+    enough to matter here, since `hw_detect.detect_hardware` spawns REAL
+    subprocesses (`nvidia-smi`, `rocm-smi`, `powershell`, `sysctl`) and
+    writes `~/.fused-render/ai_hardware.json` under whatever
+    `FUSED_RENDER_HOME` happens to be current when the daemon thread gets
+    scheduled — not necessarily the tmp home of the test that triggered
+    `create_app`, for the identical race the reaper fixture's docstring
+    demonstrates. A suite that let this run would also be spawning a real
+    `nvidia-smi`/`rocm-smi`/`powershell` process per `TestClient` on any
+    machine that has one, which is both slow and a false positive waiting to
+    happen in CI.
+
+    No test asserts `start_hardware_refresh` spawns a thread; the test that
+    is ABOUT the probe cycle (`tests/test_ai_supervisor_hardware_refresh.py`)
+    drives `_hardware_refresh_tick()` directly, never the thread — matching
+    how `reap_idle`/`idle_workers` are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hardware_refresh", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_ai_hub_metadata_refresh_thread(monkeypatch):
+    """`create_app` starts the background Hub-metadata-warming thread
+    (`supervisor.start_hub_metadata_refresh`, code review finding 1 on top
+    of SPEC AI-17); no test may let it run.
+
+    Same hazard, same fix, as `_no_ai_hardware_refresh_thread` immediately
+    above: the thread fires one sweep of `catalog.all_suggested_ids()`
+    immediately, and each id can be a REAL `urllib` fetch to
+    `huggingface.co` (`hub_metadata._fetch_raw`, unmonkeypatched here) under
+    whatever `FUSED_RENDER_HOME` happens to be current when the daemon
+    thread gets scheduled — the identical race the two fixtures above
+    already demonstrate, and here it would also mean this whole SUITE
+    reaching the real network once per `TestClient` construction.
+
+    No test asserts `start_hub_metadata_refresh` spawns a thread; the test
+    that is ABOUT the sweep (`tests/test_ai_supervisor_hub_metadata_refresh.py`)
+    drives `_hub_metadata_refresh_tick()` directly, never the thread —
+    matching how the reaper/hardware-refresh siblings are tested above."""
+    from fused_render.ai import supervisor
+
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: None)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _no_real_rcd_spawn():
     """Make spawning a REAL rclone rcd from the suite impossible, loudly.
@@ -511,6 +695,48 @@ def _no_real_rcd_spawn():
         yield
     finally:
         _rcd.subprocess = real_module
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_core_templates_stay_untouched():
+    """Fail the session loudly if it restaged the developer's REAL core templates.
+
+    The redirect at the top of this file only holds while FUSED_RENDER_HOME
+    keeps pointing at the throwaway dir. One import proved able to undo it for
+    the whole worker: `fused_render.supervisor.__main__`'s module body applies
+    the desktop env (self_environment), repointing FUSED_RENDER_HOME at the real
+    ~/.fused-render — after which every later ensure_core_templates() call wiped
+    and restaged the user's ~/.fused-render/.core-templates with this checkout's
+    tree, and env installs built venvs in the real home. test_supervisor_shutdown
+    now restores the env around that import; this guard is the net for the next
+    leak of the same class, turning silent corruption into a named failure.
+
+    Skipped when the caller deliberately pointed FUSED_RENDER_HOME at the real
+    home (the docstring above allows that), since staging there is then intended.
+    """
+    real_home = os.path.realpath(os.path.expanduser("~/.fused-render"))
+    marker = os.path.join(real_home, ".core-templates", ".version")
+    if os.path.realpath(os.environ.get("FUSED_RENDER_HOME", "")) == real_home:
+        yield
+        return
+
+    def snapshot():
+        try:
+            with open(marker, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return None
+
+    before = snapshot()
+    yield
+    after = snapshot()
+    if after != before:
+        pytest.fail(
+            f"this test session changed the REAL staged core templates "
+            f"({marker}: {before!r} -> {after!r}). Some test escaped the "
+            f"FUSED_RENDER_HOME redirect — a process resolved home_dir() to the "
+            f"real ~/.fused-render and restaged it with this checkout's "
+            f"templates.", pytrace=False)
 
 
 @pytest.fixture(scope="session", autouse=True)

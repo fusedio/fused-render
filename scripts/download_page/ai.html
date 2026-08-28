@@ -1,0 +1,1185 @@
+<!doctype html>
+<!-- The AI page, served at render.fused.io/ai.html and published to
+     s3://fused-render/ai.html by .github/workflows/release.yml alongside
+     index.html and about.html. Linked from index.html's nav.
+
+     It is set as an essay rather than a panel stack: one idea per screen, very
+     large type, a short measure, and a lot of air between claims.
+
+     The rule the whole layout is built on: a section states its claim in one
+     sentence and only then shows its evidence. That ordering is in the CSS
+     (claim first, proof after, with a delay), not just in the DOM — so on a
+     scroll the reader always reads the assertion before the thing that proves
+     it, which is how the copy deck is written.
+
+     Every visual is drawn in CSS with real text content — no screenshots, no
+     web fonts, no third-party scripts. The only network call at load is
+     same-origin latest.json for the download links, exactly as ai.html and
+     index.html do it. That is also the claim the page makes about itself. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fused Render — AI that lives on your computer</title>
+<meta name="description" content="Run AI models on your own machine, make small tools that do your work for you, and find anything on your disk instantly. Free, and the apps you run need no account.">
+<meta name="theme-color" content="#141414">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Fused Render">
+<meta property="og:title" content="AI that lives on your computer">
+<meta property="og:description" content="Make small tools that do your work for you, and run them offline against your own files. Your files stay on your machine.">
+<meta property="og:url" content="https://render.fused.io/ai.html">
+<link rel="canonical" href="https://render.fused.io/ai.html">
+<meta property="og:image" content="https://render.fused.io/og-image.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Fused Render — AI that runs on your own computer">
+<meta name="twitter:card" content="summary_large_image">
+<script>
+  // Set before first paint so no scroll-triggered element is ever styled
+  // invisible for a visitor who won't get the observer: resting CSS is the
+  // finished page, and only this class opts an element into starting hidden.
+  // Re-evaluated on change so toggling the OS setting mid-visit takes effect.
+  (function () {
+    var mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    var apply = function () {
+      document.documentElement.classList.toggle("anim", !mq.matches);
+    };
+    apply();
+    mq.addEventListener ? mq.addEventListener("change", apply)
+                        : mq.addListener(apply);
+  })();
+</script>
+<style>
+  /* index.html's palette, unchanged. The discipline this page adds: at most
+     two accent roles are visible at once, and each screen is built so that the
+     accent has somewhere obvious to be. Anything that wanted a third accent
+     got demoted to --muted instead. No extra greys are invented — every colour
+     below is one of these nine tokens. */
+  :root {
+    --bg: #141414;
+    --panel: #1b1b1d;
+    --border: #2e2e31;
+    --text: #ffffff;
+    --muted: #b9b9bf;
+    --code-bg: #0f0f10;
+    --accent: #e5ff44;
+    --accent-dim: rgba(229, 255, 68, 0.14);
+    --accent-text: #141414;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font: 17px/1.6 var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    /* The page is one narrow column of large type; nothing should ever be
+       wide enough to scroll the body sideways. Wide things get their own
+       overflow container instead. */
+    overflow-x: hidden;
+  }
+  a { color: inherit; }
+  code, pre, .mono { font-family: var(--mono); }
+
+  /* ONE column for the whole page. Prose and evidence previously sat in two
+     different centred widths (720 and 920), which put every heading ~100px
+     inboard of the panel under it — read as a mistake, because it is one.
+     Now both share an edge and the short measure is enforced per element with
+     a max-width in ch, so a heading still breaks at ~14 words without moving. */
+  .wrap, .wide { width: min(920px, 100% - clamp(28px, 8vw, 72px)); margin-inline: auto; }
+
+  /* Headings take their weight from size and tracking rather than a display
+     face — same choice as index.html, which ships no web fonts. */
+  h1, h2 { font-family: var(--sans); font-weight: 650; margin: 0; }
+  h1 {
+    font-size: clamp(2.9rem, 9vw, 5.4rem);
+    line-height: 0.98; letter-spacing: -0.04em;
+    max-width: 13ch; text-wrap: balance;
+  }
+  h2 {
+    font-size: clamp(2.1rem, 5.6vw, 3.4rem);
+    line-height: 1.04; letter-spacing: -0.035em;
+    max-width: 16ch; text-wrap: balance;
+  }
+  h3 { font-family: var(--sans); font-size: 1.0625rem; font-weight: 600; margin: 0; }
+  .lit { color: var(--accent); }
+
+  /* The single sentence that follows every h2. It is deliberately set large
+     and near-white: it is still part of the claim, not yet the evidence. */
+  .say {
+    font-size: clamp(1.125rem, 2.4vw, 1.375rem);
+    line-height: 1.5; color: var(--text);
+    max-width: 38ch; margin: 24px 0 0; text-wrap: pretty;
+  }
+  .say-muted { color: var(--muted); }
+  p { text-wrap: pretty; }
+
+  /* Long rhythm — but keyed to viewport WIDTH, not height. Height-based
+     padding (the 17vh this started as) ignores the screen it is on: a phone is
+     tall and narrow, so it was getting a ~276px gap between sections at a third
+     of the desktop's type size, while a short laptop got less air than a tall
+     one at the same width. Width is what actually tracks how big the type is
+     and how much room a line has, so the whole vertical scale keys off it. */
+  /* One idea per screen, made literal: every section is at least a full
+     viewport tall and centres its own content, so the reader never sees the
+     top of the next section peeking under the current one. Sections taller
+     than the viewport (the hard part, mainly) simply grow past it and the
+     centring becomes a no-op — min-height, never height. */
+  section {
+    padding: clamp(56px, 8vw, 116px) 0;
+    min-height: 100vh;
+    min-height: 100svh; /* svh: the phone URL bar must not add a scroll of slack */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+  /* The first screen is bar + hero together. The hero claims the remainder
+     rather than subtracting a guessed bar height — which was wrong by 25px,
+     and would have been wrong by more once the nav wraps to two rows. */
+  .first {
+    min-height: 100vh;
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+  }
+  .first .hero { flex: 1 1 auto; min-height: 0; }
+  .eyebrow {
+    font: 500 11.5px/1 var(--mono);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 20px;
+  }
+  .proof { margin-top: clamp(30px, 4vw, 60px); }
+
+  /* ---------- top bar ---------- */
+  .top {
+    display: flex; align-items: center; justify-content: space-between;
+    flex-wrap: wrap; row-gap: 12px; padding: 24px 0 0;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 600; font-size: 16px; }
+  .brand .spark { color: var(--muted); font-size: 22px; line-height: 1; }
+  .top nav { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+  .top nav a { text-decoration: none; }
+  .top nav a:hover { color: var(--text); }
+  @media (max-width: 560px) { .top nav { gap: 16px; font-size: 13px; } }
+
+  /* ---------- buttons ---------- */
+  .cta-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 40px; }
+  .btn {
+    display: inline-block; background: var(--accent); color: var(--accent-text);
+    font-weight: 600; font-size: 15px; text-decoration: none;
+    padding: 13px 24px; border-radius: 10px;
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+                box-shadow 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .btn-ghost {
+    display: inline-block; color: var(--text); font-size: 15px;
+    text-decoration: none; padding: 13px 20px;
+    border: 1px solid var(--border); border-radius: 10px;
+    transition: border-color 0.18s ease-out;
+  }
+  .btn-ghost:hover { border-color: var(--muted); }
+  @media (hover: hover) {
+    .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 24px var(--accent-dim); }
+  }
+  a:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 3px;
+  }
+
+  /* ---------- window chrome (shared by every mock, as in ai.html) ---------- */
+  .win {
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--panel); overflow: hidden;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  }
+  .win-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+    background: var(--code-bg);
+  }
+  .win-dots { display: flex; gap: 6px; }
+  .win-dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--border); display: block; }
+  .win-title {
+    font: 11.5px/1 var(--mono); color: var(--muted);
+    margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* ---------- §1 hero ---------- */
+  .hero { padding: clamp(48px, 6.5vw, 104px) 0 clamp(52px, 7vw, 112px); }
+  .hero-sub {
+    list-style: none; padding: 0; margin: 34px 0 0;
+    color: var(--muted); font-size: clamp(1.0625rem, 2.2vw, 1.25rem);
+    max-width: 34ch;
+  }
+  .hero-sub li { display: flex; gap: 12px; align-items: baseline; margin: 12px 0; }
+  .hero-sub li::before { content: "✦"; color: var(--muted); font-size: 11px; flex: none; }
+  /* The text sits in a <span> so a wrapping line keeps <strong> inline — as a
+     bare flex item the bold run gets pushed into its own column. */
+  .hero-sub li > span { min-width: 0; }
+  .hero-sub strong { color: var(--text); font-weight: 600; }
+  /* The thesis, deliberately quiet. A belief in the h1 shows nothing; a belief
+     as a footnote to a concrete offer reads as conviction. */
+  .creed {
+    font: 13px/1.6 var(--mono); color: var(--muted);
+    margin: clamp(32px, 4.5vw, 64px) 0 0; padding-left: 14px;
+    border-left: 1px solid var(--border); max-width: 42ch;
+  }
+
+  /* ---------- §3 tools: a list, not a grid ----------
+     A six-card grid is the one thing this treatment must not become, so the
+     tools are set as rows of an essay's list — name, one line, use count —
+     and the rule between them does the work a card border would. */
+  /* Cards, because these now have real screenshots to show. The image is the
+     argument; the text under it is a caption, not a pitch. */
+  .made-grid {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: clamp(16px, 2.2vw, 26px);
+  }
+  @media (max-width: 900px) { .made-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 560px) { .made-grid { grid-template-columns: minmax(0, 1fr); } }
+  .made-card {
+    display: flex; flex-direction: column; gap: 10px; text-decoration: none;
+    border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+    background: var(--panel); padding-bottom: 16px;
+    transition: border-color 0.18s ease-out, transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .made-card img {
+    display: block; width: 100%; height: auto; aspect-ratio: 16 / 10;
+    object-fit: cover; object-position: top left;
+    border-bottom: 1px solid var(--border); background: var(--code-bg);
+  }
+  .made-card h3 { padding: 0 16px; font-size: 1.0625rem; letter-spacing: -0.01em; }
+  .made-card p { margin: 0; padding: 0 16px; color: var(--muted); font-size: 0.9375rem; }
+  @media (hover: hover) {
+    .made-card:hover { border-color: var(--muted); transform: translateY(-3px); }
+  }
+  .made-note { margin: clamp(20px, 2.6vw, 30px) 0 0; color: var(--muted); font-size: 0.9375rem; }
+  .made-list { border-top: 1px solid var(--border); }
+  .made-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 4px 24px; align-items: baseline;
+    padding: 22px 0; border-bottom: 1px solid var(--border);
+  }
+  .made-row h3 { font-size: clamp(1.125rem, 2.4vw, 1.375rem); letter-spacing: -0.015em; }
+  /* What a tool does, shown as the transform it performs rather than described
+     in a sentence. Six of these read as a pattern; six sentences read as a wall. */
+  .made-row .io {
+    grid-column: 1; margin: 0; display: flex; align-items: baseline; gap: 10px;
+    flex-wrap: wrap; font: 13px/1.5 var(--mono); color: var(--muted);
+  }
+  .made-row .io em { font-style: normal; color: #4e4e56; }
+  .made-row .io .out { color: var(--text); }
+  .made-row .uses {
+    grid-row: 1 / span 2; grid-column: 2;
+    font: 12px/1.4 var(--mono); color: var(--muted); white-space: nowrap; text-align: right;
+  }
+  .made-row .uses a { display: block; margin-top: 4px; text-decoration: none; border-bottom: 1px solid var(--border); }
+  .made-row .uses a:hover { color: var(--text); }
+  @media (max-width: 520px) {
+    /* At phone width the use-count stops being a column and becomes a footer
+       line, rather than squeezing the name into three words a row. */
+    .made-row { grid-template-columns: minmax(0, 1fr); }
+    .made-row .uses { grid-row: auto; grid-column: 1; text-align: left; margin-top: 8px; }
+    .made-row .uses a { display: inline-block; margin: 0 0 0 10px; }
+  }
+
+  /* ---------- §4 make your own ---------- */
+  .prompt-line {
+    padding: 18px 20px; border-bottom: 1px solid var(--border);
+    font: 13.5px/1.55 var(--mono); color: var(--text);
+    display: flex; gap: 10px; align-items: baseline;
+  }
+  .prompt-line .caret { color: var(--accent); flex: none; }
+  .prompt-line span:last-child { min-width: 0; overflow-wrap: anywhere; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; padding: 16px 20px 0; }
+  .chip {
+    font: 11.5px/1 var(--mono); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px;
+    background: var(--code-bg);
+  }
+  .rowset { display: grid; gap: 8px; padding: 16px 20px 20px; }
+  .rowitem {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 11px 14px; font-size: 15px;
+  }
+  .rowitem span:last-child { font-family: var(--mono); font-size: 12.5px; color: var(--muted); flex: none; }
+  .win-note {
+    margin: 0; padding: 0 20px 20px;
+    font: 12.5px/1.5 var(--mono); color: var(--muted);
+  }
+  .after {
+    margin: clamp(28px, 3.5vw, 52px) 0 0;
+    font-size: clamp(1.125rem, 2.4vw, 1.375rem); line-height: 1.5;
+    color: var(--muted); max-width: 36ch;
+  }
+  .after strong { color: var(--text); font-weight: 600; }
+
+  /* ---------- §5 find anything ---------- */
+  .searchbar {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    font: 14px/1.5 var(--mono); color: var(--text); background: var(--code-bg);
+  }
+  .searchbar .ic { color: var(--muted); flex: none; }
+  .searchbar span:last-child { min-width: 0; overflow-wrap: anywhere; }
+  .hit { padding: 18px 20px; border-bottom: 1px solid var(--border); }
+  .hit:last-child { border-bottom: 0; }
+  .hit b { display: block; font: 12px/1.4 var(--mono); color: var(--muted); font-weight: 400; margin-bottom: 7px; }
+  .hit p { margin: 0; font-size: 15.5px; line-height: 1.55; }
+  .hit mark { background: var(--accent-dim); color: var(--text); padding: 1px 3px; border-radius: 3px; }
+  .hit p { font-family: var(--mono); font-size: 0.9375rem; }
+  .hit .skip { color: var(--muted); }
+  .cursor-static { display: inline-block; width: 7px; height: 15px; background: var(--muted); margin-left: 2px; vertical-align: text-bottom; }
+  .measured {
+    margin: 20px 0 0; font: 12.5px/1.5 var(--mono); color: var(--muted);
+  }
+  .measured b { color: var(--text); font-weight: 500; }
+
+  /* ---------- §6 the hard part ---------- */
+  /* Difficulties and answers are the same shape on purpose: the reader should
+     feel the second list answering the first, item for item. */
+  .beats { display: grid; gap: clamp(22px, 2.6vw, 36px); margin: 0; padding: 0; }
+  .beat-item { max-width: 46ch; }
+  .beat-item b { display: block; font-size: 1.125rem; font-weight: 650; letter-spacing: -0.015em; margin-bottom: 6px; }
+  .beat-item span { color: var(--muted); font-size: 1rem; }
+  .sub-head {
+    font: 500 11.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); margin: clamp(40px, 5vw, 76px) 0 24px;
+  }
+
+  /* the ladder — the page's one orchestrated moment */
+  .ladder-cap { font-size: 1.0625rem; color: var(--muted); margin: 0 0 20px; max-width: 40ch; }
+  .ladder { border-top: 1px solid var(--border); }
+  .rung {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: baseline; gap: 4px 28px;
+    padding: 22px 0 22px 18px; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  /* Every rung carries the marker rail; only the chosen one lights it. Keeping
+     the box on all four means the winning row does not shift sideways when it
+     is marked, so the "chosen" state reads as an answer rather than a jolt. */
+  .rung::before {
+    content: ""; position: absolute; left: 0; top: 14px; bottom: 14px;
+    width: 2px; border-radius: 2px; background: transparent;
+  }
+  .rung .lbl { font-size: clamp(1.0625rem, 2.2vw, 1.25rem); letter-spacing: -0.015em; }
+  .rung .num {
+    font: 400 clamp(1.0625rem, 2.2vw, 1.25rem)/1.2 var(--mono);
+    color: var(--muted); font-variant-numeric: tabular-nums;
+    white-space: nowrap; text-align: right; min-width: 6.5ch;
+  }
+  .rung.chosen::before { background: var(--accent); }
+  .rung.chosen .lbl, .rung.chosen .num { color: var(--text); }
+  .rung .mark.alt { color: var(--muted); }
+  .rung .mark {
+    grid-column: 1 / -1;
+    font: 500 11.5px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent); margin-top: 8px;
+  }
+  @media (max-width: 560px) {
+    /* The two measurements stay side by side and the label takes its own line;
+       nothing here ever needs to scroll sideways. */
+    .rung { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 20px; }
+    .rung .lbl { grid-column: 1 / -1; }
+    .rung .num:first-of-type { text-align: left; }
+  }
+  .payoff {
+    margin: clamp(26px, 3.2vw, 46px) 0 0;
+    font-size: clamp(1.125rem, 2.6vw, 1.5rem); line-height: 1.45;
+    max-width: 32ch; letter-spacing: -0.015em;
+  }
+  /* Three numbered beats: make it, keep it, hand it on. Numbered because this
+     genuinely is a sequence — the third step is the one people do not know
+     exists, and it is one button on every app card. */
+  .keeps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: clamp(18px, 2.6vw, 34px); margin-top: clamp(28px, 3.6vw, 48px); }
+  .keep { display: grid; gap: 8px; align-content: start; }
+  .keep-n { font: 11.5px/1 var(--mono); color: var(--accent); }
+  .keep b { font-size: 1.125rem; font-weight: 650; letter-spacing: -0.015em; }
+  .keep span:last-child { color: var(--muted); font-size: 0.9375rem; }
+  .keep code { font-size: 0.9em; color: var(--text); }
+  @media (max-width: 720px) { .keeps { grid-template-columns: minmax(0, 1fr); } }
+  .payoff em { font-style: italic; }
+  .get-note { margin: 18px 0 0; color: var(--muted); font-size: 0.9375rem; max-width: 46ch; }
+  .payoff-sub { margin: 14px 0 0; color: var(--muted); font-size: 1rem; max-width: 46ch; }
+  /* Column headers, same grid as a rung so they line up with the numbers. */
+  .ladder-head {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px 28px; padding: 0 0 10px 18px;
+    font: 11px/1.4 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  }
+  .ladder-head span:not(:first-child) { text-align: right; min-width: 6.5ch; }
+  @media (max-width: 560px) { .ladder-head { display: none; } }
+  .honesty { margin: 24px 0 0; font-size: 14px; color: var(--muted); max-width: 52ch; }
+  .replay {
+    margin-top: 26px; background: none; border: 1px solid var(--border);
+    border-radius: 8px; color: var(--muted); cursor: pointer;
+    font: 11.5px/1 var(--mono); padding: 9px 13px;
+    transition: border-color 0.18s ease-out, color 0.18s ease-out;
+  }
+  .replay:hover { color: var(--text); border-color: var(--muted); }
+  /* Hidden at rest and revealed only by JS when motion is on: with reduced
+     motion there is no sequence to replay, so the control would be a lie. */
+  .replay[hidden] { display: none; }
+
+  /* ---------- figures ----------
+     These replace prose. Each one is a drawing made of divs and real numbers,
+     and each carries the argument that used to be a paragraph — the rule is
+     that a figure may not sit next to the sentence it replaces, or we have
+     simply added pictures to a wall of text. */
+
+  .fig { margin: clamp(24px, 3vw, 40px) 0 0; }
+  .fig-cap {
+    font: 11.5px/1.5 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 14px;
+  }
+  .fig-note { font: 13px/1.5 var(--mono); color: var(--muted); margin: 12px 0 0; }
+
+  /* The chores nobody has to do any more. The strike is drawn as a rule across
+     the row rather than with text-decoration, so it reads as crossed off a list
+     rather than as deleted text. */
+  /* Two columns, same shape, so the eye compares them instead of reading them.
+     The left is what it costs you today; the right is the same list, done. */
+  .versus { display: grid; grid-template-columns: 1fr 1fr; gap: clamp(20px, 3vw, 40px); align-items: start; }
+  .versus-col.is-ours .chore li { color: var(--text); }
+  .versus-col.is-ours .chore li::after { display: none; }
+  .chore-done li { font-size: clamp(1.25rem, 2.6vw, 1.6rem); font-weight: 650; letter-spacing: -0.02em; }
+  .chore-done li::before { content: "✦"; color: var(--accent); font-size: 0.55em; margin-right: 10px; vertical-align: middle; }
+  .versus-note { margin: 18px 0 0; color: var(--muted); font-size: 0.9375rem; }
+  @media (max-width: 720px) { .versus { grid-template-columns: minmax(0, 1fr); } }
+  .chore { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+  .chore li {
+    position: relative; padding: 11px 2px; color: var(--muted);
+    font-size: 1rem; border-bottom: 1px solid var(--border);
+  }
+  .chore li::after {
+    content: ""; position: absolute; left: 0; right: 0; top: 50%;
+    height: 1px; background: var(--muted); opacity: 0.55;
+  }
+  .chore code { font-size: 0.9em; color: var(--muted); }
+  /* The one step that is left, set at claim weight so the eye lands here last. */
+  .left {
+    margin: 22px 0 0; font-size: clamp(1.25rem, 3vw, 1.75rem);
+    font-weight: 650; letter-spacing: -0.02em;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .left .tick { color: var(--accent); font-size: 0.6em; }
+
+  /* The room: one 16GB machine, already mostly spoken for, against a model that
+     does not fit in the whole bar — never mind what is left of it. Bars are
+     sized by real proportion (16 vs 42), so the overflow is measured, not drawn. */
+  .room { display: grid; gap: 16px; }
+  .room-line { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 14px; align-items: center; }
+  .room-key { font: 12px/1.35 var(--mono); color: var(--muted); text-align: right; }
+  .room-bar { display: flex; height: 40px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--code-bg); }
+  .room-seg { display: flex; align-items: center; padding: 0 9px; font: 11px/1 var(--mono); color: var(--muted); border-right: 1px solid var(--border); white-space: nowrap; overflow: hidden; }
+  .room-seg:last-child { border-right: 0; }
+  .room-seg.used { background: #26262a; }
+  .room-seg.free { color: var(--text); background: #2f2f35; }
+  .room-legend { font: 11.5px/1.6 var(--mono); color: var(--muted); margin: 12px 0 0; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .room-legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--border); }
+  .key-used { background: #26262a; }
+  .key-free { background: #2f2f35; }
+  /* The model bar is allowed to run past its own container: the clipped edge IS
+     the point, so it is drawn with no right border and a fading tail. */
+  /* The oversized bar is deliberately wider than its cell, so the row itself has
+     to do the clipping — without this the 262%-wide bar pushes the document
+     ~880px sideways, which body{overflow-x:hidden} would hide rather than fix. */
+  .room-over { position: relative; overflow: hidden; }
+  .room-over > .room-bar { min-width: 0; }
+  .room-over .room-bar {
+    border-right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0;
+    background: repeating-linear-gradient(135deg, #26262a 0 7px, #1e1e22 7px 14px);
+  }
+  .room-over::after {
+    content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 64px;
+    background: linear-gradient(90deg, transparent, var(--bg));
+    pointer-events: none;
+  }
+  .room-tag {
+    position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+    font: 11px/1 var(--mono); color: var(--accent); z-index: 1;
+  }
+
+  /* The unanswerable question, drawn as a call and its non-answer. The dash is
+     the same dash the product shows for an unmeasured value — that is the join
+     between this figure and the honesty line under the ladder. */
+  .ask { display: grid; gap: 10px; max-width: 30rem; }
+  .ask-row { display: flex; align-items: center; gap: 12px; font: 13.5px/1 var(--mono); }
+  .ask-row .who { color: var(--muted); min-width: 8.5ch; }
+  .ask-row .said { border: 1px solid var(--border); border-radius: 7px; padding: 10px 13px; background: var(--code-bg); }
+  .ask-row .said.none { color: var(--muted); letter-spacing: 0.3em; }
+
+  /* Four answers, four small drawings. Text is a label, never a paragraph. */
+  /* Explicit counts, not auto-fit: with four items auto-fit lands on three
+     across and leaves a lone card in a half-empty second row. 4 / 2x2 / 1. */
+  .did {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 1px; background: var(--border); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  @media (max-width: 900px) { .did { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 460px) { .did { grid-template-columns: minmax(0, 1fr); } }
+  .did-item { background: var(--bg); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+  .did-item b { font-size: 1rem; font-weight: 650; letter-spacing: -0.01em; }
+  .did-item span { font: 12px/1.5 var(--mono); color: var(--muted); margin-top: auto; }
+  .glyph { display: flex; align-items: flex-end; gap: 4px; height: 34px; }
+  .glyph i { display: block; background: #303036; border-radius: 2px; }
+  /* stepping down */
+  .g-step i { width: 13px; }
+  .g-step i:nth-child(1) { height: 100%; }
+  .g-step i:nth-child(2) { height: 66%; }
+  .g-step i:nth-child(3) { height: 42%; }
+  .g-step i:nth-child(4) { height: 30%; background: var(--accent); }
+  /* one out, one in */
+  .g-swap { align-items: center; gap: 8px; }
+  .g-swap i { width: 30px; height: 22px; }
+  .g-swap i.out { background: none; border: 1px dashed var(--border); }
+  .g-swap .arrow { font: 12px/1 var(--mono); color: var(--muted); }
+  /* memory handed back */
+  .g-give { align-items: center; }
+  .g-give i { height: 22px; }
+  .g-give i:first-child { width: 20px; }
+  .g-give i:last-child { width: 62px; background: none; border: 1px dashed var(--border); }
+  /* eight lanes off one queue */
+  .g-lanes { align-items: center; gap: 3px; }
+  .g-lanes i { width: 7px; height: 22px; }
+  .g-lanes i:nth-child(2n) { height: 14px; }
+
+  /* Where the network is and is not used: three lines out of one machine, two
+     lit and one dark. Replaces three paragraphs of assurance. */
+  .wires { display: grid; gap: 10px; }
+  .wire { display: grid; grid-template-columns: 128px 1fr auto; gap: 14px; align-items: center; padding: 13px 0; border-top: 1px solid var(--border); }
+  .wire:last-child { border-bottom: 1px solid var(--border); }
+  .wire .from { font: 12.5px/1.3 var(--mono); color: var(--text); }
+  .wire .path { position: relative; height: 1px; background: var(--border); }
+  .wire .path::after { content: ""; position: absolute; right: 0; top: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--border); }
+  .wire .dest { font: 11.5px/1.3 var(--mono); color: var(--muted); white-space: nowrap; }
+  .wire.off .path { background: repeating-linear-gradient(90deg, #2e2e31 0 4px, transparent 4px 9px); }
+  .wire.off .from { color: var(--muted); }
+  .wire.off .dest { color: var(--text); }
+  .wire.off .path::after { background: none; border: 1px solid var(--border); }
+  .wire.on .path { background: linear-gradient(90deg, var(--border), var(--accent)); }
+  .wire.on .path::after { background: var(--accent); }
+  @media (max-width: 560px) {
+    .wire { grid-template-columns: minmax(0, 1fr) auto; }
+    .wire .path { display: none; }
+    .room-line { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .room-key { text-align: left; }
+  }
+
+  /* ---------- §7 where your data goes ---------- */
+  .vault { display: grid; gap: clamp(24px, 3vw, 40px); }
+  .vault-item { max-width: 46ch; }
+  .vault-item h3 { font-size: 1.125rem; letter-spacing: -0.015em; margin-bottom: 6px; }
+  .vault-item p { margin: 0; color: var(--muted); font-size: 1rem; }
+  .honest {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    padding: clamp(22px, 3.5vw, 34px); margin-top: clamp(28px, 3.8vw, 56px);
+  }
+  .honest p { margin: 0 0 14px; font-size: 16px; line-height: 1.6; max-width: 58ch; }
+  .honest p:last-child { margin-bottom: 0; color: var(--muted); }
+  .honest strong { font-weight: 600; }
+
+  /* ---------- §8 download ---------- */
+  .oses { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 40px; }
+  .os {
+    display: flex; flex-direction: column; gap: 3px;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    padding: 16px 24px; text-decoration: none; min-width: 176px;
+    transition: border-color 0.18s ease-out;
+  }
+  .os:hover { border-color: var(--muted); }
+  .os b { font-weight: 600; font-size: 15px; }
+  .os span { font: 11.5px/1.4 var(--mono); color: var(--muted); }
+  /* One filled button per viewport, and this is the screen's only accent job:
+     macOS is the ship-default, the other two are equals in copy but not in
+     emphasis. */
+  .os.primary { background: var(--accent); border-color: var(--accent); }
+  .os.primary b, .os.primary span { color: var(--accent-text); }
+  .os.primary:hover { border-color: var(--accent); }
+  .version {
+    display: inline-block; margin-top: 26px;
+    font: 12px/1 var(--mono); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 6px 13px;
+  }
+  /* display:inline-block beats the UA's [hidden] rule, so without this the
+     empty pill renders as a stray outline until latest.json answers. */
+  .version[hidden] { display: none; }
+
+  footer.page {
+    border-top: 1px solid var(--border);
+    padding: 28px 0 48px; font-size: 13.5px; color: var(--muted);
+    display: flex; gap: 10px; flex-wrap: wrap;
+  }
+  footer.page a { text-decoration: none; }
+  footer.page a:hover { color: var(--text); }
+
+  /* ---------- sequence ----------
+     Everything below is opt-in via .anim, which only exists when motion is
+     allowed. Resting CSS is the finished page: with JS off, with the observer
+     never firing, or with reduced motion, the reader gets the whole essay.
+
+     The page's discipline in three rules: the claim's lines arrive in reading
+     order, the proof arrives after the claim has landed, and only the ladder
+     gets a sequence of its own. */
+  .anim .stage .claim > * { opacity: 0; transform: translateY(10px); }
+  .anim .stage .proof { opacity: 0; transform: translateY(14px); }
+  .anim .stage.in .claim > *,
+  .anim .stage.in .proof {
+    opacity: 1; transform: none;
+    transition: opacity 0.42s ease-out, transform 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .anim .stage.in .claim > *:nth-child(2) { transition-delay: 0.10s; }
+  .anim .stage.in .claim > *:nth-child(3) { transition-delay: 0.20s; }
+  /* The gap that makes the treatment: the evidence is late on purpose. */
+  .anim .stage.in .proof { transition-delay: 0.34s; }
+
+  .anim .hero-copy > * { opacity: 0; transform: translateY(8px); }
+  .anim .hero-copy.in > * {
+    opacity: 1; transform: none;
+    transition: opacity 0.5s ease-out, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .anim .hero-copy.in > *:nth-child(2) { transition-delay: 0.09s; }
+  .anim .hero-copy.in > *:nth-child(3) { transition-delay: 0.18s; }
+  .anim .hero-copy.in > *:nth-child(4) { transition-delay: 0.30s; }
+
+  /* The ladder: four rows that land one at a time, then the verdict. The rungs
+     move further and slower than anything else on the page because this is the
+     one place the reader is meant to watch a search happen rather than read a
+     finished list — each rung is an attempt, and the last one is the answer. */
+  .anim .ladder.seq .rung { opacity: 0; transform: translateY(18px); }
+  .anim .ladder.seq .rung .mark { opacity: 0; }
+  .anim .ladder.seq .rung::before { background: transparent; }
+  .anim .ladder.seq.run .rung {
+    opacity: 1; transform: none;
+    transition: opacity 0.4s ease-out, transform 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .anim .ladder.seq.run .rung:nth-child(2) { transition-delay: 0.34s; }
+  .anim .ladder.seq.run .rung:nth-child(3) { transition-delay: 0.68s; }
+  .anim .ladder.seq.run .rung:nth-child(4) { transition-delay: 1.02s; }
+  .anim .ladder.seq .rung .mark.alt { opacity: 0; }
+  .anim .ladder.seq.run .rung .mark.alt { opacity: 1; transition: opacity 0.32s ease-out 1.62s; }
+  /* The verdict arrives after the last rung has settled, not with it — the
+     pause is what makes the chosen rung read as a conclusion. */
+  .anim .ladder.seq.run .rung.chosen::before,
+  .anim .ladder.seq.run .rung .mark {
+    opacity: 1; transition: opacity 0.32s ease-out 1.62s, background 0.32s ease-out 1.62s;
+  }
+  .anim .ladder.seq.run .rung.chosen::before { background: var(--accent); }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    .btn, .btn-ghost, .os, .replay { transition: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Bar and hero share one viewport: the bar takes its natural height and the
+     hero flexes into the rest, so the first screen is exactly one screen no
+     matter how the nav wraps. -->
+<div class="first">
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <span class="spark" aria-hidden="true">✦</span>
+      Fused Render
+    </div>
+    <nav>
+      <a href="index.html">Download</a>
+      <a href="#today">What people made</a>
+      <a href="#hard">The hard part</a>
+      <a href="about.html">Why we built it</a>
+    </nav>
+  </div>
+</div>
+
+<!-- ========== §1 hero ========== -->
+<section class="hero">
+  <div class="wrap hero-copy">
+    <h1>AI that lives on <span class="lit">your computer.</span></h1>
+    <ul class="hero-sub">
+      <li><span>Find any file on your disk, instantly</span></li>
+      <li><span>Make small tools that <strong>do your work for you</strong></span></li>
+      <li><span>They run offline — <strong>your files never leave</strong></span></li>
+    </ul>
+    <div class="cta-row">
+      <a class="btn" href="#get">Download free</a>
+      <a class="btn-ghost" href="#today">See what people made</a>
+    </div>
+    <p class="creed">AI should run on your computer,<br>not someone else's.</p>
+  </div>
+</section>
+</div>
+
+<!-- ========== §2 for everyone ========== -->
+<section class="stage" id="everyone">
+  <div class="wrap">
+    <div class="claim">
+      <h2>You don't need to be technical. That's the whole point.</h2>
+    </div>
+    <div class="proof">
+      <!-- The expert sport, struck through one step at a time, and the one step
+           that is left. This replaces the sentence that listed the same steps —
+           a crossed-out list argues "we did that part" better than the phrase
+           "we did that part" does. -->
+      <div class="versus">
+        <div class="versus-col">
+          <p class="fig-cap">Doing it yourself</p>
+          <ol class="chore">
+            <li>you pick which AI your computer can handle</li>
+            <li>you download several gigabytes of it</li>
+            <li>you install the pieces that make it run</li>
+            <li>you find out it's too big, and delete it</li>
+            <li>you start again with a smaller one</li>
+          </ol>
+        </div>
+        <div class="versus-col is-ours">
+          <p class="fig-cap">With Fused Render</p>
+          <ol class="chore chore-done">
+            <li>open the app</li>
+          </ol>
+          <p class="versus-note">The download and the setup still happen — but they happen on their own, in the background. If a model turns out too big for your machine, it steps down and retries instead of asking you to start over.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== §3 use one today ========== -->
+<section class="stage" id="today">
+  <div class="wrap">
+    <div class="claim">
+      <h2>You don't have to make anything.</h2>
+      <p class="say say-muted">Open one someone else made. Point it at your folder. Read the source first if you want.</p>
+    </div>
+  </div>
+  <div class="wide proof">
+    <!-- The six real apps from the showcase gallery, with the preview.png each
+         one ships. These are not scenarios: every card is an app that exists,
+         installs, and can be opened and edited. The invented list that was here
+         before described things the product cannot do. -->
+    <div class="made-grid">
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/local-chat.jpg" alt="Local Chat, showing a streamed conversation and a tokens-per-second readout" loading="lazy" width="760" height="475">
+        <h3>Local Chat</h3>
+        <p>Chat with a model running entirely on your machine. Streamed, with a tokens/s readout.</p>
+      </a>
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/open-notion.jpg" alt="OpenNotion, showing a notes and tasks board" loading="lazy" width="760" height="475">
+        <h3>OpenNotion</h3>
+        <p>Notes and tasks, kept as files on your disk, with every edit's history preserved.</p>
+      </a>
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/open-mic.jpg" alt="OpenMic, showing a live meeting transcript with a summary" loading="lazy" width="760" height="475">
+        <h3>OpenMic</h3>
+        <p>Record a meeting, watch the transcript appear, and let the local model write the summary.</p>
+      </a>
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/local-image.jpg" alt="Local Image, showing a generated image and its settings" loading="lazy" width="760" height="475">
+        <h3>Local Image</h3>
+        <p>Make images on your own machine. A studio, a parameter sweep, and a gallery of everything.</p>
+      </a>
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/disk-usage.jpg" alt="Disk Space Visualizer, showing which folders take the most room" loading="lazy" width="760" height="475">
+        <h3>Disk Space Visualizer</h3>
+        <p>See what is eating your disk, folder by folder, and clean up safely.</p>
+      </a>
+      <a class="made-card" href="https://github.com/fusedio/fused-render-community-apps" rel="noopener">
+        <img src="assets/showcase/invoice-generator.jpg" alt="Invoice Generator, showing a print-ready invoice and a client list" loading="lazy" width="760" height="475">
+        <h3>Invoice Generator</h3>
+        <p>Clients, numbered invoices, print-ready output. Your data stays a plain file on disk.</p>
+      </a>
+    </div>
+    <p class="made-note">These six come with every copy, along with a dozen more. All of them are open source — you can read or change the code of any one.</p>
+  </div>
+</section>
+
+<!-- ========== §4 make your own ========== -->
+<section class="stage" id="make">
+  <div class="wrap">
+    <div class="claim">
+      <h2>Ask once. Keep it forever.</h2>
+      <p class="say say-muted">Describe it in your own words. It writes the tool and keeps it.</p>
+    </div>
+  </div>
+  <div class="wide proof">
+    <div class="win">
+      <div class="win-bar">
+        <div class="win-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="win-title">make a tool</div>
+      </div>
+      <div class="prompt-line">
+        <span class="caret" aria-hidden="true">›</span>
+        <span>track the invoices I&#39;ve sent and flag anything unpaid past 30 days</span>
+      </div>
+      <div class="chips" aria-hidden="true">
+        <span class="chip">writes a page you own</span>
+        <span class="chip">written by Claude Code</span>
+        <span class="chip">then runs on your machine</span>
+      </div>
+      <div class="rowset">
+        <div class="rowitem"><span>Meridian Studio</span><span>62 days</span></div>
+        <div class="rowitem"><span>Halloway &amp; Co.</span><span>41 days</span></div>
+        <div class="rowitem"><span>Ridgeline Books</span><span>33 days</span></div>
+        <div class="rowitem"><span>Everyone else</span><span>paid</span></div>
+      </div>
+      <p class="win-note">Sits in your apps. Open it whenever you want the answer again.</p>
+    </div>
+    <div class="wrap">
+      <div class="keeps">
+        <div class="keep">
+          <span class="keep-n">1</span>
+          <b>You describe it.</b>
+          <span>In your own words, the way you would to a person.</span>
+        </div>
+        <div class="keep">
+          <span class="keep-n">2</span>
+          <b>It's yours.</b>
+          <span>It lands in your apps and opens tomorrow, and next year, without asking anyone.</span>
+        </div>
+        <div class="keep">
+          <span class="keep-n">3</span>
+          <b>Send it to anyone.</b>
+          <span>One click exports the whole thing as a single <code>.fused</code> file. They open it, and it's theirs.</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== §5 find anything ========== -->
+<!-- What this section may claim is tightly bounded: the index stores path, name,
+     ext, size, mtime and depth — there is no content column, no text extraction
+     and no embedding wired to it. So: fuzzy path search over a whole machine,
+     fast, and nothing more. -->
+<section class="stage" id="find">
+  <div class="wrap">
+    <div class="claim">
+      <h2>Everything in your home folder, one keystroke away.</h2>
+      <p class="say say-muted">Half a million files indexed on one laptop. Type any fragment of a name and the answer is already there.</p>
+    </div>
+  </div>
+
+  <div class="wide proof">
+    <div class="win">
+      <div class="win-bar">
+        <div class="win-dots" aria-hidden="true"><i></i><i></i><i></i></div>
+        <div class="win-title">search</div>
+      </div>
+      <div class="searchbar">
+        <span class="ic" aria-hidden="true">⌕</span>
+        <span>renme</span><span class="cursor-static" aria-hidden="true"></span>
+      </div>
+      <div class="hits">
+        <div class="hit">
+          <b>~/Documents/archive</b>
+          <p>2024-<mark>ren</mark>ewal-<mark>me</mark>mo.pdf</p>
+        </div>
+        <div class="hit">
+          <b>~/Projects/scripts</b>
+          <p><mark>ren</mark>a<mark>me</mark>_media.py</p>
+        </div>
+        <div class="hit">
+          <b>~/Projects/scripts</b>
+          <p>batch-<mark>ren</mark>a<mark>me</mark>.sh</p>
+        </div>
+      </div>
+    </div>
+    <p class="measured">571,429 files · answered before you finish typing · nothing left the machine</p>
+    <p class="fig-note">Typing letters in order is enough — <code>renme</code> finds <code>rename_media.py</code>. Folders too.</p>
+  </div>
+</section>
+
+<!-- ========== §6 the hard part — the page's centre of gravity ========== -->
+<section class="stage" id="hard">
+  <div class="wrap">
+    <div class="claim">
+      <h2>If this is so good, why doesn't everyone do it?</h2>
+      <p class="say">Because a laptop is a small room, and these models are furniture.</p>
+    </div>
+
+    <div class="proof">
+      <!-- Difficulty 1 and 2, drawn rather than argued: the machine is already
+           mostly spoken for, and the model does not fit the whole bar anyway.
+           Bar widths are the real ratio of 16 to 42. -->
+      <div class="fig">
+        <p class="fig-cap">A 16 GB laptop, mid-afternoon</p>
+        <div class="room">
+          <div class="room-line">
+            <span class="room-key">your laptop<br>16 GB</span>
+            <div class="room-bar">
+              <span class="room-seg used" style="flex:9">already in use</span>
+              <span class="room-seg free" style="flex:7">7 GB free</span>
+            </div>
+          </div>
+          <div class="room-line room-over">
+            <span class="room-key">a big model<br>20 GB</span>
+            <div class="room-bar" style="width:125%">
+              <span class="room-seg used" style="flex:1">doesn't fit — not even close</span>
+            </div>
+          </div>
+        </div>
+        <p class="fig-note">And nothing can tell us how much room is really left. We ask the graphics driver; it does not answer.</p>
+      </div>
+
+      <p class="sub-head">What we did about it</p>
+      <div class="did">
+        <div class="did-item">
+          <div class="glyph g-step" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <b>Find the ceiling by trying.</b>
+          <span>load → fail → step down → CPU floor</span>
+        </div>
+        <div class="did-item">
+          <div class="glyph g-swap" aria-hidden="true"><i class="out"></i><span class="arrow">→</span><i></i></div>
+          <b>One text model in the room.</b>
+          <span>released before the next one loads</span>
+        </div>
+        <div class="did-item">
+          <div class="glyph g-give" aria-hidden="true"><i></i><i></i></div>
+          <b>It gives the memory back.</b>
+          <span>10 idle minutes → unloaded</span>
+        </div>
+        <div class="did-item">
+          <div class="glyph g-lanes" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <b>Downloads that don't stall.</b>
+          <span>8 lanes · 32 MB chunks · one queue</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="wide" style="margin-top: clamp(40px, 5.5vw, 84px);">
+    <p class="ladder-cap">So we try the biggest setting first and step down until it fits. On one real machine, the top rung fit — so that is where it stopped:</p>
+    <div class="ladder-head" aria-hidden="true">
+      <span>how much of the model sits on the graphics chip</span>
+      <span>memory it takes</span>
+      <span>speed</span>
+    </div>
+    <!-- Four rungs, landing one at a time. Every number here is measured; the
+         chosen row is marked in the markup so the finished page is correct
+         before a single frame of the sequence has run. -->
+    <div class="ladder" id="ladder">
+      <div class="rung chosen">
+        <span class="lbl">all of it on the graphics chip</span>
+        <span class="num">4,909 MiB</span>
+        <span class="num">161.6 tok/s</span>
+        <span class="mark">fit — stopped here</span>
+      </div>
+      <div class="rung">
+        <span class="lbl">a third of it on the graphics chip</span>
+        <span class="num">1,731 MiB</span>
+        <span class="num">55.6 tok/s</span>
+      </div>
+      <div class="rung">
+        <span class="lbl">heavy parts kept in main memory</span>
+        <span class="num">462 MiB</span>
+        <span class="num">50.5 tok/s</span>
+        <span class="mark alt">the last step down</span>
+      </div>
+    </div>
+    <div class="wrap">
+      <p class="payoff">On a smaller card it keeps stepping — and the bottom rung is the surprise: <em>less memory and more speed</em> than the setting above it.</p>
+      <p class="payoff-sub">Nothing predicts that. You only find it by trying, on the machine in front of you, which is what happens the first time you load a model.</p>
+      <p class="honesty">Where we haven't measured, we print that dash — never a zero. A zero reads as a real measurement of nothing.</p>
+      <button class="replay" id="replay" type="button" hidden>replay</button>
+    </div>
+  </div>
+</section>
+
+<!-- ========== §7 where your data goes ========== -->
+<section class="stage" id="privacy">
+  <div class="wrap">
+    <div class="claim">
+      <h2>Nowhere.</h2>
+    </div>
+    <div class="proof">
+      <!-- Every outbound line the app has, drawn once. Two are lit, three are
+           dark, and the dark ones are the assurances that used to be three
+           paragraphs — shown as absence, which is what they actually are. -->
+      <div class="fig" style="margin-top:0">
+        <p class="fig-cap">Where your work goes</p>
+        <div class="wires">
+          <div class="wire off">
+            <span class="from">your files</span>
+            <span class="path" aria-hidden="true"></span>
+            <span class="dest">never leave</span>
+          </div>
+          <div class="wire off">
+            <span class="from">apps using local AI</span>
+            <span class="path" aria-hidden="true"></span>
+            <span class="dest">answer here, wifi off</span>
+          </div>
+          <div class="wire off">
+            <span class="from">what you ask them</span>
+            <span class="path" aria-hidden="true"></span>
+            <span class="dest">stays on the machine</span>
+          </div>
+          <div class="wire on">
+            <span class="from">building a new tool</span>
+            <span class="path" aria-hidden="true"></span>
+            <span class="dest">Claude Code · once, while it's written</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="honest">
+        <p><strong>That last one is real, and we would rather say so.</strong> Writing a brand-new tool uses Claude Code, which runs in the cloud and needs an account. That step is the exception, not the rule.</p>
+        <p>The tool itself then runs here. If you build it on a local model it stays here entirely — and if it calls out to Claude instead, it says so, because you chose that when you made it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ========== §8 get it ========== -->
+<section class="stage" id="get">
+  <div class="wrap">
+    <div class="claim">
+      <h2>Free, and it stays on your machine.</h2>
+      <p class="say say-muted">One download. No account, no key, no card.</p>
+      <p class="get-note">Building brand-new tools uses Claude Code, which has its own sign-in. Everything else — the apps, the local models, the search — needs nothing.</p>
+    </div>
+    <div class="proof">
+      <div class="oses">
+        <a class="os primary" id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b>macOS</b><span>Apple silicon</span>
+        </a>
+        <a class="os" id="windows-exe" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b>Windows</b><span>64-bit installer</span>
+        </a>
+        <a class="os" id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
+          <b>Linux</b><span>AppImage</span>
+        </a>
+      </div>
+      <span class="version" id="version" hidden></span>
+    </div>
+  </div>
+</section>
+
+<div class="wrap">
+  <footer class="page">
+    <a href="index.html">Download page</a> ·
+    <a href="about.html">Why we built it</a> ·
+    <a rel="noopener" href="https://github.com/fusedio/fused-render/releases">All releases</a> ·
+    <a rel="noopener" href="https://www.fused.io">fused.io</a>
+  </footer>
+</div>
+
+<script>
+  var reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+  var animates = function () { return !reduced.matches; };
+
+  // ---- download links -------------------------------------------------
+  // Same contract as index.html and ai.html: the buttons work before this
+  // resolves and simply stay pointed at the releases page if it fails.
+  // Relative, not root-absolute: see the note in index.html -- the page is
+  // also proxied at www.fused.io/render/, where /latest.json is not ours.
+  fetch("latest.json", { cache: "no-cache" })
+    .then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (m) {
+      if (!m) return;
+      var v = document.getElementById("version");
+      if (m.version && v) { v.textContent = "v" + m.version; v.hidden = false; }
+      var map = { dmg: m.dmg_url, "windows-exe": m.windows_url, "linux-appimage": m.linux_url };
+      Object.keys(map).forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && map[id]) el.href = map[id];
+      });
+    })
+    .catch(function () {});
+
+  // ---- claim, then proof ----------------------------------------------
+  // The class is only ever ADDED; every element's resting CSS is its finished
+  // state, so nothing here can leave the page half-drawn.
+  (function () {
+    var stages = document.querySelectorAll(".stage");
+    var hero = document.querySelector(".hero-copy");
+    // Idempotent, so every path below can call it without coordinating.
+    var showHero = function () { if (hero) hero.classList.add("in"); };
+    var showAll = function () {
+      stages.forEach(function (el) { el.classList.add("in"); });
+      showHero();
+    };
+
+    // A hidden document (background tab, prerender, headless screenshot) runs
+    // neither rAF nor the observer, so the page would sit blank until it
+    // happened to be looked at. Nobody is watching, so skip straight to the
+    // finished frame — there is no animation to lose.
+    if (document.hidden || !("IntersectionObserver" in window)) {
+      showAll();
+      return;
+    }
+
+    // Sections on this page are routinely taller than the viewport, so a
+    // fractional threshold would never fire for them. Trigger on the top edge
+    // crossing instead: threshold 0 with the root shortened from the bottom.
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        e.target.classList.add("in");
+        io.unobserve(e.target);
+      });
+    }, { threshold: 0, rootMargin: "0px 0px -14% 0px" });
+    stages.forEach(function (el) { io.observe(el); });
+
+    // Hero is above the fold: run it on the next frame rather than waiting for
+    // a scroll that may never come. The timer is the belt to rAF's braces — if
+    // frames stop (tab backgrounded between load and paint) the hero still
+    // arrives rather than staying invisible.
+    requestAnimationFrame(showHero);
+    setTimeout(showHero, 200);
+  })();
+
+  // ---- the ladder: four rungs, one at a time ---------------------------
+  // The one moment the page spends real time on. The rungs only start hidden
+  // once JS has added .seq, so a reader without JS — or with motion off — gets
+  // the finished table and the marked answer immediately.
+  (function () {
+    var ladder = document.getElementById("ladder");
+    var replay = document.getElementById("replay");
+    if (!ladder || !replay) return;
+
+    var arm = function () {
+      ladder.classList.add("seq");
+      ladder.classList.remove("run");
+      // Force the hidden state to be committed before .run re-enables the
+      // transitions; without the reflow the browser coalesces both classes
+      // into no change at all and the rungs never move.
+      void ladder.offsetWidth;
+      requestAnimationFrame(function () { ladder.classList.add("run"); });
+    };
+
+    // Motion off: strip the sequencing classes entirely rather than leaving a
+    // dead .seq on the element, so the resting CSS is the only thing in play.
+    var disarm = function () { ladder.classList.remove("seq", "run"); };
+
+    var syncControl = function () {
+      replay.hidden = !animates();
+      if (!animates()) disarm();
+    };
+    syncControl();
+    reduced.addEventListener ? reduced.addEventListener("change", syncControl)
+                             : reduced.addListener(syncControl);
+
+    replay.addEventListener("click", arm);
+
+    if (document.hidden || !("IntersectionObserver" in window) || !animates()) return;
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        io.unobserve(e.target);
+        // Re-check at fire time: the setting can flip between load and scroll.
+        if (animates()) arm();
+      });
+    }, { threshold: 0.35 });
+    io.observe(ladder);
+  })();
+</script>
+</body>
+</html>

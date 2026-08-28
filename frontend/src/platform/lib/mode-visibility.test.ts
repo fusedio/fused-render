@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { TemplateEntry } from "@platform/lib/api";
 import {
+  SIDEBAR_MODES,
+  unavailableReason,
   visibleModes,
   isModePending,
   isSidebarMode,
@@ -79,8 +81,30 @@ describe("partitionModes", () => {
   it("agrees with isSidebarMode", () => {
     expect(isSidebarMode("claude")).toBe(true);
     expect(isSidebarMode("git")).toBe(true);
+    expect(isSidebarMode("mcp")).toBe(true);
     expect(isSidebarMode("claude_split")).toBe(false);
     expect(isSidebarMode("_render")).toBe(false);
+  });
+
+  // `mcp` is the second FOLDER-BOUND companion, and it is on this list for the
+  // same reason `git` is: bound to "/" alone, so no file's own template list can
+  // contain it, and borrowed from the parent app folder instead.
+  it("ranks the companions chat, working tree, tools", () => {
+    expect(SIDEBAR_MODES).toEqual(["claude", "git", "mcp"]);
+    expect(names(orderSidebarModes([t("mcp"), git, claude]))).toEqual([
+      "claude",
+      "git",
+      "mcp",
+    ]);
+  });
+
+  it("names a reason for every companion it ranks", () => {
+    // A disabled row whose tooltip is "Not available here" is the generic
+    // fallback, and a RANKED companion falling through to it is the bug — the
+    // user is owed the specific sentence.
+    for (const mode of SIDEBAR_MODES) {
+      expect(unavailableReason(mode)).not.toBe("Not available here");
+    }
   });
 
   // `git` is on SIDEBAR_MODES but never in a FILE's own template list: the
@@ -150,7 +174,9 @@ describe("defaultMode", () => {
   it("keeps a folder browsable when the registry leads with a GATED mode", () => {
     // The safety net under D280's reorder. The universal `/` key now ships
     // `["claude", "_listing", …]` so the preview PANE lands on the chat
-    // (`activePaneMode` takes modes[0] literally). The FULL-SCREEN folder route
+    // (`paneModeList` takes the list's own first entry literally — D460 deleted
+    // the row-mode resolution this comment used to name, `activePaneMode`, but
+    // the ordering claim stands unchanged). The FULL-SCREEN folder route
     // resolves through here instead, and "first unconditional" makes `_listing`
     // win from second place — which is why the reorder cannot leave a folder
     // opening as a chat with no file table. If this ever changes, opening any

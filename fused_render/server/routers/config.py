@@ -9,8 +9,10 @@ from fused_render.installed import installed_version
 from fused_render.server import dirpicker
 from fused_render.server.common import get_start_dir
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render.shell import fda as shell_fda
 from fused_render.shell import mounts as shell_mounts
 from fused_render.shell import prefs as shell_prefs
+from fused_render.shell.storage import home_dir as shell_home_dir
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
@@ -53,15 +55,12 @@ def api_config(
         # fs/events incident. Templates stay mount-agnostic; the skip lives
         # in runtime internals, keyed off this server-provided prefix.
         "mounts_root": os.path.abspath(shell_mounts.mounts_dir()),
-        # Whether the builtin learn mount record exists (D123) — the
-        # sidebar's Learn entry only renders when this is true, so it's
+        # Whether the builtin sessions mount record exists (D123/D227) — a
+        # surface that links into it only renders when this is true, so it's
         # never a dead link (BUGBOT: an unpackaged run with no
-        # FUSED_RENDER_LEARN_ZIP, or the brief window before the
+        # FUSED_RENDER_SESSIONS_ZIP, or the brief window before the
         # background automount thread upserts the record on a packaged
         # run, would otherwise show a link to a path that doesn't exist).
-        "learn_mount_ready": shell_mounts.learn_mount_ready(),
-        # Same deal for the builtin sessions mount (the Claude Sessions
-        # sub-app): the sidebar's Sessions entry only renders when true.
         "sessions_mount_ready": shell_mounts.sessions_mount_ready(),
         # The call-log store (calls.py). Same job as `mounts_root` above and
         # for a sharper reason: a call-log file is APPENDED TO by the act of
@@ -80,6 +79,19 @@ def api_config(
         # behaviour change and belongs with the mount code, not here.)
         "calls_dir": canonical_fs_path(os.path.abspath(shell_calls.store_dir())),
         "calls_suffix": shell_calls.SUFFIX,
+        # Where shell code may write SCRATCH files — bytes the app made and can
+        # remake, never the user's own documents. `~/.fused-render/cache`, under
+        # the same branch-aware home every other piece of shell state lives in
+        # (storage.home_dir), so a worktree's leftovers are its own. It exists so
+        # a surface that has to put bytes somewhere has ONE answer that is not
+        # the user's home: the image playground's webcam captures are the first,
+        # and a capture in `~/ai/images` — a folder the user browses, holding
+        # renders — is a file nobody can tell from a generated one. Path only;
+        # whoever writes there creates it, exactly as `fused_dir` above is a
+        # path and not a mkdir on this read. Canonicalized for `calls_dir`'s
+        # reason: every path above the OS in this app is forward-slashed.
+        "cache_dir": canonical_fs_path(
+            os.path.abspath(os.path.join(shell_home_dir(), "cache"))),
         # Whether POST /api/fs/pick-folder can raise a REAL OS folder dialog
         # here (server/dirpicker.py). A template asking the user where to write
         # something uses the native chooser when this is true and its own in-page
@@ -97,7 +109,7 @@ def api_config(
 
     if (update_manager := mac_update.manager()) is not None:
         config["update"] = update_manager.status()
-    # A Claude session changed this installation (selffix.py, SPEC §43) — the
+    # A Claude session changed this installation (selffix.py, SPEC §48) — the
     # sidebar's version chip turns amber and leads to the report. Rides this
     # endpoint rather than getting a poll of its own, like `update` above; it is
     # one small JSON read, and the PANEL's contents (report list, reinstall
@@ -106,7 +118,7 @@ def api_config(
     if (modified := selffix.status()) is not None:
         config["modified_install"] = modified
     # This installation cannot be written to, so a self-fix session here can only
-    # DIAGNOSE (SPEC §43, SF-13). PRESENT ONLY WHEN READ-ONLY, like
+    # DIAGNOSE (SPEC §48, SF-13). PRESENT ONLY WHEN READ-ONLY, like
     # `modified_install` above and for the same reason: the ordinary install is
     # one the user owns, and a field that is always there invites a truthiness
     # check that `{"read_only": False}` would silently pass.
@@ -117,6 +129,10 @@ def api_config(
     # and a brew probe. This is one `os.access` call.
     if not selffix.writable():
         config["read_only"] = True
+    # Full Disk Access nudge state (shell/fda.py) — present only on the
+    # packaged mac app when the probe is conclusive; absent = render nothing.
+    if (fda := shell_fda.snapshot()) is not None:
+        config["fda"] = fda
     if instance := desktop_instance():
         config["desktop_instance"] = {"id": instance[0]}
         if token == instance[1]:

@@ -105,11 +105,18 @@ export interface SideSplitInput {
   // The file's own modes, already partitioned (lib/mode-visibility).
   content: TemplateEntry[];
   own: TemplateEntry[];
-  // The parent folder's `git` entry — a placeholder while `borrowedPending`,
-  // null when the parent does not offer one (or there is nothing to borrow
-  // because the file has a `git` of its own).
-  borrowed: TemplateEntry | null;
-  borrowedPending: boolean;
+  // The parent folder's FOLDER-BOUND companion entries (`git`, `mcp`) — the ones
+  // no file's own template list can contain, so a file sidebar has them only by
+  // borrowing (see the header and lib/dir-mode). Empty when the parent offers
+  // none, and a mode is absent here when the file has one of its own.
+  //
+  // A LIST rather than the single slot this had while `git` was the only
+  // folder-bound companion: the probes are independent `useDirMode` calls, so
+  // "which of them is still out" is per mode, which is why `borrowedPending`
+  // names modes instead of being a flag.
+  borrowed: TemplateEntry[];
+  // The borrowed modes whose PARENT probe has not answered yet.
+  borrowedPending: readonly string[];
   // THIS FILE's condition.py verdicts are still in flight (`conditions === null`,
   // lib/mode-visibility's `isModePending`). Read for ONE thing — `defaultSide`
   // below — because an OWN gated companion is `settled` for every other purpose
@@ -124,7 +131,7 @@ export interface SideSplitInput {
   conditionsPending?: boolean;
   // Every companion that EXISTS AS A BINDING, whether or not it may be shown: the
   // file's own sidebar templates BEFORE the visibility filter, plus the parent's
-  // `git` however its gate voted (lib/dir-mode's `bound`). Order and duplicates
+  // borrowed modes however their gates voted (lib/dir-mode's `bound`). Order and duplicates
   // are irrelevant — exactly one field is ever read off these.
   //
   // That field is the ICON, and it is the whole reason the input exists. A
@@ -251,8 +258,15 @@ function sidebarMenu(all: TemplateEntry[], bound: TemplateEntry[]): SideEntry[] 
 }
 
 export function sideSplit(i: SideSplitInput): SideSplit {
-  const all = orderSidebarModes(i.borrowed ? [...i.own, i.borrowed] : i.own);
-  const settled = i.borrowedPending ? all.filter((e) => e !== i.borrowed) : all;
+  const all = orderSidebarModes([...i.own, ...i.borrowed]);
+  // A borrowed entry whose own probe is still out is a PLACEHOLDER: it is in `all`
+  // (a `_side` may name it, and the menu draws it as a spinner) and out of
+  // `settled` (there is no template path to frame yet). Identity, not mode, decides
+  // whether an entry is borrowed — a file with a companion of its OWN answers to
+  // this file's gates, not to the parent's probe.
+  const borrowedPending = (e: TemplateEntry) =>
+    i.borrowed.includes(e) && i.borrowedPending.includes(e.mode);
+  const settled = all.filter((e) => !borrowedPending(e));
   // ...and only while there is something to put on BOTH sides. A file whose only
   // companion is `claude` has no content pane to sit a sidebar next to, so it
   // renders as it did before the split existed: chat, full width, content mode.
@@ -261,7 +275,9 @@ export function sideSplit(i: SideSplitInput): SideSplit {
   // entry answers to its own probe, everything else to this file's gates. Only
   // `defaultSide` reads it; see the field's comment for why nothing else does.
   const unresolved = (e: TemplateEntry) =>
-    e === i.borrowed ? i.borrowedPending : !!e.conditional && !!i.conditionsPending;
+    i.borrowed.includes(e)
+      ? borrowedPending(e)
+      : !!e.conditional && !!i.conditionsPending;
   // THE LEADING COMPANION DECIDES, AND ONLY IT. `all` is already in ranking order
   // (orderSidebarModes), so `all[0]` is what an absent `_side` would open — and
   // while THAT entry is unresolved the answer is "not yet", whatever else has
@@ -312,6 +328,17 @@ export interface SideRequest {
 // The state a bare URL asks for: open, at whatever this file offers first.
 const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
 
+// What a SILENT `_side` resolves to once the session's hidden flag
+// (`lib/side-hidden-store.ts`) is in the picture: the ordinary open-unchosen
+// request, unless the user shut the sidebar earlier this session, in which
+// case silence now means "stay shut" rather than "open at the default". Only
+// ever consulted where the URL itself said nothing — an explicit `_side`
+// (including `off`) or a legacy `_mode` always wins over this, same as a deep
+// link always wins over a stored preference.
+function unchosenOrHidden(hidden: boolean): SideRequest {
+  return hidden ? { open: false, mode: null } : OPEN_UNCHOSEN;
+}
+
 // LEGACY DEEP LINKS are the second branch. `?_mode=claude` is what every
 // bookmark, recent, saved session and shared URL from before the split says, and
 // it is still a perfectly clear request — "open this file's chat". It now means
@@ -322,14 +349,17 @@ const OPEN_UNCHOSEN: SideRequest = { open: true, mode: null };
 // It is read only where `_side` is silent, and an explicit `_side=off` therefore
 // beats it: a URL that says both "shut" and "open the chat" was assembled from a
 // close click on top of an old link, and the click is the newer of the two.
-export function parseSide(search: string): SideRequest {
+// `hidden` defaults false so every existing call (including this file's own
+// tests) keeps behaving exactly as before; a caller that cares — Preview.tsx's
+// mount — passes `getSideHidden()` from `lib/side-hidden-store.ts` explicitly.
+export function parseSide(search: string, hidden = false): SideRequest {
   const params = new URLSearchParams(search);
   const raw = params.get("_side");
   if (raw === SIDE_OFF) return { open: false, mode: null };
   if (raw !== null && raw !== "") return { open: true, mode: raw };
   const legacy = params.get("_mode");
   if (legacy !== null && isSidebarMode(legacy)) return { open: true, mode: legacy };
-  return OPEN_UNCHOSEN;
+  return unchosenOrHidden(hidden);
 }
 
 // WHICH COMPANION IS ACTUALLY SHOWING, recomputed on every render — not stored,
@@ -351,6 +381,26 @@ export function resolveSide(req: SideRequest, split: SideSplit): string | null {
   if (!split.offered || !req.open) return null;
   if (req.mode && split.all.some((e) => e.mode === req.mode)) return req.mode;
   return split.defaultSide;
+}
+
+// D495's TWO RULES COLLIDE HERE, and this is the resolution. "An explicit
+// `_side` always wins over the session's hidden flag" (`unchosenOrHidden` is
+// only ever reached where the URL said nothing) and "reopening on either
+// surface clears the flag" both hold in isolation, but neither one says what
+// happens to the FLAG when a deep link is the thing that opened the sidebar —
+// which left it possible for a closed session's flag to survive an open
+// sidebar on screen, only to shut it again on the very next silent-URL hop.
+//
+// The call: a deep link that OPENS is the same observable outcome as the user
+// clicking reopen, so it clears the flag exactly as `setSide` does.
+// `hidden` is the flag's value from BEFORE this mount (`getSideHidden()`,
+// read by the caller); the answer is yes only when the flag was set yet the
+// already-RESOLVED request nonetheless opened — which, per `unchosenOrHidden`
+// above, can only happen when an explicit `_side` (or legacy `_mode`) won
+// over it. A mount where the flag was already false, or where it closed the
+// request too, has nothing to reconcile.
+export function sideReopenedByUrl(hidden: boolean, req: SideRequest): boolean {
+  return hidden && req.open;
 }
 
 // SET OR DELETE ONE PARAM, TEXTUALLY, LEAVING EVERY OTHER BYTE ALONE. `null`

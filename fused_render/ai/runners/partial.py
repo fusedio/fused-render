@@ -112,6 +112,19 @@ class Sink:
             return
         line = {"start": segment.get("start"), "end": segment.get("end"),
                 "text": segment.get("text")}
+        # **Word timings ride along, and this line is why the rebuild above is a
+        # trap** (D392). The dict is built KEY BY KEY rather than copied, which
+        # is deliberate — it is what keeps an engine's logprobs and temperatures
+        # out of a file a page reads — but it also means a genuinely public field
+        # is dropped unless it is named here. `words` was, and the only symptom
+        # was `onSegment` handing a page segments with no timings while the final
+        # `.json` had them: the reader counts DELIVERED LINES, so a segment sent
+        # live without its words is never re-sent with them, and a karaoke view
+        # built on the callback stayed empty for the whole run while the same
+        # page worked off `rec.segments`. Anything added to a segment that a
+        # caller is meant to see has to be added here too.
+        if segment.get("words") is not None:
+            line["words"] = segment["words"]
         # Labelled HERE rather than read off the segment, because the segment
         # does not have a speaker yet — `assign_speakers` runs once at the end,
         # over the whole list. It can be labelled this early because the turns

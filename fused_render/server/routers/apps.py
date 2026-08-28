@@ -28,37 +28,49 @@ which a card shows INSTEAD of rendering the entry live.
 
 POST /api/apps/new scaffolds ``<workspace>/local/<name>/`` from the packaged
 app starter kit (``fused_render/app_starter/`` — an ``index.html`` entry view
-plus a ``CLAUDE.md``) and — when the request carries a prompt — starts a
-detached Claude Code session in the new folder via the claude template's own
-backend (templates/claude/agent.py), so the session's transcript lands in the
-folder's ~/.claude/projects dir and the existing claude template UI lists and
-resumes it with no new machinery. "local" is just this feature's own tag — nothing about
-the listing side treats it specially.
+plus a ``CLAUDE.md``) and — when the request carries a prompt — creates ONE
+TASK on the new folder's ``index.html`` carrying that prompt, due now
+(``fused_render/schedule.py``). Creating an app is therefore the New task form
+with three steps in front of it: name the app, make the folder, copy the
+starter, then a task exactly like any the Tasks page makes. The scheduler's
+own loop spawns the session (it wakes on the store write, so "now" is now),
+its watcher records how the turn went, and the app's Tasks tab lists the row
+with no new machinery — the same row a task scheduled by hand would get.
+"local" is just this feature's own tag — nothing about the listing side treats
+it specially.
+
+Both paths also materialise the app's ``.fused/`` state folder — ``data/``,
+``cache/`` and ``meta.json`` (``app_fused_dir``, D548, SPEC §47). Creation
+hangs off ``record_app_open`` rather than off creation alone, because the
+convention has to hold for every app authored before it existed, and a page
+carrying the fused-app marker being rendered IS the app being opened (D301).
 
 An app folder carries no ``.claude/`` of its own (D185); the starter
 ``CLAUDE.md`` references the canonical skills by name and fused-render supplies
 them. The scaffolding session below gets them the way every session
 fused-render spawns does — from the plugin root under the app's home dir,
-loaded with ``--plugin-dir`` (skill_plugin.py, D216) — and the user-level copy
-(user_skills.py) covers the user's own later ``claude`` in the folder. Both are
-refreshed at server startup and again here at create time.
+loaded with ``--plugin-dir`` (skill_plugin.py, D216), refreshed at server
+startup and again here at create time. The user's own later ``claude`` in the
+folder is covered by the published plugin instead (user_plugin.py, D492), which
+is machine-wide and synced only at startup.
 """
 import os
 import shutil
-import threading
+import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 
-from fused_render import app_listing, claude_spawn
+from fused_render import app_listing, schedule
 from fused_render.server.common import _error, _require_fused
+from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
 
 router = APIRouter()
 
 # The packaged app starter kit: index.html + CLAUDE.md, both committed. No
 # .claude/ ships in it (D185) — skills are supplied by fused-render instead
-# (skill_plugin.py for the sessions it spawns, user_skills.py for the rest).
+# (skill_plugin.py for the sessions it spawns, user_plugin.py for the rest).
 _APP_STARTER_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "app_starter"
 )
@@ -90,6 +102,11 @@ def api_apps():
     # `openedAt` already rides in as `opened_at` (registered_apps.py), so these
     # sort by recency exactly as workspace apps do.
     apps.extend(registered_apps.registered_apps())
+    # Exported .fused files anywhere on disk, from the file index (D396).
+    # Index unavailable degrades to zero rows — never to a failed listing.
+    from fused_render import exported_apps
+
+    apps.extend(exported_apps.exported_apps())
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
     return {"apps": apps}
 
@@ -182,6 +199,11 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT):
             limit=limit, include_updated_at=False, opened_only=True
         )
     )
+    # Opened .fused files (D396): their recents store is already newest-first
+    # and every entry carries openedAt, so they merge exactly as the other two.
+    from fused_render import exported_apps
+
+    recent.extend(exported_apps.recent_exported_apps(limit))
     recent.sort(
         key=lambda a: (-_app_recency(a), a["tag"].lower(), a["name"].lower())
     )
@@ -307,6 +329,29 @@ def _app_folder_exists(rel: str) -> bool:
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
 
+@router.get("/api/apps/icon")
+def api_app_icon(path: str):
+    """The optional ``icon.svg`` of the app that owns ``path`` — the folder
+    itself, or a file anywhere inside an app (a page open in the explorer).
+    Ownership is the tasks' rule (`current_apps.app_dir_for`: registry first,
+    then the workspace climb to the first tagged folder), so the favicon on
+    `/explorer/.../index.html` agrees with the Projects row. `{"icon": null}`
+    for anything outside an app or an app without the file; `mtime` rides
+    along for cache-busting."""
+    from fused_render import current_apps
+
+    if not isinstance(path, str) or not os.path.isabs(path):
+        return {"icon": None}
+    folder = current_apps.app_dir_for(path)
+    if folder is None:
+        return {"icon": None}
+    try:
+        found = current_apps.app_icon(folder)
+    except OSError:
+        found = None
+    return found or {"icon": None}
+
+
 @router.get("/api/apps/entry")
 def api_app_entry(path: str):
     """The folder's app entry (its first tagged top-level page — the one rule,
@@ -329,6 +374,70 @@ def api_app_entry(path: str):
         return {"entry": None}
 
 
+# The authored thumbnail's cap and signature — the same two the .fused
+# export applies to a capture (appfile.py), because it is the same picture:
+# a card still, ~1280x800, and canvas.toBlob("image/png") is the only thing
+# that produces it.
+_PREVIEW_MAX_BYTES = 8 * 1024 * 1024
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+@router.post("/api/apps/preview")
+async def api_app_set_preview(
+    path: str = Form(default=""),
+    preview: UploadFile | None = File(default=None),
+    x_fused: str | None = Header(default=None),
+):
+    """Write (or replace) the app folder's authored still, ``preview.png``.
+
+    The explorer's path-bar menu offers "Set Current View as Preview" on an
+    app's entry page (Akshil, 2026-08-27): the page captures the pixels the
+    preview frame is showing (appShot.captureAppPreview — the same tab capture
+    the .fused export bakes in) and posts them here. The file lands under the
+    ONE name `app_listing.app_preview_image` reads, so a card shows it on its
+    next listing with no new plumbing.
+
+    Only an APP folder takes one — `app_listing.app_entry(path)` must resolve —
+    because a preview.png in a folder that is not an app is a stray file
+    nothing will ever read. Written to a sibling temp file and `os.replace`d so
+    an interrupted write never leaves the zero-length file `app_preview_image`
+    would (rightly) treat as absent while a real one sat there a moment ago.
+    ``replaced`` tells the caller which of the two verbs it just did.
+    """
+    from fused_render.index.ignore import MountGuard
+
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not path or not os.path.isabs(path):
+        return _error("path must be an absolute app folder path")
+    if MountGuard().blocks(path) or not os.path.isdir(path):
+        return _error("not a folder", status=404)
+    if app_listing.app_entry(path) is None:
+        return _error("not an app folder: no page carries the fused-app marker")
+    if preview is None:
+        return _error("preview.png is required")
+    raw = await preview.read(_PREVIEW_MAX_BYTES + 1)
+    if not raw or not raw.startswith(_PNG_MAGIC):
+        return _error("preview must be a PNG")
+    if len(raw) > _PREVIEW_MAX_BYTES:
+        return _error("preview is larger than 8 MiB")
+    target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
+    replaced = os.path.isfile(target)
+    tmp = os.path.join(path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(raw)
+        os.replace(tmp, target)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return _error(f"could not write preview.png: {exc.strerror or exc}", status=500)
+    return {"path": target, "replaced": replaced}
+
+
 @router.get("/api/apps/recents")
 def api_app_recents():
     entries = [
@@ -347,8 +456,30 @@ def record_app_open(path: str, title: str | None = None) -> bool:
     the workspace the open lands in the recents store (keyed workspace-
     relative); outside, opening IS registering — `registered_apps.record_open`
     puts the folder on the /apps hub and stores the open time itself.
+
+    Opening an app is also where its ``.fused/`` folder comes into being
+    (``app_fused_dir.ensure``, D548): the convention has to hold for the apps
+    that existed before it, and the render path is the one moment the server
+    knows a folder is being used AS an app. Deliberately ahead of the
+    workspace/registered fork — a linked folder outside ~/Fused is just as much
+    an app — and deliberately not part of this function's return value, which
+    answers "was the open recorded?" and nothing else.
+
+    Gated on ``app_listing.app_entry`` rather than on reaching this function,
+    so the folder is created for APPS and nothing else. GET /render has already
+    established the marker by the time it calls here, so the gate never changes
+    that path's answer; what it rules out is the legacy POST endpoint below,
+    whose ``path`` is an arbitrary caller-supplied directory that no branch
+    validates before the fork.
     """
+    from fused_render import app_fused_dir, app_listing
     from fused_render.shell import storage
+
+    try:
+        if app_listing.app_entry(path) is not None:
+            app_fused_dir.ensure(path)
+    except OSError:
+        pass  # unreadable dir — the recency question below answers itself
 
     rel = _workspace_rel(fused_dir(), path)
     if rel is None:
@@ -418,71 +549,109 @@ def _app_name_error(name) -> str | None:
     return None
 
 
-# The spawn machinery (where agent.py lives, why _start cannot be called in
-# this process, and the poll that gets a run's turn committed) is shared with
-# scheduled messages and lives in fused_render/claude_spawn.py.
+# What the hero composer's two pickers may ask for. Models are the
+# default-model preference's own set — the claude template's MODELS vocabulary,
+# already written down once in shell/prefs.py — so a third copy of that list
+# cannot drift from the control it feeds. Efforts have no such home yet: the
+# template's EFFORTS list is JS, and this is the first Python caller that needs
+# it, so the tuple lives here until a second one does.
 #
-# These two are re-bound as module-level names rather than called through
-# `claude_spawn.` at the use site, because `_start_app_session` resolves them as
-# globals — which is what lets a test swap either one out.
-_claude_agent = claude_spawn.load_agent
-_record_session_when_ready = claude_spawn.record_session_when_ready
+# `""` is a first-class member of both, exactly as it is in
+# VALID_DEFAULT_MODELS: "no flag", so the session keeps its own defaults.
+_VALID_SESSION_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 
 
-# The permission mode the scaffolding session runs in, passed EXPLICITLY rather
-# than left to agent.py's default ("prompt", the strictest).
-#
-# A template chat is watched: the page polls, a card appears, the user answers.
-# This session has no page yet — it starts from an HTTP POST and nobody is
-# polling `decide`, so under "prompt" the first tool call parks a request in
-# the run's perm/ dir and blocks there until PERMISSION_WAIT (an hour by
-# default) expires and the server denies it on the user's behalf. From the
-# outside that is indistinguishable from the crash this module's helper fixes:
-# a folder full of untouched boilerplate.
-#
-# "auto" is the broadest mode the template offers (bypassPermissions is
-# deliberately not among PERMISSION_MODES at all): the CLI's own classifier
-# approves what it judges safe and escalates the rest to a card. So the
-# first-pass scaffolding work proceeds unattended, and anything the classifier
-# won't take on itself still parks a request — answerable once the user opens
-# the app's chat, which `run_id` in the response is there to let the UI do.
-_APP_SESSION_PERMISSION_MODE = "auto"
+def _session_choice_error(field: str, value, allowed) -> str | None:
+    """Why `value` is not an acceptable `field`, or None.
+
+    A 400 rather than a silent fallback: the pickers only ever send members of
+    these sets, so anything else is a stale client or a typo in a hand-rolled
+    request — and a caller that asked for `opus` and silently got the default
+    has been answered with the wrong session, which is worse than a 400. (The
+    claude template falls BACK for an unknown permission mode instead, but
+    there the safe direction is the strict one; here there is no strict
+    direction, only a different model.)"""
+    if not isinstance(value, str):
+        return f"{field!r} must be a string"
+    if value not in allowed:
+        return (f"invalid {field} {value!r}: expected one of "
+                + ", ".join(repr(v) for v in allowed))
+    return None
 
 
-def _spawn_session_helper(target: str, prompt: str) -> dict:
-    """Run agent._start in the fork-safe helper; return its result dict.
+def _create_app_task(entry_html: str, prompt: str, model: str = "",
+                     effort: str = "") -> tuple[dict | None, str | None]:
+    """Create the scaffolding TASK: the prompt, on the app's index.html, due now.
 
-    Thin wrapper over claude_spawn.spawn_helper, which holds the posix_spawn
-    discipline this call depends on. What stays here is the one policy choice:
-    the permission mode above, and a FRESH session always — an app is being
-    scaffolded, so there is no prior conversation to resume."""
-    return claude_spawn.spawn_helper(
-        target, prompt, _APP_SESSION_PERMISSION_MODE)
+    The seam a test stubs. `schedule.create` is the New task form's own path
+    (POST /api/schedule), used with what that form would send for a one-off
+    opened from the list with the when-row untouched — `immediate` says the
+    time is a default, not a plan, so the calendar draws no chip for it. The
+    target is the FILE, not the folder, for the same reason a task on a file
+    is: `_outgoing` then names it in the transcript's first turn, which is
+    what lets "open this task" land on the page rather than the folder.
 
+    No title: a blank one is the first branch of a precedence the tasks
+    endpoint owns (user's title, else Claude Code's own ai-title, else the
+    prompt's first line), and pinning the folder name here would beat the
+    better name forever. No permission mode: `schedule.create` defaults to
+    "auto", the broadest the template offers, and the right one for a turn
+    nobody is watching yet — anything the CLI's classifier will not take on
+    itself parks a card the Tasks row answers.
 
-def _start_app_session(app_dir: str, prompt: str) -> tuple[str | None, str | None]:
-    """Start a detached Claude Code session on the new app's FOLDER.
+    THEN SENT, HERE, AND WAITED FOR. The loop would send it on its own — the
+    store write rings it awake — but the caller is about to land the user on
+    the new page with the Claude pane open, and that pane can only show a turn
+    whose run id it has (template.html's boot: a `run` param re-attaches, a
+    bare `_side=claude` with no session shows the landing page). So the entry
+    is run now (`schedule.run_now`, the Board's own drag path — the ordinary
+    send brought forward, not a second spawn path) and the stored entry is
+    read back until it carries a `run_id` or has failed. If the loop got to it
+    first, `run_now` says "already claimed" — that is success, not failure:
+    the wait below reads the same store either way.
 
-    The seam the tests stub. Reuses the claude agent's _start (via the
-    fork-safe helper above) — cwd = the app folder, stream-json log, the
-    transcript in the same project dir the split view the app opens in lists
-    and resumes from — with the prompt over stdin
-    (message_via_stdin) so user text never enters argv. Returns
-    (run_id, error), exactly one of them set: a missing claude CLI or spawn
-    failure must not fail the creation that already succeeded, but the reason
-    rides back so the UI isn't silent about it, and the run_id lets the
-    caller attach to the live run."""
+    Returns (entry, error), exactly one set: a task that could not be stored
+    must not fail the creation that already succeeded, but the reason rides
+    back so the UI is not silent about the prompt going nowhere. An entry that
+    was stored but whose send failed comes back as the entry — its own
+    `state`/`error` say so, where every task's does."""
     try:
-        res = _spawn_session_helper(app_dir, prompt)
-    except Exception as exc:
-        return None, f"failed to start Claude session: {exc}"
-    if res.get("error") or not res.get("run_id"):
-        return None, str(res.get("error") or "failed to start Claude session")
-    threading.Thread(
-        target=_record_session_when_ready, args=(_claude_agent(), res["run_id"]),
-        daemon=True, name="fused-app-session-record",
-    ).start()
-    return str(res["run_id"]), None
+        entry = schedule.create(
+            entry_html, prompt, datetime.now(timezone.utc),
+            immediate=True, model=model, effort=effort)
+    except Exception as exc:  # noqa: BLE001 — the reason belongs in the response
+        return None, f"failed to create the app's task: {exc}"
+    entry_id = str(entry.get("id") or "")
+    try:
+        schedule.run_now(entry_id)
+    except Exception:  # noqa: BLE001 — the loop still has the entry
+        pass
+    return _await_sent(entry_id, entry), None
+
+
+# How long the create call waits for the task's spawn to report a run id.
+# spawn_helper's own timeout is 60s; a spawn ordinarily returns in a second or
+# two. Past this the response goes out without a run id and the page lands on
+# the file with the pane open on its sessions list, where the run turns up.
+_SENT_WAIT_S = 20.0
+
+
+def _await_sent(entry_id: str, fallback: dict) -> dict:
+    """The stored entry once its send has resolved — `run_id` set, or a
+    terminal state — else the freshest copy after `_SENT_WAIT_S`."""
+    deadline = time.monotonic() + _SENT_WAIT_S
+    latest = fallback
+    while True:
+        for e in schedule.list_entries():
+            if str(e.get("id") or "") == entry_id:
+                latest = e
+                break
+        if latest.get("run_id") or latest.get("state") not in (
+                schedule.PENDING, schedule.SENDING):
+            return latest
+        if time.monotonic() >= deadline:
+            return latest
+        time.sleep(0.2)
 
 
 @router.post("/api/apps/new")
@@ -500,6 +669,17 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
     prompt = body.get("prompt", "")
     if not isinstance(prompt, str):
         return _error("'prompt' must be a string")
+
+    # The composer's model/effort pickers. Both optional and both
+    # defaulting to "" — an older client that sends neither gets exactly the
+    # session it got before this existed.
+    model = body.get("model", "")
+    effort = body.get("effort", "")
+    for field, value, allowed in (("model", model, VALID_DEFAULT_MODELS),
+                                  ("effort", effort, _VALID_SESSION_EFFORTS)):
+        err = _session_choice_error(field, value, allowed)
+        if err is not None:
+            return _error(err)
 
     root = fused_dir()
     dest = os.path.join(root, "local", name)
@@ -522,16 +702,30 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
         shutil.rmtree(dest, ignore_errors=True)
         return _error(f"failed to create app {name!r}: {exc}")
 
-    # Refresh the skills the starter CLAUDE.md references: the plugin root the
-    # scaffolding session below is handed (D216) and the user-level copy for the
-    # user's own sessions (D185). Startup already synced both; doing it again
-    # here repairs a deletion in the window before that session starts.
-    # Best-effort inside — never fails creation over a skill copy.
+    # The `.fused/` state folder, before git rather than after: `init_repo`'s
+    # first commit is "the untouched starter", and `.fused/` is not starter
+    # content — creating it first means the freshly written `.gitignore` is
+    # already excluding it when `add -A` runs, instead of the boilerplate
+    # commit capturing an empty `data/`/`cache/` pair that later has to be
+    # untracked. (The starter kit itself cannot carry the folder: git does not
+    # store empty directories, so a copytree of the packaged kit would produce
+    # nothing.) Opening the app would create it anyway (`record_app_open`);
+    # doing it here means it is there for the scaffolding turn that runs first.
+    from fused_render import app_fused_dir
+
+    app_fused_dir.ensure(dest)
+
+    # Refresh the plugin root the scaffolding session below is handed (D216).
+    # Startup already synced it; doing it again here repairs a deletion in the
+    # window before that session starts. Best-effort inside — never fails
+    # creation over a skill copy.
+    #
+    # The user's own later sessions are covered by the published plugin
+    # (user_plugin.py, D492), which is not synced here on purpose: it is a
+    # network clone, and a create-app request is not the place for one.
     from fused_render.skill_plugin import export_skill_plugin_env
-    from fused_render.user_skills import sync_user_skills
 
     export_skill_plugin_env()
-    sync_user_skills()
 
     # Version control from birth: every new app is a git repo whose first
     # commit is the untouched starter, BEFORE any session runs — so the
@@ -541,22 +735,22 @@ def api_new_app(body: dict = Body(...), x_fused: str | None = Header(default=Non
 
     app_git.init_repo(dest)
 
-    entry_html = os.path.join(dest, "index.html")
-    run_id, session_error = None, None
+    entry_html = os.path.abspath(os.path.join(dest, "index.html"))
+    task, task_error = None, None
     if prompt.strip():
-        run_id, session_error = _start_app_session(dest, prompt)
+        task, task_error = _create_app_task(entry_html, prompt, model, effort)
 
     return {
         "path": os.path.abspath(dest),
-        "entry_html": os.path.abspath(entry_html),
-        "session_started": run_id is not None,
-        # The live run, for a caller that wants to attach to the session it
-        # just started (the claude template's own `run` param re-attach path:
-        # poll it and answer any approval the "auto" classifier escalated).
-        # None when no prompt was given or the spawn failed.
-        "run_id": run_id,
-        # Why the session did NOT start (claude CLI missing, spawn failure) —
-        # the app itself was created fine, but the UI shouldn't be silent
-        # about the prompt going nowhere. None when started or no prompt.
-        "session_error": session_error,
+        "entry_html": entry_html,
+        # The scheduled entry carrying the prompt — the same shape GET
+        # /api/schedule lists, read back after its send resolved so `run_id`
+        # is set when the spawn succeeded (the page attaches the Claude pane
+        # to it) and `state`/`error` say so when it did not. None when no
+        # prompt was given or the task could not be stored.
+        "task": task,
+        # Why the task was NOT created — the app itself was created fine, but
+        # the UI shouldn't be silent about the prompt going nowhere. None when
+        # created, or when there was no prompt.
+        "task_error": task_error,
     }
