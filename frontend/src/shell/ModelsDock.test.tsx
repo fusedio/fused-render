@@ -17,8 +17,25 @@ import type { AiLoadedModel } from "@platform/lib/api";
 
 // Read once, at module scope — several tests below assert against the actual
 // CSS text rather than computed style, since react-test-renderer never runs a
-// real cascade and `:last-child` can only be checked in the rule itself.
-const CSS = readFileSync(join(import.meta.dir, "../styles/notifications.css"), "utf8");
+// real cascade and a selector like `:last-child` can only be checked in the
+// rule itself.
+const CSS_RAW = readFileSync(join(import.meta.dir, "../styles/notifications.css"), "utf8");
+// COMMENTS STRIPPED before any of it is searched, so a rule that gets
+// commented out (rather than deleted) reads as ABSENT to these tests instead
+// of still matching on its leftover text — the same failure mode a plain
+// `.includes`/`.indexOf` on the raw file would miss.
+const CSS = CSS_RAW.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** Finds a CSS rule by its selector and returns its declaration block —
+ *  requires the selector to be immediately followed by " {" in the
+ *  COMMENT-STRIPPED text, so a selector name that only survives inside a
+ *  comment (or as a substring of a longer, unrelated selector) does not
+ *  satisfy it. Fails the assertion immediately if the rule is not live. */
+function cssBlock(selector: string): string {
+  const at = CSS.indexOf(selector + " {");
+  expect(at).toBeGreaterThan(-1);
+  return CSS.slice(at, CSS.indexOf("}", at));
+}
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -397,10 +414,16 @@ test("a non-ready model's state also lives in the figures block, not the head", 
 // text, not computed style: react-test-renderer never runs a real cascade,
 // so `:last-child` can only be verified in the rule itself.
 test("the figures block's own trailing margin is zeroed when nothing follows it", () => {
-  const at = CSS.indexOf(".dl-row-figures:last-child {");
-  expect(at).toBeGreaterThan(-1);
-  const rule = CSS.slice(at, CSS.indexOf("}", at));
-  expect(rule).toContain("margin-bottom: 0;");
+  expect(cssBlock(".dl-row-figures:last-child")).toContain("margin-bottom: 0;");
+});
+
+// The other half of the same margin bookkeeping: when a failure message DOES
+// follow (so `.dl-row-figures` is no longer the last child and keeps its own
+// 5px), `.dl-status`'s own top margin is what must be zeroed instead, or the
+// two 5px gaps stack into a 10px one above the message — the same doubling
+// `.dl-row-head + .dl-status` already prevents for a bar-less job row.
+test("the figures block does not double up with a following status message", () => {
+  expect(cssBlock(".dl-row-figures + .dl-status")).toContain("margin-top: 0;");
 });
 
 test("pressing Unload calls onUnload with the model id and shows Unloading… mid-flight", async () => {

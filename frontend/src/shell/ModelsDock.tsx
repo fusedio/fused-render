@@ -302,7 +302,18 @@ function ModelRow({
           `.dl-title`'s job-row wrap rule then broke the name at a hyphen —
           the one thing `.dl-model`'s comment says an id must never do. The
           fix is D596's own device, applied here: the row was short of LINES,
-          not width. */}
+          not width.
+          THIS ONLY SHRINKS A ROW WHOSE HEAD PREVIOUSLY WRAPPED — the reported
+          case, and any id long enough to compete with "1.7 GB now (2.2 GB
+          held)" and "Unload" for the panel's ~320px content box. A SHORT id
+          like "gpt-oss-20b", whose head already fit on one line under the old
+          layout, gets one line TALLER here: it trades a head that already had
+          room for the figures alongside it for an always-present figures line
+          below. CSS cannot pick a layout by the rendered width of its own
+          content — there is no selector for "would this line have wrapped" —
+          so the row does not (and structurally cannot) branch between the two
+          shapes; every row pays the same one-line-head-plus-figures-line
+          structure regardless of whether its own name needed it. */}
       <div className="dl-row-head">
         {/* The MODEL name only, not the whole `owner/model` repo id — the
             same trim `.dl-model` uses on the job row, for the same reason:
