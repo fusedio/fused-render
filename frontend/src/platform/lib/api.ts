@@ -934,6 +934,9 @@ export interface Prefs {
     ip: string | null;
     port: number | null;
     error: string | null;
+    // Devices paired by scanning the QR code (lan.py): what the Preferences
+    // list shows and can revoke.
+    devices: LanDevice[];
   };
   // The default Claude model, as one of the claude template's own short names
   // — "" means unset, and each consumer keeps its own default (the fused.ai
@@ -1125,6 +1128,38 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export interface LanDevice {
+  id: string;
+  name: string; // "iPhone · Safari", derived from the user agent at pairing
+  paired_at: number; // epoch seconds
+  last_seen: number;
+}
+
+// A one-time pairing URL for the QR code (five minutes, single use). `ip_url`
+// carries the same token behind the raw LAN address, for a phone whose
+// resolver does not do multi-label .local names.
+export function getLanPairToken(): Promise<{ url: string; ip_url: string | null; ttl_s: number }> {
+  return getJson("/api/lan/pair-token");
+}
+
+export function getLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return getJson("/api/lan/devices");
+}
+
+async function lanDelete(path: string): Promise<{ devices: LanDevice[] }> {
+  const r = await fetch(path, { method: "DELETE", headers: { "X-Fused": "1" } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export function revokeLanDevice(id: string): Promise<{ devices: LanDevice[] }> {
+  return lanDelete(`/api/lan/devices/${encodeURIComponent(id)}`);
+}
+
+export function revokeAllLanDevices(): Promise<{ devices: LanDevice[] }> {
+  return lanDelete("/api/lan/devices");
 }
 
 export function putLanEnabled(enabled: boolean): Promise<Prefs> {

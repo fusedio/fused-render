@@ -239,6 +239,242 @@ def _not_found() -> Response:
     return PlainTextResponse("not found", status_code=404)
 
 
+# ---- pairing: which devices may use the listener ----------------------------
+#
+# QR only, by the owner's call: Preferences shows a QR of
+# http://render.fused.local/pair?t=<one-time token>; the phone scans it, /pair
+# sets a long-lived device cookie and lands on the grid. No PIN, no approval
+# dialog. The token is minted over LOOPBACK (the desktop's own API — a LAN peer
+# cannot mint one), lives five minutes, and is spent on first use. The cookie
+# is 128 bits of randomness; the store keeps its SHA-256 plus a name derived
+# from the user agent, so a stolen store file cannot forge a cookie and the
+# Preferences list can say "iPhone · Safari, last seen 2h ago" and revoke it.
+#
+# What this does and does not cover: it answers "is this MY device", not "is
+# this network safe" — over plain http the cookie travels in clear, which
+# WPA2/3 home Wi-Fi encrypts per client and an open network does not. The
+# Preferences copy says so; https stays the follow-up.
+
+COOKIE = "fused_lan_device"
+COOKIE_MAX_AGE_S = 90 * 86400
+PAIR_TOKEN_TTL_S = 5 * 60
+_LAST_SEEN_STEP_S = 10 * 60
+
+_pair_tokens: dict[str, float] = {}  # token -> expiry (monotonic)
+_pair_lock = threading.Lock()
+
+
+def _devices_path() -> str:
+    from fused_render.shell.storage import home_dir
+
+    return os.path.join(home_dir(), "lan_devices.json")
+
+
+def _read_devices() -> list[dict]:
+    from fused_render.shell import storage
+
+    data = storage.read_json(_devices_path())
+    devices = data.get("devices") if isinstance(data, dict) else None
+    return [d for d in (devices or []) if isinstance(d, dict) and d.get("hash")]
+
+
+def _write_devices(devices: list[dict]) -> None:
+    from fused_render.shell import storage
+
+    storage.write_json(_devices_path(), {"devices": devices})
+
+
+def _hash(secret: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+def mint_pair_token() -> str:
+    """A one-time, five-minute pairing token. Loopback callers only (the router
+    below is on the inner app; the LAN wrapper never forwards it)."""
+    import secrets
+    import time
+
+    token = secrets.token_urlsafe(24)
+    now = time.monotonic()
+    with _pair_lock:
+        for t, exp in list(_pair_tokens.items()):
+            if exp < now:
+                del _pair_tokens[t]
+        _pair_tokens[token] = now + PAIR_TOKEN_TTL_S
+    return token
+
+
+def _spend_pair_token(token: str) -> bool:
+    import time
+
+    with _pair_lock:
+        exp = _pair_tokens.pop(token, None)
+    return exp is not None and exp >= time.monotonic()
+
+
+def _device_name(user_agent: str) -> str:
+    ua = user_agent or ""
+    if "iPhone" in ua:
+        device = "iPhone"
+    elif "iPad" in ua:
+        device = "iPad"
+    elif "Android" in ua:
+        device = "Android"
+    elif "Macintosh" in ua:
+        device = "Mac"
+    elif "Windows" in ua:
+        device = "Windows PC"
+    elif "Linux" in ua:
+        device = "Linux"
+    else:
+        device = "Device"
+    if "CriOS" in ua or ("Chrome" in ua and "Edg" not in ua):
+        browser = "Chrome"
+    elif "Edg" in ua:
+        browser = "Edge"
+    elif "FxiOS" in ua or "Firefox" in ua:
+        browser = "Firefox"
+    elif "Safari" in ua:
+        browser = "Safari"
+    else:
+        browser = "browser"
+    return f"{device} · {browser}"
+
+
+def _pair_device(user_agent: str) -> tuple[str, dict]:
+    """Register a new device; returns (cookie secret, public record)."""
+    import secrets
+    import time
+
+    secret = secrets.token_urlsafe(32)
+    now = time.time()
+    record = {
+        "id": secrets.token_hex(6),
+        "hash": _hash(secret),
+        "name": _device_name(user_agent),
+        "paired_at": now,
+        "last_seen": now,
+    }
+    devices = _read_devices()
+    devices.append(record)
+    _write_devices(devices)
+    return secret, _public(record)
+
+
+def _public(record: dict) -> dict:
+    return {k: record[k] for k in ("id", "name", "paired_at", "last_seen") if k in record}
+
+
+def list_devices() -> list[dict]:
+    return [_public(d) for d in _read_devices()]
+
+
+def revoke_device(device_id: str) -> bool:
+    devices = _read_devices()
+    kept = [d for d in devices if d.get("id") != device_id]
+    if len(kept) == len(devices):
+        return False
+    _write_devices(kept)
+    return True
+
+
+def revoke_all_devices() -> None:
+    _write_devices([])
+
+
+def _cookie_secret(scope) -> str | None:
+    raw = _header(scope, b"cookie")
+    for part in raw.split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == COOKIE and value:
+            return value
+    return None
+
+
+def _paired(scope) -> bool:
+    """True when the request carries a cookie for a stored device; bumps that
+    device's last_seen at most every ten minutes (a write per request would
+    churn the file on every asset)."""
+    import time
+
+    secret = _cookie_secret(scope)
+    if not secret:
+        return False
+    digest = _hash(secret)
+    devices = _read_devices()
+    for d in devices:
+        if d.get("hash") == digest:
+            now = time.time()
+            if now - float(d.get("last_seen") or 0) > _LAST_SEEN_STEP_S:
+                d["last_seen"] = now
+                try:
+                    _write_devices(devices)
+                except OSError:
+                    pass
+            return True
+    return False
+
+
+def _host_ok(scope) -> bool:
+    """Only the names we advertise (and the raw LAN address) may address the
+    listener — a website in a LAN browser that rebinds its own DNS to us would
+    otherwise arrive same-origin."""
+    host = _header(scope, b"host").split(":")[0].strip().lower()
+    if not host:
+        return False
+    if host in (HOSTNAME, ALIAS_HOSTNAME):
+        return True
+    ip = _controller._ip or lan_ip()
+    return bool(ip) and host == ip
+
+
+_PAIR_PAGE = """<!doctype html><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fused apps</title>
+<style>
+html{color-scheme:light dark;background:#131417;color:#e8eaed;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+@media (prefers-color-scheme:light){html{background:#fff;color:#17181a}}
+main{max-width:28rem;margin:18vh auto 0;padding:0 24px}h1{font-size:22px;margin:0 0 12px}p{color:#9aa0a6;margin:0 0 10px}
+</style><main><h1>%s</h1><p>%s</p><p>%s</p></main>"""
+
+
+def _pair_page(title: str, line: str, hint: str = "") -> Response:
+    from html import escape
+
+    return Response(_PAIR_PAGE % (escape(title), escape(line), escape(hint)),
+                    media_type="text/html", status_code=200 if not hint else 403)
+
+
+def _unauthorized(scope) -> Response:
+    """An unpaired request: the grid explains how to pair; everything else is a
+    bare 401 (a page's fetches must not get an HTML document back)."""
+    if scope["path"] in ("/", "/index.html"):
+        return _pair_page(
+            "Scan to pair this device",
+            "On the computer, open Preferences → Share on local network and scan the QR code "
+            "with this phone.",
+            "This device is not paired yet.")
+    return JSONResponse({"error": "not paired"}, status_code=401)
+
+
+def _handle_pair(scope) -> Response:
+    query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+    token = (query.get("t") or [""])[0]
+    if not token or not _spend_pair_token(token):
+        return _pair_page(
+            "That code has expired",
+            "Pairing codes last five minutes and work once. Open Preferences → Share on "
+            "local network on the computer for a fresh one and scan it again.",
+            "Not paired.")
+    secret, _record = _pair_device(_header(scope, b"user-agent"))
+    response = RedirectResponse("/", status_code=302)
+    response.set_cookie(COOKIE, secret, max_age=COOKIE_MAX_AGE_S, httponly=True,
+                        samesite="lax", path="/")
+    return response
+
+
 _RUNTIME_PATH = os.path.join(os.path.dirname(_STATIC_DIR), "runtime.js")
 _PHONE_PATH = os.path.join(_STATIC_DIR, "runtime-phone.js")
 _runtime_cache: tuple[tuple[float, float], bytes] | None = None
@@ -292,7 +528,8 @@ class LanApp:
             # page needs; forwarded when every watched `path` is in the roots.
             query = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"),
                              keep_blank_values=True)
-            if scope["path"] == "/api/fs/events" and query.get("path") and _args_in_scope(query):
+            if (_host_ok(scope) and _paired(scope) and scope["path"] == "/api/fs/events"
+                    and query.get("path") and _args_in_scope(query)):
                 await self.inner(scope, receive, send)
             else:
                 await send({"type": "websocket.close", "code": 1008})
@@ -310,6 +547,13 @@ class LanApp:
         forwarded through ``_Forward`` when the body had to be read)."""
         path = scope["path"]
         method = scope["method"].upper()
+
+        if not _host_ok(scope):
+            return _not_found()
+        if path == "/pair" and method == "GET":
+            return _handle_pair(scope)
+        if not _paired(scope):
+            return _unauthorized(scope)
 
         if path == "/" or path == "/index.html":
             # The grid is a second Vite page (frontend/lan.html → shell-dist/
@@ -555,6 +799,7 @@ class _Controller:
             "ip": ip,
             "port": self.port,
             "error": self.error,
+            "devices": list_devices(),
         }
 
     # -- start/stop
@@ -669,6 +914,55 @@ def apply(enabled: bool) -> None:
 
 def status() -> dict:
     return _controller.status()
+
+
+# ---- the desktop's own API (loopback; the LAN wrapper never forwards these) --
+
+from fastapi import APIRouter, Header  # noqa: E402
+
+router = APIRouter()
+
+
+def _require_fused(x_fused: str | None):
+    if x_fused != "1":
+        return JSONResponse({"error": "missing X-Fused header"}, status_code=403)
+    return None
+
+
+@router.get("/api/lan/pair-token")
+def api_lan_pair_token():
+    """Mint a one-time pairing token and the URL to put in the QR code."""
+    token = mint_pair_token()
+    base = _controller.url()
+    url = (base or f"http://{HOSTNAME}/") + "pair?" + urlencode({"t": token})
+    ip = _controller._ip or lan_ip()
+    port = _controller.port
+    ip_url = None
+    if ip:
+        ip_url = f"http://{ip}{'' if port in (None, 80) else ':' + str(port)}/pair?" + urlencode({"t": token})
+    return {"url": url, "ip_url": ip_url, "ttl_s": PAIR_TOKEN_TTL_S}
+
+
+@router.get("/api/lan/devices")
+def api_lan_devices():
+    return {"devices": list_devices()}
+
+
+@router.delete("/api/lan/devices/{device_id}")
+def api_lan_device_revoke(device_id: str, x_fused: str | None = Header(default=None)):
+    if (guard := _require_fused(x_fused)) is not None:
+        return guard
+    if not revoke_device(device_id):
+        return JSONResponse({"error": "no such device"}, status_code=404)
+    return {"devices": list_devices()}
+
+
+@router.delete("/api/lan/devices")
+def api_lan_devices_revoke_all(x_fused: str | None = Header(default=None)):
+    if (guard := _require_fused(x_fused)) is not None:
+        return guard
+    revoke_all_devices()
+    return {"devices": []}
 
 
 def start_if_enabled() -> None:

@@ -46,12 +46,17 @@ import {
   hfLogout,
   putCanvasesEnabled,
   putLanEnabled,
+  getLanPairToken,
+  getLanDevices,
+  revokeLanDevice,
+  revokeAllLanDevices,
   putDefaultModel,
   putReaderEnabled,
   startHfLogin,
 } from "@platform/lib/api";
+import qrcode from "qrcode-generator";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import type { CallsParamsMode, HfAuth, Prefs } from "@platform/lib/api";
+import type { CallsParamsMode, HfAuth, LanDevice, Prefs } from "@platform/lib/api";
 import { navigate, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -211,25 +216,60 @@ function CanvasesSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Pref
 }
 
 // Local-network sharing (lan.py): off by default, this is the only place it
-// turns on. Same one-checkbox section shape as Canvases above. Shows the
-// address a phone types once the listener is up, and the bind/mDNS error
-// when it is not — the server reports both in the same prefs payload.
+// turns on. Same one-checkbox section shape as Canvases above. While the
+// listener is up it shows the QR code a phone scans to pair (the ONLY way in —
+// no PIN, no approval dialog), and the devices that have, with revoke.
 function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lan = prefs.lan;
   const enabled = lan?.enabled ?? false;
+  const running = enabled && !!lan?.running;
+  const [devices, setDevices] = useState<LanDevice[]>(lan?.devices ?? []);
 
   const toggle = async () => {
     if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      onChange(await putLanEnabled(!enabled));
+      const next = await putLanEnabled(!enabled);
+      onChange(next);
+      setDevices(next.lan?.devices ?? []);
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // While the QR is on screen, watch for the phone to pair: the list grows,
+  // and the spent code is replaced with a fresh one (tokens are single-use).
+  useEffect(() => {
+    if (!running) return;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const { devices: next } = await getLanDevices();
+        if (!alive) return;
+        setDevices((prev) => (prev.length === next.length && prev.every((d, i) => d.id === next[i].id) ? prev : next));
+      } catch {
+        /* the next tick retries */
+      }
+    };
+    const id = window.setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [running]);
+
+  const revoke = async (id: string | null) => {
+    setError(null);
+    try {
+      const { devices: next } = id ? await revokeLanDevice(id) : await revokeAllLanDevices();
+      setDevices(next);
+    } catch (e) {
+      setError((e as Error).message);
     }
   };
 
@@ -238,10 +278,10 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
       <h2>Share on local network</h2>
       <p className="deploy-muted">
         Open your apps — everything under <code>~/Fused</code> and every linked folder — from a
-        phone or another computer on the same Wi-Fi. While this is on, <b>anyone on your network</b>{" "}
-        can open and run those apps and read or change their files; nothing else on this computer is
-        reachable. Plain http: on iPhone the live microphone and clipboard paste stay off; everything
-        else works.
+        phone on the same Wi-Fi. Only devices you pair by scanning the code below get in; a paired
+        device can open and run those apps and read or change their files, and nothing else on this
+        computer is reachable. Plain http: on iPhone the live microphone and clipboard paste stay off,
+        and on an open (password-less) network the pairing cookie travels in the clear.
       </p>
       <label className="prefs-radio">
         <input type="checkbox" checked={enabled} disabled={busy} onChange={toggle} />
@@ -249,23 +289,116 @@ function LanSection({ prefs, onChange }: { prefs: Prefs; onChange: (p: Prefs) =>
           <b>Share my apps</b> on this network.
         </span>
       </label>
-      {enabled && lan?.running && lan.url && (
-        <p className="deploy-muted">
-          On your phone, open <a href={lan.url} target="_blank" rel="noreferrer"><b>{lan.url}</b></a>
-          {lan.ip && (
-            <>
-              {" "}(or <code>http://{lan.ip}{lan.port && lan.port !== 80 ? `:${lan.port}` : ""}/</code> if
-              the name does not resolve)
-            </>
-          )}
-          .
-        </p>
+      {running && lan.url && (
+        <LanPairing url={lan.url} deviceCount={devices.length} />
+      )}
+      {running && (
+        <LanDevices devices={devices} onRevoke={revoke} />
       )}
       {enabled && !lan?.running && (
         <ErrorBanner>{lan?.error ? `Not sharing: ${lan.error}` : "Starting…"}</ErrorBanner>
       )}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </section>
+  );
+}
+
+// The QR code: a one-time pairing URL, refreshed when it expires or is spent
+// (the device count changing is how we learn it was spent).
+function LanPairing({ url, deviceCount }: { url: string; deviceCount: number }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  const [ipUrl, setIpUrl] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    let timer: number | null = null;
+    setExpired(false);
+    getLanPairToken()
+      .then((t) => {
+        if (!alive) return;
+        const qr = qrcode(0, "M");
+        qr.addData(t.url);
+        qr.make();
+        setSvg(qr.createSvgTag({ cellSize: 4, margin: 0, scalable: true }));
+        setIpUrl(t.ip_url);
+        timer = window.setTimeout(() => alive && setExpired(true), t.ttl_s * 1000);
+      })
+      .catch(() => alive && setSvg(null));
+    return () => {
+      alive = false;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [nonce, deviceCount]);
+
+  return (
+    <div className="lan-pair">
+      <div
+        className="lan-pair-qr"
+        aria-label="Pairing QR code"
+        style={{ opacity: expired ? 0.25 : 1 }}
+        dangerouslySetInnerHTML={{ __html: svg ?? "" }}
+      />
+      <div className="lan-pair-text">
+        <p>
+          <b>Scan with the phone's camera</b> to pair it. The code works once and for five minutes;
+          the phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+        </p>
+        {expired ? (
+          <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
+            New code
+          </button>
+        ) : (
+          <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
+            New code
+          </button>
+        )}
+        {ipUrl && (
+          <p className="deploy-muted" style={{ marginTop: 8 }}>
+            If the phone can't resolve the name, open this once instead:{" "}
+            <code style={{ wordBreak: "break-all" }}>{ipUrl}</code>
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function agoLabel(ts: number): string {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+  return `${Math.floor(s / 86400)} d ago`;
+}
+
+function LanDevices({ devices, onRevoke }: { devices: LanDevice[]; onRevoke: (id: string | null) => void }) {
+  if (!devices.length) {
+    return <p className="deploy-muted">No paired devices yet.</p>;
+  }
+  return (
+    <div className="lan-devices">
+      <div className="lan-devices-head">
+        <b>Paired devices</b>
+        <button type="button" className="btn btn-secondary" onClick={() => onRevoke(null)}>
+          Forget all
+        </button>
+      </div>
+      <ul>
+        {devices.map((d) => (
+          <li key={d.id}>
+            <span className="lan-device-name">{d.name}</span>
+            <span className="deploy-muted">
+              paired {agoLabel(d.paired_at)} · seen {agoLabel(d.last_seen)}
+            </span>
+            <button type="button" className="btn btn-secondary" onClick={() => onRevoke(d.id)}>
+              Revoke
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
