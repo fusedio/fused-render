@@ -1644,14 +1644,16 @@ def test_a_page_satisfied_by_today_never_opens_an_older_day(store, monkeypatch):
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
+    sys.platform != "linux",
     reason="fds() reads /proc/self/fd (Linux procfs) purely as a test-side probe "
            "of how many file handles this process holds open — it names no app "
            "behavior, just counts descriptors the way `lsof`/`ls /proc/self/fd` "
-           "would. Windows has no /proc: there is no bare-stdlib equivalent (the "
-           "nearest real one, enumerating HANDLEs via a Windows API, needs a new "
-           "dependency this repo doesn't otherwise carry), so the probe itself — "
-           "not the merge-closes-its-files guarantee it's checking — is Linux-only.",
+           "would. Neither Windows nor macOS has /proc (macOS's own /proc was "
+           "removed years ago; there is no bare-stdlib equivalent on either — "
+           "the nearest real one, enumerating HANDLEs via a Windows API or Mach "
+           "APIs via psutil, needs a new dependency this repo doesn't otherwise "
+           "carry), so the probe itself — not the merge-closes-its-files "
+           "guarantee it's checking — is Linux-only.",
 )
 def test_an_abandoned_merge_closes_the_day_s_files(store):
     """A full page or an exhausted budget abandons the walk mid-merge; the day's

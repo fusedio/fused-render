@@ -2378,6 +2378,13 @@
     color: var(--error); font-size: 12px; margin: 6px 0;
     white-space: pre-wrap; word-break: break-word;
   }
+  /* A cached copy that predates the Task's own completion (subagentRenderState's
+     "partial" kind): the turns above it are real, but the agent's own final
+     message may still be missing — said plainly, not left implicit. */
+  .sub-turn-partial {
+    color: var(--faint); font-size: 12px; font-style: italic; margin: 6px 0;
+    white-space: pre-wrap; word-break: break-word;
+  }
   .thinking > summary {
     cursor: pointer; color: var(--faint); font-size: 12px; font-style: italic;
     transition: color .12s ease-out;
@@ -13508,8 +13515,12 @@ function subagentCacheTrim() {
 // main conversation uses, which is what lets a nested Task chip (spawnDepth
 // > 1) work with no code of its own. A user turn is the subagent's own
 // prompt: plain text, never markdown — nobody asked the model to write it.
-function renderSubagentTranscript(container, turns) {
+// `opts.partial` appends one more slot, always LAST, for the notice that a
+// cached copy predates the Task's own completion (see `subagentRenderState`)
+// — removed the moment a fetch replaces it with a non-partial reading.
+function renderSubagentTranscript(container, turns, opts) {
   const list = Array.isArray(turns) ? turns : [];
+  const partial = !!(opts && opts.partial);
   for (let i = 0; i < list.length; i++) {
     const turn = list[i] || {};
     let turnEl = container.children[i];
@@ -13526,12 +13537,32 @@ function renderSubagentTranscript(container, turns) {
       renderSegments(turnEl, turn.segments || []);
     }
   }
-  Array.from(container.children).slice(list.length).forEach((c) => c.remove());
+  if (partial) {
+    let notice = container.children[list.length];
+    if (!notice || notice.className !== "sub-turn-partial") {
+      if (notice) notice.remove();
+      notice = document.createElement("div");
+      notice.className = "sub-turn-partial";
+      notice.textContent = "Showing a partial transcript — this agent's "
+        + "final message may still be missing.";
+      container.appendChild(notice);
+    }
+  }
+  Array.from(container.children).slice(list.length + (partial ? 1 : 0))
+    .forEach((c) => c.remove());
 }
 
 // A fetch that failed enough times to give up on: shown once, in the log
 // area itself, so the chip says SOMETHING rather than sitting empty forever.
+// Idempotent on purpose (code review finding #4): once this message is
+// already the only thing in the container, a poll tick that keeps calling
+// this every 400 ms for the rest of the run must not keep replacing the
+// node — that destroys any text selection inside it, for no visible change.
 function renderSubagentFailure(container, message) {
+  const cur = container.children[0];
+  if (container.children.length === 1 && cur && cur.className === "sub-turn-error") {
+    return;
+  }
   const div = document.createElement("div");
   div.className = "sub-turn-error";
   div.textContent = "Couldn't load this subagent's transcript"
@@ -13539,15 +13570,70 @@ function renderSubagentFailure(container, message) {
   container.replaceChildren(div);
 }
 
+// ── the state machine, made a pure function (round 3) ─────────
+// Rounds 1 and 2 painted imperatively, once, from whichever exit path a
+// fetch happened to take — and every round found one more path that forgot
+// to. `subagentRenderState`/`subagentShouldFetch` are the fix: two pure
+// functions of (cached entry, fail count, Task's own current status), with
+// no side effects, called FRESH on every pump. There is no longer a "did
+// this code path remember to paint" question, because painting is not a
+// side effect scattered through the fetch — it is "call `renderSubagentPump`
+// with whatever these return", every time, unconditionally.
+
+// What the log should show right now. Never decides whether to fetch — a
+// cached copy can be the RIGHT THING TO SHOW while the agent is still
+// writing and another fetch is still worth making (see subagentShouldFetch).
+function subagentRenderState(cached, failCount, status) {
+  if (cached) {
+    // A copy taken while still `running` is PARTIAL the instant the Task
+    // itself goes terminal: it is missing whatever the agent wrote in
+    // roughly its last 400 ms — typically its own concluding message, i.e.
+    // the actual result — and must never be shown as if it were the final
+    // word. A truncated transcript that reads exactly like a complete one
+    // is the worst failure mode this feature can have (code review finding
+    // #2) — worse than one that is visibly broken.
+    const partial = status !== "running" && cached.fetchedAtStatus === "running";
+    return { kind: partial ? "partial" : "ok", turns: cached.turns };
+  }
+  if ((failCount || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) return { kind: "failed" };
+  return { kind: "empty" };   // nothing yet — still loading, or never asked
+}
+
+// Whether there is anything left worth going back to the wire for. A cache
+// that is the right thing to RENDER (kind "ok") can still be worth
+// refreshing — the agent may still be writing — so this is asked
+// separately from `subagentRenderState`, not derived from its `kind`.
+function subagentShouldFetch(cached, failCount, status) {
+  if ((failCount || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) return false;   // given up
+  if (!cached) return true;
+  if (status === "running") return true;   // still writing; always worth another look
+  return cached.fetchedAtStatus === "running";   // stale copy, now-terminal status
+}
+
+// The ONE place that touches a Task chip's subagent-log DOM. Every caller —
+// the top of `pumpSubagentLog` (painting whatever is already known, before
+// any fetch), and a fetch's own completion (painting whatever just changed)
+// — hands this the CURRENT derived state and nothing else decides what
+// appears on screen.
+function renderSubagentPump(container, state, message) {
+  if (state.kind === "failed") { renderSubagentFailure(container, message); return; }
+  if (state.kind === "empty") {
+    if (container.children.length) container.replaceChildren();
+    return;
+  }
+  renderSubagentTranscript(container, state.turns || [],
+                           { partial: state.kind === "partial" });
+}
+
 // ONE entry point for a Task chip's subagent log — the 400 ms poll tick, the
 // "toggle" listener (a restored conversation that never polls), and a fetch's
 // own completion ALL call this, rather than each other or a fetch function
-// directly. That is deliberate: three call sites each re-implementing "is
-// this open, is this agent given up on, should this recurse" is exactly how
-// a prior round of fixes (running->terminal catch-up, the fail bound) each
-// individually forgot to re-apply every gate in the no-more-poll-ticks case.
-// One function that every caller goes through cannot forget a gate for one
-// of its callers and not the others.
+// directly. That is deliberate: separate call sites each re-implementing "is
+// this open, is this agent given up on, should this recurse, should this
+// paint" is exactly how two prior rounds of fixes each left one more
+// no-more-poll-ticks case unhandled. One function every caller goes through,
+// painting from the pure state functions above, cannot forget a gate — or a
+// paint — for one of its callers and not the others.
 //
 // `getLogEl`/`getSeg` are read AT USE, never captured by value: a rebuild
 // (the Task's own status flipping, or `subagent` arriving late) tears down
@@ -13570,29 +13656,30 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   // forever even though nothing is currently wrong.
   if (opts && opts.reexpand) subagentFailCount.delete(agentId);
   const status = seg.status || "running";
-  const cached = subagentCache.get(agentId);
-  if (cached) {
-    // Already have a copy: paint it immediately (no flash of an empty log
-    // while the network round-trip that follows, if any, is in flight).
-    renderSubagentTranscript(logEl, cached.turns || []);
-    // ...and only go back to the wire while the agent could still be
-    // writing, OR the copy on hand was taken before it finished (see
-    // subagentCache's own comment) — a terminal copy fetched AT a terminal
-    // status is the final word and is never re-requested.
-    if (status !== "running" && cached.fetchedAtStatus !== "running") return;
+
+  // Paint whatever is ALREADY known before deciding whether to fetch
+  // anything more — every pump repaints from the current cache/fail-count/
+  // status, so there is no "first open after a give-up shows nothing until
+  // a fetch resolves" gap, and no stale render left over from a state that
+  // no longer holds (a `reexpand` above, say).
+  renderSubagentPump(logEl, subagentRenderState(
+    subagentCache.get(agentId), subagentFailCount.get(agentId), status),
+    subagentFailMessage.get(agentId));
+
+  if (!subagentShouldFetch(subagentCache.get(agentId),
+                           subagentFailCount.get(agentId), status)) {
+    return;   // fully settled (a final cache) or already given up
   }
-  if ((subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
-    if (!cached) renderSubagentFailure(logEl, subagentFailMessage.get(agentId));
-    return;
-  }
-  if (subagentLoading.has(agentId)) return;   // already in flight; its own
-                                              // completion re-enters here
+  if (subagentLoading.has(agentId)) return;   // already in flight elsewhere
+  const session_id = fused.params.get("session_id") || "";
+  if (!session_id) return;   // hoisted above the `.add` (code review finding
+                             // #5) — an unresolvable case must not churn the
+                             // in-flight set on every tick regardless
+
   subagentLoading.add(agentId);
   const startStatus = status;
   let outcome;
   try {
-    const session_id = fused.params.get("session_id") || "";
-    if (!session_id) return;
     const data = await fused.runPython(
       AGENT, { action: "subagent", file: FILE, session_id, agent_id: agentId },
       { key: null });
@@ -13603,47 +13690,54 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   } finally {
     subagentLoading.delete(agentId);
   }
-  // The chip may be pointed at a DIFFERENT agent entirely by now — `key`
-  // (buildToolChip) includes `agentId` precisely because a rebuild can
-  // retarget it — and this fetch's outcome belongs to the one it was asked
-  // for, not whatever is current. Applying it to the wrong agent's cache or
-  // log would be worse than doing nothing.
-  if (!(getSeg() && getSeg().subagent && getSeg().subagent.agentId === agentId)) return;
-  if (!outcome.ok) {
+
+  // The shared, agentId-keyed state is updated UNCONDITIONALLY, before any
+  // check of what THIS chip currently points at (code review finding #3): a
+  // successful, potentially multi-megabyte fetch is valid regardless of a
+  // mid-flight rebuild, and `subagent` can also be transiently ABSENT from
+  // this very segment (`_attach_subagents` returns segments untouched on a
+  // transient `os.listdir` error or a half-written `.meta.json` hitting a
+  // `json.load` failure) — neither is a reason to throw the answer away.
+  if (outcome.ok) {
+    subagentCache.set(agentId, { turns: outcome.turns, fetchedAtStatus: startStatus });
+    subagentCacheTrim();
+    subagentFailCount.delete(agentId);
+    subagentFailMessage.delete(agentId);
+  } else {
     subagentFailCount.set(agentId, (subagentFailCount.get(agentId) || 0) + 1);
     subagentFailMessage.set(agentId, outcome.message);
-    // Painted HERE, not left for a later tick to notice the bound was hit:
-    // the 5th failure can land on the run's FINAL poll (a Task's own
-    // tool_result can be the very last row before the whole run reports
-    // done), so there may be no later tick at all — an open chip with a
-    // give-up nobody ever painted is the exact blank-forever state this
-    // feature exists to prevent.
-    const cur = getLogEl();
-    if (cur && !subagentCache.get(agentId)
-        && (subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
-      renderSubagentFailure(cur, outcome.message);
-    }
-    return;   // a failure never re-enters below
   }
-  subagentCache.set(agentId, { turns: outcome.turns, fetchedAtStatus: startStatus });
-  subagentCacheTrim();
-  subagentFailCount.delete(agentId);
-  subagentFailMessage.delete(agentId);
-  const cur = getLogEl();
-  if (cur) renderSubagentTranscript(cur, outcome.turns);
-  // Catch up ONLY on a running->terminal transition that happened WHILE this
-  // fetch was in flight (a Task's own tool_result can be the very last row
-  // before the whole run reports done, so there may be no external tick left
-  // to notice) — not a general self-driving loop. While the subagent is
-  // still running, the 400 ms poll tick is what paces further fetches;
-  // recursing unconditionally here would free-run as fast as the network
-  // allows instead of on that cadence. The recursive call still goes
-  // through every gate above (`el.open`, the depth cap, the fail bound) —
-  // that is what makes it impossible for THIS path to bypass them the way a
-  // direct call to the fetch alone used to (finding C).
+
+  // Everything past here is about WHAT IS ON SCREEN, which only makes sense
+  // for the chip this fetch was actually asked for — `key` (buildToolChip)
+  // includes `agentId` precisely because a rebuild CAN retarget this closure
+  // at a different subagent entirely, and painting (or chasing a
+  // transition) for the wrong one would be worse than doing nothing.
   const seg2 = getSeg();
-  const status2 = (seg2 && seg2.status) || "running";
-  if (startStatus === "running" && status2 !== "running") {
+  if (!(seg2 && seg2.subagent && seg2.subagent.agentId === agentId)) return;
+  const status2 = seg2.status || "running";
+  const cached2 = subagentCache.get(agentId);
+  const failN2 = subagentFailCount.get(agentId) || 0;
+  const cur = getLogEl();
+  if (cur) {
+    renderSubagentPump(cur, subagentRenderState(cached2, failN2, status2),
+                       subagentFailMessage.get(agentId));
+  }
+  // Chase a state that is not yet SETTLED (still partial/empty, i.e. still
+  // worth fetching) all the way to a stopping point — a complete cache, or
+  // the give-up bound — the moment the Task itself has gone terminal, with
+  // no dependence on a further external poll tick: the Task's own
+  // `tool_result` can be the very last row before the whole run reports
+  // done, so there may not be one. Gated on the CURRENT status being
+  // terminal, not on what THIS attempt started as — a failure below the
+  // bound must keep chasing through subsequent failures too, not stop after
+  // one extra try — and bounded because `subagentShouldFetch` becomes false
+  // once the fetch finally succeeds at a matching status OR the fail count
+  // reaches its own ceiling; either way this cannot recurse forever. While
+  // the subagent is still running, the 400 ms poll tick is what paces
+  // further fetches instead — recursing here regardless of status2 would
+  // free-run as fast as the network allows rather than on that cadence.
+  if (status2 !== "running" && subagentShouldFetch(cached2, failN2, status2)) {
     pumpSubagentLog(el, getLogEl, getSeg);
   }
 }

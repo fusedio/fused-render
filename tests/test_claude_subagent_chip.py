@@ -814,9 +814,14 @@ main();
 
 def test_a_rebuild_onto_a_different_agent_mid_fetch_does_not_cross_wires(
         probe_src, tmp_path):
-    """Code review finding D: a fetch in flight for agent A must not paint
-    its result into agent B's log, or make B's catch-up decision, if the
-    chip gets rebuilt onto B before A's fetch resolves."""
+    """Code review finding D (frontend round 2) plus finding #3 (round 3): a
+    fetch in flight for agent A must not paint its result into agent B's
+    log, or make B's catch-up decision, if the chip gets rebuilt onto B
+    before A's fetch resolves — but A's answer IS a real, valid, potentially
+    multi-megabyte fetch, cached under A's own agentId regardless, because
+    the cache is keyed by agentId and stays valid no matter what this one
+    chip currently points at. Only the DOM paint and the catch-up decision
+    are gated on the match, not the cache write (round 3, finding #3)."""
     got = _run(probe_src, """
 async function main() {
   runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "from A"}]}});
@@ -830,14 +835,173 @@ async function main() {
   console.log(JSON.stringify({
     tree: dump(el.el),
     cachedA: subagentCache.has("aA"),
-    cachedB: subagentCache.has("aB"),
+    cacheB: subagentCache.get("aB") || null,
   }));
 }
 main();
 """ % (json.dumps(_task_seg(subagent=_sub(agent_id="aA"))),
        json.dumps(_task_seg(subagent=_sub(agent_id="aB")))), tmp_path)
-    # A's answer must not be cached under A (the mismatch guard returns
-    # before any cache write) and must not appear in B's log.
-    assert got["cachedA"] is False
+    # A's answer IS cached under A now (round 3 changed this deliberately) —
+    # but it must never have painted into B's log, or B's own cache under B's
+    # key (the rebuild onto B legitimately triggers B's OWN fetch, which is
+    # unrelated and must not be confused with A's outcome bleeding across).
+    assert got["cachedA"] is True
+    if got["cacheB"] is not None:
+        assert got["cacheB"]["turns"] != [{"role": "user", "text": "from A"}]
     users = _by_class(got["tree"], "sub-turn-user")
     assert not any(u["text"] == "from A" for u in users)
+
+
+# ------------------------------------------------- round 3: derived render
+
+def test_a_below_bound_failure_on_the_last_ever_tick_still_recovers(
+        probe_src, tmp_path):
+    """Code review round 3, finding #1: the OLD code only retried a failure
+    from a LATER external poll tick, and only painted the give-up message at
+    the bound. A run whose Task result lands as the run's very last row
+    ends the poll loop right there — if the chase-fetch that follows fails
+    even ONCE (fail count 1, nowhere near the bound of 5), nothing external
+    will ever retry it. The fix chases a non-settled state (no cache yet, not
+    given up yet) all the way to a stopping point FROM WITHIN the completion
+    handler itself, with no dependence on any further tick."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "blip 1"});
+  runPythonQueue.push({__reject: true, message: "blip 2"});
+  runPythonQueue.push({turns: [{role: "user", text: "finally landed"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1 starts, still "running"
+  el.update(%s);                         // status flips to terminal WHILE #1 is in flight
+  // NOTHING else calls update() or clicks anything after this — the
+  // no-more-ticks case.
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    assert got["calls"] == 3
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "finally landed"
+
+
+def test_a_partial_cache_that_never_completes_shows_the_partial_notice(
+        probe_src, tmp_path):
+    """Code review round 3, finding #2: a copy fetched while still `running`
+    is shown immediately (as before), but once the Task goes terminal and
+    EVERY subsequent catch-up attempt fails all the way to the give-up
+    bound, the chip must say the transcript is partial — not silently keep
+    displaying the running-time snapshot forever with no indication it is
+    missing the agent's own concluding message."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "still going"}]});
+  for (let i = 0; i < 5; i++) runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1 succeeds, cached at "running"
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // status goes terminal; every catch-up fails
+  for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "still going"
+    partial = _by_class(got["tree"], "sub-turn-partial")
+    assert len(partial) == 1, "a stale running-time cache must say it is partial"
+    # The stale copy is NEVER silently replaced by the error path either —
+    # the turns stay on screen, with the notice, not an error in their place.
+    assert _by_class(got["tree"], "sub-turn-error") == []
+
+
+def test_a_still_running_cache_reads_as_ok_not_partial(probe_src, tmp_path):
+    got = _run(probe_src, """
+console.log(JSON.stringify({
+  state: subagentRenderState({turns: [], fetchedAtStatus: "running"}, 0, "running"),
+}));
+""", tmp_path)
+    assert got["state"]["kind"] == "ok"
+
+
+def test_render_state_is_pure(probe_src, tmp_path):
+    """subagentRenderState/subagentShouldFetch as pure functions, exercised
+    directly rather than through the whole chip — the derived-state
+    invariant this whole round is about."""
+    got = _run(probe_src, """
+console.log(JSON.stringify({
+  empty: subagentRenderState(null, 0, "running"),
+  failed: subagentRenderState(null, 5, "running"),
+  ok: subagentRenderState({turns: [1], fetchedAtStatus: "ok"}, 0, "ok"),
+  partial: subagentRenderState({turns: [1], fetchedAtStatus: "running"}, 0, "ok"),
+  shouldFetchRunning: subagentShouldFetch({turns: [], fetchedAtStatus: "ok"}, 0, "running"),
+  shouldNotFetchSettled: subagentShouldFetch({turns: [], fetchedAtStatus: "ok"}, 0, "ok"),
+  shouldNotFetchGivenUp: subagentShouldFetch(null, 5, "running"),
+  shouldFetchStalePartial: subagentShouldFetch({turns: [], fetchedAtStatus: "running"}, 0, "ok"),
+}));
+""", tmp_path)
+    assert got["empty"]["kind"] == "empty"
+    assert got["failed"]["kind"] == "failed"
+    assert got["ok"]["kind"] == "ok"
+    assert got["partial"]["kind"] == "partial"
+    assert got["shouldFetchRunning"] is True
+    assert got["shouldNotFetchSettled"] is False
+    assert got["shouldNotFetchGivenUp"] is False
+    assert got["shouldFetchStalePartial"] is True
+
+
+def test_the_give_up_message_is_not_repainted_once_shown(probe_src, tmp_path):
+    """Code review round 3, finding #4: once the failure message is the only
+    thing in the log, a poll tick that keeps calling this every 400 ms for
+    the rest of the run must not keep replacing the node — the SAME element
+    (by identity) should still be there after a second render of the exact
+    same failed state."""
+    got = _run(probe_src, """
+const container = document.createElement("div");
+renderSubagentFailure(container, "down");
+const firstUid = container.children[0].uid;
+renderSubagentFailure(container, "down");
+console.log(JSON.stringify({
+  n: container.children.length,
+  sameUid: container.children[0].uid === firstUid,
+}));
+""", tmp_path)
+    assert got["n"] == 1
+    assert got["sameUid"] is True
+
+
+def test_session_id_absent_never_touches_the_loading_set(probe_src, tmp_path):
+    """Code review round 3, finding #5: the `session_id` check used to sit
+    INSIDE the try, after `subagentLoading.add(agentId)` — so a page where
+    `session_id` has not landed yet added and (via `finally`) immediately
+    deleted the agentId on every single tick, forever, unlike every other
+    bail-out path above it which returns before touching the set at all.
+    Hoisted above the add: `add` must never even be CALLED when there is no
+    session id, not merely "cleaned up again by the time anyone looks"."""
+    got = _run(probe_src, """
+async function main() {
+  SESSION_ID = "";
+  const addCalls = [];
+  const realAdd = subagentLoading.add.bind(subagentLoading);
+  subagentLoading.add = (id) => { addCalls.push(id); return realAdd(id); };
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    addCalls: addCalls.length,
+    stillLoading: subagentLoading.has("a1"),
+    calls: runPythonLog.length,
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
+    assert got["addCalls"] == 0, "no session_id must never even register as loading"
+    assert got["stillLoading"] is False
+    assert got["calls"] == 0, "no session_id means no fetch is ever attempted"
