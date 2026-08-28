@@ -62,6 +62,18 @@
     --scrim-bg-hover: rgba(0, 0, 0, 0.75);
     --scrim-border: rgba(255, 255, 255, 0.25);
     --scrim-fg: #ffffff;
+    /* Code's OWN palette (6b.2, D611 follow-up) — distinct from the four UI
+       tokens above on purpose: a syntax palette needs several MUTUALLY
+       DISTINGUISHABLE hues, which "reuse the app's one accent" cannot give
+       it. Unused here — dark mode still renders through oneDark's own
+       HighlightStyle — but declared to oneDark's OWN produced colours, so a
+       future unification starts from values that already agree, and so this
+       block and the light one below name the same token for the same
+       family. */
+    --code-keyword: #c678dd;
+    --code-string: #98c379;
+    --code-number: #d19a66;
+    --code-function: #61afef;
   }
   :root[data-theme="light"] {
     color-scheme: light;
@@ -87,6 +99,20 @@
     --scrim-bg-hover: rgba(0, 0, 0, 0.75);
     --scrim-border: rgba(255, 255, 255, 0.25);
     --scrim-fg: #ffffff;
+    /* Code's own palette, ACTUALLY USED here (lightCodeHighlight, below in
+       the script) — chosen for two things at once: recognisably the same hue
+       family as oneDark's dark-mode colours (purple/green/orange/blue), and
+       readable on `--bg-alt` the way `--accent` itself had to be redarkened
+       for (this view's light `--accent` is already a deep olive rather than
+       the brand lime, for the identical reason). Checked against WCAG
+       contrast on both `--bg` (#fff) and `--bg-alt` (#f4f5f7): keyword
+       7.34:1 / 6.73:1, string 7.39:1 / 6.78:1, number 7.39:1 / 6.77:1,
+       function 7.59:1 / 6.96:1 — all comfortably past the 4.5:1 body-text
+       floor, most past the 7:1 AAA one. */
+    --code-keyword: #6639ba;
+    --code-string: #116329;
+    --code-number: #953800;
+    --code-function: #0550ae;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
@@ -410,10 +436,15 @@
     cursor: pointer;
   }
   .corner-btn:hover { color: var(--fg); border-color: var(--accent); }
+  /* An accent-coloured GLYPH on the normal surface, not a filled block: a
+     solid `--accent` fill read as the loudest thing on an otherwise quiet
+     page, especially in light mode where `--accent` is a heavy deep olive.
+     The border still turns accent too, so "on" is legible at a glance without
+     reading the icon — two signals, neither of them a fill. */
   .corner-btn[aria-pressed="true"] {
-    background: var(--accent);
+    background: var(--bg-alt);
     border-color: var(--accent);
-    color: var(--on-accent);
+    color: var(--accent);
   }
   .corner-btn:disabled {
     cursor: not-allowed;
@@ -3103,24 +3134,40 @@
     }
 
     // `oneDark` (dark mode) already ships its own token colours; light mode
-    // has no equivalent, so fences there stayed flat grey until this. Built
-    // from the SAME theme tokens as everything else in this view (no new
-    // colour literals) — a small, mostly-monochrome palette, so weight and
-    // slant carry some of what a fuller palette would carry in colour.
+    // had none, so fences there stayed flat grey until this. FIRST DRAFT built
+    // the palette out of the UI token set (`--accent`/`--fg`/`--fg-muted`) and
+    // that was the wrong source: light mode has exactly ONE accent, so every
+    // accent-ish class (keyword, control keyword, number, bool) converged on
+    // the same olive-green, which is "bold some words", not syntax colour, and
+    // it disagreed with dark mode about what a string looks like (green there,
+    // grey here). A syntax palette needs several hues that are BOTH mutually
+    // distinguishable and readable on the page, which is a different
+    // requirement from "matches the app" — so code gets its own small palette,
+    // `--code-keyword`/`--code-string`/`--code-number`/`--code-function`,
+    // declared in both `:root` blocks (never a literal here, or
+    // test_tier_one_template_has_no_colour_literals_outside_its_palettes
+    // fails). Comments and plain text/punctuation stay on the UI tokens
+    // (`--fg-muted` italic, `--fg`) — those two are meant to read as quieter
+    // than code, in both palettes, which is the one place reusing a UI token
+    // is still the right call. The dark block sets the same four names to
+    // oneDark's OWN produced colours (unused today — dark still renders
+    // through oneDark's own HighlightStyle, not this one — but declared so a
+    // future unification has the right values already, and so the two
+    // palettes agree on what each token family means).
     const lightCodeHighlight = CM.HighlightStyle.define([
       { tag: [CM.tags.keyword, CM.tags.controlKeyword, CM.tags.operatorKeyword,
               CM.tags.definitionKeyword, CM.tags.moduleKeyword],
-        color: "var(--accent)", fontWeight: "600" },
-      { tag: [CM.tags.string, CM.tags.special(CM.tags.string)], color: "var(--fg-muted)" },
+        color: "var(--code-keyword)", fontWeight: "600" },
+      { tag: [CM.tags.string, CM.tags.special(CM.tags.string)], color: "var(--code-string)" },
       { tag: [CM.tags.comment, CM.tags.lineComment, CM.tags.blockComment],
-        color: "var(--ghost)", fontStyle: "italic" },
+        color: "var(--fg-muted)", fontStyle: "italic" },
       { tag: [CM.tags.number, CM.tags.bool, CM.tags.atom, CM.tags.null],
-        color: "var(--accent)" },
+        color: "var(--code-number)" },
       { tag: [CM.tags.typeName, CM.tags.className, CM.tags.namespace],
-        color: "var(--fg)", fontWeight: "600" },
+        color: "var(--code-function)", fontWeight: "600" },
       { tag: [CM.tags.propertyName, CM.tags.attributeName], color: "var(--fg-muted)" },
       { tag: [CM.tags.function(CM.tags.variableName), CM.tags.definition(CM.tags.variableName)],
-        color: "var(--fg)", fontWeight: "600" },
+        color: "var(--code-function)", fontWeight: "600" },
       { tag: [CM.tags.variableName, CM.tags.self], color: "var(--fg)" },
       { tag: [CM.tags.operator, CM.tags.punctuation, CM.tags.bracket, CM.tags.meta],
         color: "var(--fg-muted)" },
