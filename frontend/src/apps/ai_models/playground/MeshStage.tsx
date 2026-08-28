@@ -129,6 +129,21 @@ function MeshViewer({ path, jobId }: { path: string; jobId: string }) {
         };
         loop();
 
+        // Assigned HERE, immediately after the rAF loop starts — not after
+        // `loader.parse(...)` below, which is preceded by two `await`s
+        // (`fetch`, `arrayBuffer()`). An unmount, or a failed/non-OK
+        // `/api/fs/raw` fetch, landing in that window used to run this
+        // effect's cleanup against the still-default no-op `cleanup = ()
+        // => {}` — leaving the loop rendering forever and one WebGL
+        // context leaked per navigation (code review, 2026-08-28,
+        // finding 3). Everything the loop actually touches (`raf`,
+        // `resize`, `renderer`) already exists by this point.
+        cleanup = () => {
+          cancelAnimationFrame(raf);
+          window.removeEventListener("resize", resize);
+          renderer.dispose();
+        };
+
         function frame(root: unknown) {
           const box = new THREE.Box3().setFromObject(root);
           if (box.isEmpty()) return;
@@ -163,11 +178,6 @@ function MeshViewer({ path, jobId }: { path: string; jobId: string }) {
           },
         );
 
-        cleanup = () => {
-          cancelAnimationFrame(raf);
-          window.removeEventListener("resize", resize);
-          renderer.dispose();
-        };
       } catch (e) {
         if (alive) setError((e as Error).message);
       }
@@ -205,6 +215,12 @@ export function MeshStage({
 
   const [attachment, setAttachment] = useState<Attached | null>(null);
   const [attaching, setAttaching] = useState(false);
+  //: Whether the attached picture is showing full-size — `ImageStage.tsx`'s
+  //: own `showBase` state, under this stage's own name. The thumbnail
+  //: button that opens it had no `onClick` at all until code review caught
+  //: it (2026-08-28, finding 5): a 28px thumbnail that claims "See this
+  //: picture" and does nothing when clicked.
+  const [showAttachment, setShowAttachment] = useState(false);
   const [steps, setSteps] = useState(() => numParam("steps", modelSteps, ...STEPS_RANGE));
   const [guidance, setGuidance] = useState(() =>
     numParam("guidance", engineTraits.defaultGuidance, ...GUIDANCE_RANGE),
@@ -237,6 +253,15 @@ export function MeshStage({
   useEffect(() => () => {
     aliveRef.current = false;
   }, []);
+
+  // Escape closes the preview — `ImageStage.tsx`'s own effect, verbatim:
+  // the one keystroke anybody reaches for before the ✕.
+  useEffect(() => {
+    if (!showAttachment) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setShowAttachment(false);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showAttachment]);
 
   /** Point the render at a file already on this disk — no copy, no upload —
    *  the identical trade `ImageStage.tsx`'s own `choose` makes and for the
@@ -323,6 +348,7 @@ export function MeshStage({
                   className="pg-attach-open"
                   title="See this picture"
                   aria-label="See this picture"
+                  onClick={() => setShowAttachment(true)}
                 >
                   <img src={rawUrl(attachment.path)} alt="" />
                 </button>
@@ -425,6 +451,30 @@ export function MeshStage({
           </RailField>
         </ConfigPanel>
 
+        {/* The attached picture at full size — `ImageStage.tsx`'s own
+            lightbox, verbatim: the whole modal is an image and a way out,
+            because a 28px thumbnail cannot be looked at. Click the
+            backdrop or press Escape to close. */}
+        {attachment && showAttachment && (
+          <div
+            className="pg-lightbox"
+            role="dialog"
+            aria-label="The attached picture"
+            onClick={() => setShowAttachment(false)}
+          >
+            <img src={rawUrl(attachment.path)} alt="" onClick={(e) => e.stopPropagation()} />
+            <button
+              type="button"
+              className="pg-lightbox-close"
+              title="Close"
+              aria-label="Close"
+              onClick={() => setShowAttachment(false)}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {error && <p className="pg-error">{error}</p>}
 
         {!run ? (
@@ -438,7 +488,15 @@ export function MeshStage({
             <p className="pg-answer-label">Result</p>
             <figure className="pg-image-result">
               {run.done ? (
-                <MeshViewer path={run.started.path} jobId={run.started.jobId} />
+                // `key={path}`: without it, clicking a gallery thumbnail
+                // (a different render, a different `path`) re-runs this
+                // effect on the SAME <canvas> and calls `new THREE.
+                // WebGLRenderer({ canvas })` again on one whose renderer
+                // was already `dispose()`d — reusing a canvas across two
+                // WebGLRenderer instances is unsupported (code review,
+                // 2026-08-28, finding 8). The key forces React to unmount
+                // and remount a fresh <canvas> instead.
+                <MeshViewer key={run.started.path} path={run.started.path} jobId={run.started.jobId} />
               ) : (
                 <div className="pg-image-frame" style={{ aspectRatio: "1 / 1", width: "100%" }}>
                   <div className="pg-image-wait" aria-hidden="true" />
