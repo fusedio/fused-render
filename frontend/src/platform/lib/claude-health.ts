@@ -36,7 +36,7 @@ export interface ClaudeIssue {
    *  and its absence is meaningful: `unusable-override` has no action because
    *  the value lives in a shell profile we cannot edit, and offering a button
    *  that silently does nothing is worse than the sentence it replaced. */
-  action?: { kind: "install" | "update" | "doctor"; label: string };
+  action?: { kind: "install" | "update" | "doctor" | "login"; label: string };
 }
 
 /** `claude update`, the fix for an install that is merely old. Not in
@@ -186,8 +186,16 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
     issues.push({
       id: "signed-out",
       title: "Claude Code isn't signed in",
-      detail: "Open a terminal, run `claude`, type /login and finish signing in.",
+      // NOT "run `claude`, type /login" any more. That was the only route
+      // through the TUI door, but `claude auth login` opens the browser itself
+      // and finishes on its own loopback callback — so this is a button, and
+      // the code never comes anywhere near the app. The sentence describes what
+      // pressing it does, because a browser window about to appear over the app
+      // is a thing to announce first.
+      detail: "Sign in with your browser — Claude Code opens the page and "
+        + "finishes on its own.",
       helpKind: "login",
+      action: { kind: "login", label: "Sign in" },
     });
   }
 
