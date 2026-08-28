@@ -155,7 +155,7 @@ const STARTERS: Starter[] = [
  *  multiple of 16), and that arithmetic is the image route's own, not this
  *  one's. `/api/ai/video` derives its default canvas off the reference
  *  itself, on the ENGINE's own 64-multiple two-stage grid
- *  (`_video_default_size`, D611) — sending `fitToImage`'s pair would bypass
+ *  (`_video_default_size`, D621) — sending `fitToImage`'s pair would bypass
  *  that derivation and echo a canvas nobody actually rendered (a 1280x704
  *  reference would send 640x352, while the engine renders 640x320). So with
  *  no size picked by hand, `width`/`height` are left off entirely and the

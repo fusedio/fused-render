@@ -6455,7 +6455,7 @@ def test_a_small_reference_can_come_back_square(client, fake_video_runner, tmp_p
     reference is smaller than the engine's own 704 target on both axes (no
     downscale happens), and each axis then floors independently: `max(256,
     300 // 64 * 64) == 256`, `max(256, 200 // 64 * 64) == 256`. This pins
-    that as deliberate rather than incidental — see D611."""
+    that as deliberate rather than incidental — see D621."""
     page = tmp_path / "pages" / "editor.html"
     page.parent.mkdir(parents=True)
     page.write_text("<html></html>")
