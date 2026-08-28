@@ -6330,6 +6330,137 @@ def test_a_video_waits_for_its_model_rather_than_failing_fast(client, fake_video
     assert os.path.isfile(started["path"])
 
 
+# -- a reference image (I2V) -----------------------------------------------------
+# One image, a single string, conditioning at frame 0 with strength 1.0 — the
+# same scope decision `/api/ai/image`'s own `image` option made for editing,
+# restated for video. `_resolve_reference_image` is the shared helper both
+# routes call; these tests exercise it through `/api/ai/video`, the same way
+# the block above exercises `_edit_default_size` through `/api/ai/image`.
+
+
+def test_video_rejects_an_image_array(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ["a.png", "b.png"]},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_rejects_an_empty_image_string(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": ""},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "single string" in response.json()["error"]
+
+
+def test_video_reference_image_needs_a_file_that_exists(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "/nope/nowhere.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "no such file" in response.json()["error"]
+    assert not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_video_refuses_a_relative_image_with_no_base(client, fake_video_runner):
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "'image' must be absolute" in response.json()["error"]
+
+
+def test_video_resolves_a_relative_image_against_base(
+        client, fake_video_runner, base_photo):
+    """RH-1, same as `/api/ai/image`'s own version of this test: a relative
+    `image` resolves against the directory of `base`."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_video_absolute_image_ignores_base(client, fake_video_runner, base_photo):
+    _page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": photo},
+        headers={"X-Fused": "1"}).json()
+    assert started["image"] == ai_runtime.canonical_fs_path(photo)
+    _wait_job(started["jobId"])
+
+
+def test_a_plain_text_to_video_request_has_no_image_key(client, fake_video_runner):
+    """A caller that never mentioned `image` sees no trace of it in the
+    reply — the byte-identical-to-today's-call promise, restated at the
+    route's own boundary."""
+    started = client.post("/api/ai/video", json={"prompt": "x"},
+                          headers={"X-Fused": "1"}).json()
+    assert "image" not in started
+    _wait_job(started["jobId"])
+
+
+def test_video_canvas_derives_from_the_reference_image(
+        client, fake_video_runner, base_photo):
+    """`base_photo` is 2000x1000 (2:1) — fitted (without upscaling) to the
+    engine's own longer default side (`max(704, 480) == 704`), landing at
+    704x352, then snapped DOWN to the 64-multiple grid `snap_output_
+    dimensions(..., two_stage=True)` uses: 704 (already a multiple of 64)
+    x 320 (352 snapped down from 352 to 320)."""
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": "photo.png", "base": page},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 320)
+    assert started["width"] % 64 == 0 and started["height"] % 64 == 0
+    _wait_job(started["jobId"])
+
+
+def test_an_explicit_width_still_wins_over_the_derived_default(
+        client, fake_video_runner, base_photo):
+    page, photo = base_photo
+    started = client.post(
+        "/api/ai/video",
+        json={"prompt": "a fox", "image": "photo.png", "base": page, "width": 512},
+        headers={"X-Fused": "1"}).json()
+    # Height still comes from the reference image; only width was named.
+    assert (started["width"], started["height"]) == (512, 320)
+    _wait_job(started["jobId"])
+
+
+def test_an_unreadable_reference_falls_back_to_the_engines_own_default(
+        client, fake_video_runner, tmp_path):
+    """A file that exists, is a regular file, but is not one of the three
+    formats `_image_pixel_size` understands — the derived-default lookup
+    fails toward None, and the render still goes ahead at the ENGINE's own
+    default canvas rather than refusing the request outright."""
+    junk = tmp_path / "not-really-a-photo.png"
+    junk.write_bytes(b"this is not image data")
+    started = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "image": str(junk)},
+        headers={"X-Fused": "1"}).json()
+    assert (started["width"], started["height"]) == (704, 480)
+    _wait_job(started["jobId"])
+
+
+def test_the_video_bridge_base_option_reaches_the_route(
+        client, fake_video_runner, base_photo):
+    """`base` is bridge-injected, not caller-facing (mirrors `_IMAGE_SERVER_
+    OPTIONS`'s own asymmetry) — this exercises it through the SERVER side,
+    since `base` alone with no `image` is a legitimate call the bridge
+    itself would make on every video render once `runtime.js` injects it."""
+    page, _photo = base_photo
+    response = client.post(
+        "/api/ai/video", json={"prompt": "a fox", "base": page},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 200, response.json()
+
+
 # -- transcription (SPEC §40) ---------------------------------------------------
 # Job-backed like an image and for the same reason — a 90-minute recording is
 # not a chat turn — with one addition: the transcript is a FILE, so the work
@@ -7885,6 +8016,11 @@ def test_the_bridges_accepted_video_keys_match_the_servers_constant():
     assert match, "could not find aiVideo's whitelist array in runtime.js"
     js_keys = sorted(re.findall(r'"([^"]+)"', match.group(1)))
     assert js_keys == sorted(ai_runtime._VIDEO_OPTIONS)
+    # Same asymmetry as `_IMAGE_SERVER_OPTIONS` (D413): `base` is
+    # bridge-injected, so it must NOT be in the caller-facing set the bridge
+    # validates against, and must be in the wider server set.
+    assert "base" not in ai_runtime._VIDEO_OPTIONS
+    assert "base" in ai_runtime._VIDEO_SERVER_OPTIONS
 
 
 def test_the_bridges_accepted_transcribe_keys_match_the_servers_CALLER_FACING_constant():

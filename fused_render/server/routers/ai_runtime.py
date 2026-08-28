@@ -119,8 +119,21 @@ _MIN_VIDEO_STEPS, _MAX_VIDEO_STEPS = 2, 50
 # No `guidance` here — the shipping video engine is CFG-distilled and takes
 # no such parameter. A caller passing one hits `_reject_unknown` like any
 # other unsupported option.
+#
+# `image`: a single reference image (SPEC AI-15, restating AI-9f's scope
+# decision for video) — conditioning at frame 0, strength 1.0, no per-image
+# frame index or strength surface, no multi-anchor `images` list. There is
+# only ONE video runner, so no per-runner refusal (`engine_options.
+# UNSUPPORTED` row) is needed the way `/api/ai/image`'s `image` gets one —
+# `registry.VideoTraits.supports_image` exists for the CATALOG payload (so
+# the Playground cannot offer a control the resolved engine will not
+# honour), not for a request-time gate here.
 _VIDEO_OPTIONS = frozenset({
-    "prompt", "model", "width", "height", "frames", "steps", "seed"})
+    "prompt", "model", "width", "height", "frames", "steps", "seed", "image"})
+# `base` is bridge-injected, the identical asymmetry `_IMAGE_SERVER_OPTIONS`
+# documents — video had no way to resolve a page-relative path at all until
+# `image` needed one, so this is also where `base` first reaches this route.
+_VIDEO_SERVER_OPTIONS = _VIDEO_OPTIONS | {"base"}
 _TRANSCRIBE_OPTIONS = frozenset({
     "path", "model", "language", "task", "initialPrompt", "vad", "diarize",
     "speakers", "words"})
@@ -334,6 +347,90 @@ def _edit_default_size(image_path: str) -> tuple[int, int] | None:
         height = height * 1024 // longest
     fitted_w = max(_MIN_SIDE, width // _SIDE_STEP * _SIDE_STEP)
     fitted_h = max(_MIN_SIDE, height // _SIDE_STEP * _SIDE_STEP)
+    return fitted_w, fitted_h
+
+
+def _resolve_reference_image(value, base, *, caller: str):
+    """Resolve an `image` option to `(path, None)`, or `(None, error)`.
+
+    Shared by `/api/ai/image`'s edit image and `/api/ai/video`'s reference
+    image — the page-relative-to-`base` rule `/api/ai/transcribe`'s `path`
+    already follows (RH-1), factored out here because a third copy of it
+    for video would otherwise be exactly the kind of drift D413 keeps
+    catching: two routes independently retyping "absolute, or relative to a
+    page named by `base`" and one of them eventually getting it slightly
+    wrong.
+
+    `caller` names the bridge function in the one message that mentions it
+    (`fused.ai.image` or `fused.ai.video`) — every other word in every
+    message here is shared VERBATIM between the two routes, so the image
+    route's wording (pinned by tests and by SPEC) stays byte-identical and
+    the video route's says `fused.ai.video` in exactly the place the image
+    one says `fused.ai.image`.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None, _error(
+            "'image' must be the path to one base image, as a single "
+            f"string — {caller}({{image}}) edits exactly one image, so an "
+            "array or any other type is rejected rather than guessed at",
+            status=400)
+    path = os.path.expanduser(value.strip())
+    if not os.path.isabs(path):
+        if not isinstance(base, str) or not os.path.isabs(base):
+            return None, _error(
+                "'image' must be absolute, or relative to a page named by "
+                "'base'", status=400)
+        path = os.path.join(os.path.dirname(base), path)
+    path = os.path.abspath(path)
+    if not os.path.exists(path):
+        return None, _error(f"no such file: {path}", status=400)
+    if not os.path.isfile(path):
+        return None, _error(f"not a file: {path}", status=400)
+    return path, None
+
+
+def _video_default_size(image_path: str, traits: "registry.VideoTraits") -> tuple[int, int] | None:
+    """A video's default `(width, height)` derived from a reference image, or
+    None to fall back silently to `traits.default_width/height`.
+
+    Same fit-without-upscaling arithmetic as `_edit_default_size`, but
+    snapped to a multiple of **64**, not 16 — the engine's own two-stage
+    grid (`snap_output_dimensions(..., two_stage=True)` in
+    `ltx-pipelines-mlx`), coarser than the app's ordinary 32-multiple video
+    rail (`_VIDEO_SIDE_STEP`). Landing on that grid already means the
+    engine's own re-snap is a no-op, so the width/height this route echoes
+    back are the ones actually rendered.
+
+    The longest side is fit to the ENGINE's own longer default side
+    (`max(traits.default_width, traits.default_height)`), not the image
+    route's 1024 — that figure is that route's own tuned default and has
+    nothing to do with video. The pixel budget is enforced in 64-steps here
+    (not `_clamp_video_canvas`'s ordinary 32), so a canvas this function
+    hands back never needs a further shave that would knock it back off the
+    64-multiple grid.
+    """
+    dims = _image_pixel_size(image_path)
+    if dims is None:
+        return None
+    width, height = dims
+    if width <= 0 or height <= 0:
+        return None
+    step = 64
+    target_long = max(traits.default_width, traits.default_height)
+    longest = max(width, height)
+    if longest > target_long:
+        # Downscale only, same rule as `_edit_default_size`.
+        width = width * target_long // longest
+        height = height * target_long // longest
+    fitted_w = max(_MIN_VIDEO_SIDE, width // step * step)
+    fitted_h = max(_MIN_VIDEO_SIDE, height // step * step)
+    while fitted_w * fitted_h > _MAX_VIDEO_PIXELS:
+        if fitted_w >= fitted_h and fitted_w > _MIN_VIDEO_SIDE:
+            fitted_w -= step
+        elif fitted_h > _MIN_VIDEO_SIDE:
+            fitted_h -= step
+        else:
+            break
     return fitted_w, fitted_h
 
 
@@ -1354,25 +1451,18 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
                     "but not edit an existing image with it. Try "
                     "mlx-community/FLUX.2-Klein-4B-4bit.", status=400)
         # Page-relative, the same rule `/api/ai/transcribe`'s `path` follows
-        # (RH-1): a relative `image` resolves against the directory of
-        # `base`, the calling page's own absolute path. An absolute `image`
-        # ignores `base`, as it does there. No allowlist, for the identical
+        # (RH-1) — see `_resolve_reference_image`, shared with `/api/ai/
+        # video`'s own `image` option. No allowlist, for the identical
         # reason `api_ai_transcribe` gives: `/api/fs/raw` already serves any
         # absolute path on this machine, so the only checks are the ones a
-        # typo deserves.
-        image_path = os.path.expanduser(image.strip())
-        base = body.get("base")
-        if not os.path.isabs(image_path):
-            if not isinstance(base, str) or not os.path.isabs(base):
-                return _error(
-                    "'image' must be absolute, or relative to a page named "
-                    "by 'base'", status=400)
-            image_path = os.path.join(os.path.dirname(base), image_path)
-        image_path = os.path.abspath(image_path)
-        if not os.path.exists(image_path):
-            return _error(f"no such file: {image_path}", status=400)
-        if not os.path.isfile(image_path):
-            return _error(f"not a file: {image_path}", status=400)
+        # typo deserves. `image` is already a validated non-empty string
+        # here (the array/type check above), so this only re-derives the
+        # PATH resolution — the shared function's own type check is a no-op
+        # for a value that already passed it.
+        image_path, rejection = _resolve_reference_image(
+            image, body.get("base"), caller="fused.ai.image")
+        if rejection is not None:
+            return rejection
 
     # Decision 1: an edit's default size comes from the BASE IMAGE, using the
     # prototype's own arithmetic (confirmed as written by the gate run). Any
@@ -1531,14 +1621,29 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         return guard
 
     # Checked first, so an unknown option (`guidance`, say) is reported even
-    # when another field is also wrong — see `_reject_unknown`.
-    rejection = _reject_unknown(body, _VIDEO_OPTIONS, "/api/ai/video")
+    # when another field is also wrong — see `_reject_unknown`. The wider,
+    # SERVER set: `base` is bridge-injected, same asymmetry as `/api/ai/
+    # image`.
+    rejection = _reject_unknown(body, _VIDEO_SERVER_OPTIONS, "/api/ai/video")
     if rejection is not None:
         return rejection
 
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return _error("'prompt' must be a non-empty string", status=400)
+
+    # `image` (SPEC AI-15): condition on one reference image at frame 0,
+    # strength 1.0 — the same single-string scope `/api/ai/image`'s `image`
+    # already made (AI-9f), restated for video. No per-runner refusal here
+    # (unlike the image route's `engine_options.unsupported_or_raise`): there
+    # is only ONE video runner, so nothing to refuse against yet.
+    image = body.get("image")
+    image_path = None
+    if image is not None:
+        image_path, rejection = _resolve_reference_image(
+            image, body.get("base"), caller="fused.ai.video")
+        if rejection is not None:
+            return rejection
 
     model = _model_of(body) or catalog.default_for(registry.VIDEO_GENERATION)
     if not model:
@@ -1629,8 +1734,22 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # 1024x1024 default matches its own pipelines' square default rather
     # than an arbitrary size. The side snap and pixel clamp below stay
     # shared across every engine — see `_MIN_VIDEO_SIDE` and friends above.
-    width = _video_side(body.get("width"), traits.default_width)
-    height = _video_side(body.get("height"), traits.default_height)
+    #
+    # A REFERENCE IMAGE overrides that default (mirrors `/api/ai/image`'s
+    # own Decision 1) — `_video_default_size` already lands on the engine's
+    # 64-multiple grid, so `_video_side`'s ordinary 32-multiple snap below is
+    # a no-op on it. An explicit `width`/`height` in the body still wins;
+    # this only changes the DEFAULT either falls back to. A base image this
+    # reader cannot parse falls back to the engine's own default silently —
+    # this is a convenience default, not a validation the request already
+    # passed (`_resolve_reference_image`, above).
+    default_width, default_height = traits.default_width, traits.default_height
+    if image_path is not None:
+        derived = _video_default_size(image_path, traits)
+        if derived is not None:
+            default_width, default_height = derived
+    width = _video_side(body.get("width"), default_width)
+    height = _video_side(body.get("height"), default_height)
     width, height = _clamp_video_canvas(width, height)
 
     uid = secrets.token_hex(6)
@@ -1648,6 +1767,12 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         "seed": seed,
         "out": path,
     }
+    if image_path is not None:
+        # Absent entirely rather than `None` when there is no reference
+        # image — same rule the image route's own `request["image"]` follows:
+        # the worker's `generate()` reads presence to decide whether to pass
+        # `image=` to `generate_and_save` at all.
+        request["image"] = image_path
     try:
         supervisor.start_video(model, request, job)
     except supervisor.SupervisorError as e:
@@ -1658,7 +1783,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # been snapped, `frames` rounded to the engine's grid, `steps` clamped, `seed`
     # invented. A caller that echoes these back gets the render it actually
     # got, not the one it asked for.
-    return {
+    reply = {
         "jobId": job,
         # Canonical, like every other path this API hands back.
         "path": canonical_fs_path(path),
@@ -1670,6 +1795,12 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
         "steps": steps,
         "seed": seed,
     }
+    if image_path is not None:
+        # Echoed beside `path`, canonical for the same reason the image
+        # route's own reply echoes its `image`: a caller that passed a
+        # relative path can see what it resolved to.
+        reply["image"] = canonical_fs_path(image_path)
+    return reply
 
 
 #: Whisper's two directions. One flag to the model, so leaving `translate` out
