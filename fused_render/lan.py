@@ -517,9 +517,11 @@ _runtime_cache: tuple[tuple[float, float], bytes] | None = None
 
 def _phone_runtime() -> Response:
     """``/static/runtime.js`` for the phone: the stock runtime followed by
-    ``static/lan/runtime-phone.js``, which replaces the members that mean
-    something different on a phone (``fused.capture.*``, ``fused.fileIndex``,
-    ``fused.device``). Same URL the ``/render`` injection already emits, so no
+    ``static/lan/runtime-phone.js``, which sets ``fused.device`` and makes
+    ``fused.capture.*`` / ``fused.fileIndex`` fail fast with an error naming
+    where they ARE available (the computer, or the Fused Render app) — the
+    desktop implementations would record the computer, which is nonsense from
+    a phone. Same URL the ``/render`` injection already emits, so no
     HTML rewriting; the desktop's loopback server keeps serving the stock file.
     Concatenated once per (mtime, mtime) so a dev edit shows on reload."""
     global _runtime_cache
@@ -620,9 +622,9 @@ class LanApp:
             return self._app_shortcut(path[3:])
         if path == "/static/runtime.js" and method in ("GET", "HEAD"):
             # The native iOS shell (ios/) marks its user agent: it gets the
-            # STOCK runtime — the phone-browser overrides (camera-photo capture,
-            # etc.) are workarounds for limits a WKWebView shell does not have,
-            # and the shell installs its own bridge on top.
+            # STOCK runtime — a phone browser gets the "not available here"
+            # overrides, the shell installs its own native bridge on top
+            # (ios/FusedRender/Resources/runtime-ios.js).
             if "FusedRender-iOS/" not in _header(scope, b"user-agent"):
                 return _phone_runtime()
 
