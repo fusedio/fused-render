@@ -891,6 +891,61 @@ main();
         "a single below-bound failure with no further tick must still show the notice")
 
 
+def test_a_bound_reached_rebuild_repaints_the_notice_into_a_fresh_error_slot(
+        probe_src, tmp_path):
+    """Round 9 mutation-testing gap: `pumpSubagentLog` paints the give-up
+    notice from TWO places — its top-of-function fail-bound check (the
+    "BOUND" branch, reached with no fetch attempted this tick at all) and
+    the tail of a fetch that itself just failed (the "TAIL" branch). Both
+    matter in production: a body rebuild (the Task's own `status`/`output`/
+    `images`/subagent identity changing, which is `buildToolChip`'s rebuild
+    key) tears the chip's body down and builds a FRESH, empty error slot —
+    and if that same tick's fail count is already at the bound, NO fetch
+    runs at all (the bound check returns before ever reaching the fetch),
+    so only the BOUND branch can repaint it; the tail branch never gets a
+    chance to. This test reaches exactly that: a cached partial transcript
+    (so `hasContent` would read true under the deleted guard), five
+    real failed fetches driving the count to the bound, and then ONE more
+    rebuild with no further fetch — the bound branch alone is what must
+    still show the notice next to the cached turn."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "partial"}]});
+  for (let i = 0; i < 5; i++) runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                    // fetch #1: caches "partial" while running
+  await new Promise((r) => setTimeout(r, 0));
+  for (let i = 0; i < 5; i++) {
+    el.update(%s);                         // 1st: status running->ok, rebuild + fetch (fails)
+                                            // 2nd..5th: same key, no rebuild, plain retries
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const callsBeforeRebuild = runPythonLog.length;
+  el.update(%s);                           // same status, new `output`: a rebuild with the
+                                            // fail bound ALREADY reached -> fresh, empty
+                                            // error slot, and NO fetch runs this tick
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    tree: dump(el.el),
+    callsBeforeRebuild,
+    callsAfterRebuild: runPythonLog.length,
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok", output="rebuild"))),
+       tmp_path)
+    assert got["callsAfterRebuild"] == got["callsBeforeRebuild"], (
+        "the bound-reached rebuild tick must not itself trigger a further fetch")
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "partial"
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and errors[0]["text"], (
+        "the BOUND branch must repaint the notice into the fresh error slot "
+        "even though a real transcript is already cached alongside it")
+
+
 def test_a_reopen_while_a_fetch_is_in_flight_still_gets_a_real_refetch(
         probe_src, tmp_path):
     """Round 9, MEDIUM 1: closing and re-opening a chip WHILE its fetch is
@@ -928,6 +983,57 @@ main();
     assert len(assistants) == 1
     seg_text = _by_class(assistants[0], "seg-text")
     assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>the rest of it</md>"
+
+
+def test_a_reopen_chase_still_fires_after_the_chip_retargets_to_another_agent(
+        probe_src, tmp_path):
+    """`wantedRefetch` is consumed (deleted from `subagentRefetchWanted`)
+    well before the chase that acts on it, and there are two `return`s in
+    between: an agentId mismatch (the chip has since been rebuilt onto a
+    DIFFERENT subagent) and a missing log element. The chase itself
+    (`pumpSubagentLog(el, getLogEl, getSeg)`) always reads `getSeg()` LIVE
+    — it re-derives whichever agent the chip CURRENTLY points at, it does
+    not remember which agent originally asked to "look again" — so once a1
+    reexpands mid-flight and the chip is then rebuilt onto b1 before a1's
+    fetch resolves, the owed chase (if it fires at all) ends up fetching
+    b1, not a1. Before the fix, it never fired at all: the chase sat AFTER
+    the agentId-mismatch return, so landing on that return for a1's
+    resolving fetch (seg2 is now b1, not a1) skipped the chase along with
+    the paint — b1 was fetched exactly once, from its own rebuild, and
+    never again. After the fix, the chase runs regardless of that return
+    and issues a second, real fetch for whatever agent is now current
+    (b1) — the concrete, observable difference this test pins."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "truncated"}]}});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1 (a1) starts, deferred
+  clickSummary(el.el);                  // close
+  clickSummary(el.el);                  // re-open WHILE fetch #1 is in flight -> a1's
+                                         // "look again" is recorded in subagentRefetchWanted
+  el.update(%s);                        // rebuild: this chip now points at a DIFFERENT
+                                         // agent (b1) before a1's fetch ever resolves;
+                                         // b1's own rebuild-triggered fetch #2 resolves
+                                         // immediately (default {turns: []})
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);                   // a1's fetch #1 resolves now: a truncated read,
+                                         // landing on the agentId-mismatch return
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({calls: runPythonLog}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="b1"), status="ok"))), tmp_path)
+    calls_a1 = [c for c in got["calls"] if c["params"]["agent_id"] == "a1"]
+    calls_b1 = [c for c in got["calls"] if c["params"]["agent_id"] == "b1"]
+    assert len(calls_a1) == 1, "a1's own fetch happens exactly once here"
+    assert len(calls_b1) == 2, (
+        "a1's owed reexpand chase must still fire even after the chip "
+        "retargeted to b1 before a1's in-flight fetch resolved — it just "
+        "ends up fetching whichever agent is now current (b1), a SECOND "
+        "time, rather than never firing at all")
 
 
 def test_a_success_after_earlier_failures_clears_the_failure_state(

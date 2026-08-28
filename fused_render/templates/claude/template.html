@@ -14602,6 +14602,26 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
     subagentFailTrim();
   }
 
+  // Chased HERE — right after the cache/fail-state writes above settle
+  // (their outcome is what a chased fetch would itself read as `cached`),
+  // and before either of the two `return`s just below (a chip retargeted
+  // at a different agent; its log element gone). Those returns are about
+  // whether THIS fetch's own outcome is still worth PAINTING into the DOM;
+  // the chase is a separate obligation, owed to whoever asked to "look
+  // again" regardless of where this fetch's answer ends up. Both returns
+  // are legitimate reasons to drop the paint, but neither is a reason to
+  // drop the request: a reexpand on a chip that later retargets still has
+  // `cached.final` stuck at false for its ORIGINAL agent, so a live poll
+  // tick would eventually recover it — except a restored/finished
+  // conversation never produces one, which is the exact case this chase
+  // exists for. `wantedRefetch` was already consumed (deleted) above, so
+  // this cannot recurse again unless a FRESH reexpand arrives while THIS
+  // chase is itself in flight, which is a new, legitimate request.
+  if (wantedRefetch) {
+    pumpSubagentLog(el, getLogEl, getSeg)
+      .catch((e) => console.error("subagent log pump failed", e));
+  }
+
   // Painting, unlike the bookkeeping above, only makes sense for the chip
   // this fetch was actually asked for — applying the outcome to a chip now
   // pointed at a DIFFERENT agent would show the wrong subagent's data (or
@@ -14624,17 +14644,6 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
     // to reach it; the bound's only remaining job is stopping automatic
     // PER-TICK retries (see the top guard).
     renderSubagentPump(cur, null, true, subagentFailMessage.get(agentId));
-  }
-
-  // A reexpand that landed mid-flight is still owed a REAL fetch (round 9,
-  // MEDIUM 1) — chase it once, immediately, rather than waiting for a poll
-  // tick that a restored/finished conversation may never produce again.
-  // Bounded: `wantedRefetch` was already consumed (deleted) above, so this
-  // cannot recurse again unless a FRESH reexpand arrives while THIS chase
-  // is itself in flight, which is a new, legitimate request.
-  if (wantedRefetch) {
-    pumpSubagentLog(el, getLogEl, getSeg)
-      .catch((e) => console.error("subagent log pump failed", e));
   }
 }
 
