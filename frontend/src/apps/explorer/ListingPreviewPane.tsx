@@ -175,7 +175,7 @@ export default function ListingPreviewPane({
         <iframe
           className="pane-frame"
           src={withNoFocus(
-            // `_noopen=1`, not `_preview=1` (D621): this pane is fully
+            // `_noopen=1`, not `_preview=1` (D622): this pane is fully
             // interactive — you type in it — so it must not carry the
             // display-only stamp `runtime.js`'s `IS_THUMBNAIL` reads off
             // `_preview`, which would silently disable `fused.daemon.*` for

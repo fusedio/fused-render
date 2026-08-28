@@ -1132,7 +1132,7 @@ def test_a_render_referred_by_a_preview_records_nothing(client, workspace, recen
 
 
 def test_a_noopen_render_records_nothing(client, workspace, recents_home):
-    # `_noopen=1` is the explorer companion pane's own stamp (D621): unlike
+    # `_noopen=1` is the explorer companion pane's own stamp (D622): unlike
     # `_preview=1`, it says NOTHING about whether this render is a thumbnail —
     # only that it must not count as an app open. Same recording suppression,
     # a separate reason.

@@ -239,14 +239,14 @@ def test_nothing_selects_a_row_out_from_under_the_arriving_chat():
     # rides this src at all — the claude template PULLS it at its own boot
     # instead (see ListingPreviewPane.tsx/Listing.tsx) — so this string is back
     # to exactly its pre-"Fix with AI" shape. The trailing flag itself moved on
-    # in D621 (`_preview=1` -> `_noopen=1`, tested separately below) — this
+    # in D622 (`_preview=1` -> `_noopen=1`, tested separately below) — this
     # assertion pins only the `_file` target, unconditionally the folder.
     assert "`&_file=${encodeURIComponent(folder)}${chatOnly}&_noopen=1`" in pane, (
         "the companion iframe's _file target is no longer unconditionally the folder")
 
 
 def test_the_companion_iframe_is_marked_noopen_not_preview():
-    """D621: the companion pane (claude/git/mcp) is fully interactive — you
+    """D622: the companion pane (claude/git/mcp) is fully interactive — you
     type in it — unlike a card or a card-peek thumbnail. `_preview=1` used to
     ride its src to do a job it never asked for: `runtime.js`'s `IS_THUMBNAIL`
     reads that same flag off any same-origin ancestor and, once set, disables

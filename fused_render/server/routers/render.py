@@ -69,7 +69,7 @@ def render(
     # opened (D301): record recency here — and, for a folder outside the
     # workspace, registration on the /apps hub — instead of trusting any
     # client-side post. `_preview=1` is the card/preview iframes saying "this
-    # render is a thumbnail, not an open"; `_noopen=1` (D621) says only the
+    # render is a thumbnail, not an open"; `_noopen=1` (D622) says only the
     # second half of that — "not an open" — with no claim about being a
     # thumbnail, for a caller (the explorer's companion pane) that is fully
     # interactive and must not be treated as display-only. Either suppresses
