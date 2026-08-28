@@ -407,6 +407,86 @@ def test_the_vae_CLASS_NAME_is_what_the_projection_table_is_keyed_by(monkeypatch
     assert worker._loaded["vae"] == "AutoencoderKLFlux2"
 
 
+# -- releasing the allocator on an idle timer (D597) -----------------------------
+
+
+def test_release_calls_cuda_even_when_the_mps_call_raises(monkeypatch, base):
+    """THE regression this locks down. `torch/__init__.py` imports `torch.mps`
+    unconditionally on every platform and `empty_cache` is a plain function
+    that always exists on it — so a presence check (`getattr`/`hasattr`)
+    always passes, even on a CPU/CUDA/ROCm build with no MPS backend at all.
+    Calling it anyway reaches `torch._C._mps_emptyCache()`, which raises
+    `RuntimeError("Cannot execute emptyCache() without MPS backend.")` — and
+    on an unconditional call (no per-backend try/except) that exception took
+    the CUDA branch down with it before it ever ran, on exactly the one build
+    (`diffusers_image_cuda`/`_rocm`) that has a caching allocator worth
+    reclaiming at all. `torch.backends.mps.is_available()` — `_place()`'s own
+    gate above — is what actually distinguishes the two cases; this test's
+    `mps.empty_cache` still raises even though `is_available()` correctly
+    says `False`, to prove the gate is what stops the call, not luck."""
+    torch = fake_torch()
+    calls = []
+
+    def raising_empty_cache():
+        raise RuntimeError("Cannot execute emptyCache() without MPS backend.")
+
+    torch.mps = types.SimpleNamespace(empty_cache=raising_empty_cache)
+    torch.backends = types.SimpleNamespace(
+        mps=types.SimpleNamespace(is_available=lambda: False))
+    torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        empty_cache=lambda: calls.append("cuda"))
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    worker.release()  # must not raise, and must not skip the CUDA branch
+
+    assert calls == ["cuda"]
+
+
+def test_release_calls_mps_when_it_is_actually_available(monkeypatch, base):
+    """The other half: a real Apple Silicon build DOES get the call."""
+    torch = fake_torch()
+    calls = []
+    torch.mps = types.SimpleNamespace(empty_cache=lambda: calls.append("mps"))
+    torch.backends = types.SimpleNamespace(
+        mps=types.SimpleNamespace(is_available=lambda: True))
+    torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    worker.release()
+
+    assert calls == ["mps"]
+
+
+def test_release_survives_both_backends_raising(monkeypatch, base):
+    """Neither backend's failure reaches the caller — `_fire_release` already
+    swallows and logs a raising `release`, so a release that raises here would
+    only be double-handled, never a functional problem, but the whole point of
+    the per-backend try/except is that ONE of the two is still allowed to
+    succeed even when the other cannot, which this alone cannot show without
+    the mixed case above. This pins the belt-and-braces half: even if the gate
+    itself were ever wrong on some future torch build, this function still
+    cannot raise into `worker_base`."""
+    torch = fake_torch()
+
+    def raising_mps():
+        raise RuntimeError("boom")
+
+    def raising_cuda():
+        raise RuntimeError("boom")
+
+    torch.mps = types.SimpleNamespace(empty_cache=raising_mps)
+    torch.backends = types.SimpleNamespace(
+        mps=types.SimpleNamespace(is_available=lambda: True))
+    torch.cuda = types.SimpleNamespace(is_available=lambda: True, empty_cache=raising_cuda)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    worker = load_worker(monkeypatch, base)
+    worker.release()  # must not raise
+
+
 def test_a_thumbnail_appears_from_the_SECOND_step_and_is_GONE_at_the_end(
         monkeypatch, base, tmp_path):
     """Step 1 has no predecessor, so it has no velocity and no estimate — and
