@@ -460,6 +460,33 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `worker_base.serve
+    (release=...)`, fired `worker_base._RELEASE_IDLE_S` after this worker's
+    LAST execution if nothing new has started by then, never per-call. See
+    `worker_base._release`'s docstring for the measured numbers this exists
+    for (a 34.4 GB machine holding "21 GB held" against "1.7 GB now" long
+    after a render finished) and why the reclaim is on a timer rather than
+    unconditional.
+
+    `mx.clear_cache()`, guarded the same way `_pin_stream` guards every MLX
+    API that might be missing: `getattr` rather than a bare attribute access,
+    because `tests/test_ai_mflux_worker.py` stubs `mlx.core` with a
+    `FakeMlxCore` that has no `clear_cache` at all, and a real but older mlx
+    wheel could equally lack it. Absence is a no-op, not a crash — there is
+    nothing to release on either.
+
+    Deliberately does NOT touch `set_cache_limit` or `set_memory_limit` — see
+    the module docstring's boundary: this reclaims what a finished render left
+    behind, it does not change what the NEXT render is allowed to cost.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -701,4 +728,5 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, peak_memory=peak_memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory,
+                      release=release)
