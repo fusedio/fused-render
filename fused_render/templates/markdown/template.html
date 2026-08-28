@@ -1046,8 +1046,13 @@
         </div>
       </div>
     </div>
+    <!-- No `hidden` here, unlike the rail's own reopen button: the RAIL
+         defaults OPEN (so its reopen chip correctly starts hidden), but this
+         panel defaults CLOSED — before applySidebar() has run even once, the
+         reopen chip belongs on screen, not hidden and then un-hidden a beat
+         later. -->
     <button id="side-reopen" type="button" class="panel-reopen-btn right"
-            aria-label="Show panel" hidden>
+            aria-label="Show panel">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"
            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M6 3.5 L11 8 L6 12.5" transform="rotate(180 8 8)" />
@@ -4211,8 +4216,25 @@
       layoutPanels();
     }
 
-    railCollapseEl.addEventListener("click", () => fused.params.set("outline", "0"));
-    railReopenEl.addEventListener("click", () => fused.params.set("outline", "1"));
+    // `event.isTrusted` guards every writer here (this pair, and the matching
+    // side-panel pair below): the param records what the user WANTS, and
+    // only a genuine user click may change that — the layout clamp
+    // (`layoutPanels`) may only ever affect PRESENTATION
+    // (`style.display`/`style.width`), never the param, precisely so a panel
+    // the user asked to keep open reappears on its own the moment there is
+    // room again, rather than staying closed because a transient narrow width
+    // overwrote the preference. `isTrusted` is the browser's own distinction
+    // between a real user gesture and any script-dispatched event, so this
+    // holds even against a future mistake that calls `.click()` on one of
+    // these buttons instead of touching `style.*`.
+    railCollapseEl.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      fused.params.set("outline", "0");
+    });
+    railReopenEl.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      fused.params.set("outline", "1");
+    });
 
     railGripEl.addEventListener("pointerdown", (event) => {
       event.preventDefault();
@@ -4282,8 +4304,14 @@
       canvas.setData(data);
     }
 
-    sideCollapseEl.addEventListener("click", () => fused.params.set("graph", "0"));
-    sideReopenEl.addEventListener("click", () => fused.params.set("graph", "1"));
+    sideCollapseEl.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      fused.params.set("graph", "0");
+    });
+    sideReopenEl.addEventListener("click", (event) => {
+      if (!event.isTrusted) return;
+      fused.params.set("graph", "1");
+    });
 
     depthEl.addEventListener("change", () => fused.params.set("depth", depthEl.value));
 
