@@ -289,7 +289,7 @@ def test_discard_throws_the_walkthrough_away(html):
         assert fn.index("const armed = annArmEpoch;") < stop
         assert fn.index("annRecIds = [];") < stop
         assert fn.index("annRecHandle = null;") < stop
-    assert body.index('annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");') \
+    assert body.index('annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");') \
         < body.index("await handle.cancel()")
     assert "annotations = annotations.filter((a) => !ids.has(a.id));" in body
     assert "renderAnn();" in body, "discarded pins leave the screen even if Esc already disarmed"
@@ -328,7 +328,7 @@ def test_the_live_recording_is_never_announced_as_done(html):
     begin = _block(html, "async function annRecBegin()", "\n}\n")
     assert 'annRecBtn.setAttribute("aria-label", "Stop the recording");' in begin
     end = _block(html, "async function annRecEnd()", "\n}\n")
-    assert 'annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");' in end
+    assert 'annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");' in end
 
 
 def test_the_seat_swaps_faces_off_the_two_state_classes(html):
@@ -704,8 +704,9 @@ def test_a_cross_origin_capture_comes_off_the_tab_not_the_document(html):
     assert "blanks: []" in body and "incomplete: false" in body
     # The share prompt is paid ONCE — the stream is cached and reused — and
     # raised at ARM time, where the user activation actually is (a mic commit
-    # or a walkthrough click's fire-and-forget crop may have none).
-    assert "if (annOn && annXO) annXOStreamGet().catch" in html
+    # or a walkthrough click's fire-and-forget crop may have none). Only where
+    # the native screen shot is off, though: with it there is no prompt at all.
+    assert "if (annOn && annXO && shotNativeOff) annXOStreamGet().catch" in html
     getter = _block(html, "async function annXOStreamGet()", "\n}\n")
     assert 'readyState === "live"' in getter
     assert "preferCurrentTab: true" in getter
