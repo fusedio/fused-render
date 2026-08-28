@@ -45,10 +45,11 @@ const [templatePath, docPath, caretArg, optsArg] = process.argv.slice(2);
 const opts = JSON.parse(optsArg || "{}");
 const doc = fs.readFileSync(docPath, "utf8");
 
-const { buildDecorations, refreshLinks } = loadTemplateScript(templatePath, {
-  doc, scanned: opts.scanned === true, params: opts.params || {},
-  writable: opts.writable,
-});
+const { buildDecorations, refreshLinks, enclosingFence, fenceLangAndBody } =
+  loadTemplateScript(templatePath, {
+    doc, scanned: opts.scanned === true, params: opts.params || {},
+    writable: opts.writable,
+  });
 
 // The template's own load() bailed (no `_file`), so the link facts are asked for
 // explicitly here — through the real refreshLinks, so the page's own
@@ -78,6 +79,15 @@ const fakeView = { state, posAtDOM: () => 0, dispatch() {} };
 
 function widgetDom(widget) {
   const node = widget.toDOM(fakeView);
+  // A shallow child list — one level, not a full tree — so a test can see
+  // WHAT a widget actually built (a linked-image badge is an <a> wrapping an
+  // <img>, not text) without the fake DOM needing a real querySelector.
+  const children = Array.prototype.map.call(node.children || [], (child) => ({
+    tag: (child.tagName || "").toLowerCase(),
+    cls: child.className || "",
+    src: child.src || "",
+    alt: child.alt || "",
+  }));
   return {
     tag: (node.tagName || "").toLowerCase(),
     cls: node.className || "",
@@ -86,6 +96,7 @@ function widgetDom(widget) {
     text: node.textContent || "",
     src: node.src || "",
     href: node.href || "",
+    children,
   };
 }
 
@@ -103,6 +114,20 @@ for (const iter = set.iter(); iter.value; iter.next()) {
     cls: spec.class || (spec.widget ? spec.widget.key : null),
     text: doc.slice(iter.from, iter.to),
     dom: spec.widget ? widgetDom(spec.widget) : null,
+    // A fence's copy button used to close over the BODY STRING it was BUILT
+    // with, which went stale whenever CM reused the widget's DOM across an
+    // edit that happened to leave the reuse key (lang + body length + first
+    // 40 chars) unchanged. The fix reads the CURRENT document at click time
+    // instead, via `enclosingFence`+`fenceLangAndBody` from the widget's own
+    // (always up to date) position — reported here directly, bypassing the
+    // DOM/`posAtDOM` layer entirely, so a test can assert this equals the
+    // fence's real current body without simulating a click.
+    currentFenceBody: (spec.widget && String(spec.widget.key || "").startsWith("fc:"))
+      ? (() => {
+          const fence = enclosingFence(state, iter.from);
+          return fence ? fenceLangAndBody(state, fence)[1] : null;
+        })()
+      : null,
     // A mark can carry its own element and attributes (`tagName`/`attributes`),
     // which is how a range becomes an actual anchor without replacing the text
     // under it. Reported for the same reason a widget's DOM is: what a mark

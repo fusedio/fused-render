@@ -349,7 +349,13 @@ def test_a_bare_url_renders_as_a_link_without_rewriting_it(note_file):
     plain = decorate(note_file, caret=0)
     link = at(plain, "https://example.com/a", "mark")
     assert link, "a bare URL should be decorated"
-    assert link[0]["cls"] == "lp-link", link
+    # `lp-bare-link` alongside `lp-link` (not just `lp-link` alone): this is a
+    # MARK over live, editable text, so a plain click must keep editing (the
+    # caret can land here) -- only Ctrl/Cmd-click or middle-click opens it.
+    # The delegated click handler keys off this second class to tell a bare
+    # autolink apart from an opaque `[label](url)` WIDGET, where a plain
+    # click opens (D611 link-activation fix).
+    assert link[0]["cls"].split() == ["lp-link", "lp-bare-link"], link
     # A MARK, not a widget: the text under it is untouched, so the document
     # still says exactly what the user typed and the caret can still sit in it.
     assert link[0]["tag"] == "a"
@@ -363,14 +369,14 @@ def test_an_angle_autolink_hides_its_brackets_and_gives_them_back(note_file):
     # applies to it exactly as it does to `**` or `# `.
     assert at(plain, "<", "hide"), "the opening angle bracket should be hidden"
     assert at(plain, ">", "hide")
-    assert at(plain, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+    assert at(plain, "https://example.com/b", "mark")[0]["cls"].split() == ["lp-link", "lp-bare-link"]
 
     caret = NOTE.index("<https://example.com/b>") + 4
     revealed = decorate(note_file, caret=caret)
     assert not at(revealed, "<", "hide")
     assert at(revealed, "<", "mark")[0]["cls"] == "lp-mark"
     # Still a link while revealed: showing the source must not un-style it.
-    assert at(revealed, "https://example.com/b", "mark")[0]["cls"] == "lp-link"
+    assert at(revealed, "https://example.com/b", "mark")[0]["cls"].split() == ["lp-link", "lp-bare-link"]
 
 
 def test_a_schemeless_autolink_gets_an_href_that_leaves_this_page(tmp_path):
@@ -403,6 +409,68 @@ def test_an_explicit_link_is_still_one_widget_and_not_also_a_url_mark(note_file)
     assert at(plain, "[ext](https://x.com)", "widget")
     assert not at(plain, "https://x.com")
     assert not at(plain, "../CONTRIBUTING.md#Install")
+
+
+# --------------------------------------------------- what must NOT render
+
+
+def test_a_nested_image_link_renders_as_one_clickable_image(tmp_path):
+    r"""`[![alt](img)](url)` -- a CI-badge/shield pattern GitHub renders as a
+
+    clickable image. The naive regex (`[^\]]*` for the label) cannot see this
+    shape at all: the label content is `![alt](img)`, which itself contains
+    `]`, so the whole outer Link fell through undecorated and stayed visible
+    as raw markup. The fix asks the TREE for an outer Link whose entire label
+    is a single Image, not a smarter regex.
+    """
+    path = tmp_path / "badge.md"
+    path.write_text(
+        "top\n\n[![CI](badge.svg)](https://ci.example.com/build)\n",
+        encoding="utf-8")
+    plain = decorate(str(path), caret=0)
+    widget = at(plain, "[![CI](badge.svg)](https://ci.example.com/build)", "widget")
+    assert widget, "the whole badge construct should be one widget"
+    node = widget[0]["dom"]
+    assert node["tag"] == "a"
+    assert node["href"] == "https://ci.example.com/build"
+    assert len(node["children"]) == 1
+    img = node["children"][0]
+    assert img["tag"] == "img"
+    assert img["alt"] == "CI"
+    assert img["src"].endswith("badge.svg")
+    # Nothing of the construct survives as separate hidden/mark decorations —
+    # it is genuinely ONE widget, not a half-rendered mix of a raw-text outer
+    # link around an independently-replaced inner image.
+    assert not at(plain, "![CI](badge.svg)")
+
+
+def test_a_wikilink_is_not_mistaken_for_a_nested_image_link(note_file):
+    """The standing trap (MD-3): the grammar wraps a `[[wikilink]]`'s inner
+
+    brackets in a Link node too, so the nested-image-link check must not
+    fire for one — a wikilink never has a genuine Image node nested inside
+    its Link the way a real `[![alt](img)](url)` does.
+    """
+    plain = decorate(note_file, caret=0)
+    assert at(plain, "[[Wiki Link|label]]", "widget")
+    assert at(plain, "![[embed.png]]", "widget")
+
+
+def test_a_link_target_with_a_balanced_paren_is_not_truncated(tmp_path):
+    r"""A Wikipedia-style URL (`Foo_(bar)`) has a paren INSIDE the
+
+    destination, which the old `[^()\s]*` URL group could not include —
+    only up to the first `(` was ever captured, silently truncating the
+    href. The grammar already finds the construct's true end; the fix only
+    has to stop excluding parens from what it captures.
+    """
+    path = tmp_path / "wiki.md"
+    path.write_text(
+        "top\n\n[wiki](https://en.wikipedia.org/wiki/Foo_(bar))\n",
+        encoding="utf-8")
+    plain = decorate(str(path), caret=0)
+    node = dom(plain, "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))")
+    assert node["href"] == "https://en.wikipedia.org/wiki/Foo_(bar)"
 
 
 # --------------------------------------------------- what must NOT render
@@ -528,6 +596,48 @@ def test_a_fenced_block_is_padded_only_at_its_two_edges(note_file):
     assert "lp-fence-line" in classes
 
 
+def test_the_fence_copy_button_reads_the_current_document_not_a_stale_key(tmp_path):
+    """The chip widget's copy handler used to close over the BODY STRING it
+
+    was built with. CM reuses a widget's DOM whenever the reuse key --
+    lang + body length + first 40 characters -- matches across a rebuild,
+    which is common (appending well past character 40 leaves the key
+    unchanged), so a captured string would silently go stale: the worst
+    failure mode for a copy button, since nothing on screen looks wrong.
+
+    Two fences below are built to COLLIDE on that exact key -- same
+    language, same length, identical first 40 characters, different content
+    after that -- to prove the fix does not depend on the key being a
+    perfect hash at all: `currentFenceBody` (reported by the probe via
+    `enclosingFence`+`fenceLangAndBody`, the same two functions the real
+    click handler calls) is read fresh from each fence's own current
+    position, so it is correct for BOTH even though a snapshot-based
+    handler could not tell them apart.
+    """
+    prefix = "x" * 40
+    body_a = prefix + "AAAA"
+    body_b = prefix + "BBBB"
+    assert len(body_a) == len(body_b)  # the reuse key's length component matches too
+    doc = (
+        f"```python\n{body_a}\n```\n\n"
+        f"```python\n{body_b}\n```\n"
+    )
+    path = tmp_path / "fence.md"
+    path.write_text(doc, encoding="utf-8")
+    plain = decorate(str(path), caret=0)
+    chips = [d for d in plain if d.get("currentFenceBody") is not None]
+    assert len(chips) == 2, chips
+    # Ordered by position, so the first chip belongs to the first fence.
+    chips.sort(key=lambda d: d["from"])
+    assert chips[0]["currentFenceBody"] == body_a
+    assert chips[1]["currentFenceBody"] == body_b
+    # The two widgets DO collide on the key the DOM-reuse fast path checks --
+    # confirming this is a genuine test of the collision case, not one that
+    # happens not to exercise it.
+    assert chips[0]["cls"] == chips[1]["cls"], \
+        "the two fences should share a reuse key here"
+
+
 def test_a_blockquote_is_spaced_as_one_block(note_file):
     classes = line_classes(decorate(note_file, caret=0))
     # One line long here, so the same line is both edges.
@@ -561,7 +671,8 @@ def test_an_at_sign_in_a_www_autolink_is_not_an_email_address(tmp_path):
     # `mailto:` href hands it to a mail client instead of a browser.
     path = tmp_path / "at.md"
     path.write_text("See www.example.com/u@h/x here.\n", encoding="utf-8")
-    marks = [d for d in decorate(str(path), caret=0) if d["cls"] == "lp-link"]
+    marks = [d for d in decorate(str(path), caret=0)
+             if d["cls"].split() == ["lp-link", "lp-bare-link"]]
     assert marks, "the www autolink was not decorated at all"
     assert marks[0]["attrs"]["href"] == "https://www.example.com/u@h/x"
 

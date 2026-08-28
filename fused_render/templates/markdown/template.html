@@ -1116,7 +1116,7 @@
   <div id="ro-wrap"><span id="ro" hidden></span></div>
   <!-- The image lightbox (6a): overlay + key handler over the already-rendered
        <img class="lp-img">/<video> widgets, not a rendering change. -->
-  <div id="lightbox" hidden>
+  <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer" hidden>
     <!-- Monochrome SVG on currentColor, the same idiom the corner button uses
        — no typographic character standing in for an icon anywhere (✕/‹/› all
        render at a different weight and optical size than a drawn glyph, and
@@ -1476,29 +1476,37 @@
     //
     // No extension filter: the shell opens any path with its own template, so a
     // link to a .png, a .pdf or a subfolder is as navigable as one to a note.
+    // What a `[label](target)` link's TARGET means — one function, so a
+    // nested image-in-link (`linkedImageWidget`, below) resolves its outer
+    // target exactly the same way an ordinary text link does, rather than a
+    // second copy of this rule drifting from it.
+    function applyLinkTarget(a, href) {
+      // Absolute paths, any scheme (http:, mailto:, data:) and a bare
+      // #anchor are not vault paths — rewriting them would break them. MD-3
+      // draws this same line for what counts as an edge.
+      if (/^(#|\/|[a-z][a-z0-9+.-]*:)/i.test(href)) {
+        a.href = href;
+        a.target = "_blank";
+        a.rel = "noopener";
+        return;
+      }
+      const hash = href.indexOf("#");
+      const target = hash === -1 ? href : href.slice(0, hash);
+      if (!target) { a.href = href; return; }
+      const heading = hash === -1 ? "" : decodeMaybe(href.slice(hash + 1));
+      const path = resolvePath(noteDir(), decodeMaybe(target));
+      a.dataset.path = path;
+      if (heading) a.dataset.heading = heading;
+      a.href = urlForFsPath(path, heading ? "heading=" + encodeURIComponent(heading) : "");
+    }
+
     function markdownLinkWidget(label, href) {
       const key = "ln:" + label + "|" + href;
       return new DomWidget(key, () => {
         const a = document.createElement("a");
         a.className = "lp-link";
         a.textContent = label || href;
-        // Absolute paths, any scheme (http:, mailto:, data:) and a bare
-        // #anchor are not vault paths — rewriting them would break them. MD-3
-        // draws this same line for what counts as an edge.
-        if (/^(#|\/|[a-z][a-z0-9+.-]*:)/i.test(href)) {
-          a.href = href;
-          a.target = "_blank";
-          a.rel = "noopener";
-          return a;
-        }
-        const hash = href.indexOf("#");
-        const target = hash === -1 ? href : href.slice(0, hash);
-        if (!target) { a.href = href; return a; }
-        const heading = hash === -1 ? "" : decodeMaybe(href.slice(hash + 1));
-        const path = resolvePath(noteDir(), decodeMaybe(target));
-        a.dataset.path = path;
-        if (heading) a.dataset.heading = heading;
-        a.href = urlForFsPath(path, heading ? "heading=" + encodeURIComponent(heading) : "");
+        applyLinkTarget(a, href);
         return a;
       }, true);
     }
@@ -1521,6 +1529,15 @@
     // `from`) — the lightbox (6a) uses it to find this exact image again in
     // `collectDocImages()`'s regex scan, rather than trusting DOM order,
     // which CodeMirror only renders for the current viewport.
+    // What a `![alt](src)` image/video's SOURCE resolves to — factored out so
+    // a nested badge image (`linkedImageWidget`, below) resolves its own
+    // `src` the identical way a standalone image does.
+    function resolveMediaSrc(el, src) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(src)) el.src = src;   // http:, data:, file:
+      else if (src.startsWith("/")) el.src = fused.rawUrl(src);
+      else el.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+    }
+
     function imageWidget(alt, src, pos) {
       const key = "im:" + alt + "|" + src;
       // The extension is read off the source BEFORE the scheme/absolute
@@ -1543,9 +1560,7 @@
           el.className = "lp-img";
           el.alt = alt;
         }
-        if (/^[a-z][a-z0-9+.-]*:/i.test(src)) el.src = src;   // http:, data:, file:
-        else if (src.startsWith("/")) el.src = fused.rawUrl(src);
-        else el.src = fused.rawUrl(resolvePath(noteDir(), decodeMaybe(src)));
+        resolveMediaSrc(el, src);
         if (!isVideo) {
           el.style.cursor = "zoom-in";
           el.addEventListener("mousedown", (e) => e.stopPropagation());
@@ -1556,6 +1571,38 @@
         }
         return el;
       }, !isVideo);
+    }
+
+    // `[![alt](imgsrc)](url)` — a badge/shield pattern (GitHub CI badges are
+    // the common case): an outer LINK whose entire label is a single IMAGE.
+    // Built as one widget, an anchor wrapping an image, rather than as the
+    // plain-link/plain-image widgets composing on their own — the image does
+    // NOT open the lightbox here (a badge's whole point is that clicking it
+    // goes to `url`, exactly what GitHub itself renders), so it gets none of
+    // `imageWidget`'s own click handling, only `resolveMediaSrc`'s `src`
+    // resolution and `applyLinkTarget`'s target resolution, the same two
+    // rules a plain image and a plain link already use.
+    function linkedImageWidget(alt, src, href) {
+      const key = "li:" + alt + "|" + src + "|" + href;
+      const isVideo = VIDEO_EXT.test(src.split(/[?#]/)[0]);
+      return new DomWidget(key, () => {
+        const a = document.createElement("a");
+        a.className = "lp-link";
+        applyLinkTarget(a, href);
+        const media = document.createElement(isVideo ? "video" : "img");
+        if (isVideo) {
+          media.className = "lp-video";
+          media.controls = true;
+          media.muted = true;
+          media.preload = "metadata";
+        } else {
+          media.className = "lp-img";
+          media.alt = alt;
+        }
+        resolveMediaSrc(media, src);
+        a.appendChild(media);
+        return a;
+      }, true);
     }
 
     // A task checkbox is clickable and writes back, as in Obsidian — and it
@@ -1628,12 +1675,23 @@
     // end — the fence markers stay visible (MD-18a), this only adds a small
     // floating toolbar over them. Opaque: a click on the chip or the copy
     // button must not move the caret or count as an edit.
+    // The enclosing FencedCode node for a document position — one function,
+    // so the copy button (below) and anything else that ever needs "which
+    // fence is this" ask the tree the same way `within`/`enclosingLinkTarget`
+    // already do for their own node kinds.
+    function enclosingFence(state, pos) {
+      const tree = CM.syntaxTree(state);
+      for (let node = tree.resolveInner(pos, 1); node; node = node.parent) {
+        if (node.name === "FencedCode") return node;
+      }
+      return null;
+    }
+
     function fenceChipWidget(lang, body) {
-      // Body is part of the key: the widget must not be REUSED with a stale
-      // closure once the code inside the fence changes, or the copy button
-      // would keep copying whatever it happened to close over first.
+      // `body` names the widget (the key), but the CLICK HANDLER below does
+      // NOT close over it — see the comment there for why.
       const key = "fc:" + lang + "|" + body.length + "|" + body.slice(0, 40);
-      return new DomWidget(key, () => {
+      return new DomWidget(key, (editorView) => {
         const wrap = document.createElement("span");
         wrap.className = "lp-fence-chip";
         if (lang) {
@@ -1652,7 +1710,25 @@
           e.preventDefault();
           e.stopPropagation();
           if (!navigator.clipboard || !navigator.clipboard.writeText) return;
-          navigator.clipboard.writeText(body).then(() => {
+          // Reads the CURRENT document at click time rather than closing over
+          // a snapshot: CM reuses a widget's DOM whenever `key` matches
+          // across a rebuild (the fast path, so an untouched fence is not
+          // rebuilt on every keystroke elsewhere in the note), and an edit
+          // that happens to leave this fence's length and first 40 characters
+          // unchanged — appending well past that point, or editing a LATER
+          // fence, is enough — reuses the OLD widget with the OLD closure, so
+          // a captured `body` string would silently copy stale code, the
+          // worst failure mode for a copy button (nothing looks wrong).
+          // `posAtDOM`, not the closed-over node/position either — that is
+          // the SAME idiom `taskWidget` already uses to find its own current
+          // position from its own DOM node, which self-heals across content
+          // ABOVE this fence shifting its absolute offset, not only content
+          // inside it changing.
+          const pos = editorView.posAtDOM(wrap);
+          const fence = enclosingFence(editorView.state, pos);
+          const currentBody = fence
+            ? fenceLangAndBody(editorView.state, fence)[1] : body;
+          navigator.clipboard.writeText(currentBody).then(() => {
             btn.textContent = "Copied";
             setTimeout(() => { btn.textContent = "Copy"; }, 1200);
           }).catch(() => {});
@@ -1743,8 +1819,14 @@
           : /^www\./i.test(raw) ? "https://" + raw
           : raw.includes("@") ? "mailto:" + raw
           : "https://" + raw;
+        // `lp-bare-link` (6b follow-up, D611 link-activation fix): this is a
+        // MARK over live document text, not a widget — the caret can and
+        // should still land here on an ordinary click (it is editable prose,
+        // unlike a `[label](url)` widget). So a plain click here EDITS, same
+        // as clicking anywhere else in the line; only Ctrl/Cmd-click or
+        // middle-click OPENS it — see the delegated click handler.
         out.push(CM.Decoration.mark({
-          class: "lp-link",
+          class: "lp-link lp-bare-link",
           tagName: "a",
           attributes: { href, target: "_blank", rel: "noopener" },
         }).range(from, to));
@@ -1894,8 +1976,37 @@
           }
           if (name === "Image" || name === "Link") {
             if (open) return true;
+            // The badge shape: `[![alt](imgsrc)](url)`, an outer Link whose
+            // entire label is one Image — asked of the TREE, not grown into
+            // the regex below as bracket-balancing, because the tree already
+            // knows this shape and a hand-rolled balancer is exactly the kind
+            // of "is this code?" reimplementation that has bitten the link
+            // layer twice before (MD-3). This cannot mistake a `[[wikilink]]`
+            // for one: those wrap their double brackets in a single Link or
+            // Image node directly, never a genuine Image NESTED inside a
+            // Link, so no extra guard is needed to keep the two apart.
+            if (name === "Link") {
+              const child = node.node.getChild("Image");
+              if (child && child.from === node.from + 1) {
+                const tail = state.doc.sliceString(child.to, node.to);
+                const tailMatch = /^\]\((\S*)\)$/.exec(tail);
+                const innerRaw = state.doc.sliceString(child.from, child.to);
+                const innerMatch = /^!\[([^\]]*)\]\((\S*)\)$/.exec(innerRaw);
+                if (tailMatch && innerMatch) {
+                  pushWidget(node.from, node.to,
+                    linkedImageWidget(innerMatch[1], innerMatch[2], tailMatch[1]));
+                  return false;
+                }
+              }
+            }
             const raw = state.doc.sliceString(node.from, node.to);
-            const match = /^(!?)\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
+            // The URL group is `\S*`, not a character class excluding `()` —
+            // a link destination may contain balanced parens (a Wikipedia
+            // URL is the classic case, `Foo_(bar)`), and the grammar has
+            // already found the construct's true end (`node.to`), so greedy
+            // `\S*` backtracking exactly one char for the trailing `\)$`
+            // recovers the whole destination correctly either way.
+            const match = /^(!?)\[([^\]]*)\]\((\S*)\)$/.exec(raw);
             // No match means this is not a plain inline link: a reference
             // link, a titled link, or — the common case — the inner brackets
             // of a `[[wikilink]]`, which the regex pass below owns.
@@ -2210,7 +2321,10 @@
       for (let node = tree.resolveInner(pos, 0); node; node = node.parent) {
         if (node.name !== "Link") continue;
         const raw = state.doc.sliceString(node.from, node.to);
-        const match = /^\[([^\]]*)\]\(([^()\s]*)\)$/.exec(raw);
+        // `\S*`, not a `()`-excluding class — see the matching comment in
+        // buildDecorations; a Wikipedia-style URL with a balanced paren must
+        // select correctly here too, or ⌘K would edit a truncated target.
+        const match = /^\[([^\]]*)\]\((\S*)\)$/.exec(raw);
         if (!match) continue;
         const start = node.from + match[1].length + 3;
         return { from: start, to: start + match[2].length };
@@ -3427,6 +3541,35 @@
       }
     }
 
+    // A GitHub-style in-page anchor, `[label](#some-heading)` — different from
+    // `[[#Heading]]` (`scrollToHeading`, exact text): the convention there is
+    // a SLUGGED heading id (lowercased, non-word characters stripped, spaces
+    // to hyphens), not the heading's literal text, and the two must not be
+    // conflated into one function — `scrollToHeading` is also what
+    // `?heading=` navigation and every wikilink anchor rely on, and loosening
+    // its match to "or slugged" risks a heading that merely slugs to the same
+    // string as another stealing the jump. Exact text is tried first
+    // regardless (a note that literally titles a heading with a slug-shaped
+    // string should still win), slug second.
+    function slugifyHeading(text) {
+      return text.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
+    }
+    function scrollToAnchorHash(hash) {
+      const wanted = decodeMaybe(String(hash).replace(/^#/, "")).trim();
+      if (!wanted || !view) return;
+      const doc = view.state.doc;
+      const wantedSlug = slugifyHeading(wanted);
+      let slugLine = -1;
+      for (let n = 1; n <= doc.lines; n++) {
+        const match = /^#{1,6}\s+(.*)$/.exec(doc.line(n).text);
+        if (!match) continue;
+        const text = match[1].trim();
+        if (text.toLowerCase() === wanted.toLowerCase()) { scrollToLine(n); return; }
+        if (slugLine === -1 && slugifyHeading(text) === wantedSlug) slugLine = n;
+      }
+      if (slugLine !== -1) scrollToLine(slugLine);
+    }
+
     // MD-4b's rule in one place, so every heading jump obeys it: scroll the line
     // into view and leave the caret alone. The outline (below) scrolls by LINE
     // rather than by text because it built the row from that line — matching by
@@ -3733,6 +3876,23 @@
 
     // One delegated handler for every link surface: wikilink and markdown-link
     // widgets and backlink rows all carry data-path; ghosts carry data-create.
+    // ---- opening a `[label](url)`/bare-URL link (D611 follow-up) -----------
+    // The note surface used to open read-only by default, and inside a
+    // NON-editable CM view a plain `<a>` activates natively (the browser
+    // handles the click). Now that a writable note is always editable
+    // (MD-1a), the surface is `contenteditable`, and a click inside
+    // `contenteditable` never follows a link — the browser places the caret
+    // instead, which is standard behaviour, not a CodeMirror quirk. So every
+    // link here needs EXPLICIT JS activation; native `href` alone is dead.
+    // `window.open(url, "_blank", "noopener")` is the same idiom
+    // `claude/template.html`'s artifact rows already use for an outbound
+    // link from inside this app's iframes — not a new mechanism.
+    function openLinkHref(href) {
+      if (href.startsWith("#")) { scrollToAnchorHash(href); return; }
+      try { window.open(href, "_blank", "noopener"); }
+      catch (e) { /* popup blocked or similar — nothing else to fall back to */ }
+    }
+
     document.addEventListener("click", (event) => {
       // `[[#Heading]]`: the target note IS this one, so this is a scroll, not a
       // navigation. Checked first — its data attribute is the narrowest.
@@ -3757,9 +3917,42 @@
         return;
       }
       const el = event.target.closest("[data-path]");
-      if (!el) return;
+      if (el) {
+        event.preventDefault();
+        openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
+        return;
+      }
+      // `markdownLinkWidget`'s external/absolute/mailto/bare-`#anchor` branch
+      // and `pushUrl`'s bare-URL mark both land here — anything already
+      // handled above (a resolved vault link) carries `data-path` and
+      // returned first. `.lp-bare-link` (pushUrl) is a MARK over live,
+      // editable text, unlike the WIDGET `[label](url)` produces — a widget
+      // is opaque to CodeMirror's own pointer handling (the caret cannot
+      // land on it regardless), but a mark is ordinary prose the caret
+      // legitimately belongs in, so a plain click there must keep editing,
+      // matching "do not intercept anything that is not a rendered link
+      // widget". Only Ctrl/Cmd-click opens a bare URL; a `[label](url)`
+      // widget opens on a plain click, same as a vault link always has.
+      const link = event.target.closest("a.lp-link[href]");
+      if (link) {
+        if (link.classList.contains("lp-bare-link") && !(event.metaKey || event.ctrlKey)) return;
+        event.preventDefault();
+        openLinkHref(link.getAttribute("href"));
+      }
+    });
+
+    // Middle-click ("auxclick", not "click" — a plain `click` listener never
+    // sees it) opening a link is standard browser behaviour this surface lost
+    // the same way a plain click did; restored here for both link shapes,
+    // since a middle-click's whole point is "open without touching the
+    // caret", so `.lp-bare-link` does not need the Ctrl/Cmd gate a `click`
+    // does.
+    document.addEventListener("auxclick", (event) => {
+      if (event.button !== 1) return;
+      const link = event.target.closest("a.lp-link[href]");
+      if (!link) return;
       event.preventDefault();
-      openNote(el.getAttribute("data-path"), el.getAttribute("data-heading") || "");
+      openLinkHref(link.getAttribute("href"));
     });
 
     document.getElementById("reload").addEventListener("click", () => void reloadFromDisk());
@@ -3812,10 +4005,40 @@
       lightboxEl.hidden = false;
     }
 
+    // A modal that leaves the surface behind it live is not modal: opening
+    // the lightbox over an ALWAYS-EDITABLE document (MD-1a) previously left
+    // focus in the CM editor, so typing while an image was open still edited
+    // the note (and the 2s idle autosave committed it), and the arrow keys
+    // raced CodeMirror's own keymap — the window-level listener below fired
+    // in the BUBBLE phase, strictly after CM's own contentDOM handlers had
+    // already run. Two independent fixes, not one: focus genuinely MOVES
+    // into the overlay on open (the browser only ever routes keydown to the
+    // focused element, so this alone stops the bleed-through in the normal
+    // case) and back to the editor on close; the keydown listener is also
+    // re-registered in the CAPTURE phase and calls `stopPropagation()`
+    // unconditionally while open, so it is authoritative even if focus ever
+    // lands somewhere unexpected — defense in depth, not a substitute for
+    // moving focus.
+    function lightboxFocusables() {
+      return [lbCloseEl, lbPrevEl, lbNextEl].filter((el) => !el.hidden);
+    }
+    // A dialog traps Tab within itself rather than leaking focus back into
+    // the document behind it.
+    function cycleLightboxFocus(backwards) {
+      const items = lightboxFocusables();
+      if (!items.length) return;
+      const at = items.indexOf(document.activeElement);
+      const next = backwards
+        ? (at <= 0 ? items.length - 1 : at - 1)
+        : (at === -1 || at === items.length - 1 ? 0 : at + 1);
+      items[next].focus();
+    }
+
     function openLightbox(pos) {
       lbImages = collectDocImages();
       const at = lbImages.findIndex((image) => image.pos === pos);
       showLightboxAt(at === -1 ? 0 : at);
+      lbCloseEl.focus();
     }
 
     function closeLightbox() {
@@ -3823,6 +4046,10 @@
       lbImgEl.src = "";
       lbImages = [];
       lbIndex = -1;
+      // Hand the caret back to the document, not wherever focus happens to
+      // land by default (the <body>) — the user was editing before this
+      // opened, and closing it should not silently drop them out of it.
+      if (view) view.focus();
     }
 
     lbCloseEl.addEventListener("click", closeLightbox);
@@ -3838,7 +4065,12 @@
       if (event.key === "Escape") { event.preventDefault(); closeLightbox(); }
       else if (event.key === "ArrowLeft") { event.preventDefault(); showLightboxAt(lbIndex - 1); }
       else if (event.key === "ArrowRight") { event.preventDefault(); showLightboxAt(lbIndex + 1); }
-    });
+      else if (event.key === "Tab") { event.preventDefault(); cycleLightboxFocus(event.shiftKey); }
+      // Authoritative while open (see the comment above `openLightbox`): every
+      // key stops here, whether or not the lightbox itself uses it, so none
+      // of them ever reach the editable document underneath.
+      event.stopPropagation();
+    }, true);
 
     // ---- the selection format bubble (6c) ------------------------------------
     // Positioned by hand from `view.coordsAtPos`, not CM's tooltip API (not
@@ -4018,6 +4250,25 @@
     // either panel looking only at itself. `desiredRailPx`/`desiredSidePx`
     // hold that desire; each panel's own drag/keyboard handlers only ever
     // update their own variable and call `layoutPanels()`.
+    //
+    // THE INVARIANT (stated once, because this template has now conflated
+    // "what currently fits" with "what the user asked for" three separate
+    // times — `graph=0` written into the URL by a layout-driven close,
+    // `#side-reopen` shipping `hidden` backwards, and a drag/keyboard resize
+    // reading the rendered, comfort-clamped box back into the stored width):
+    // A PERSISTED PREFERENCE — `localStorage`, a `fused.params` write, an
+    // element's default visibility — MAY ONLY EVER BE WRITTEN FROM THE
+    // USER'S OWN GESTURE, expressed as the size/state they are actually
+    // asking for, and NEVER read back out of a clamped or otherwise
+    // presentation-only DOM measurement (`getBoundingClientRect`,
+    // `style.display`, `style.width`). Concretely here: a drag or an arrow
+    // key computes its next value from `desiredSidePx`/`desiredRailPx` (the
+    // last INTENT), never from `sideEl`/`railEl`'s current rendered
+    // `getBoundingClientRect().width` — that box can be narrower than the
+    // desire right now (the comfort target, or the hard floor) without the
+    // desire itself having changed, and basing a resize off it would silently
+    // adopt the clamp's number as the new preference the moment the user so
+    // much as nudges the grip while it is clamped.
     const gripEl = document.getElementById("side-grip");
     const SIDE_KEY = "fused-md-side-width";
     const SIDE_MIN = 15 * 16;   // 15rem — narrower and the backlink rows wrap badly
@@ -4047,7 +4298,9 @@
     gripEl.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       const startX = event.clientX;
-      const startWidth = sideEl.getBoundingClientRect().width;
+      // `desiredSidePx`, not `sideEl.getBoundingClientRect().width` — see
+      // THE INVARIANT above.
+      const startWidth = desiredSidePx;
       gripEl.setPointerCapture(event.pointerId);
       // Dragging LEFT widens: the panel is on the right, so its width grows as
       // the pointer moves away from it.
@@ -4056,7 +4309,10 @@
         gripEl.removeEventListener("pointermove", onMove);
         gripEl.removeEventListener("pointerup", onUp);
         gripEl.removeEventListener("pointercancel", onUp);
-        applySideWidth(sideEl.getBoundingClientRect().width, true);
+        // Persists whatever the last `onMove` already set `desiredSidePx`
+        // to — re-clamped against its own MIN/MAX, which is a no-op here
+        // since it already was.
+        applySideWidth(desiredSidePx, true);
       };
       gripEl.addEventListener("pointermove", onMove);
       gripEl.addEventListener("pointerup", onUp);
@@ -4067,7 +4323,7 @@
       const step = event.key === "ArrowLeft" ? 16 : event.key === "ArrowRight" ? -16 : 0;
       if (!step) return;
       event.preventDefault();
-      applySideWidth(sideEl.getBoundingClientRect().width + step, true);
+      applySideWidth(desiredSidePx + step, true);
     });
 
     // ---- the outline rail (MD-19a/MD-19b) ------------------------------------
@@ -4239,7 +4495,9 @@
     railGripEl.addEventListener("pointerdown", (event) => {
       event.preventDefault();
       const startX = event.clientX;
-      const startWidth = railEl.getBoundingClientRect().width;
+      // `desiredRailPx`, not `railEl.getBoundingClientRect().width` — see
+      // THE INVARIANT above.
+      const startWidth = desiredRailPx;
       railGripEl.setPointerCapture(event.pointerId);
       // The rail is on the LEFT, so dragging right (away from the document)
       // widens it — the opposite sense from the right panel's grip.
@@ -4248,7 +4506,7 @@
         railGripEl.removeEventListener("pointermove", onMove);
         railGripEl.removeEventListener("pointerup", onUp);
         railGripEl.removeEventListener("pointercancel", onUp);
-        applyRailWidth(railEl.getBoundingClientRect().width, true);
+        applyRailWidth(desiredRailPx, true);
       };
       railGripEl.addEventListener("pointermove", onMove);
       railGripEl.addEventListener("pointerup", onUp);
@@ -4259,7 +4517,7 @@
       const step = event.key === "ArrowLeft" ? -16 : event.key === "ArrowRight" ? 16 : 0;
       if (!step) return;
       event.preventDefault();
-      applyRailWidth(railEl.getBoundingClientRect().width + step, true);
+      applyRailWidth(desiredRailPx + step, true);
     });
 
     function graphOn() { return fused.params.get("graph") === "1"; }

@@ -3320,6 +3320,22 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   between "wide enough that chrome is free" and "the hard floor", which is
   deliberately where a note gets read beside an open chat panel — the case
   the owner was looking at both times.
+  **The stored preference (`desiredRailPx`/`desiredSidePx`) is written ONLY
+  from the user's own drag or arrow-key gesture, expressed as the size being
+  asked for — never read back out of `getBoundingClientRect()`.** That
+  distinction is a real invariant this template has broken three separate
+  times on this branch (a layout-driven close writing `graph=0` into the URL
+  param; `#side-reopen` shipping `hidden` backwards; and a grip drag/arrow-key
+  resize basing its next value on the panel's CURRENT RENDERED box, which can
+  be narrower than the desire right now — comfort-clamped or hard-floored —
+  without the desire having changed, so nudging the grip while clamped
+  silently adopted the clamp's number as the new stored preference). Stated
+  once, here, as the rule: a persisted preference (`localStorage`, a
+  `fused.params` write, an element's default visibility) may only ever be
+  written from a genuine user gesture's own intent, never from a
+  presentation-only measurement (`getBoundingClientRect`, `style.display`,
+  `style.width`) — `layoutPanels` reads intent and computes presentation,
+  and nothing may read that computed presentation back into a stored intent.
 - **MD-19** **Rendering the graph.** One implementation, in
   `templates/shared/graph-canvas.js`, served from the `/template-shared/` mount
   and used by both graph surfaces — extracted the moment the second one
@@ -3599,6 +3615,18 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   alt text, since either can repeat. Alt text, when present, sits bottom-left
   as the caption. `![[embed]]` images are not indexed for prev/next — only the
   plain `![alt](src)` form the regex scan can see without a link scan.
+  **A modal that leaves the surface behind it live is not modal**, so opening
+  it moves DOM focus into the overlay (the close button) and back to the
+  editor on close — this is what actually stops keys from reaching an
+  ALWAYS-EDITABLE document (MD-1a) underneath, since the browser only routes
+  keydown to whatever is currently focused. The overlay's `keydown` listener
+  is additionally registered in the CAPTURE phase (not bubble) and calls
+  `stopPropagation()` on every key while open, whether or not the lightbox
+  itself uses it — defense in depth on top of the focus move, not a
+  substitute for it: a bubble-phase listener fires strictly AFTER CM's own
+  contentDOM handlers, too late to stop an edit or a keymap collision that
+  already happened. `Tab` cycles among the overlay's own controls
+  (`lightboxFocusables`) rather than leaking focus back into the page.
 - **MD-28** **Fenced code gets real per-language highlighting, in both
   themes, as a block** (D611). Three changes:
   1. **Per-language tokens.** `CM.markdown({ codeLanguages })` had never been
@@ -3630,10 +3658,20 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
      language, uppercase and muted in the chrome register (§2 of the redesign
      plan — 11px, `letter-spacing: 0.08em`), and a **copy button** that
      appears on hovering that corner and copies the fenced body (markers
-     stripped) via `navigator.clipboard`. The widget's reuse key includes a
-     snippet of the body, not just the language, so editing the code inside
-     the fence cannot leave the copy button holding a stale closure over the
-     old text.
+     stripped) via `navigator.clipboard`. The widget's reuse KEY includes a
+     snippet of the body (language + length + first 40 characters) so a
+     typical edit invalidates it and rebuilds the DOM — but the key is a
+     hash, not a guarantee, and CM reuses the OLD DOM (and whatever closure
+     it captured) whenever two builds collide on it, which is not rare: any
+     edit past character 40 that leaves the length unchanged, or editing a
+     LATER fence in the same note, collides. **So the click handler does not
+     close over a body string at all** — it re-derives the CURRENT fence at
+     click time from the widget's own live position (`enclosingFence` +
+     `fenceLangAndBody`, the same idiom `taskWidget` already uses via
+     `posAtDOM` to find its own current position), which is correct
+     regardless of whether the key happened to collide, and self-heals even
+     when content ABOVE the fence shifts every absolute offset without
+     touching the fence's own text.
 - **MD-29** **The selection format bubble** (D611). A floating bar appears
   above a non-empty editor selection — bold, italic, strikethrough, inline
   code, link, and "Turn into" (MD-30) — flipping below the selection when
@@ -3679,6 +3717,68 @@ behaviour copied from Obsidian rather than invented. Design + rationale:
   rendered heading the instant it is typed (MD-18a) — the only gap was ever
   the RETROACTIVE direction, which neither Obsidian nor Typora has a native
   command for either.
+- **MD-31** **Every link activates through explicit JS, never through a
+  native anchor click — a consequence of D611 the plan did not anticipate.**
+  Before D611, a note opened read-only by default (`EditorView.editable.of
+  (false)`), and clicking a native `<a>` inside a NON-editable CM view
+  activates it natively — ordinary browser behaviour. A writable note is now
+  always editable (MD-1a), which makes the surface `contenteditable`, and
+  inside `contenteditable` a click on an anchor never follows it: the browser
+  places the caret there instead. That is standard `contenteditable`
+  behaviour, not a CodeMirror quirk, and it silently killed every link that
+  relied on native `href` activation — while a vault-relative link kept
+  working, because `markdownLinkWidget` already gives it `data-path` and the
+  one delegated `document` click handler (MD-3/MD-4a) opens it in JS
+  regardless of what contenteditable does with the click.
+  So the same delegated handler now owns activation for the two link shapes
+  that used to rely on the browser: `markdownLinkWidget`'s external/
+  absolute/mailto/bare-`#anchor` branch, and `pushUrl`'s bare-autolink mark
+  (MD-24) — both carry `.lp-link`, matched as `a.lp-link[href]` after the
+  existing `data-path`/`data-anchor`/`data-create` checks. **The two shapes
+  are NOT treated identically**, because they are not the same kind of
+  decoration: `markdownLinkWidget` replaces `[label](url)` with an OPAQUE
+  widget (`ignoreEvent` true), so the caret can never land there regardless —
+  a plain click opens it, exactly like a vault-relative link always has.
+  `pushUrl`'s bare URL is a MARK over live, editable prose — the caret
+  legitimately belongs there — so a plain click keeps editing and only
+  Ctrl/Cmd-click (or middle-click, via a matching `auxclick` listener, since
+  middle-click never fires a `click` event at all) opens it; `.lp-bare-link`
+  is the class the click handler keys off to tell the two apart. Opening
+  itself goes through `window.open(url, "_blank", "noopener")` — the same
+  idiom `claude/template.html`'s artifact rows already use for an outbound
+  link from inside one of this app's iframes, not a new mechanism — except a
+  bare `#anchor`, which scrolls within the note instead (`scrollToAnchorHash`,
+  a GitHub-style SLUG match, exact text tried first, distinct from
+  `scrollToHeading`'s exact-text-only match for `[[#Heading]]` and
+  `?heading=`, which must not be loosened by this).
+- **MD-31a** **A nested image-in-link (`[![alt](img)](url)`, GitHub's own
+  badge/shield pattern) renders as ONE clickable image, asked of the TREE —
+  not a smarter regex.** The plain-link regex's label group (`[^\]]*`)
+  cannot see this shape at all: the label content is `![alt](img)`, which
+  itself contains `]`, so the whole outer `Link` fell through undecorated
+  and stayed visible as raw markup whether or not the caret was on it — a
+  pre-existing bug (unrelated to D611) the redesign did not introduce but
+  did make more visible. Growing the regex into a bracket-balancer would be
+  exactly the "is this code?" reimplementation trap that has bitten the link
+  layer twice before (MD-3): the tree already knows an outer `Link` whose
+  `getChild("Image")` starts immediately after its own opening mark is this
+  shape, and that check cannot mistake a `[[wikilink]]` for one — a
+  wikilink's double brackets wrap a single Link or Image node directly, never
+  a genuine Image nested inside a Link. Built as `linkedImageWidget`, sharing
+  `applyLinkTarget` (the link-target rule) and `resolveMediaSrc` (the image-
+  source rule) with the plain link and image widgets rather than copying
+  either — the image does NOT open the lightbox here, since a badge's whole
+  point is that clicking it goes to `url`, exactly what GitHub itself
+  renders.
+- **MD-31b** **A link destination may contain a balanced paren (a Wikipedia
+  URL is the classic case, `Foo_(bar)`), and every regex that captures one
+  now says `\S*` rather than a `()`-excluding character class** — the URL
+  group in the plain-link decorator, in the nested-badge decorator, and in
+  `enclosingLinkTarget` (⌘K's link-edit lookup). The grammar has already
+  found the construct's true end; greedy `\S*` backtracking exactly one
+  character for the trailing `\)$` recovers the whole destination correctly
+  either way, without needing to balance parens by hand. Also pre-existing,
+  also unrelated to D611.
 
 ## 33. Git View — Source Control Scoped to the Open Path (D193, D229)
 

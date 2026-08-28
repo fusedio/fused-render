@@ -53,6 +53,7 @@ const tomlLang = StreamLanguage.define(toml);
 const EXPORTS = [
   "buildDecorations", "refreshLinks", "editorKeymap",
   "renumberFilter", "renumberOrderedLists",
+  "enclosingFence", "fenceLangAndBody",
 ];
 
 const stub = () => new Proxy({}, {
