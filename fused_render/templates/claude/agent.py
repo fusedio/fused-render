@@ -62,6 +62,7 @@ Actions:
           "timeline": {...}}  # version_id MUST come from a snapshot_plan call
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
+import io
 import json
 import os
 import re
@@ -959,6 +960,61 @@ def _wire_path(path: str) -> str:
     return path.replace("\\", "/")
 
 
+def _attach_dirs(raw: str) -> list:
+    """The directories THIS message's attachments live in, as the page reported
+    them — one `Read(//dir/**)` rule each on the spawn line (`extra_read_dirs`).
+
+    Why the page decides and not this module: the attachment list is the page's
+    own state (`shotAttached`), it is per MESSAGE, and by the time `start` runs
+    the paths are already inside the composed message where nothing can tell an
+    attachment path from a path the user happened to type. So it is sent
+    explicitly, as a JSON array of strings, on the same call as the message.
+
+    VALIDATED HERE ANYWAY, because a grant is a grant: the parameter crosses the
+    bridge as a plain string and this is the last place before it becomes a
+    permission rule. Only absolute paths to directories that exist survive,
+    deduplicated, and a filesystem ROOT is refused outright: `Read(///**)` is the
+    whole disk, which is exactly the blanket rule this feature's own test asserts
+    is never emitted.
+
+    There is NO COUNT LIMIT (D617). A `_ATTACH_DIRS_MAX` of 4 used to sit here to
+    keep the spawn line bounded, mirroring the page's own attachment cap; both
+    are gone. A drop of thirty rows out of one folder was always ONE rule (they
+    dedupe), and the pathological case — thirty rows out of thirty folders — is a
+    long argv string, not an unsafe one, on a local tool the user drove by hand.
+    Refusing the grant only cost them a permission card per attachment.
+
+    Anything unparseable is an empty list, never an error. A refused grant costs
+    the user one permission card; a refused SEND costs them their message.
+    """
+    if not raw:
+        return []
+    try:
+        vals = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(vals, list):
+        return []
+    out = []
+    for v in vals:
+        if not isinstance(v, str) or not v.strip():
+            continue
+        path = v.strip()
+        if not os.path.isabs(path) or not os.path.isdir(path):
+            continue
+        wired = _wire_path(os.path.normpath(path))
+        # A root ("/", "C:/") has no parent to scope to — the rule would be the
+        # whole disk. Also drops the shots dir if the page ever names it, since
+        # its rule is unconditional.
+        if wired.rstrip("/").rstrip(":") in ("", "/"):
+            continue
+        if wired == _wire_path(SHOTS):
+            continue
+        if wired not in out:
+            out.append(wired)
+    return out
+
+
 def _read_rule(path: str) -> str:
     """A `Read(...)` permission rule scoped to everything under `path`.
 
@@ -1074,6 +1130,217 @@ def _shots_dir() -> dict:
     # `_wire_path`, not the raw join: this string is what the page joins crop
     # names onto, and it has to be spelled the way the Read rule spells it.
     return {"dir": _wire_path(SHOTS)}
+
+
+# The longest edge a transcoded picture is given, and the byte budget it has to
+# land under. Both numbers are the PAGE's, deliberately: SHOT_VIEW_EDGE (1600) is
+# what a capture of the whole pane is capped at and what the page's own downscale
+# targets, and SHOT_ATTACH_MAX_BYTES (4 MB) is the downscale trigger it measures a picture
+# against — a conversion that came back bigger or sharper than the app's own
+# screenshots would be a second, quieter rule for the same thing.
+SHOT_PNG_EDGE = 1600
+SHOT_PNG_MAX_BYTES = 4 * 1024 * 1024
+# What a PNG that missed the budget is re-tried as. Quality before resolution,
+# same order as the page's encoder ladder: 1600px of a photo at q60 still answers
+# every question the agent has of it, where 800px of it may not.
+SHOT_JPEG_QUALITY = (90, 80, 70, 60)
+# `sips` is a one-shot converter on a file the user just handed us; 20s is long
+# enough for a 50 MP HEIC and short enough that a wedged binary does not hold the
+# composer.
+SHOT_SIPS_TIMEOUT = 20
+
+
+def _in_shots(target: str) -> bool:
+    """Whether `target` is a path INSIDE the shots directory.
+
+    The same four-step containment `_in_canvases_root` documents (abspath,
+    realpath, normcase, commonpath) and for the same four reasons — most sharply
+    realpath here, because SHOTS lives under the macOS temp dir where `/var` and
+    `/private/var` name one directory, so a string prefix would reject every real
+    path the page sends. A path that cannot be resolved is treated as OUTSIDE.
+
+    This is the whole authorisation for the transcode: the action reads bytes off
+    disk and writes a sibling next to them, and the only place either is allowed
+    to happen is the directory the page already uploads into and the pruner
+    already owns."""
+    if not target:
+        return False
+    try:
+        root = os.path.normcase(os.path.realpath(os.path.abspath(SHOTS)))
+        path = os.path.normcase(os.path.realpath(os.path.abspath(target)))
+        return path != root and os.path.commonpath([root, path]) == root
+    except (OSError, ValueError):
+        return False
+
+
+def _sips_to_png(path: str) -> str | None:
+    """A macOS-only second opinion on bytes Pillow refused: `sips` through
+    ImageIO, which decodes what the OS itself can — HEIC/HEIF above all, and the
+    raw camera formats too.
+
+    It exists because HEIC is the DEFAULT camera format on every iPhone and the
+    one format both halves of this feature are blind to: no browser engine here
+    decodes it, and Pillow needs `pillow-heif`, which is a compiled wheel we do
+    not ship. Shelling out to a binary that is present on every macOS install
+    costs nothing at rest and turns "this attachment is useless" into a PNG.
+
+    Returns the temp file's path, or None for anything at all going wrong — a
+    missing binary, a non-zero exit, a timeout, a format ImageIO does not know.
+    The caller reports the ORIGINAL Pillow failure in that case, which is the
+    honest one: sips is the fallback, not the diagnosis."""
+    if sys.platform != "darwin" or not os.path.exists("/usr/bin/sips"):
+        return None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="conv-", suffix=".png", dir=SHOTS)
+        os.close(fd)
+    except OSError:
+        return None
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/sips", "-s", "format", "png", path, "--out", tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=SHOT_SIPS_TIMEOUT, check=False)
+        if proc.returncode == 0 and os.path.getsize(tmp) > 0:
+            return tmp
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    return None
+
+
+def _image_to_png(path: str) -> dict:
+    """Transcode one picture in the shots directory into a PNG (or JPEG) beside
+    it, and hand the page the copy's path and size.
+
+    WHY THIS EXISTS AT ALL. D613 made an image this browser cannot decode travel
+    as bytes with a note instead of a broken thumbnail, on the grounds that "the
+    AGENT may well know a format this browser does not". For the two formats
+    users actually drop — TIFF off a scanner or a GIS export, HEIC off an iPhone
+    — that turned out to be false: the Read tool cannot open either, so the
+    attachment was a path to bytes nobody in the conversation could look at. The
+    page could see it was undecodable; it just had nowhere to send it. This is
+    that somewhere, and it is on the python side because that is where Pillow and
+    the OS's own decoders are.
+
+    IT WRITES A SIBLING AND DELETES NOTHING. The original stays: it is what the
+    user actually attached, the page may still want its byte count, and the
+    pruner (30d/1000 files) already owns everything in this directory — a second
+    deletion policy for a second file in the same directory would be the only
+    thing here that could lose a user's picture early.
+
+    PNG FIRST, JPEG ONLY IF PNG MISSES THE BUDGET. A screenshot, a scan and a
+    diagram are the common TIFFs and all three are exactly what PNG is good at
+    (and what JPEG's ringing ruins); a 12 MP photo is the common HEIC and is
+    where a lossless 1600px re-encode blows past 4 MB. So the format follows the
+    content instead of the extension, decided by measuring rather than guessing.
+
+    NEVER RAISES. Every failure is `{"error": ...}` — the page's whole answer to
+    one is to keep the bytes-plus-glyph attachment it already had, so an
+    exception crossing the bridge would cost the user the attachment to report a
+    problem with the attachment."""
+    try:
+        if not path or not os.path.isabs(path):
+            return {"error": "not an absolute path"}
+        if not _in_shots(path):
+            # The page only ever asks about a file it just uploaded here. Anything
+            # else is a bug or a caller that should not be reading the disk
+            # through this action, and both get the same one sentence.
+            return {"error": "not inside the attachments directory"}
+        if not os.path.isfile(path):
+            return {"error": "no such file"}
+        try:
+            from PIL import Image
+        except ImportError:
+            return {"error": "pillow is not installed"}
+
+        tmp = None
+        try:
+            try:
+                img = Image.open(path)
+                img.load()
+            except Exception as first:
+                # HEIC without pillow-heif lands here, which is the common case
+                # rather than the exotic one — hence the OS decoder below.
+                tmp = _sips_to_png(path)
+                if tmp is None:
+                    return {"error": "could not decode: %s" % first}
+                img = Image.open(tmp)
+                img.load()
+            # A multi-frame TIFF (a fax, a scanned stack) or an animated GIF has
+            # one frame the user means by "the picture", and it is the first.
+            try:
+                if getattr(img, "n_frames", 1) > 1:
+                    img.seek(0)
+            except Exception:
+                pass
+            source_w, source_h = img.size
+            if not source_w or not source_h:
+                return {"error": "the picture has no pixels"}
+            # Alpha is kept where it exists (a diagram with a transparent
+            # background reads wrong flattened onto black) and dropped where it
+            # does not — CMYK, 16-bit grey and palette all have to leave their
+            # own mode either way, since PNG will not take some of them and the
+            # agent's reader would not thank us for the rest.
+            if img.mode in ("RGBA", "LA") or (
+                    img.mode == "P" and "transparency" in img.info):
+                img = img.convert("RGBA")
+            elif img.mode != "RGB":
+                img = img.convert("RGB")
+            if max(source_w, source_h) > SHOT_PNG_EDGE:
+                img.thumbnail((SHOT_PNG_EDGE, SHOT_PNG_EDGE), Image.LANCZOS)
+            width, height = img.size
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            data, ext = buf.getvalue(), ".png"
+            if len(data) > SHOT_PNG_MAX_BYTES:
+                flat = img
+                if flat.mode != "RGB":
+                    # JPEG has no alpha. White rather than black because these
+                    # are documents and screenshots far more often than they are
+                    # neon on dark.
+                    bg = Image.new("RGB", flat.size, (255, 255, 255))
+                    bg.paste(flat, mask=flat.split()[-1])
+                    flat = bg
+                for q in SHOT_JPEG_QUALITY:
+                    jbuf = io.BytesIO()
+                    flat.save(jbuf, format="JPEG", quality=q, optimize=True,
+                              progressive=True)
+                    data, ext = jbuf.getvalue(), ".jpg"
+                    if len(data) <= SHOT_PNG_MAX_BYTES:
+                        break
+                # Past the ladder it goes out anyway: an oversize picture the
+                # agent CAN read beats a perfectly sized one it cannot, and the
+                # page reports the size it got.
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+        base = os.path.splitext(os.path.basename(path))[0]
+        out = os.path.join(SHOTS, base + ext)
+        # 0600 on the create itself, like `_open_private`: the directory is
+        # already 0700, and a converted picture of someone's screen or camera
+        # roll should never be briefly wider than the original was.
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
+            raise
+        return {"path": _wire_path(out), "width": width, "height": height,
+                "bytes": len(data), "source_w": source_w, "source_h": source_h}
+    except Exception as e:
+        return {"error": "could not convert: %s" % e}
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True) -> str:
@@ -3973,7 +4240,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "", custom: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "",
+         read_dirs: str = "", path: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3984,7 +4252,8 @@ def main(action: str = "start", file: str = "", message: str = "",
         # API, which has no page — and only then does `_start` ask disk. "0" is a
         # real no, so it must not be read as absence.
         return _start(file, message, session_id, model, effort, permission_mode,
-                      has_pane=None if has_pane == "" else has_pane != "0")
+                      has_pane=None if has_pane == "" else has_pane != "0",
+                      extra_read_dirs=_attach_dirs(read_dirs))
     if action == "poll":
         # `file` rides along so the poll can refuse a run that is not about
         # this page's target (see _poll) — optional, because not every caller
@@ -4049,6 +4318,13 @@ def main(action: str = "start", file: str = "", message: str = "",
         # Asked for by the page BEFORE it composes a message, because that is
         # when it has crops to upload — see SHOTS for why this is not a run dir.
         return _shots_dir()
+    if action == "image_to_png":
+        # A picture the page uploaded but cannot DECODE (tiff, heic). Asked for
+        # right after the upload, so the chip can show a thumbnail and — the real
+        # point — so the agent's `Read` gets a format it can open. `path` is the
+        # file the page just wrote, and `_image_to_png` re-checks that it is
+        # inside SHOTS before touching it.
+        return _image_to_png(path)
     if action == "terminal_command":
         return _terminal_command(file, session_id)
     if action == "cancel":
