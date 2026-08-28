@@ -14301,12 +14301,14 @@ const subagentFailCount = new Map();   // agentId -> consecutive failures
 const subagentFailMessage = new Map(); // agentId -> the last error's message
 // A server error, an executor timeout on a large transcript, or a torn-down
 // page gives a rejected fetch — bounded here so that does not become a
-// 400 ms retry storm for the rest of the page's life. Never hit by a
-// transient blip (one retry the very next tick recovers those); hit only by
-// something that keeps failing, at which point retrying harder is not going
-// to help and the chip says so instead (see renderSubagentFailure). This is
-// real error handling, not an optimisation — kept even after the cache
-// itself stopped being a source of truth.
+// 400 ms retry storm for the rest of the page's life. This bound no longer
+// gates whether the give-up notice is SHOWN (round 8: it paints on every
+// failure that has nothing else to show, see pumpSubagentLog) — only
+// whether the chip keeps automatically retrying. A single transient blip
+// now flashes the notice for about one poll tick before the next success
+// clears it; accepted cost of always painting, not a claim that the blip
+// never shows at all. This is real error handling, not an optimisation —
+// kept even after the cache itself stopped being a source of truth.
 const MAX_SUBAGENT_FETCH_ATTEMPTS = 5;
 // Same bound as APP_STATE_MEMO_MAX, same reason: one entry per subagent ever
 // expanded is bounded in practice (a handful per session) and unbounded in
@@ -14421,12 +14423,15 @@ function renderSubagentPump(container, turns, failed, message) {
 // comes back — live, every poll tick — with no notion of a copy being
 // "settled" or "partial". `subagentCache` survives only as a display cache
 // (paint something instead of a blank frame while a fetch is in flight);
-// it is never consulted to decide what the UI's state IS. The one
-// short-circuit (skip re-fetching once terminal AND a real, non-empty
-// transcript is already in hand) is a single fact about live data, and
-// getting it wrong costs one harmless extra fetch, never a wrong render.
-// Accepted cost: one transcript read per 400 ms per OPEN chip — the price
-// this feature should have paid from the start.
+// it is never consulted to decide what the UI's state IS, with ONE
+// exception: `cached.final` (round 7), true only for a fetch that itself
+// started at a terminal status and returned real content. Getting THAT
+// wrong is not free — a short/truncated read caught mid-flush on the
+// subagent's own file can set it permanently (round 8's MEDIUM) — which is
+// why a re-open explicitly clears it rather than trusting one read
+// forever; see `reexpand` below. Accepted cost: one transcript read per
+// 400 ms per OPEN chip — the price this feature should have paid from the
+// start.
 //
 // `getLogEl`/`getSeg` are read AT USE, never captured by value: a rebuild
 // (the Task's own status flipping, or `subagent` arriving late) tears down
@@ -14452,32 +14457,46 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   if (opts && opts.reexpand) {
     subagentFailCount.delete(agentId);
     subagentFailMessage.delete(agentId);
+    // `final` trusts a SINGLE terminal-status read of the subagent's own
+    // file — but the Task goes terminal the moment its tool_result lands in
+    // the PARENT transcript, while the turns come from a separate file, so
+    // a read that catches agent-<id>.jsonl mid-flush can drop the
+    // partially-written last line and return a real but short answer,
+    // marking it final forever (round 8, MEDIUM). A user re-opening the
+    // chip is an explicit, cheap request to look again — clearing `final`
+    // (not the turns themselves; still painted below while the refresh is
+    // in flight) is the one gesture that recovers from that.
+    const entry = subagentCache.get(agentId);
+    if (entry && entry.final) entry.final = false;
   }
   const status = seg.status || "running";
   const cached = subagentCache.get(agentId);
-  const hasContent = !!(cached && cached.turns && cached.turns.length);
 
   // Paint whatever is already on hand immediately — no flash of an empty
   // log while the fetch below is in flight.
   renderSubagentPump(logEl, cached && cached.turns, false, null);
 
   // Stop only once a fetch that ITSELF started at a terminal status came
-  // back with real content — `cached.final`, set only there (below). Round
-  // 7's HIGH 1: this used to be "any cached content at all, current status
-  // terminal", which froze the transcript at whatever a RUNNING-status
-  // fetch last returned — the tick right after a Task goes terminal (the
-  // one carrying the agent's own concluding message) hit this and returned
-  // before ever asking again. A fetch made while still running can never
-  // prove there is nothing left to say; only one made AT the terminal
-  // status can.
+  // back with real content — `cached.final`, set only there (below), and
+  // cleared by a re-open (see `reexpand` above). This used to be "any
+  // cached content at all, current status terminal", which froze the
+  // transcript at whatever a RUNNING-status fetch last returned — the tick
+  // right after a Task goes terminal (the one carrying the agent's own
+  // concluding message) hit this and returned before ever asking again. A
+  // fetch made while still running can never prove there is nothing left
+  // to say; only one made AT the terminal status can.
   if (cached && cached.final) return;
 
   if ((subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
-    // Only paint the give-up message if there is nothing better already on
-    // screen — a cached copy (even a non-final one) beats a failure notice.
-    if (!hasContent) {
-      renderSubagentPump(logEl, null, true, subagentFailMessage.get(agentId));
-    }
+    // The give-up notice paints UNCONDITIONALLY here (round 8, HIGH): it
+    // used to be gated on "nothing better already on screen", reasoning
+    // that a failed refresh would otherwise erase a good answer — but
+    // renderSubagentPump writes the failure into its OWN slot
+    // (container.children[1]) and never touches the turns slot, so that
+    // never happened; the guard only ever suppressed the ONE signal that a
+    // partial, still-being-refreshed transcript had stopped updating,
+    // turning a truncated answer into one that reads as complete forever.
+    renderSubagentPump(logEl, null, true, subagentFailMessage.get(agentId));
     return;
   }
   if (subagentLoading.has(agentId)) return;   // already in flight elsewhere
@@ -14552,19 +14571,17 @@ async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   if (outcome.ok && !emptyAtTerminal) {
     renderSubagentPump(cur, outcome.turns, false, null);
   } else {
-    // Painted whenever there is nothing ELSE worth showing — not only once
-    // the bound is reached (round 7's HIGH 2). A restored/finished
-    // conversation never polls again, so a single failure this far below
-    // the bound would otherwise sit blank forever with no external tick
-    // left to reach it; the bound's only remaining job is stopping
-    // automatic PER-TICK retries (see the top guard), not gating whether a
-    // failure is allowed to say so. A cached copy already on screen (even
-    // a non-final one) is left alone — a failed refresh does not erase a
-    // good-enough answer already shown.
-    const stillCached = subagentCache.get(agentId);
-    if (!(stillCached && stillCached.turns && stillCached.turns.length)) {
-      renderSubagentPump(cur, null, true, subagentFailMessage.get(agentId));
-    }
+    // Painted UNCONDITIONALLY (round 8, HIGH) — not only once the bound is
+    // reached (round 7's HIGH 2), and not gated on "is a cached copy
+    // already on screen" (round 8's own fix): renderSubagentPump's failure
+    // branch writes only into its own slot and never touches the turns
+    // slot, so a cached copy is never actually at risk — it stays exactly
+    // where it was, next to the notice. A restored/finished conversation
+    // never polls again, so a single failure this far below the bound
+    // would otherwise sit unexplained forever with no external tick left
+    // to reach it; the bound's only remaining job is stopping automatic
+    // PER-TICK retries (see the top guard).
+    renderSubagentPump(cur, null, true, subagentFailMessage.get(agentId));
   }
 }
 

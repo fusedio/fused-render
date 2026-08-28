@@ -17,11 +17,18 @@ this cached copy trustworthy": there is no such question any more.
 `pumpSubagentLog` re-fetches on every poll tick while the chip is open and
 renders whatever comes back, live; `subagentCache` survives only so a
 re-open (or the very first tick) doesn't show a blank frame while the fetch
-resolves, and is never consulted to decide what the UI's state IS. The one
-exception — skip re-fetching once the Task is terminal AND a fetch has
-already returned a real, non-empty transcript — is a single fact about data
-already in hand, not a trust judgement, so getting it wrong costs one
-harmless extra fetch rather than a wrong render.
+resolves, and is never consulted to decide what the UI's state IS — except
+for one flag, `cached.final` (round 7): true only for a fetch that itself
+started at a terminal status and returned real content, and the ONE thing
+that stops the re-fetch loop. Getting it wrong is not free — a fetch can
+catch the subagent's own file mid-flush and return a real but truncated
+answer, which round 7 first left permanently stuck — so a re-open
+explicitly clears it (round 8) rather than trusting one read forever. The
+give-up notice (a separate, always-live signal) paints on every failure
+that has nothing better to show, never gated on "is something already
+cached" (round 8's HIGH): the failure slot and the turns slot are
+independent, so a failure never erases a good answer, and gating the
+notice on one existing was only ever hiding a truncated transcript.
 
 Same harness as tests/test_claude_template_segments.py (same `_DOM`, same
 anchors): read that file's module docstring for why node-and-textual-anchors
@@ -776,6 +783,45 @@ main();
             "each independent close/re-open cycle must show its OWN failure")
 
 
+def test_a_persistent_failure_after_a_partial_read_shows_both_the_turn_and_the_error(
+        probe_src, tmp_path):
+    """Code review round 8, HIGH: the "don't clobber good content" guards
+    suppressed the give-up notice whenever ANY cached turns existed —
+    including a non-`final` partial captured while the agent was still
+    running. That left a truncated transcript rendering as complete,
+    permanently, the moment every later refresh started failing, with no
+    signal anywhere that anything was wrong — the exact class round 7's
+    HIGH 1 was fixing, re-entered through round 7's own HIGH 2 fix.
+    renderSubagentPump writes a failure into its OWN slot and never
+    touches the turns slot, so there was never anything to protect:
+    deleting the guards lets both live on screen together, which is the
+    only thing that tells the reader the transcript stopped updating."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "partial"}]});
+  for (let i = 0; i < 8; i++) runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: one turn, cached at "running"
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // terminal; every later fetch fails
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "partial"
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and errors[0]["text"], (
+        "the give-up notice must show ALONGSIDE the partial turn, not be hidden by it")
+
+
 def test_a_success_after_earlier_failures_clears_the_failure_state(
         probe_src, tmp_path):
     got = _run(probe_src, """
@@ -1198,25 +1244,76 @@ main();
     assert len(users) == 1 and users[0]["text"] == "recovered"
 
 
-def test_reexpanding_a_good_non_empty_cache_does_not_blank_or_refetch_it(
+def test_a_truncated_final_read_is_recoverable_by_reopening(
         probe_src, tmp_path):
-    """`reexpand` only ever clears the fail count now — it never touches the
-    cache at all — and re-opening a chip whose Task is terminal with a real,
-    non-empty transcript already in hand must not blank the log or trigger
-    a fresh (possibly multi-megabyte) fetch."""
+    """Round 8, MEDIUM's exact scenario: the Task goes terminal the instant
+    its tool_result lands in the PARENT transcript, but the turns come from
+    a SEPARATE file — a read that catches agent-<id>.jsonl mid-flush can
+    drop the partially-written last line and return a real but short
+    answer, marking it `final` forever with no further tick ever asking
+    again. Only a re-open recovers, so it must."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({turns: [{role: "user", text: "truncated"}]});
+  runPythonQueue.push({turns: [
+    {role: "user", text: "truncated"},
+    {role: "assistant", text: "", segments: [{kind: "text", text: "the rest of it"}]},
+  ]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                  // fetch #1: short read, marked final
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                         // a later tick: `final` blocks it
+  await new Promise((r) => setTimeout(r, 0));
+  const callsBeforeReopen = runPythonLog.length;
+  clickSummary(el.el);                  // close
+  clickSummary(el.el);                  // re-open: clears `final`, refetches
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    callsBeforeReopen, tree: dump(el.el), calls: runPythonLog.length,
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    assert got["callsBeforeReopen"] == 1, "`final` must block the tick before any re-open"
+    assert got["calls"] == 2, "the re-open must be the thing that finally refetches"
+    assistants = _by_class(got["tree"], "sub-turn-assistant")
+    assert len(assistants) == 1
+    seg_text = _by_class(assistants[0], "seg-text")
+    assert len(seg_text) == 1 and seg_text[0]["html"] == "<md>the rest of it</md>"
+
+
+def test_reexpanding_a_good_cache_refetches_but_never_blanks_it(
+        probe_src, tmp_path):
+    """Round 8, MEDIUM: `final` trusts a SINGLE terminal-status read, which
+    can be short if it catches the subagent's own file mid-flush — so a
+    re-open now explicitly clears `final` and refetches, rather than
+    trusting one read forever. What is preserved from before: the log is
+    never blanked while that refetch is in flight — the cached copy paints
+    immediately on open, whether or not the refetch ends up changing it."""
     got = _run(probe_src, """
 async function main() {
   runPythonQueue.push({turns: [{role: "user", text: "the real transcript"}]});
   const el = buildToolChip(%s, "k1");
-  clickSummary(el.el);                  // fetch #1: good, non-empty, settled
+  clickSummary(el.el);                  // fetch #1: good, non-empty, final
   await new Promise((r) => setTimeout(r, 0));
   clickSummary(el.el);                  // close
-  clickSummary(el.el);                  // re-open: must NOT refetch or blank
+  runPythonQueue.push({__defer: true,
+    value: {turns: [{role: "user", text: "the real transcript"}]}});
+  clickSummary(el.el);                  // re-open: `final` cleared -> refetches...
+  const treeWhileInFlight = dump(el.el);   // ...but must not blank meanwhile
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);
   await new Promise((r) => setTimeout(r, 0));
-  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    treeWhileInFlight, tree: dump(el.el), calls: runPythonLog.length,
+  }));
 }
 main();
 """ % json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok")), tmp_path)
-    assert got["calls"] == 1, "a good settled cache must not be re-fetched on reopen"
+    assert got["calls"] == 2, "reexpand must clear `final` and refetch"
+    in_flight_users = _by_class(got["treeWhileInFlight"], "sub-turn-user")
+    assert len(in_flight_users) == 1 and in_flight_users[0]["text"] == "the real transcript"
     users = _by_class(got["tree"], "sub-turn-user")
     assert len(users) == 1 and users[0]["text"] == "the real transcript"
