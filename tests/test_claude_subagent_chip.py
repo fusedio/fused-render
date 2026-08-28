@@ -169,9 +169,15 @@ const attachCodeCopy = (el) => { attachCalls.push(el.uid); };
 
 // The one new external dependency this feature adds: a fetch. `runPythonLog`
 // records every call so a test can assert de-duplication; `runPythonQueue`
-// lets a test script each call's answer (default: no turns).
+// lets a test script each call's answer (default: no turns). A queued item
+// of `{__defer: true, value}` resolves LATER, on demand — for a test that
+// needs to force something (a rebuild, another call) to happen BETWEEN a
+// fetch starting and it resolving — via `pendingResolvers`, in call order.
+// A queued item of `{__reject: true, message}` rejects instead, for the
+// error-handling probes.
 const runPythonLog = [];
 const runPythonQueue = [];
+const pendingResolvers = [];
 const AGENT = "./agent.py";
 const FILE = "/proj/page.html";
 let SESSION_ID = "sess1";
@@ -180,6 +186,12 @@ const fused = {
   runPython: (agent, params) => {
     runPythonLog.push({agent, params});
     const next = runPythonQueue.length ? runPythonQueue.shift() : {turns: []};
+    if (next && next.__defer) {
+      return new Promise((resolve, reject) => {
+        pendingResolvers.push({resolve, reject, value: next.value});
+      });
+    }
+    if (next && next.__reject) return Promise.reject(new Error(next.message));
     return Promise.resolve(typeof next === "function" ? next(params) : next);
   },
 };
@@ -222,10 +234,10 @@ def _by_class(tree, cls):
     return out
 
 
-def _task_seg(subagent=None, status="running", tid="t1"):
+def _task_seg(subagent=None, status="running", tid="t1", output=None):
     seg = {"kind": "tool", "id": tid, "name": "Task",
            "input": {"description": "Verify suites", "subagent_type": "general-purpose"},
-           "status": status, "output": None, "images": []}
+           "status": status, "output": output, "images": []}
     if subagent is not None:
         seg["subagent"] = subagent
     return seg
@@ -400,14 +412,22 @@ main();
     assert got["calls"] == 3
 
 
-def test_a_finished_and_cached_subagent_is_not_refetched(probe_src, tmp_path):
+def test_a_running_to_terminal_transition_forces_exactly_one_more_fetch(
+        probe_src, tmp_path):
+    """The bug this pins the fix for: a snapshot cached while still `running`
+    is missing whatever the agent wrote in roughly its last 400 ms — typically
+    its own concluding message, i.e. the actual result. The running->terminal
+    transition must force one more fetch even though the agentId is already
+    cached; after THAT fetch (now made at a terminal status), a further
+    rebuild at the same terminal status must not fetch again."""
     got = _run(probe_src, """
 async function main() {
   const el = buildToolChip(%s, "k1");
   clickSummary(el.el);
-  await new Promise((r) => setTimeout(r, 0));
-  el.update(%s);   // now "ok" — same agentId, already cached
-  el.update(%s);
+  await new Promise((r) => setTimeout(r, 0));      // fetch #1, cached at "running"
+  el.update(%s);                                    // now "ok" — same agentId
+  await new Promise((r) => setTimeout(r, 0));       // fetch #2: the catch-up
+  el.update(%s);                                    // still "ok", already final
   await new Promise((r) => setTimeout(r, 0));
   console.log(JSON.stringify({calls: runPythonLog.length}));
 }
@@ -415,7 +435,28 @@ main();
 """ % (json.dumps(_task_seg(subagent=_sub(), status="running")),
        json.dumps(_task_seg(subagent=_sub(), status="ok")),
        json.dumps(_task_seg(subagent=_sub(), status="ok"))), tmp_path)
-    assert got["calls"] == 1
+    assert got["calls"] == 2
+
+
+def test_the_catch_up_fetch_still_fires_with_no_further_poll_tick(
+        probe_src, tmp_path):
+    """A Task's own tool_result can be the very last row before the whole run
+    reports done — there may be no NEXT `update()` call at all once the
+    status goes terminal. The catch-up fetch must not depend on one: it is
+    driven from inside the in-flight fetch's own completion, not a tick."""
+    got = _run(probe_src, """
+async function main() {
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);          // fetch #1 starts, still "running"
+  el.update(%s);                 // status flips to "ok" WHILE #1 is in flight
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));   // let the chained fetch land
+  console.log(JSON.stringify({calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(), status="running")),
+       json.dumps(_task_seg(subagent=_sub(), status="ok"))), tmp_path)
+    assert got["calls"] == 2
 
 
 def test_two_concurrent_opens_of_the_same_agent_do_not_double_fetch(
@@ -517,3 +558,106 @@ console.log(JSON.stringify({
     assert got["n"] == 2
     assert got["sameUid"] is True
     assert got["firstText"] == "go"
+
+
+# ------------------------------------------------- rebuild mid-fetch (#2)
+
+def test_a_rebuild_mid_fetch_lands_the_result_in_the_current_log(probe_src, tmp_path):
+    """A fetch started on one tick can resolve after a LATER tick has already
+    torn the body down and built a fresh `.chip-subagent-log` (here: the
+    Task's own `output` changing while still running, the same kind of event
+    as a status flip) — the result must land in whatever log element is
+    CURRENTLY on screen, not the one that was live when the fetch began.
+    Under the bug this fixes, `getLogEl`/`getSeg` were plain values captured
+    at call time, so the resolved data wrote into an orphaned node and the
+    visible (rebuilt) log stayed empty forever."""
+    payload = {"turns": [{"role": "user", "text": "hello from the agent"}]}
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__defer: true, value: %s});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                          // fetch #1 starts, deferred
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                                 // output changed -> rebuild -> fresh log
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);                            // resolves AFTER the rebuild
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el)}));
+}
+main();
+""" % (json.dumps(payload), json.dumps(_task_seg(subagent=_sub())),
+       json.dumps(_task_seg(subagent=_sub(), output="partial"))), tmp_path)
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "hello from the agent"
+
+
+# ------------------------------------------------- error handling (#3)
+
+def test_a_failed_fetch_does_not_throw_and_can_retry(probe_src, tmp_path):
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "boom"});
+  runPythonQueue.push({turns: [{role: "user", text: "recovered"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                          // fetch #1: rejects
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);                                 // still running: tick retries
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main().catch((err) => { console.log(JSON.stringify({threw: String(err)})); });
+""" % (json.dumps(_task_seg(subagent=_sub())),
+       json.dumps(_task_seg(subagent=_sub()))), tmp_path)
+    assert "threw" not in got, got
+    assert got["calls"] == 2
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "recovered"
+
+
+def test_repeated_failures_stop_after_a_bound_and_show_something(
+        probe_src, tmp_path):
+    """A server error or an executor timeout must not become an unbounded
+    400 ms retry storm. After enough consecutive failures the chip gives up
+    and says so, instead of trying forever."""
+    for _ in range(10):
+        pass  # queued below; a plain loop keeps the failures explicit
+    got = _run(probe_src, """
+async function main() {
+  for (let i = 0; i < 10; i++) runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub())),
+       json.dumps(_task_seg(subagent=_sub()))), tmp_path)
+    assert got["calls"] <= 6, "retries must be bounded, not unbounded"
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and "down" in errors[0]["text"]
+
+
+def test_a_success_after_earlier_failures_clears_the_failure_state(
+        probe_src, tmp_path):
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__reject: true, message: "flaky"});
+  runPythonQueue.push({turns: [{role: "user", text: "ok now"}]});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);
+  await new Promise((r) => setTimeout(r, 0));
+  el.update(%s);
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    failCount: subagentFailCount.get("a1") || 0,
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
+    assert got["failCount"] == 0
