@@ -28,9 +28,10 @@ realpath'd, and must land inside the realpath of ``~/Fused/local``. A page
 outside it — or a page inside it reaching outside — gets 404, not 403: from
 the phone's point of view those files do not exist.
 
-No pairing/PIN in this cut: anyone on the Wi-Fi can open and run these apps
-while the switch is on, and the Preferences copy says so. PIN pairing is the
-named follow-up.
+Who gets in: only devices that scanned the QR code in Preferences (see the
+pairing section below). Unpaired requests get a how-to-pair page at ``/`` and
+401 everywhere else; a Host allowlist closes DNS rebinding. No PIN and no
+approve-on-laptop dialog, by the owner's call — the QR is the whole UX.
 
 Lifecycle: ``attach(app)`` at either entry point (cli.py / app.py) hands the
 inner app over; ``apply(enabled)`` — called from the prefs PUT and once at
