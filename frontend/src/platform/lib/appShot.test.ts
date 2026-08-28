@@ -162,3 +162,21 @@ test("the module header states the decision and the WebGL cost plainly", () => {
   expect(header).toMatch(/RASTERISES BLANK|rasterises blank/);
   expect(header).toContain("preserveDrawingBuffer");
 });
+
+// Bugbot on #919: the card export hands over the `.app-pcard-thumb` SPAN, whose
+// iframe is a child. Judging the span itself let it pass cropRect, skipped the
+// stage, and then found no frame to clone — a .fused with no preview and no
+// error. The frame is resolved out of whatever was offered, once, and every
+// later step (geometry, window, clone) runs on that frame.
+test("a wrapper source resolves to the iframe inside it before anything is judged", () => {
+  expect(SHOT).toContain("export function frameOf(el: Element): HTMLIFrameElement | null {");
+  expect(SHOT).toContain('return el.querySelector("iframe");');
+  const pick = SHOT.slice(SHOT.indexOf("let source: Element;"),
+                          SHOT.indexOf("} else if (opts.stage === false) {"));
+  expect(pick).toContain("const live = captureEl ? frameOf(captureEl) : null;");
+  expect(pick).toContain("if (live && cropRect(live)) {");
+  expect(pick).not.toContain("cropRect(captureEl)");
+  const shoot = SHOT.slice(SHOT.indexOf("async function shootFrame("));
+  expect(shoot).toContain("const frame = frameOf(source);");
+  expect(shoot).toContain("const r = cropRect(frame);");
+});

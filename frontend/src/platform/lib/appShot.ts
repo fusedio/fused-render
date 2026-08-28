@@ -159,16 +159,28 @@ function nextPaint(): Promise<void> {
 // duration is the same feedback it always was.
 const SHOOTING_ATTR = "data-capture-shooting";
 
+// The iframe a capture source stands for: the element itself, or the one live
+// frame inside it. The card export hands over the `.app-pcard-thumb` SPAN (the
+// frame is its child), the explorer hands over the preview pane's frame
+// directly — one lookup serves both, and a wrapper with no frame in it is
+// simply not a source (Bugbot on #919: the span passed `cropRect`, so the
+// stage never ran and the .fused shipped with no preview and no error).
+export function frameOf(el: Element): HTMLIFrameElement | null {
+  if (el instanceof HTMLIFrameElement) return el;
+  return el.querySelector("iframe");
+}
+
 // The frame's window, or null when its document cannot be read. A cross-origin
 // frame exposes no `contentDocument` (and touching `contentWindow.document`
 // throws), which is the one case a DOM clone simply cannot serve.
 function frameWindow(el: Element): Window | null {
-  if (!(el instanceof HTMLIFrameElement)) return null;
+  const frame = frameOf(el);
+  if (!frame) return null;
   try {
     // contentDocument is null for cross-origin; check it before the window so
     // the same-origin test is a null check rather than a caught throw.
-    if (!el.contentDocument) return null;
-    return el.contentWindow;
+    if (!frame.contentDocument) return null;
+    return frame.contentWindow;
   } catch {
     return null;
   }
@@ -206,7 +218,11 @@ function canvasToPng(canvas: HTMLCanvasElement): Promise<Blob | undefined> {
 // capped so the result lands under MAX_SHOT_WIDTH, and encode it as a PNG.
 // undefined for anything that stops it: not an iframe, cross-origin, empty
 // body, markup that will not rasterise.
-async function shootFrame(frame: Element): Promise<Blob | undefined> {
+async function shootFrame(source: Element): Promise<Blob | undefined> {
+  // Measured on the FRAME, not the wrapper: a thumb span's padding or border
+  // would otherwise be drawn as document that is not there.
+  const frame = frameOf(source);
+  if (!frame) return undefined;
   const r = cropRect(frame);
   if (!r) return undefined;
   const win = frameWindow(frame);
@@ -239,8 +255,12 @@ export async function captureAppPreview(
   let stage: HTMLDivElement | undefined;
   try {
     let source: Element;
-    if (cropRect(captureEl)) {
-      source = captureEl as Element;
+    // The offered element counts only if there is a FRAME in it worth drawing:
+    // the card hands over its thumb span, so the frame is looked up first and
+    // the geometry test runs on the frame, not the wrapper.
+    const live = captureEl ? frameOf(captureEl) : null;
+    if (live && cropRect(live)) {
+      source = live;
     } else if (opts.stage === false) {
       return undefined;
     } else {
