@@ -249,6 +249,17 @@ export function MeshStage({
 
   const abortRef = useRef<AbortController | null>(null);
   useEffect(() => () => abortRef.current?.abort(), []);
+  // `run` is what the guard below ultimately reads, but it is set by
+  // `setRun` AFTER `startMesh`'s own `await` — a SECOND click (a real
+  // double-click, or any click landing while that POST is still in
+  // flight) reads the still-stale `run` and passes the guard a second
+  // time, opening a second server job the UI then loses track of (only
+  // the LATER `jobId` ever lands in `run`, so Stop can cancel only one of
+  // the two — code review, 2026-08-28: bugbot finding 3). A plain ref is
+  // synchronous where React state is not: set it before the first
+  // `await` inside `generate`, so a click arriving before that state
+  // update actually lands sees it change in the SAME tick it was set.
+  const inFlightRef = useRef(false);
   const aliveRef = useRef(true);
   useEffect(() => () => {
     aliveRef.current = false;
@@ -287,7 +298,8 @@ export function MeshStage({
   };
 
   const generate = async () => {
-    if (!attachment || (run && !run.done)) return;
+    if (!attachment || (run && !run.done) || inFlightRef.current) return;
+    inFlightRef.current = true;
     setError(null);
     try {
       const controller = new AbortController();
@@ -318,6 +330,12 @@ export function MeshStage({
       }
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      // Cleared once the job has actually STARTED (this render's own
+      // `run`/`busy` state is what guards a click for the rest of the
+      // render's life) — this ref's only job is to close the gap between
+      // a click and `startMesh`'s own `await` landing.
+      inFlightRef.current = false;
     }
   };
 
