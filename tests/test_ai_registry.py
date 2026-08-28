@@ -240,13 +240,21 @@ def test_catalog_video_traits_follow_the_resolved_engine(monkeypatch):
     assert video == {
         "framesBase": 1, "framesStep": 8, "minFrames": 9, "maxFrames": 169,
         "defaultFrames": 97, "defaultWidth": 704, "defaultHeight": 480,
-        "defaultSteps": 8,
+        "defaultSteps": 8, "supportsImage": True,
     }
 
 
 def test_video_frame_bounds_matches_the_apps_own_n_window():
     ltx = registry.video_traits_for("ltx-video")
     assert registry.video_frame_bounds(ltx) == (9, 169)  # 1+8*1, 1+8*21
+
+
+def test_ltx_video_traits_say_it_accepts_a_reference_image():
+    """The engine fact `/api/ai/video` and `catalog.py`'s Playground payload
+    both need to know whether the resolved runner honours an `image` option
+    at all — `ltx-video`'s `DistilledPipeline.generate_and_save` does."""
+    ltx = registry.video_traits_for("ltx-video")
+    assert ltx.supports_image is True
 
 
 def test_ltx_video_suggestions_name_their_own_8_step_default():
