@@ -3059,17 +3059,32 @@
     // | LanguageSupport | null`, which is simpler than building an array of
     // `LanguageDescription` and needs nothing extra from the bundle. The
     // aliases are the usual short forms a fence's info string carries.
+    // Every one of these factories (CM.python/javascript/json/yaml/html/css)
+    // returns a LanguageSupport, not a Language — and `codeLanguages`'s
+    // function form is documented to return `Language | LanguageDescription |
+    // null`. A LanguageSupport silently satisfies neither shape inside
+    // @codemirror/lang-markdown's `getCodeParser`: it is truthy, so it falls
+    // into the `else if (found) return found.parser` branch, and a
+    // LanguageSupport has no `.parser` of its own — only `.language.parser` —
+    // so nesting silently no-ops. The fence still got a FencedCode/CodeText
+    // shell with no language-specific children at all: "no highlighting, no
+    // error", found by resolving a position inside a fenced block and
+    // walking the parent chain in both shapes and diffing them — `.language`
+    // produces `import < ImportStatement < Script < FencedCode`, where the
+    // bare LanguageSupport produced only `CodeText < FencedCode`.
+    // `shellLang`/`tomlLang` are already `Language` instances
+    // (`StreamLanguage.define`), not LanguageSupport, so they need no `.language`.
     const CODE_LANG_MAP = {
-      python: () => CM.python(), py: () => CM.python(),
-      javascript: () => CM.javascript(), js: () => CM.javascript(),
-      jsx: () => CM.javascript({ jsx: true }),
-      typescript: () => CM.javascript({ typescript: true }),
-      ts: () => CM.javascript({ typescript: true }),
-      tsx: () => CM.javascript({ jsx: true, typescript: true }),
-      json: () => CM.json(),
-      yaml: () => CM.yaml(), yml: () => CM.yaml(),
-      html: () => CM.html(),
-      css: () => CM.css(),
+      python: () => CM.python().language, py: () => CM.python().language,
+      javascript: () => CM.javascript().language, js: () => CM.javascript().language,
+      jsx: () => CM.javascript({ jsx: true }).language,
+      typescript: () => CM.javascript({ typescript: true }).language,
+      ts: () => CM.javascript({ typescript: true }).language,
+      tsx: () => CM.javascript({ jsx: true, typescript: true }).language,
+      json: () => CM.json().language,
+      yaml: () => CM.yaml().language, yml: () => CM.yaml().language,
+      html: () => CM.html().language,
+      css: () => CM.css().language,
       shell: () => CM.shellLang, sh: () => CM.shellLang,
       bash: () => CM.shellLang, zsh: () => CM.shellLang,
       toml: () => CM.tomlLang,
@@ -4001,28 +4016,46 @@
     // two DESIRED widths (not the last-RENDERED ones — reading those back
     // would ratchet the panels narrower forever on a shrinking window and
     // never recover on a widening one) and gives the document its floor
-    // first. When the two desired widths together do not leave room for it,
-    // **the right panel yields first** (owner's call): the rail is the one
-    // open by default, so the panel the user opened on top of it is the one
-    // that gives ground, down to its own MIN, before the rail is touched at all.
+    // FIRST, as a HARD minimum — narrower than this and a panel is worth
+    // nothing, because there is no document left to read or annotate. A
+    // narrow window is not the only way to get here: the shell's own
+    // Claude-panel iframe can leave this template's `#split` at a fraction of
+    // the outer window's width with no navigation and no reload, which is why
+    // this is re-run on `resize` (below), not only on open/drag.
+    //
+    // Down to a panel's own MIN is a squeeze; past that is a CLOSE, not a
+    // squeeze-below-min — this view never renders a sliver of a panel too
+    // narrow to read. **The right panel yields first, and furthest**
+    // (owner's call): squeezed to its floor, then closed outright, before the
+    // rail — open by default — gives any ground at all. Presentational only:
+    // this sets `style.display` directly, which beats both the `.on` class
+    // and the `hidden` attribute on specificity without touching either, so
+    // the moment there is room again both panels reappear exactly as the
+    // user left them — no param write, no lost preference.
     function layoutPanels() {
       const room = document.getElementById("split").getBoundingClientRect().width;
-      const railOpen = !railEl.hidden;
-      const sideOpen = sideEl.classList.contains("on");
+      const railWantsOpen = !railEl.hidden;      // the `outline` param's state
+      const sideWantsOpen = sideEl.classList.contains("on"); // the `graph` param's state
+      let railOpen = railWantsOpen;
+      let sideOpen = sideWantsOpen;
       let railW = railOpen ? desiredRailPx : 0;
       let sideW = sideOpen ? desiredSidePx : 0;
-      let overflow = (railW + sideW) - (room - DOC_FLOOR_PX);
-      if (overflow > 0 && sideOpen) {
-        const give = Math.min(overflow, sideW - SIDE_MIN);
-        sideW -= give;
-        overflow -= give;
+      const spareFor = (rw, sw) => room - DOC_FLOOR_PX - rw - sw;
+
+      if (sideOpen) {
+        const short = -spareFor(railW, sideW);
+        if (short > 0) sideW -= Math.min(short, sideW - SIDE_MIN);
+        if (spareFor(railW, sideW) < 0) { sideOpen = false; sideW = 0; }
       }
-      if (overflow > 0 && railOpen) {
-        const give = Math.min(overflow, railW - RAIL_MIN);
-        railW -= give;
-        overflow -= give;
+      if (railOpen) {
+        const short = -spareFor(railW, sideW);
+        if (short > 0) railW -= Math.min(short, railW - RAIL_MIN);
+        if (spareFor(railW, sideW) < 0) { railOpen = false; railW = 0; }
       }
+
+      railEl.style.display = railOpen ? "" : "none";
       if (railOpen) railEl.style.width = Math.round(Math.max(RAIL_MIN, railW)) + "px";
+      sideEl.style.display = sideOpen ? "" : "none";
       if (sideOpen) {
         sideEl.style.width = Math.round(Math.max(SIDE_MIN, sideW)) + "px";
         // A canvas is a fixed-size bitmap: its backing store only follows its
@@ -4031,6 +4064,12 @@
         canvas.nudge();
       }
     }
+    // The shell's Claude panel opening or closing resizes THIS iframe with no
+    // navigation and no reload (§ above) — an ordinary `resize` on this
+    // window, since an iframe's box is its own nested viewport. Not a poll:
+    // it fires only when the box genuinely changes, the same discipline
+    // MD-17 already holds this template to elsewhere.
+    window.addEventListener("resize", () => layoutPanels());
 
     function applyRail() {
       const on = outlineOn();
