@@ -563,10 +563,9 @@ def _lift_read_only(root: str) -> None:
 
 
 def clone_dir() -> str:
-    """The workspace tag dir a clone lands in: ``<workspace>/local``. The same
-    dir the showcase Clone installs into (community.COMMUNITY_TAG_DIR), and for
-    the same reason — ``local`` is where a copy you own for editing belongs, as
-    against the read-only artifact it came from."""
+    """The workspace tag dir a clone lands in: ``<workspace>/local`` — where a
+    copy you own for editing belongs, as against the read-only artifact it
+    came from."""
     from fused_render.shell.seed import fused_dir
 
     return os.path.join(fused_dir(), "local")
@@ -632,8 +631,8 @@ def clone_app_file(fused_path: str) -> dict:
     local = clone_dir()
     os.makedirs(local, exist_ok=True)
     # Staged INSIDE the destination tag dir so the claim is a same-filesystem
-    # rename (community._install's reason: a home-dir staging area can sit on
-    # another volume, where os.rename fails outright).
+    # rename — a home-dir staging area can sit on another volume, where
+    # os.rename fails outright.
     staging = tempfile.mkdtemp(dir=local, prefix=f".clone-{target['slug']}-")
     try:
         staged_app = os.path.join(staging, target["slug"])

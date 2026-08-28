@@ -19,9 +19,10 @@ X-Fused guard: one of them schedules code execution, and the other stops it.
 import os
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Body, Header
+from fastapi import APIRouter, Body, File, Header, UploadFile
 
 from fused_render import recur, schedule, tasks_store
+from fused_render.server import image_convert
 from fused_render.server.common import _error, _require_fused
 
 router = APIRouter()
@@ -98,56 +99,89 @@ def api_schedule_events_ack(body: dict = Body(...),
 # What the New task form's attach/drop accepts, and the one place bytes are
 # written: everything else (the create endpoint, the model) deals only in the
 # returned paths, which `schedule._images` refuses unless they live under
-# `schedule.shots_dir()`. Data-URL JSON rather than multipart because the form
-# already holds the image as a data URL for its thumbnail, and one body shape
-# means one validator.
-_SHOT_MIME_EXT = {"image/png": ".png", "image/jpeg": ".jpg",
-                  "image/webp": ".webp", "image/gif": ".gif"}
-#: Decoded-byte cap per image. Matches the spirit of the claude template's
-#: SEGMENT_IMAGE_CAP (an 8 MB screenshot is not a more useful attachment than
-#: the same pixels at 2), with headroom for full-window PNG shots.
-_SHOT_MAX_BYTES = 4 * 1024 * 1024
+# `schedule.shots_dir()`.
+#
+# MULTIPART, not the data-URL JSON this used to take (2026-08-28). The form no
+# longer holds the file as a data URL at all — the chip's thumbnail is a
+# `blob:` URL and only pictures get one — and base64 is a 33% tax paid twice
+# (once in the browser's string, once in the body) on a gesture whose whole
+# point is now that a 40 MB log can be dropped on the card. `UploadFile`
+# streams to a spooled temp file instead.
+#
+# NO CAPS AND NO TYPE GATE (D618, following D615 for the chat): any file, any
+# size. The image-only MIME check and the 4 MB byte ceiling are both gone; 4 MB
+# survives as `image_convert.PNG_MAX_BYTES`, which is a DOWNSCALE TRIGGER for a
+# picture and never a refusal.
 
 
 @router.post("/api/schedule/shot")
-def api_schedule_shot(body: dict = Body(...),
-                      x_fused: str | None = Header(default=None)):
-    """Store one task-attachment image; return the path to schedule with."""
+async def api_schedule_shot(file: UploadFile | None = File(default=None),
+                            x_fused: str | None = Header(default=None)):
+    """Store one task attachment; return the path to schedule with.
+
+    `{path, kind, width?, height?}` — `kind` is "image" or "file", which is the
+    one thing the card cannot work out for itself once the extension may be
+    anything (and which the transcode below can CHANGE: a `.tif` arrives as
+    bytes no browser draws and leaves as a PNG the chip can show).
+
+    The file is OPTIONAL in the signature so that a body which is not multipart
+    at all reaches this function and gets the D3 guard's answer first: a
+    required `File(...)` is a validation error raised before any of our code
+    runs, which would have made an unguarded 422 the reply to a cross-origin
+    POST."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    data = body.get("data")
-    if not isinstance(data, str) or not data.startswith("data:"):
-        return _error("data: expected a data: URL", status=400)
-    head, sep, payload = data.partition(",")
-    mime = head[5:].split(";", 1)[0].strip().lower()
-    ext = _SHOT_MIME_EXT.get(mime)
-    if not sep or not ext or ";base64" not in head:
-        return _error("data: expected a base64 image data: URL "
-                      "(png, jpeg, webp or gif)", status=400)
-    import base64
-    import binascii
-    try:
-        raw = base64.b64decode(payload, validate=True)
-    except (ValueError, binascii.Error):
-        return _error("data: not valid base64", status=400)
+    if file is None:
+        return _error("file: expected a multipart upload", status=400)
+    raw = await file.read()
     if not raw:
-        return _error("data: empty image", status=400)
-    if len(raw) > _SHOT_MAX_BYTES:
-        return _error(
-            f"data: image too large (over {_SHOT_MAX_BYTES // (1024 * 1024)} MB)",
-            status=400)
+        return _error("file: empty upload", status=400)
+
+    mime = file.content_type or ""
+    ext = image_convert.ext_for(mime, file.filename)
     shots = schedule.shots_dir()
     os.makedirs(shots, mode=0o700, exist_ok=True)
     # Server-minted name, never the client's: the path returned here is what
-    # `schedule._images` later trusts.
+    # `schedule._images` later trusts, and a filename is the one field in a
+    # multipart body a page chooses freely. Only the EXTENSION is taken from the
+    # client (sanitised by `ext_for`), because it is what decides the template a
+    # preview opens the file in.
     name = (datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
             + "-" + os.urandom(4).hex() + ext)
     path = os.path.join(shots, name).replace("\\", "/")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(raw)
-    return {"path": path}
+
+    if not image_convert.is_image(ext, mime):
+        return {"path": path, "kind": "file"}
+
+    # A PICTURE gets one more decision, and it is taken HERE rather than in the
+    # browser (the chat takes it in the page, with a canvas; D613). Server-side
+    # for this form because the two cases are one call from here — a format no
+    # engine can decode and a picture merely too big share a ladder — where in
+    # the client they are two code paths, one of which cannot exist at all: a
+    # canvas cannot downscale bytes it cannot draw. The card stays small and the
+    # bytes are already on disk by the time the question is asked.
+    out, width, height = path, None, None
+    blind = image_convert.browser_blind(ext, mime)
+    if blind or len(raw) > image_convert.PNG_MAX_BYTES:
+        # A DIFFERENT name, not a same-extension sibling: a 6 MB `.png` being
+        # downscaled would otherwise be asked to overwrite itself.
+        conv = image_convert.transcode(
+            path, os.path.splitext(path)[0] + "-view")
+        if conv.get("path"):
+            out = conv["path"]
+            width, height = conv.get("width"), conv.get("height")
+    if width is None:
+        size = image_convert.dimensions(out)
+        if size:
+            width, height = size
+    body = {"path": out, "kind": "image"}
+    if width and height:
+        body["width"], body["height"] = width, height
+    return body
 
 
 @router.post("/api/schedule")
@@ -247,6 +281,15 @@ def api_schedule_create(body: dict = Body(...),
             session_learned=body.get("session_learned"),
             immediate=body.get("immediate"),
             images=body.get("images"),
+            # The SAME attachments with their names and kinds beside them
+            # (D619). Passed through unvalidated exactly like `images` is —
+            # `schedule._attachments` is what refuses anything not living under
+            # the task-shots dir, so the create endpoint keeps its habit of not
+            # holding a second copy of the model's rules. Either field alone is
+            # enough; each is derived from the other when only one arrives, so a
+            # client that has not been rebuilt still schedules attachments and a
+            # client that sends only the richer field still gets `images` stored.
+            attachments=body.get("attachments"),
             # THE ONE ENDPOINT ALLOWED TO MAKE A FOLDER. The New task form lets
             # you name a folder that does not exist yet — it shows the path as a
             # new folder while you type it — and this is where that promise is

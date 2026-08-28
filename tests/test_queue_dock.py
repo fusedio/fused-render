@@ -18,7 +18,7 @@ Two halves to test, and they are tested in the two ways they can be:
   that a refusal is spoken rather than swallowed, that an empty card is no card at
   all, and that there is exactly ONE card in that corner.
 
-The row-level rules (ordering, dedupe, the header count, what Cancel all counts)
+The row-level rules (ordering, dedupe, the header count, what Cancel queued counts)
 are unit-tested in frontend/src/shell/queue-dock-lib.test.ts, where they are pure.
 """
 import os
@@ -34,11 +34,13 @@ WRITE = {"X-Fused": "1"}
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FRONT = os.path.join(_ROOT, "frontend", "src")
-# The queue half (rows, polling, Cancel all) and the card it fills (plate, header,
+# The queue half (rows, polling, Cancel queued) and the card it fills (plate, header,
 # count, one list, collapse, Clear).
 _DOCK = os.path.join(_FRONT, "shell", "QueueDock.tsx")
 _CARD = os.path.join(_FRONT, "platform", "ui", "DownloadManager.tsx")
 _HOST = os.path.join(_FRONT, "platform", "ui", "NotificationHost.tsx")
+_BAR = os.path.join(_FRONT, "platform", "ui", "StatusBar.tsx")
+_APP = os.path.join(_FRONT, "shell", "App.tsx")
 _CSS = os.path.join(_FRONT, "styles", "notifications.css")
 
 
@@ -267,15 +269,25 @@ def test_a_refusal_is_spoken(dock):
     user the button lies."""
     assert "cancelOutcome(" in dock
     assert "r.refused" in dock
-    assert 'cancelQueued("all")' in dock, "Cancel all lives here and nowhere else"
+    assert 'cancelQueued("all")' in dock, "Cancel queued lives here and nowhere else"
 
 
-def test_an_empty_card_is_no_card(card):
-    """Not an empty state, not a header saying "nothing queued": a picture of work
-    in progress has nothing to draw when there is none. The rule is the CARD's now
-    and applies once — both halves have to be empty, because a queue row with no
-    jobs is still work worth a card, and a job with no queue row always was."""
-    assert "if (jobs.length === 0 && queued === 0) return null;" in card
+def test_an_empty_card_draws_the_idle_state_not_no_card(card):
+    """SUPERSEDED by D565 (user verdict: "different categories of status bar
+    should be always present"): this used to return null outright — "a
+    picture of work in progress has nothing to draw when there is none" —
+    and that rule is gone on purpose, not merely relaxed. Both halves empty
+    now draws the IDLE readout ("No activity", D569 — round 2's bare "Idle"
+    named no subject, which is exactly what the user could not place)
+    instead of vanishing; the gate still only ever reasons about jobs and
+    queue, since repo updates are their own sibling section (SPEC §36,
+    RepoUpdatesDock.tsx)."""
+    assert "const idle = jobs.length === 0 && queued === 0;" in card
+    assert "if (jobs.length === 0 && queued === 0) return null;" not in card
+    # D573: the idle SENTENCE moved from a chip-level `.dl-idle` span into
+    # the panel a real, always-clickable chip opens (VS Code/Cursor status
+    # bar idiom — no separate idle markup any more).
+    assert '<div className="dl-panel-empty">No jobs</div>' in card
 
 
 def test_there_is_one_card_not_two(dock, card):
@@ -289,25 +301,39 @@ def test_there_is_one_card_not_two(dock, card):
         assert f".{gone} {{" not in css, f"the second card's .{gone} rule survives"
     # the rows land in the card's one list, above the job rows
     assert "{queue?.rows}" in card
-    assert card.index("{queue?.rows}") < card.index("listed.map((job)")
-    # and the one header count is told about them
-    assert "jobsSummary(jobs, count)" in card
+    assert card.index("{queue?.rows}") < card.index("jobs.map((job)")
+    # and the section's own occupancy signal is told about them. The chip renders
+    # no sentence (D573, `jobsSummary` since deleted) and no number
+    # (D588/D590 — one circle, outlined or filled), but whether it is FILLED
+    # still comes off the same `count`/`jobs` the card computes right here.
+    assert "count: QueueCount = { waiting: queue?.waiting ?? 0, running: queue?.running ?? 0 };" in card
 
 
-def test_the_fold_takes_the_job_rows_and_not_the_queue_s(card):
-    """A queue row's ✕ is the only cancel a queued message or a live turn has, and
-    the collapse is a PERSISTED preference — so folding the whole list left a card
-    someone collapsed weeks ago showing scheduled work with no reachable way to stop
-    it. The fold takes the job rows (the download history it was set to fold away);
-    the queue's rows stay, in the same one list, with their controls."""
-    assert "rowsShown(collapsed, count)" in card
-    assert "(shown.queue || listed.length > 0) &&" in card
-    assert "{queue?.rows}" in card, "the queue's rows must not sit behind the fold"
-    # exactly one half is folded, and it is the jobs' — minus the one job row that
-    # stands in for a missing queue row, which goes through the fold for the same
-    # reason a queue row does (jobs.ts `foldedJobRows`).
-    assert "shown.jobs ? jobs : foldedJobRows(jobs)" in card
-    assert ".dl-rows.is-folded {" in _read(_CSS), "the folded list needs its own cap"
+def test_the_fold_takes_every_row_now_not_just_the_jobs(card):
+    """D562 (user call, 2026-08-27): 'everything is foldable, even for the job
+    cards' — reversing the earlier partial fold (D558/D559), which pinned the
+    queue's rows and a live-run stand-in outside the collapse. Collapsed now
+    renders no `.dl-rows` at all, no exemption; collapsed also renders no
+    panel at all any more (D563, status bar redesign), so there is nothing
+    left standing in a header for reachability to move to — `showCancelAll`
+    dropped the collapsed-threshold parameter this docstring used to point
+    at (queue-dock-lib.ts's own doc has the current rule)."""
+    assert "rowsShown" not in card, "the two-field queue/jobs split is gone"
+    assert "foldedJobRows" not in card, "no row is exempt from the fold any more"
+    # D574/D580: the gate is no longer `collapsed` alone — it is `open`, which
+    # is the saved preference overridden in either direction by a transient
+    # auto-open (a new job arrived) or auto-close (the list drained). Still ONE
+    # gate over the whole panel, which is what this test is really about.
+    assert "{open && (" in card, "the whole rows block is gated on one `open` flag"
+    assert (
+        "const open = autoClose ? false : !collapsed || autoOpen;" in card
+    ), "and `open` is the override-aware derivation, not a second stored flag"
+    assert "{queue?.rows}" in card, "the queue's rows still render, just not exempt"
+    jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
+    assert "export function rowsShown" not in jobs_ts
+    assert "export function foldedJobRows" not in jobs_ts
+    css = _read(_CSS)
+    assert ".dl-rows.is-folded" not in css, "no partial-height cap — collapsed omits the rows entirely"
 
 
 def test_the_job_half_is_told_which_runs_the_queue_draws(dock, card):
@@ -369,44 +395,137 @@ def test_the_two_halves_share_one_job_snapshot_so_the_handover_is_not_a_race(doc
     assert 'r.role === "live" && ended.has(' in lib
 
 
-def test_a_stand_in_job_row_survives_the_fold(card):
-    """A live run the queue half is NOT drawing has exactly one row, and it is a job
-    row — so the fold must not take it, or the hole reopens for anybody whose card has
-    been collapsed since before any of this existed. Only unattended work in flight
-    goes through: a download's ✕ is a request for work the user started themselves,
-    and a finished run's row is a report, so both still fold."""
-    assert "foldedJobRows" in card
+def test_a_stand_in_job_row_folds_like_any_other_now(card):
+    """A live run the queue half is NOT drawing still gets exactly one row, and it
+    is a job row (`jobRows` — unaffected by D562, this is ownership, not fold).
+    It used to be exempt from the collapse specially (`foldedJobRows`); D562
+    (user call, 2026-08-27) removed every such exemption, so this row now folds
+    like any other — collapsed, it is simply not on screen (D563's chip
+    carries no row and no button), not a per-row carve-out."""
+    assert "foldedJobRows" not in card
     jobs_ts = _read(os.path.join(_FRONT, "platform", "lib", "jobs.ts"))
-    assert "export function foldedJobRows(jobs: Job[]): Job[]" in jobs_ts
+    assert "export function foldedJobRows" not in jobs_ts
+    assert "export function jobRows(jobs: Job[], drawn?" in jobs_ts
 
 
-def test_the_stored_fold_is_only_ever_written_by_a_press(card):
-    """No auto-expand and no silent rewrite: the preference is the user's. A card
-    folded on purpose stays folded — it just stops swallowing the queue's cancels.
-    One setter call (the header toggle) and one write beside it."""
-    assert card.count("setCollapsed(") == 1
-    assert card.count("saveCollapsed(") == 2  # the writer, and its one call site
+def test_the_fold_is_never_persisted_at_all(card, dock):
+    """D603 SUPERSEDES this test's original subject. It used to police WHO may
+    write the stored fold — the D567 guard, which survived D574's auto-open,
+    D580's auto-close and D582's exclusivity, each of which had to be kept away
+    from `localStorage`. There is no longer a stored fold to write: the key,
+    `loadCollapsed` and `saveCollapsed` are deleted outright (user: "on page
+    reload the models popover auto opens for some reason" — not the auto-open
+    path at all, but a stored `"0"` from an earlier click being faithfully
+    restored on every load since).
+
+    So the invariant gets STRONGER rather than disappearing: no source file in
+    this feature may touch `localStorage` for the fold at all. Deleting the
+    writer is what makes that checkable as an absence instead of as a count.
+
+    Checked on CODE, not on comments — several of these files legitimately
+    explain in prose why the persistence was removed, and a test that tripped
+    over its own explanation would be worse than no test.
+    """
+    def code_only(src):
+        return "\n".join(
+            line for line in src.splitlines()
+            if not line.strip().startswith(("//", "*", "/*")))
+
+    # The two halves of the activity card, plus the machinery they lean on.
+    for label, src in (("the card", card), ("the dock", dock)):
+        stripped = code_only(src)
+        assert "localStorage" not in stripped, f"{label} must not persist the fold"
+        assert "saveCollapsed" not in stripped, f"{label} must not write the fold"
+        assert "loadCollapsed" not in stripped, f"{label} must not read a stored fold"
+
+    for module in ("autoExpand.ts", "exclusiveSection.ts"):
+        stripped = code_only(_read(os.path.join(_FRONT, "platform", "lib", module)))
+        assert "localStorage" not in stripped, f"{module} must not persist anything"
+
+    # And every section, not just this card's: four separate keys existed
+    # (`models-`, `jobs-`, `repo-updates-`, `engines-collapsed`) and all four go.
+    for rel in (("shell", "ModelsDock.tsx"), ("shell", "RepoUpdatesDock.tsx"),
+                ("shell", "EnginesDock.tsx")):
+        stripped = code_only(_read(os.path.join(_FRONT, *rel)))
+        assert "localStorage" not in stripped, f"{rel[-1]} must not persist the fold"
+        assert "-collapsed" not in stripped, f"{rel[-1]} must not keep a fold key"
+
+    # The one remaining setter is the chip's own click. `close` is `forceClose`
+    # (transient only), which is what D585 finding 2 fixed and D603 does not undo.
+    assert card.count("setCollapsed(") == 1, "the chip's own click, and nothing else"
 
 
 def test_the_column_owns_where_it_sits(dock, card):
-    """Placement belongs to NotificationHost — neither the queue nor the card
-    positions itself, exactly like the server card below them."""
+    """Placement belongs to StatusBar / notifications.css (D563) — neither the
+    queue nor the card positions itself inline, exactly as it never did when
+    NotificationHost owned this instead."""
     for gone in ("position: fixed", "position:fixed", "zIndex", "z-index"):
         assert gone not in dock
         assert gone not in card
 
 
-def test_the_shell_composes_the_card_and_the_host_places_it(dock):
+def test_the_bar_reserves_space_inside_main_not_the_floating_column(dock, card):
+    """D563 (user call: "the collapsed notification is also taking too much
+    space... it is impossible to use the claude template with it"). The two
+    cards moved OUT of NotificationHost's fixed, floating column and into a
+    bar mounted inside `#main`, which reserves layout space for it instead of
+    overlaying whatever is under it. Toasts, FdaCard and ServerStatusBanner —
+    all short-lived or exceptional enough that overlaying the page is still
+    the right call — are the ones left in NotificationHost's column.
+
+    The real BEHAVIOUR this bar composition produces — three sections in
+    order, an omitted slot rendering nothing rather than an empty wrapper —
+    is a `frontend/src/platform/ui/StatusBar.test.tsx` render test now
+    (code review finding #8: a source-literal grep here cannot see whether
+    a component actually behaves the way its source claims). This function
+    stays a structural/placement check only."""
+    app = _read(_APP)
+    host = _read(_HOST)
+    bar = _read(_BAR)
+    # StatusBar is mounted INSIDE #main, alongside the routed content, not as
+    # a sibling of it the way NotificationHost is.
+    main_at = app.index('<div id="main">')
+    bar_use_at = app.index("<StatusBar")
+    main_close_at = app.index("</div>", bar_use_at)
+    assert main_at < bar_use_at < main_close_at, "StatusBar must render INSIDE #main"
+    assert "<NotificationHost />" in app, "the two moved entries are gone from its props"
+    assert "activity?: ReactNode" not in host, "NotificationHost no longer takes them"
+    assert "repoUpdates?: ReactNode" not in host
+    assert "DownloadManager" not in host, "the bare-manager fallback moved to StatusBar"
+    assert "activity?: ReactNode" in bar
+    assert "repoUpdates?: ReactNode" in bar
+    assert "models?: ReactNode" in bar, "D565: a third, always-present section"
+
+
+def test_the_bar_is_always_present_now_not_gone_when_empty(dock, card):
+    """D565 (user verdict on the shipped round-1 bar: "this is very ugly.
+    different categories of status bar should be always present and look
+    better"). Round 1's `.status-bar:empty { display: none }` rule —
+    collapsing the bar to nothing the moment both cards had nothing to show
+    — is SUPERSEDED, not extended: the three categories are a fixed status
+    readout now, each drawing its own idle text (`No models loaded` /
+    `No activity` / `No updates`, D569) instead of vanishing. `#main` is
+    therefore permanently shorter by the bar's height on every page, which
+    is the accepted cost the user's own words call for."""
+    css = _read(_CSS)
+    bar_tsx = _read(_BAR)
+    assert ".status-bar:empty" not in css, "the always-gone rule must not survive next to always-present"
+    # D573: idle text moved from the chip into the panel it opens.
+    assert '<div className="dl-panel-empty">No jobs</div>' in card, "the activity section's own idle text"
+
+
+def test_the_shell_composes_the_card_and_the_bar_places_it(dock):
     """platform may not import shell (frontend/scripts/check-boundaries.mjs) and a
     queue row has to speak explorerUrl, which lives in shell. So the dependency
     runs the way the boundary allows: shell imports the card and fills its `queue`
-    slot, and the host takes the composed thing as its ONE activity entry.
+    slot, and StatusBar (D563 — no longer NotificationHost, see the placement
+    test below) takes the composed thing as its ONE activity entry.
 
     Omitted, the bare manager stands in: platform does not come to depend on a
     shell that may not be there."""
     assert 'import DownloadManager from "@platform/ui/DownloadManager"' in dock
-    host = _read(_HOST)
-    assert "activity?: ReactNode" in host
-    assert "{!IS_EMBED && (activity ?? <DownloadManager />)}" in host
-    # one entry in the column, not two stacked cards
-    assert host.count("<DownloadManager />") == 1
+    bar = _read(_BAR)
+    assert "activity?: ReactNode" in bar
+    assert "{activity ?? <DownloadManager />}" in bar
+    # one entry in the bar, not two stacked cards
+    assert bar.count("<DownloadManager />") == 1

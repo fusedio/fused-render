@@ -1,4 +1,4 @@
-// The queue half of the ONE bottom-right activity card: work that is about to run
+// The queue half of the ONE status-bar activity card: work that is about to run
 // or running now (Akshil, 2026-08-17).
 //
 // It used to be a card of its own, stacked directly above the download manager,
@@ -9,7 +9,14 @@
 // the bottom one once it had finished: one run changing container mid-life. So this
 // module no longer draws a card. It polls, it renders ROWS, and it hands them to
 // DownloadManager, which owns the plate, the one header, the one count, the one
-// list and Clear. The lifecycle is one list now:
+// list and Clear.
+//
+// This is the ONE place `<DownloadManager>` is instantiated. Repo updates
+// (SPEC §36) are no longer a slot filled here — they draw their own sibling
+// card (RepoUpdatesDock.tsx), mounted directly by App.tsx beside this one via
+// StatusBar's separate `repoUpdates` prop (D563 — NotificationHost's, before
+// the status bar redesign), so this module has nothing to do with them any
+// more. The lifecycle drawn here is one list:
 //
 //     queued → starting → running → finished / failed
 //        \______ these rows ______/     \__ a job row __/
@@ -17,7 +24,7 @@
 // WHAT COUNTS AS QUEUED is the whole definition, and it is the server's, not a
 // filter invented here: `GET /api/schedule/queue` answers with what is PAST DUE
 // and waiting to be claimed. A message scheduled for later today is not queued,
-// it is scheduled, and putting it in this card would make Cancel all mean
+// it is scheduled, and putting it in this card would make Cancel queued mean
 // something nobody asked for ("cancel my afternoon").
 //
 // WHY IT EXISTS, in the user's words: a run parked on a permission prompt was
@@ -26,8 +33,11 @@
 // the link is `explorerUrl`, the app's one answer to that question, rather than a
 // path assembled here.
 //
-// It is also the only place Cancel all now lives: the calendar's Queued strip was
-// removed and this replaces the global surface that went with it.
+// It is also the only place Cancel queued now lives (named "Cancel all" until
+// user feedback: over a card that is mostly job rows, "all" read as a promise
+// this button never kept — it withdraws queued scheduled messages only and
+// cannot touch a job row): the calendar's Queued strip was removed and this
+// replaces the global surface that went with it.
 //
 // WHY THE SHELL COMPOSES THE CARD instead of platform polling the queue itself:
 // `explorerUrl` — and `cancelOutcome`, and `relativeDue` — live in
@@ -35,8 +45,8 @@
 // (frontend/scripts/check-boundaries.mjs). Rather than inject three functions
 // downward, the dependency runs the way the boundary already allows: shell imports
 // platform's card and fills its `queue` slot with the parts only shell can build.
-// Placement is still NotificationHost's, which takes this whole thing as its one
-// `activity` entry.
+// Placement (D563) is `StatusBar`'s (platform/ui/StatusBar.tsx), which takes this
+// whole thing as its `activity` entry the same way NotificationHost used to.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelQueued,
@@ -44,6 +54,7 @@ import {
   type ScheduledMessage,
 } from "@platform/lib/api";
 import {
+  failedJobs,
   cancelJob,
   isRunning,
   jobStatusLine,
@@ -299,7 +310,7 @@ function Row({
   );
 }
 
-export default function QueueDock() {
+export default function QueueDock({ onFailed }: { onFailed?: (jobs: Job[]) => void } = {}) {
   const { snap, refresh } = useQueue();
   // The card's own job snapshot, handed up on every one of its polls — about once a
   // second while anything is live, against this half's six. It is what the status
@@ -327,7 +338,29 @@ export default function QueueDock() {
   // in-flight run pokes on every shell mount (Bugbot, PR #648).
   const sawEcho = useRef(false);
   const sawJobs = useRef(false);
+  // FAILURES GO TO NOTIFICATIONS (D586). This half already receives
+  // `DownloadManager`'s full, unfiltered snapshot on every poll, so the
+  // re-route needs no second poller and no store — it forwards the error rows
+  // to the shell, which hands them to `RepoUpdatesDock`. Through a ref so the
+  // callback below keeps its stable `[]` identity (it is `DownloadManager`'s
+  // `queue.onJobs`, and re-creating it would re-arm that effect every render).
+  const onFailedRef = useRef(onFailed);
+  onFailedRef.current = onFailed;
+  // Only ANNOUNCE a change, never every poll: the snapshot arrives about once
+  // a second while anything is live, and calling up unconditionally would set
+  // state in `App` — re-rendering the whole shell — on every one of those.
+  // Compared by id set, since a failed job's own fields no longer move.
+  const failedIds = useRef("");
+  const forwardFailed = useCallback((next: Job[]) => {
+    const failed = failedJobs(next);
+    const key = failed.map((j) => j.id).join("\u0000");
+    if (key === failedIds.current) return;
+    failedIds.current = key;
+    onFailedRef.current?.(failed);
+  }, []);
+
   const onJobs = useCallback((next: Job[]) => {
+    forwardFailed(next);
     if (!sawEcho.current) {
       sawEcho.current = true;
       setJobs(next);
@@ -341,7 +374,7 @@ export default function QueueDock() {
     sawJobs.current = true;
     prevJobs.current = next;
     setJobs(next);
-  }, []);
+  }, [forwardFailed]);
 
   // What this half still owns: its rows minus any live one whose run the registry
   // says has ended. Without that the outcome row would wait for the next queue read
@@ -360,14 +393,10 @@ export default function QueueDock() {
       lines.set(job.id.slice(SCHEDULE_JOB_PREFIX.length), jobStatusLine(job) || job.detail);
     }
   }
-  // Cancel all is the QUEUE's — the rows the server would withdraw if asked right
-  // now, which is `pending` and nothing else. A live turn is not one of them (it
-  // has its own ✕, which stops a running process) and neither is a claimed one
-  // (the server refuses `sending`), so the button counts only what it can take —
-  // and disappears when nothing left in the card is withdrawable. It is not the
-  // card's Clear and never becomes it: Clear dismisses rows for work that ENDED.
-  const offerCancelAll = showCancelAll(rows);
-
+  // What the BUTTON does when pressed — asks the server to withdraw every
+  // queued message and reports what it actually took. Whether the button
+  // renders at all is `showCancelAll`'s call, at the `cancelAll:` prop below,
+  // where the reasoning for it lives.
   const cancelAll = async () => {
     setBusy(true);
     try {
@@ -403,7 +432,29 @@ export default function QueueDock() {
             onNote={setNote}
           />
         )),
-        cancelAll: offerCancelAll ? (
+        // "Cancel queued" — labelled for what it withdraws, since the old
+        // "Cancel all" read as "cancel everything on this card" over a list that
+        // is mostly job rows, which is precisely what this button does not touch
+        // (user feedback). It is the QUEUE's — the rows the server would
+        // withdraw if asked right now, which is `pending` and nothing else. A
+        // live turn is not one of them (it has its own ✕, which stops a running
+        // process) and neither is a claimed one (the server refuses `sending`),
+        // so the button counts only what it can take — and disappears when
+        // nothing left in the card is withdrawable. It is not the card's Clear
+        // and never becomes it: Clear dismisses rows for work that ENDED.
+        //
+        // DECIDED INLINE, once per render (D563, status bar redesign). It used
+        // to be built as a FUNCTION of whether the card was collapsed, because
+        // the threshold itself depended on it (`showCancelAll`'s own doc, D562)
+        // — collapsed dropped the withdrawable-rows threshold to one, since that
+        // was the only way left to reach a lone row once the header folded away.
+        // This button now renders only inside the card's expanded panel (the
+        // collapsed chip carries no controls at all), so that
+        // folded-but-visible state it was answering no longer exists, and
+        // neither does the function shape it needed. There is no
+        // `offerCancelAll` local any more either: one call, at the one place
+        // that uses it.
+        cancelAll: showCancelAll(rows) ? (
           <button
             type="button"
             className="q-all"
@@ -411,7 +462,7 @@ export default function QueueDock() {
             disabled={busy}
             title="Cancel every queued message"
           >
-            Cancel all
+            Cancel queued
           </button>
         ) : null,
         // Only ever the answer to a cancel pressed in this card, so it lives with

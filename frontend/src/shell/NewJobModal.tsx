@@ -20,9 +20,17 @@ import {
   listDir,
   rawUrl,
   scheduleMessage,
+  statPath,
   uploadTaskShot,
 } from "@platform/lib/api";
-import type { Config, RecurrenceRule, ScheduledMessage } from "@platform/lib/api";
+import type { Config, RecurrenceRule, ScheduledMessage, StatResult,
+  TaskAttachment } from "@platform/lib/api";
+// The seal a display-only frame wears, read from the one module that owns it —
+// imported rather than mirrored, which is what stops this viewer's sandbox from
+// drifting from the card grid's (D616 makes the same point about the claude
+// template, which can only mirror it because it is vanilla JS in a folder).
+import { THUMB_SEAL } from "@platform/lib/frame-focus";
+import { thumbUrl } from "@platform/lib/thumb-frame";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { navigateUrl } from "@platform/lib/router";
 import { ENTER_LABEL, isMod, MOD_LABEL } from "@platform/lib/platform";
@@ -223,6 +231,20 @@ const ICON_FILE = (
 // with the row (see the form's markup for why).
 
 // lucide "check", at tick scale.
+// lucide "x", for the attachment chips' remove button. An SVG rather than the
+// "✕" character because a glyph sits on a font baseline — it lands a pixel or
+// two below and right of a 14px circle's centre in every system face, and no
+// line-height fixes what the font's own metrics decide (Akshil, 2026-08-28:
+// "the cross is not properly aligned … it should be perfect"). Two strokes on
+// a 24-grid centre exactly, in any box.
+const ICON_X = (
+  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M18 6 6 18" />
+    <path d="m6 6 12 12" />
+  </svg>
+);
+
 const ICON_CHECK = (
   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
        strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -1810,21 +1832,123 @@ export function saveActionLabel(
 // itself, so this alias only names what the builder returns.
 export type SchedulePayload = Parameters<typeof scheduleMessage>[0];
 
-// One attached image, from either of the two places it can come from. A fresh
-// attach holds the file as a data URL (its thumbnail, shown before the upload
-// answers) and gains `path` when POST /api/schedule/shot returns; an Edit's
-// restored attachment is the opposite — a stored path with no data URL, drawn
-// through /api/fs/raw. `key` only keys the React list.
+// One attachment, from either of the two places it can come from. A fresh
+// attach shows a `blob:` thumbnail (pictures only) while the upload is in
+// flight and gains `path` plus the SERVER's `kind` when POST
+// /api/schedule/shot answers; an Edit's restored attachment is the opposite — a
+// stored path with no blob, its kind read back off the extension
+// (`attachmentKindOf`) and its picture drawn through /api/fs/raw. `key` only
+// keys the React list.
+//
+// ANY FILE, NO CAPS (D618, following the chat's D612/D615): the count cap
+// (IMAGES_MAX, 4), the byte cap and the image-only MIME gate are all gone. What
+// `kind` decides is what the chat's `shotIsImage` decides — a thumbnail or a
+// glyph, a picture viewer or a template preview — and nothing about whether the
+// file is allowed in.
 export interface TaskImage {
   key: number;
   path: string;
-  dataUrl: string | null;
+  // Thumbnail XOR glyph, never both — the chat's D613 rule and for its reason:
+  // a chip wearing a picture frame AND a hole is the worst of the three
+  // possible outputs.
+  kind: "image" | "file";
+  // What to SAY for a file: the client's filename, which is the only name the
+  // user recognises — the stored path is a minted timestamp.
+  name: string;
+  // A `blob:` URL for a freshly attached, drawable picture; null for
+  // everything else (a restored attachment, every non-picture, and a picture in
+  // a format this engine cannot draw until the server's PNG comes back).
+  thumb: string | null;
 }
 
-// Mirrors the server's IMAGES_MAX (schedule.py): each image rides every run of
-// a repeat into the model's context, so the count is a budget, not a limit on
-// what the form can hold.
-export const IMAGES_MAX = 4;
+// Extensions that mean "picture" for a path with no File behind it — a restored
+// Edit, and the kind guess a fresh attach makes before the upload answers.
+// Deliberately only the DRAWABLE formats: the upload endpoint has already
+// converted anything a browser shows as an empty box (a `.tif`, a `.heic`) by
+// the time a path is stored, so a stored path in one of those formats is the
+// original that nobody can draw — and the one worth drawing is the `-view.png`
+// beside it, which this list matches on its own.
+const DRAWABLE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp",
+                               ".avif", ".bmp", ".svg", ".ico"]);
+// The same answer from a MIME, for a clipboard paste whose File has no usable
+// filename at all (a pasted screenshot is `image/png` and nothing else).
+const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
+                                "image/webp", "image/avif", "image/bmp",
+                                "image/svg+xml"]);
+
+export function attachmentKindOf(path: string): "image" | "file" {
+  const dot = path.lastIndexOf(".");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const ext = dot > slash ? path.slice(dot).toLowerCase() : "";
+  return DRAWABLE_EXTS.has(ext) ? "image" : "file";
+}
+
+// An EDIT's chips, restored from the entry the form opened on.
+//
+// `attachments` first, `images` second, and the difference is what the user
+// sees: the richer field carries the filename they chose and the kind the
+// browser settled at attach time, where a bare path yields a minted timestamp
+// (`20260828-101500-a1b2c3d4.pdf`) and a kind guessed from an extension the
+// upload endpoint may have changed. The fallback stays because an entry stored
+// before D619 has only paths — and it is the same guess the server makes for
+// one (`schedule._derived_attachment`).
+export function restoredAttachments(
+  editing?: Pick<ScheduledMessage, "images" | "attachments"> | null,
+): TaskImage[] {
+  const rich = editing?.attachments ?? [];
+  if (rich.length) {
+    return rich.map((a, i) => ({
+      key: i,
+      path: a.path,
+      kind: a.kind === "image" ? "image" : "file",
+      name: a.name || a.path.split("/").pop() || a.path,
+      thumb: null,
+    }));
+  }
+  return (editing?.images ?? []).map((p, i) => ({
+    key: i,
+    path: p,
+    kind: attachmentKindOf(p),
+    name: p.split("/").pop() || p,
+    thumb: null,
+  }));
+}
+
+// The chat's own two functions, ported (D616 / template.html paneOfferable +
+// paneSrcFor): stat's entries minus the `conditional` ones — their verdict lives
+// behind /api/fs/conditions and is deliberately NOT fetched, so an unresolved
+// gate reads as "not offered" — and minus the chat mode itself; the first one
+// wins, and it is the shell's own default-template rule. A per-extension table
+// here would drift from the registry on the next rebinding and ignore a user's
+// override entirely (§16).
+//
+// /render and NOT /embed: /embed serves the React shell, which nests the file
+// one iframe deeper — an extra document, an extra boot, and a chrome bar around
+// a preview that has a caption of its own here.
+//
+// `thumbUrl` puts the two display-only stamps on: `_preview=1` (this is a
+// picture of a page, not an open the recents list should record) and
+// `_nofocus=1` (the framed page may not steal the keyboard or yank scroll — the
+// viewer is modal and Escape has to keep belonging to it).
+//
+// null is the ORDINARY answer, not an error: a file with no template, a path
+// the pruner has deleted, a server that declined. The dialog then says the name
+// and the path, which is what it said before a preview existed.
+const PREVIEW_SKIP_MODES = new Set(["claude"]);
+
+export function taskPreviewSrcFor(stat: StatResult | null, path: string): string | null {
+  if (!stat || stat.is_dir || !path) return null;
+  const t = (stat.templates || []).find(
+    (e) => !e.conditional && !PREVIEW_SKIP_MODES.has(e.mode));
+  if (!t) return null;
+  // `_render` is a shell sentinel (PT-12), not a template folder: it means "the
+  // file renders itself", which is a bare /render on the file.
+  if (t.mode === "_render") return thumbUrl("/render?path=" + encodeURIComponent(path));
+  if (!t.path) return null;
+  return thumbUrl("/render?path=" + encodeURIComponent(t.path)
+    + "&_file=" + encodeURIComponent(path)
+    + (stat.remote ? "&_remote=1" : ""));
+}
 
 export function buildSchedulePayload(form: {
   target: string;
@@ -1885,6 +2009,13 @@ export function buildSchedulePayload(form: {
   // Uploaded task-shot paths, in attach order. Omitted from the wire when
   // empty, like every other optional here.
   images?: string[];
+  // The SAME uploads with the two facts a path loses — the user's filename and
+  // the kind the browser settled — in the same order. Sent beside `images`
+  // rather than instead of it (D619): the fired run writes the chat's own
+  // `<pane-shot>` block from these, so the task's turn shows receipt rows
+  // (📄 name, a thumbnail) instead of a list of temp paths, and every reader
+  // that only knows `images` keeps working.
+  attachments?: TaskAttachment[];
 }): SchedulePayload {
   const repeating = form.rule !== null || form.repeat === "cron";
   const trimmedTitle = form.title.trim();
@@ -1948,6 +2079,8 @@ export function buildSchedulePayload(form: {
     // same reason `title` is.
     ...(form.replacesEntryId ? { replaces: form.replacesEntryId } : {}),
     ...(form.images && form.images.length ? { images: form.images } : {}),
+    ...(form.attachments && form.attachments.length
+      ? { attachments: form.attachments } : {}),
   };
 }
 
@@ -2129,13 +2262,13 @@ export default function NewJobModal({
   // with it, so the split has to be taken once rather than per reader.
   const draft = splitDraft(initialMessage);
   const [message, setMessage] = useState(initialAsk);
-  // The attached images (design: same affordance the claude template's chat
-  // has — paste, drop or pick, thumbnails with a remove ✕). An Edit opens on
-  // the entry's stored paths; a fresh attach shows its data URL immediately
-  // and swaps in the uploaded path when the POST answers.
+  // The attachments (design: the same functionality the claude template's chat
+  // has — paste or drop ANY file, a thumbnail or a doc glyph with a remove ✕ —
+  // in this card's own chrome). An Edit opens on the entry's stored paths, kind
+  // decided by extension since there is no File to ask; a fresh attach shows
+  // its chip immediately and swaps in the uploaded path when the POST answers.
   const [images, setImages] = useState<TaskImage[]>(() =>
-    (editing?.images ?? []).map((p, i) => ({ key: i, path: p, dataUrl: null })),
-  );
+    restoredAttachments(editing));
   // THE REF IS THE AUTHORITY, the state is its mirror for rendering — and that
   // asymmetry is load-bearing twice (Bugbot, PR #865). Save awaits the uploads
   // and then has to read the paths they wrote; a `setImages` updater only
@@ -2151,58 +2284,88 @@ export default function NewJobModal({
   }, []);
   // Keys for images attached in THIS session, clear of the edit-seeded 0..n.
   const imageKey = useRef(1000);
-  // Every in-flight ATTACHMENT — the read and the upload together, not just
-  // the upload — so Save can await the stragglers instead of silently
-  // scheduling a task with half its images. Each promise removes itself when
-  // it settles. Registering only the upload was a hole: it was added inside
-  // `FileReader.onload`, so a drop-then-Save could run while readers were
-  // still pending, find the set empty, await nothing, and drop every fresh
-  // attachment (Bugbot, PR #865).
+  // Every in-flight UPLOAD, so Save can await the stragglers instead of
+  // silently scheduling a task with half its attachments. Each promise removes
+  // itself when it settles, and each is registered SYNCHRONOUSLY with the chip
+  // it belongs to — a drop-then-immediate-Save has to find it there (Bugbot,
+  // PR #865). There is no read to cover any more: the upload is multipart, so
+  // the File goes straight into a FormData and the only thing the chip needed a
+  // FileReader for (a data-URL thumbnail) is a `blob:` URL now.
   const pendingRef = useRef<Set<Promise<void>>>(new Set());
-  const fileRef = useRef<HTMLInputElement | null>(null);
-  const attachImages = useCallback((files: FileList | File[] | null) => {
-    const picked = [...(files ?? [])].filter((f) => f.type.startsWith("image/"));
+  const attachFiles = useCallback((files: FileList | File[] | null) => {
+    const picked = [...(files ?? [])];
     if (!picked.length) return;
     picked.forEach((file) => {
       const key = imageKey.current++;
-      // Registered SYNCHRONOUSLY, before the read even starts, and covering
-      // read-then-upload as one unit — that is what makes Save's await
-      // meaningful for a file dropped an instant earlier.
-      const pending: Promise<void> = new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onerror = () => reject(fr.error ?? new Error("could not read the image"));
-        fr.onload = () => resolve(String(fr.result || ""));
-        fr.readAsDataURL(file);
-      })
-        .then((dataUrl) => {
-          if (!dataUrl.startsWith("data:image/")) return;
-          // The cap is answered against the REF, synchronously, and BEFORE the
-          // POST: files that lose the race used to upload anyway, writing
-          // orphan bytes into a directory with no TTL and leaving Save
-          // something to await that no chip would ever show.
-          if (imagesRef.current.length >= IMAGES_MAX) return;
-          applyImages((prev) => [...prev, { key, path: "", dataUrl }]);
-          return uploadTaskShot(dataUrl).then(({ path }) =>
-            applyImages((prev) => prev.map((i) => (i.key === key ? { ...i, path } : i))),
-          );
-        })
+      // The chip's kind is a GUESS until the upload answers, and the guess is
+      // only "can this engine draw it": a `.tif` and a `.heic` are pictures the
+      // browser renders as an empty box, so they wear the glyph until the
+      // server's PNG comes back and `kind` arrives with a path that can be
+      // drawn. MIME first (a pasted screenshot has no filename), extension
+      // second (a drop off a NAS often has no type).
+      const drawable = DRAWABLE_MIMES.has(file.type)
+        || (!!file.name && attachmentKindOf(file.name) === "image");
+      // `blob:` rather than a FileReader's data URL: no read to await before
+      // the chip appears and no 33% base64 string held in memory, which is what
+      // makes a 40 MB drop cost nothing on the card.
+      const thumb = drawable ? URL.createObjectURL(file) : null;
+      applyImages((prev) => [...prev, {
+        key,
+        path: "",
+        kind: drawable ? "image" : "file",
+        name: file.name || "attachment",
+        thumb,
+      }]);
+      const pending: Promise<void> = uploadTaskShot(file)
+        .then((up) => applyImages((prev) => prev.map(
+          (i) => (i.key === key ? { ...i, path: up.path, kind: up.kind } : i))))
         .catch((e) => {
-          // A failed read or upload takes its thumbnail with it — a picture on
-          // the card that would not reach the task is the lie to avoid.
+          // A failed upload takes its chip with it — an attachment on the card
+          // that would not reach the task is the lie to avoid.
+          if (thumb) URL.revokeObjectURL(thumb);
           applyImages((prev) => prev.filter((i) => i.key !== key));
-          setError((e as Error).message || "image upload failed");
+          setError((e as Error).message || "attachment upload failed");
         })
         .finally(() => pendingRef.current.delete(pending));
       pendingRef.current.add(pending);
     });
   }, [applyImages]);
 
-  // The open image, if any — the claude template's #shotview, ported: a chip's
-  // 22px thumbnail proves a picture EXISTS, it cannot show what is in it, so
-  // clicking it opens a fitted viewer and a second click swaps to natural size
-  // (the zoom class) with the box scrolling.
+  // The open attachment, if any — the claude template's #shotview, ported: a
+  // chip proves a thing EXISTS, it cannot show what is in it, so clicking it
+  // opens a viewer. A PICTURE opens fitted and a second click swaps to natural
+  // size (the zoom class) with the box scrolling; a FILE opens in its own
+  // fused-render template, which is the only answer to "is this the right file"
+  // that a name cannot give (D616).
   const [viewer, setViewer] = useState<TaskImage | null>(null);
   const [viewerZoom, setViewerZoom] = useState(false);
+  // A file's preview: the src once the stat has answered, null for every "no
+  // preview" case (no template, a pruned copy, a declining server, an upload
+  // still in flight) — and `frameLoaded` because the promise the line makes is
+  // about the PAGE, not about the URL: the caption says "loading preview…"
+  // until the frame itself fires `load`.
+  const [previewSrc, setPreviewSrc] = useState<string | null>(null);
+  const [previewWait, setPreviewWait] = useState(false);
+  const [frameLoaded, setFrameLoaded] = useState(false);
+  const closeViewer = useCallback(() => setViewer(null), []);
+  useEffect(() => {
+    setPreviewSrc(null);
+    setFrameLoaded(false);
+    if (!viewer || viewer.kind !== "file" || !viewer.path) {
+      setPreviewWait(false);
+      return;
+    }
+    // Identity, not a path compare: the user may close this or open another
+    // attachment in the seconds the stat takes, and a late answer must not
+    // frame the previous file. The cleanup runs on both.
+    let live = true;
+    setPreviewWait(true);
+    statPath(viewer.path)
+      .then((st) => { if (live) setPreviewSrc(taskPreviewSrcFor(st, viewer.path)); })
+      .catch(() => { if (live) setPreviewSrc(null); })
+      .finally(() => { if (live) setPreviewWait(false); });
+    return () => { live = false; };
+  }, [viewer]);
 
   // Escape closes the VIEWER while it is up — captured at the document so the
   // modal chassis' own Escape (which would close the whole card) never sees it.
@@ -2218,21 +2381,23 @@ export default function NewJobModal({
     return () => document.removeEventListener("keydown", onKey, { capture: true });
   }, [viewer]);
 
-  // ONE paste handler for both text fields: a screenshot pasted on the title is
-  // as deliberate as one pasted on the description, and only a FILE paste is
-  // intercepted — ordinary text pastes stay exactly what they were.
-  const pasteImages = useCallback(
+  // ONE paste handler for both text fields: a file pasted on the title is as
+  // deliberate as one pasted on the description, and only a FILE paste is
+  // intercepted — ordinary text pastes stay exactly what they were. ANY file
+  // kind, not only an image: the type gate is gone (D618), and a clipboard
+  // holding a `.csv` is the same gesture as one holding a screenshot.
+  const pasteFiles = useCallback(
     (e: React.ClipboardEvent) => {
       const files = [...e.clipboardData.items]
         .filter((i) => i.kind === "file")
         .map((i) => i.getAsFile())
-        .filter((f): f is File => !!f && f.type.startsWith("image/"));
+        .filter((f): f is File => !!f);
       if (files.length) {
         e.preventDefault();
-        attachImages(files);
+        attachFiles(files);
       }
     },
-    [attachImages],
+    [attachFiles],
   );
 
   // The FIRST field on the card, and REQUIRED (Akshil, 2026-08-17).
@@ -2845,7 +3010,7 @@ export default function NewJobModal({
     try {
       // A drop the instant before Save must still make the task: wait out the
       // in-flight uploads, then read the paths off state. Failures already
-      // removed themselves (attachImages' catch), so what remains is real.
+      // removed themselves (attachFiles' catch), so what remains is real.
       await Promise.all([...pendingRef.current]);
       // One pure function builds the whole body, so what actually goes on the
       // wire can be asserted without a DOM (new-task-form.test.ts). A rule
@@ -2879,6 +3044,12 @@ export default function NewJobModal({
           // is a plan or a thing to run. See `timePicked`.
           timePicked,
           images: imagesRef.current.map((i) => i.path).filter(Boolean),
+          // Same list, same order, the names and kinds kept. Filtered on `path`
+          // like `images` above, so an upload that never answered is left out
+          // of BOTH fields rather than described in one of them.
+          attachments: imagesRef.current
+            .filter((i) => i.path)
+            .map((i) => ({ path: i.path, name: i.name, kind: i.kind })),
         }),
       );
       rememberRecent(target);
@@ -3105,7 +3276,7 @@ export default function NewJobModal({
           onDrop={(e) => {
             if (e.dataTransfer.files?.length) {
               e.preventDefault();
-              attachImages(e.dataTransfer.files);
+              attachFiles(e.dataTransfer.files);
             }
           }}
         >
@@ -3115,7 +3286,7 @@ export default function NewJobModal({
             className="new-task-field new-task-title"
             aria-label="What should Claude do?"
             aria-required="true"
-            onPaste={pasteImages}
+            onPaste={pasteFiles}
             placeholder={TITLE_PLACEHOLDER}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
@@ -3162,20 +3333,22 @@ export default function NewJobModal({
             placeholder={ASK_PLACEHOLDER}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            onPaste={pasteImages}
+            onPaste={pasteFiles}
           />
 
-          {/* The attachments: thumbnails in attach order, each with its ✕, and
-              the picker chip while there is budget left (IMAGES_MAX). Hidden
-              entirely with nothing attached and no room implied — the row only
-              exists once the first image lands or via the chip itself, which
-              is the quiet entry point for a user who won't drag. */}
           {/* The attachments, minimal on purpose (Akshil, 2026-08-26: "just
               the image and the x icon on it"): a bare thumbnail that OPENS the
               viewer — a receipt this small proves a picture exists, it cannot
-              show what is in it — and an ✕ riding its corner. The card has no
-              room for the claude template's full pill; what it keeps from the
-              template is the affordance, not the chrome. */}
+              show what is in it — and an ✕ riding its corner. A NON-PICTURE
+              gets the same footprint with the doc glyph and a short filename in
+              place of the picture (thumbnail XOR glyph, D613), because a file is
+              the one attachment that cannot show what it is.
+
+              NO ＋ PICKER (D618): the row is chips and nothing else. The entry
+              points are paste on either field and drop anywhere on the card,
+              which is the gesture every user of this card actually makes; a
+              dashed square standing permanently in the row was chrome for the
+              one who does neither. */}
           <div className="new-task-images">
             {images.map((img) => (
               <div
@@ -3184,63 +3357,52 @@ export default function NewJobModal({
               >
                 <button
                   type="button"
-                  className="nt-img-open"
-                  aria-label="View image"
+                  className={"nt-img-open" + (img.kind === "file" ? " nt-img-doc" : "")}
+                  aria-label={img.kind === "image"
+                    ? "View image" : "Preview " + img.name}
                   onClick={() => {
                     setViewer(img);
                     setViewerZoom(false);
                   }}
                 >
-                  <img src={img.dataUrl ?? rawUrl(img.path)} alt="" />
+                  {img.kind === "image" && (img.thumb || img.path) ? (
+                    <img src={img.thumb ?? rawUrl(img.path)} alt="" />
+                  ) : (
+                    <>
+                      <span className="nt-img-glyph" aria-hidden="true">📄</span>
+                      <span className="nt-img-name">{img.name}</span>
+                    </>
+                  )}
                 </button>
                 <button
                   type="button"
                   className="nt-img-x"
-                  aria-label="Remove image"
+                  aria-label="Remove attachment"
                   onClick={() => {
+                    if (img.thumb) URL.revokeObjectURL(img.thumb);
                     applyImages((prev) => prev.filter((i) => i.key !== img.key));
                     setViewer((v) => (v?.key === img.key ? null : v));
                   }}
                 >
-                  ✕
+                  {ICON_X}
                 </button>
               </div>
             ))}
-            {images.length < IMAGES_MAX && (
-              <button
-                type="button"
-                className="nt-img-add"
-                aria-label="Add image"
-                onClick={() => fileRef.current?.click()}
-              >
-                {ICON_PLUS}
-              </button>
-            )}
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(e) => {
-                attachImages(e.target.files);
-                e.target.value = "";
-              }}
-            />
           </div>
 
           {/* The viewer (#shotview, ported): modal on purpose — the one thing
-              the user is doing here is looking at one picture. Fitted first;
-              clicking the image swaps to natural size and the box scrolls,
-              which is the only way a card-sized column shows a wide screenshot
-              at a legible scale. Scrim click and Escape both close it. */}
-          {viewer && (
+              the user is doing here is looking at one attachment. A PICTURE is
+              fitted first; clicking the image swaps to natural size and the box
+              scrolls, which is the only way a card-sized column shows a wide
+              screenshot at a legible scale. Scrim click and Escape both close
+              it. */}
+          {viewer && viewer.kind === "image" && (
             <div className="nt-shotview" role="dialog" aria-label="Attached image">
-              <div className="nt-shotview-scrim" onClick={() => setViewer(null)} />
+              <div className="nt-shotview-scrim" onClick={closeViewer} />
               <figure className={"nt-shotview-box" + (viewerZoom ? " zoom" : "")}>
                 <img
                   className="nt-shotview-img"
-                  src={viewer.dataUrl ?? rawUrl(viewer.path)}
+                  src={viewer.thumb ?? rawUrl(viewer.path)}
                   alt="attached image"
                   onClick={() => setViewerZoom((z) => !z)}
                 />
@@ -3252,7 +3414,57 @@ export default function NewJobModal({
                   <button
                     type="button"
                     className="nt-chip-x"
-                    onClick={() => setViewer(null)}
+                    onClick={closeViewer}
+                  >
+                    Close
+                  </button>
+                </figcaption>
+              </figure>
+            </div>
+          )}
+
+          {/* A FILE's viewer: the file in its OWN fused-render template, sealed
+              (D616). A name and a path answer "which file is this" and do not
+              answer "is this the RIGHT file", which is the question a viewer
+              exists for — and fused-render already owns a table for a .csv, a
+              schema for a .parquet, a page for a .md.
+
+              The frame is UNMOUNTED by this very conditional on every exit —
+              Close, Escape and the scrim all clear `viewer` — and that is the
+              load-bearing half rather than a tidy-up: a template is a RUNNING
+              document (a warm python worker behind it, a poll, possibly a map
+              redrawing), so one left mounted behind a shut modal goes on costing
+              all of it. */}
+          {viewer && viewer.kind === "file" && (
+            <div className="nt-shotview" role="dialog" aria-label="Attached file">
+              <div className="nt-shotview-scrim" onClick={closeViewer} />
+              <figure className="nt-shotview-box nt-shotview-doc">
+                {previewSrc && (
+                  <iframe
+                    className="nt-shotview-frame"
+                    {...THUMB_SEAL}
+                    src={previewSrc}
+                    title=""
+                    tabIndex={-1}
+                    aria-hidden="true"
+                    onLoad={() => setFrameLoaded(true)}
+                  />
+                )}
+                {(previewWait || (!!previewSrc && !frameLoaded)) && (
+                  <p className="nt-shotview-load">loading preview…</p>
+                )}
+                <figcaption className="nt-shotview-bar">
+                  <span className="nt-shotview-name">
+                    <span aria-hidden="true">📄</span> {viewer.name}
+                  </span>
+                  <span className="nt-shotview-path">
+                    {viewer.path || "uploading…"}
+                  </span>
+                  <span className="nt-shotview-spacer" />
+                  <button
+                    type="button"
+                    className="nt-chip-x"
+                    onClick={closeViewer}
                   >
                     Close
                   </button>

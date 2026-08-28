@@ -377,11 +377,20 @@
   margin-right: 0;
 }
 
-/* ---- Attached images (NewJobModal) ---------------------------------------- */
+/* ---- Attachments (NewJobModal) -------------------------------------------- */
+/* Every <button> rule below is spelled `.deploy-body button.<cls>`: fields.css
+   paints `.deploy-body button` (padding 5px 12px, a border, a fill, radius 6)
+   onto any button in a modal body at (0,1,1), and a bare `.nt-img-x` at (0,1,0)
+   lost to it — the ✕ came out as a padded pill hanging off the thumbnail's
+   corner (Akshil, 2026-08-28: "the cross should be a circle in top right and
+   smaller"). Winning on specificity, not import order. */
 /* Minimal on purpose (Akshil, 2026-08-26): a bare thumbnail with an ✕ riding
    its corner — no pill, no label. The thumbnail is a real <button> that opens
    the viewer below; at this size it proves a picture exists and cannot show
-   what is in it, so the zoom-in cursor and hover ring are load-bearing. */
+   what is in it, so the zoom-in cursor and hover ring are load-bearing.
+   A NON-PICTURE (D618) takes the identical footprint — same height, same
+   border, same ✕ — with the doc glyph and a clipped filename where the picture
+   would be: it is the one attachment that cannot show what it is. */
 .new-task-images {
   display: flex;
   flex-wrap: wrap;
@@ -398,7 +407,7 @@
   display: inline-flex;
 }
 
-.nt-img-open {
+.deploy-body button.nt-img-open {
   display: block;
   padding: 0;
   background: none;
@@ -409,34 +418,39 @@
   cursor: zoom-in;
 }
 
-.nt-img-open img {
+.deploy-body button.nt-img-open img {
   display: block;
   height: 36px;
   max-width: 64px;
   object-fit: cover;
 }
 
-.nt-img-open:hover,
-.nt-img-open:focus-visible {
+.deploy-body button.nt-img-open:hover:not(:disabled),
+.deploy-body button.nt-img-open:focus-visible {
   border-color: var(--accent);
   outline: none;
 }
 
 /* An upload still in flight only dims; its ✕ works the whole time, because
    removing it is exactly the escape a wrong drop wants. */
-.nt-img-up .nt-img-open img {
+.nt-img-up button.nt-img-open img {
   opacity: 0.55;
 }
 
 /* The ✕, INSIDE the thumbnail's corner on its own scrim plate so it reads
    against any pixels underneath — never floating half off the image, which is
    what read as broken in the first cut. */
-.nt-img-x {
+.deploy-body button.nt-img-x {
   position: absolute;
-  top: 2px;
-  right: 2px;
+  /* 3px, not 2: the thumbnail's corner is a 6px radius, and a 14px circle at
+     2px pokes past the curve on both sides. At 3px it sits inside it. */
+  top: 3px;
+  right: 3px;
   width: 14px;
   height: 14px;
+  min-width: 0;
+  min-height: 0;
+  align-self: auto;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -450,31 +464,101 @@
   cursor: pointer;
 }
 
-.nt-img-x:hover {
+.deploy-body button.nt-img-x svg {
+  display: block;
+  flex: none;
+}
+
+.deploy-body button.nt-img-x:hover:not(:disabled) {
   background: var(--scrim-bg-hover);
 }
 
-/* The picker: a quiet dashed square the same height as the thumbs — the entry
-   point for a user who won't drag or paste. */
-.nt-img-add {
+/* A FILE chip is a PILL, not a thumbnail box: glyph · name · ✕ in one row, the
+   ✕ in flow rather than overlaid — a name has no corner for a scrim plate to sit
+   on without covering its last letters (Akshil, 2026-08-28: "this ui doesn't
+   look good" — the ✕ was over the "df" of Profile.pdf). The pill wears the
+   thumbnail's border so the two kinds still read as one row; the inner button
+   drops its own. */
+.nt-img:has(.nt-img-doc) {
+  align-items: center;
+  /* The thumbnail's 36px + its 1px borders, so a pill and a picture in the same
+     row share one top and one bottom edge. */
+  height: 38px;
+  box-sizing: border-box;
+  padding-right: 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.nt-img:has(.nt-img-doc):hover,
+.nt-img:has(.nt-img-doc):focus-within {
+  border-color: var(--accent);
+}
+
+.deploy-body button.nt-img-doc {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 36px;
+  gap: 6px;
   height: 36px;
-  padding: 0;
-  color: var(--fg-muted);
+  box-sizing: border-box;
+  padding: 0 4px 0 8px;
+  border: 0;
+  border-radius: 0;
   background: none;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
+  align-self: auto;
+  line-height: 1;
+  font-size: 12px;
+  color: var(--fg-muted);
   cursor: pointer;
 }
 
-.nt-img-add:hover,
-.nt-img-add:focus-visible {
-  color: var(--fg);
-  border-color: var(--fg-muted);
+.deploy-body button.nt-img-doc:hover:not(:disabled),
+.deploy-body button.nt-img-doc:focus-visible {
+  border-color: transparent;
+  background: none;
   outline: none;
+}
+
+.nt-img-glyph {
+  font-size: 13px;
+  line-height: 1;
+}
+
+/* ~18ch and then an ellipsis: a filename is recognised by its head, and a chip
+   that grew with the name would push the row into a second line for one drop. */
+.nt-img-name {
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The pill's ✕ sits in the row, plain until hovered — no scrim plate, there are
+   no pixels to read against. */
+.deploy-body .nt-img:has(.nt-img-doc) button.nt-img-x {
+  position: static;
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+}
+
+.deploy-body .nt-img:has(.nt-img-doc) button.nt-img-x svg {
+  width: 9px;
+  height: 9px;
+}
+
+.deploy-body .nt-img:has(.nt-img-doc) button.nt-img-x:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--ctl-quiet-bg-hover);
+}
+
+/* An upload still in flight dims the doc chip exactly as it dims a thumbnail. */
+.nt-img-up .nt-img-doc {
+  opacity: 0.55;
 }
 
 /* ---- the image viewer (template.html #shotview, ported) -------------------- */
@@ -571,4 +655,45 @@
   text-align: left;
   min-width: 0;
   font-size: 11px;
+}
+
+/* ---- a file's own preview, framed (D616) ---------------------------------- */
+/* The template renders the file itself, so the box gives it a real viewport
+   rather than fitting it: a data grid at thumbnail scale is unreadable, which is
+   the whole reason the viewer opens. Bounded by the box's own max-height, so a
+   short window shrinks it instead of pushing Close off screen. */
+.nt-shotview-doc {
+  width: min(880px, 100%);
+}
+
+.nt-shotview-frame {
+  display: block;
+  width: 100%;
+  height: min(70vh, 620px);
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+/* Stands until the frame's own `load` — the promise the line makes is about the
+   PAGE, not the URL. It is the only thing in the box while the stat is in
+   flight, which is what keeps the dialog from opening onto an empty rectangle. */
+.nt-shotview-load {
+  margin: 0;
+  padding: 24px 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+/* The file's own name, ahead of the path: the path is a minted timestamp and
+   this is the half the user recognises. */
+.nt-shotview-name {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
 }

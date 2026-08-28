@@ -220,11 +220,25 @@ try {
 await new Promise((r) => setTimeout(r, 60));
 await new Promise((r) => setTimeout(r, 60));
 
+// A `title`/`aria-label` never shows up in `textContent` — a button's
+// TOOLTIP and its confirm-dialog question live there, not in the visible
+// label — so a test that needs to pin what those actually SAY (not just
+// that the button exists) needs the attributes too. This is a minimal
+// attribute-aware serialization of the view, bounded like `viewText` is.
+function serialize(node) {
+  if (!node || node.tagName === undefined) return "";
+  const attrs = Object.entries(node.attrs || {})
+    .map(([k, v]) => ` ${k}="${v}"`).join("");
+  const kids = (node.children || []).map(serialize).join("");
+  return `<${node.tagName.toLowerCase()}${attrs}>${node._text || ""}${kids}</${node.tagName.toLowerCase()}>`;
+}
+
 const view = byId.view;
 process.stdout.write(JSON.stringify({
   painted: view.children.length > 0,
   viewChildren: view.children.length,
   viewText: view.textContent.slice(0, 400),
+  viewHTML: serialize(view).slice(0, 8000),
   skeletonHidden: byId.skeleton.hidden,
   error: fatal,
   unhandled,

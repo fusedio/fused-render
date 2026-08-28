@@ -17,14 +17,14 @@
 .app-page-head {
   flex: 0 0 auto;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   /* Same column as .app-page-body below, so the heading lines up with the
      tab strip and the frame instead of hugging the window edge. */
   width: min(1050px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 14px 0 0;
+  padding: 14px 0 10px;
 }
 
 .app-page-title {
@@ -32,7 +32,6 @@
   display: flex;
   align-items: baseline;
   gap: 12px;
-  padding-bottom: 10px;
 }
 
 .app-page-title h1 {
@@ -61,9 +60,12 @@
   text-decoration: underline;
 }
 
+/* "Open app" and "Deploy to Workbench" sit opposite the title, centred on
+   their line — so the deploy button takes the same box as its neighbour and
+   no margin of its own, or the pair would sit off each other. */
+.app-page-open,
 .app-page-deploy {
   flex: 0 0 auto;
-  margin-bottom: 8px;
 }
 
 .workbench-deploy-stack {
@@ -171,35 +173,6 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
-}
-
-/* Full-screen door in the frame's top-right corner: quiet until hovered,
-   over whatever the app draws there, so it must bring its own backdrop. */
-.app-page-fullscreen {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--bg);
-  color: var(--fg);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  transition: background 120ms, border-color 120ms;
-}
-
-.app-page-fullscreen:hover {
-  background: color-mix(in srgb, var(--fg) 8%, var(--bg));
-  border-color: var(--fg-muted);
-}
-
-.app-page-fullscreen svg {
-  width: 18px;
-  height: 18px;
 }
 
 /* The nested Tasks page brings its own 22px page padding and a 1050px column

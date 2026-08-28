@@ -68,6 +68,52 @@ def api_engine_forget(engine_id: str, payload: dict = Body(...),
     return {"ok": True}
 
 
+@router.get("/api/engines/running")
+def api_engines_running():
+    """Every live engine child — what the status bar's Engines section lists
+    (D591). NO `X-Fused` GUARD: this is a read-only, same-origin GET, the same
+    posture this module's docstring states for proxied GETs and the same as
+    `GET /api/apps/background/running`.
+
+    The work is `engine_host.running_engines()`, which owns the lock discipline
+    (snapshot under `_lock`, `Popen.poll()` outside it) — this router must not
+    touch `_children` or that lock itself.
+    """
+    return {"engines": engine_host.running_engines()}
+
+
+@router.post("/api/engines/{engine_id}/stop")
+def api_engine_stop(engine_id: str,
+                    x_fused: str | None = Header(default=None)):
+    """Stop one engine child. `X-Fused` guarded like its `ensure`/`reinit`/
+    `forget` siblings, since it reaches the child's executing side.
+
+    NOT A DESTRUCTIVE ROUTE, despite the name — stopping any of the three
+    kinds is safe and recoverable, which is why it is offered as a plain
+    button in the status bar:
+
+      * a `template` engine respawns on the next `ensure`;
+      * a warm `app` worker respawns on the next call to it, and is already
+        idle-reaped on a timer anyway (`APP_IDLE_RETIRE_S`);
+      * a `background` app daemon going down IS the documented "quit this app
+        right now" action (see `background_apps.py`'s own `/stop` docstring).
+
+    Deliberately NOT routed through `POST /api/apps/background/stop`: that
+    endpoint takes an `html` PAGE path and derives the folder with
+    `_folder_for` (a `dirname()`), so handing it a folder would resolve to the
+    folder's PARENT — and it only covers `kind="background"`, missing template
+    engines and app workers entirely.
+
+    `engine_host.stop` already does the whole teardown (kills the child, drops
+    the replay registry and the busy count) and is idempotent for an id that
+    is not running, so an unknown id is a no-op rather than an error.
+    """
+    if (error := _require_fused(x_fused)) is not None:
+        return error
+    engine_host.stop(engine_id)
+    return {"ok": True}
+
+
 @router.api_route(
     "/api/engines/{engine_id}/proxy/{path:path}",
     methods=["GET", "HEAD", "POST"],

@@ -74,10 +74,17 @@ def render(
     if _preview != "1" and not _referred_by_preview(referer):
         from fused_render.app_listing import text_has_fused_meta
         from fused_render.server.routers.apps import record_app_open
+        from fused_render import git_upstream
 
         try:
             if text_has_fused_meta(html):
-                record_app_open(os.path.dirname(os.path.abspath(path)))
+                app_dir = os.path.dirname(os.path.abspath(path))
+                record_app_open(app_dir)
+                # Throttled per repo root, off the request path (D301 is
+                # already "this app is being opened" exactly once — see
+                # git_upstream.py's module docstring for why this lives here
+                # rather than on /api/fs/list).
+                git_upstream.note_app_opened(app_dir)
         except Exception:
             logger.warning("recording app open failed for %s", path, exc_info=True)
 

@@ -342,14 +342,26 @@ def shots_dir() -> str:
         os.path.join(storage.home_dir(), "task-shots")).replace("\\", "/")
 
 
-#: Attachment bounds. A cap on COUNT because each image rides every run of a
-#: repeat into the model's context; the byte cap lives on the upload endpoint,
-#: which is the only writer.
-IMAGES_MAX = 4
+#: The claude page's wire tag for a message's attachments — a SECOND COPY of
+#: `PANE_SHOT_TAG` in fused_render/templates/claude/template.html, which is the
+#: canonical one. It cannot be imported in either direction (a template may not
+#: import fused_render, SPEC PY-15 / D166), and it is already spelled a third
+#: time in `tasks_store._MACHINERY_STRIP` and a fourth in `agent.py`'s. The
+#: parity test in tests/test_schedule_images.py reads the page's constant out of
+#: template.html and compares this one to it.
+_PANE_SHOT_TAG = "pane-shot"
 
 
 def _images(value) -> list[str]:
     """Validate a request's ``images`` into stored task-shot paths.
+
+    NO COUNT CAP and NO TYPE CHECK (D618). `IMAGES_MAX` (4) is gone, for the
+    reason D615 deleted the chat's byte cap: it protected nothing the shots
+    directory's own pruner did not already own, and it refused the gesture the
+    feature exists for — dropping the five files a task is about. The key is
+    still spelled ``images`` on the wire and in the store, because every entry
+    written before today spells it that way and a rename would be a migration
+    bought for a word; what it holds is any file the upload endpoint minted.
 
     Only paths under ``shots_dir()`` are accepted — the upload endpoint is the
     only thing that writes there, so this is what keeps the field from being a
@@ -360,20 +372,160 @@ def _images(value) -> list[str]:
         return []
     if not isinstance(value, list):
         raise ValueError("images: expected a list of attachment paths")
-    if len(value) > IMAGES_MAX:
-        raise ValueError(f"images: at most {IMAGES_MAX} images per task")
+    return [_shot_path(item, "images") for item in value]
+
+
+def _shot_path(value, field: str) -> str:
+    """One request-supplied attachment path, resolved into a shots_dir resident.
+
+    The containment rule, in ONE function, because two fields now carry the
+    same paths — ``images`` (the flat list every stored entry has always had)
+    and ``attachments`` (the same paths with the user's own filename and kind
+    beside them, see `_attachments`). Two copies of a containment check is two
+    chances to relax one of them."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field}: expected a list of attachment paths")
     root = os.path.realpath(shots_dir())
-    out: list[str] = []
+    real = os.path.realpath(os.path.expanduser(value.strip()))
+    if not real.startswith(root + os.sep):
+        raise ValueError(f"{field}: not a task attachment path")
+    if not os.path.isfile(real):
+        raise ValueError(f"{field}: attachment no longer exists")
+    return real.replace("\\", "/")
+
+
+#: What an attachment's `kind` may be. The claude page's own vocabulary minus
+#: the two kinds only a browser can produce: "pane" and "overview" are pictures
+#: of a screen somebody was looking at, and a scheduled run has no screen (see
+#: `_outgoing`). A task attachment is a picture the user brought in ("image") or
+#: a file that is not a picture at all ("file") — the same two the upload
+#: endpoint mints and the same two the New task card draws.
+_ATTACH_KINDS = ("image", "file")
+
+#: How long an attachment's display name may be. It is the filename the user
+#: recognises, shown on a chip and named in the prompt — not a place to put a
+#: paragraph, and the field arrives from a request body.
+_ATTACH_NAME_MAX = 255
+
+
+def _attachments(value, images: list[str]) -> list[dict]:
+    """Validate a request's ``attachments`` into stored ``{path, name, kind}``.
+
+    WHY THIS EXISTS ALONGSIDE ``images``: the fired run's message is the claude
+    page's own `<pane-shot>` block now (see `_attachments_block`), and that
+    block is read back by the chat to draw a RECEIPT ROW per attachment — a
+    thumbnail, or a 📄 and the file's name. A bare path cannot fill that row
+    honestly: the stored name is a minted timestamp (`a1b2c3d4.pdf`), and the
+    kind of a `.tif` that the upload endpoint transcoded is not the kind its
+    extension says. Both facts are known in the browser at attach time and
+    nowhere else, so they travel.
+
+    ``images`` DOES NOT GO AWAY, and neither field is required:
+
+      * both sent — what the New task card does — and each is validated on
+        its own, `create` storing both exactly as they arrived. They are not
+        cross-checked: both fields are already confined to `shots_dir()`, so a
+        client that disagreed with itself would only be describing its own
+        files oddly, and refusing the schedule over it would turn a cosmetic
+        mismatch into a lost task;
+      * only ``images`` (every client written before today, and every entry
+        already on disk) — the name is the path's basename and the kind is
+        guessed from its extension. A worse answer than the browser's, and the
+        only one available; it is exactly what the New task card's own Edit
+        path does with a stored path (`attachmentKindOf`);
+      * only ``attachments`` — ``images`` is derived from it, so `_send`, the
+        occurrence copy and every existing reader keep working unchanged.
+
+    Same containment as `_images` (`_shot_path`), because this field is the
+    other way a request names a file to put in a prompt."""
+    if value in (None, ""):
+        return [_derived_attachment(p) for p in images]
+    if not isinstance(value, list):
+        raise ValueError("attachments: expected a list of "
+                         "{path, name, kind} objects")
+    out: list[dict] = []
     for item in value:
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError("images: expected a list of attachment paths")
-        real = os.path.realpath(os.path.expanduser(item.strip()))
-        if not real.startswith(root + os.sep):
-            raise ValueError("images: not a task attachment path")
-        if not os.path.isfile(real):
-            raise ValueError("images: attachment no longer exists")
-        out.append(real.replace("\\", "/"))
+        if not isinstance(item, dict):
+            raise ValueError("attachments: expected a list of "
+                             "{path, name, kind} objects")
+        path = _shot_path(item.get("path"), "attachments")
+        kind = item.get("kind")
+        if kind not in _ATTACH_KINDS:
+            raise ValueError("attachments: kind must be one of "
+                             + ", ".join(_ATTACH_KINDS))
+        name = item.get("name")
+        if name is not None and not isinstance(name, str):
+            raise ValueError("attachments: name must be a string")
+        # BASENAME, and never the raw value: this name is only ever DISPLAYED,
+        # so a client that sent a path here must not have it read as one — and
+        # a newline in it would break the one-line-per-row reading of the block
+        # it lands in. An empty one falls back to the stored file's own name
+        # rather than refusing: a nameless chip is a small loss, a refused
+        # schedule is not.
+        name = os.path.basename((name or "").strip().replace("\\", "/"))
+        name = name.replace("\r", " ").replace("\n", " ").strip()
+        if len(name) > _ATTACH_NAME_MAX:
+            raise ValueError(
+                f"attachments: name is longer than {_ATTACH_NAME_MAX} characters")
+        out.append({"path": path, "name": name or os.path.basename(path),
+                    "kind": kind})
     return out
+
+
+def _stored_attachments(entry: dict) -> list[dict]:
+    """An ENTRY's attachments, read back — never re-validated.
+
+    `_attachments` is the request path and it refuses a file that has gone; a
+    stored entry has to survive one. A scheduled task can fire days after it
+    was written and its files can be moved out from under it, and a
+    materialization or a send that RAISED over that would take down the whole
+    tick — where the run itself only needs to be handed the path and let the
+    Read fail with something the user can read.
+
+    Also the migration: an entry written before the field existed has only
+    ``images``, and gets basename/extension answers (`_derived_attachment`)."""
+    stored = entry.get("attachments")
+    if isinstance(stored, list) and stored:
+        out: list[dict] = []
+        for item in stored:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "").strip()
+            if not path:
+                continue
+            kind = item.get("kind")
+            fallback = _derived_attachment(path)
+            out.append({
+                "path": path,
+                "name": str(item.get("name") or "").strip() or fallback["name"],
+                "kind": kind if kind in _ATTACH_KINDS else fallback["kind"],
+            })
+        if out:
+            return out
+    return [_derived_attachment(str(p)) for p in (entry.get("images") or [])
+            if isinstance(p, str) and p.strip()]
+
+
+def _derived_attachment(path: str) -> dict:
+    """One `{path, name, kind}` for a path that arrived WITHOUT one — a legacy
+    entry, or a client still sending only ``images``.
+
+    The extension is all there is to go on, and it is the same list the New
+    task card guesses from (`DRAWABLE_EXTS` in NewJobModal.tsx): only formats a
+    browser actually draws count as "image", because the receipt row this feeds
+    puts an `<img>` on a picture and a 📄 on everything else — and an `<img>`
+    pointed at a `.csv` is a broken-image glyph, which reads as a bug."""
+    ext = os.path.splitext(path)[1].lower()
+    return {"path": path, "name": os.path.basename(path),
+            "kind": "image" if ext in _DRAWABLE_EXTS else "file"}
+
+
+#: Mirror of `DRAWABLE_EXTS` in frontend/src/shell/NewJobModal.tsx — the formats
+#: a browser can draw. Duplicated rather than shared because one side is Python
+#: and the other TypeScript; a test pins the pair (D146: the duplicated rule
+#: gets a test, not a comment).
+_DRAWABLE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif",
+                            ".bmp", ".svg", ".ico"})
 
 
 def max_late_seconds() -> int | None:
@@ -666,7 +818,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
            permission_mode: str = "", repeats: str = "",
            rule: dict | None = None, title=None, description=None,
            new_task_each_run=None, session_learned=None,
-           immediate=None, images=None,
+           immediate=None, images=None, attachments=None,
            create_target: bool = False,
            model: str = "", effort: str = "") -> dict:
     """Validate and store one scheduled message; return the stored entry.
@@ -746,7 +898,15 @@ def create(target: str, message: str, due=None, session_id: str = "",
         raise ValueError("message: cannot be empty")
     if not isinstance(target, str) or not target.strip():
         raise ValueError("target: required")
+    # BOTH FIELDS, either one sufficient. `images` is the flat path list every
+    # entry on disk carries; `attachments` is the same paths with the filename
+    # and the kind the browser knew, which is what the fired run's `<pane-shot>`
+    # block needs to draw a receipt row rather than a raw path. Each is derived
+    # from the other when only one arrived — see `_attachments`.
     images = _images(images)
+    attachments = _attachments(attachments, images)
+    if not images:
+        images = [a["path"] for a in attachments]
     target = os.path.abspath(os.path.expanduser(target))
     # The new folder is only CHECKED here; it is made at the very bottom, right
     # before the entry is stored. Everything between this point and there can
@@ -859,6 +1019,14 @@ def create(target: str, message: str, due=None, session_id: str = "",
         # `_images` above. Stored on the entry (and copied onto every
         # occurrence) so the send path and an edit both read them off the row.
         "images": images,
+        # The same attachments, with the two facts a path does not carry: the
+        # NAME the user recognises (a stored path is a minted timestamp) and the
+        # KIND the browser settled (a `.tif` the upload endpoint transcoded is a
+        # picture whose extension says otherwise). Read by
+        # `_attachments_block` to write the claude page's own `<pane-shot>`
+        # block, which is what makes the fired turn render receipt rows in the
+        # chat instead of a list of paths (D619).
+        "attachments": attachments,
         # Threading, not scheduling: whether each run of a REPEAT opens its own
         # session. Stored on one-shots too (as False) so every entry has the
         # same shape and the form reads it back the same way — a one-shot has
@@ -1350,7 +1518,6 @@ def _outgoing(entry: dict) -> str:
     cwd says, so a block naming it would add nothing and claim a pane that
     never existed."""
     message = entry.get("message") or ""
-    target = entry.get("target") or ""
     # A message with no words is left exactly as it is. The block is a PREFIX
     # to something a human said, and prepending it to nothing would send a
     # send that is pure machinery — which every reader here strips back to ""
@@ -1358,31 +1525,123 @@ def _outgoing(entry: dict) -> str:
     # is a description of a file.
     if not message.strip():
         return message
+    state = _outgoing_state(entry)
+    return (state + "\n\n" + message) if state else message
+
+
+def _outgoing_state(entry: dict) -> str:
+    """The `<live-app-state>` block alone, or "" for a target that has none.
+
+    Split out of `_outgoing` for `_composed`, which has to put the attachments
+    block BETWEEN this one and the user's words — the claude page's own block
+    order (`composeOutgoing`), and the order every leading-block strip in the
+    system expects."""
+    target = entry.get("target") or ""
     if not target or os.path.isdir(target) or not os.path.isfile(target):
-        return message
+        return ""
     state = json.dumps({"entry": target, "scheduled": True})
     return ("<live-app-state>\n"
             "The file this task was scheduled against. No one is at the "
             "screen — this is a scheduled run, so there is no pane snapshot, "
             "no screenshot and no annotation, only the target itself.\n"
             f"{state}\n"
-            "</live-app-state>\n\n") + message
+            "</live-app-state>")
 
 
 def _attachments_block(entry: dict) -> str:
-    """The message tail naming a task's attached images, or "".
+    """The task's attachments as the claude page's own `<pane-shot>` block, or "".
 
-    Paths, not pixels: the spawned run pre-allows Read of ``shots_dir()``
-    (``_send`` passes it as an extra read dir), so the model opens the files
-    itself — the same shape the claude template uses for annotation crops, and
-    the reason a repeat can re-read its images on every run without the store
-    carrying megabytes of base64."""
-    images = [str(p) for p in (entry.get("images") or [])
-              if isinstance(p, str) and p.strip()]
-    if not images:
+    THE CHAT'S WIRE, NOT A SENTENCE OF OUR OWN (D619). This used to append a
+    plain-text tail — "Attached files (read them with the Read tool):" and the
+    paths, one per line — and it worked for the model and failed for the human:
+    opening the fired task's chat showed the user's turn ending in a list of
+    `/Users/…/task-shots/…pdf` temp paths, where the SAME chat renders its own
+    attachments as receipt rows (a thumbnail, or 📄 and the file's name, both
+    opening the viewer). Same files, two presentations, and the one the user
+    could not read was the one they never chose.
+
+    The block the chat writes is the block that renders. `template.html` reads
+    it back on restore (`paneShotIn` → `shotRestoreReceipt`) and every reader of
+    a transcript already strips it from a row title (`tasks_store`,
+    `agent.py::_strip_machinery`, `sessionTitle`), because `pane-shot` has been
+    in `_MACHINERY_STRIP` all along. Nothing new had to learn anything; the
+    scheduler just had to stop inventing a shape.
+
+    Paths, not pixels, exactly as before: the spawned run pre-allows Read of
+    ``shots_dir()`` (`_send` passes it as an extra read dir), so the model opens
+    the files itself and a repeat re-reads them on every run without the store
+    carrying megabytes of base64.
+
+    THE TAG AND THE PAYLOAD SHAPE ARE DUPLICATED, not imported: a template may
+    not import fused_render and fused_render may not import a template (SPEC
+    PY-15 / D166), so `_PANE_SHOT_TAG` is a second copy of the page's
+    `PANE_SHOT_TAG` and the entries are hand-written to the shape `paneShotIn`
+    parses. A parity test reads the page's constant out of template.html and
+    compares (D146: the duplicated rule gets a test, not a comment).
+
+    What the payload leaves out, and why that is safe: `viewNote` is "" (there
+    is nothing this picture fails to show — nobody cropped it), and there is no
+    `size` (the browser drew every picture it kept, or the upload endpoint
+    transcoded it). `paneShotIn` reads whatever parses and every consumer treats
+    a missing field as absent, so an entry is exactly `{kind, view, name,
+    viewNote}` rather than a row of nulls."""
+    shots = [a for a in _stored_attachments(entry) if a.get("path")]
+    if not shots:
         return ""
-    return ("\n\nAttached images (read them with the Read tool):\n"
-            + "\n".join(images))
+    # WHAT they are, in one word, before the per-kind paragraph — the same
+    # three-way choice `paneShotBlock` makes, and for its reason: a list that is
+    # nothing but files must not be announced as pictures, and a mixed one has
+    # no honest singular noun at all.
+    files = sum(1 for a in shots if a["kind"] == "file")
+    if files == len(shots):
+        noun = "a file" if len(shots) == 1 else "files"
+    elif files:
+        noun = "attachments"
+    else:
+        noun = "a picture" if len(shots) == 1 else "pictures"
+    what = noun if len(shots) == 1 and noun.startswith("a ") \
+        else f"{len(shots)} {noun}"
+    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
+                           "name": a["name"], "viewNote": ""} for a in shots])
+    # The chat's own two kind sentences, minus the two kinds a scheduled run
+    # cannot have: "pane" and "overview" are pictures of a screen taken at send
+    # time, and there was no screen (`_outgoing` says so in the block above
+    # this one). Saying WHEN they were attached instead: the user chose these
+    # files when they wrote the task, which may have been days ago, and a model
+    # told "to this message, deliberately" would be reading a claim about a
+    # conversation that never happened.
+    return (f"<{_PANE_SHOT_TAG}>\n"
+            f"The user attached {what} to this task when they scheduled it — "
+            "not to a conversation, and nobody is at the screen for this run. "
+            "Each entry's `view` is a path to read and `name` is what they "
+            "called it. `kind` says what you are looking at: \"image\" is a "
+            "picture the user brought in from somewhere else, so it is NOT a "
+            "picture of this app; \"file\" is a file that is not a picture at "
+            "all — read it as text, and say so plainly rather than guessing if "
+            "it is a binary format (xlsx, zip, a PDF) that will not parse.\n"
+            f"{payload}\n"
+            f"</{_PANE_SHOT_TAG}>")
+
+
+def _composed(entry: dict) -> str:
+    """Everything the scheduler prepends to the user's words, in the claude
+    page's own reading order — state block, attachments block, message.
+
+    The inverse of `composeOutgoing` in template.html, and the order is that
+    function's: the machinery first, the words last. It matters for more than
+    tidiness — `tasks_store`'s and `agent.py`'s strips only peel a LEADING
+    block, so a block wedged after the message would be read as something the
+    user typed and would title the row with itself.
+
+    Kept out of `_outgoing`, which stays exactly what it was: one block, about
+    the target, testable on its own."""
+    parts = [p for p in (_outgoing_state(entry), _attachments_block(entry)) if p]
+    message = entry.get("message") or ""
+    if not message.strip():
+        # A send that is pure machinery — see `_outgoing`. The blocks are a
+        # PREFIX to something a human said, and there is nothing to prefix.
+        return message
+    return "\n\n".join(parts + [message])
 
 
 def _send(entry: dict) -> None:
@@ -1398,9 +1657,10 @@ def _send(entry: dict) -> None:
         # the second is the load-bearing one: a directory rule on a run with
         # nothing to read there is standing permission for no reason, and every
         # send without images keeps the exact call shape it has always had.
-        attachments = {"extra_read_dirs": [shots_dir()]} if entry.get("images") else {}
+        attachments = ({"extra_read_dirs": [shots_dir()]}
+                       if _stored_attachments(entry) else {})
         res = claude_spawn.spawn_helper(
-            entry["target"], _outgoing(entry) + _attachments_block(entry),
+            entry["target"], _composed(entry),
             entry.get("permission_mode")
             or _SCHEDULED_PERMISSION_MODE, entry.get("session_id") or "",
             model=str(entry.get("model") or ""),
@@ -2150,6 +2410,11 @@ def _materialize(now: datetime) -> None:
                 # The attachments travel with every run for the same reason the
                 # words above do: an occurrence IS that template's run.
                 "images": list(entry.get("images") or []),
+                # …and their names/kinds with them, so the occurrence's own
+                # `<pane-shot>` block reads like the template's would. Derived
+                # for a template stored before this field existed, which is the
+                # same fallback `_attachments` takes on the wire.
+                "attachments": _stored_attachments(entry),
                 # Carried so an occurrence reads the same shape as any other
                 # entry. It is the TEMPLATE's answer that decided the session id
                 # above; copying it keeps the record of which way that went.

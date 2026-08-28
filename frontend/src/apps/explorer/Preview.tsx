@@ -45,7 +45,6 @@ import { setClipboard } from "@apps/explorer/lib/fs-clipboard";
 import { recordFsOp } from "@apps/explorer/lib/fs-undo";
 import { dismissToast, pushToast } from "@platform/lib/toast";
 import { syncRegistryToast, troubleReport } from "@platform/lib/trouble";
-import { runCommunity, touchCommunityApp, communityCacheSlug } from "@platform/lib/community";
 import { templateModeIcon, modeTitle, KNOWN_SENTINEL_MODES } from "@apps/explorer/ModeSwitcher";
 import {
   isModePending,
@@ -57,6 +56,11 @@ import {
 } from "@platform/lib/mode-visibility";
 import { useDirMode } from "@apps/explorer/lib/dir-mode";
 import { takeClaudeAsk, claudeEntryReady, resolveClaudeAskRoute } from "@apps/explorer/lib/claude-ask";
+import {
+  pendingClaudeAskVersion,
+  subscribePendingClaudeAsk,
+  takePendingClaudeAsk,
+} from "@apps/explorer/lib/pending-claude-ask";
 import {
   sideSplit,
   parseSide,
@@ -153,46 +157,6 @@ function TopbarActions({ children }: { children: ReactNode }) {
 // renders the box: same arrangement as TopbarActions above, other way round.
 function usePreviewSideSlot(): HTMLElement | null {
   return useSyncExternalStore(subscribePreviewSideSlot, previewSideSlot, () => null);
-}
-
-// "Clone" in the preview header of a showcase app: copy the app (current
-// state, edits included) into the workspace (Fused/local/<slug>, community.py's
-// `install`) and navigate to the cloned copy — the same open convention the
-// /apps community grid uses. The showcase tree itself is fully editable; the
-// clone is how you keep a copy that catalog refreshes never touch.
-function CloneCommunityButton({ slug }: { slug: string }) {
-  const [busy, setBusy] = useState(false);
-  const doClone = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const r = await runCommunity<{ status?: string; message?: string; path?: string }>({
-        action: "install",
-        slug,
-      });
-      // `already-installed` also carries the path — an app cloned elsewhere
-      // still opens the user's copy rather than erroring.
-      if (!r.path) throw new Error(r.message || "clone failed");
-      touchCommunityApp(slug);
-      navigate(r.path, { isDir: true });
-    } catch (e) {
-      pushToast({ msg: (e as Error).message || "clone failed", tone: "error" });
-      setBusy(false);
-    }
-    // Success navigates away and unmounts this button; no busy reset needed.
-  };
-  return (
-    <button
-      type="button"
-      className="bar-ctl bar-ctl-bordered"
-      title={"Clone this app into Fused/local/" + slug + " and open your copy"}
-      onClick={doClone}
-      disabled={busy}
-    >
-      {busy && <span className="mode-icon-spinner" />}
-      {busy ? "Cloning…" : "Clone"}
-    </button>
-  );
 }
 
 // "Clone" in the preview header of a `.fused` app file: copy the payload into
@@ -798,9 +762,6 @@ function TemplatePreview({
   //     user built, sized by them, with their own bar (PaneModeMenu) writing
   //     `_mode`. A pane that grew a second split of its own would be answering a
   //     layout question the user already answered;
-  // Showcase clone app: fully editable, no mode restrictions — the slug only
-  // decides whether the Clone button renders in the header.
-  const communitySlug = communityCacheSlug(fsPath);
   const splitCapable = !!actionsInTopbar && !stat.is_dir && !IS_EMBED;
   const parts = partitionModes(templates);
 
@@ -1219,6 +1180,46 @@ function TemplatePreview({
     claudeSeedRef.current = null;
   }, [fsPath]);
 
+  // The other side of a "Fix with Claude" staged from OUTSIDE this surface
+  // entirely — a repo-updates row in the activity card (shell/
+  // RepoUpdatesDock.tsx), which stages `{path, prompt}`
+  // (lib/pending-claude-ask.ts) and navigates here rather than calling
+  // `window._fusedClaudeAsk` the way the git companion's OWN button does,
+  // because that export only exists once a surface for this exact path is
+  // already mounted — the whole reason this file's copy of the pull exists.
+  // Gated on `claudeAskRoute` (not merely mounted) for the same reason the
+  // installer above is: nothing may be handed to a surface whose Claude
+  // entry cannot actually show it yet. ALSO gated on `suppressForListing`,
+  // for the same reason the installer above stands down there: a directory
+  // is exactly the target "Fix with Claude" navigates to (the repo root),
+  // which mounts `_listing` mode — `claudeAskRoute` resolves to `"content"`
+  // there (no split), so without this gate this file's own pull would win
+  // the race against the child `<Listing>`'s independent pull and consume
+  // the staged ask itself, `void setMode("claude")`-ing over the folder
+  // listing wholesale instead of leaving it to whichever installer the
+  // Lockstep contract actually intends for a directory target.
+  // `askVersion` (finding 17b, code review 2026-08-27): the case
+  // `[fsPath, claudeAskRoute, suppressForListing]` alone misses is a SECOND
+  // stage for the SAME path while this surface never left it — the common
+  // one, since the user is usually already looking at the very repo whose
+  // card just failed. None of those three deps change, so without this the
+  // effect would never re-run and the prompt would sit unseen until it
+  // expires. `pending-claude-ask.ts`'s own header has the full reasoning;
+  // Listing.tsx's copy of this hook does the identical thing, independently
+  // (the "Lockstep" its own comment names) — this file's own subscription
+  // must not be merged into that one.
+  const askVersion = useSyncExternalStore(
+    subscribePendingClaudeAsk,
+    pendingClaudeAskVersion,
+    pendingClaudeAskVersion,
+  );
+  useEffect(() => {
+    if (suppressForListing) return;
+    if (!claudeAskRoute) return;
+    const prompt = takePendingClaudeAsk(fsPath);
+    if (prompt) claudeAskActionRef.current(prompt);
+  }, [fsPath, claudeAskRoute, suppressForListing, askVersion]);
+
   // Keep the URL honest about what is actually open, for the cases the user's
   // own clicks don't cover: the legacy `_mode=claude` migration above, and a
   // `_side` that named a mode this file doesn't offer (a carried-over param, or
@@ -1626,9 +1627,6 @@ function TemplatePreview({
           pane shows (and the way back to Live) is stated in the git sidebar's
           own commit list — the dot, the `previewing` pill, and its banner's
           "Back to now". One surface owns the state it controls. */}
-      {/* Showcase app: Clone copies it into Fused/local so catalog refreshes
-          never touch your copy. */}
-      {communitySlug && !stat.is_dir && <CloneCommunityButton slug={communitySlug} />}
       {/* A `.fused` app file: Clone unpacks it into Fused/local as an editable
           app, or opens the copy that is already there (D397). Keyed off the
           extension, which is what routes this file to the fusedapp template in

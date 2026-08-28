@@ -408,7 +408,7 @@ def test_the_prompt_does_not_promise_a_path_the_fallback_may_not_send(agent, tmp
 def test_the_page_hands_the_live_retry_to_the_status_line(html):
     """Without the third argument the status line can only say "Thinking…",
     which is the bug this feature exists to fix."""
-    assert "w.setStats(tokens, data.phase || \"thinking\", data.retry)" in html
+    assert "w.setStats(tokens, data.phase || \"thinking\", data.retry, data.activity)" in html
 
 
 def test_the_page_announces_the_skills_the_poll_reports(html):

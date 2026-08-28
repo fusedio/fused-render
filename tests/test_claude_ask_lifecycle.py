@@ -98,6 +98,39 @@ def test_both_hosts_use_the_shared_readiness_check(preview, listing):
         assert "claudeEntryReady" in src, label
 
 
+def test_both_hosts_install_the_cross_navigation_pull(preview, listing):
+    """A "Fix with Claude" staged from OUTSIDE the target surface entirely —
+    a repo-updates row in the activity card, mounted nowhere near Preview or
+    Listing (SPEC §36) — cannot call `window._fusedClaudeAsk`: that export
+    only exists once a surface for the target path is already mounted. So it
+    stages `{path, prompt}` in a separate store (lib/pending-claude-ask.ts)
+    and navigates; both hosts must pick it up on their own, independently —
+    a folder opened one way must not silently drop a prompt the other way
+    would have shown (Preview.tsx's own "Lockstep" note)."""
+    for label, src in [("Preview.tsx", preview), ("Listing.tsx", listing)]:
+        assert '"@apps/explorer/lib/pending-claude-ask"' in src, label
+        assert "takePendingClaudeAsk" in src, label
+        assert "takePendingClaudeAsk(fsPath)" in src, label
+        assert "claudeAskActionRef.current(prompt)" in src, label
+
+
+def test_previews_cross_navigation_pull_stands_down_for_the_folder_peek(preview):
+    """"Fix with Claude" navigates to a directory — the repo root — which
+    mounts `_listing` mode in THIS file's own main body. Without standing
+    down there the same way the window._fusedClaudeAsk installer already
+    does (both installed by this same file, both racing the child
+    <Listing>'s own independent pull), this file's pull could win the race
+    and consume the staged ask itself instead of leaving the folder-target
+    case to the installer the Lockstep contract actually intends."""
+    fn = preview[preview.index("// The other side of a \"Fix with Claude\" staged"):]
+    # `askVersion` (finding 17b) joined the dependency array alongside the
+    # three this test originally pinned — a re-stage while this surface
+    # never left `fsPath` changes none of the other three, and without it
+    # the effect would never re-run. See pending-claude-ask.ts's own header.
+    fn = fn[:fn.index("}, [fsPath, claudeAskRoute, suppressForListing, askVersion]);") + 1]
+    assert "if (suppressForListing) return;" in fn
+
+
 def test_the_shared_take_primitive_reads_and_clears_in_one_step():
     src = _read("lib", "claude-ask.ts")
     fn = src[src.index("export function takeClaudeAsk("):]

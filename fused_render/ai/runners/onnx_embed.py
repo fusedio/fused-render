@@ -1071,6 +1071,13 @@ def main():
 
     No `memory=`: see the module docstring on why RSS is the honest answer for
     an onnxruntime session.
+
+    No `release=` either (see `worker_base._release`'s docstring for the
+    feature this is opting out of): onnxruntime's memory arena is
+    `SessionOptions` config fixed when the session is CREATED, not a
+    per-execution or per-idle-timer allocation this process could hand back
+    without tearing the session down and rebuilding it — which is a much
+    bigger change than an idle reclaim is meant to be.
     """
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False)

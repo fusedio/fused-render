@@ -413,6 +413,31 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim: `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST execution
+    if nothing new started by then, never per-call (see `worker_base.
+    _release`'s docstring for why, and the measured numbers this whole
+    feature exists for).
+
+    Doubly relevant here: `DistilledPipeline(low_memory=True)` already frees
+    the transformer and text encoder BETWEEN STAGES of one render (see
+    `peak_memory`'s docstring), which is a real memory saving DURING a
+    render — but it is orthogonal to this. Freeing a stage still leaves its
+    buffers in MLX's own pool, not back with the OS, so a finished render can
+    still be sitting on the same "peak held, nothing active" pool `mflux_
+    image` was measured with. `getattr` because a real but older mlx wheel,
+    or this repo's stubbed `mlx.core` in tests, may not have `clear_cache` at
+    all — absence is a no-op.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -568,4 +593,5 @@ def generate(body):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=False, memory=memory, peak_memory=peak_memory)
+                      streaming=False, memory=memory, peak_memory=peak_memory,
+                      release=release)

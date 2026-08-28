@@ -239,6 +239,7 @@
      `[hidden] { display: none }`, exactly as #leftbar[hidden] does. */
   #annbtn[hidden] { display: none; }
   #annrec[hidden] { display: none; }
+  #viewshot[hidden] { display: none; }
   #anncta button:disabled { opacity: .55; cursor: default; }
   /* The recording state borrows --error, the one token already meant for
      "something the user should notice is live" (it colours a failed run) —
@@ -280,11 +281,13 @@
      (#annbtn.on = mode armed, #annrec.on = recording live), via :has on the
      wrapper — no third writer to fall out of step.
 
-     Idle faces: 💬 Comment · 🎙 Record. A mode ON means ONE control (Akshil,
+     Idle faces: 💬 Comment · 🎙 Annotate. A mode ON means ONE control (Akshil,
      2026-08-19): the mic hides outright, and the Comment seat morphs into
      the mode's exit. */
   #annbtn .cmt-stop, #annbtn .cmt-done, #annbtn .done-word { display: none; }
   #anncta:has(#annbtn.on) #annrec { display: none; }
+  /* The camera goes with the mic: a mode takes the strip down to ONE control. */
+  #anncta:has(#annbtn.on) #viewshot { display: none; }
   /* Comment armed (and no recording): the seat IS ✓ Done, in the armed
      accent — send the notes and finish. `:not(.busy)` on the SHOW rules, so
      the transcribing state below is one word, not "✓ Done Transcribing…"
@@ -777,6 +780,21 @@
     border-color: var(--accent);
     outline: none;
   }
+  /* A NON-picture attachment's door into the viewer. A file has no thumbnail —
+     nothing 22px wide can say about a .csv what its name already says better —
+     so the GLYPH is the button, which keeps the chip one shape (glyph, words, ✕)
+     across both kinds instead of giving files a second control images lack. */
+  .annchip .shotdoc {
+    flex-shrink: 0;
+    font-size: 13px;
+    color: var(--accent);
+    padding: 0 1px;
+    cursor: pointer;
+  }
+  .annchip .shotdoc:hover, .annchip .shotdoc:focus-visible {
+    color: var(--fg);
+    outline: none;
+  }
   /* The chip arriving. HALF of the "did it even do anything?" answer — the other
      half is the flash over the pane itself (shotFlash) — and it is deliberately
      the loud half: the pane is where the user was looking, the composer is where
@@ -908,6 +926,41 @@
     color: var(--dim);
   }
   #shotview-note:empty { display: none; }
+  /* What a FILE viewer has instead of a picture: the name the user called it and
+     how big it is. An image says both of those things by BEING shown, so it stays
+     empty there — the `:empty` rule is what makes one dialog serve both kinds
+     without a second layout. */
+  #shotview-name {
+    font-size: 12.5px;
+    color: var(--fg);
+    font-weight: 600;
+    word-break: break-word;
+  }
+  #shotview-name:empty { display: none; }
+  /* The file's own template, in the footprint the picture gets — the SAME
+     `position: fixed` viewport, which in the sidebar layout is a ~440px column.
+     So the size is written against the viewport rather than against the box (a
+     box sized by its content cannot give a percentage height to a child), minus
+     #shotview's 12px padding and #shotview-box's 10px on both sides, and capped
+     at 900px so a wide window does not stretch a table across a metre of screen.
+     `flex: 1 1 auto` + `min-height: 0` for the same reason the <img> has them:
+     the caption bar holds Discard and Close and must not be pushed off. */
+  #shotview-frame {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: calc(100vw - 44px);
+    max-width: 900px;
+    height: calc(100vh - 120px);
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: var(--surface-2);
+  }
+  #shotview-frame[hidden] { display: none; }
+  #shotview-loading {
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  #shotview-loading[hidden] { display: none; }
 
   /* ── the "what was sent" popup: same overlay family as the viewer ─────── */
   /* Below the screenshot viewer (90): the popup's overview thumb opens the
@@ -1369,6 +1422,22 @@
     justify-content: flex-end;
   }
   .annsum .annsum-lbl { color: var(--accent); font-weight: 600; flex-shrink: 0; }
+  /* A file's receipt glyph is the DOOR into the viewer (D616), so it is a real
+     <button> — which arrives wearing the UA's border, background and font. Reset
+     to exactly the span it replaces, and nothing more: the row must not shift by
+     a pixel depending on whether the attachment is openable. */
+  .annsum button.annsum-lbl {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    font-weight: 600;
+    line-height: inherit;
+    cursor: pointer;
+  }
+  .annsum button.annsum-lbl:hover,
+  .annsum button.annsum-lbl:focus-visible { color: var(--fg); outline: none; }
   .annsum .annsum-el { color: var(--faint); flex-shrink: 0; font-size: 11px; }
   /* The crop that rode with this note. Small on purpose — it is a receipt, not a
      viewer; hovering shows the path the agent was given. */
@@ -1425,46 +1494,13 @@
   /* The push channel's receipt: this message carried a description of the app
      the user is looking at, and they should be able to see that it did. */
   .user .attach { margin-top: 4px; font-size: 11px; color: var(--faint); }
-  /* The composer's screenshot button. It has NO pressed state, and that absence is
-     the design: the pill deleted before it was a per-message toggle you armed and
-     that then re-armed itself away after every send, so the only way to know what
-     the next message carried was to remember. This one ACTS — it takes the picture
-     on click and the picture appears as a chip — so the state that used to live in
-     the button's paint now lives above the composer where it can be looked at.
-     `disabled` is therefore the only state left, and it lasts one capture.
-
-     Its content is a monochrome inline svg on `currentColor`, not the colour emoji
-     the first version used: `.pill` paints only `color`, so its three neighbours
-     are quiet dim TEXT and a saturated multicolour glyph was the one loud thing in
-     the row. Inheriting `color` also gets the hover colour applied to the icon for
-     free — an emoji cannot be recoloured at all. Icon-only, and no word beside it:
-     the row already carries three selects and a send button and wraps in a narrow
-     chat pane, so every extra millimetre costs a line.
-
-     It deliberately does NOT override `.pill`'s padding. The pill box is the shared
-     visual language of that row, and while every background is transparent a
-     different box is invisible — it only appears once hover paints one, as a pill
-     that is taller and narrower than the selects beside it. So the icon is centred
-     inside the pill's own box instead: `min-height` is the pills' text line box
-     (their font-size × the inherited line-height), which is what gives a text pill
-     its height. */
-  .viewshot {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 1.65em;
-  }
-  .viewshot svg { display: block; }
-  /* Hidden where the hosted layout has nothing to photograph (annPollTarget), and
-     spelled out for the same reason #annbtn's hiding is: the rule above is
-     `display: inline-flex`, which outranks the UA's [hidden] rule, so [hidden]
-     alone would leave a live button on screen over a pane that is not there. */
-  .viewshot[hidden] { display: none; }
-  /* Mid-capture. Not a spinner: a capture is a second at most, and a 9px ring
-     inside a 13px pill reads as a smudge rather than as progress — but the dim and
-     the cursor still have to say that a second click will not start a second one
-     (shotBusy is the half that enforces it). */
-  .viewshot:disabled { opacity: .45; cursor: default; }
+  /* The screenshot button is a seat in #anncta now (between Comment and Record),
+     so it wears that strip's button rules; see the #viewshot rules beside
+     #annrec's. It has NO pressed state, and that absence is the design: the
+     pill deleted before it was a per-message toggle you armed and that then
+     re-armed itself away after every send. This one ACTS — it takes the picture
+     on click and the picture appears as a chip above the composer where it can
+     be looked at. `disabled` is the only state left, and it lasts one capture. */
   /* The composer's calendar button, immediately left of Send. Same box as
      .viewshot above and for the same three reasons — an icon-only control in a
      row that wraps, a monochrome inline svg on `currentColor` so it stays as
@@ -1638,33 +1674,57 @@
      call leaves both sitting still while the run is perfectly healthy. A sweep
      across the label is motion the eye catches without being read.
      Gradient-over-text, so it costs no layout and no extra element. */
+  /* THE app's one running shimmer, on the verb: the same --status-progress
+     hue and the same D453 sweep the top strip's "running" mark and the
+     chat-row mark already use (100deg highlight, 300% gradient, 2.2 s, one
+     animated property). Not --fg over --faint (the first cut — grey over grey,
+     read as a static word) and not --accent (the second — a third colour for
+     "running" when the shell has settled on one). Two surfaces, one hue. */
   .working .verb {
-    color: var(--fg);
-    background: linear-gradient(90deg, var(--fg) 35%, var(--faint) 50%, var(--fg) 65%);
-    background-size: 200% 100%;
+    color: var(--status-progress);
+    background-image: linear-gradient(
+      100deg,
+      var(--status-progress) 30%,
+      color-mix(in srgb, var(--status-progress) 65%, var(--fg)) 50%,
+      var(--status-progress) 70%
+    );
+    background-size: 300% 100%;
+    background-repeat: repeat;
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
-    animation: skel-shimmer 2.2s linear infinite;
+    animation: claude-running-shimmer 2.2s linear infinite;
   }
   /* Awaiting approval is the one phase where nothing is running: the turn is
      blocked on the user, and a shimmer there would promise progress that only
      their click can produce. Stopping keeps it — the kill is still in flight. */
   .working.awaiting .verb {
     animation: none;
-    background: none;
+    background-image: none;
     -webkit-text-fill-color: var(--fg);
   }
   /* Reduced motion drops the sweep, and with it the transparent fill the
-     gradient stands in for — otherwise the label would be invisible. */
+     gradient stands in for — otherwise the label would be invisible. Same
+     fallback as the top strip: still says it, in the running colour. */
   @media (prefers-reduced-motion: reduce) {
     .working .verb {
       animation: none;
-      background: none;
-      -webkit-text-fill-color: var(--fg);
+      background-image: none;
+      -webkit-text-fill-color: var(--status-progress);
     }
   }
-  .working .meta { color: var(--faint); font-size: 12px; }
+  /* The brackets carry the detail (a Bash description, a file name) and are
+     the one part of the line whose length the page does not control. They give
+     way first: the verb and the stop button keep their width at any pane size,
+     and the detail truncates with an ellipsis rather than wrapping the line or
+     pushing the stop button off the column. */
+  .working .verb { white-space: nowrap; flex: 0 0 auto; }
+  .working .meta {
+    color: var(--faint); font-size: 12px;
+    flex: 1 1 auto; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .working .stop { flex: 0 0 auto; }
   /* The stop control rides ON the working line, which exists for exactly as long
      as a run is interruptible — so the button cannot outlive what it cancels. */
   .working .stop {
@@ -3598,7 +3658,7 @@
            two mode buttons under the pointer, the back button and the kebab
            all hold still (Akshil, 2026-08-19 — it used to appear between
            Record and ⋮ and shuffled the whole right cluster on every toggle).
-           At rest the strip is [← Chats … 💬 Comment 🎙 Record ⋮]. -->
+           At rest the strip is [← Chats … 💬 Comment 🎙 Annotate ⋮]. -->
       <!-- WHAT a click pins, chosen up front: the element under it, or the
            exact spot. Appears while the mode is armed — typed comment and
            recording alike (Akshil, 2026-08-19) — it is a property of the
@@ -3638,9 +3698,22 @@
                 title="Discard the recording — nothing is transcribed or sent"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 4h11"/><path d="M5.5 4V2.75a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1V4"/><path d="M3.75 4l.6 9a1 1 0 0 0 1 .95h5.3a1 1 0 0 0 1-.95l.6-9"/><line x1="6.5" y1="7" x2="6.5" y2="10.5"/><line x1="9.5" y1="7" x2="9.5" y2="10.5"/></svg></button>
         <button id="annbtn" type="button" aria-pressed="false" aria-label="Comment on the preview"
                 title="Comment on the preview, then send the notes to Claude"><svg class="cmt-bubble" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 2.5h-11a1 1 0 0 0-1 1v7a1 1 0 0 0 1 1h2.5v2.9l3.4-2.9h5.1a1 1 0 0 0 1-1v-7a1 1 0 0 0-1-1z"/></svg><svg class="cmt-stop" viewBox="0 0 16 16" aria-hidden="true"><rect class="fill" x="4" y="4" width="8" height="8" rx="1.5"/></svg><svg class="cmt-done" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 8.5l3.5 3.5 7-8"/></svg><span class="lbl cmt-word">Comment</span><span class="lbl done-word">Done</span><span id="annreclbl"></span></button>
+        <!-- Screenshot, between Comment and Record (Akshil, 2026-08-27). It
+             was a camera pill beside Send in BOTH composers; it moved up
+             here because it acts on the PREVIEW, like its two neighbours,
+             not on the draft — the picture it takes still lands as a chip
+             above the composer, where the message is (shotAttachPane).
+             One copy now: this strip is the one row the home card and the
+             chat both keep. Hidden while a mode is armed, like the mic — a
+             mode takes the strip down to a single control — and gated
+             exactly like its neighbours (annPollTarget, enterNoPane). The
+             `viewshot` class is the narrow layout's hook (body.view-chat). -->
+        <button id="viewshot" class="viewshot" type="button"
+                aria-label="Screenshot the preview and attach it to this message"
+                title="Screenshot the preview and attach it to this message"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4"/></svg><span class="lbl">Screenshot</span></button>
         <button id="annrec" type="button" aria-pressed="false"
-                aria-label="Record a spoken walkthrough"
-                title="Record a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Record</span></button>
+                aria-label="Annotate with a spoken walkthrough"
+                title="Annotate with a spoken walkthrough — talk while you click, and each click becomes a note"><svg class="rec-mic" viewBox="0 0 16 16" aria-hidden="true"><rect x="6" y="1.5" width="4" height="7.5" rx="2"/><path d="M3.5 7.5a4.5 4.5 0 0 0 9 0"/><line x1="8" y1="12" x2="8" y2="14.5"/></svg><span class="lbl rec-word">Annotate</span></button>
       </div>
       <!-- More options (⋮), beside the annotate switch. One item today: hand
            this session to a real terminal. The LABEL is decided at open time
@@ -3801,22 +3874,11 @@
             <select id="effort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="perm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
-            <!-- Takes the picture NOW and hangs it above the composer as a chip;
-                 see the shotAttachPane section. The spoken strings are rewritten
-                 by applyPaneNoun once the target's kind is known, so the markup
-                 ships the neutral noun rather than a wrong one.
-
-                 AFTER the spacer, beside Send, and that position is the fix for
-                 "not intuitive": grouped with the pills it read as a fourth
-                 SETTING, sitting among three dropdowns that all describe how the
-                 run behaves. Next to Send it reads as what it is — something you
-                 do TO this message, in the seat every chat app puts an attach
-                 control in. A camera, not a landscape photo: the glyph names the
-                 verb ("take a picture of what I am looking at") rather than a
-                 file type ("insert an image"), which is what the old one said. -->
-            <button id="viewshot" class="pill viewshot" type="button"
-                    aria-label="Screenshot the preview and attach it to this message"
-                    title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- The screenshot button used to sit here, beside Send (a camera
+                 pill). It lives in the #anncta strip now, between Comment and
+                 Record (Akshil, 2026-08-27): it acts on the PREVIEW like its
+                 two neighbours, not on this draft. The chip it produces still
+                 lands in #annchips-chat above. -->
             <!-- IMMEDIATELY LEFT OF SEND, and that seat is the whole idea: these
                  two are the ways this draft leaves the box — now, or as a task —
                  so they sit together, after the spacer, apart from the three
@@ -3880,13 +3942,8 @@
             <select id="heffort" class="pill effort-sel" aria-label="Effort"></select>
             <select id="hperm" class="pill perm-sel" aria-label="How much Claude may do without asking"></select>
             <span class="spacer"></span>
-            <!-- The home card's copy, in the same seat beside Send. Both composers
-                 carry one because the chips row above them is the same row
-                 (#annchips-home / #annchips-chat), and one list of attached
-                 pictures is shared state behind both (shotAttached). -->
-            <button id="hviewshot" class="pill viewshot" type="button"
-                    aria-label="Screenshot the preview and attach it to this message"
-                    title="Screenshot the preview and attach it to this message"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="9" r="2.4" stroke="currentColor" stroke-width="1.3"/></svg></button>
+            <!-- No screenshot button here any more: the ONE copy is in the
+                 #anncta strip, which the home view keeps (see #viewshot). -->
             <!-- The chat composer's copy, in the same seat. Both rows carry one
                  for the reason both carry a screenshot button: a FIRST message is
                  exactly as schedulable as a follow-up, and which of the two you
@@ -4024,6 +4081,21 @@
     <div id="shotview-scrim"></div>
     <figure id="shotview-box">
       <img id="shotview-img" alt="">
+      <!-- The FILE case's stand-in for the picture: name and size. Empty (and so
+           display:none) for anything that has pixels of its own to show. -->
+      <div id="shotview-name"></div>
+      <!-- THE FILE'S OWN PREVIEW (D616). A file the explorer has a template for
+           is shown IN that template here, framed exactly as the left pane frames
+           one (/render, never /embed — see paneSrcFor) and sealed exactly as the
+           shell seals a display-only frame (THUMB_SEAL). Empty and hidden until
+           a stat says a template exists; unmounted on every close, because a
+           template with a folder venv keeps RUNNING behind a closed modal. -->
+      <iframe id="shotview-frame" hidden title="" tabindex="-1"
+              aria-hidden="true"
+              sandbox="allow-scripts allow-same-origin" allow=""></iframe>
+      <!-- A first render can take seconds (a folder venv, a big parquet), and a
+           blank box for those seconds reads as a preview that failed. -->
+      <div id="shotview-loading" hidden>loading preview…</div>
       <div id="shotview-note"></div>
       <figcaption id="shotview-bar">
         <span id="shotview-path" class="mono"></span>
@@ -4846,17 +4918,25 @@ function curLeftEntry() {
 
 // One stat entry → the iframe src. Split out of paneURL so a picker switch can
 // re-derive the URL from the entry list it already has, with no re-stat.
-function paneSrcFor(t) {
+//
+// `file` and `remote` default to the chat's OWN target, which is every caller in
+// the pane; they are parameters at all because the shot viewer frames a template
+// for a file that is NOT the target (an attachment — D616), and the URL shape it
+// needs is this one, verbatim, down to the `_remote` hint. One builder, so a
+// preview that works in the pane cannot be subtly different in the viewer.
+function paneSrcFor(t, file, remote) {
+  const target = file === undefined ? FILE : file;
+  const rem = remote === undefined ? paneRemote : remote;
   // `_render` is a shell sentinel (PT-12), not a template folder: it means "the
   // file renders itself", which is a bare /render on the file.
-  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(FILE);
+  if (t.mode === "_render") return "/render?path=" + encodeURIComponent(target);
   if (!t.path) throw new Error("the default view for this file has no template (" + t.mode + ")");
   // `_remote=1` forwards stat's remote flag exactly as the shell's own iframe
   // does, so a template that prefers ranged HTTP reads over local file I/O
   // still gets the hint here.
   return "/render?path=" + encodeURIComponent(t.path)
-    + "&_file=" + encodeURIComponent(FILE)
-    + (paneRemote ? "&_remote=1" : "");
+    + "&_file=" + encodeURIComponent(target)
+    + (rem ? "&_remote=1" : "");
 }
 
 // EVERY piece of chrome that names the target goes through here, and the noun has
@@ -4897,8 +4977,8 @@ let paneNoun = "preview";
 // Everything that names the pane, rewritten in ONE place. Called from
 // setTargetNoun (never on its own) so the noun and the chrome that speaks it
 // cannot get out of step, and it covers exactly the sinks a person or the model
-// reaches: two spoken attributes on the annotate switch, four on the two
-// screenshot buttons (there are two composers, home and chat, and both carry one),
+// reaches: two spoken attributes on the annotate switch, two on the
+// screenshot button (one copy, in the #anncta strip — shotBtns),
 // and — live, because they are built per message — the chip's label, the receipt
 // thumbnail's `alt` and the two block preambles further down.
 function applyPaneNoun() {
@@ -5274,8 +5354,8 @@ function applyLeftMode() {
 // with no preview is still a thing to open a terminal session on. The strip is
 // a child of #chat, so it survives removing #left; with the kebab in it, it is
 // no longer the empty bordered row that used to justify taking it too.
-// Plus both copies of the screenshot button (#viewshot in the chat composer,
-// #hviewshot on the home card): "photograph the WHOLE visible pane" has nothing
+// Plus the screenshot button (#viewshot, in the strip between Comment and
+// Record): "photograph the WHOLE visible pane" has nothing
 // to photograph, and its block's caption names a pane unconditionally.
 //
 // What this deliberately does NOT do is tidy the URL. `split`, `paneview`,
@@ -5367,8 +5447,8 @@ function enterNoPane() {
   // the column being removed — and for an ordinary folder, where nothing is
   // hosted either, "photograph the whole visible pane" has nothing to photograph,
   // so the buttons go with it rather than sitting there as a promise.
-  const hostedControls = new Set(["annbtn", "annrec", "anntool", "viewshot", "hviewshot"]);
-  for (const id of ["annbtn", "annrec", "anntool", "viewshot", "hviewshot", "leftmode",
+  const hostedControls = new Set(["annbtn", "annrec", "anntool", "viewshot"]);
+  for (const id of ["annbtn", "annrec", "anntool", "viewshot", "leftmode",
                     "viewbtn", "left", "divider"]) {
     if (CHAT_ONLY && hostedControls.has(id)) continue;
     const el = document.getElementById(id);
@@ -5501,10 +5581,17 @@ const annChipsEls = [
   document.getElementById("annchips-chat"),
 ];
 
-// The pictures waiting to ride the NEXT message. Each entry is
-// `{kind, view, viewNote, thumb, name?}` — `kind` being `"pane"` for a capture of
-// the preview and `"image"` for a file the user pasted or dropped in — and each is
+// The attachments waiting to ride the NEXT message. Each entry is
+// `{kind, view, viewNote, thumb?, name?, size?}` and `kind` is one of four:
+// `"pane"` (a capture of the preview), `"overview"` (the badged one a send with
+// comments takes), `"image"` (a picture the user pasted, dropped or dragged in)
+// and `"file"` (anything else they brought in — a CSV, a log, a PDF). Each is
 // drawn as one chip above both composers.
+//
+// `view` is a path either way, and it is a COPY in the shots directory for
+// everything the page read the bytes of, or the file's OWN real path for a drag
+// that told us where it lives (shotAttachPaths). `size` is carried only by a file,
+// and only when it is known — the real-path shape never opened the file.
 //
 // A LIST, where D285 kept a single shot, and the rule that made it one is intact
 // inside the list rather than abandoned: "the pane, now" still has exactly one
@@ -6242,6 +6329,7 @@ function renderShotChips() {
 function shotNoun(shot) {
   if (!shot) return "picture";
   if (shot.kind === "image") return shot.name || "pasted image";
+  if (shot.kind === "file") return shot.name || "attached file";
   if (shot.kind === "overview") return "annotated overview";
   return paneNoun + " screenshot";
 }
@@ -6249,10 +6337,46 @@ function shotAlt(shot) {
   if (shot && shot.kind === "image") {
     return "image attached to this message" + (shot.name ? ": " + shot.name : "");
   }
+  if (shot && shot.kind === "file") {
+    return "file attached to this message" + (shot.name ? ": " + shot.name : "");
+  }
   if (shot && shot.kind === "overview") {
     return "overview of the " + paneNoun + " pane with a badge at each comment";
   }
   return "screenshot of the whole " + paneNoun + " pane";
+}
+
+// How big it is, in the one unit a reader can act on. Only ever shown for a
+// FILE: a picture answers "is this the right one" by being looked at, where a
+// spreadsheet or a log answers it by name and size and nothing else.
+//
+// `undefined` — not zero — is a real and ordinary answer here: an attachment that
+// came in as a PATH (a real file the page never read the bytes of) has no size to
+// report, and inventing "0 KB" for it would read as an empty file.
+function shotSizeLabel(bytes) {
+  if (typeof bytes !== "number" || !isFinite(bytes) || bytes < 0) return "";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+// What a REFUSED attachment says, on the row, in both places one is drawn (the
+// pending chip and the sent receipt). ONE function for the same reason shotNoun
+// is one: the two used to spell it differently ("image failed" against "no
+// image"), which made a receipt look like a different event from the chip it
+// replaced.
+//
+// The reason used to live only in `title`, and a chip reading "🖼 no image" with
+// nothing visible to explain it was reported as exactly that: a picture that
+// disappeared for no stated cause. `why` is ONE SHORT CLAUSE so it fits on the
+// row without wrapping it; the full sentence stays in `title` and in the viewer's
+// note line, which is where the detail belongs.
+function shotFailLabel(shot) {
+  const what = shot.kind === "image" ? "no image"
+    : shot.kind === "file" ? "no file"
+    : shot.kind === "overview" ? "no overview screenshot"
+    : "no pane screenshot";
+  return shot.why ? what + " — " + shot.why : what;
 }
 
 // One attached picture's chip: an annotation chip's pill with the picture where
@@ -6269,12 +6393,34 @@ function shotChip(shot) {
   // `shotchip` is only the animation hook (the entrance that says a capture just
   // happened); every other rule it wears is `.annchip`'s, because it IS one.
   chip.className = "annchip shotchip";
-  const lbl = document.createElement("span");
-  lbl.className = "pinlbl";
-  lbl.textContent = "🖼";
-  chip.appendChild(lbl);
-  if (shot.thumb) {
+  // A FILE has no pixels, so its glyph carries the job the thumbnail does for a
+  // picture: it is the door into the viewer. A <button> rather than a span, for
+  // exactly the reasons shotThumbBtn is one — tabbable, Enter/Space, announced.
+  // A door only where there is a room behind it: a REFUSED file (`view` null)
+  // has nothing to open, so its glyph is the same plain span a refused picture
+  // gets — one "failed" chip shape, whatever kind failed.
+  const isFile = shot.kind === "file";
+  // A PICTURE OR A GLYPH, NEVER BOTH. Where there is a thumbnail the picture IS
+  // the icon, and putting 🖼 in front of it captions a photo with a drawing of a
+  // photo. So the glyph is built only where there is nothing to look at: a file,
+  // an image this engine cannot decode, a refusal. Where it IS built it keeps its
+  // other job, being the door into the viewer -- but only where there is a room
+  // behind it (`view`) and only for the two kinds the viewer opens without pixels.
+  const pic = !!shot.thumb;
+  const isDoor = !pic && !!shot.view && (isFile || shot.kind === "image");
+  if (pic) {
     chip.appendChild(shotThumbBtn("shotthumb", shot, shotAlt(shot)));
+  } else {
+    const lbl = document.createElement(isDoor ? "button" : "span");
+    lbl.className = isDoor ? "pinlbl shotdoc" : "pinlbl";
+    lbl.textContent = isFile ? "📄" : "🖼";
+    if (isDoor) {
+      lbl.type = "button";
+      lbl.title = "Click to see what is attached";
+      lbl.setAttribute("aria-label", shotAlt(shot) + " — open details");
+      lbl.onclick = () => shotViewOpen(shot);
+    }
+    chip.appendChild(lbl);
   }
   const txt = document.createElement("span");
   txt.className = "txt";
@@ -6282,8 +6428,18 @@ function shotChip(shot) {
   // different facts, and the second is the one a user has to be told BEFORE they
   // press send — that is the whole advantage of attaching on the gesture rather
   // than during the send, where a failure could only be reported afterwards.
-  txt.textContent = shot.view ? shotNoun(shot)
-    : (shot.kind === "image" ? "image failed" : "screenshot failed");
+  //
+  // A file also says how BIG it is, right here, and a picture does not: the chip
+  // is the only place a non-picture attachment is described at all before the
+  // send, and "which of these two exports did I just attach" is a question a name
+  // alone often cannot answer.
+  // Keyed off the PICTURE and not off the kind: an image this browser cannot
+  // decode has no thumbnail either, and then its size is the only thing on the
+  // chip that tells it apart from another one.
+  const size = pic ? "" : shotSizeLabel(shot.size);
+  txt.textContent = shot.view
+    ? shotNoun(shot) + (size ? " · " + size : "")
+    : shotFailLabel(shot);
   // The path, or the reason there is none. Hovering a crop's receipt shows the
   // same thing, for the same reason: what the agent was handed is checkable.
   txt.title = shot.viewNote || shot.view || "";
@@ -6757,7 +6913,11 @@ function annSetMode(on) {
   // fire-and-forget crop) may have none. Swallowed
   // whole: a declined prompt just means notes without pictures, and each
   // capture path already degrades to exactly that.
-  if (annOn && annXO) annXOStreamGet().catch(() => { /* declined: words only */ });
+  // Only when the native screen shot is not available here (shotNativeOff):
+  // with it, a cross-origin pane is photographed off the screen with no share
+  // prompt at all, and raising one at arm time would be the prompt this
+  // change exists to remove.
+  if (annOn && annXO && shotNativeOff) annXOStreamGet().catch(() => { /* declined: words only */ });
   // The word is the static markup "Comment" in BOTH states — the button's
   // accent fill is what says armed. It used to flip to "Commenting", but a
   // label that changes width makes the whole right-anchored row shuffle on
@@ -6877,6 +7037,10 @@ function annWarmTranscriber() {
 (async () => {
   try {
     const src = await fused.capture.sources();
+    // The native still (shotNativePane) is off where the probe says the
+    // platform cannot take one; `granted` is deliberately NOT read — on
+    // macOS the first shot is what raises the Screen Recording prompt.
+    if (src && src.screenshot && src.screenshot.available === false) shotNativeOff = true;
     if (src && src.audio && src.audio.available === false) {
       // Removed, not hidden: #anncta's display rule beats `hidden`, and the
       // strip hides itself once nothing visible is left in it.
@@ -7175,8 +7339,8 @@ async function annRecEnd() {
   // Point into the next typed comment is a visible fact, not a trap.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
+  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
   // The settle window is a STATUS, not a Done button (Bugbot, PR #665): with
   // #annrec.on gone the armed CSS would show an enabled ✓ Done for however
   // long the stop takes — milliseconds where the app records natively, longer
@@ -7361,8 +7525,8 @@ async function annRecDiscard() {
   // the same disabled status annRecEnd shows — never an enabled Done.
   annRecBtn.classList.remove("on");
   annRecBtn.setAttribute("aria-pressed", "false");
-  annRecBtn.setAttribute("aria-label", "Record a spoken walkthrough");
-  annRecBtn.title = "Record a spoken walkthrough — talk while you click, and each click becomes a note";
+  annRecBtn.setAttribute("aria-label", "Annotate with a spoken walkthrough");
+  annRecBtn.title = "Annotate with a spoken walkthrough — talk while you click, and each click becomes a note";
   annBtn.disabled = true;
   annBtn.setAttribute("aria-label", "Discarding the recording");
   annBtn.title = "Discarding the recording…";
@@ -7969,11 +8133,18 @@ NARROW_MQ.addEventListener("change", () => {
 // boot so a chat that never annotates never makes the directory; a failure
 // clears the cache so the next send tries again instead of degrading forever.
 let shotDirPromise = null;
+// The resolved directory, kept synchronously readable. `shotReadDirs` needs to
+// know which attachment paths are ALREADY covered by the spawn line's standing
+// Read rule, and it runs inside the send with nothing to await on — so the answer
+// is remembered the moment it lands rather than asked for a second time. "" until
+// then, which is a safe default: the worst it costs is one redundant Read rule.
+let shotDirSeen = "";
 function shotDirPath() {
   if (!shotDirPromise) {
     shotDirPromise = fused.runPython(AGENT, { action: "shots_dir" }, { key: null })
       .then((r) => {
         if (!r || !r.dir) throw new Error((r && r.error) || "no screenshot directory");
+        shotDirSeen = r.dir;
         return r.dir;
       })
       .catch((err) => { shotDirPromise = null; throw err; });
@@ -8598,10 +8769,20 @@ let shotWebpOk = null;
 // that FITS is the one we want. We do not encode both to compare when the first
 // already fits — that doubles the cost for a marginal byte win, and the budget
 // here is time.
-async function shotEncode(pane, rect, limits) {
+// `out`, when given, is filled with the size the winning encode actually used.
+// A caller that has to SAY what it did to the pixels - the attach path, whose
+// chip reads "downscaled from 4200x2800 to 1600x1067" - cannot work that out
+// itself: `shotFit` is only the first guess, and the halve-and-retry below may
+// have gone two steps past it. Reporting it from in here is what keeps that
+// sentence true without a second copy of the ladder living outside.
+async function shotEncode(pane, rect, limits, out) {
   const maxEdge = (limits && limits.maxEdge) || SHOT_MAX_EDGE;
   const maxBytes = (limits && limits.maxBytes) || SHOT_MAX_BYTES;
   let fit = shotFit(rect.width, rect.height, maxEdge);
+  const done = (blob) => {
+    if (out) { out.width = fit.width; out.height = fit.height; }
+    return blob;
+  };
   for (let attempt = 0; attempt < 3; attempt++) {
     const c = document.createElement("canvas");
     c.width = fit.width;
@@ -8619,12 +8800,12 @@ async function shotEncode(pane, rect, limits) {
           break;
         }
         shotWebpOk = true;
-        if (webp.size <= maxBytes) return webp;
+        if (webp.size <= maxBytes) return done(webp);
       }
     }
     const png = await shotBlob(c, "image/png");
     if (!png) return null;
-    if (png.size <= maxBytes) return png;
+    if (png.size <= maxBytes) return done(png);
     fit = { width: Math.max(1, Math.round(fit.width / 2)),
             height: Math.max(1, Math.round(fit.height / 2)), scale: fit.scale / 2 };
   }
@@ -8706,13 +8887,188 @@ async function shotXOPane() {
            styled: 0, incomplete: false, imagesMissing: 0 };
 }
 
+// ── the native screen shot: the pane's LIVE pixels, no document needed ──
+// `POST /api/capture/shot-region` — the ScreenCaptureKit / GDI / desktop-portal
+// still behind `fused.capture.screenshot()` (SPEC §45), pointed at the screen
+// rect the browser reports for the pane's frame. It is the mechanism the
+// shell's "Set Current View as Preview" and export capture already use
+// (appShot.ts, AF-11), and every capture here tries it FIRST, for the reasons
+// it replaced tab capture there: no share prompt (so nothing hinges on a
+// click's transient activation, and a walkthrough's tenth note raises no
+// picker), it works in whatever browser opened the page (the Chromium-only
+// current-tab hints did not), and the pixels are the ones the user is looking
+// at — WebGL maps included, which the DOM clone below can only report blank.
+//
+// It photographs VISIBLE pixels, so the frame must be on screen and the
+// window on one display (the server refuses a straddling rect). Every
+// "cannot" — no server, 409 unsupported, 400 off-display, a hidden pane, an
+// origin we cannot compute — answers null, never a throw, and shotPane falls
+// through to the paths that were there before: the tab share for a
+// cross-origin pane, the clone-and-rasterise for a readable one. Nothing that
+// worked stops working; this is a better first answer, not a new gate.
+//
+// Same answer shape as shotPane and shotXOPane, so every consumer runs
+// unchanged; the doubt fields are clean because live pixels have no style
+// walk, no image inlining and no readback to caveat.
+let shotNativeOff = false;   // set by the sources() probe and by a 409
+const SHOT_NATIVE_MIN = { width: 120, height: 75 };
+
+// Where the TOP window's viewport sits on the screen, learned from pointer
+// events the way appShot.ts learns it: a MouseEvent carries screenX/Y and
+// clientX/Y both, and their difference IS the viewport origin in screen
+// units — exact for any chrome layout (a side panel, vertical tabs), where the
+// outerWidth/innerWidth arithmetic assumes chrome on top and split evenly at
+// the sides. Our window may be a frame of the shell's, so the learned origin
+// is walked up to the top through the frame offsets. `pointerdown` only: a
+// keyboard click is a MouseEvent with every coordinate zero, which would
+// teach an origin of (0,0) and send viewport coordinates as screen ones.
+let shotTopOrigin = null;
+window.addEventListener("pointerdown", (e) => {
+  const off = shotFrameOffset(window);
+  if (!off) return;
+  shotTopOrigin = { x: e.screenX - e.clientX - off.x, y: e.screenY - e.clientY - off.y };
+}, true);
+
+// A window's viewport origin within the TOP window's viewport, summed over
+// every frame element between them; null when a frame on the way is not ours
+// to read (a cross-origin ancestor — no screen rect can be computed then).
+function shotFrameOffset(win) {
+  let x = 0, y = 0;
+  try {
+    for (let w = win; w !== w.top; w = w.parent) {
+      const fe = w.frameElement;
+      if (!fe) return null;
+      const r = fe.getBoundingClientRect();
+      x += r.left + (fe.clientLeft || 0);
+      y += r.top + (fe.clientTop || 0);
+    }
+  } catch (err) {
+    return null;
+  }
+  return { x, y };
+}
+
+// The frame's CONTENT box in screen units — `{rect: [x, y, w, h], width,
+// height}` — or null when it is off screen, not fully inside the top viewport
+// (a sliver is a wrong picture, and the server would refuse the rect anyway)
+// or too small to be worth photographing. The border is trimmed because the
+// pixels have to be the framed viewport's: that is the space every pin and
+// crop rect is already in (annStageRect).
+function shotScreenRect(frame) {
+  const win = frame.ownerDocument && frame.ownerDocument.defaultView;
+  if (!win) return null;
+  const off = shotFrameOffset(win);
+  if (!off) return null;
+  const r = frame.getBoundingClientRect();
+  const w = Math.round(frame.clientWidth || r.width);
+  const h = Math.round(frame.clientHeight || r.height);
+  if (w < SHOT_NATIVE_MIN.width || h < SHOT_NATIVE_MIN.height) return null;
+  const left = off.x + r.left + (frame.clientLeft || 0);
+  const top = off.y + r.top + (frame.clientTop || 0);
+  let topWin;
+  try { topWin = win.top; void topWin.innerWidth; } catch (err) { return null; }
+  if (left < 0 || top < 0 || left + w > topWin.innerWidth || top + h > topWin.innerHeight) {
+    return null;
+  }
+  const origin = shotTopOrigin || {
+    x: topWin.screenX + Math.max(0, (topWin.outerWidth - topWin.innerWidth) / 2),
+    y: topWin.screenY + Math.max(0, topWin.outerHeight - topWin.innerHeight),
+  };
+  return { rect: [origin.x + left, origin.y + top, w, h], width: w, height: h };
+}
+
+// What sits ON the pane and must not be in its picture: our layer (ring,
+// pins, the click flash — one shadow host over the framed document, or the
+// split layout's #annpins/#annhl over #leftframe), and the flash where it is a
+// plain sibling of the frame (`data-shot-flash`). The DOM clone never had
+// this problem — cloneNode skips a shadow tree — but a screen shot sees
+// everything the user does.
+function shotOverlayEls() {
+  const els = [];
+  if (annLayerRoot && annLayerRoot.host) els.push(annLayerRoot.host);
+  else for (const el of [annPins, annHl]) if (el) els.push(el);
+  for (const el of document.querySelectorAll("[data-shot-flash]")) els.push(el);
+  return els;
+}
+
+async function shotNativePane(deadline) {
+  if (shotNativeOff || !annFrame || !annFrame.isConnected) return null;
+  const box = shotScreenRect(annFrame);
+  if (!box) return null;
+  const hidden = shotOverlayEls();
+  const prior = hidden.map((el) => el.style.visibility);
+  // The shell hides its own overlay chrome on this attribute (appShot.ts's
+  // SHOOTING_ATTR) — stamped on the document that OWNS the frame, which in the
+  // sidebar layout is the shell's.
+  let hostBody = null;
+  try { hostBody = annFrame.ownerDocument.body; } catch (err) { /* not ours */ }
+  try {
+    for (const el of hidden) el.style.visibility = "hidden";
+    if (hostBody) hostBody.setAttribute("data-capture-shooting", "");
+    // Two frames, so the hiding is painted before the screen is read —
+    // bounded, because rAF never fires in a hidden document and a hang here
+    // would eat the caller's whole deadline.
+    await Promise.race([
+      new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res))),
+      new Promise((res) => setTimeout(res, 120)),
+    ]);
+    const ctl = new AbortController();
+    const left = (deadline || (Date.now() + SHOT_TIMEOUT_MS)) - Date.now();
+    const timer = setTimeout(() => ctl.abort(), Math.max(200, Math.min(4000, left)));
+    let res;
+    try {
+      res = await fetch("/api/capture/shot-region", {
+        method: "POST",
+        signal: ctl.signal,
+        headers: { "X-Fused": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ rect: box.rect, dpr: window.devicePixelRatio || 1 }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    // 409 is "this platform has no still": remembered, so a page over an
+    // unsupported backend pays the round trip once. 400 (off-display, bad
+    // rect) and 500 are about THIS shot — the next one may land.
+    if (res.status === 409) shotNativeOff = true;
+    if (!res.ok) {
+      // Said, not swallowed: the fallbacks answer, but a 400 on every click
+      // (a rect the server judges off-display) is a bug in the arithmetic
+      // above that only the console can show.
+      let why = "";
+      try { why = (await res.json())._error || ""; } catch (err) { /* not JSON */ }
+      console.warn("native pane shot refused (" + res.status + "): " + why,
+                   { rect: box.rect, dpr: window.devicePixelRatio || 1 });
+      return null;
+    }
+    const blob = await res.blob();
+    if (!blob.size || !blob.type.startsWith("image/png")) return null;
+    const bitmap = await createImageBitmap(blob);
+    // Drawn at the frame's CSS size, not the display's: every crop rect and
+    // badge position downstream is in the framed viewport's CSS pixels, the
+    // space the rasteriser below already answers in.
+    const canvas = document.createElement("canvas");
+    canvas.width = box.width;
+    canvas.height = box.height;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, box.width, box.height);
+    bitmap.close();
+    return { canvas, width: box.width, height: box.height, blanks: [],
+             styled: 0, incomplete: false, imagesMissing: 0 };
+  } catch (err) {
+    return null;   // unreachable server, aborted, undecodable — the fallbacks answer
+  } finally {
+    hidden.forEach((el, i) => { el.style.visibility = prior[i]; });
+    if (hostBody) hostBody.removeAttribute("data-capture-shooting");
+  }
+}
+
 // Rasterise the visible left pane once. Returns
 // {canvas, width, height, blanks, styled, incomplete} or null when there is no
 // readable app document to capture. `deadline` is a Date.now() stamp the style
 // walk stops at — the capture's share of SHOT_TIMEOUT_MS, enforced INSIDE the
 // walk because that is the only place that can enforce it (see shotInlineStyles).
-// A cross-origin target takes the tab-capture path above instead — pixels off
-// the screen, since there is no document to clone.
+// Every target tries the NATIVE screen shot first (shotNativePane above);
+// a cross-origin target that could not be shot that way takes the tab-capture
+// path — pixels off the screen, since there is no document to clone.
 //
 // Why the clone is styled from the LIVE tree, which is what creates the race
 // shotInlineStyles has to defend against: a clone is detached, and a detached
@@ -8723,6 +9079,8 @@ async function shotXOPane() {
 // mutate the page the user is looking at. So the live tree is the only source of
 // truth for computed style, and the race is detected rather than avoided.
 async function shotPane(deadline) {
+  const native = await shotNativePane(deadline);
+  if (native) return native;
   if (annXO) return shotXOPane();
   const win = appWindow();
   const doc = win && win.document;
@@ -9169,9 +9527,18 @@ function formatAnnotations(arr) {
 function paneShotBlock(views) {
   const list = (views || []).filter(Boolean);
   if (!list.length) return "";
+  // WHAT they are, in one word, before the per-kind paragraph below. Not always
+  // "pictures" any more: a list that is nothing but files must not be announced
+  // as pictures, and a mixed one has no honest singular noun at all.
+  const files = list.filter((s) => s.kind === "file").length;
+  const noun = files === list.length ? (list.length === 1 ? "a file" : "files")
+    : files ? "attachments"
+    : (list.length === 1 ? "a picture" : "pictures");
+  const what = list.length === 1 && noun.indexOf("a ") === 0
+    ? noun : list.length + " " + noun;
   return "<" + PANE_SHOT_TAG + ">\n"
-    + "The user attached " + (list.length === 1 ? "a picture" : list.length
-      + " pictures") + " to this message, deliberately, for this message only. "
+    + "The user attached " + what
+    + " to this message, deliberately, for this message only. "
     + "Each entry's `view` is a path to read; `viewNote` is what that picture does "
     + "NOT show, and it is worth reading before trusting the pixels — it arrives "
     + "with a null `view` when the attachment failed outright, and ALONGSIDE a "
@@ -9186,7 +9553,10 @@ function paneShotBlock(views) {
     + "overlapping, everything shifted, the page just looking wrong), which no "
     + "badge-level reading can answer; \"image\" is a file the user pasted or "
     + "dragged in from somewhere else, so it is NOT a picture of this pane and "
-    + "`name` is what they called it.\n"
+    + "`name` is what they called it; \"file\" is a file the user attached from "
+    + "elsewhere and it is NOT a picture at all — read it as text, and say so "
+    + "plainly rather than guessing if it is a binary format (xlsx, zip, a PDF) "
+    + "that will not parse, and `name` is what they called it.\n"
     + JSON.stringify(list) + "\n</" + PANE_SHOT_TAG + ">";
 }
 
@@ -9283,7 +9653,11 @@ const MARKER_VIEW = "🖼 pane screenshot";
 // record of a wordless send and "pane screenshot" would name a picture of this
 // app for a photo the user brought in from somewhere else.
 const MARKER_IMG = "🖼 images";
-const MARKERS = [MARKER_ANN, MARKER_VIEW, MARKER_IMG];
+// And its non-picture sibling, for the same reason again: a send that carried a
+// spreadsheet is not a send that carried images, and the bubble is the only
+// record a wordless turn leaves.
+const MARKER_FILE = "📄 files";
+const MARKERS = [MARKER_ANN, MARKER_VIEW, MARKER_IMG, MARKER_FILE];
 const MARKER_JOIN = " + ";
 function isMarkerOnly(text) {
   const t = (text || "").trim();
@@ -9316,8 +9690,14 @@ function stripBlocks(text) {
     // pane; a session written before `kind` existed has no `kind` at all, and that
     // is exactly the pane case, so the default falls the right way on its own.
     const views = paneShotIn(noState);
-    carried.push(views.length && views.every((v) => v.kind === "image")
-                 ? MARKER_IMG : MARKER_VIEW);
+    // Three answers now, in order of how specific they are: everything the user
+    // BROUGHT IN (image or file) is described by what they brought, and only a
+    // list containing a capture of this pane may be called a pane screenshot.
+    const brought = views.length
+      && views.every((v) => v.kind === "image" || v.kind === "file");
+    carried.push(!brought ? MARKER_VIEW
+                 : views.every((v) => v.kind === "image") ? MARKER_IMG
+                 : MARKER_FILE);
   }
   return carried.join(MARKER_JOIN);
 }
@@ -9378,8 +9758,7 @@ function annResolveSent() {
 // setTargetNoun, which is hundreds of lines above here, and a hoisted declaration
 // is what makes that legal rather than a temporal-dead-zone ReferenceError.
 function shotBtns() {
-  return [document.getElementById("viewshot"), document.getElementById("hviewshot")]
-    .filter(Boolean);
+  return [document.getElementById("viewshot")].filter(Boolean);
 }
 
 // Release a shot's thumbnail and forget it. The blob URL is the only handle to a
@@ -9418,14 +9797,83 @@ const shotViewImg = document.getElementById("shotview-img");
 const shotViewPath = document.getElementById("shotview-path");
 const shotViewNote = document.getElementById("shotview-note");
 const shotViewDrop = document.getElementById("shotview-drop");
+const shotViewName = document.getElementById("shotview-name");
 const shotViewBox = document.getElementById("shotview-box");
+const shotViewFrame = document.getElementById("shotview-frame");
+const shotViewLoad = document.getElementById("shotview-loading");
 let shotViewing = null;
 
+// ── an attachment's own preview ────────────────────────────────
+// The other half of "what did I just attach", and the half a name and a size
+// cannot answer: a .csv is a table, a .md is a document, a .parquet has a schema —
+// and fused-render already OWNS a template for each of them. So the viewer frames
+// the attachment in its own template, which is the same question the left pane
+// asks about the chat's target, asked about a file that is not it.
+//
+// EXACTLY the pane's rule, through the pane's own two functions: stat's entries
+// minus the `conditional` ones (their verdict lives behind /api/fs/conditions and
+// is not fetched — an unresolved gate reads as "not offered") and minus the chat
+// mode itself, first one wins (`paneOfferable`), then `paneSrcFor` for the URL.
+// Reused rather than re-derived because a per-extension table here would drift
+// from the registry on the next rebinding and ignore a user's own override (§16).
+//
+// /render and NOT /embed, for the reason the pane comment gives: /embed serves the
+// React shell, which nests the target one iframe deeper — an extra document, an
+// extra boot, and a chrome bar around a preview that has a header of its own here.
+//
+// The two stamps the shell puts on a display-only frame ride along: `_preview=1`
+// (this is a picture of a page, not an open the recents list should record) and
+// `_nofocus=1` (the framed page may not steal the keyboard or yank scroll — the
+// viewer is modal, and Escape has to keep belonging to it).
+//
+// null is the ordinary answer, not an error: a file with no template, a path the
+// pruner has deleted, a server that declined. The viewer then stays exactly as it
+// was before this existed — name, size, path, Discard, Close.
+async function shotPreviewSrc(path) {
+  if (!path) return null;
+  try {
+    const st = await fetch("/api/fs/stat?path=" + encodeURIComponent(path))
+      .then((r) => r.json());
+    if (!st || st.error || st.is_dir) return null;
+    const t = paneOfferable(st.templates)[0];
+    if (!t) return null;
+    return paneSrcFor(t, path, !!st.remote) + "&_preview=1&_nofocus=1";
+  } catch (err) {
+    return null;
+  }
+}
+
+// Take the frame down. Called on every close and before every open, and the
+// `src` write is the load-bearing half: a template with a folder venv holds a
+// warm worker and can poll, so a frame merely `hidden` goes on running behind a
+// modal the user shut. `about:blank` rather than removing the element, so the
+// layout and the listeners below stay wired.
+function shotViewUnframe() {
+  shotViewFrame.hidden = true;
+  shotViewFrame.src = "about:blank";
+  shotViewLoad.hidden = true;
+}
+
 function shotViewOpen(shot) {
-  if (!shot || !(shot.src || shot.thumb)) return;
+  // A FILE is the one thing worth opening that has no pixels: it is admitted on
+  // its own terms rather than on a src, and the <img> is taken out of the dialog
+  // for it. Everything else still needs something to show — a viewer that opens
+  // onto a broken-image glyph is worse than a chip that did not open.
+  // ... and so is an IMAGE this engine could not decode: it has a real path and a
+  // real size and no pixels, which is a file in every way that matters here.
+  const pic = shot && (shot.src || shot.thumb);
+  const bare = !!shot && !pic
+    && (shot.kind === "file" || shot.kind === "image");
+  if (!shot || !(pic || bare)) return;
   shotViewing = shot;
-  shotViewImg.src = shot.src || shot.thumb;
-  shotViewImg.alt = shotAlt(shot) + ", full size";
+  shotViewImg.hidden = !pic;
+  shotViewImg.src = pic || "";
+  shotViewImg.alt = pic ? shotAlt(shot) + ", full size" : "";
+  // Name and size, for the kind that cannot show them itself. Cleared for a
+  // picture, which is what keeps `:empty { display: none }` honest.
+  const size = bare ? shotSizeLabel(shot.size) : "";
+  shotViewName.textContent = bare
+    ? shotNoun(shot) + (size ? " · " + size : "") : "";
   // Every open starts FITTED. A zoom is a thing you do to one picture while
   // looking at it, not a preference that should follow you to the next one — and
   // a viewer that opened already scrolled into the middle of an image would look
@@ -9439,6 +9887,25 @@ function shotViewOpen(shot) {
   // one moment the user is looking at the pixels it is about.
   shotViewNote.textContent = shot.viewNote || "";
   shotViewDrop.hidden = shotAttached.indexOf(shot) === -1;
+  // The FILE's preview, and only a file's: an image already has the picture
+  // viewer above (which is the better view of pixels than any template), and a
+  // refusal has no path to frame. Whatever the last open left mounted comes down
+  // first — a second open must not show the previous file's template while this
+  // one's stat is in flight.
+  shotViewUnframe();
+  if (bare && shot.kind === "file" && shot.view) {
+    shotViewLoad.hidden = false;
+    shotPreviewSrc(shot.view).then((src) => {
+      // The user may have closed this, or opened another attachment, in the
+      // seconds the stat took. Identity, the same test Discard uses.
+      if (shotViewing !== shot || shotView.hidden) return;
+      // No template for this extension (or the copy is gone): the viewer is what
+      // it was before D616, and the line that promised a preview goes away.
+      if (!src) { shotViewLoad.hidden = true; return; }
+      shotViewFrame.hidden = false;
+      shotViewFrame.src = src;
+    });
+  }
   shotView.hidden = false;
   // Focus moves into the dialog so Escape and Tab belong to it. The close button
   // rather than the image: the first thing a keyboard reaches for in a viewer is
@@ -9449,6 +9916,11 @@ function shotViewOpen(shot) {
 function shotViewClose() {
   shotViewing = null;
   shotView.hidden = true;
+  // THE FRAME, unlike the <img>, is UNMOUNTED — every close, Escape included.
+  // A template is a running document (a warm python worker behind it, a poll,
+  // possibly a map redrawing), and one left mounted behind a hidden modal costs
+  // all of that for a preview nobody is looking at.
+  shotViewUnframe();
   // The <img> keeps its src deliberately: it is a blob URL or a /raw URL that is
   // still valid, and clearing it would make every reopen re-decode. Nothing about
   // a hidden element is holding anything the page did not already hold.
@@ -9466,9 +9938,35 @@ function shotViewClose() {
 function shotReceipt(sum, shot) {
   const row = document.createElement("div");
   row.className = "annsum-row";
-  const lbl = document.createElement("span");
-  lbl.className = "annsum-lbl";
-  lbl.textContent = "🖼";
+  // What will actually be DRAWN under this row, decided before the row is built
+  // because it decides whether the row gets a glyph at all. Never for a file: an
+  // <img> pointed at a .csv is a broken-image glyph, which reads as a bug.
+  const src = shot.kind === "file" ? "" : (shot.src || shot.thumb || "");
+  // A PICTURE OR A GLYPH, NEVER BOTH (the same rule shotChip follows). The
+  // picture goes directly under these words, so a 🖼 in front of them captions a
+  // photo with a drawing of a photo. `.annsum-row` is `justify-content: flex-end`,
+  // so dropping the glyph slides the text right against the same edge every other
+  // row is aligned to -- nothing moves, nothing needs a placeholder.
+  // AND THE GLYPH IS THE DOOR, exactly as it is on the pending chip (shotChip's
+  // `isDoor`): a sent file's receipt opens the same viewer, with the same template
+  // preview inside it (D616). Without this a file was previewable while it sat in
+  // the composer and unopenable the moment it was sent — the inconsistency that
+  // made the picture chip's own thumbnail a button in the first place. A door only
+  // where there is a room: a refused attachment (`view` null) keeps the plain span.
+  if (!src) {
+    const isDoor = !!shot.view
+      && (shot.kind === "file" || shot.kind === "image");
+    const lbl = document.createElement(isDoor ? "button" : "span");
+    lbl.className = "annsum-lbl";
+    lbl.textContent = shot.kind === "file" ? "📄" : "🖼";
+    if (isDoor) {
+      lbl.type = "button";
+      lbl.title = "Click to see what was attached";
+      lbl.setAttribute("aria-label", shotAlt(shot) + " — open details");
+      lbl.onclick = () => shotViewOpen(shot);
+    }
+    row.appendChild(lbl);
+  }
   const txt = document.createElement("span");
   txt.className = "annsum-txt";
   // Says which it was, because "no picture, and here is why" is a different
@@ -9476,16 +9974,35 @@ function shotReceipt(sum, shot) {
   txt.textContent = shot.view
     ? (shot.kind === "image"
         ? "image attached" + (shot.name ? ": " + shot.name : "")
+        : shot.kind === "file"
+        ? "file attached" + (shot.name ? ": " + shot.name : "")
         : shot.kind === "overview" ? "annotated overview attached"
         : "screenshot attached")
-    : (shot.kind === "image" ? "no image"
-       : shot.kind === "overview" ? "no overview screenshot"
-       : "no pane screenshot");
+    // The refusal names its cause ON THE ROW (shotFailLabel): "🖼 no image" with
+    // the reason only in a `title` was a picture that vanished unexplained.
+    : shotFailLabel(shot);
   txt.title = shot.viewNote || shot.view || "";
-  row.append(lbl, txt);
+  row.appendChild(txt);
   sum.appendChild(row);
-  const src = shot.src || shot.thumb;
-  if (!src) return;
+  // Nothing to draw. A picture's pruned copy announces itself (the <img> 404s and
+  // `onerror` below says so in words); a row with no <img> has to ASK, or it goes
+  // on claiming a path the pruner deleted. `probe` is set only by the restore — a
+  // live send's bytes were written seconds ago — so a fresh turn costs no request.
+  if (!src) {
+    if (shot.probe) {
+      fetch(shot.probe, { method: "HEAD" })
+        .then((r) => { if (!r.ok) throw new Error("gone"); })
+        .catch(() => {
+          const gone = document.createElement("span");
+          gone.className = "annsum-gone";
+          gone.textContent = " — " + (shot.kind === "image" ? "image" : "file")
+            + " pruned";
+          gone.title = shot.view || "";
+          row.appendChild(gone);
+        });
+    }
+    return;
+  }
   const btn = shotThumbBtn("annsum-pane", shot, shotAlt(shot));
   btn.title = shot.view || "";
   // A restored turn whose file the shots directory has pruned (12h/200 files)
@@ -9518,7 +10035,19 @@ function shotRestoreReceipt(turn, text) {
   sum.className = "annsum";
   let overview = null;
   for (const shot of shots) {
-    const full = shot.view ? { ...shot, src: fused.rawUrl(shot.view) } : shot;
+    // A picture gets a `src` (it is drawn); a FILE gets a `probe` instead (there
+    // is nothing to draw, and the only question left about it is whether the path
+    // it names is still there). Never `src` for a file: an <img> pointed at a
+    // .csv is a broken-image glyph, which reads as a bug in the chat.
+    // An IMAGE carrying a `size` is one the sending browser could not decode
+    // (shotAttachFile writes a thumbnail OR a size, never both), so it has no
+    // pixels this browser can draw either — and it takes the file's treatment
+    // rather than a broken <img> that would then blame the pruner for a format.
+    const bare = shot.kind === "file"
+      || (shot.kind === "image" && typeof shot.size === "number");
+    const full = !shot.view ? shot
+      : bare ? { ...shot, probe: fused.rawUrl(shot.view) }
+      : { ...shot, src: fused.rawUrl(shot.view) };
     if (shot.kind === "overview" && !overview) overview = full;
     shotReceipt(sum, full);
   }
@@ -9539,6 +10068,13 @@ shotViewImg.onclick = () => {
   const zoomed = shotViewBox.classList.toggle("zoom");
   if (!zoomed) { shotViewBox.scrollTop = 0; shotViewBox.scrollLeft = 0; }
 };
+
+// The preview has actually rendered: the line that said so goes. `load` and not a
+// timer, because how long a first render takes is exactly what is unknowable here
+// (a folder venv, a hundred-megabyte parquet) and is the reason the line exists.
+// It also fires for the `about:blank` an unmount writes, which is harmless —
+// the line is already hidden by then.
+shotViewFrame.onload = () => { shotViewLoad.hidden = true; };
 
 document.getElementById("shotview-close").onclick = shotViewClose;
 document.getElementById("shotview-scrim").onclick = shotViewClose;
@@ -9822,6 +10358,10 @@ function shotFlash() {
   const el = host.ownerDocument.createElement("div");
   el.setAttribute("style", "position: absolute; inset: 0; background: #ffffff;"
     + " opacity: 0; pointer-events: none; z-index: 2147483647;");
+  // Named, so shotNativePane can hide it: a native shot reads the SCREEN, and
+  // the flash is on the screen (in the split layout it is a sibling of the
+  // frame, not behind a shadow root).
+  el.setAttribute("data-shot-flash", "");
   host.appendChild(el);
   const done = () => { try { el.remove(); } catch (err) { /* gone with the doc */ } };
   // No animate() (an old engine, a detached document) is a missed flash, never a
@@ -9921,16 +10461,32 @@ for (const b of shotBtns()) b.addEventListener("click", shotAttachPane);
 // block would have meant a second grant, a second pruner and a second reader for
 // something the agent sees as the same thing — a path to a picture.
 //
-// How many can ride at once. A paste is one picture, a drag can be a folder's
-// worth, and the cap is what stops a slip of the mouse turning into 40 uploads and
-// a turn nobody can read. Over it, the extra files do NOT vanish: each becomes a
-// chip that says why, the same shape a failed capture wears, because a file the
-// user dropped and cannot see anywhere is indistinguishable from a bug.
-const SHOT_ATTACH_MAX = 4;
-// Bytes one pasted/dropped picture may be. The point of the limit is the AGENT's
-// read, not the disk: an 8 MB screenshot is not a more useful attachment than the
-// same picture at 4 MB, and this is where a phone photo would otherwise land.
+// HOW MANY CAN RIDE AT ONCE: as many as the user brought (D617). A count cap
+// (4) stood here and it was the last refusal left in this pipeline — and it
+// refused the one gesture it was written for, dropping a folder. This is a local
+// tool reading local files off the same disk: a drop of 40 is 40 attachments,
+// uploaded in order, each with its own chip. Nothing about "too many" is decided
+// here, or anywhere, any more.
+// THE ONE BYTE NUMBER LEFT, and it is a DOWNSCALE TRIGGER rather than a limit
+// (D615). Over it, a picture whose pixels this engine can read is re-encoded to
+// meet it (`shotShrink`) — the point was always the AGENT's read and not the disk:
+// an 8 MB screenshot is not a more useful attachment than the same picture at
+// 4 MB, and this is where a phone photo would otherwise land. Nothing is ever
+// refused for being over it; a picture that cannot be shrunk simply travels whole.
 const SHOT_ATTACH_MAX_BYTES = 4 * 1024 * 1024;
+// There is NO size cap on a non-picture, and there is no longer one on a picture
+// this engine cannot decode either. The 25 MB `SHOT_ATTACH_MAX_FILE_BYTES` that
+// used to sit here (D612) protected nothing: the shots directory is pruned on its
+// own schedule (12h/200 files), the agent's `Read` truncates a long file anyway,
+// and `/api/fs/upload` enforces no limit of its own — so the number's only effect
+// was to turn the one gesture that carries a 30 MB log into a chip saying no.
+// A log's, a dump's or a parquet's extra bytes ARE the content.
+
+// WHAT the attachment will be called. `shotIsImage` decides this and whether a
+// thumbnail is made, and nothing else — the caps it used to select are gone.
+function shotKindFor(file) {
+  return shotIsImage(file) ? "image" : "file";
+}
 
 // The extension a pasted blob has EARNED, from its MIME type — the same rule
 // shotExt applies to an encoded crop, for the same reason: the name has to follow
@@ -9948,61 +10504,327 @@ function shotFileExt(type, name) {
 // Whether this file is a picture at all. `type` first because it is what the
 // clipboard supplies and what the browser sniffed; the extension is the fallback
 // for a drag whose source gave no type.
+//
+// It no longer decides whether the attachment HAPPENS — every file type is
+// accepted now — only which of the two caps applies, whether a thumbnail is made,
+// and which word the wire uses (`shotKindFor`). The gate it used to be was the
+// thing users kept reporting: a chat that could be handed a screenshot of a CSV
+// but not the CSV.
 function shotIsImage(file) {
   if (!file) return false;
   if ((file.type || "").slice(0, 6) === "image/") return true;
   return /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(file.name || "");
 }
 
-// Take one picture the user brought in. Never throws: every refusal becomes a chip
-// carrying its own reason, exactly as a failed capture does, so nothing the user
-// gestured at disappears without an answer.
-async function shotAttachFile(file) {
-  const name = file.name || "pasted image";
-  const fail = (why) => {
-    shotAttached.push({ kind: "image", view: null, name, viewNote: why });
-    renderAnn();
-  };
-  if (file.size > SHOT_ATTACH_MAX_BYTES) {
-    return fail("not attached: " + name + " is " + Math.round(file.size / 1024)
-                + " KB and the limit is "
-                + Math.round(SHOT_ATTACH_MAX_BYTES / 1024) + " KB");
-  }
+// What to call the COPY on disk. A picture's name follows its bytes (shotFileExt,
+// above), because a clipboard image arrives with no filename and an agent Reading
+// a `.png` that holds JPEG bytes gets a file it cannot open. A file keeps its own
+// extension verbatim, and keeps NONE when it has none — the `.png` fallback that
+// is right for a nameless blob would be a lie about a Makefile.
+function shotSaveExt(file) {
+  if (shotIsImage(file)) return shotFileExt(file.type, file.name);
+  const dot = (file.name || "").lastIndexOf(".");
+  return dot > 0 ? (file.name || "").slice(dot).toLowerCase() : "";
+}
+
+// The FORMAT a name or path claims, spelled the way a person says it — "HEIC",
+// "TIFF", "PNG". Only ever used in the sentence a converted attachment wears, and
+// that sentence has to name the format the user recognises: they dropped
+// `IMG_4031.HEIC`, so "converted from HEIC" is checkable against the chip next to
+// it in a way "converted from image/heic" is not. `.jpg`/`.tif` are folded onto
+// their long names for the same reason — nobody calls it a JPG file when the
+// dialog that made it said JPEG.
+function shotFormatLabel(name) {
+  const dot = String(name || "").lastIndexOf(".");
+  const ext = dot > 0 ? String(name).slice(dot + 1).toLowerCase() : "";
+  const long = { jpg: "JPEG", jpeg: "JPEG", tif: "TIFF", tiff: "TIFF",
+                 heic: "HEIC", heif: "HEIF" };
+  return long[ext] || (ext ? ext.toUpperCase() : "that format");
+}
+
+// A picture NEITHER side can read, handed to the server to transcode. The bytes
+// are already on disk (this runs after the upload), so what crosses the bridge is
+// a path and what comes back is a sibling PNG next to it — Pillow decodes the
+// TIFF, and on a Mac the OS's own decoders take the HEIC that Pillow cannot.
+//
+// It exists because D613's "the AGENT may well know a format this browser does
+// not" turned out to be FALSE for the two formats users actually drop: `Read`
+// opens neither a .tif nor a .heic, so the attachment was a path to bytes nobody
+// in the conversation could look at. The page could already tell (`shotPixels`
+// returning null); it just had nowhere to send them.
+//
+// Never throws and never rejects: a failure here leaves the attachment exactly as
+// D613 left it (bytes, a glyph, a note), so the only thing riding on this call is
+// how good the attachment is, never whether there is one.
+async function shotServerPng(path) {
   try {
-    const dir = await shotDirPath();
-    const path = shotJoin(dir, shotStamp() + shotFileExt(file.type, file.name));
-    await fused.uploadFile(path, file);
-    shotAttached.push({ kind: "image", view: path, name,
-                        thumb: URL.createObjectURL(file) });
-    renderAnn();
+    const out = await fused.runPython(AGENT, { action: "image_to_png", path: path },
+                                      { key: null });
+    return out && out.path ? out : null;
   } catch (err) {
-    fail("not attached: it could not be saved (" + err.message + ")");
+    return null;
   }
 }
 
-// Every image in a paste or a drop, in order, up to the cap. Sequential rather
-// than Promise.all: they share one shots directory and one upload channel, the
-// chips appear one after another as they land (which is the feedback), and four
-// small files are not a race worth running.
+// The pixels of a picture the user brought in, or null when this engine cannot
+// get at them. Two mechanisms because they fail in different places:
+// `createImageBitmap` is the direct one and THROWS on a format it does not know,
+// while an `<img>` + `decode()` is what an engine without createImageBitmap still
+// has. Either result is a valid `drawImage` SOURCE named `canvas`, which is
+// exactly the shape `shotEncode` reads its pane out of — so the resize below is a
+// reuse of the capture ladder rather than a second copy of it.
 //
-// THE CAP IS DECIDED HERE and not per file, because only this end knows how many
-// there are. Refusing file-by-file said the same sentence once per file — drop a
-// folder of 30 and the composer fills with 26 identical "which is the cap" chips,
-// which is a worse answer than silence. One chip, naming the number left out.
-async function shotAttachFiles(files) {
-  const imgs = [...(files || [])].filter(shotIsImage);
-  if (!imgs.length) return;
-  const room = Math.max(0, SHOT_ATTACH_MAX - shotAttached.length);
-  for (const f of imgs.slice(0, room)) await shotAttachFile(f);
-  const over = imgs.length - room;
-  if (over > 0) {
-    shotAttached.push({ kind: "image", view: null,
-      name: over === 1 ? "1 more picture" : over + " more pictures",
-      viewNote: "not attached: " + over + (over === 1 ? " picture" : " pictures")
-        + " would have taken this message past " + SHOT_ATTACH_MAX
-        + ", which is the cap" });
-    renderAnn();
+// This runs for EVERY image, not only the oversize ones, because the answer is
+// load-bearing twice: it decides whether the downscale is even available (there
+// is no resize for bytes nothing here can read, so those travel whole — D615 took
+// the second cap that used to catch them away) and whether a thumbnail is honest. `URL.createObjectURL` on a .tiff renders an empty box in
+// Chrome — no error, no glyph, nothing — which reads as a bug in the chat rather
+// than as a format the browser lacks.
+async function shotPixels(file) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bmp = await createImageBitmap(file);
+      if (bmp && bmp.width && bmp.height) {
+        return { canvas: bmp, width: bmp.width, height: bmp.height,
+                 free: () => { try { bmp.close(); } catch (err) { /* no close */ } } };
+      }
+    } catch (err) { /* an engine without it, or a format it refuses — try <img> */ }
   }
+  if (typeof Image !== "function") return null;
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await (img.decode ? img.decode() : new Promise((res, rej) => {
+      img.onload = res;
+      img.onerror = () => rej(new Error("undecodable"));
+    }));
+    if (!img.naturalWidth || !img.naturalHeight) throw new Error("no pixels");
+    return { canvas: img, width: img.naturalWidth, height: img.naturalHeight,
+             free: () => URL.revokeObjectURL(url) };
+  } catch (err) {
+    URL.revokeObjectURL(url);
+    return null;
+  }
+}
+
+// One oversize picture, re-encoded small enough to attach. The ladder is
+// `shotEncode`'s and not a new one: webp quality steps where the engine really
+// encodes webp (and the silent-PNG guard where it only pretends to), PNG
+// otherwise, and resolution given up only after quality has run out. Capped at
+// SHOT_VIEW_EDGE, which is what a capture of the whole pane is capped at — so a
+// photo the user brought in is never carried at a size the app's own screenshots
+// are not. null means even the halvings could not reach the budget.
+async function shotShrink(pix, maxBytes) {
+  const fit = {};
+  const blob = await shotEncode(pix, { left: 0, top: 0,
+                                       width: pix.width, height: pix.height },
+                                { maxEdge: SHOT_VIEW_EDGE, maxBytes: maxBytes },
+                                fit);
+  return blob ? { blob: blob, width: fit.width, height: fit.height } : null;
+}
+
+// Take one thing the user brought in. Never throws: every refusal becomes a chip
+// carrying its own reason, exactly as a failed capture does, so nothing the user
+// gestured at disappears without an answer.
+//
+// AN OVERSIZE PICTURE IS RESIZED, NOT REFUSED. The 4 MB cap was never about the
+// disk — it is about the agent's read of the pixels — and a picture that is too
+// big for it is one downscale away from being exactly as useful, which makes
+// refusing it the wrong answer to a question we can just solve. And since D615
+// there is no second cap behind it either, so exactly ONE thing still refuses: an
+// upload that failed. `why` rides with every refusal so the chip
+// and the receipt can say the reason ON THE ROW instead of hiding it in a
+// `title` nobody hovers.
+async function shotAttachFile(file) {
+  const kind = shotKindFor(file);
+  const name = file.name || (kind === "image" ? "pasted image" : "attached file");
+  const fail = (note, why) => {
+    shotAttached.push({ kind, view: null, name, viewNote: note, why: why });
+    renderAnn();
+  };
+  // What actually gets written, what the chip says happened to it, and whether a
+  // 22px view of it would show anything. Decided in this order because each
+  // answer feeds the next: readable pixels decide whether the downscale trigger
+  // even applies, the trigger decides whether to resize, and the resize decides
+  // which bytes go up.
+  let blob = file, note = "", pic = kind === "image", undecodable = false;
+  if (kind === "image") {
+    const pix = await shotPixels(file);
+    if (!pix) {
+      // Still attached, and still called an image — but the note is NOT written
+      // here any more, because what it should say is not known yet: the server
+      // gets asked for a PNG after the upload (`shotServerPng`), and only if that
+      // also fails is this an attachment nobody can look at. D613 wrote the note
+      // at this point and claimed "the AGENT may well know a format this browser
+      // does not"; for .tif and .heic — the two formats users actually drop —
+      // that was wrong, and a sentence that soothes with a false hope is worse
+      // than the blank box it was written to explain.
+      pic = false;
+      undecodable = true;
+    } else {
+      if (file.size > SHOT_ATTACH_MAX_BYTES) {
+        const small = await shotShrink(pix, SHOT_ATTACH_MAX_BYTES);
+        if (small) {
+          blob = small.blob;
+          note = (small.width < pix.width
+            ? "downscaled from " + pix.width + "×" + pix.height + " to "
+              + small.width + "×" + small.height
+            : "re-encoded") + " for the agent's read ("
+            + shotSizeLabel(file.size) + " → " + shotSizeLabel(blob.size) + ")";
+        }
+      }
+      pix.free();
+    }
+  }
+  // NOTHING IS REFUSED FOR ITS SIZE ANY MORE (D615). What stood here was a
+  // 25 MB ceiling for a non-picture (and for a picture no engine here can
+  // decode), and it protected nothing that was not already protected: the shots
+  // directory prunes itself, `Read` truncates a long file at the agent's end, and
+  // the upload endpoint has no limit of its own to be gentle about. So the only
+  // refusal left in this function is an upload that actually failed.
+  try {
+    const dir = await shotDirPath();
+    // The extension follows whichever bytes are going up: the file's own when the
+    // file itself is being copied, and the ENCODER'S when it was re-encoded — a
+    // resized .jpg comes back as webp where webp is real, and a path called
+    // `.jpg` holding webp bytes is the exact lie shotExt exists to prevent.
+    const ext = blob === file ? shotSaveExt(file) : shotExt(blob);
+    const path = shotJoin(dir, shotStamp() + ext);
+    await fused.uploadFile(path, blob);
+    // THE ONE THING THIS BROWSER CANNOT DO FOR ITSELF. The bytes are on disk now,
+    // inside the one directory the server will convert in, so the picture no
+    // engine here can decode gets one more chance from the side that has Pillow
+    // and (on a Mac) the OS's own decoders. On success the attachment becomes an
+    // ordinary picture — a real thumbnail, a `view` the agent's Read can open —
+    // and the note says what was done and why; on failure it is D613's
+    // bytes-and-a-glyph, with the note finally saying the true thing about it.
+    let conv = null;
+    if (undecodable) {
+      conv = await shotServerPng(path);
+      note = conv
+        ? "converted from " + shotFormatLabel(name) + " to "
+          + shotFormatLabel(conv.path) + " on the server ("
+          + conv.source_w + "×" + conv.source_h + " → "
+          + conv.width + "×" + conv.height
+          + ") because neither the browser nor the agent can read that format"
+        : "attached as bytes: this browser cannot decode " + name + " and the "
+          + "server could not convert it either, so the agent probably cannot "
+          + "read this format — say so rather than guessing at the pixels";
+    }
+    // A thumbnail and a `size` are alternatives, not a pair: whatever can be SEEN
+    // answers "which one did I just attach" by being looked at, and whatever
+    // cannot answers it by name and size. That is the same split the chip and the
+    // receipt draw — a picture OR a glyph, never both. A CONVERTED picture is on
+    // the seen side of it: its thumbnail is the server's copy fetched back
+    // through /api/fs/raw (a URL that survives a reload, unlike the blob: one a
+    // live encode gets), and it carries no `size` for exactly the reason no other
+    // drawable picture does — which is also what keeps the restore path's
+    // `bare` test (an image with a `size` has no pixels anyone can draw) true.
+    const shot = { kind, view: conv ? conv.path : path, name };
+    if (note) shot.viewNote = note;
+    if (conv) shot.thumb = fused.rawUrl(conv.path);
+    else if (pic) shot.thumb = URL.createObjectURL(blob);
+    else shot.size = file.size;
+    shotAttached.push(shot);
+    renderAnn();
+  } catch (err) {
+    fail("not attached: it could not be saved (" + err.message + ")",
+         "could not be saved");
+  }
+}
+
+// EVERYTHING in a paste or a drop, in order. Every file, however many there are
+// — there is no overflow branch here to read any more, because there is nothing
+// left for it to say (D617).
+//
+// Sequential rather than Promise.all, and that is the one decision this function
+// still makes: they share one shots directory and one upload channel, and the
+// chips appearing one after another as they land IS the feedback for a drop big
+// enough to take a moment. A parallel fan-out would buy little and would land the
+// chips in a scrambled order.
+async function shotAttachFiles(files) {
+  const picks = [...(files || [])].filter(Boolean);
+  if (!picks.length) return;
+  for (const f of picks) await shotAttachFile(f);
+}
+
+// ── an attachment that is already a PATH ───────────────────────
+// The one shape that skips the upload entirely: a drag whose source told us where
+// the file actually LIVES. A browser `File` never carries that (bytes only, no
+// filesystem path — that is an Electron privilege), so this is not reachable from
+// a Finder or Explorer drop and never will be; it is for drags that originate
+// INSIDE fused-render, which can say so in a dataTransfer type of their own.
+//
+// Copying would be the wrong answer for those even though it would work: the file
+// is one the user already has, at a path they can name, and the agent is about to
+// be asked to Read it — likely to EDIT it next, which a copy in a temp directory
+// that gets pruned in 12 hours cannot survive. So the real path goes on the wire,
+// and the spawn line grows a Read rule for its directory (`read_dirs` on the send,
+// agent.py's `extra_read_dirs`) exactly as it already has one for the shots dir.
+const SHOT_PATH_TYPE = "application/x-fused-path";
+
+// The last segment of a path, either separator. Not `basename` from anywhere —
+// this template imports nothing.
+function shotBase(path) {
+  const parts = String(path || "").split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(path || "");
+}
+
+// The directory part, in the same forward-slash spelling `_wire_path` hands the
+// page (the Read rule is matched as TEXT, so the two have to agree — see the
+// shots-dir note on shotJoin).
+function shotDirOf(path) {
+  const norm = String(path || "").replace(/\\/g, "/");
+  const cut = norm.lastIndexOf("/");
+  return cut > 0 ? norm.slice(0, cut) : norm;
+}
+
+// Real paths a drop carried, one per line. Newline-joined because a multi-row
+// selection is one drag, and a newline is the one character a filesystem path
+// cannot contain on the platforms this ships to.
+function shotDropPaths(dt) {
+  if (!dt || [...(dt.types || [])].indexOf(SHOT_PATH_TYPE) === -1) return [];
+  let raw = "";
+  try { raw = dt.getData(SHOT_PATH_TYPE) || ""; } catch (err) { return []; }
+  return raw.split("\n").map((s) => s.trim()).filter(Boolean);
+}
+
+// Attach them: no upload, no bytes read, no size (the page never opened the
+// file — `undefined` is the honest answer, and shotSizeLabel prints nothing for
+// it). An image still gets a thumbnail, because /api/fs/raw will serve it and a
+// picture the user can see is the whole reason the thumbnail exists.
+//
+// Every path the drag carried, like shotAttachFiles: no count cap, no overflow
+// chip (D617). A multi-row selection out of the file tree is one gesture and all
+// of it arrives.
+function shotAttachPaths(paths) {
+  for (const path of (paths || [])) {
+    const name = shotBase(path);
+    const kind = shotKindFor({ name, type: "" });
+    const shot = { kind, view: path, name };
+    if (kind === "image") shot.thumb = fused.rawUrl(path);
+    shotAttached.push(shot);
+  }
+  renderAnn();
+}
+
+// Every directory the agent has to be allowed to Read for THIS message, beyond
+// the shots dir it is always allowed. Only real-path attachments contribute:
+// everything that was copied lives under the shots dir, which the spawn line
+// pre-approves unconditionally, so filtering it out here is what keeps the
+// `--allowed-tools` line from growing a duplicate rule on every turn.
+//
+// Deduplicated, because dropping six rows out of one folder is one grant.
+function shotReadDirs(shots) {
+  const dirs = [];
+  for (const s of (shots || [])) {
+    if (!s || !s.view) continue;
+    const dir = shotDirOf(s.view);
+    if (!dir || dir === shotDirSeen) continue;
+    if (dirs.indexOf(dir) === -1) dirs.push(dir);
+  }
+  return dirs;
 }
 
 // PASTE. `clipboardData.files` is the modern spelling and it is empty for a
@@ -10018,10 +10840,10 @@ async function shotAttachFiles(files) {
 function shotPasteHandler(e) {
   const data = e.clipboardData;
   if (!data) return;
-  const imgs = [...(data.files || [])].filter(shotIsImage);
-  if (!imgs.length) return;
+  const picks = [...(data.files || [])];
+  if (!picks.length) return;
   e.preventDefault();
-  shotAttachFiles(imgs);
+  shotAttachFiles(picks);
 }
 box.addEventListener("paste", shotPasteHandler);
 homebox.addEventListener("paste", shotPasteHandler);
@@ -10043,36 +10865,47 @@ homebox.addEventListener("paste", shotPasteHandler);
 // toggle flickers the highlight off the moment the cursor moves over a chip. The
 // counter is reset (not decremented) on drop, because a drop delivers no leave for
 // the enters that preceded it.
-function shotDragHasFiles(e) {
+// TWO payloads answer yes, and the order they are TRIED in (see the drop) is the
+// whole point: a drag from inside fused-render carries the real path, and a copy
+// of a file the user already has is strictly worse than the file itself.
+function shotDragHasAttachment(e) {
   const dt = e.dataTransfer;
   if (!dt) return false;
-  return [...(dt.types || [])].indexOf("Files") !== -1;
+  const types = [...(dt.types || [])];
+  return types.indexOf("Files") !== -1 || types.indexOf(SHOT_PATH_TYPE) !== -1;
 }
 const chatCol = document.getElementById("chat");
 let shotDragDepth = 0;
 if (chatCol) {
   chatCol.addEventListener("dragenter", (e) => {
-    if (!shotDragHasFiles(e)) return;
+    if (!shotDragHasAttachment(e)) return;
     e.preventDefault();
     shotDragDepth++;
     chatCol.classList.add("dropping");
   });
   chatCol.addEventListener("dragover", (e) => {
-    if (!shotDragHasFiles(e)) return;
+    if (!shotDragHasAttachment(e)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   });
   chatCol.addEventListener("dragleave", (e) => {
-    if (!shotDragHasFiles(e)) return;
+    if (!shotDragHasAttachment(e)) return;
     shotDragDepth = Math.max(0, shotDragDepth - 1);
     if (!shotDragDepth) chatCol.classList.remove("dropping");
   });
   chatCol.addEventListener("drop", (e) => {
-    if (!shotDragHasFiles(e)) return;
+    if (!shotDragHasAttachment(e)) return;
     e.preventDefault();
     shotDragDepth = 0;
     chatCol.classList.remove("dropping");
-    shotAttachFiles([...(e.dataTransfer.files || [])]);
+    // REAL PATHS FIRST. Both payloads can ride one drag (a source that sets the
+    // path type may set `files` too), and when they do they describe the same
+    // file — one by where it lives and one by a copy of its bytes. The path is
+    // the better answer for every reader downstream: no upload, no 12-hour
+    // expiry, and an edit the agent makes lands on the user's own file.
+    const paths = shotDropPaths(e.dataTransfer);
+    if (paths.length) shotAttachPaths(paths);
+    else shotAttachFiles([...(e.dataTransfer.files || [])]);
   });
 }
 
@@ -12824,6 +13657,59 @@ function retryVerb(retry) {
 // line that reports a turn running OUTSIDE this app (D415's transcript-follow),
 // which has no process to kill and no phase to read, and where a "stop · esc"
 // that quietly does nothing would be the worst control on the page.
+// The verb for a run this page owns, from the poll's phase and `activity`. ONE
+// PLAIN SENTENCE a person who has never heard of tokens can read: what Claude
+// is doing right now, in everyday words. The specifics (which command, which
+// file) go in the brackets after it, and only one of them (see activityDetail).
+// An earlier cut of this line stacked tokens, input bytes, a thinking estimate,
+// a task count and a silence timer into the brackets — a dashboard, not a
+// status (Akshil, 2026-08-28). Everything that was a NUMBER is gone; what was
+// a number is now a word.
+//
+// `quietSecs` is how long the poll has reported nothing new. Past 20 s the
+// verb itself changes to say the wait is real — "Still waiting for a reply" —
+// instead of appending "quiet 86s" to a verb that still claims progress.
+function activityVerb(stats, thinkVerb, quietSecs) {
+  const act = stats.activity || {};
+  if (act.hook) return "Running project hooks";
+  if (stats.phase === "tooling") {
+    const t = act.tool;
+    if (!t) return "Reading the result";
+    const streaming = act.tool_input_bytes && !t.detail;
+    switch (t.name) {
+      case "Bash": return streaming ? "Preparing a command" : "Running a command";
+      case "Read": return "Reading a file";
+      case "Edit": case "MultiEdit": case "NotebookEdit": return "Editing a file";
+      case "Write": return "Writing a file";
+      case "Grep": case "Glob": return "Searching files";
+      case "Task": case "Agent": return "Running a helper agent";
+      case "Skill": return "Loading a skill";
+      case "WebFetch": case "WebSearch": return "Fetching from the web";
+      default: return "Using " + t.name;
+    }
+  }
+  // The model's turn: request out, thinking, or writing. A long silence here
+  // is the one ambiguity worth naming — and if a background command is still
+  // running, that is almost always what the wait is.
+  if (quietSecs >= 20) {
+    return act.tasks && act.tasks.length
+      ? "Waiting for a background command to finish"
+      : "Still waiting for a reply";
+  }
+  if (stats.phase === "requesting") return "Waiting for a reply";
+  if (stats.phase === "composing") return "Writing a reply";
+  return thinkVerb;
+}
+// The ONE thing that goes in the brackets beside the time: the command's
+// description, the file's name, the helper agent's job. Nothing while the model
+// itself is working — there is no useful noun for that.
+function activityDetail(stats) {
+  const act = stats.activity || {};
+  if (act.hook) return "";
+  if (stats.phase === "tooling" && act.tool && act.tool.detail) return act.tool.detail;
+  return "";
+}
+
 function addWorking(opts) {
   const fixedVerb = (opts && opts.verb) || "";
   const stoppable = !(opts && opts.stoppable === false);
@@ -12831,7 +13717,12 @@ function addWorking(opts) {
   d.className = "turn working";
   const thinkVerb = VERBS[Math.floor(Math.random() * VERBS.length)];
   const start = Date.now();
-  let stats = { tokens: 0, phase: "thinking", retry: null };
+  let stats = { tokens: 0, phase: "thinking", retry: null, activity: null };
+  // When the poll last told us something NEW. The stream rows carry no clock,
+  // so this is the page's own: a line whose facts have not moved for a while
+  // says so ("quiet 24s") instead of letting the timer imply progress.
+  let lastChange = Date.now();
+  let lastKey = "";
   let stopping = false;
   d.innerHTML = '<span class="star">✻</span> <span class="verb"></span><span class="meta"></span>'
     // The key rides on the label, not in a hint row: same reasoning as the
@@ -12848,20 +13739,21 @@ function addWorking(opts) {
     const secs = Math.round((Date.now() - start) / 1000);
     // A live retry outranks every phase but the user's own stop: it is the only
     // one of these that explains why nothing is happening.
+    const quiet = Math.round((Date.now() - lastChange) / 1000);
     verbEl.textContent = (stopping ? "Stopping" :
                           fixedVerb ? fixedVerb :
                           stats.retry ? retryVerb(stats.retry) :
                           stats.phase === "awaiting" ? "Waiting for your approval" :
-                          stats.phase === "composing" ? "Composing" :
-                          stats.phase === "tooling" ? "Working" : thinkVerb) + "…";
+                          activityVerb(stats, thinkVerb, quiet)) + "…";
     // The shimmer is the liveness signal (see .working .verb), so the one phase
     // that is NOT progress has to say so: awaiting approval is blocked on the
     // user, not on the model.
     d.classList.toggle("awaiting", !stopping && stats.phase === "awaiting");
-    const effort = curEffort();
+    // Time, and at most one detail. Nothing else: no token count, no byte
+    // count, no effort label — the numbers were the complaint.
     const parts = [secs + "s"];
-    if (stats.tokens) parts.push("↓ " + stats.tokens + " tokens");
-    if (stats.phase === "thinking" && effort) parts.push(effort + " effort");
+    const detail = stopping || fixedVerb ? "" : activityDetail(stats);
+    if (detail) parts.push(detail);
     meta.textContent = " (" + parts.join(" · ") + ")";
   };
   const timer = setInterval(draw, 1000);
@@ -12880,7 +13772,16 @@ function addWorking(opts) {
   followBottom();
   return {
     el: d,
-    setStats(tokens, phase, retry) { stats = { tokens, phase, retry: retry || null }; draw(); },
+    setStats(tokens, phase, retry, activity) {
+      stats = { tokens, phase, retry: retry || null, activity: activity || null };
+      // "New" = any fact on the line moved. Tokens tick during composing, the
+      // thinking estimate during thinking, input bytes during a Write — so a
+      // healthy run resets this every poll and only a genuinely silent one
+      // reaches the "quiet Ns" hint.
+      const key = JSON.stringify([tokens, phase, retry, activity]);
+      if (key !== lastKey) { lastKey = key; lastChange = Date.now(); }
+      draw();
+    },
     // Reversible: the kill can fail, and a run that is still streaming must not
     // be left wearing a "Stopping…" line it will never honour.
     setStopping(on) { stopping = on; if (stopBtn) stopBtn.disabled = on; draw(); },
@@ -14199,7 +15100,7 @@ async function pollLoop(run_id, gen = logGen) {
       if (tick++ % 8 === 0) pollArtifacts();
       // usage arrives only at message end; estimate from streamed text meanwhile
       const tokens = Math.max(data.tokens || 0, Math.round((data.text || "").length / 4));
-      w.setStats(tokens, data.phase || "thinking", data.retry);
+      w.setStats(tokens, data.phase || "thinking", data.retry, data.activity);
       syncPermissions(data.permissions, run_id, w, data.mode);
       noteSkills(data.skills, w);
       // Not awaited: a snapshot must never hold up the streaming reply, and the
@@ -14423,7 +15324,26 @@ async function sendMessage(message) {
   const wireViews = pics.map((s) => {
     const wire = { kind: s.kind || "pane", view: s.view || null };
     if (s.viewNote) wire.viewNote = s.viewNote;
-    if (s.name && s.kind === "image") wire.name = s.name;
+    // The short clause too, and for the SCREEN rather than for the model: a
+    // restored turn rebuilds its receipt out of this JSON alone, and without it
+    // a refusal that said why while the page was open goes back to saying "no
+    // image" and nothing else the moment the session is reopened. Parsing it back
+    // out of `viewNote` was the alternative and would break on the next sentence
+    // anyone writes.
+    if (s.why) wire.why = s.why;
+    // `name` rides for both kinds the user BROUGHT IN, and the block's own text
+    // leans on it ("`name` is what they called it") — a capture of this pane has
+    // no such name, and the paneNoun already says what it is.
+    if (s.name && (s.kind === "image" || s.kind === "file")) wire.name = s.name;
+    // And how big, for a file only: the agent is about to Read it, and knowing
+    // beforehand whether that is 3 KB or 20 MB is the difference between reading
+    // it whole and reaching for a targeted grep. Absent when unknown (a real-path
+    // attachment was never opened) rather than sent as 0.
+    // An image the browser could not decode carries a size for the same reason a
+    // file does: there is no small picture of it to look at, so this is the only
+    // measurement of it there is, on the wire and on the chip alike.
+    if ((s.kind === "file" || s.kind === "image")
+        && typeof s.size === "number") wire.size = s.size;
     return wire;
   });
   // The overview rides the same pictures block the user's own attachments do —
@@ -14498,6 +15418,13 @@ async function sendMessage(message) {
       // model got APP_STATE_UNREADABLE back, which the invariant beside that
       // constant says can never be the answer to it. See agent.py `_has_pane`.
       has_pane: noPane ? "0" : "1",
+      // The directories THIS message's attachments live in, beyond the shots dir
+      // the spawn line always allows: one Read rule each, so a real-path
+      // attachment (shotAttachPaths) does not card the very file the user just
+      // dragged in. Sent per TURN because the spawn is per turn — every send
+      // launches a fresh `claude --resume` — so the grant matches the message it
+      // arrived with and expires with it instead of accumulating over a session.
+      read_dirs: JSON.stringify(shotReadDirs(pics)),
       // key:null — all agent calls opt out of default per-file cancellation
       // (D114): start/poll/history/sessions share one file, and superseding an
       // awaited poll would leave it pending and hang the streaming loop.

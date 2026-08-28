@@ -1,11 +1,9 @@
 """Regression tests for the community marketplace backend
 (fused_render/community.py):
 
-- force-update no longer discards local edits when the "Local edits before
-  community update" snapshot commit itself fails (a pre-commit hook, in this
-  suite) — it aborts with an error instead of running `_replace_contents`.
 - `refresh` performs a FULL clone of the community repo into the workspace's
-  showcase folder and serves the catalog from it.
+  showcase folder and serves the catalog from it, and never fetches or
+  merges again once that clone exists.
 - a pre-existing showcase folder that is not our clone is never deleted —
   refresh refuses with a friendly error instead.
 - `_cache_lock` is a real cross-process lock: a call that can't acquire it
@@ -13,7 +11,6 @@
 """
 import json
 import os
-import stat
 import sys
 import time
 
@@ -33,17 +30,8 @@ def community_mod(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "STATE_DIR", str(state))
     monkeypatch.setattr(mod, "WORKSPACE", str(workspace))
     monkeypatch.setattr(mod, "SHOWCASE_DIR", str(workspace / "showcase"))
-    monkeypatch.setattr(mod, "COMMUNITY_TAG_DIR", str(workspace / "local"))
-    monkeypatch.setattr(mod, "INSTALLS_JSON", str(state / "installs.json"))
-    monkeypatch.setattr(mod, "OPENED_JSON", str(state / "opened.json"))
     monkeypatch.setattr(mod, "LOCK_PATH", str(state / ".lock"))
     return mod
-
-
-def _write_installs(mod, installs):
-    os.makedirs(mod.STATE_DIR, exist_ok=True)
-    with open(mod.INSTALLS_JSON, "w", encoding="utf-8") as f:
-        json.dump({"schema": 1, "installs": installs}, f)
 
 
 def _write_metadata(mod, slug, meta):
@@ -73,48 +61,6 @@ def _make_remote(tmp_path, apps):
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_force_update_aborts_when_snapshot_commit_fails(tmp_path, community_mod):
-    mod = community_mod
-    app_dir = str(tmp_path / "installed" / "widget")
-    os.makedirs(app_dir)
-    git(app_dir, "init", "-q")
-    write(app_dir, "app.py", "old\n")
-    git(app_dir, "add", "-A")
-    git(app_dir, "commit", "-q", "-m", "Install from community")
-    local_commit = git(app_dir, "rev-parse", "HEAD").strip()
-
-    # A hook that always refuses the commit — stands in for gpgsign/lock
-    # contention/anything else that can fail "Local edits before update".
-    hooks = os.path.join(app_dir, ".git", "hooks")
-    os.makedirs(hooks, exist_ok=True)
-    hook_path = os.path.join(hooks, "pre-commit")
-    with open(hook_path, "w", encoding="utf-8") as f:
-        f.write("#!/bin/sh\nexit 1\n")
-    os.chmod(hook_path, os.stat(hook_path).st_mode | stat.S_IEXEC)
-
-    # User edit, never committed — this is what must survive.
-    write(app_dir, "app.py", "MY EDIT\n")
-
-    _write_installs(mod, {
-        "widget": {"path": app_dir, "commit": "old-sha", "local_commit": local_commit,
-                    "version": "1", "installed_at": "2026-01-01T00:00:00Z"},
-    })
-    showcase_slug = os.path.join(mod.SHOWCASE_DIR, "widget")
-    os.makedirs(showcase_slug, exist_ok=True)
-    with open(os.path.join(showcase_slug, "app.py"), "w", encoding="utf-8") as f:
-        f.write("new upstream content\n")
-    os.makedirs(os.path.join(mod.SHOWCASE_DIR, ".git"), exist_ok=True)  # _cache_ready()
-    _write_metadata(mod, "widget", {"name": "Widget"})
-
-    res = mod.main(action="update", slug="widget", force=True)
-
-    assert res["status"] == "error"
-    with open(os.path.join(app_dir, "app.py"), encoding="utf-8") as f:
-        assert f.read() == "MY EDIT\n"  # never overwritten by _replace_contents
-    assert git(app_dir, "status", "--porcelain").strip()  # still dirty, not silently committed
-
-
-@pytest.mark.skipif(not git_available(), reason="git not installed")
 def test_refresh_full_clones_into_workspace_showcase(tmp_path, community_mod, monkeypatch):
     mod = community_mod
     remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
@@ -132,33 +78,17 @@ def test_refresh_full_clones_into_workspace_showcase(tmp_path, community_mod, mo
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_keeps_local_edits(tmp_path, community_mod, monkeypatch):
-    mod = community_mod
-    remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
-    monkeypatch.setattr(mod, "REPO_URL", remote)
-    assert mod.main(action="refresh")["status"] == "ok"
-
-    # The showcase tree is the user's: an edit must survive the next refresh.
-    edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
-    with open(edited, "w", encoding="utf-8") as f:
-        f.write("MY EDIT\n")
-
-    res = mod.main(action="refresh")
-    assert res["status"] == "ok"
-    with open(edited, encoding="utf-8") as f:
-        assert f.read() == "MY EDIT\n"
-
-
-@pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
+def test_refresh_never_fetches_or_merges_once_the_clone_exists(
         tmp_path, community_mod, monkeypatch):
+    """Once the showcase clone exists, refresh is a no-op that just serves
+    the catalog — no fetch, no merge, ever again after the first clone. An
+    edit sitting in the tree (however it got there) is never touched, and no
+    upstream commit — however conflicting — is ever pulled in."""
     mod = community_mod
     remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
     monkeypatch.setattr(mod, "REPO_URL", remote)
     assert mod.main(action="refresh")["status"] == "ok"
 
-    # Local edit AND an upstream commit touching the same file: the ff-only
-    # merge can't apply, and the local tree must survive untouched.
     edited = os.path.join(mod.SHOWCASE_DIR, "widget", "index.html")
     with open(edited, "w", encoding="utf-8") as f:
         f.write("MY EDIT\n")
@@ -168,11 +98,21 @@ def test_refresh_keeps_conflicting_local_edits_when_upstream_moved(
     git(seed, "commit", "-q", "-m", "upstream change")
     git(seed, "push", "-q", "origin", "HEAD")
 
+    calls = []
+    real_git = mod._git
+
+    def spy(cwd, *args, **kwargs):
+        calls.append(args)
+        return real_git(cwd, *args, **kwargs)
+
+    monkeypatch.setattr(mod, "_git", spy)
+
     res = mod.main(action="refresh")
 
-    assert res["status"] == "ok"  # catalog still serves
+    assert res["status"] == "ok"
     with open(edited, encoding="utf-8") as f:
-        assert f.read() == "MY EDIT\n"
+        assert f.read() == "MY EDIT\n"  # untouched — no merge ran
+    assert not any(a and a[0] in ("fetch", "merge") for a in calls)
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
@@ -200,22 +140,6 @@ def test_refresh_refuses_foreign_git_repo_at_showcase_path(tmp_path, community_m
     assert os.path.isfile(stale_lock)  # their in-flight git op untouched
 
 
-def test_refresh_refuses_foreign_showcase_folder(community_mod):
-    mod = community_mod
-    # A showcase folder the user made themselves (no .git) must never be
-    # deleted or cloned over.
-    os.makedirs(mod.SHOWCASE_DIR)
-    marker = os.path.join(mod.SHOWCASE_DIR, "precious.txt")
-    with open(marker, "w", encoding="utf-8") as f:
-        f.write("keep me\n")
-
-    res = mod.main(action="refresh")
-
-    assert res["status"] == "error"
-    assert "not the showcase clone" in res["message"]
-    assert os.path.isfile(marker)
-
-
 @pytest.mark.skipif(not git_available(), reason="git not installed")
 def test_refresh_sweeps_leftover_staging_dirs(tmp_path, community_mod, monkeypatch):
     mod = community_mod
@@ -234,15 +158,16 @@ def test_refresh_sweeps_leftover_staging_dirs(tmp_path, community_mod, monkeypat
 
 
 @pytest.mark.skipif(not git_available(), reason="git not installed")
-def test_refresh_leaves_fresh_git_locks_alone(tmp_path, community_mod, monkeypatch):
+def test_refresh_leaves_git_locks_alone(tmp_path, community_mod, monkeypatch):
     mod = community_mod
     remote = _make_remote(tmp_path, [{"slug": "widget", "name": "Widget"}])
     monkeypatch.setattr(mod, "REPO_URL", remote)
     assert mod.main(action="refresh")["status"] == "ok"
 
-    # The showcase clone is the user's tree: a FRESH index.lock may be their
-    # own git command in flight and must survive; an ancient one is debris
-    # from a killed process and gets cleaned.
+    # The showcase clone is the user's tree, and refresh never fetches or
+    # merges once the clone exists — so it must never touch a lockfile
+    # either, fresh or ancient. (No fetch/merge means no lock contention to
+    # clean up in the first place.)
     git_dir = os.path.join(mod.SHOWCASE_DIR, ".git")
     fresh = os.path.join(git_dir, "index.lock")
     with open(fresh, "w", encoding="utf-8"):
@@ -250,13 +175,13 @@ def test_refresh_leaves_fresh_git_locks_alone(tmp_path, community_mod, monkeypat
     old = os.path.join(git_dir, "HEAD.lock")
     with open(old, "w", encoding="utf-8"):
         pass
-    ancient = time.time() - mod.STALE_LOCK_AGE - 60
+    ancient = time.time() - 3600 - 60
     os.utime(old, (ancient, ancient))
 
     mod.main(action="refresh")
 
     assert os.path.isfile(fresh)
-    assert not os.path.exists(old)
+    assert os.path.isfile(old)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="posix flock path")
@@ -275,3 +200,50 @@ def test_cache_lock_times_out_instead_of_racing(community_mod, monkeypatch):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+# -------------------------------------------------- normalized origin (finding #11)
+
+
+@pytest.mark.skipif(not git_available(), reason="git not installed")
+def test_cache_ready_tolerates_an_equivalent_but_differently_spelled_origin(
+        tmp_path, community_mod, monkeypatch):
+    """A genuine clone of REPO_URL, whose origin is merely spelled
+    differently (an ssh remote against an https REPO_URL, a trailing
+    `.git`) must still read as ready — an exact string match reported it
+    `no-cache` forever, and `_refresh` then refused it outright on every
+    visit ("exists but is not the showcase clone")."""
+    mod = community_mod
+    monkeypatch.setattr(mod, "REPO_URL", "https://github.com/fusedio/fused-render-community-apps.git")
+    os.makedirs(mod.SHOWCASE_DIR)
+    git(mod.SHOWCASE_DIR, "init", "-q")
+    # Same repo, spelled as ssh + no trailing .git.
+    git(mod.SHOWCASE_DIR, "remote", "add", "origin",
+        "git@github.com:fusedio/fused-render-community-apps")
+
+    assert mod._cache_ready()
+
+    res = mod.main(action="refresh")
+    assert res["status"] == "ok"
+
+
+def test_normalize_git_url_treats_scp_and_https_and_dotgit_as_equal(community_mod):
+    mod = community_mod
+    forms = [
+        "https://github.com/fusedio/fused-render-community-apps.git",
+        "https://github.com/fusedio/fused-render-community-apps",
+        "https://github.com/fusedio/fused-render-community-apps/",
+        "git@github.com:fusedio/fused-render-community-apps.git",
+        "git@github.com:fusedio/fused-render-community-apps",
+        "ssh://git@github.com/fusedio/fused-render-community-apps.git",
+        "https://GITHUB.com/fusedio/fused-render-community-apps.git",
+    ]
+    normalized = {mod._normalize_git_url(f) for f in forms}
+    assert len(normalized) == 1, normalized
+
+
+def test_normalize_git_url_still_tells_different_repos_apart(community_mod):
+    mod = community_mod
+    a = mod._normalize_git_url("https://github.com/fusedio/fused-render-community-apps.git")
+    b = mod._normalize_git_url("https://github.com/someone-else/unrelated-repo.git")
+    assert a != b

@@ -24,10 +24,10 @@ Two things move, because the workspace's absolute path is written down in two
 places:
 
 a) the folder itself;
-b) **absolute paths written into the app's own state** — community install
-   records, bookmark and recents view urls, scheduled-message targets (a
-   stale one fails a 400 on an unattended run), and the menu-bar pin (the one
-   of these that lives under Application Support, not ``home_dir()``).
+b) **absolute paths written into the app's own state** — bookmark and
+   recents view urls, scheduled-message targets (a stale one fails a 400 on
+   an unattended run), and the menu-bar pin (the one of these that lives
+   under Application Support, not ``home_dir()``).
 
 Re-entrant: (b) is attempted on every startup, gated on its own
 "old shape present, new shape absent" check, so a process that died between
@@ -213,8 +213,12 @@ def _remap_file_param(query: str, src: str, dst: str) -> str | None:
 # ---------------------------------------------------------------- state files
 
 def _rewrite_state(src: str, dst: str) -> None:
-    for label, fn in (("community installs", _rewrite_installs),
-                      ("bookmarks", _rewrite_bookmarks),
+    # community installs.json is deliberately absent here: the community
+    # marketplace no longer produces installed copies (fused_render/
+    # community.py), and installs.json from before that change is left on
+    # disk untouched — nothing reads or writes it any more, so there is
+    # nothing here for a workspace move to keep in step.
+    for label, fn in (("bookmarks", _rewrite_bookmarks),
                       ("recents", _rewrite_recents),
                       ("scheduled messages", _rewrite_schedule),
                       ("the menu-bar pin", _rewrite_pin)):
@@ -222,27 +226,6 @@ def _rewrite_state(src: str, dst: str) -> None:
             fn(src, dst)
         except Exception:
             logger.exception("could not rewrite workspace paths in %s", label)
-
-
-def _rewrite_installs(src: str, dst: str) -> None:
-    """installs.json records each installed app's absolute folder."""
-    from fused_render import community
-
-    data = storage.read_json(community.INSTALLS_JSON)
-    installs = data.get("installs") if isinstance(data, dict) else None
-    if not isinstance(installs, dict):
-        return
-    changed = False
-    for rec in installs.values():
-        if not isinstance(rec, dict):
-            continue
-        remapped = _remap(rec.get("path"), src, dst)
-        if remapped is not None:
-            rec["path"] = remapped
-            changed = True
-    if changed:
-        storage.write_json(community.INSTALLS_JSON, data)
-        logger.info("rewrote workspace paths in %s", community.INSTALLS_JSON)
 
 
 def _rewrite_bookmarks(src: str, dst: str) -> None:

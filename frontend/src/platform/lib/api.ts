@@ -813,11 +813,36 @@ export function resolveConditions(fsPath: string): Promise<ConditionsResult> {
   return p;
 }
 
-// One task-attachment image in, its stored path out (POST /api/schedule/shot).
-// The path is what scheduleMessage's `images` carries; the bytes live under
-// the server's task-shots dir, where the scheduled run is pre-allowed to Read.
-export function uploadTaskShot(dataUrl: string): Promise<{ path: string }> {
-  return postJson<{ path: string }>("/api/schedule/shot", { data: dataUrl });
+// One task attachment in, its stored path out (POST /api/schedule/shot). The
+// path is what scheduleMessage's `images` carries; the bytes live under the
+// server's task-shots dir, where the scheduled run is pre-allowed to Read.
+//
+// MULTIPART, not the data-URL JSON this was until 2026-08-28 (D618): the card
+// takes ANY file at ANY size now, and base64 is a 33% tax paid twice on a 40 MB
+// log. The browser sets the multipart boundary Content-Type, so we must NOT set
+// it ourselves; X-Fused still forces the write guard (see importTemplates).
+//
+// `kind` is the server's answer and may DISAGREE with what the client guessed:
+// a `.tif` goes up as bytes no browser draws and comes back as a PNG the chip
+// can show, at the converted path.
+export interface TaskShotUpload {
+  path: string;
+  kind: "image" | "file";
+  width?: number;
+  height?: number;
+}
+
+export async function uploadTaskShot(file: File): Promise<TaskShotUpload> {
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  const res = await fetch("/api/schedule/shot", {
+    method: "POST",
+    headers: { "X-Fused": "1" },
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as TaskShotUpload;
 }
 
 export function rawUrl(fsPath: string): string {
@@ -2042,6 +2067,37 @@ export function getBackgroundAppsRunning(): Promise<{ running: Record<string, bo
   return getJson<{ running: Record<string, boolean> }>("/api/apps/background/running");
 }
 
+/** One live engine child (server/engine_host.py `Child`), as
+ *  `GET /api/engines/running` reports it (D591). */
+export interface RunningEngine {
+  engine_id: string;
+  /** "template" | "app" | "background" — which bring-up path owns it. Carried
+   *  so three similarly-named rows stay distinguishable in the panel. */
+  kind: string;
+  pid: number;
+  version: string;
+  /** The declaring folder — `kind: "background"` only, "" otherwise. */
+  folder: string;
+  /** The module a warm app worker serves — "" for the other kinds. */
+  module: string;
+}
+
+/** Every engine daemon running right now — the status bar's Engines section.
+ *  Read-only and unguarded, like `getBackgroundAppsRunning` above: the server
+ *  snapshots a dict it already holds and polls one `Popen` per child, so there
+ *  is no walk and no spawn behind this. */
+export function getRunningEngines(): Promise<{ engines: RunningEngine[] }> {
+  return getJson<{ engines: RunningEngine[] }>("/api/engines/running");
+}
+
+/** Stop one engine child. Recoverable for all three kinds — a template engine
+ *  respawns on the next `ensure`, a warm app worker on its next call, and a
+ *  background daemon going down is the documented "quit this app" action —
+ *  which is why the panel offers it as a plain button (D591). */
+export function stopEngine(engineId: string): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>(`/api/engines/${encodeURIComponent(engineId)}/stop`, {});
+}
+
 // The folder's app entry page (its first top-level .html carrying
 // `<meta name="fused-app">`, resolved by the server's one copy of the rule) or
 // null. Feeds the explorer's "Open app" button.
@@ -2984,8 +3040,37 @@ export interface AiLoadedModel {
   state: string;
   detail: string | null;
   error: string | null;
-  /** RSS of the worker process. Not the model's size — see SPEC AI-8. */
+  /** RSS of the worker process (`worker_base.resident_bytes`, so a runner's own
+   *  framework probe can raise it above the kernel's RSS). Not the model's size
+   *  — see SPEC AI-8. It LEADS a status-bar model row since D600: `1.7 GB now
+   *  (24 GB held)`. */
   residentBytes: number | null;
+  /** A LOWER BOUND on what the worker process is holding RIGHT NOW —
+   *  `max(phys_footprint, resident_size)` on macOS, RSS elsewhere (D597, and
+   *  `worker_base.os_footprint_bytes`, whose docstring owns the argument).
+   *  Neither counter is a superset of the other: the Metal pool is charged to
+   *  `phys_footprint` and never appears in RSS (a live FLUX worker read 172 MB
+   *  of RSS against 23 GB of dirty IOAccelerator regions), while
+   *  `phys_footprint` excludes clean file-backed pages that RSS counts, so an
+   *  mmap-heavy runner has the SMALLER footprint of the two. The status-bar row
+   *  applies the same max again against `residentBytes` above, and omits the
+   *  parenthetical when the two coincide. Null where no counter could be read at
+   *  all — which must stay null, since a row cannot invent a held figure. */
+  osFootprintBytes: number | null;
+  /** What this model actually COSTS on this machine, in bytes — the primary
+   *  figure on a status-bar row, colour-coded against
+   *  `AiRuntime.memoryCeilingBytes` (D594). Straight from
+   *  `fused_render/ai/fit.footprint_bytes`, so it is the SAME ladder and the
+   *  same number the AI Models page's fit badge shows, never a second
+   *  estimate. NULL when nothing is measured and nothing is declared — in
+   *  which case the row falls back to `residentBytes` alone, uncoloured,
+   *  rather than colouring a guess or printing 0. */
+  footprintBytes: number | null;
+  /** Which rung of the ladder answered — the SAME vocabulary `AiFitVerdict`
+   *  established (SPEC AI-16, AI-16c, D497), deliberately reused rather than
+   *  reinvented: "measured" is stated as fact, "declared" and "download" are
+   *  hedges. Null exactly when `footprintBytes` is. */
+  footprintBasis: "measured" | "declared" | "download" | null;
   /** "cuda" | "mps" | "cpu" — where the weights actually landed, as the worker
    *  reported it. Null from a runner that does not say. The page shows it
    *  because a model answering at a few words a second on a CPU is working
@@ -3018,6 +3103,13 @@ export interface AiRuntime {
   loaded: AiLoadedModel[];
   downloading: AiDownload[];
   totalResidentBytes: number | null;
+  /** What a model has to fit under on THIS machine, in bytes — the Apple
+   *  Silicon wired limit where it applies, total physical RAM otherwise, and
+   *  NULL when neither can be read (D594). Carried once, not per row, because
+   *  it is a per-machine constant. Null is not zero: with no ceiling there is
+   *  nothing to colour a footprint against, and the row shows its figure
+   *  uncoloured rather than assuming a denominator. */
+  memoryCeilingBytes: number | null;
 }
 
 export function getAiRuntime(): Promise<AiRuntime> {
@@ -3673,6 +3765,17 @@ export interface RecurrenceRule {
   count?: number; // total occurrences; exclusive with until
 }
 
+// One attachment on a scheduled task, as the store holds it. `path` is a
+// task-shots resident (the server refuses anything else); `name` is the user's
+// own filename; `kind` is the chat's own two-way split — a thumbnail or a 📄,
+// a picture viewer or a template preview — and never the browser-only "pane"
+// and "overview" kinds, which need a screen somebody was looking at.
+export interface TaskAttachment {
+  path: string;
+  name: string;
+  kind: "image" | "file";
+}
+
 export interface ScheduledMessage {
   id: string;
   target: string;
@@ -3681,6 +3784,12 @@ export interface ScheduledMessage {
   // Task-shot paths attached in the New task form (server: schedule.shots_dir()).
   // Read back so an edit — which is cancel + re-create — can re-state them.
   images?: string[];
+  // The same attachments carrying the two things a path does not: the filename
+  // the user recognises (a stored path is a minted timestamp) and the kind the
+  // browser settled at attach time (a `.tif` was transcoded, so its extension
+  // lies). The server derives this for an entry stored before the field existed,
+  // so it is only ever absent on a response from an older build.
+  attachments?: TaskAttachment[];
   session_id: string;
   // WHERE `session_id` came from: true only when the server LEARNED it (a
   // repeating template's first run reported the session it opened, and that id
@@ -3809,10 +3918,17 @@ export function scheduleMessage(body: {
   // A no-op where there is nothing to move — a task whose session exists is
   // numbered on the session id, and that key is untouched by an edit.
   replaces?: string;
-  // Paths returned by uploadTaskShot, at most 4. The server refuses anything
-  // not living under its own task-shots dir, so this can only name images this
-  // form itself uploaded.
+  // Paths returned by uploadTaskShot — any file type, any count (D618). The
+  // server refuses anything not living under its own task-shots dir, so this
+  // can only name files this form itself uploaded. Still spelled `images`
+  // because every stored entry spells it that way.
   images?: string[];
+  // The same uploads with `name` and `kind` (D619). What the FIRED RUN needs:
+  // its message carries the claude page's own `<pane-shot>` block, and that
+  // block's receipt rows show a thumbnail or 📄 plus the file's name — neither
+  // of which a minted path can supply. Sent alongside `images`, never instead
+  // of it, so an entry keeps the shape every existing reader expects.
+  attachments?: TaskAttachment[];
 }): Promise<{ entry: ScheduledMessage }> {
   return postJson<{ entry: ScheduledMessage }>("/api/schedule", body);
 }

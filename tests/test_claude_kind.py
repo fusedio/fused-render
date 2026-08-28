@@ -205,9 +205,16 @@ def test_the_pane_renders_a_page_target_as_itself():
     """`_render` is a shell sentinel (PT-12), not a template folder: for an
     `.html` target the file IS the document, so a bare /render on the file is
     the only correct src — routing it through a template would frame the source
-    view of a page the user expects to see rendered."""
+    view of a page the user expects to see rendered.
+
+    `target` and not `FILE` since D616: the shot viewer frames a template for an
+    ATTACHMENT, which is a file that is not the chat's target, through this one
+    builder — so the target defaults to `FILE` and is a parameter otherwise. One
+    builder, because a preview that works in the pane must not be subtly different
+    in the viewer."""
     page = _pane_source()
-    assert 'if (t.mode === "_render") return "/render?path=" + encodeURIComponent(FILE);' in page
+    assert 'if (t.mode === "_render") return "/render?path=" + encodeURIComponent(target);' in page
+    assert 'const target = file === undefined ? FILE : file;' in page
 
 
 def test_a_folder_target_still_resolves_its_app_entry():
@@ -314,8 +321,8 @@ def test_the_no_pane_state_removes_the_column_the_divider_and_the_pane_controls(
     code = _pane_code()
     i = code.index("function enterNoPane()")
     body = code[i:code.index("\n}", i)]
-    assert ('for (const id of ["annbtn", "annrec", "anntool", "viewshot", "hviewshot", '
-            '"leftmode",\n                    "viewbtn", "left", "divider"]) {') in body
+    assert ('for (const id of ["annbtn", "annrec", "anntool", "viewshot", "leftmode",\n'
+            '                    "viewbtn", "left", "divider"]) {') in body
     assert "if (el) el.remove();" in body
     assert '"anntools"' not in body, "the strip survives — the kebab lives there"
     assert 'document.body.classList.add("nopane");' in body
@@ -1116,7 +1123,17 @@ def test_the_picker_is_sourced_from_the_stat_call_the_pane_already_makes():
     (CT-12 — unresolved reads as "not offered").
     """
     page = _pane_source()
-    assert page.count("/api/fs/stat?path=") == 1
+    # TWO in the file since D616, and the second one is not the pane's: the shot
+    # viewer stats an ATTACHMENT to find ITS template. The rule that matters is
+    # still one stat per pane open, which is what `paneURL` holds.
+    assert page.count("/api/fs/stat?path=") == 2
+    def body(head):
+        start = page.index(head)
+        return page[start:page.index("\n}\n", start)]
+    assert body("async function paneURL()").count("/api/fs/stat?path=") == 1, \
+        "the pane still pays the round trip once"
+    assert body("async function shotPreviewSrc(path)").count(
+        "/api/fs/stat?path=") == 1
     assert "paneEntries = paneOfferable(st.templates);" in page
     assert "!e.conditional && !PANE_SKIP_MODES.has(e.mode)" in page
     # Named in a comment (that is where the reasoning lives), never fetched.

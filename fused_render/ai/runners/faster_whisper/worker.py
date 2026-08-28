@@ -651,5 +651,9 @@ def generate(body):
 
 
 if __name__ == "__main__":
+    # No `release=` (see `worker_base._release`'s docstring): the CTranslate2
+    # backend underneath faster-whisper exposes no cache-release call at all —
+    # there is nothing here in the shape of `mx.clear_cache()`/`torch.*.
+    # empty_cache()` to hand the idle timer to reach for.
     worker_base.serve(download=download, load=load, generate=generate,
                       streaming=False, memory=memory)

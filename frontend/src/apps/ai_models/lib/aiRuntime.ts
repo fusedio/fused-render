@@ -19,9 +19,23 @@ import { getAiRuntime, type AiRuntime } from "@platform/lib/api";
 const ACTIVE_MS = 1000;
 const IDLE_MS = 10_000;
 
-const EMPTY: AiRuntime = { runners: [], loaded: [], downloading: [], totalResidentBytes: null };
+const EMPTY: AiRuntime = {
+  runners: [],
+  loaded: [],
+  downloading: [],
+  totalResidentBytes: null,
+  // Null, not a guess: `settled` (below) is what distinguishes
+  // "not asked yet" from "this machine has no readable ceiling".
+  memoryCeilingBytes: null,
+};
 
 let current: AiRuntime = EMPTY;
+// Has a real response ever landed? `EMPTY` is indistinguishable from a machine
+// holding nothing, and `useAutoExpandOnNew` needs that distinction so a page
+// load onto already-resident models is not read as a wave of arrivals (D574
+// bug 2, autoExpand.ts's `ready`). Module-level like `current` itself, so a
+// remount inherits it rather than re-announcing what is already loaded.
+let settled = false;
 let timer: number | null = null;
 let inFlight = false;
 const listeners = new Set<(runtime: AiRuntime) => void>();
@@ -41,6 +55,7 @@ export function isBusy(runtime: AiRuntime): boolean {
 
 function publish(next: AiRuntime) {
   current = next;
+  settled = true;
   for (const listener of listeners) listener(next);
 }
 
@@ -86,6 +101,13 @@ export function useAiRuntime(): AiRuntime {
 
 /** Push a known-fresh answer — what a load or unload replies with — so the UI
  *  updates on the action rather than on the next tick. */
+/** Whether `useAiRuntime` has ever seen a real answer — see `settled`. Read
+ *  during render: whatever makes it flip also publishes new state, so the
+ *  re-render that observes the data observes this with it. */
+export function aiRuntimeSettled(): boolean {
+  return settled;
+}
+
 export function publishAiRuntime(runtime: AiRuntime) {
   publish(runtime);
   schedule();

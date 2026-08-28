@@ -344,6 +344,35 @@ def peak_memory():
     return None
 
 
+def release():
+    """Hand MLX's allocator pool back to the OS — `mflux_image.release`'s own
+    probe, verbatim. `worker_base.serve(release=...)` fires this
+    `worker_base._RELEASE_IDLE_S` seconds after this worker's LAST generation
+    if nothing new started in the meantime, not per call: a chat exchanged in
+    a burst of turns, or a page issuing many short completions in a row, keeps
+    the allocator at full speed throughout — only a run of `_RELEASE_IDLE_S`
+    seconds with no new `/generate` at all actually clears it.
+
+    Matters for the same stacking reason as `mlx_whisper.worker.release` and
+    `mlx_embed.worker.release`: the supervisor keeps one resident worker PER
+    CAPABILITY, so a text model sits in its own process next to whatever
+    image, speech or embed worker is also loaded, each with its own idle
+    pool — this is the runner most likely to be resident continuously through
+    a whole session, which is exactly the case an idle-only release exists
+    for, as against the per-call design this change's first cut used and
+    would have thrashed a fast chat loop.
+
+    `getattr` because a real but older mlx wheel, or this repo's stubbed
+    `mlx.core` in tests, may not have `clear_cache` at all — absence is a
+    no-op, matching every other MLX runner's guard.
+    """
+    import mlx.core as mx
+
+    clear = getattr(mx, "clear_cache", None)
+    if clear is not None:
+        clear()
+
+
 # ------------------------------------------------------------------ generation
 
 
@@ -601,4 +630,5 @@ def generate(body, write):
 
 if __name__ == "__main__":
     worker_base.serve(download=download, load=load, generate=generate,
-                      streaming=True, memory=memory, peak_memory=peak_memory)
+                      streaming=True, memory=memory, peak_memory=peak_memory,
+                      release=release)

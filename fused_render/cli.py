@@ -145,7 +145,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community
 
-    community.refresh_in_background()
+    community.ensure_showcase_in_background()
     # Probe Claude Code (found / version / signed-in) off the request path, so
     # the first-run strip's GET is a disk read rather than a login-shell spawn.
     # Same placement rule as the showcase refresh above: an entry point, never

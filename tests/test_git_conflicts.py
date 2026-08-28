@@ -29,7 +29,7 @@ import os
 
 import pytest
 
-from _git_repo import git, git_available
+from _git_repo import bare_repo, git, git_available
 
 _TPL = os.path.join(
     os.path.dirname(__file__), "..", "fused_render", "templates", "git")
@@ -186,6 +186,57 @@ def test_resolve_is_declared_destructive(ops):
     # It overwrites a file in the working tree; the view keys its confirmation
     # step off this tuple, so omitting it ships the op without one.
     assert "resolve" in ops.DESTRUCTIVE_OPS
+
+
+def rebase_conflict_repo(root, path="pkg/mod.py"):
+    """A repo whose current branch, rebased onto `origin/main`, conflicts on
+    one path: local HEAD has an uncommitted-free commit changing `path` one
+    way, `origin/main` was advanced (from a second clone) changing the same
+    line another way."""
+    remote = root + "-remote.git"
+    bare_repo(remote)
+    os.makedirs(root, exist_ok=True)
+    git(root, "init", "-q", root)
+    _put(root, path, "one\ntwo\nthree\n")
+    _put(root, "README.md", "readme\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "base")
+    git(root, "remote", "add", "origin", remote)
+    git(root, "push", "-q", "-u", "origin", "HEAD:main")
+    git(root, "remote", "set-head", "origin", "--auto")
+
+    # A second clone advances the remote's main — root never sees this commit
+    # until it fetches (which `_rebase` itself does).
+    other = root + "-other"
+    git(os.path.dirname(root), "clone", "-q", remote, other)
+    _put(other, path, "one\nTHEIRS\nthree\n")
+    git(other, "add", "-A")
+    git(other, "commit", "-qm", "theirs")
+    git(other, "push", "-q", "origin", "HEAD:main")
+
+    # root's own, unpushed commit on the same line.
+    _put(root, path, "one\nOURS\nthree\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-qm", "ours")
+    return root
+
+
+def test_a_rebase_conflict_leaves_the_repo_in_a_state_the_conflicts_reader_finds(reader, tmp_path):
+    # `ops.py` offers no rebase op of its own (removed as too dangerous to
+    # offer — D555 amendment); a rebase left mid-operation is still always
+    # possible from a terminal or another tool, and the conflict reader must
+    # still find and describe it accurately, which is what this pins — the
+    # rebase itself is driven with a raw `git rebase`, standing in for the
+    # terminal.
+    root = rebase_conflict_repo(str(tmp_path / "rbconflict"))
+    git(root, "fetch", "-q", "origin", "main")
+    git(root, "rebase", "origin/main", check=False)
+
+    assert unmerged(root) == ["pkg/mod.py"]
+    conflicts = reader.main(file=root, op="conflicts")
+    assert conflicts["ok"] is True
+    assert conflicts["operation"] == "rebase"
+    assert [f["path"] for f in conflicts["files"]] == ["pkg/mod.py"]
 
 
 def test_resolve_writes_the_file_and_stages_nothing(ops, tmp_path):

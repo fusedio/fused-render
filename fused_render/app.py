@@ -317,7 +317,7 @@ def _start_server_thread(port: int) -> tuple[uvicorn.Server, threading.Thread]:
     # the background — the apps grid lists it as an ordinary tag dir once done.
     from fused_render import community
 
-    community.refresh_in_background()
+    community.ensure_showcase_in_background()
     # One-time migration: stamp `<meta name="fused-app">` into pre-existing
     # workspace apps (meta_migration's docstring carries the rules).
     from fused_render import meta_migration
