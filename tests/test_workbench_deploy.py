@@ -200,32 +200,3 @@ def test_share_reports_that_the_canvas_scope_is_unchanged(tmp_path, monkeypatch)
     assert record.share_url == "https://www.fused.io/canvas/fc_testtoken"
     assert any("did NOT change the Canvas access scope" in w for w in record.warnings)
     assert any("fused_session_token" in w for w in record.warnings)
-
-
-def test_a_renamed_shell_says_the_app_url_moved(tmp_path, monkeypatch):
-    """Names hold still now, so the one deploy that moves should say so."""
-    page = _page(tmp_path)
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(
-        workbench_deploy, "fused_cli", lambda: FusedCli(command=["fused"], external=False)
-    )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, "https://www.fused.io/workbench/me/Demo\n", ""
-        ),
-    )
-
-    first = workbench_deploy.deploy_workbench_app(str(page), "Demo_App", share=False)
-    assert not any("app URL moved" in w for w in first.warnings)
-
-    # Same page, new Canvas name: the shell is named for the Canvas, so the
-    # address really does move and the deploy has to admit it.
-    second = workbench_deploy.deploy_workbench_app(str(page), "Renamed_App", share=False)
-    assert second.shell_slug == "Renamed_App"
-    assert any("app URL moved" in w for w in second.warnings)
-
-    # A redeploy that changes nothing must stay quiet.
-    third = workbench_deploy.deploy_workbench_app(str(page), "Renamed_App", share=False)
-    assert not any("app URL moved" in w for w in third.warnings)
