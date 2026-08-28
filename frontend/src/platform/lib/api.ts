@@ -3291,6 +3291,17 @@ export interface AiCatalogCapability {
     defaultHeight: number;
     defaultSteps: number;
   } | null;
+  /** `videoTraits`' sibling for image-to-3D (`registry.MeshTraits`, server
+   *  side) — `null` for every capability but this one, for the identical
+   *  reason: today there is exactly one mesh runner and its numbers are
+   *  read straight from `hy3dshape.pipeline_mlx.ShapePipeline.__call__`'s
+   *  own signature, but a client that hardcoded them would drift the
+   *  moment a second engine (or a changed default) resolved differently. */
+  meshTraits: {
+    defaultSteps: number;
+    defaultGuidance: number;
+    defaultOctreeResolution: number;
+  } | null;
 }
 
 /** A model on this disk that NO capability can load, and why.

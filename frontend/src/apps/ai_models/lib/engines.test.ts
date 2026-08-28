@@ -465,6 +465,10 @@ describe("capabilityLabel", () => {
     expect(capabilityLabel("text-to-video")).toBe("Video generation");
   });
 
+  it("names the sixth capability too", () => {
+    expect(capabilityLabel("image-to-3d")).toBe("3D mesh generation");
+  });
+
   it("renders an unknown capability as ITSELF rather than hiding it", () => {
     // A capability added server-side should appear here — ugly but present —
     // instead of vanishing from the only page that can configure it.

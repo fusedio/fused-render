@@ -259,6 +259,7 @@ function capability(
     default: "mlx-lm",
     models,
     videoTraits: null,
+    meshTraits: null,
     ...over,
   };
 }
@@ -439,6 +440,33 @@ describe("video generation's place in the reading order", () => {
       "text-generation",
       "automatic-speech-recognition",
       "text-to-video",
+    ]);
+  });
+
+  // image-to-3d was added to CAPABILITY_ORDER after text-to-video, for the
+  // identical reason video was listed rather than left to fall through
+  // (Task 5, SPEC §48) — the newest and narrowest capability sorts last.
+  it("sorts image-to-3d after text-to-video, both named", () => {
+    const catalogWithMesh: AiCatalogCapability[] = [
+      capability("image-to-3d", [curated("dgrauet/hunyuan3d-2.1-mlx")], {
+        runner: "hunyuan3d-mlx",
+        runnerShortLabel: "Hunyuan3D-2.1",
+      }),
+      capability("text-to-video", [curated("dgrauet/ltx-2.3-mlx-q4")], {
+        runner: "ltx-video",
+        runnerShortLabel: "LTX-2.3",
+      }),
+      capability("text-generation", [curated("mlx-community/Qwen3.5-9B-OptiQ-4bit")]),
+      capability("text-to-image", [curated("mlx-community/FLUX.2-Klein-4B-4bit")]),
+    ];
+    const sections = mergeSections(
+      groupRepos([]).models.groups, catalogWithMesh, resident(), new Map(),
+    );
+    expect(sections.map((s) => s.key)).toEqual([
+      "text-to-image",
+      "text-generation",
+      "text-to-video",
+      "image-to-3d",
     ]);
   });
 

@@ -276,6 +276,12 @@ const MEDIA_GLYPHS = {
       <path d="M16 10.5 21 7.5v9L16 13.5z" />
     </svg>
   ),
+  mesh: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3 4 7.5v9L12 21l8-4.5v-9Z" />
+      <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+    </svg>
+  ),
 } satisfies Record<string, ReactNode>;
 
 type PlaygroundMedia = keyof typeof MEDIA_GLYPHS;
@@ -290,6 +296,7 @@ const PLAYGROUND_FLOWS: Record<string, [PlaygroundMedia, PlaygroundMedia]> = {
   "text-to-video": ["chat", "video"],
   "automatic-speech-recognition": ["speech", "chat"],
   embeddings: ["chat", "meaning"],
+  "image-to-3d": ["image", "mesh"],
 };
 
 // The header's single glyph names the task itself, which is not always the
@@ -300,6 +307,7 @@ const PLAYGROUND_HEADS: Record<string, PlaygroundMedia> = {
   "text-to-video": "video",
   "automatic-speech-recognition": "speech",
   embeddings: "meaning",
+  "image-to-3d": "mesh",
 };
 
 const FLOW_ARROW = (

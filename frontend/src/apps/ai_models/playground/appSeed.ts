@@ -91,6 +91,21 @@ function buildAppSeedDetail(model: AiCatalogModel, capability: string): string {
         "before offering the feature. " +
         (extra ? "The options above are the settings I tuned in the Playground." : ""),
     );
+  } else if (capability === "image-to-3d") {
+    const extra = opts([
+      ["steps", readParam("steps") ?? (model.defaults?.steps != null ? String(model.defaults.steps) : null)],
+      ["guidance", readParam("guidance")],
+      ["octreeResolution", readParam("octree")],
+      ["seed", readParam("seed")],
+    ]);
+    lines.push(
+      "It turns a picture into an untextured 3D mesh. Call it from the page with " +
+        `await fused.ai.mesh({ image, model: ${JSON.stringify(model.id)}${extra}, onProgress }) — ` +
+        "it resolves with { url, seed, ... } and url is a .glb, openable in a three.js viewer. " +
+        "Apple Silicon only, with no fallback on other platforms — check fused.ai.models.catalog() " +
+        "before offering the feature. " +
+        (extra ? "The options above are the settings I tuned in the Playground." : ""),
+    );
   } else if (capability === "automatic-speech-recognition") {
     const extra = opts([
       ["task", readParam("task") ? JSON.stringify(readParam("task")) : null],

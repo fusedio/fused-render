@@ -55,11 +55,19 @@ export const PLAYGROUND_GROUPS: PlaygroundGroup[] = [
     label: "Video",
     blurb: "Turn a description into a short video with sound.",
   },
-  // Last on purpose: Home renders `slice(0, shown)`, so the array's tail is
-  // what a narrow window drops — and this is the card chosen to go first.
   {
     capability: "embeddings",
     label: "Embeddings",
     blurb: "Find text that matches by meaning, not wording.",
+  },
+  // Last on purpose, now: Home renders `slice(0, shown)`, so the array's
+  // tail is what a narrow window drops — and this is the newest and
+  // narrowest card (Apple Silicon only, like video, plus a required image
+  // input a description-only card cannot offer at a glance), so it goes
+  // first when something has to.
+  {
+    capability: "image-to-3d",
+    label: "3D mesh",
+    blurb: "Turn a picture into an untextured 3D mesh.",
   },
 ];

@@ -386,6 +386,38 @@ export function startVideo(request: VideoRequest): Promise<VideoStarted> {
   return postJson<VideoStarted>("/api/ai/video", request);
 }
 
+// -- Mesh (POST /api/ai/mesh, SPEC §48) ----------------------------------------
+
+/** `image` is REQUIRED here — unlike `ImageRequest`'s optional edit-mode
+ *  one, there is no prompt-only mode for a pipeline that only ever reads a
+ *  picture. Absolute, same reasoning as `ImageRequest.image`: the shell is
+ *  not a page and has no `?path=` to resolve a relative one against. */
+export interface MeshRequest {
+  image: string;
+  model?: string;
+  steps?: number;
+  guidance?: number;
+  octreeResolution?: number;
+  seed?: number;
+}
+
+/** The reply echoes the SETTLED request — `steps`/`guidance`/
+ *  `octreeResolution` clamped, `seed` invented — never what was asked. */
+export interface MeshStarted {
+  jobId: string;
+  path: string;
+  model: string;
+  image: string;
+  steps: number;
+  guidance: number;
+  octreeResolution: number;
+  seed: number;
+}
+
+export function startMesh(request: MeshRequest): Promise<MeshStarted> {
+  return postJson<MeshStarted>("/api/ai/mesh", request);
+}
+
 // -- Embeddings (POST /api/ai/embed, SPEC §40) ---------------------------------
 
 export interface EmbedResult {

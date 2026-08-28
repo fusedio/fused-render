@@ -29,6 +29,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { TextStage } from "./TextStage";
 import { ImageStage } from "./ImageStage";
 import { VideoStage } from "./VideoStage";
+import { MeshStage } from "./MeshStage";
 import { TranscribeStage } from "./TranscribeStage";
 import { EmbedStage } from "./EmbedStage";
 import { modelSizeHint, modelSizeLabel } from "@apps/ai_models/shared/modelSize";
@@ -882,6 +883,13 @@ export default function PlaygroundTab() {
                 model={selected.model.id}
                 entry={selected.model}
                 traits={selected.row.videoTraits}
+              />
+            ) : selected.row.capability === "image-to-3d" ? (
+              <MeshStage
+                key={selected.model.id}
+                model={selected.model.id}
+                entry={selected.model}
+                traits={selected.row.meshTraits}
               />
             ) : selected.row.capability === "automatic-speech-recognition" ? (
               <TranscribeStage key={selected.model.id} model={selected.model.id} />

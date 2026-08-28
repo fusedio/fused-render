@@ -359,6 +359,14 @@ describe("benchmarkableCapabilities", () => {
     expect(benchmarkableCapabilities(["text-to-video"], ["text-generation"])).toEqual([]);
   });
 
+  it("drops image-to-3d too — the identical gap, same reason", () => {
+    // hunyuan3d-mlx joined text-to-video in `benchmark.NO_WORKLOAD_YET`
+    // (Task 2, SPEC §48) for the same cost reason: a resident MLX model and
+    // a render that runs well past the few-second workloads this tab
+    // actually measures.
+    expect(benchmarkableCapabilities(["image-to-3d"], ["text-generation"])).toEqual([]);
+  });
+
   it("is not fooled by a capability appearing in workloadCapabilities out of order", () => {
     expect(
       benchmarkableCapabilities(["a", "b", "c"], ["c", "a"]),

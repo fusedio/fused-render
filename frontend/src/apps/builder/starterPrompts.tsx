@@ -35,6 +35,7 @@ export const STARTER_CAPABILITIES = [
   "text-to-video",
   "automatic-speech-recognition",
   "embeddings",
+  "image-to-3d",
 ] as const;
 
 // One wrapper for every chip glyph: 13px at 2px stroke, the composer's own
@@ -76,6 +77,13 @@ const VIDEO =
   "Before anything else read fused.ai.models.catalog(): if the text-to-video row's " +
   "default is null this machine cannot run video, so say so plainly and hide the " +
   "render button instead of offering one that always fails. ";
+
+// The identical guard for image-to-3d — the second capability with no
+// "everywhere" runner, off Apple Silicon exactly as unservable as video.
+const MESH =
+  "Before anything else read fused.ai.models.catalog(): if the image-to-3d row's " +
+  "default is null this machine cannot run mesh generation, so say so plainly and " +
+  "hide the render button instead of offering one that always fails. ";
 
 export const STARTER_PROMPTS: StarterPrompt[] = [
   // -- No AI -----------------------------------------------------------------
@@ -491,6 +499,74 @@ export const STARTER_PROMPTS: StarterPrompt[] = [
       "order in one player. Save the table as shots.json and the clips in a shots/ folder " +
       "beside the app. " +
       VIDEO +
+      LOCAL,
+  },
+
+  // -- Image to 3D -------------------------------------------------------------
+  // Every mesh brief ends with MESH: this capability is Apple Silicon only
+  // with no fallback, exactly like video, so a page that assumes it is a
+  // page that is simply broken on the machine it was built for.
+  {
+    label: "Mesh viewer",
+    capability: "image-to-3d",
+    glyph: S(
+      <>
+        <path d="M12 3 4 7.5v9L12 21l8-4.5v-9Z" />
+        <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+      </>,
+    ),
+    prompt:
+      "A photo-to-mesh viewer. Left: a drop zone for one image, a steps slider, a guidance " +
+      "slider, an octree-resolution slider, a seed with dice, and Generate / Cancel " +
+      '(fused.ai.cancel("image-to-3d")). Right: the resulting .glb loaded into a rotating ' +
+      "three.js viewer (orbit controls, a ground grid) with a progress bar driven by the " +
+      "job while it renders via fused.ai.mesh({image, steps, guidance, octreeResolution}). " +
+      "Below, a session gallery of every finished mesh as a tiny rendered thumbnail; " +
+      "clicking one loads it in the viewer and Save copies the .glb into a meshes/ folder " +
+      "beside the app. " +
+      MESH +
+      LOCAL,
+  },
+  {
+    label: "Product turntable",
+    capability: "image-to-3d",
+    glyph: S(<path d="M4 12a8 4 0 1 0 16 0 8 4 0 1 0-16 0M12 8V2" />),
+    prompt:
+      "A product-turntable maker. Inputs: a product photo drop zone and an octree-resolution " +
+      "select (draft/standard/high). Render the mesh with fused.ai.mesh, then auto-rotate it " +
+      "in a three.js viewer against a plain studio backdrop with a Pause toggle and a " +
+      "speed slider, showing the job's progress bar while rendering. Export captures a " +
+      "short WebM of one full rotation via MediaRecorder into an exports/ folder beside " +
+      "the app. " +
+      MESH +
+      LOCAL,
+  },
+  {
+    label: "Object library",
+    capability: "image-to-3d",
+    glyph: S(<path d="M4 7h6v6H4zM14 7h6v6h-6zM4 15h6v6H4zM14 15h6v6h-6z" />),
+    prompt:
+      "An object-library builder. A grid of photo drop slots (add/remove); Generate all " +
+      "runs each photo through fused.ai.mesh one at a time, queued so the page stays " +
+      "usable, updating each tile's status (queued, rendering with a progress bar, done, " +
+      "failed with the error message) and a per-tile Retry. Clicking a done tile opens it " +
+      "full-screen in a three.js viewer with orbit controls. Save writes a library.json " +
+      "and the .glb files into a library/ folder beside the app. " +
+      MESH +
+      LOCAL,
+  },
+  {
+    label: "Sketch to shape",
+    capability: "image-to-3d",
+    glyph: S(<path d="M4 20l4-1 11-11-3-3L5 16l-1 4z" />),
+    prompt:
+      "A sketch-to-shape pad. Left: a plain <canvas> the user draws a simple object outline " +
+      "on (pen, eraser, clear) and a Generate button that captures the canvas as a PNG and " +
+      "sends it through fused.ai.mesh — no other inputs, defaults only. Right: the " +
+      "resulting mesh in a three.js viewer with orbit controls, and the seed shown beside " +
+      "it with a Reuse button (passes seed back into fused.ai.mesh). Keep the last three " +
+      "results as thumbnails to switch between. " +
+      MESH +
       LOCAL,
   },
 

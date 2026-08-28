@@ -36,6 +36,7 @@ function row(
     default: models[0]?.id ?? null,
     models,
     videoTraits: null,
+    meshTraits: null,
     ...over,
   };
 }

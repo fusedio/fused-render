@@ -64,6 +64,13 @@ const ICONS: Record<string, ReactNode> = {
       <path d="M16 10.5 21 7.5v9L16 13.5z" />
     </svg>
   ),
+  // Image to 3D: a wireframe cube — the shortest honest drawing of "a mesh".
+  "image-to-3d": (
+    <svg {...base}>
+      <path d="M12 3 4 7.5v9L12 21l8-4.5v-9Z" />
+      <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+    </svg>
+  ),
   // Transcription: a microphone.
   "automatic-speech-recognition": (
     <svg {...base}>

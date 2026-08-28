@@ -1843,6 +1843,40 @@
   pointer-events: none;
 }
 
+/* `MeshStage`'s own gallery item: a mesh has no thumbnail image the way an
+   img/video source does, so past renders are a button drawing a fixed glyph
+   rather than a decoded frame — same sizing and hover/active states as its
+   img/video siblings above, on a <button> instead. */
+.pg-image-strip button.pg-thumb {
+  height: 84px;
+  width: 84px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.8;
+  padding: 0;
+}
+
+.pg-image-strip button.pg-thumb:hover {
+  opacity: 1;
+}
+
+.pg-image-strip button.pg-thumb.active {
+  opacity: 1;
+  border-color: var(--accent);
+}
+
+.pg-image-strip button.pg-thumb.disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  pointer-events: none;
+}
+
 /* -- transcription ------------------------------------------------------------------ */
 
 .pg-dropzone {

@@ -58,8 +58,13 @@ export const UNRECOGNISED = "unrecognised";
  *
  *  VIDEO IS LISTED, deliberately, rather than left to fall through to the
  *  end by accident (its own history, from when the Playground had no
- *  private copy naming it at all) — it sorts last of the five named here,
- *  which is where it has always ended up, now on purpose.
+ *  private copy naming it at all) — it sorted last of the five originally
+ *  named here, which is where it had always ended up, now on purpose.
+ *
+ *  IMAGE-TO-3D IS LISTED LAST, for the identical reason video was: the
+ *  newest capability and the second with no cross-platform fallback row —
+ *  a card this narrow earns an explicit, considered position rather than
+ *  whatever the server happens to send it in.
  *
  *  A capability missing from this list is still not missing from the page: it
  *  sorts after these, in the order the server sent it (see `groupRepos`), which
@@ -77,6 +82,7 @@ export const CAPABILITY_ORDER = [
   "automatic-speech-recognition",
   "embeddings",
   "text-to-video",
+  "image-to-3d",
 ];
 
 export interface RepoGroup {

@@ -32,6 +32,7 @@ const CAPABILITY_LABELS: Record<string, string> = {
   "automatic-speech-recognition": "Speech to text",
   "embeddings": "Embeddings",
   "text-to-video": "Video generation",
+  "image-to-3d": "3D mesh generation",
 };
 
 export function capabilityLabel(capability: string): string {
