@@ -13327,9 +13327,10 @@ function toolChipSummary(seg) {
 // this is a floor under that, not a UI a user is expected to reach.
 const MAX_SUBAGENT_DEPTH = 8;
 
-// elapsed time since `iso` (a subagent's own first-row timestamp), as the
-// short form the badge shows. `now` is a parameter rather than `Date.now()`
-// read inline so this stays a pure function to test against.
+// Elapsed time since `iso` (any ISO timestamp — a subagent's first-row time,
+// or its last-activity time, callers differ), as the short form the badge
+// shows. `now` is a parameter rather than `Date.now()` read inline so this
+// stays a pure function to test against.
 function formatElapsed(iso, now) {
   if (!iso) return "";
   const start = Date.parse(iso);
@@ -13345,21 +13346,30 @@ function formatElapsed(iso, now) {
 }
 
 // The badge's one line: what kind of agent, what it is doing (or did), and —
-// while running — what it last touched and for how long. `now` rides through
-// to `formatElapsed` for the same testability reason.
+// while running — what it last touched and how long ago. `now` rides
+// through to `formatElapsed` for the same testability reason.
 //
-// The elapsed figure is measured off `lastActivityAt`, not `startedAt`, when
-// we have it: total runtime keeps climbing even if the process has actually
-// hung, while "time since it last did anything" is the stronger signal that
-// it is (or isn't) still alive. Falls back to `startedAt` when there is no
-// activity yet (the very first tick after spawn, before anything is written).
+// The parenthetical is "active <lastActivityAt> ago", not total runtime:
+// total runtime keeps climbing even if the process has actually hung, while
+// time since it last did anything is the stronger signal of whether it is
+// still alive. The WORDING carries that — "(active 2s ago)" reads nothing
+// like a duration, so it cannot be mistaken for "started 2s ago" — because
+// the number alone does not: a subagent twenty minutes into a run showing a
+// bare "(2s)" would read as just-started to anyone who does not already know
+// which timestamp fed it. Falls back to total elapsed since `startedAt` only
+// when there is no activity yet at all (the very first tick after spawn,
+// before anything has been written).
 function subagentStatusLine(seg, now) {
   const sub = (seg && seg.subagent) || {};
   const type = sub.agentType || "agent";
   if (seg.status === "running") {
     const p = sub.progress || {};
     const tool = p.lastTool ? " — " + prettyToolName(p.lastTool) : "";
-    const elapsed = formatElapsed(p.lastActivityAt || p.startedAt, now);
+    if (p.lastActivityAt) {
+      const idle = formatElapsed(p.lastActivityAt, now);
+      return "Running " + type + tool + (idle ? " (active " + idle + " ago)" : "");
+    }
+    const elapsed = formatElapsed(p.startedAt, now);
     return "Running " + type + tool + (elapsed ? " (" + elapsed + ")" : "");
   }
   if (seg.status === "error") return type + " — failed";
@@ -13373,7 +13383,7 @@ function subagentStatusLine(seg, now) {
 // — it is missing whatever the agent wrote in roughly its last 400 ms, which
 // is typically its concluding message, i.e. the actual result — so the
 // running→terminal transition always forces exactly one more fetch (see
-// `maybeLoadSubagentTranscript`) rather than trusting the cache forever.
+// `pumpSubagentLog`) rather than trusting the cache forever.
 //
 // Kept across a chip's own body rebuilds (its `<details>` is torn down and
 // rebuilt the moment the Task's own status flips, see buildToolChip) so a
@@ -13437,71 +13447,38 @@ function renderSubagentFailure(container, message) {
   container.replaceChildren(div);
 }
 
-// The actual fetch, de-duplicated per agent: `action: "subagent"` is a lazy
-// read of a file that can run to megabytes, so at most one is in flight for
-// any one agentId at a time. `getLogEl`/`getSeg` are read AT USE, not
-// captured at call time: a rebuild (the Task's own status flipping, or
-// `subagent` arriving late) tears down and replaces the log element and the
-// segment reference both, and a fetch that started before that and resolves
-// after it must land in the CURRENT one, not write into an orphaned node
-// nobody can see.
-async function loadSubagentTranscript(getLogEl, getSeg) {
-  const seg0 = getSeg();
-  const sub0 = seg0 && seg0.subagent;
-  const agentId = sub0 && sub0.agentId;
-  if (!agentId || subagentLoading.has(agentId)) return;
-  subagentLoading.add(agentId);
-  const startStatus = seg0.status || "running";
-  try {
-    const session_id = fused.params.get("session_id") || "";
-    if (!session_id) return;
-    const data = await fused.runPython(
-      AGENT, { action: "subagent", file: FILE, session_id, agent_id: agentId },
-      { key: null });
-    subagentCache.set(agentId, { turns: (data && data.turns) || [],
-                                 fetchedAtStatus: startStatus });
-    subagentCacheTrim();
-    subagentFailCount.delete(agentId);
-    subagentFailMessage.delete(agentId);
-    const logEl = getLogEl();
-    if (logEl) renderSubagentTranscript(logEl, (data && data.turns) || []);
-  } catch (err) {
-    subagentFailCount.set(agentId, (subagentFailCount.get(agentId) || 0) + 1);
-    subagentFailMessage.set(agentId,
-      String((err && err.message) || err || "request failed"));
-    return;   // a failure never chains into the catch-up fetch below
-  } finally {
-    subagentLoading.delete(agentId);
-  }
-  // The status may have gone terminal WHILE this fetch was in flight — the
-  // tick that would have noticed missed its chance, because this same
-  // agentId was already "loading" (the guard above skipped it), and there
-  // may be no NEXT poll tick to give it another: a Task's own tool_result
-  // can be the very last row before the whole run reports done, ending the
-  // poll loop for good. Caught up HERE instead, once — after which
-  // `fetchedAtStatus` matches the now-terminal status and this is a no-op.
-  const seg = getSeg();
-  const status = (seg && seg.status) || "running";
-  const cached = subagentCache.get(agentId);
-  if (seg && status !== "running" && cached && cached.fetchedAtStatus === "running") {
-    loadSubagentTranscript(getLogEl, getSeg);
-  }
-}
-
-// Whether THIS tick is the one that fetches. Called on every `update()` (the
-// existing 400 ms poll, no second loop) so a running subagent's chip, while
-// open, tails the same way the main transcript does — and does nothing at
-// all while the chip is collapsed, which is the common case and the one the
-// cost budget is about.
-function maybeLoadSubagentTranscript(el, getLogEl, getSeg) {
+// ONE entry point for a Task chip's subagent log — the 400 ms poll tick, the
+// "toggle" listener (a restored conversation that never polls), and a fetch's
+// own completion ALL call this, rather than each other or a fetch function
+// directly. That is deliberate: three call sites each re-implementing "is
+// this open, is this agent given up on, should this recurse" is exactly how
+// a prior round of fixes (running->terminal catch-up, the fail bound) each
+// individually forgot to re-apply every gate in the no-more-poll-ticks case.
+// One function that every caller goes through cannot forget a gate for one
+// of its callers and not the others.
+//
+// `getLogEl`/`getSeg` are read AT USE, never captured by value: a rebuild
+// (the Task's own status flipping, or `subagent` arriving late) tears down
+// and replaces both the log element and the segment reference, and a fetch
+// that started before that and resolves after it must act on the CURRENT
+// one, not on what was live when the fetch began.
+async function pumpSubagentLog(el, getLogEl, getSeg, opts) {
   const seg = getSeg();
   const sub = seg && seg.subagent;
   const logEl = getLogEl();
   if (!sub || !sub.agentId || !logEl) return;
   if ((sub.spawnDepth || 0) > MAX_SUBAGENT_DEPTH) return;
   if (!el.open) return;
+  const agentId = sub.agentId;
+  // A user re-opening the chip is a fresh chance to try again: giving up
+  // must not be a state that only a full page reload can ever clear, and
+  // `subagentFailCount` is cumulative over the page's whole lifetime rather
+  // than "this burst", so without this a handful of failures hours apart
+  // (a dev-server restart, an executor recycle) would sit on the bound
+  // forever even though nothing is currently wrong.
+  if (opts && opts.reexpand) subagentFailCount.delete(agentId);
   const status = seg.status || "running";
-  const cached = subagentCache.get(sub.agentId);
+  const cached = subagentCache.get(agentId);
   if (cached) {
     // Already have a copy: paint it immediately (no flash of an empty log
     // while the network round-trip that follows, if any, is in flight).
@@ -13512,11 +13489,71 @@ function maybeLoadSubagentTranscript(el, getLogEl, getSeg) {
     // status is the final word and is never re-requested.
     if (status !== "running" && cached.fetchedAtStatus !== "running") return;
   }
-  if ((subagentFailCount.get(sub.agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
-    if (!cached) renderSubagentFailure(logEl, subagentFailMessage.get(sub.agentId));
+  if ((subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
+    if (!cached) renderSubagentFailure(logEl, subagentFailMessage.get(agentId));
     return;
   }
-  loadSubagentTranscript(getLogEl, getSeg);
+  if (subagentLoading.has(agentId)) return;   // already in flight; its own
+                                              // completion re-enters here
+  subagentLoading.add(agentId);
+  const startStatus = status;
+  let outcome;
+  try {
+    const session_id = fused.params.get("session_id") || "";
+    if (!session_id) return;
+    const data = await fused.runPython(
+      AGENT, { action: "subagent", file: FILE, session_id, agent_id: agentId },
+      { key: null });
+    outcome = { ok: true, turns: (data && data.turns) || [] };
+  } catch (err) {
+    outcome = { ok: false,
+               message: String((err && err.message) || err || "request failed") };
+  } finally {
+    subagentLoading.delete(agentId);
+  }
+  // The chip may be pointed at a DIFFERENT agent entirely by now — `key`
+  // (buildToolChip) includes `agentId` precisely because a rebuild can
+  // retarget it — and this fetch's outcome belongs to the one it was asked
+  // for, not whatever is current. Applying it to the wrong agent's cache or
+  // log would be worse than doing nothing.
+  if (!(getSeg() && getSeg().subagent && getSeg().subagent.agentId === agentId)) return;
+  if (!outcome.ok) {
+    subagentFailCount.set(agentId, (subagentFailCount.get(agentId) || 0) + 1);
+    subagentFailMessage.set(agentId, outcome.message);
+    // Painted HERE, not left for a later tick to notice the bound was hit:
+    // the 5th failure can land on the run's FINAL poll (a Task's own
+    // tool_result can be the very last row before the whole run reports
+    // done), so there may be no later tick at all — an open chip with a
+    // give-up nobody ever painted is the exact blank-forever state this
+    // feature exists to prevent.
+    const cur = getLogEl();
+    if (cur && !subagentCache.get(agentId)
+        && (subagentFailCount.get(agentId) || 0) >= MAX_SUBAGENT_FETCH_ATTEMPTS) {
+      renderSubagentFailure(cur, outcome.message);
+    }
+    return;   // a failure never re-enters below
+  }
+  subagentCache.set(agentId, { turns: outcome.turns, fetchedAtStatus: startStatus });
+  subagentCacheTrim();
+  subagentFailCount.delete(agentId);
+  subagentFailMessage.delete(agentId);
+  const cur = getLogEl();
+  if (cur) renderSubagentTranscript(cur, outcome.turns);
+  // Catch up ONLY on a running->terminal transition that happened WHILE this
+  // fetch was in flight (a Task's own tool_result can be the very last row
+  // before the whole run reports done, so there may be no external tick left
+  // to notice) — not a general self-driving loop. While the subagent is
+  // still running, the 400 ms poll tick is what paces further fetches;
+  // recursing unconditionally here would free-run as fast as the network
+  // allows instead of on that cadence. The recursive call still goes
+  // through every gate above (`el.open`, the depth cap, the fail bound) —
+  // that is what makes it impossible for THIS path to bypass them the way a
+  // direct call to the fetch alone used to (finding C).
+  const seg2 = getSeg();
+  const status2 = (seg2 && seg2.status) || "running";
+  if (startStatus === "running" && status2 !== "running") {
+    pumpSubagentLog(el, getLogEl, getSeg);
+  }
 }
 
 // The chip's expanded body, rebuilt from the segment (never patched): a
@@ -13768,10 +13805,12 @@ function buildToolChip(seg, key) {
   // event (fired by the element itself, after `open` changes) is the one
   // hook that reaches an expand with no live run behind it. Harmless if a
   // live run's own next `update()` tick gets there first: the fetch is
-  // de-duplicated per agentId (see loadSubagentTranscript).
+  // de-duplicated per agentId (see pumpSubagentLog). `reexpand: true` is
+  // what gives a subagent that hit the fail bound a fresh chance — the ONE
+  // gesture that recovers it short of a full reload.
   el.addEventListener("toggle", () => {
     if (lastSeg && lastSeg.name === "Task" && lastSeg.subagent) {
-      maybeLoadSubagentTranscript(el, getSubagentLog, getLastSeg);
+      pumpSubagentLog(el, getSubagentLog, getLastSeg, { reexpand: true });
     }
   });
 
@@ -13796,7 +13835,7 @@ function buildToolChip(seg, key) {
   // Read live rather than captured: a fetch in flight when the body rebuilds
   // (the Task's own status flips, or `subagent` arrives late) must land in
   // whatever `subagentLog`/`lastSeg` point to NOW, not the ones that existed
-  // when the fetch started — see loadSubagentTranscript's own comment.
+  // when the fetch started — see pumpSubagentLog's own comment.
   const getSubagentLog = () => subagentLog;
   const getLastSeg = () => lastSeg;
   function update(next) {
@@ -13820,7 +13859,7 @@ function buildToolChip(seg, key) {
     // of the transcript — no second poll loop for a Task chip's own log.
     if (next.name === "Task" && next.subagent) {
       if (subagentStatusEl) subagentStatusEl.textContent = subagentStatusLine(next);
-      maybeLoadSubagentTranscript(el, getSubagentLog, getLastSeg);
+      pumpSubagentLog(el, getSubagentLog, getLastSeg);
     }
   }
   function rebuild(next) {

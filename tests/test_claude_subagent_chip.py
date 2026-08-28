@@ -5,8 +5,10 @@ agent.py's `_attach_subagents` (tests/test_claude_subagents.py) puts a
 spawnDepth, agentId, and (while running) a `progress` snapshot. This file
 covers the RENDERER for that: the status badge in the chip's body
 (`subagentStatusLine`, `formatElapsed`), the lazy fetch of the subagent's own
-transcript on expand (`maybeLoadSubagentTranscript`, `loadSubagentTranscript`),
-and rendering that transcript through the SAME segment machinery the main
+transcript on expand (`pumpSubagentLog`, the one entry point every caller —
+the poll tick, the "toggle" listener, and a fetch's own completion — goes
+through), and rendering that transcript through the SAME segment machinery
+the main
 conversation uses (`renderSubagentTranscript` calling `renderSegments`) —
 which is also what makes a NESTED subagent (spawnDepth > 1) work with no
 extra code.
@@ -282,7 +284,12 @@ console.log(JSON.stringify({
     assert got["h"] == "1h 2m"
 
 
-def test_subagent_status_line_running_with_last_tool(probe_src, tmp_path):
+def test_subagent_status_line_falls_back_to_total_elapsed_with_no_activity_yet(
+        probe_src, tmp_path):
+    """The very first tick after spawn: nothing has been written, so there is
+    no `lastActivityAt` yet and the badge falls back to total time since
+    start — worded as a bare duration, not "active ... ago", since it is not
+    measuring activity at all here."""
     got = _run(probe_src, """
 const seg = %s;
 console.log(JSON.stringify({
@@ -292,6 +299,27 @@ console.log(JSON.stringify({
         "startedAt": "2026-01-01T00:00:00.000Z", "lastActivityAt": "",
         "lastTool": "Bash"}))), tmp_path)
     assert got["s"] == "Running general-purpose — Bash (10s)"
+
+
+def test_subagent_status_line_uses_last_activity_when_present(probe_src, tmp_path):
+    """The PRIMARY path (code review finding E): once the agent has done
+    anything at all, the parenthetical measures time since ITS LAST activity,
+    not total runtime — and the wording says so ("active ... ago"), so a
+    subagent twenty minutes into a run whose last tool call was two seconds
+    ago reads as still alive, not as freshly started."""
+    got = _run(probe_src, """
+const seg = %s;
+console.log(JSON.stringify({
+  s: subagentStatusLine(seg, Date.parse("2026-01-01T00:20:02.000Z")),
+}));
+""" % json.dumps(_task_seg(subagent=_sub(progress={
+        "startedAt": "2026-01-01T00:00:00.000Z",
+        "lastActivityAt": "2026-01-01T00:20:00.000Z",
+        "lastTool": "Grep"}))), tmp_path)
+    # 20 minutes of total runtime, but the badge reads off the 2s since the
+    # last tool call — and says so, rather than a bare "(2s)" a reader could
+    # mistake for "started 2s ago".
+    assert got["s"] == "Running general-purpose — Grep (active 2s ago)"
 
 
 def test_subagent_status_line_done_and_error(probe_src, tmp_path):
@@ -661,3 +689,155 @@ main();
 """ % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
        json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
     assert got["failCount"] == 0
+
+
+# ------------------------------------------------- give-up recovery (#A)
+
+def test_reexpanding_after_giving_up_gets_a_fresh_chance(probe_src, tmp_path):
+    """Code review finding A: `subagentFailCount` is cumulative over the
+    page's whole lifetime, not "this burst" — five rejections spread over
+    hours (a dev-server restart, an executor recycle) must not permanently
+    kill a subagent's transcript. Collapsing and re-expanding the chip is
+    the recovery gesture; it must reach a real fetch again, not stay stuck
+    behind the old count."""
+    got = _run(probe_src, """
+async function main() {
+  for (let i = 0; i < 5; i++) runPythonQueue.push({__reject: true, message: "down"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);              // open -> fetch #1 fails
+  for (let i = 0; i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);                   // ticks 2..5: each fails, hits the bound
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  const failedBefore = subagentFailCount.get("a1") || 0;
+  clickSummary(el.el);              // close
+  runPythonQueue.push({turns: [{role: "user", text: "recovered"}]});
+  clickSummary(el.el);              // re-open: reexpand:true clears the count
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    failedBefore,
+    bound: MAX_SUBAGENT_FETCH_ATTEMPTS,
+    failedAfter: subagentFailCount.get("a1") || 0,
+    tree: dump(el.el),
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
+    assert got["failedBefore"] >= got["bound"]
+    assert got["failedAfter"] == 0
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert len(users) == 1 and users[0]["text"] == "recovered"
+
+
+# ------------------------------------------------- paint on give-up (#B)
+
+def test_the_give_up_message_paints_from_the_final_failed_attempt(
+        probe_src, tmp_path):
+    """A tighter version of the same finding: NOTHING calls `update()` (or
+    anything else) after the failure that trips the bound. If the paint
+    only happened on a LATER tick noticing the count was already over the
+    line — rather than from inside the failing call itself — this would
+    show a blank log forever, which is exactly finding B."""
+    got = _run(probe_src, """
+async function main() {
+  for (let i = 0; i < 5; i++) runPythonQueue.push({__reject: true, message: "final straw"});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                    // failure 1 of 5
+  for (let i = 0; i < 4; i++) {           // failures 2..5 — the 5th trips the bound
+    await new Promise((r) => setTimeout(r, 0));
+    el.update(%s);
+  }
+  await new Promise((r) => setTimeout(r, 0));   // let the 5th (bound-tripping) fetch settle
+  // No further el.update() call anywhere after this — the "no more ticks"
+  // case: whatever is on screen now is whatever the failing call itself put
+  // there, or nothing ever will be.
+  console.log(JSON.stringify({tree: dump(el.el), calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1")))), tmp_path)
+    assert got["calls"] == 5
+    errors = _by_class(got["tree"], "sub-turn-error")
+    assert len(errors) == 1 and "final straw" in errors[0]["text"]
+
+
+# ------------------------------------------------- catch-up gating (#C)
+
+def test_the_catch_up_fetch_does_not_fire_for_a_collapsed_chip(probe_src, tmp_path):
+    """Code review finding C: the running->terminal catch-up used to call
+    the fetch directly, bypassing `el.open` — collapse the chip while a
+    fetch is in flight, let the Task complete, and it must NOT start a
+    second (potentially multi-megabyte) fetch for a chip nobody is
+    looking at."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "x"}]}});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                 // open -> fetch #1 starts (deferred)
+  clickSummary(el.el);                 // CLOSED before it resolves
+  el.update(%s);                        // status goes terminal mid-flight
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);                  // fetch #1 resolves now, chip closed
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="ok"))), tmp_path)
+    assert got["calls"] == 1, "a collapsed chip must not trigger the catch-up fetch"
+
+
+def test_the_catch_up_fetch_does_not_fire_for_a_given_up_agent(probe_src, tmp_path):
+    """The catch-up path must respect the fail bound too — an agent already
+    given up on must not get a bonus fetch just because its status happened
+    to flip while a (successful, unrelated-timing) fetch was in flight."""
+    got = _run(probe_src, """
+async function main() {
+  const el = buildToolChip(%s, "k1");
+  subagentFailCount.set("a1", MAX_SUBAGENT_FETCH_ATTEMPTS);   // already given up
+  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "x"}]}});
+  el.update(%s);   // re-triggers a pass while open; cache empty, but capped...
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({calls: runPythonLog.length}));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running")),
+       json.dumps(_task_seg(subagent=_sub(agent_id="a1"), status="running"))), tmp_path)
+    # Given up already: no fetch at all, deferred or otherwise.
+    assert got["calls"] == 0
+
+
+# ------------------------------------------------- agent-mismatch guard (#D)
+
+def test_a_rebuild_onto_a_different_agent_mid_fetch_does_not_cross_wires(
+        probe_src, tmp_path):
+    """Code review finding D: a fetch in flight for agent A must not paint
+    its result into agent B's log, or make B's catch-up decision, if the
+    chip gets rebuilt onto B before A's fetch resolves."""
+    got = _run(probe_src, """
+async function main() {
+  runPythonQueue.push({__defer: true, value: {turns: [{role: "user", text: "from A"}]}});
+  const el = buildToolChip(%s, "k1");
+  clickSummary(el.el);                 // fetch for agent A starts, deferred
+  el.update(%s);                        // rebuild retargets this chip at agent B
+  const p = pendingResolvers.shift();
+  p.resolve(p.value);                  // A's fetch resolves AFTER the retarget
+  await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => setTimeout(r, 0));
+  console.log(JSON.stringify({
+    tree: dump(el.el),
+    cachedA: subagentCache.has("aA"),
+    cachedB: subagentCache.has("aB"),
+  }));
+}
+main();
+""" % (json.dumps(_task_seg(subagent=_sub(agent_id="aA"))),
+       json.dumps(_task_seg(subagent=_sub(agent_id="aB")))), tmp_path)
+    # A's answer must not be cached under A (the mismatch guard returns
+    # before any cache write) and must not appear in B's log.
+    assert got["cachedA"] is False
+    users = _by_class(got["tree"], "sub-turn-user")
+    assert not any(u["text"] == "from A" for u in users)
