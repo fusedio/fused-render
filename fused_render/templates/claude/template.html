@@ -2316,6 +2316,38 @@
   .toolchip .chip-img {
     display: block; max-width: 100%; border-radius: 8px; margin-top: 6px;
   }
+  /* A spawned subagent's header (Task chip only): agent type + description +
+     status, drawn like a chip-flag badge so a running one reads as "in
+     progress" beside its own siblings rather than as an error state. */
+  .chip-subagent-status {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 0 7px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .03em;
+    color: var(--dim);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .chip-subagent-status.is-running {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .chip-subagent-status.is-error { color: var(--error); border-color: var(--error); }
+  /* The subagent's own transcript, nested one level in: a left rule (same
+     device as .thinking-body) says "this is a conversation INSIDE the call
+     above", never a sibling of the turn's own segments. */
+  .chip-subagent-log {
+    margin-top: 8px;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-strong);
+  }
+  .chip-subagent-log:empty { display: none; }
+  .sub-turn-user {
+    color: var(--dim); font-size: 12px; margin: 6px 0;
+    white-space: pre-wrap; word-break: break-word;
+  }
   .thinking > summary {
     cursor: pointer; color: var(--faint); font-size: 12px; font-style: italic;
     transition: color .12s ease-out;
@@ -13275,6 +13307,130 @@ function toolChipSummary(seg) {
   return parts.lead ? parts.lead + "  " + parts.path : parts.path;
 }
 
+// ── a spawned subagent, inside its own Task chip ──────────────
+// agent.py's `_attach_subagents` puts a `subagent` object on a `Task` segment
+// (agentType, description, model, spawnDepth, agentId — and, while it is
+// still running, a `progress` snapshot). This is the renderer for that: a
+// status badge in the chip's body, and — on expand — the subagent's own
+// transcript, loaded lazily and re-fetched on the SAME 400 ms poll that
+// drives everything else while it runs (no second timer).
+
+// A nested subagent that itself spawned a subagent is real (spawnDepth > 1),
+// but a chip that recurses without limit over bad or adversarial data is not
+// a feature. Never hit in practice — a person expands at most a few levels —
+// this is a floor under that, not a UI a user is expected to reach.
+const MAX_SUBAGENT_DEPTH = 8;
+
+// elapsed time since `iso` (a subagent's own first-row timestamp), as the
+// short form the badge shows. `now` is a parameter rather than `Date.now()`
+// read inline so this stays a pure function to test against.
+function formatElapsed(iso, now) {
+  if (!iso) return "";
+  const start = Date.parse(iso);
+  if (Number.isNaN(start)) return "";
+  const n = typeof now === "number" ? now : Date.now();
+  let s = Math.max(0, Math.round((n - start) / 1000));
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  s = s % 60;
+  if (m < 60) return m + "m " + (s < 10 ? "0" : "") + s + "s";
+  const h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m";
+}
+
+// The badge's one line: what kind of agent, what it is doing (or did), and —
+// while running — what it last touched and for how long. `now` rides through
+// to `formatElapsed` for the same testability reason.
+function subagentStatusLine(seg, now) {
+  const sub = (seg && seg.subagent) || {};
+  const type = sub.agentType || "agent";
+  if (seg.status === "running") {
+    const p = sub.progress || {};
+    const tool = p.lastTool ? " — " + prettyToolName(p.lastTool) : "";
+    const elapsed = formatElapsed(p.startedAt, now);
+    return "Running " + type + tool + (elapsed ? " (" + elapsed + ")" : "");
+  }
+  if (seg.status === "error") return type + " — failed";
+  return type + " — done";
+}
+
+// agentId -> the last `{turns, transcript}` `action: "subagent"` answered.
+// Kept across a chip's own body rebuilds (its `<details>` is torn down and
+// rebuilt the moment the Task's own status flips, see buildToolChip) so a
+// finished subagent already read once is not re-fetched just because its
+// OWN chip happened to repaint.
+const subagentCache = new Map();
+const subagentLoading = new Set();   // agentIds with a fetch in flight
+
+// One assistant/user turn of a subagent's own transcript. Assistant turns go
+// through `renderSegments` — the SAME tool-chip/thinking/text machinery the
+// main conversation uses, which is what lets a nested Task chip (spawnDepth
+// > 1) work with no code of its own. A user turn is the subagent's own
+// prompt: plain text, never markdown — nobody asked the model to write it.
+function renderSubagentTranscript(container, turns) {
+  const list = Array.isArray(turns) ? turns : [];
+  for (let i = 0; i < list.length; i++) {
+    const turn = list[i] || {};
+    let turnEl = container.children[i];
+    if (!turnEl) {
+      turnEl = document.createElement("div");
+      container.appendChild(turnEl);
+    }
+    if (turn.role === "user") {
+      turnEl.className = "sub-turn-user";
+      const text = typeof turn.text === "string" ? turn.text : "";
+      if (turnEl.textContent !== text) turnEl.textContent = text;
+    } else {
+      turnEl.className = "sub-turn-assistant";
+      renderSegments(turnEl, turn.segments || []);
+    }
+  }
+  Array.from(container.children).slice(list.length).forEach((c) => c.remove());
+}
+
+// The actual fetch, de-duplicated per agent: `action: "subagent"` is a lazy
+// read of a file that can run to megabytes, so at most one is in flight for
+// any one agentId at a time, and a finished agent already cached is never
+// asked for again (see `maybeLoadSubagentTranscript`).
+async function loadSubagentTranscript(logEl, seg) {
+  const sub = seg.subagent;
+  const agentId = sub && sub.agentId;
+  if (!agentId || subagentLoading.has(agentId)) return;
+  subagentLoading.add(agentId);
+  try {
+    const session_id = fused.params.get("session_id") || "";
+    if (!session_id) return;
+    const data = await fused.runPython(
+      AGENT, { action: "subagent", file: FILE, session_id, agent_id: agentId },
+      { key: null });
+    subagentCache.set(agentId, data);
+    renderSubagentTranscript(logEl, (data && data.turns) || []);
+  } finally {
+    subagentLoading.delete(agentId);
+  }
+}
+
+// Whether THIS tick is the one that fetches. Called on every `update()` (the
+// existing 400 ms poll, no second loop) so a running subagent's chip, while
+// open, tails the same way the main transcript does — and does nothing at
+// all while the chip is collapsed, which is the common case and the one the
+// cost budget is about.
+function maybeLoadSubagentTranscript(el, logEl, seg) {
+  const sub = seg && seg.subagent;
+  if (!sub || !sub.agentId || !logEl) return;
+  if ((sub.spawnDepth || 0) > MAX_SUBAGENT_DEPTH) return;
+  if (!el.open) return;
+  const cached = subagentCache.get(sub.agentId);
+  if (cached) {
+    // Already have a copy: paint it immediately (no flash of an empty log
+    // while the network round-trip that follows, if any, is in flight), and
+    // only go back to the wire while the agent could still be writing.
+    renderSubagentTranscript(logEl, cached.turns || []);
+    if (seg.status !== "running") return;
+  }
+  loadSubagentTranscript(logEl, seg);
+}
+
 // The chip's expanded body, rebuilt from the segment (never patched): a
 // segment's input never changes once it is on the wire, and its output arrives
 // once, so a full rebuild is both cheap and the only version that cannot go
@@ -13314,8 +13470,30 @@ function fillToolChipBody(body, seg) {
     body.appendChild(d);
   };
   const used = [];
+  let subagentLog = null;         // set by the Task case, handed back to the caller
+  let subagentStatusEl = null;    // ditto — the badge `update()` refreshes live
 
   switch (seg.name) {
+    case "Task": {
+      used.push("description", "subagent_type", "prompt");
+      if (inp.description) label(String(inp.description));
+      if (inp.subagent_type) label(String(inp.subagent_type));
+      if (typeof inp.prompt === "string" && inp.prompt) pre(inp.prompt);
+      if (seg.subagent) {
+        subagentStatusEl = document.createElement("div");
+        subagentStatusEl.className = "chip-subagent-status is-" + (seg.status || "running");
+        subagentStatusEl.textContent = subagentStatusLine(seg);
+        body.appendChild(subagentStatusEl);
+        // No expand affordance past the depth cap — see MAX_SUBAGENT_DEPTH —
+        // but the badge above still says what happened.
+        if ((seg.subagent.spawnDepth || 0) <= MAX_SUBAGENT_DEPTH) {
+          subagentLog = document.createElement("div");
+          subagentLog.className = "chip-subagent-log";
+          body.appendChild(subagentLog);
+        }
+      }
+      break;
+    }
     case "Edit": {
       used.push("file_path", "old_string", "new_string", "replace_all");
       pathLabel(inp.file_path);
@@ -13452,6 +13630,7 @@ function fillToolChipBody(body, seg) {
     el.alt = seg.name + " result image";
     body.appendChild(el);
   });
+  return { subagentLog, subagentStatusEl };
 }
 
 // One tool call. Returns a view handle rather than an element: the same call is
@@ -13496,6 +13675,17 @@ function buildToolChip(seg, key) {
   body.className = "chip-body";
   el.append(head, body);
   registerCard(el, head, key);
+  // A restored (finished) conversation never polls, so nothing would ever
+  // call `update()` again to notice a Task chip being opened — the "toggle"
+  // event (fired by the element itself, after `open` changes) is the one
+  // hook that reaches an expand with no live run behind it. Harmless if a
+  // live run's own next `update()` tick gets there first: the fetch is
+  // de-duplicated per agentId (see loadSubagentTranscript).
+  el.addEventListener("toggle", () => {
+    if (lastSeg && lastSeg.name === "Task" && lastSeg.subagent) {
+      maybeLoadSubagentTranscript(el, subagentLog, lastSeg);
+    }
+  });
 
   // What the DOM currently says, as one string. Re-rendering an unchanged chip
   // every 400 ms would drop scroll position inside a long output and fight the
@@ -13508,11 +13698,38 @@ function buildToolChip(seg, key) {
   // 400 ms poll for the rest of the turn. `output` is capped (4000 chars) and
   // images contribute only their count, so what is left is cheap.
   let shown = null;
+  // Handles into a Task chip's own subagent header/log, so they can be kept
+  // live (the badge's elapsed time, the nested transcript while it runs)
+  // WITHOUT forcing a full body rebuild every 400 ms poll — only the two
+  // fields below ever trigger that (see `key`).
+  let subagentLog = null;
+  let subagentStatusEl = null;
+  let lastSeg = null;   // for the "toggle" listener below, which has no `next`
   function update(next) {
+    lastSeg = next;
+    // The subagent's own agentId/spawnDepth join `key` for one reason only:
+    // agent.py can attach `subagent` a poll or two AFTER the bare Task call
+    // first appears (the sidecar is written once the CLI has spawned the
+    // agent), while `status`/`output`/`images` stay exactly "running"/null/[]
+    // the whole time — so without this, the body built before that arrived
+    // would never get its badge or its expand log at all.
     const key = JSON.stringify([next.status, next.output,
-                                (next.images || []).length]);
-    if (key === shown) return;
-    shown = key;
+                                (next.images || []).length,
+                                next.subagent ? next.subagent.agentId : null,
+                                next.subagent ? next.subagent.spawnDepth : null]);
+    if (key !== shown) {
+      shown = key;
+      rebuild(next);
+    }
+    // Independent of the body rebuild above: while the chip is open and its
+    // subagent is running, this is the SAME 400 ms tick that drives the rest
+    // of the transcript — no second poll loop for a Task chip's own log.
+    if (next.name === "Task" && next.subagent) {
+      if (subagentStatusEl) subagentStatusEl.textContent = subagentStatusLine(next);
+      maybeLoadSubagentTranscript(el, subagentLog, next);
+    }
+  }
+  function rebuild(next) {
     const status = String(next.status || "running");
     // `is-` prefixed, and not the bare status word: `error` alone collided with
     // the page's own `.error` rule (a red pill with a border and 8px of padding
@@ -13540,7 +13757,9 @@ function buildToolChip(seg, key) {
     const full = toolChipSummary(next);
     if (full) sub.setAttribute("title", full);
     body.replaceChildren();
-    fillToolChipBody(body, next);
+    const built = fillToolChipBody(body, next);
+    subagentLog = (built && built.subagentLog) || null;
+    subagentStatusEl = (built && built.subagentStatusEl) || null;
   }
   update(seg);
   return { kind: "tool", el, update };
