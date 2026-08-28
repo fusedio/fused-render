@@ -459,8 +459,9 @@ def _unauthorized(scope) -> Response:
     if scope["path"] in ("/", "/index.html"):
         return _pair_page(
             "Scan to pair this device",
-            "On the computer, open Preferences → Share on local network and scan the QR code "
-            "with this phone.",
+            "On the computer, open Preferences → Render local network and scan the QR code "
+            "with the iPhone's Camera app — not the Control Center QR scanner, whose "
+            "in-app browser cannot pair Safari.",
             "This device is not paired yet.")
     return JSONResponse({"error": "not paired"}, status_code=401)
 

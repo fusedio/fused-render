@@ -341,9 +341,9 @@ function LanPairing({ url }: { url: string }) {
       />
       <div className="lan-pair-text">
         <p>
-          <b>Scan with the phone's camera</b> to pair it — from the Camera app or the Control Center
-          scanner (tap "Open in Safari" there). The code changes every five minutes; a paired phone
-          then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
+          <b>Scan with the iPhone's Camera app</b> to pair it — not the Control Center QR scanner,
+          whose in-app browser can't pair Safari. The code changes every five minutes; a paired
+          phone then opens <a href={url} target="_blank" rel="noreferrer">{url}</a>.
         </p>
         <button type="button" className="btn btn-secondary" onClick={() => setNonce((n) => n + 1)}>
           New code
