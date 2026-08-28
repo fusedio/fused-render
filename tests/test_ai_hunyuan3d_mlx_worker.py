@@ -705,3 +705,66 @@ def test_a_poisoned_pipeline_is_rebuilt_before_the_next_render(monkeypatch, tmp_
     assert rebuilt.calls  # the rebuilt pipeline is what actually ran
     assert poisoned.calls == []
     assert result["path"]
+
+
+def test_a_failed_first_render_still_poisons_the_pipeline_and_the_second_still_works(
+        monkeypatch, tmp_path):
+    """End-to-end through TWO real `generate()` calls, not a pipeline
+    pre-poisoned by the test itself: render 1 reaches the real engine's own
+    "free the DiT" point (step 6, `pipeline_mlx.py`) and THEN fails —
+    exactly what an empty-surface render does (decode, step 7, runs with no
+    DiT needed and raises). Render 1's `FakePipeline.__call__` mimics that
+    ordering precisely (sets `self.dit = None`, THEN raises), so this pins
+    the real timing bug, not a shortcut. Render 2 must still rebuild and
+    succeed — `_ensure_pipeline`'s `pipeline.dit is None` check must not
+    require a SUCCESSFUL first render to have poisoned the pipeline, since
+    the real engine frees the DiT before it can know whether decode will
+    even succeed (code review, 2026-08-28: bugbot finding 1's regression
+    case)."""
+    base = FakeBase()
+    module = load_worker(monkeypatch, base)
+
+    first = FakePipeline()
+
+    def poison_then_fail():
+        first.dit = None
+        raise ValueError("need at least one array to concatenate")
+
+    first.on_call = poison_then_fail
+    rebuilt = FakePipeline()
+    built = []
+
+    def fake_shape_pipeline_class():
+        class _Ctor:
+            @staticmethod
+            def from_pretrained(_fetched):
+                built.append(True)
+                return rebuilt
+        return _Ctor
+
+    module._loaded["pipeline"] = first
+    module._loaded["fetched"] = "/weights/dir"
+    monkeypatch.setattr(module, "_shape_pipeline_class", fake_shape_pipeline_class)
+
+    try:
+        module.generate(_request(tmp_path, job="render-1"))
+        raised = None
+    except ValueError as e:
+        raised = str(e)
+
+    # Render 1 failed (the raw numpy message here, since this test's fake
+    # bypasses `_is_empty_surface_error`'s traceback-frame detection —
+    # that translation is covered separately; this test is about the
+    # pipeline's OWN state after a failure, not the message shape) —
+    assert raised is not None
+    # — and left the pipeline poisoned, exactly like the real engine does.
+    assert first.dit is None
+    assert module._loaded["pipeline"] is first  # not yet rebuilt
+
+    # Render 2: must rebuild rather than hit `first`'s dead DiT again.
+    result = module.generate(_request(tmp_path, job="render-2"))
+
+    assert built == [True]
+    assert module._loaded["pipeline"] is rebuilt
+    assert rebuilt.calls
+    assert result["path"]
