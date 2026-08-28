@@ -294,26 +294,52 @@ function ModelRow({
 
   return (
     <div className="dl-row">
+      {/* NAME + ACTION ONLY — the figures moved to their own line below (see
+          `.dl-row-figures`'s comment in notifications.css). The head used to
+          also carry `MemoryCell`/the state span, but a job like
+          "FLUX.2-Klein-4B-4bit" + "1.7 GB now (2.2 GB held)" + "Unload" needs
+          more width than the panel's own `min-width` cap gives a row, and
+          `.dl-title`'s job-row wrap rule then broke the name at a hyphen —
+          the one thing `.dl-model`'s comment says an id must never do. The
+          fix is D596's own device, applied here: the row was short of LINES,
+          not width.
+          THIS ONLY SHRINKS A ROW WHOSE HEAD PREVIOUSLY WRAPPED — the reported
+          case, and any id long enough to compete with "1.7 GB now (2.2 GB
+          held)" and "Unload" for the panel's ~320px content box. A SHORT id
+          like "gpt-oss-20b", whose head already fit on one line under the old
+          layout, gets one line TALLER here: it trades a head that already had
+          room for the figures alongside it for an always-present figures line
+          below. CSS cannot pick a layout by the rendered width of its own
+          content — there is no selector for "would this line have wrapped" —
+          so the row does not (and structurally cannot) branch between the two
+          shapes; every row pays the same one-line-head-plus-figures-line
+          structure regardless of whether its own name needed it. */}
       <div className="dl-row-head">
         {/* The MODEL name only, not the whole `owner/model` repo id — the
             same trim `.dl-model` uses on the job row, for the same reason:
             the owner never distinguishes anything and eats width a narrow
-            bar has none of. Full id stays on hover. */}
-        <span className="dl-title" title={model.model}>
+            bar has none of. Full id stays on hover.
+            `dl-title-id` (notifications.css) is what keeps this on ONE line
+            instead of inheriting `.dl-title`'s two-line, wrap-anywhere job-row
+            rule — a model id is a single unbreakable token, not a prompt. */}
+        <span className="dl-title dl-title-id" title={model.model}>
           {repoName(model.model)}
         </span>
-        {/* A non-ready worker holds no weights yet, so there is no cost to
-            report — its STATE is the honest thing to show in this column
-            instead, and the bring-up's real progress (percentage, cancel) is a
-            job row in Jobs, reported by `supervisor._report` (D588). */}
+        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
+          {busy ? "Unloading…" : "Unload"}
+        </button>
+      </div>
+      {/* The figures, on their own line — `.dl-row-figures` in
+          notifications.css. A non-ready worker holds no weights yet, so there
+          is no cost to report — its STATE is the honest thing to show here
+          instead, and the bring-up's real progress (percentage, cancel) is a
+          job row in Jobs, reported by `supervisor._report` (D588). */}
+      <div className="dl-row-figures">
         {model.state === "ready" ? (
           <MemoryCell model={model} ceilingBytes={ceilingBytes} />
         ) : (
           <span className="dl-amount">{model.state}</span>
         )}
-        <button className="dl-row-cancel" onClick={unload} disabled={busy}>
-          {busy ? "Unloading…" : "Unload"}
-        </button>
       </div>
       {failure && <div className="dl-status">{failure}</div>}
     </div>

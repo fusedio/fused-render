@@ -698,6 +698,46 @@
   font-weight: 600;
 }
 
+/* THE MODEL ROW'S TITLE IS AN ID, NOT A PROMPT — the opposite of the case
+   `.dl-title` above is built for, so a model row needs a second, more
+   specific rule rather than a tweak to that one. `.dl-title` carries D596's
+   two-line clamp plus `overflow-wrap: anywhere` because a JOB row's title is
+   a long PROMPT and the model id already has its own line below (`.dl-model`,
+   next). `ModelRow` (ModelsDock.tsx) has no such second line — its `.dl-title`
+   *is* the model id — so inheriting the prompt rule let `overflow-wrap:
+   anywhere` snap "FLUX.2-Klein-4B-4bit" at the hyphen into "FLUX.2-" over
+   "Klein-4B-4bit", which is exactly what `.dl-model`'s own comment below
+   forbids: "a model id is a single unbreakable token and wrapping one
+   mid-word reads worse than truncating it". `EnginesDock.tsx` renders a
+   `.dl-title` too, and carries THIS class as well (code review: the "folder
+   name" read of that row was wrong — `engineLabel` falls back to
+   `engine.module || engine.engine_id` whenever `folder` is empty, and a
+   module path or engine id is exactly the same unbreakable dot/hyphen token
+   this class exists for). That row pairs the title with a one-word
+   `.dl-amount` kind rather than a byte pair, so one line plus ellipsis
+   already fits and nothing else about it moves — only the title class is
+   shared, additively alongside `dl-title` on both rows' spans, never a
+   replacement for it.
+   ONE LINE, ELLIPSISED, never wrapped: `display: block` plus `white-space:
+   nowrap` opts back out of the `-webkit-box`/`line-clamp` machinery entirely
+   (line-clamp only exists inside that box model), and `overflow-wrap: normal`
+   restores the browser's ordinary "break at a real word boundary, or not at
+   all" behaviour so a hyphen is never mistaken for one. `-webkit-line-clamp:
+   none` is stated explicitly rather than left to `display: block` alone —
+   today the box-model switch already neutralises the inherited clamp, but
+   resetting the property itself keeps that true even if `white-space` is ever
+   relaxed back toward wrapping, or a future Chromium extends legacy
+   `-webkit-line-clamp` to non-`-webkit-box` containers. Full id stays on
+   hover, same as before. */
+.dl-title.dl-title-id {
+  display: block;
+  -webkit-line-clamp: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+}
+
 /* The model running this row (JobRow's `.dl-model`) — ON ITS OWN LINE since
    D596, no longer a suffix on the head. It is a `<div>` between the head and
    the progress bar, so it has the panel's full width and needs no shrink
@@ -719,6 +759,59 @@
   white-space: nowrap;
   font-size: 11px;
   color: var(--fg-muted);
+}
+
+/* THE MODEL ROW'S FIGURES, ON THEIR OWN LINE — the same device D596 used for
+   `.dl-model` above, applied for the same reason: the head is short of
+   LINES, not width. `.dl-panel` caps at `min(340px, ...)` (D608), which
+   leaves a row roughly 320px of content box; the name, "1.7 GB now (2.2 GB
+   held)" and "Unload" together need more than that at once, and truncating
+   the name would not have closed the gap either — three items were never
+   going to fit on one line at this cap. So `MemoryCell` (or the non-ready
+   `state` span it alternates with) moves out of `.dl-row-head` onto a line
+   below it, exactly where `.dl-model` sits on a job row, and the head keeps
+   only the name and the Unload button.
+   NO FONT-SIZE OR COLOUR HERE, unlike `.dl-model` above, which sets both —
+   this class holds only the placement (the bottom margin `.dl-model` also
+   carries), because both of its possible children already own their own ink:
+   `.dl-amount` sets the same 11px `var(--fg-muted)` `.dl-model` does, and
+   `.dl-mem-live` sets its own colour (plain or banded) on top of that. Adding
+   either declaration here would be redundant right now, not a fallback for
+   anything — the day a child of this line doesn't carry its own treatment,
+   the fix is to give THAT child one, not to reach for this wrapper.
+   Unlike `.dl-model` this line is not itself ellipsised — its content is
+   `.dl-amount`/`.dl-mem-live`, which already carry their own overflow rules,
+   and neither of those changes here. */
+.dl-row-figures {
+  margin-bottom: 5px;
+}
+
+/* ZEROED WHEN IT IS THE LAST CHILD — the common case, since most rows carry
+   no failure message. The asymmetric bottom margin on the row's last child is
+   not new: `.dl-row-head` has carried `margin-bottom: 5px` while being the
+   last child (a row with no bar and no status) since before this change, and
+   that was already true dead space nobody paid attention to because the row
+   had no other interior gap competing with it. This change is what makes it
+   worth removing rather than leaving alone: the row now ALWAYS pays for one
+   real interior gap (`.dl-row-head`'s own margin, between the head and this
+   line), and paying a second one below the last line as well would eat the
+   height this whole restructuring exists to save — 5px here plus the existing
+   asymmetry would leave 13px of bottom padding against 8px on top, and the
+   card would end up TALLER than before instead of shorter. Left in place only
+   when `.dl-status` follows (the rule below still fires for that case, on
+   `.dl-status`'s own top margin, exactly as `.dl-row-head + .dl-status`
+   already does for the head). */
+.dl-row-figures:last-child {
+  margin-bottom: 0;
+}
+
+/* Same reasoning as `.dl-row-head + .dl-status` below, one level further
+   down the row: with the figures now always on their own line between the
+   head and a failure message, `.dl-row-figures` is what sits directly above
+   `.dl-status` on a model row, so it is what needs its top margin zeroed to
+   avoid stacking two 5px gaps into one 10px one. */
+.dl-row-figures + .dl-status {
+  margin-top: 0;
 }
 
 /* BACK IN THE PROTECTED GROUP (D596), reversing D577's `flex: 0 9999 auto`.

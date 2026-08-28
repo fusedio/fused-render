@@ -101,7 +101,16 @@ function EngineRow({
   return (
     <div className="dl-row">
       <div className="dl-row-head">
-        <span className="dl-title" title={engine.folder || engine.engine_id}>
+        {/* `dl-title-id` (notifications.css) — `engineLabel` falls back to
+            `engine.module || engine.engine_id` whenever `folder` is empty, so
+            an unmapped engine's title is a module path or engine id, the same
+            unbreakable dot/hyphen token the model row's name is. Without this
+            class it inherited `.dl-title`'s job-row wrap rule and could snap
+            mid-token exactly like the reported bug. Only the title class
+            moves here — this row already fits its name plus the one-word
+            `.dl-amount` kind on one line, so nothing else about its layout
+            changes. */}
+        <span className="dl-title dl-title-id" title={engine.folder || engine.engine_id}>
           {engineLabel(engine)}
         </span>
         {/* The KIND, so three similarly-named rows stay distinguishable — and
