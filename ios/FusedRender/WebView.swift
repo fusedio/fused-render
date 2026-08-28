@@ -10,10 +10,22 @@
 import SwiftUI
 import WebKit
 
+/// The little the native chrome needs from the page: where it is, whether it
+/// can go back, and two verbs. Owned by ConnectedView, filled in by WebView.
+@MainActor
+final class WebController: ObservableObject {
+    weak var webView: WKWebView?
+    @Published var location: URL?
+    @Published var canGoBack = false
+
+    func goBack() { webView?.goBack() }
+    func load(_ url: URL) { webView?.load(URLRequest(url: url)) }
+}
+
 struct WebView: UIViewRepresentable {
     let url: URL
     @Binding var pairURL: URL?
-    let onNavigated: (URL) -> Void
+    let controller: WebController
 
     static let userAgentMarker: String = {
         let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -26,7 +38,18 @@ struct WebView: UIViewRepresentable {
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.allowsContentJavaScript = true
+        // The native capture bridge: JS side injected at document end (after
+        // the page's runtime.js has built window.fused), Swift side receives
+        // the `fusedCapture` messages. See CaptureBridge.swift.
+        let bridge = context.coordinator.bridge
+        config.userContentController.add(bridge, name: CaptureBridge.handlerName)
+        if let url = Bundle.main.url(forResource: "runtime-ios", withExtension: "js"),
+           let source = try? String(contentsOf: url, encoding: .utf8) {
+            config.userContentController.addUserScript(
+                WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: false))
+        }
         let web = WKWebView(frame: .zero, configuration: config)
+        bridge.webView = web
         web.navigationDelegate = context.coordinator
         web.uiDelegate = context.coordinator
         web.allowsBackForwardNavigationGestures = true
@@ -39,6 +62,7 @@ struct WebView: UIViewRepresentable {
             if let ua = ua as? String { web.customUserAgent = ua + " " + Self.userAgentMarker }
         }
         context.coordinator.webView = web
+        controller.webView = web
         web.load(URLRequest(url: pairURL ?? url))
         return web
     }
@@ -55,20 +79,26 @@ struct WebView: UIViewRepresentable {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(baseURL: url, onNavigated: onNavigated) }
+    func makeCoordinator() -> Coordinator { Coordinator(baseURL: url, controller: controller) }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var baseURL: URL
         weak var webView: WKWebView?
-        let onNavigated: (URL) -> Void
+        let controller: WebController
+        let bridge = CaptureBridge()
 
-        init(baseURL: URL, onNavigated: @escaping (URL) -> Void) {
+        init(baseURL: URL, controller: WebController) {
             self.baseURL = baseURL
-            self.onNavigated = onNavigated
+            self.controller = controller
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            if let u = webView.url { onNavigated(u) }
+            controller.location = webView.url
+            controller.canGoBack = webView.canGoBack
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            controller.canGoBack = webView.canGoBack
         }
 
         // target=_blank links open in the same view.

@@ -145,19 +145,33 @@ struct PairView: View {
 struct ConnectedView: View {
     @EnvironmentObject var model: AppModel
     let server: Server
-    @State private var location: URL?
+    @StateObject private var web = WebController()
+
+    /// On the grid itself (or the pairing pages around it) — nothing to go back to.
+    private var onGrid: Bool {
+        guard let loc = web.location else { return true }
+        return loc.path == "/" || loc.path == "/index.html" || loc.path == "/pair"
+    }
 
     var body: some View {
-        WebView(url: server.baseURL, pairURL: $model.pendingPairURL) { location = $0 }
+        WebView(url: server.baseURL, pairURL: $model.pendingPairURL, controller: web)
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
             .overlay(alignment: .bottomTrailing) {
-                // A quiet way back to the computer list, parked in the corner
-                // under the home indicator where pages keep nothing; the page
-                // itself is the chrome.
+                // The one piece of native chrome, parked in the corner under
+                // the home indicator where pages keep nothing: back to the
+                // grid from inside an app (the edge swipe also works), and
+                // back to the computer list.
                 Menu {
+                    if !onGrid {
+                        Button("All apps", systemImage: "square.grid.2x2") { web.load(server.baseURL) }
+                        if web.canGoBack {
+                            Button("Back", systemImage: "chevron.left") { web.goBack() }
+                        }
+                        Divider()
+                    }
                     Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }
-                    if let location { Text(location.host ?? "").font(.footnote) }
+                    Text(server.host).font(.footnote)
                 } label: {
                     Image(systemName: "ellipsis.circle.fill")
                         .font(.title2)
