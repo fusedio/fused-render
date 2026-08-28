@@ -687,26 +687,31 @@ def test_a_streaming_generates_writes_also_stay_off_the_connection_thread(base):
 # status bar kept reading "1.7 GB now (21 GB held)" long after the render
 # finished.
 #
-# It does NOT fire in the request's own `finally` — an earlier cut of this
-# did, and re-faulting a 24 GB working set on every single call would make a
-# burst of five renders pay that cost five times. Instead each completed
+# It does NOT fire in the request's own `finally` — this change's first cut
+# did that, and re-faulting a 24 GB working set on every single call would
+# make a burst of five renders pay that cost five times. Instead each completed
 # execution arms a `_RELEASE_IDLE_S`-second timer; a new execution inside
 # that window cancels the pending one and arms a fresh one, so only a
 # genuinely idle worker ever actually clears. These tests set `base._release`
 # directly (mirroring how `_measure_peak` is set on `base` above) because
 # `_serve` here calls `build_server` directly, the same seam `serve()` itself
 # assigns through — and they swap in `_ManualTimer` below for
-# `threading.Timer` so the 30s window is crossed by calling `.fire()`, never
-# by sleeping.
+# `worker_base._new_timer` so the 30s window is crossed by calling `.fire()`,
+# never by sleeping.
 
 
 class _ManualTimer:
     """Stands in for `threading.Timer`, fired by hand instead of by a real
-    30-second wait. `_arm_release_timer` calls `threading.Timer(...)`
-    directly, so patching the `Timer` NAME on the `threading` module (which
-    `base.threading` and the real stdlib module both are — one object)
-    intercepts every timer it creates for the rest of the test, with no seam
-    needed in the production code.
+    30-second wait. `_arm_release_timer` calls `worker_base._new_timer(...)`
+    — a local indirection to `threading.Timer` that exists FOR this seam —
+    rather than `threading.Timer` directly: patching the real stdlib class
+    would affect every `threading.Timer` created ANYWHERE in the process for
+    the duration of the test, including by daemon threads leaked from an
+    earlier test in the same xdist worker (a real cross-file flake shape in
+    this repo, not a hypothetical one), silently turning them into timers
+    that are never scheduled and never fire. Patching `base._new_timer`
+    instead only ever affects timers `_arm_release_timer` itself creates, in
+    THIS one fresh module.
 
     `cancel()` matches real `Timer` semantics: a cancelled timer's function
     never runs, even if `.fire()` is called on it afterwards — which is what
@@ -741,7 +746,7 @@ def manual_timers(base, monkeypatch):
     """Every `_ManualTimer` `_arm_release_timer` creates during this test, in
     order — `instances[-1]` is always the CURRENTLY pending one."""
     _ManualTimer.instances = []
-    monkeypatch.setattr(base.threading, "Timer", _ManualTimer)
+    monkeypatch.setattr(base, "_new_timer", _ManualTimer)
     return _ManualTimer.instances
 
 

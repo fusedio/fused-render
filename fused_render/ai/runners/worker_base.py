@@ -212,6 +212,17 @@ _release_timer = None
 #: could already have rearmed (see `_fire_release`).
 _release_generation = 0
 
+#: The constructor `_arm_release_timer` calls to make its timer — a LOCAL
+#: seam, not `threading.Timer` used directly. A test that wants a manually-
+#: fired stand-in only has to monkeypatch THIS name, rather than
+#: `threading.Timer` itself — patching the real stdlib class would affect
+#: every `threading.Timer` created anywhere in the process for the duration
+#: of the test, including by daemon threads left running from an earlier
+#: test in the same worker, which is exactly the kind of cross-test flake
+#: this module's own generate-thread singleton (`_GENERATE_TASKS`) already
+#: has to be careful never to become an instance of.
+_new_timer = threading.Timer
+
 
 def _arm_release_timer():
     """(Re)start the `_RELEASE_IDLE_S` idle timer — called once after every
@@ -246,7 +257,7 @@ def _arm_release_timer():
             _release_timer.cancel()
         _release_generation += 1
         token = _release_generation
-        timer = threading.Timer(_RELEASE_IDLE_S, _fire_release, args=(token,))
+        timer = _new_timer(_RELEASE_IDLE_S, _fire_release, args=(token,))
         # Daemon: a pending release must never be what keeps the worker
         # process alive. `serve_forever()`'s own thread and `os._exit(0)` in
         # `/quit` are both how this process actually ends, and neither should
