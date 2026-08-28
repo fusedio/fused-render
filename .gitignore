@@ -70,3 +70,4 @@ docs/superpowers/plans/
 ios/*.xcodeproj
 ios/build/
 ios/FusedRender/Info.plist
+ios/FusedRenderWidgets/Info.plist
