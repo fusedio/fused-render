@@ -2519,7 +2519,7 @@ def _thinking_delta_text(row) -> str:
     return str(delta.get("thinking") or "")
 
 
-def _segments_from_rows(rows: list) -> list:
+def _segments_from_rows(rows: list, skip_sidechain: bool = True) -> list:
     """The ordered transcript of a reply: text, thinking and tool segments.
 
     ONE reader with TWO callers — `_poll` over the live `out.jsonl` and
@@ -2626,8 +2626,11 @@ def _segments_from_rows(rows: list) -> list:
         if not isinstance(row, dict):
             continue
         # Synthetic rows and subagent rows are not this conversation — the same
-        # guard `_history` has always applied to turns.
-        if row.get("isMeta") or row.get("isSidechain"):
+        # guard `_history` has always applied to turns. `skip_sidechain=False`
+        # is the one exception: reading a SUBAGENT's own file, where every row
+        # carries `isSidechain: true` (that is what marks it as a subagent to
+        # its parent) and the rows ARE that conversation.
+        if row.get("isMeta") or (skip_sidechain and row.get("isSidechain")):
             continue
         t = row.get("type")
         message = row.get("message")
@@ -2756,6 +2759,179 @@ def _segments_from_rows(rows: list) -> list:
             continue
         out.append(seg)
     return out
+
+
+# --------------------------------------------------------------- subagents
+#
+# A `Task` tool call spawns a subagent whose run Claude Code writes to its OWN
+# file — never inline in the parent transcript — under
+# PROJECTS/<munged-cwd>/<session-id>/subagents/agent-<id>.jsonl, alongside a
+# tiny sidecar agent-<id>.meta.json carrying the header a chip needs
+# (agentType, description, model, spawnDepth) and the `toolUseId` that joins
+# it to the `Task` `tool_use` block in the parent. `subagents/workflows/
+# wf_*/agent-*.jsonl` is a different layer (a different kind of run) and is
+# deliberately not rendered here — the index builder below skips right over
+# it because it is a directory, not a `.meta.json` file.
+#
+# Whether a subagent is still running is NOT computed from its own file: a
+# `Task` segment's `status` is already "running" until its own `tool_result`
+# lands (`_segments_from_rows`, same as any other tool call), so that is the
+# answer. What IS read from the subagent's own file, and only while it is
+# running, is a cheap tail — the last tool it called and when it started/last
+# did anything — for the collapsed chip's status line.
+
+_SUBAGENT_TAIL_BYTES = 65536  # a live-status tail, not the whole transcript
+
+
+def _subagents_dir(file: str, session_id: str) -> str:
+    return os.path.join(PROJECTS, _munge(_workdir(os.path.abspath(file))),
+                        session_id, "subagents")
+
+
+def _subagent_path(file: str, session_id: str, agent_id: str) -> str:
+    return os.path.join(_subagents_dir(file, session_id),
+                        "agent-%s.jsonl" % agent_id)
+
+
+def _subagent_meta_index(file: str, session_id: str) -> dict:
+    """`toolUseId -> header` for every top-level `agent-*.meta.json` in this
+    session's `subagents/` dir.
+
+    Sidecars only — a few hundred bytes each — so this is cheap enough to
+    read on every poll; the (potentially multi-megabyte) transcript itself is
+    read only lazily, on expand (`_subagent_transcript`)."""
+    out = {}
+    try:
+        names = os.listdir(_subagents_dir(file, session_id))
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith("agent-") and name.endswith(".meta.json")):
+            continue  # skips the `workflows` directory entry too
+        agent_id = name[len("agent-"):-len(".meta.json")]
+        try:
+            with open(os.path.join(_subagents_dir(file, session_id), name),
+                      encoding="utf-8") as fh:
+                meta = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        tool_use_id = str(meta.get("toolUseId") or "")
+        if not tool_use_id:
+            continue
+        depth = meta.get("spawnDepth")
+        out[tool_use_id] = {
+            "agentId": agent_id,
+            "agentType": str(meta.get("agentType") or ""),
+            "description": str(meta.get("description") or ""),
+            "model": str(meta.get("model") or ""),
+            "spawnDepth": depth if isinstance(depth, int) else 0,
+        }
+    return out
+
+
+def _subagent_progress(path: str) -> dict:
+    """A cheap tail read of a RUNNING subagent's own file: when it started,
+    when it last did anything, and the last tool it called. Not the whole
+    transcript — a run can be megabytes deep by the time anyone looks — just
+    the first line (the start) and the trailing `_SUBAGENT_TAIL_BYTES` (the
+    latest activity), the same tail-read shape as `_scan_transcript`."""
+    out = {"startedAt": "", "lastActivityAt": "", "lastTool": ""}
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return out
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            row = json.loads(fh.readline())
+        if isinstance(row, dict):
+            out["startedAt"] = str(row.get("timestamp") or "")
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(path, "rb") as fh:
+            if size > _SUBAGENT_TAIL_BYTES:
+                fh.seek(size - _SUBAGENT_TAIL_BYTES)
+            blob = fh.read().decode("utf-8", "replace")
+    except OSError:
+        return out
+    for line in reversed(blob.splitlines()):
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if not out["lastActivityAt"]:
+            out["lastActivityAt"] = str(row.get("timestamp") or "")
+        if not out["lastTool"]:
+            msg = row.get("message")
+            content = msg.get("content") if isinstance(msg, dict) else None
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        out["lastTool"] = str(block.get("name") or "")
+                        break
+        if out["lastActivityAt"] and out["lastTool"]:
+            break
+    return out
+
+
+def _attach_subagents(segments: list, file: str, session_id: str) -> list:
+    """Enrich every `Task` tool segment IN PLACE with its subagent's header,
+    and — only while it is still running — a live progress snapshot.
+
+    No-op without both a target file and a session id (a bookkeeping poll
+    that has neither, or a run whose session id has not landed yet) and
+    without any subagents recorded for it at all — the common case is a
+    session with no `Task` calls, and this must cost nothing extra there.
+    """
+    if not file or not session_id:
+        return segments
+    if not any(s.get("kind") == "tool" and s.get("name") == "Task"
+               for s in segments):
+        return segments
+    index = _subagent_meta_index(file, session_id)
+    if not index:
+        return segments
+    for seg in segments:
+        if seg.get("kind") != "tool" or seg.get("name") != "Task":
+            continue
+        info = index.get(seg.get("id"))
+        if info is None:
+            continue
+        sub = dict(info)
+        if seg.get("status") == "running":
+            sub["progress"] = _subagent_progress(
+                _subagent_path(file, session_id, info["agentId"]))
+        seg["subagent"] = sub
+    return segments
+
+
+def _subagent_transcript(file: str, session_id: str, agent_id: str) -> dict:
+    """A spawned subagent's own transcript, rendered with the same segment
+    machinery as the main conversation — loaded lazily, only when its chip is
+    expanded, and re-read (not appended-to) on the caller's own poll so a
+    running subagent's body tails the same way the main transcript does.
+
+    `agent_id` is a page-supplied id joined into a path exactly like
+    `run_id`/`session_id` elsewhere, so it gets the same refusal."""
+    if _bad_id(session_id) or _bad_id(agent_id):
+        return {"turns": [], "transcript": _transcript_stat("")}
+    file = os.path.abspath(file)
+    path = _subagent_path(file, session_id, agent_id)
+    stat = _transcript_stat(path)
+    if not os.path.isfile(path):
+        return {"turns": [], "transcript": stat}
+    turns = _turns_from_transcript(path, skip_sidechain=False)
+    for turn in turns:
+        if turn["role"] == "assistant" and turn.get("segments"):
+            turn["segments"] = _attach_subagents(turn["segments"], file,
+                                                 session_id)
+    return {"turns": turns, "transcript": stat}
 
 
 def _poll(run_id: str, file: str = "") -> dict:
@@ -3069,7 +3245,8 @@ def _poll(run_id: str, file: str = "") -> dict:
             # schedule.py) left this page reporting the kill as a crash. See
             # `_cancel`, which writes the marker.
             "cancelled": os.path.exists(os.path.join(run_dir, "cancelled")),
-            "segments": _segments_from_rows(parsed)}
+            "segments": _attach_subagents(_segments_from_rows(parsed), file,
+                                          new_session)}
 
 
 # ------------------------------------------------------- sessions & history
@@ -3635,49 +3812,21 @@ def _transcript_stat(path: str) -> dict:
         return {"path": path, "mtime": 0.0, "size": 0}
 
 
-def _history(file: str, session_id: str) -> dict:
-    """Rebuild the conversation from the Claude Code session transcript.
+def _turns_from_transcript(path: str, skip_sidechain: bool = True) -> list:
+    """The turn-by-turn rebuild shared by `_history` (the main conversation,
+    `skip_sidechain=True`) and `_subagent_transcript` (a spawned subagent's
+    OWN conversation, where every row carries `isSidechain: true` and
+    `skip_sidechain=False` is what keeps that from dropping the whole file).
+    Pulled out of `_history` rather than duplicated — a second copy of this
+    loop that only one of the two callers kept up to date is exactly how a
+    subagent transcript would drift from the main one's rendering rules.
 
-    Resolved ONLY at the target file's own project dir — with copied files
-    the same session id exists in several project dirs with divergent
-    content, and a glob would render some other copy's conversation while
-    resume continues this one's. Migrates first (same as `start`) so a moved
-    file's saved session shows its turns immediately, without waiting for the
-    user to send a message.
-
-    Assistant turns carry `segments` as well as `text` — the same ordered
-    text/tool record `_poll` returns, through the same `_segments_from_rows`, so
-    a restored conversation shows the tool calls it made instead of only the
-    prose around them. User turns keep just `text`: there is nothing structured
-    about a typed message, and the app-state block is stripped from it BEFORE
-    anything else reads it (below), which is also why segments cannot become a
-    second route back for the block the user never saw.
-
-    User turns DO carry `uuid`, the transcript record's own id. It is the one
-    field a restored turn can be addressed by from outside this page: the Tasks
-    list reads the same uuid off the same record (`_prompt`, server/routers/
-    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
-    turn a person clicked instead of to the top of the conversation. "" on a
-    record that has none — the template treats the key as optional throughout."""
-    if _bad_id(session_id):
-        return {"turns": [], "transcript": _transcript_stat("")}
-    file = os.path.abspath(file)
-    path = os.path.join(PROJECTS, _munge(_workdir(file)),
-                        session_id + ".jsonl")
-    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
-    # is the watermark the page follows the conversation by — it re-renders when
-    # the file moves past it — and a stat taken AFTER the read would describe
-    # rows this payload may not contain, which is a turn silently swallowed. Taken
-    # first, a write that lands mid-read shows up as a watermark the very next lap
-    # disagrees with: one redundant re-render, never a missed one.
-    #
-    # The PATH rides back for `/api/claude-sessions/liveness`: resolving an id to
-    # a transcript belongs here (the line above is the only place that knows the
-    # folder this chat is open on), and the endpoint refuses to do it.
-    stat = _transcript_stat(path)
+    Callers own the `transcript` watermark and the `stopped` flag: both are
+    facts about a SPECIFIC file (`_transcript_stat`, `_stopped_last`), not
+    about turns in general.
+    """
     if not os.path.isfile(path):
-        return {"turns": [], "transcript": stat}
-
+        return []
     turns = []
     stretch = []  # rows of the assistant reply being read, for its segments
 
@@ -3695,7 +3844,7 @@ def _history(file: str, session_id: str) -> dict:
         """
         if not stretch:
             return
-        segments = _segments_from_rows(stretch)
+        segments = _segments_from_rows(stretch, skip_sidechain=skip_sidechain)
         del stretch[:]
         if not segments:
             return
@@ -3709,7 +3858,7 @@ def _history(file: str, session_id: str) -> dict:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("isMeta") or row.get("isSidechain"):
+        if row.get("isMeta") or (skip_sidechain and row.get("isSidechain")):
             continue
         msg = row.get("message") or {}
         role = msg.get("role")
@@ -3755,6 +3904,59 @@ def _history(file: str, session_id: str) -> dict:
                 else:
                     turns.append({"role": "assistant", "text": text})
     close_stretch()
+    return turns
+
+
+def _history(file: str, session_id: str) -> dict:
+    """Rebuild the conversation from the Claude Code session transcript.
+
+    Resolved ONLY at the target file's own project dir — with copied files
+    the same session id exists in several project dirs with divergent
+    content, and a glob would render some other copy's conversation while
+    resume continues this one's. Migrates first (same as `start`) so a moved
+    file's saved session shows its turns immediately, without waiting for the
+    user to send a message.
+
+    Assistant turns carry `segments` as well as `text` — the same ordered
+    text/tool record `_poll` returns, through the same `_segments_from_rows`, so
+    a restored conversation shows the tool calls it made instead of only the
+    prose around them. User turns keep just `text`: there is nothing structured
+    about a typed message, and the app-state block is stripped from it BEFORE
+    anything else reads it (below), which is also why segments cannot become a
+    second route back for the block the user never saw.
+
+    User turns DO carry `uuid`, the transcript record's own id. It is the one
+    field a restored turn can be addressed by from outside this page: the Tasks
+    list reads the same uuid off the same record (`_prompt`, server/routers/
+    tasks.py) and links a message as `?msg=<uuid>`, so the chat can scroll to the
+    turn a person clicked instead of to the top of the conversation. "" on a
+    record that has none — the template treats the key as optional throughout."""
+    if _bad_id(session_id):
+        return {"turns": [], "transcript": _transcript_stat("")}
+    file = os.path.abspath(file)
+    path = os.path.join(PROJECTS, _munge(_workdir(file)),
+                        session_id + ".jsonl")
+    # SAMPLED BEFORE THE READ, and the order is the whole guarantee (D415). This
+    # is the watermark the page follows the conversation by — it re-renders when
+    # the file moves past it — and a stat taken AFTER the read would describe
+    # rows this payload may not contain, which is a turn silently swallowed. Taken
+    # first, a write that lands mid-read shows up as a watermark the very next lap
+    # disagrees with: one redundant re-render, never a missed one.
+    #
+    # The PATH rides back for `/api/claude-sessions/liveness`: resolving an id to
+    # a transcript belongs here (the line above is the only place that knows the
+    # folder this chat is open on), and the endpoint refuses to do it.
+    stat = _transcript_stat(path)
+    if not os.path.isfile(path):
+        return {"turns": [], "transcript": stat}
+
+    turns = _turns_from_transcript(path)
+    # Every assistant turn's `Task` calls get their subagent's header (and, if
+    # still running, a live progress snapshot) — see `_attach_subagents`.
+    for turn in turns:
+        if turn["role"] == "assistant" and turn.get("segments"):
+            turn["segments"] = _attach_subagents(turn["segments"], file,
+                                                 session_id)
     # ...and whether the last of those turns was ENDED BY THE USER. The
     # transcript cannot say — a killed run just stops writing — so it is read
     # off the run dir (`_stopped_last`) and reported on the turn it belongs to,
@@ -3832,7 +4034,8 @@ def main(action: str = "start", file: str = "", message: str = "",
          scope: str = "once", permission_mode: str = "", mode: str = "",
          state: str = "", has_pane: str = "", enrich: str = "",
          deltas: str = "", version_id: str = "", confirm_unique: str = "",
-         answers: str = "", note: str = "", custom: str = "") -> dict:
+         answers: str = "", note: str = "", custom: str = "",
+         agent_id: str = "") -> dict:
     if action == "start":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -3884,6 +4087,13 @@ def main(action: str = "start", file: str = "", message: str = "",
         if not file:
             return {"error": "missing target file (no _file param?)"}
         return _history(file, session_id)
+    if action == "subagent":
+        # A `Task` chip's expand: its own transcript, loaded lazily (never on
+        # the plain poll/history payload) and re-read on the caller's own
+        # poll while it is still running, same as the main transcript.
+        if not file:
+            return {"error": "missing target file (no _file param?)"}
+        return _subagent_transcript(file, session_id, agent_id)
     if action == "snapshots":
         # `enrich` arrives as a STRING like every other param (the binder is
         # str-shaped), so "" and "0" both mean don't — the boot call sends

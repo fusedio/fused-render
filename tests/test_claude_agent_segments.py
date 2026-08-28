@@ -817,8 +817,12 @@ def test_a_transcript_that_does_not_exist_yet_still_answers_a_watermark(
 def test_the_watermark_is_stat_ed_before_the_rows_are_read(agent):
     """Order is the guarantee: a stat taken AFTER the read would describe rows
     the payload does not contain — a turn silently swallowed for good. Taken
-    first, a write that lands mid-read costs one redundant re-render."""
+    first, a write that lands mid-read costs one redundant re-render.
+
+    The read itself now lives in `_turns_from_transcript` (shared with
+    `_subagent_transcript`), so the invariant this test owns is narrower than
+    it used to be: `_history` takes its stat before calling that function."""
     src = open(os.path.join(TEMPLATE_DIR, "agent.py"), encoding="utf-8").read()
     body = src[src.index("def _history(file: str, session_id: str)"):]
     body = body[:body.index("\ndef ")]
-    assert body.index("_transcript_stat(path)") < body.index("for line in open(path")
+    assert body.index("_transcript_stat(path)") < body.index("_turns_from_transcript(path)")
