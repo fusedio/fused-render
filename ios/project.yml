@@ -3,6 +3,10 @@
 # the local-network listener (fused_render/lan.py): Bonjour finds the computer,
 # a QR scan pairs, a WKWebView shows the same grid and apps a phone browser
 # would — with the native pieces a browser on plain http cannot offer.
+#
+# Two targets share Shared/: the app, and a WidgetKit extension that puts
+# individual Fused apps on the Home Screen (one configurable widget per app,
+# tap → deep link into the app). They talk through the App Group container.
 name: FusedRender
 options:
   bundleIdPrefix: io.fused
@@ -15,8 +19,10 @@ settings:
     SWIFT_VERSION: "5.10"
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
-    # No team yet: simulator builds run unsigned. Set DEVELOPMENT_TEAM for a
-    # device / TestFlight build.
+    # The Fused developer team (Apple Development identity in the keychain):
+    # signs simulator and device builds alike; the App Group entitlement the
+    # widget needs is provisioned against it.
+    DEVELOPMENT_TEAM: 39J46U46UX
     CODE_SIGN_STYLE: Automatic
     TARGETED_DEVICE_FAMILY: "1,2"
     SUPPORTS_MACCATALYST: NO
@@ -27,13 +33,23 @@ targets:
     platform: iOS
     sources:
       - path: FusedRender
+      - path: Shared
+    dependencies:
+      - target: FusedRenderWidgets
+        embed: true
+    entitlements:
+      path: FusedRender/FusedRender.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.io.fused.render
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.fused.render
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # No generated scene manifest: the one under `info:` names
+        # SceneDelegate, which quick actions (long-press the icon) arrive through.
         INFOPLIST_KEY_CFBundleDisplayName: Fused Render
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: YES
@@ -42,8 +58,16 @@ targets:
       properties:
         CFBundleDisplayName: Fused Render
         UILaunchScreen: {}
+        # No scene configurations here on purpose: under the SwiftUI lifecycle
+        # the scene delegate is handed over by AppDelegate (SceneDelegate.swift).
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # fusedrender://open?host=…&port=…&path=… — what widgets and quick
+        # actions open (Shared/AppManifest.swift builds and parses it).
+        CFBundleURLTypes:
+          - CFBundleURLName: io.fused.render.open
+            CFBundleURLSchemes:
+              - fusedrender
         # The listener speaks plain http on the LAN (lan.py explains why).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
@@ -56,3 +80,27 @@ targets:
         NSMicrophoneUsageDescription: Apps you open can record audio with your permission.
         UIViewControllerBasedStatusBarAppearance: true
         ITSAppUsesNonExemptEncryption: false
+
+  FusedRenderWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: FusedRenderWidgets
+      - path: Shared
+    entitlements:
+      path: FusedRenderWidgets/FusedRenderWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.io.fused.render
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.fused.render.widgets
+        INFOPLIST_KEY_CFBundleDisplayName: Fused apps
+        GENERATE_INFOPLIST_FILE: YES
+        SKIP_INSTALL: YES
+    info:
+      path: FusedRenderWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Fused apps
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

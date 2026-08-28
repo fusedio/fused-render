@@ -11,6 +11,8 @@ import SwiftUI
 
 @main
 struct FusedRenderApp: App {
+    // Quick actions come through UIKit delegates (SceneDelegate.swift).
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = AppModel()
 
     var body: some Scene {

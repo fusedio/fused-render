@@ -6,10 +6,26 @@ struct RootView: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        if let server = model.current {
-            ConnectedView(server: server)
-        } else {
-            NavigationStack { ServersView() }
+        Group {
+            if let server = model.current {
+                ConnectedView(server: server)
+            } else {
+                NavigationStack { ServersView() }
+            }
+        }
+        // Widgets open fusedrender://open?… ; quick actions post the same URL
+        // through SceneDelegate.
+        .onOpenURL { url in _ = model.open(deepLink: url) }
+        .onReceive(NotificationCenter.default.publisher(for: SceneDelegate.openNotification)) { note in
+            if let url = note.object as? URL { _ = model.open(deepLink: url) }
+        }
+        .onAppear {
+            // A quick action that cold-launched the app arrived before any
+            // view could listen for the notification.
+            if let url = SceneDelegate.pending {
+                SceneDelegate.pending = nil
+                _ = model.open(deepLink: url)
+            }
         }
     }
 }
@@ -146,6 +162,7 @@ struct ConnectedView: View {
     @EnvironmentObject var model: AppModel
     let server: Server
     @StateObject private var web = WebController()
+    @State private var showHomeScreenHelp = false
 
     /// On the grid itself (or the pairing pages around it) — nothing to go back to.
     private var onGrid: Bool {
@@ -157,6 +174,7 @@ struct ConnectedView: View {
         WebView(url: server.baseURL, pairURL: $model.pendingPairURL, controller: web)
             .ignoresSafeArea(edges: .bottom)
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(isPresented: $showHomeScreenHelp) { HomeScreenHelp() }
             .overlay(alignment: .bottomTrailing) {
                 // The one piece of native chrome, parked in the corner under
                 // the home indicator where pages keep nothing: back to the
@@ -170,6 +188,7 @@ struct ConnectedView: View {
                         }
                         Divider()
                     }
+                    Button("Add an app to the Home Screen", systemImage: "plus.square.on.square") { showHomeScreenHelp = true }
                     Button("Switch computer", systemImage: "desktopcomputer") { model.disconnect() }
                     Text(server.host).font(.footnote)
                 } label: {

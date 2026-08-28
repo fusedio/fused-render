@@ -95,6 +95,11 @@ struct WebView: UIViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             controller.location = webView.url
             controller.canGoBack = webView.canGoBack
+            // The grid just loaded (paired, current): refresh what the widgets
+            // and quick actions know.
+            if let u = webView.url, u.path == "/" || u.path == "/index.html", let host = u.host {
+                ManifestSync.refresh(from: webView, server: Server(name: host, host: host, port: u.port ?? 80))
+            }
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

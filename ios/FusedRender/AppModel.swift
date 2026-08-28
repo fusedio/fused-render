@@ -76,6 +76,22 @@ final class AppModel: ObservableObject {
         return true
     }
 
+    /// A widget or quick action: `fusedrender://open?host&port&path`. Go to
+    /// that computer and straight to the page, skipping the grid. An unpaired
+    /// computer shows the server's own pairing page; the ⋯ menu offers Pair.
+    func open(deepLink url: URL) -> Bool {
+        guard let link = DeepLink(url) else { return false }
+        let server = known.first(where: { $0.host == link.host && $0.port == link.port })
+            ?? Server(name: link.host, host: link.host, port: link.port)
+        remember(server)
+        var c = URLComponents(url: server.baseURL, resolvingAgainstBaseURL: false)!
+        c.path = "/render"
+        c.queryItems = [URLQueryItem(name: "path", value: link.path)]
+        pendingPairURL = c.url  // the webview's "load this next" slot
+        current = server
+        return true
+    }
+
     func forget(_ server: Server) {
         known.removeAll { $0 == server }
         if current == server { current = nil }
