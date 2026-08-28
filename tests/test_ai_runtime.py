@@ -4681,7 +4681,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
 def test_every_mutating_route_carries_the_guard(client):
     for path in ("/api/ai/runtime/load", "/api/ai/runtime/unload",
                  "/api/ai/runtime/download", "/api/ai/image", "/api/ai/transcribe",
-                 "/api/ai/video"):
+                 "/api/ai/video", "/api/ai/mesh"):
         assert client.post(path, json={"model": "org/x", "prompt": "x"}).status_code == 403
 
 
@@ -6475,6 +6475,43 @@ def test_mesh_defaults_match_the_pipelines_own_signature(client, fake_mesh_runne
     assert reply["guidance"] == 5.0
     assert reply["octreeResolution"] == 256
     _wait_job(reply["jobId"])
+
+
+def test_mesh_guidance_zero_is_reachable_and_echoed_as_zero(client, fake_mesh_runner, tmp_path):
+    """`guidance: 0` is CFG off — the one qualitative setting this capability
+    has — and `MIN_MESH_GUIDANCE` is 0.0, an in-range value, not a floor
+    that excludes it. A `body.get("guidance") or default` implementation
+    would treat 0 as absent and silently render (and echo) the default 5.0
+    instead — code review, 2026-08-28, finding 1."""
+    reply = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "guidance": 0},
+        headers={"X-Fused": "1"}).json()
+    assert reply["guidance"] == 0
+    row = _wait_job(reply["jobId"])
+    assert row["state"] == "done", row
+
+
+def test_mesh_steps_zero_clamps_to_the_floor_not_the_default(client, fake_mesh_runner, tmp_path):
+    """`steps: 0` must clamp to `MIN_MESH_STEPS` (1), not fall through to the
+    default (50) the way an `or default` implementation would — the same
+    truthiness bug as guidance, one floor over."""
+    reply = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "steps": 0},
+        headers={"X-Fused": "1"}).json()
+    assert reply["steps"] == 1
+    _wait_job(reply["jobId"])
+
+
+def test_mesh_octree_resolution_garbage_is_a_400_not_a_silent_default(
+        client, fake_mesh_runner, tmp_path):
+    """`{"octreeResolution": "high"}` must 400 like `steps`/`guidance` do for
+    the identical mistake, not silently render at 256 with a 200 — code
+    review, 2026-08-28, finding 6."""
+    response = client.post(
+        "/api/ai/mesh", json={"image": _photo(tmp_path), "octreeResolution": "high"},
+        headers={"X-Fused": "1"})
+    assert response.status_code == 400
+    assert "octreeResolution" in response.json()["error"]
 
 
 def test_mesh_seed_is_invented_when_not_given_and_echoed_when_it_is(

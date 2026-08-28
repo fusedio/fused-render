@@ -392,11 +392,15 @@ def _mesh_octree_resolution(value, default: int) -> int:
     """Octree resolution, clamped to `[_MIN_MESH_OCTREE_RESOLUTION,
     _MAX_MESH_OCTREE_RESOLUTION]` — this engine's ENTIRE face-count lever
     (`registry.MeshTraits`'s docstring explains why there is no second
-    knob), so this clamp is also this capability's "face cap"."""
-    try:
-        resolution = int(value)
-    except (TypeError, ValueError):
-        resolution = default
+    knob), so this clamp is also this capability's "face cap".
+
+    Raises `(TypeError, ValueError)` for a value that is not a number,
+    same as `steps`/`guidance` in `api_ai_mesh` — a garbage value must 400
+    like its siblings, not silently render at `default` with a 200 (code
+    review, 2026-08-28, finding 6: `{"octreeResolution": "high"}` used to
+    do exactly that).
+    """
+    resolution = int(value) if value is not None else default
     return max(_MIN_MESH_OCTREE_RESOLUTION, min(_MAX_MESH_OCTREE_RESOLUTION, resolution))
 
 
@@ -1776,18 +1780,31 @@ def api_ai_mesh(body: dict = Body(...), x_fused: str | None = Header(default=Non
     serving_runner = registry.for_capability(registry.IMAGE_TO_3D)
     traits = registry.mesh_traits_for(serving_runner.code if serving_runner else None)
 
+    # `if ... is not None else default`, NOT `body.get(...) or default` —
+    # `or` treats 0 as absent, and 0 is a real, in-range value for BOTH of
+    # these (`MIN_MESH_STEPS` and `MIN_MESH_GUIDANCE` are both 0/1, not
+    # excluded floors). Guidance 0 is the one qualitative setting this
+    # capability has — CFG off — and `or` made it unreachable: every
+    # request for it silently rendered at the default 5.0 instead, and the
+    # reply echoed 5.0 back as if that were what ran (code review,
+    # 2026-08-28, finding 1).
+    steps_in = body.get("steps")
     try:
-        steps = max(_MIN_MESH_STEPS,
-                    min(_MAX_MESH_STEPS, int(body.get("steps") or traits.default_steps)))
+        steps = max(_MIN_MESH_STEPS, min(
+            _MAX_MESH_STEPS, int(steps_in if steps_in is not None else traits.default_steps)))
     except (TypeError, ValueError):
         return _error("'steps' must be a number", status=400)
+    guidance_in = body.get("guidance")
     try:
-        guidance = max(_MIN_MESH_GUIDANCE, min(
-            _MAX_MESH_GUIDANCE, float(body.get("guidance") or traits.default_guidance)))
+        guidance = max(_MIN_MESH_GUIDANCE, min(_MAX_MESH_GUIDANCE, float(
+            guidance_in if guidance_in is not None else traits.default_guidance)))
     except (TypeError, ValueError):
         return _error("'guidance' must be a number", status=400)
-    octree_resolution = _mesh_octree_resolution(
-        body.get("octreeResolution"), traits.default_octree_resolution)
+    try:
+        octree_resolution = _mesh_octree_resolution(
+            body.get("octreeResolution"), traits.default_octree_resolution)
+    except (TypeError, ValueError):
+        return _error("'octreeResolution' must be a number", status=400)
     # A seed the caller did not choose is chosen HERE and reported back —
     # same rule `/api/ai/image` and `/api/ai/video` both use.
     try:
