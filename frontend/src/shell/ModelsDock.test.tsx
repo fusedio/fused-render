@@ -9,9 +9,16 @@
 // model list.
 import { expect, test } from "bun:test";
 import { act, create, type ReactTestRenderer, type ReactTestRendererJSON } from "react-test-renderer";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
 
 import { memoryBand, ModelsCardView } from "@shell/ModelsDock";
 import type { AiLoadedModel } from "@platform/lib/api";
+
+// Read once, at module scope — several tests below assert against the actual
+// CSS text rather than computed style, since react-test-renderer never runs a
+// real cascade and `:last-child` can only be checked in the rule itself.
+const CSS = readFileSync(join(import.meta.dir, "../styles/notifications.css"), "utf8");
 
 function findAll(node: ReactTestRendererJSON | null, className: string): ReactTestRendererJSON[] {
   if (node === null || typeof node === "string") return [];
@@ -379,6 +386,21 @@ test("a non-ready model's state also lives in the figures block, not the head", 
   const head = findAll(row, "dl-row-head")[0];
   expect(findAll(head, "dl-amount")).toHaveLength(0);
   expect(text(findAll(findAll(row, "dl-row-figures")[0], "dl-amount")[0])).toBe("downloading");
+});
+
+// The figures block is the row's LAST child in the common case (no failure
+// message), so its own `margin-bottom: 5px` would otherwise be dead space
+// stacking on `.dl-row`'s bottom padding — 13px of bottom breathing room
+// against 8px on top, and enough to eat the whole height saving this layout
+// change exists to produce (a one-line title saves ~15px; an unclosed
+// trailing margin gives most of it straight back). Checked against the CSS
+// text, not computed style: react-test-renderer never runs a real cascade,
+// so `:last-child` can only be verified in the rule itself.
+test("the figures block's own trailing margin is zeroed when nothing follows it", () => {
+  const at = CSS.indexOf(".dl-row-figures:last-child {");
+  expect(at).toBeGreaterThan(-1);
+  const rule = CSS.slice(at, CSS.indexOf("}", at));
+  expect(rule).toContain("margin-bottom: 0;");
 });
 
 test("pressing Unload calls onUnload with the model id and shows Unloading… mid-flight", async () => {

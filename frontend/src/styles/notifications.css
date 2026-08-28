@@ -773,6 +773,25 @@
   color: var(--fg-muted);
 }
 
+/* ZEROED WHEN IT IS THE LAST CHILD — the common case, since most rows carry
+   no failure message. The asymmetric bottom margin on the row's last child is
+   not new: `.dl-row-head` has carried `margin-bottom: 5px` while being the
+   last child (a row with no bar and no status) since before this change, and
+   that was already true dead space nobody paid attention to because the row
+   had no other interior gap competing with it. This change is what makes it
+   worth removing rather than leaving alone: the row now ALWAYS pays for one
+   real interior gap (`.dl-row-head`'s own margin, between the head and this
+   line), and paying a second one below the last line as well would eat the
+   height this whole restructuring exists to save — 5px here plus the existing
+   asymmetry would leave 13px of bottom padding against 8px on top, and the
+   card would end up TALLER than before instead of shorter. Left in place only
+   when `.dl-status` follows (the rule below still fires for that case, on
+   `.dl-status`'s own top margin, exactly as `.dl-row-head + .dl-status`
+   already does for the head). */
+.dl-row-figures:last-child {
+  margin-bottom: 0;
+}
+
 /* Same reasoning as `.dl-row-head + .dl-status` below, one level further
    down the row: with the figures now always on their own line between the
    head and a failure message, `.dl-row-figures` is what sits directly above
